@@ -1,9 +1,11 @@
-From dc03b8687fe130e662da2524aa4b04690c7ccc7e Mon Sep 17 00:00:00 2001
+From c04dc6e096658f5d9e8b3f23a51f434ba842a788 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 1 Oct 2026 00:52:09 -0700
-Subject: [PATCH] crucible: retain hot-fork source and utility custody
+Date: Thu, 1 Oct 2026 11:49:58 -0700
+Subject: [PATCH] crucible: distribute cumulative native graph and descriptor
+ sources
 
-Provide deterministic execution, retained stop custody, and current-root sealing. Bind child copies to the final pinned source bytes and size, and refuse unsupported seal authority in standalone block utilities.
+Preserve the reviewed runtime implementation and schemas while keeping
+validation packet artifacts outside the production source distribution.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -7511,7 +7513,7 @@ index f0a6042e616031076bda4618737fdac804431712..a851e3ea2adfddd7f59ccdfcb72c595e
      g_free(bs);
  }
 diff --git a/block/block-backend.c b/block/block-backend.c
-index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910b716f5e4 100644
+index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f231c5609ef 100644
 --- a/block/block-backend.c
 +++ b/block/block-backend.c
 @@ -93,6 +93,21 @@ struct BlockBackend {
@@ -7536,7 +7538,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  };
  
  typedef struct BlockBackendAIOCB {
-@@ -119,6 +134,592 @@ static QTAILQ_HEAD(, BlockBackend) block_backends =
+@@ -119,6 +134,598 @@ static QTAILQ_HEAD(, BlockBackend) block_backends =
  static QTAILQ_HEAD(, BlockBackend) monitor_block_backends =
      QTAILQ_HEAD_INITIALIZER(monitor_block_backends);
  
@@ -7779,6 +7781,12 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
 +    QEMU_LOCK_GUARD(&crucible_hot_fork_block_backend_lock);
 +
 +    qemu_block_backend_hot_fork_inventory_locked(inventory);
++}
++
++uint64_t qemu_block_backend_hot_fork_id(const BlockBackend *backend)
++{
++    GLOBAL_STATE_CODE();
++    return backend ? backend->crucible_hot_fork_id : 0;
 +}
 +
 +void qemu_block_backend_hot_fork_inventory_destroy(
@@ -8129,7 +8137,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  static int coroutine_mixed_fn GRAPH_RDLOCK
  blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
                      Error **errp);
-@@ -199,6 +800,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -199,6 +806,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      }
  
      blk->disable_perm = false;
@@ -8137,7 +8145,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  
      /*
       * blk->shared_perm contains the permissions we want to share once
-@@ -213,9 +815,11 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -213,9 +821,11 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      if (local_err) {
          error_propagate(errp, local_err);
          blk->disable_perm = true;
@@ -8149,7 +8157,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  
      if (runstate_check(RUN_STATE_INMIGRATE)) {
          /* Activation can happen when migration process is still active, for
-@@ -232,6 +836,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
+@@ -232,6 +842,7 @@ static void GRAPH_RDLOCK blk_root_activate(BdrvChild *child, Error **errp)
      if (local_err) {
          error_propagate(errp, local_err);
          blk->disable_perm = true;
@@ -8157,7 +8165,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
          return;
      }
  }
-@@ -274,6 +879,7 @@ static int GRAPH_RDLOCK blk_root_inactivate(BdrvChild *child)
+@@ -274,6 +885,7 @@ static int GRAPH_RDLOCK blk_root_inactivate(BdrvChild *child)
      }
  
      blk->disable_perm = true;
@@ -8165,7 +8173,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
      if (blk->root) {
          bdrv_child_try_set_perm(blk->root, 0, BLK_PERM_ALL, &error_abort);
      }
-@@ -377,6 +983,7 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
+@@ -377,6 +989,7 @@ BlockBackend *blk_new(AioContext *ctx, uint64_t perm, uint64_t shared_perm)
      notifier_list_init(&blk->insert_bs_notifiers);
      QLIST_INIT(&blk->aio_notifiers);
  
@@ -8173,7 +8181,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
      QTAILQ_INSERT_TAIL(&block_backends, blk, link);
      return blk;
  }
-@@ -499,6 +1106,7 @@ static void blk_delete(BlockBackend *blk)
+@@ -499,6 +1112,7 @@ static void blk_delete(BlockBackend *blk)
      QTAILQ_REMOVE(&block_backends, blk, link);
      drive_info_del(blk->legacy_dinfo);
      block_acct_cleanup(&blk->stats);
@@ -8181,7 +8189,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
      g_free(blk);
  }
  
-@@ -526,6 +1134,7 @@ void blk_ref(BlockBackend *blk)
+@@ -526,6 +1140,7 @@ void blk_ref(BlockBackend *blk)
      assert(blk->refcnt > 0);
      GLOBAL_STATE_CODE();
      blk->refcnt++;
@@ -8189,7 +8197,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  }
  
  /*
-@@ -540,6 +1149,7 @@ void blk_unref(BlockBackend *blk)
+@@ -540,6 +1155,7 @@ void blk_unref(BlockBackend *blk)
          assert(blk->refcnt > 0);
          if (blk->refcnt > 1) {
              blk->refcnt--;
@@ -8197,7 +8205,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
          } else {
              blk_drain(blk);
              /* blk_drain() cannot resurrect blk, nobody held a reference */
-@@ -706,6 +1316,7 @@ bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp)
+@@ -706,6 +1322,7 @@ bool monitor_add_blk(BlockBackend *blk, const char *name, Error **errp)
  
      blk->name = g_strdup(name);
      QTAILQ_INSERT_TAIL(&monitor_block_backends, blk, monitor_link);
@@ -8205,7 +8213,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
      return true;
  }
  
-@@ -724,6 +1335,7 @@ void monitor_remove_blk(BlockBackend *blk)
+@@ -724,6 +1341,7 @@ void monitor_remove_blk(BlockBackend *blk)
      QTAILQ_REMOVE(&monitor_block_backends, blk, monitor_link);
      g_free(blk->name);
      blk->name = NULL;
@@ -8213,7 +8221,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  }
  
  /*
-@@ -889,6 +1501,7 @@ void blk_remove_bs(BlockBackend *blk)
+@@ -889,6 +1507,7 @@ void blk_remove_bs(BlockBackend *blk)
      blk_drain(blk);
      root = blk->root;
      blk->root = NULL;
@@ -8221,7 +8229,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  
      bdrv_graph_wrlock_drained();
      bdrv_root_unref_child(root);
-@@ -921,8 +1534,10 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
+@@ -921,8 +1540,10 @@ int blk_insert_bs(BlockBackend *blk, BlockDriverState *bs, Error **errp)
                                         perm, shared_perm, blk, errp);
      bdrv_graph_wrunlock();
      if (blk->root == NULL) {
@@ -8232,7 +8240,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  
      notifier_list_notify(&blk->insert_bs_notifiers, blk);
      if (tgm->throttle_state) {
-@@ -961,6 +1576,7 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
+@@ -961,6 +1582,7 @@ blk_set_perm_locked(BlockBackend *blk, uint64_t perm, uint64_t shared_perm,
  
      blk->perm = perm;
      blk->shared_perm = shared_perm;
@@ -8240,7 +8248,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
  
      return 0;
  }
-@@ -997,10 +1613,12 @@ int blk_attach_dev(BlockBackend *blk, DeviceState *dev)
+@@ -997,10 +1619,12 @@ int blk_attach_dev(BlockBackend *blk, DeviceState *dev)
       * job or NBD server writing to the image for storage migration. */
      if (runstate_check(RUN_STATE_INMIGRATE)) {
          blk->disable_perm = true;
@@ -8253,7 +8261,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
      blk_iostatus_reset(blk);
  
      return 0;
-@@ -1015,6 +1633,7 @@ void blk_detach_dev(BlockBackend *blk, DeviceState *dev)
+@@ -1015,6 +1639,7 @@ void blk_detach_dev(BlockBackend *blk, DeviceState *dev)
      assert(blk->dev == dev);
      GLOBAL_STATE_CODE();
      blk->dev = NULL;
@@ -8261,7 +8269,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
      blk->dev_ops = NULL;
      blk->dev_opaque = NULL;
      blk_set_perm(blk, 0, BLK_PERM_ALL, &error_abort);
-@@ -2419,6 +3038,7 @@ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
+@@ -2419,6 +3044,7 @@ int blk_set_aio_context(BlockBackend *blk, AioContext *new_context,
  
      if (!bs) {
          qatomic_set(&blk->ctx, new_context);
@@ -8269,7 +8277,7 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
          return 0;
      }
  
-@@ -2448,6 +3068,7 @@ static void blk_root_set_aio_ctx_commit(void *opaque)
+@@ -2448,6 +3074,7 @@ static void blk_root_set_aio_ctx_commit(void *opaque)
      ThrottleGroupMember *tgm = &blk->public.throttle_group_member;
  
      qatomic_set(&blk->ctx, new_context);
@@ -8279,10 +8287,10 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
          throttle_group_attach_aio_context(tgm, new_context);
 diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f9ad374e7
+index 0000000000000000000000000000000000000000..ba10e460c01b96aba1fa831c351b1a503f876dfb
 --- /dev/null
 +++ b/block/crucible-hot-fork-source.c
-@@ -0,0 +1,1460 @@
+@@ -0,0 +1,1764 @@
 +/*
 + * Crucible native read-only block source ownership
 + *
@@ -8319,6 +8327,14 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +typedef struct ReadOnlySourceNode {
 +    BlockDriverState *node;
 +    BlockDriverState *parent;
++    const BdrvChild *incoming_edge;
++    char *incoming_name;
++    char *node_name;
++    int64_t parent_index;
++    bool receipt_valid;
++    off_t receipt_size;
++    struct timespec receipt_ctime;
++    uint8_t receipt_digest[32];
 +    BlockDriver *driver;
 +    BdrvCrucibleHotForkSourceDisposition disposition;
 +    BdrvCrucibleHotForkFileState file;
@@ -8335,6 +8351,8 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    ReadOnlySourcePhase phase;
 +    BdrvCrucibleHotForkSourceDisposition disposition;
 +    bool original_read_only;
++    uint64_t backend_id;
++    char *backend_name;
 +    char *node_name;
 +    GArray *graph;
 +};
@@ -8408,12 +8426,16 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +
 +static bool GRAPH_RDLOCK source_graph_capture(
 +    GArray *graph, BlockDriverState *node, BlockDriverState *parent,
++    const BdrvChild *incoming_edge, int64_t parent_index,
 +    unsigned depth, Error **errp)
 +{
 +    BdrvChild *child;
++    int64_t ordinal = graph->len;
 +    ReadOnlySourceNode entry = {
 +        .node = node,
 +        .parent = parent,
++        .incoming_edge = incoming_edge,
++        .parent_index = parent_index,
 +        .driver = node->drv,
 +        .pinned_fd = -1,
 +        .disposition = node->drv ?
@@ -8462,10 +8484,13 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +            return false;
 +        }
 +    }
++    entry.incoming_name = g_strdup(incoming_edge ? incoming_edge->name : "");
++    entry.node_name = g_strdup(bdrv_get_node_name(node));
 +    bdrv_ref(node);
 +    g_array_append_val(graph, entry);
 +    QLIST_FOREACH(child, &node->children, next) {
-+        if (!source_graph_capture(graph, child->bs, node, depth + 1, errp)) {
++        if (!source_graph_capture(graph, child->bs, node, child,
++                                  ordinal, depth + 1, errp)) {
 +            return false;
 +        }
 +    }
@@ -8485,7 +8510,7 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +
 +static bool GRAPH_RDLOCK source_graph_matches(
 +    const GArray *graph, BlockDriverState *node, BlockDriverState *parent,
-+    size_t *index, bool frozen, Error **errp)
++    const BdrvChild *incoming_edge, size_t *index, bool frozen, Error **errp)
 +{
 +    const ReadOnlySourceNode *entry;
 +    BdrvChild *child;
@@ -8497,6 +8522,10 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    }
 +    entry = &g_array_index(graph, ReadOnlySourceNode, (*index)++);
 +    if (entry->node != node || entry->parent != parent ||
++        entry->incoming_edge != incoming_edge ||
++        strcmp(entry->incoming_name,
++               incoming_edge ? incoming_edge->name : "") ||
++        strcmp(entry->node_name, bdrv_get_node_name(node)) ||
 +        entry->driver != node->drv || bdrv_is_inactive(node) ||
 +        !node->drv || entry->disposition !=
 +            node->drv->bdrv_crucible_hot_fork_source_disposition) {
@@ -8517,7 +8546,8 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +        return false;
 +    }
 +    QLIST_FOREACH(child, &node->children, next) {
-+        if (!source_graph_matches(graph, child->bs, node, index, frozen, errp)) {
++        if (!source_graph_matches(graph, child->bs, node, child,
++                                  index, frozen, errp)) {
 +            return false;
 +        }
 +    }
@@ -8530,7 +8560,7 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    size_t index = 0;
 +    GRAPH_RDLOCK_GUARD_MAINLOOP();
 +
-+    if (!source_graph_matches(source->graph, source->root, NULL,
++    if (!source_graph_matches(source->graph, source->root, NULL, NULL,
 +                              &index, frozen, errp)) {
 +        return false;
 +    }
@@ -8560,6 +8590,8 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +                assert(released);
 +                close(entry->pinned_fd);
 +            }
++            g_free(entry->incoming_name);
++            g_free(entry->node_name);
 +        }
 +    }
 +    for (index = 0; index < graph->len; index++) {
@@ -8578,7 +8610,10 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    if (!source->backend) {
 +        return parent == NULL;
 +    }
-+    return blk_bs(source->backend) == source->root &&
++    return source->backend_id ==
++               qemu_block_backend_hot_fork_id(source->backend) &&
++           !strcmp(source->backend_name, blk_name(source->backend)) &&
++           blk_bs(source->backend) == source->root &&
 +           parent == blk_root(source->backend) && parent &&
 +           QLIST_NEXT(parent, next_parent) == NULL;
 +}
@@ -8681,7 +8716,7 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    graph = g_array_new(false, false, sizeof(ReadOnlySourceNode));
 +    {
 +        GRAPH_RDLOCK_GUARD_MAINLOOP();
-+        captured = source_graph_capture(graph, root, NULL, 0, errp);
++        captured = source_graph_capture(graph, root, NULL, NULL, -1, 0, errp);
 +    }
 +    if (!captured) {
 +        source_graph_free(graph);
@@ -8697,6 +8732,8 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +        .phase = SOURCE_ORIGINAL,
 +        .disposition = root->drv->bdrv_crucible_hot_fork_source_disposition,
 +        .original_read_only = bdrv_is_read_only(root),
++        .backend_id = qemu_block_backend_hot_fork_id(blk),
++        .backend_name = g_strdup(blk ? blk_name(blk) : ""),
 +        .node_name = g_strdup(bdrv_get_node_name(root)),
 +        .graph = graph,
 +    };
@@ -8816,6 +8853,7 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +        blk_unref(source->backend);
 +    }
 +    g_free(source->node_name);
++    g_free(source->backend_name);
 +    g_free(source);
 +    return true;
 +}
@@ -8830,6 +8868,7 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    size_t native_roots;
 +    size_t native_nodes;
 +    bool child_plan_active;
++    bool graph_receipt_issued;
 +};
 +
 +static bool source_set_owned_by(const QemuBlockHotForkSourceSet *set,
@@ -9093,17 +9132,41 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    return true;
 +}
 +
++bool qemu_block_hot_fork_source_set_restored_current(
++    const QemuBlockHotForkSourceSet *set, Error **errp)
++{
++    size_t index;
++
++    GLOBAL_STATE_CODE();
++    if (!source_set_complete(set, errp)) {
++        return false;
++    }
++    if (set->child_plan_active) {
++        error_setg(errp, "Crucible source set retains a child file plan");
++        return false;
++    }
++    for (index = 0; index < set->sources->len; index++) {
++        QemuBlockBackendHotForkReadOnlySource *source =
++            g_ptr_array_index(set->sources, index);
++
++        if (source->phase != SOURCE_ORIGINAL) {
++            error_setg(errp, "Crucible source set must be restored before release");
++            return false;
++        }
++    }
++    return true;
++}
++
 +bool qemu_block_hot_fork_source_set_free(QemuBlockHotForkSourceSet *set,
 +                                       Error **errp)
 +{
 +    size_t index;
 +
 +    GLOBAL_STATE_CODE();
-+    if (!source_set_owned(set, errp)) {
-+        return false;
-+    }
-+    if (set->child_plan_active) {
-+        error_setg(errp, "Crucible source set retains a child file plan");
++    if (!source_set_owned(set, errp) || set->child_plan_active) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible source set retains a child file plan");
++        }
 +        return false;
 +    }
 +    for (index = 0; index < set->sources->len; index++) {
@@ -9154,6 +9217,15 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +/* Bound native files independently of the complete graph visit bound. */
 +#define HOT_FORK_CHILD_MAX_FILES 4096
 +#define HOT_FORK_CHILD_COPY_CHUNK (64 * 1024)
++#define HOT_FORK_GRAPH_RECEIPT_MAX_NODES 4096
++#define HOT_FORK_GRAPH_RECEIPT_MAX_BYTES (64ULL * 1024 * 1024 * 1024)
++
++typedef struct HotForkGraphReceiptPending {
++    ReadOnlySourceNode *node;
++    off_t size;
++    struct timespec ctime;
++    uint8_t digest[32];
++} HotForkGraphReceiptPending;
 +
 +typedef struct HotForkChildFileEntry {
 +    BlockDriverState *node;
@@ -9397,6 +9469,244 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    return length == 32;
 +}
 +
++static bool source_file_receipt_matches(ReadOnlySourceNode *node,
++                                        Error **errp)
++{
++    struct stat before, after;
++    uint8_t digest[32];
++
++    if (fstat(node->pinned_fd, &before) < 0 || !S_ISREG(before.st_mode) ||
++        before.st_dev != node->file.device ||
++        before.st_ino != node->file.inode ||
++        before.st_size != node->receipt_size ||
++        before.st_ctim.tv_sec != node->receipt_ctime.tv_sec ||
++        before.st_ctim.tv_nsec != node->receipt_ctime.tv_nsec ||
++        !child_file_digest(node->pinned_fd, before.st_size, digest, errp) ||
++        fstat(node->pinned_fd, &after) < 0 ||
++        after.st_size != before.st_size ||
++        after.st_ctim.tv_sec != before.st_ctim.tv_sec ||
++        after.st_ctim.tv_nsec != before.st_ctim.tv_nsec ||
++        memcmp(digest, node->receipt_digest, sizeof(digest))) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible retained graph file content changed");
++        }
++        return false;
++    }
++    return true;
++}
++
++static bool source_set_graph_content_matches(QemuBlockHotForkSourceSet *set,
++                                              Error **errp)
++{
++    size_t root, visit;
++
++    if (!set->graph_receipt_issued) {
++        return true;
++    }
++    for (root = 0; root < set->sources->len; root++) {
++        QemuBlockBackendHotForkReadOnlySource *source =
++            g_ptr_array_index(set->sources, root);
++
++        for (visit = 0; visit < source->graph->len; visit++) {
++            ReadOnlySourceNode *node =
++                &g_array_index(source->graph, ReadOnlySourceNode, visit);
++
++            if (node->file_pinned &&
++                (!node->receipt_valid ||
++                 !source_file_receipt_matches(node, errp))) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++bool qemu_block_hot_fork_source_set_has_graph_receipt(
++    const QemuBlockHotForkSourceSet *set)
++{
++    GLOBAL_STATE_CODE();
++    return set && set->owner == getpid() && set->graph_receipt_issued;
++}
++
++void qemu_block_hot_fork_graph_receipt_destroy(
++    QemuBlockHotForkGraphReceipt *receipt)
++{
++    size_t index;
++
++    if (!receipt) {
++        return;
++    }
++    for (index = 0; index < receipt->count; index++) {
++        QemuBlockHotForkGraphMember *member = &receipt->members[index];
++
++        g_free(member->backend_name);
++        g_free(member->root_node_name);
++        g_free(member->node_name);
++        g_free(member->edge_name);
++        g_free(member->driver_name);
++        g_free(member->file_path);
++    }
++    g_free(receipt->members);
++    *receipt = (QemuBlockHotForkGraphReceipt) { 0 };
++}
++
++bool qemu_block_hot_fork_source_set_graph_receipt(
++    QemuBlockHotForkSourceSet *set, uint32_t maximum_nodes,
++    uint64_t maximum_bytes, QemuBlockHotForkGraphReceipt *receipt,
++    Error **errp)
++{
++    g_autoptr(GArray) pending =
++        g_array_new(false, false, sizeof(HotForkGraphReceiptPending));
++    QemuBlockHotForkSourceSetInventory inventory;
++    uint64_t total_bytes = 0;
++    size_t root, visit, ordinal = 0;
++
++    GLOBAL_STATE_CODE();
++    if (!receipt || receipt->members || receipt->count || !maximum_nodes ||
++        maximum_nodes > HOT_FORK_GRAPH_RECEIPT_MAX_NODES ||
++        !maximum_bytes ||
++        maximum_bytes > HOT_FORK_GRAPH_RECEIPT_MAX_BYTES ||
++        !qemu_block_hot_fork_source_set_query(set, &inventory, errp) ||
++        !inventory.frozen || inventory.nodes > maximum_nodes) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible graph receipt requires a complete "
++                       "frozen source set within caller bounds");
++        }
++        return false;
++    }
++    *receipt = (QemuBlockHotForkGraphReceipt) {
++        .members = g_new0(QemuBlockHotForkGraphMember, inventory.nodes),
++    };
++    for (root = 0; root < set->sources->len; root++) {
++        QemuBlockBackendHotForkReadOnlySource *source =
++            g_ptr_array_index(set->sources, root);
++
++        if (source->disposition != BDRV_CRUCIBLE_HOT_FORK_SOURCE_NATIVE_FILE) {
++            error_setg(errp, "Crucible graph receipt requires native files");
++            goto fail;
++        }
++        for (visit = 0; visit < source->graph->len; visit++) {
++            ReadOnlySourceNode *node =
++                &g_array_index(source->graph, ReadOnlySourceNode, visit);
++            QemuBlockHotForkGraphMember *member =
++                &receipt->members[receipt->count++];
++
++            member->root_index = root;
++            member->node_index = visit;
++            member->parent_index = node->parent_index;
++            member->backend_id = source->backend_id;
++            member->backend_name = g_strdup(source->backend_name);
++            member->root_node_name = g_strdup(source->node_name);
++            member->node_name = g_strdup(node->node_name);
++            member->edge_name = g_strdup(node->incoming_name);
++            member->driver_name = g_strdup(node->driver->format_name);
++            if (node->file_pinned) {
++                HotForkGraphReceiptPending entry = { .node = node };
++                struct stat before, after;
++                static const char hex[] = "0123456789abcdef";
++                char descriptor_path[64], file_path[PATH_MAX + 1];
++                ssize_t path_length;
++                size_t byte;
++
++                g_snprintf(descriptor_path, sizeof(descriptor_path),
++                           "/proc/self/fd/%d", node->pinned_fd);
++                path_length = readlink(descriptor_path, file_path, PATH_MAX);
++                if (path_length <= 0 || path_length == PATH_MAX) {
++                    error_setg(errp, "Crucible graph file has no bounded path");
++                    goto fail;
++                }
++                file_path[path_length] = '\0';
++                if (fstat(node->pinned_fd, &before) < 0 ||
++                    !S_ISREG(before.st_mode) || before.st_size < 0 ||
++                    before.st_dev != node->file.device ||
++                    before.st_ino != node->file.inode ||
++                    (uint64_t)before.st_size > maximum_bytes - total_bytes ||
++                    !child_file_digest(node->pinned_fd, before.st_size,
++                                       entry.digest, errp) ||
++                    fstat(node->pinned_fd, &after) < 0 ||
++                    after.st_size != before.st_size ||
++                    after.st_ctim.tv_sec != before.st_ctim.tv_sec ||
++                    after.st_ctim.tv_nsec != before.st_ctim.tv_nsec) {
++                    if (!errp || !*errp) {
++                        error_setg(errp, "Crucible graph file is not stable "
++                                   "within the receipt byte budget");
++                    }
++                    goto fail;
++                }
++                if (set->graph_receipt_issued &&
++                    (!node->receipt_valid ||
++                     node->receipt_size != before.st_size ||
++                     node->receipt_ctime.tv_sec != before.st_ctim.tv_sec ||
++                     node->receipt_ctime.tv_nsec != before.st_ctim.tv_nsec ||
++                     memcmp(node->receipt_digest, entry.digest,
++                            sizeof(entry.digest)))) {
++                    error_setg(errp, "Crucible retained graph file changed");
++                    goto fail;
++                }
++                entry.size = before.st_size;
++                entry.ctime = before.st_ctim;
++                total_bytes += before.st_size;
++                member->file_backed = true;
++                member->originally_writable_file = !node->file.read_only;
++                member->file_path = g_strdup(file_path);
++                g_array_append_val(pending, entry);
++                member->file_device = before.st_dev;
++                member->file_inode = before.st_ino;
++                member->file_size = before.st_size;
++                for (byte = 0; byte < sizeof(entry.digest); byte++) {
++                    member->file_sha256[byte * 2] =
++                        hex[entry.digest[byte] >> 4];
++                    member->file_sha256[byte * 2 + 1] =
++                        hex[entry.digest[byte] & 15];
++                }
++            }
++            ordinal++;
++        }
++    }
++    if (ordinal != inventory.nodes ||
++        !qemu_block_hot_fork_source_set_query(set, &inventory, errp) ||
++        !inventory.frozen) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible graph changed during receipt capture");
++        }
++        goto fail;
++    }
++    /* Recheck earlier native descriptors after reading the complete roster,
++     * before publishing any receipt. Display paths convey no file authority. */
++    for (visit = 0; visit < pending->len; visit++) {
++        HotForkGraphReceiptPending *entry =
++            &g_array_index(pending, HotForkGraphReceiptPending, visit);
++        struct stat pinned;
++
++        if (fstat(entry->node->pinned_fd, &pinned) < 0 ||
++            pinned.st_size != entry->size ||
++            pinned.st_ctim.tv_sec != entry->ctime.tv_sec ||
++            pinned.st_ctim.tv_nsec != entry->ctime.tv_nsec ||
++            !S_ISREG(pinned.st_mode) ||
++            pinned.st_dev != entry->node->file.device ||
++            pinned.st_ino != entry->node->file.inode) {
++            error_setg(errp, "Crucible graph file changed during full capture");
++            goto fail;
++        }
++    }
++    for (visit = 0; visit < pending->len; visit++) {
++        HotForkGraphReceiptPending *entry =
++            &g_array_index(pending, HotForkGraphReceiptPending, visit);
++
++        entry->node->receipt_size = entry->size;
++        entry->node->receipt_ctime = entry->ctime;
++        memcpy(entry->node->receipt_digest, entry->digest,
++               sizeof(entry->digest));
++        entry->node->receipt_valid = true;
++    }
++    set->graph_receipt_issued = true;
++    return true;
++
++fail:
++    qemu_block_hot_fork_graph_receipt_destroy(receipt);
++    return false;
++}
++
 +static bool child_file_original_matches(const HotForkChildFileEntry *entry,
 +                                        const struct stat *current)
 +{
@@ -9617,7 +9927,8 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    GLOBAL_STATE_CODE();
 +    if (count > HOT_FORK_CHILD_MAX_FILES || (count && !files) ||
 +        !qemu_block_hot_fork_source_set_query(set, &inventory, errp) ||
-+        !inventory.frozen || set->child_plan_active) {
++        !inventory.frozen || set->child_plan_active ||
++        !source_set_graph_content_matches(set, errp)) {
 +        if (!errp || !*errp) {
 +            error_setg(errp, "Crucible child files require one complete "
 +                       "frozen source set");
@@ -9671,6 +9982,7 @@ index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f
 +    if (!plan || plan->owner <= 1 || plan->owner != getppid() ||
 +        plan->owner == getpid() || plan->consumed ||
 +        !source_set_complete_owned(plan->sources, plan->owner, errp) ||
++        !source_set_graph_content_matches(plan->sources, errp) ||
 +        !qemu_aio_hot_fork_thread_pools_empty() ||
 +        !qemu_block_hot_fork_all_sources_fork_safe(errp)) {
 +        if (!errp || !*errp) {
@@ -10816,7 +11128,7 @@ index 0000000000000000000000000000000000000000..35fefde050b5d8d110355a40651d0db9
 +}
 +block_init(bdrv_crucible_shmem_init);
 diff --git a/block/file-posix.c b/block/file-posix.c
-index 3c985da94f563be9463b05c3573ac95e2d726f06..7eca852e4562d01315f2f09b5a73b3559fcc0f35 100644
+index 3c985da94f563be9463b05c3573ac95e2d726f06..ed8a10991b7d635c1e8d3392ca8409ab01bf4a0f 100644
 --- a/block/file-posix.c
 +++ b/block/file-posix.c
 @@ -23,6 +23,8 @@
@@ -10840,29 +11152,36 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..7eca852e4562d01315f2f09b5a73b355
      bool has_discard:1;
      bool has_write_zeroes:1;
      bool use_linux_aio:1;
-@@ -1097,7 +1104,21 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
+@@ -1097,7 +1104,28 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
  
      /* If we cannot use fcntl, or fcntl failed, fall back to qemu_open() */
      if (fd == -1) {
 +#ifdef __linux__
-+        bool pinned_fdset_source = s->crucible_source_pins &&
-+            g_str_has_prefix(bs->filename, "/dev/fdset/");
++        bool pinned_source = s->crucible_source_pins &&
++            s->crucible_source_owner == getpid();
++
++        if ((s->crucible_source_pins || s->crucible_child_descriptor) &&
++            s->crucible_source_owner != getpid()) {
++            error_setg(errp, "Crucible source reopen requires its current owner");
++            return -ESTALE;
++        }
 +#else
-+        bool pinned_fdset_source = false;
++        bool pinned_source = false;
 +#endif
 +        g_autofree char *private_filename =
-+            (s->crucible_child_descriptor || pinned_fdset_source) ?
++            (s->crucible_child_descriptor || pinned_source) ?
 +            g_strdup_printf("/proc/self/fd/%d", s->fd) : NULL;
          const char *normalized_filename = bs->filename;
 +
-+        /* Adopted fdsets are gone; a pinned source retains its live inode. */
++        /* Pinned source and adopted child custody retain the actual inode;
++         * launch paths may be inaccessible or name a different file. */
 +        if (private_filename) {
 +            normalized_filename = private_filename;
 +        }
          ret = raw_normalize_devicepath(&normalized_filename, errp);
          if (ret >= 0) {
              fd = qemu_open(normalized_filename, *open_flags, errp);
-@@ -1107,6 +1128,18 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
+@@ -1107,6 +1135,18 @@ static int raw_reconfigure_getfd(BlockDriverState *bs, int flags,
          }
      }
  
@@ -10881,7 +11200,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..7eca852e4562d01315f2f09b5a73b355
      if (fd != -1 && (*open_flags & O_RDWR)) {
          ret = check_hdev_writable(fd);
          if (ret < 0) {
-@@ -2500,6 +2533,15 @@ out:
+@@ -2500,6 +2540,15 @@ out:
  
  static int coroutine_fn raw_thread_pool_submit(ThreadPoolFunc func, void *arg)
  {
@@ -10897,7 +11216,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..7eca852e4562d01315f2f09b5a73b355
      return thread_pool_submit_co(func, arg);
  }
  
-@@ -3956,6 +3998,133 @@ raw_co_copy_range_to(BlockDriverState *bs,
+@@ -3956,6 +4005,138 @@ raw_co_copy_range_to(BlockDriverState *bs,
      return raw_thread_pool_submit(handle_aiocb_copy_range, &acb);
  }
  
@@ -10935,6 +11254,11 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..7eca852e4562d01315f2f09b5a73b355
 +    }
 +    switch (action) {
 +    case BDRV_CRUCIBLE_HOT_FORK_FILE_PIN:
++        if ((s->crucible_source_pins || s->crucible_child_descriptor) &&
++            s->crucible_source_owner != getpid()) {
++            error_setg(errp, "Crucible file pin requires current source custody");
++            return false;
++        }
 +        if (s->crucible_source_pins == UINT_MAX) {
 +            error_setg(errp, "Crucible file source pin count is exhausted");
 +            return false;
@@ -11031,7 +11355,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..7eca852e4562d01315f2f09b5a73b355
  BlockDriver bdrv_file = {
      .format_name = "file",
      .protocol_name = "file",
-@@ -3967,6 +4136,10 @@ BlockDriver bdrv_file = {
+@@ -3967,6 +4148,10 @@ BlockDriver bdrv_file = {
      .bdrv_reopen_prepare = raw_reopen_prepare,
      .bdrv_reopen_commit = raw_reopen_commit,
      .bdrv_reopen_abort = raw_reopen_abort,
@@ -11293,7 +11617,7 @@ index a57c2922d55d0a5667374239e8d3d4f2fc764d21..9e6c6af25f42c57fbe884bb36afae51f
      .bdrv_probe           = &raw_probe,
      .bdrv_reopen_prepare  = &raw_reopen_prepare,
 diff --git a/blockdev.c b/blockdev.c
-index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4fedbef948 100644
+index 6e86c6262f96c502a56c61785d876cefad912813..1adbee35ad8c6920f9238cee55f0940314ec5ca9 100644
 --- a/blockdev.c
 +++ b/blockdev.c
 @@ -32,6 +32,8 @@
@@ -11365,7 +11689,7 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
          return;
      case TRANSACTION_ACTION_KIND_DRIVE_BACKUP:
          drive_backup_action(act->u.drive_backup.data,
-@@ -2282,6 +2295,642 @@ exit:
+@@ -2282,6 +2295,716 @@ exit:
      job_txn_unref(block_job_txn);
  }
  
@@ -11379,10 +11703,10 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +static uint64_t crucible_block_seal_vmstop_request_generation;
 +static pid_t crucible_block_seal_pid;
 +static bool crucible_block_seal_receipt_invalidated;
++static const QemuBlockHotForkSourceSet *crucible_block_seal_sources;
 +
-+void qemu_crucible_block_seal_child_reset(void)
++static void crucible_block_seal_receipt_dispose(void)
 +{
-+    /* A forked child cannot inherit source-process receipt authority. */
 +    g_clear_pointer(&crucible_block_sealed_roots, g_ptr_array_unref);
 +    crucible_block_seal_backend_generation = 0;
 +    crucible_block_seal_graph_generation = 0;
@@ -11392,6 +11716,15 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +    crucible_block_seal_vmstop_request_generation = 0;
 +    crucible_block_seal_pid = 0;
 +    crucible_block_seal_receipt_invalidated = false;
++    crucible_block_seal_sources = NULL;
++}
++
++void qemu_crucible_block_seal_child_reset(void)
++{
++    /* A forked child cannot inherit source-process receipt authority. */
++    if (crucible_block_seal_pid != getpid()) {
++        crucible_block_seal_receipt_dispose();
++    }
 +}
 +
 +static bool crucible_block_seal_stop_provenance_current(void)
@@ -11418,18 +11751,19 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +}
 +
 +static bool GRAPH_RDLOCK crucible_block_seal_file(
-+    BlockDriverState *root, const char **path,
++    BlockDriverState *root, char **path,
 +    BdrvCrucibleHotForkFileState *file, Error **errp)
 +{
 +    BlockDriverState *leaf;
 +    struct stat metadata;
++    char descriptor_path[64], resolved[PATH_MAX + 1];
++    ssize_t length;
 +
 +    if (!root || !root->drv ||
 +        strcmp(root->drv->format_name, "qcow2") != 0 ||
 +        !root->file || !(leaf = root->file->bs) || !leaf->drv ||
 +        strcmp(leaf->drv->format_name, "file") != 0 ||
 +        !leaf->drv->bdrv_crucible_hot_fork_file ||
-+        !g_path_is_absolute(leaf->filename) ||
 +        !leaf->drv->bdrv_crucible_hot_fork_file(
 +            leaf, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY, file, errp)) {
 +        if (!errp || !*errp) {
@@ -11437,13 +11771,23 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +        }
 +        return false;
 +    }
-+    if (lstat(leaf->filename, &metadata) < 0 ||
-+        !S_ISREG(metadata.st_mode) ||
-+        metadata.st_dev != file->device || metadata.st_ino != file->inode) {
-+        error_setg(errp, "Crucible block seal file path no longer names the open file");
++    /* Native descriptor custody remains authoritative after fdset opening or
++     * child adoption; a launch filename can still name the parent's inode. */
++    g_snprintf(descriptor_path, sizeof(descriptor_path), "/proc/self/fd/%d",
++               file->descriptor);
++    length = readlink(descriptor_path, resolved, PATH_MAX);
++    if (length <= 0 || length == PATH_MAX) {
++        error_setg(errp, "Crucible block seal file has no bounded native path");
 +        return false;
 +    }
-+    *path = leaf->filename;
++    resolved[length] = '\0';
++    if (fstat(file->descriptor, &metadata) < 0 ||
++        !S_ISREG(metadata.st_mode) ||
++        metadata.st_dev != file->device || metadata.st_ino != file->inode) {
++        error_setg(errp, "Crucible block seal lost its native regular descriptor");
++        return false;
++    }
++    *path = g_strdup(resolved);
 +    return true;
 +}
 +
@@ -11501,7 +11845,7 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +        BlockDriverState *overlay = backend ? blk_bs(backend) : NULL;
 +        BlockDriverState *snapshot;
 +        BdrvCrucibleHotForkFileState file;
-+        const char *path;
++        g_autofree char *path = NULL;
 +        Error *local_err = NULL;
 +        bool current;
 +
@@ -11520,7 +11864,6 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +                crucible_block_seal_file(snapshot, &path, &file,
 +                                         &local_err) &&
 +                file.read_only &&
-+                strcmp(path, root->snapshot_file_path) == 0 &&
 +                file.device == root->snapshot_file_device &&
 +                file.inode == root->snapshot_file_inode;
 +        }
@@ -11529,6 +11872,63 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +            return false;
 +        }
 +    }
++    return true;
++}
++
++bool qemu_crucible_block_seal_source_acquire(
++    const QemuBlockHotForkSourceSet *sources, Error **errp)
++{
++    GLOBAL_STATE_CODE();
++    if (!crucible_block_sealed_roots) {
++        return true;
++    }
++    if (crucible_block_seal_pid != getpid() ||
++        crucible_block_seal_receipt_invalidated ||
++        (crucible_block_seal_sources && crucible_block_seal_sources != sources) ||
++        !crucible_block_seal_stop_provenance_current() ||
++        !crucible_block_seal_boundary() ||
++        !qemu_block_hot_fork_source_set_restored_current(sources, errp) ||
++        !crucible_block_seal_receipt_current()) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible block seal lost its original source owner");
++        }
++        return false;
++    }
++    crucible_block_seal_sources = sources;
++    return true;
++}
++
++bool qemu_crucible_block_seal_source_release(
++    const QemuBlockHotForkSourceSet *sources, Error **errp)
++{
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    bool released;
++
++    GLOBAL_STATE_CODE();
++    if (!crucible_block_sealed_roots) {
++        return true;
++    }
++    /* Membership precedes source inspection; another set cannot retire debt. */
++    if (crucible_block_seal_pid != getpid() ||
++        !sources || sources != crucible_block_seal_sources ||
++        !qemu_block_hot_fork_source_set_restored_current(sources, errp) ||
++        !crucible_block_seal_receipt_current() ||
++        !qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier)) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible block seal retains its original source debt");
++        }
++        return false;
++    }
++    released = !barrier.held && !barrier.graph_held && !barrier.snapshot_bound;
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++    if (!released) {
++        error_setg(errp, "Crucible block seal still retains native barriers");
++        return false;
++    }
++    /* The immutable backing graph remains; only its completed receipt retires.
++     * A later seal must validate and physically seal the new writable root. */
++    crucible_block_seal_receipt_dispose();
 +    return true;
 +}
 +
@@ -11569,7 +11969,7 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +        BlockBackend *backend;
 +        BlockDriverState *root;
 +        BdrvCrucibleHotForkFileState file = { 0 };
-+        const char *path = "";
++        g_autofree char *path = NULL;
 +        Error *local_err = NULL;
 +        int64_t size;
 +
@@ -11697,8 +12097,8 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +        BdrvCrucibleHotForkFileState file;
 +        BdrvCrucibleHotForkFileState overlay_file;
 +        BdrvChild *parent;
-+        const char *path;
-+        const char *overlay_path;
++        g_autofree char *path = NULL;
++        g_autofree char *overlay_path = NULL;
 +        unsigned parent_count = 0;
 +
 +        if (!entry->root_present || entry->external_shared ||
@@ -11752,8 +12152,7 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +                }
 +                goto out;
 +            }
-+            if (strcmp(path, item->snapshot_file_path) != 0 ||
-+                file.device != item->snapshot_file_device ||
++            if (file.device != item->snapshot_file_device ||
 +                file.inode != item->snapshot_file_inode) {
 +                error_setg(errp, "Crucible block seal file identity changed");
 +                goto out;
@@ -11869,7 +12268,7 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +        CrucibleHotForkBlockSealedRoot *root = g_new0(
 +            CrucibleHotForkBlockSealedRoot, 1);
 +        BdrvCrucibleHotForkFileState file;
-+        const char *path;
++        g_autofree char *path = NULL;
 +
 +        {
 +            GRAPH_RDLOCK_GUARD_MAINLOOP();
@@ -11877,7 +12276,6 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +                bdrv_cow_bs(snapshot->new_bs) != snapshot->old_bs ||
 +                !crucible_block_seal_file(snapshot->old_bs, &path, &file,
 +                                          &local_err) ||
-+                strcmp(path, request->value->snapshot_file_path) != 0 ||
 +                file.device != request->value->snapshot_file_device ||
 +                file.inode != request->value->snapshot_file_inode ||
 +                !crucible_block_seal_empty(snapshot->new_bs,
@@ -11897,7 +12295,7 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +        root->backend_name = g_strdup(request->value->backend_name);
 +        root->overlay_node_name = g_strdup(request->value->overlay_node_name);
 +        root->snapshot_node_name = g_strdup(request->value->snapshot_node_name);
-+        root->snapshot_file_path = g_strdup(request->value->snapshot_file_path);
++        root->snapshot_file_path = g_strdup(path);
 +        root->snapshot_file_device = file.device;
 +        root->snapshot_file_inode = file.inode;
 +        root->overlay_empty = true;
@@ -11916,7 +12314,7 @@ index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4f
 +    for (index = 0; index < count; index++) {
 +        ExternalSnapshotState *snapshot = snapshots[index];
 +        BdrvCrucibleHotForkFileState file;
-+        const char *path;
++        g_autofree char *path = NULL;
 +
 +        GRAPH_RDLOCK_GUARD_MAINLOOP();
 +        if (!bdrv_is_read_only(snapshot->old_bs) ||
@@ -62248,10 +62646,10 @@ index e078b36b2d57f295ce978622cfbcba8a0a36a9f9..2016d37d1e2ebbd80e3041accf35703e
  
  #endif
 diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
-index c3849640df9f61c70f82f0534b42f400c27f424a..eaa95f1077589bc83a15c8a84bd1f2cc9d61defe 100644
+index c3849640df9f61c70f82f0534b42f400c27f424a..e7dfeac3116ea714c0e583bbfbf9f1d02ea0b5e3 100644
 --- a/include/system/block-backend-global-state.h
 +++ b/include/system/block-backend-global-state.h
-@@ -15,6 +15,305 @@
+@@ -15,6 +15,343 @@
  
  #include "block-backend-common.h"
  
@@ -62352,6 +62750,7 @@ index c3849640df9f61c70f82f0534b42f400c27f424a..eaa95f1077589bc83a15c8a84bd1f2cc
 + */
 +void qemu_block_backend_hot_fork_inventory(
 +    QemuBlockBackendHotForkInventory *inventory);
++uint64_t qemu_block_backend_hot_fork_id(const BlockBackend *backend);
 +void qemu_block_backend_hot_fork_inventory_destroy(
 +    QemuBlockBackendHotForkInventory *inventory);
 +
@@ -62521,6 +62920,41 @@ index c3849640df9f61c70f82f0534b42f400c27f424a..eaa95f1077589bc83a15c8a84bd1f2cc
 +    const QemuBlockHotForkSourceSet *set,
 +    QemuBlockHotForkSourceSetInventory *inventory, Error **errp);
 +
++typedef struct QemuBlockHotForkGraphMember {
++    uint64_t root_index;
++    uint64_t node_index;
++    int64_t parent_index;
++    uint64_t backend_id;
++    char *backend_name;
++    char *root_node_name;
++    char *node_name;
++    char *edge_name;
++    char *driver_name;
++    bool file_backed;
++    bool originally_writable_file;
++    char *file_path;
++    uint64_t file_device;
++    uint64_t file_inode;
++    uint64_t file_size;
++    char file_sha256[65];
++} QemuBlockHotForkGraphMember;
++
++typedef struct QemuBlockHotForkGraphReceipt {
++    size_t count;
++    QemuBlockHotForkGraphMember *members;
++} QemuBlockHotForkGraphReceipt;
++
++/* Authenticates the complete retained native graph and pinned file bytes.
++ * The caller supplies a zeroed receipt and releases it with destroy(). */
++bool qemu_block_hot_fork_source_set_graph_receipt(
++    QemuBlockHotForkSourceSet *set, uint32_t maximum_nodes,
++    uint64_t maximum_bytes, QemuBlockHotForkGraphReceipt *receipt,
++    Error **errp);
++bool qemu_block_hot_fork_source_set_has_graph_receipt(
++    const QemuBlockHotForkSourceSet *set);
++void qemu_block_hot_fork_graph_receipt_destroy(
++    QemuBlockHotForkGraphReceipt *receipt);
++
 +/* Authenticates one retained backend and returns its original permissions. */
 +bool qemu_block_hot_fork_source_set_backend_permissions(
 +    const QemuBlockHotForkSourceSet *set, BlockBackend *backend,
@@ -62545,6 +62979,8 @@ index c3849640df9f61c70f82f0534b42f400c27f424a..eaa95f1077589bc83a15c8a84bd1f2cc
 + */
 +bool qemu_block_hot_fork_source_set_restore(QemuBlockHotForkSourceSet *set,
 +                                          Error **errp);
++bool qemu_block_hot_fork_source_set_restored_current(
++    const QemuBlockHotForkSourceSet *set, Error **errp);
 +bool qemu_block_hot_fork_source_set_free(QemuBlockHotForkSourceSet *set,
 +                                       Error **errp);
 +
@@ -62558,16 +62994,23 @@ index c3849640df9f61c70f82f0534b42f400c27f424a..eaa95f1077589bc83a15c8a84bd1f2cc
   * Global state (GS) API. These functions run under the BQL.
   *
 diff --git a/include/system/blockdev.h b/include/system/blockdev.h
-index 3211b16513ae0d6d5e96cab7d3cc917fe439a8d9..545bd9910cac68956756069ad9cb9e6e5cb0fae7 100644
+index 3211b16513ae0d6d5e96cab7d3cc917fe439a8d9..5094f9f661f826f732ebc1b9fadbee2afbd887d3 100644
 --- a/include/system/blockdev.h
 +++ b/include/system/blockdev.h
-@@ -61,4 +61,9 @@ QemuOpts *drive_add(BlockInterfaceType type, int index, const char *file,
+@@ -61,4 +61,16 @@ QemuOpts *drive_add(BlockInterfaceType type, int index, const char *file,
  DriveInfo *drive_new(QemuOpts *arg, BlockInterfaceType block_default_type,
                       Error **errp);
  
 +/* True only while the same-process seal retains its original drain barrier. */
 +bool qemu_crucible_block_seal_ready(void);
-+/* Called in the coordinator child immediately after fork, before reinit. */
++typedef struct QemuBlockHotForkSourceSet QemuBlockHotForkSourceSet;
++/* Transfers receipt custody to the original complete template source set. */
++bool qemu_crucible_block_seal_source_acquire(
++    const QemuBlockHotForkSourceSet *sources, Error **errp);
++/* Retires only that original receipt after its native sources were restored. */
++bool qemu_crucible_block_seal_source_release(
++    const QemuBlockHotForkSourceSet *sources, Error **errp);
++/* Discards only an inherited receipt after native child source adoption. */
 +void qemu_crucible_block_seal_child_reset(void);
 +
  #endif
@@ -66972,10 +67415,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9dde628645 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..22a2c39c53fd32210bef953a076718f07f986267 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6065 @@
+@@ -14,53 +14,6281 @@
   */
  
  #include "qemu/osdep.h"
@@ -67510,6 +67953,22 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +static QemuBlockBackendHotForkSnapshotBinding
 +    *crucible_hot_fork_template_snapshot_bindings;
 +static QemuBlockHotForkSourceSet *crucible_hot_fork_template_sources;
++
++typedef struct CrucibleHotForkGraphReceiptStamp {
++    const QemuBlockHotForkSourceSet *sources;
++    pid_t process;
++    uint64_t template_generation;
++    uint64_t runstate_generation;
++    uint64_t vmstop_generation;
++    uint64_t vmstop_request_generation;
++    uint64_t barrier_generation;
++    uint64_t graph_barrier_generation;
++    uint64_t graph_mutation_generation;
++    uint64_t snapshot_generation;
++    uint64_t backend_generation;
++} CrucibleHotForkGraphReceiptStamp;
++
++static CrucibleHotForkGraphReceiptStamp crucible_hot_fork_graph_receipt;
 +
 +#define CRUCIBLE_HOT_FORK_PRIVATE_RING_FD_NAME_MAX 128
 +
@@ -70335,6 +70794,13 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +            errp ? *errp : NULL);
 +        return false;
 +    }
++    if (!qemu_crucible_block_seal_source_acquire(
++            crucible_hot_fork_template_sources, errp)) {
++        crucible_hot_fork_template_record_failure(
++            CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_CAPTURE,
++            errp ? *errp : NULL);
++        return false;
++    }
 +    success = qemu_block_backend_hot_fork_barrier(
 +        QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &block);
 +    if (success) {
@@ -70496,6 +70962,14 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +                    error_free(local_err);
 +                    break;
 +                }
++                if (!qemu_crucible_block_seal_source_release(
++                        crucible_hot_fork_template_sources, &local_err)) {
++                    crucible_hot_fork_template_record_failure(
++                        CRUCIBLE_HOT_FORK_TEMPLATE_FAILURE_STAGE_SOURCE_RESTORE,
++                        local_err);
++                    error_free(local_err);
++                    break;
++                }
 +                if (!qemu_block_hot_fork_source_set_free(
 +                        crucible_hot_fork_template_sources, &local_err)) {
 +                    crucible_hot_fork_template_record_failure(
@@ -70505,6 +70979,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +                    break;
 +                }
 +                crucible_hot_fork_template_sources = NULL;
++                crucible_hot_fork_graph_receipt =
++                    (CrucibleHotForkGraphReceiptStamp) {0};
 +            }
 +            crucible_hot_fork_template_complete(
 +                crucible_hot_fork_template_completion);
@@ -70969,6 +71445,170 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +        block_barrier->quiescent && block_barrier->snapshot_complete &&
 +        report->missing_proofs == 0;
 +    return report;
++}
++
++CrucibleHotForkSourceGraphReceipt *qmp_crucible_hot_fork_source_graph(
++    int64_t expected_qemu_pid, uint64_t expected_template_generation,
++    uint32_t maximum_nodes, uint64_t maximum_bytes, Error **errp)
++{
++    QemuBlockBackendHotForkBarrierInventory block;
++    QemuBlockHotForkGraphReceipt native = { 0 };
++    CrucibleHotForkSourceGraphReceipt *report = NULL;
++    CrucibleHotForkSourceGraphMemberList **tail;
++    CrucibleHotForkGraphReceiptStamp stamp;
++    size_t index;
++
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    if (expected_qemu_pid != getpid() ||
++        expected_template_generation == 0 ||
++        expected_template_generation !=
++            crucible_hot_fork_template_generation ||
++        !crucible_hot_fork_template_active ||
++        crucible_hot_fork_template_phase !=
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD ||
++        !crucible_hot_fork_template_sources ||
++        crucible_hot_fork_operation_active ||
++        !crucible_hot_fork_exact_paused_boundary()) {
++        error_setg(errp, "Crucible source graph requires the original "
++                   "prepared source and exact stopped boundary");
++        goto out;
++    }
++    if (!qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &block)) {
++        error_setg(errp, "Cannot inspect Crucible source graph barrier");
++        goto out;
++    }
++    if (!block.held || !block.graph_held || !block.complete ||
++        !block.quiescent || !block.snapshot_bound ||
++        !block.snapshot_complete || !block.snapshot_sources.frozen ||
++        !block.snapshot_generation ||
++        !block.snapshot_backend_generation) {
++        error_setg(errp, "Crucible source graph lost its frozen barrier");
++        goto release_block;
++    }
++    stamp = (CrucibleHotForkGraphReceiptStamp) {
++        .sources = crucible_hot_fork_template_sources,
++        .process = getpid(),
++        .template_generation = crucible_hot_fork_template_generation,
++        .runstate_generation = qemu_runstate_transition_generation(),
++        .vmstop_generation = qemu_plugin_crucible_vmstop_generation(),
++        .vmstop_request_generation = qemu_vmstop_request_generation(),
++        .barrier_generation = block.generation,
++        .graph_barrier_generation = block.graph_barrier_generation,
++        .graph_mutation_generation = block.graph_mutation_generation,
++        .snapshot_generation = block.snapshot_generation,
++        .backend_generation = block.snapshot_backend_generation,
++    };
++    if (stamp.runstate_generation == UINT64_MAX ||
++        !stamp.vmstop_generation || stamp.vmstop_generation == UINT64_MAX ||
++        stamp.vmstop_request_generation == UINT64_MAX) {
++        error_setg(errp, "Crucible source graph stop provenance is exhausted");
++        goto release_block;
++    }
++    if (!qemu_block_hot_fork_source_set_graph_receipt(
++            crucible_hot_fork_template_sources, maximum_nodes,
++            maximum_bytes, &native, errp)) {
++        goto release_block;
++    }
++    if (!crucible_hot_fork_exact_paused_boundary() ||
++        stamp.runstate_generation != qemu_runstate_transition_generation() ||
++        stamp.vmstop_generation != qemu_plugin_crucible_vmstop_generation() ||
++        stamp.vmstop_request_generation != qemu_vmstop_request_generation()) {
++        qemu_block_hot_fork_graph_receipt_destroy(&native);
++        error_setg(errp, "Crucible source graph stop changed during capture");
++        goto release_block;
++    }
++    report = g_new0(CrucibleHotForkSourceGraphReceipt, 1);
++    report->schema_version = 1;
++    report->qemu_pid = getpid();
++    report->template_generation = crucible_hot_fork_template_generation;
++    report->runstate_generation = stamp.runstate_generation;
++    report->vmstop_generation = stamp.vmstop_generation;
++    report->vmstop_request_generation = stamp.vmstop_request_generation;
++    report->barrier_generation = block.generation;
++    report->graph_barrier_generation = block.graph_barrier_generation;
++    report->graph_mutation_generation = block.graph_mutation_generation;
++    report->snapshot_generation = block.snapshot_generation;
++    report->backend_generation = block.snapshot_backend_generation;
++    report->root_count = block.snapshot_sources.roots;
++    report->node_count = native.count;
++    tail = &report->members;
++    for (index = 0; index < native.count; index++) {
++        const QemuBlockHotForkGraphMember *source = &native.members[index];
++        CrucibleHotForkSourceGraphMember *member =
++            g_new0(CrucibleHotForkSourceGraphMember, 1);
++        CrucibleHotForkSourceGraphMemberList *link =
++            g_new0(CrucibleHotForkSourceGraphMemberList, 1);
++
++        member->root_index = source->root_index;
++        member->node_index = source->node_index;
++        member->parent_index = source->parent_index;
++        member->backend_id = source->backend_id;
++        member->backend_name = g_strdup(source->backend_name);
++        member->root_node_name = g_strdup(source->root_node_name);
++        member->node_name = g_strdup(source->node_name);
++        member->edge_name = g_strdup(source->edge_name);
++        member->driver_name = g_strdup(source->driver_name);
++        member->file_backed = source->file_backed;
++        member->originally_writable_file =
++            source->originally_writable_file;
++        member->file_path = g_strdup(source->file_path ?: "");
++        member->file_device = source->file_device;
++        member->file_inode = source->file_inode;
++        member->file_size = source->file_size;
++        member->file_sha256 = g_strdup(source->file_sha256);
++        link->value = member;
++        *tail = link;
++        tail = &link->next;
++    }
++    qemu_block_hot_fork_graph_receipt_destroy(&native);
++    /*
++     * Only this successful authenticated query binds the full native graph
++     * to its exact stopped template and retained barrier epochs.
++     */
++    crucible_hot_fork_graph_receipt = stamp;
++release_block:
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&block);
++out:
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    return report;
++}
++
++/* Called with the template guard held, before the physical child-file plan.
++ * Reusing an unchanged paused template is allowed; resume, graph mutation,
++ * barrier reacquisition, or another template requires its own graph query. */
++static bool crucible_hot_fork_graph_receipt_current(void)
++{
++    const CrucibleHotForkGraphReceiptStamp *receipt =
++        &crucible_hot_fork_graph_receipt;
++    QemuBlockBackendHotForkBarrierInventory block;
++    bool current;
++
++    if (!receipt->sources || receipt->process != getpid() ||
++        receipt->sources != crucible_hot_fork_template_sources ||
++        receipt->template_generation != crucible_hot_fork_template_generation ||
++        receipt->runstate_generation != qemu_runstate_transition_generation() ||
++        receipt->vmstop_generation != qemu_plugin_crucible_vmstop_generation() ||
++        receipt->vmstop_request_generation != qemu_vmstop_request_generation() ||
++        !crucible_hot_fork_template_active ||
++        crucible_hot_fork_template_phase !=
++            CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD ||
++        !crucible_hot_fork_exact_paused_boundary() ||
++        !qemu_block_hot_fork_source_set_has_graph_receipt(receipt->sources) ||
++        !qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &block)) {
++        return false;
++    }
++    current = block.held && block.graph_held && block.complete &&
++        block.quiescent && block.snapshot_bound && block.snapshot_complete &&
++        block.snapshot_sources.frozen &&
++        block.generation == receipt->barrier_generation &&
++        block.graph_barrier_generation == receipt->graph_barrier_generation &&
++        block.graph_mutation_generation == receipt->graph_mutation_generation &&
++        block.snapshot_generation == receipt->snapshot_generation &&
++        block.snapshot_backend_generation == receipt->backend_generation;
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&block);
++    return current;
 +}
 +
 +/*
@@ -71628,7 +72268,16 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +    Error *local_err = NULL;
 +    ssize_t count;
 +    size_t index;
++    bool receipt_current;
 +
++    g_mutex_lock(&crucible_hot_fork_template_lock);
++    receipt_current = crucible_hot_fork_graph_receipt_current();
++    g_mutex_unlock(&crucible_hot_fork_template_lock);
++    if (!receipt_current) {
++        operation->blocker =
++            "child file plan lacks its current authenticated graph receipt";
++        return -ENOTSUP;
++    }
 +    if (!crucible_hot_fork_child_files_bound() ||
 +        operation->child_files_generation != stage->generation) {
 +        operation->blocker = "native roots require a bound child file plan";
@@ -71975,6 +72624,12 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +            return -ENOTSUP;
 +        }
 +        if (sources.roots != 0) {
++            if (!qemu_block_hot_fork_source_set_has_graph_receipt(
++                    crucible_hot_fork_template_sources)) {
++                operation->blocker =
++                    "native roots lack a retained complete graph receipt";
++                return -ENOTSUP;
++            }
 +            /* Every frozen native root needs its child-private successor. */
 +            result = crucible_hot_fork_prepare_child_files(operation);
 +            if (result != 0) {
@@ -72261,7 +72916,11 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
 +                                             child_error);
 +        crucible_hot_fork_child_exit_at(14, -EPROTO);
 +    }
++    /* The borrowed source was physically consumed; its parent seal receipt
++     * cannot become authority for a freshly adopted child template. */
++    qemu_crucible_block_seal_child_reset();
 +    crucible_hot_fork_template_sources = NULL;
++    crucible_hot_fork_graph_receipt = (CrucibleHotForkGraphReceiptStamp) {0};
 +    /* Inherited destination duplicates were closed by descriptor disposition. */
 +    crucible_hot_fork_child_files_stage_clear(false);
 +
@@ -73057,7 +73716,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6080,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6296,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -73081,7 +73740,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9d
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6144,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6360,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -115075,10 +115734,10 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..0fa36c0d2fd102338f073d14f9b2054a30c32739 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..5bc96bb9e411cd0e36fb16271db09bcd0f225179 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -132,6 +132,2957 @@
+@@ -132,6 +132,3075 @@
  { 'command': 'query-status', 'returns': 'StatusInfo',
    'allow-preconfig': true }
  
@@ -115197,6 +115856,122 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0fa36c0d2fd102338f073d14f9b2054a
 +            'node-count': 'uint64',
 +            'originally-writable-root-count': 'uint64',
 +            'originally-writable-backend-count': 'uint64' } }
++
++##
++# @CrucibleHotForkSourceGraphMember:
++#
++# One node in the original held native block graph.  Each root has a
++# zero-based node order; @parent-index is -1 only for that root.
++# Backend ID zero identifies a parentless named root.
++# A member with @file-backed false is a format node; its file fields
++# are zero/empty.  Its file descendants appear as separate members.
++# SHA256 covers the complete pinned regular file, including VMState
++# after freeze.
++#
++# @root-index: zero-based native root ordinal
++# @node-index: zero-based depth-first node ordinal in the root
++# @parent-index: parent node ordinal, or -1 for a root
++# @backend-id: original backend ID, or zero for a parentless root
++# @backend-name: original backend name, or empty for a parentless root
++# @root-node-name: original root node name
++# @node-name: current native node name
++# @edge-name: incoming BdrvChild name, empty only for a root
++# @driver-name: native block driver name
++# @file-backed: whether this node pins a regular file
++# @originally-writable-file: whether that file was writable at capture
++# @file-path: diagnostic descriptor display path, or empty; not file
++#     authority
++# @file-device: pinned file st_dev, or zero without a file
++# @file-inode: pinned file st_ino, or zero without a file
++# @file-size: complete pinned file length, or zero without a file
++# @file-sha256: complete pinned file SHA256, or empty without a file
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkSourceGraphMember',
++  'data': { 'root-index': 'uint64',
++            'node-index': 'uint64',
++            'parent-index': 'int64',
++            'backend-id': 'uint64',
++            'backend-name': 'str',
++            'root-node-name': 'str',
++            'node-name': 'str',
++            'edge-name': 'str',
++            'driver-name': 'str',
++            'file-backed': 'bool',
++            'originally-writable-file': 'bool',
++            'file-path': 'str',
++            'file-device': 'uint64',
++            'file-inode': 'uint64',
++            'file-size': 'uint64',
++            'file-sha256': 'str' } }
++
++##
++# @CrucibleHotForkSourceGraphReceipt:
++#
++# Versioned complete graph membership and pinned-file content from
++# the original frozen SourceSet.  Process, template, and barrier
++# generations are diagnostic currentness facts; child installation
++# rechecks the retained native graph.
++#
++# @schema-version: graph receipt version, currently 1
++# @qemu-pid: original source process ID
++# @template-generation: retained template generation
++# @runstate-generation: original native stop transition generation
++# @vmstop-generation: original plugin stop completion generation
++# @vmstop-request-generation: original native stop request generation
++# @barrier-generation: retained block barrier generation
++# @graph-barrier-generation: retained graph barrier generation
++# @graph-mutation-generation: observed native graph generation
++# @snapshot-generation: original frozen snapshot binding generation
++# @backend-generation: bound backend inventory generation
++# @root-count: complete native root count
++# @node-count: complete native graph member count
++# @members: complete depth-first graph members in root order
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkSourceGraphReceipt',
++  'data': { 'schema-version': 'uint32',
++            'qemu-pid': 'int64',
++            'template-generation': 'uint64',
++            'runstate-generation': 'uint64',
++            'vmstop-generation': 'uint64',
++            'vmstop-request-generation': 'uint64',
++            'barrier-generation': 'uint64',
++            'graph-barrier-generation': 'uint64',
++            'graph-mutation-generation': 'uint64',
++            'snapshot-generation': 'uint64',
++            'backend-generation': 'uint64',
++            'root-count': 'uint64',
++            'node-count': 'uint64',
++            'members': [ 'CrucibleHotForkSourceGraphMember' ] } }
++
++##
++# @crucible-hot-fork-source-graph:
++#
++# Reads the complete original native graph after the template reaches
++# its frozen, quiescent boundary.  Caller node and byte limits must
++# cover every member and pinned regular file.  Incomplete results fail
++# without a receipt.  Later content mutation fails child-file planning
++# or installation.  A complete retained receipt is required before
++# the production fork of any native source root.
++#
++# @expected-qemu-pid: exact source process ID
++# @expected-template-generation: retained template generation
++# @maximum-nodes: caller cap on complete native graph members
++# @maximum-bytes: caller cap on complete pinned file bytes
++#
++# Returns: @CrucibleHotForkSourceGraphReceipt
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-source-graph',
++  'data': { 'expected-qemu-pid': 'int64',
++            'expected-template-generation': 'uint64',
++            'maximum-nodes': 'uint32',
++            'maximum-bytes': 'uint64' },
++  'returns': 'CrucibleHotForkSourceGraphReceipt' }
 +
 +##
 +# @CrucibleHotForkBlockBarrierState:
@@ -115346,7 +116121,7 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0fa36c0d2fd102338f073d14f9b2054a
 +# @backend-id: positive process-local BlockBackend identity
 +# @backend-name: exact monitor-visible backend name
 +# @root-node-name: current root node name, possibly empty
-+# @file-path: absolute path of the current root file, possibly empty
++# @file-path: diagnostic descriptor display path, possibly empty
 +# @file-device: st_dev of the open current root file
 +# @file-inode: st_ino of the open current root file
 +# @virtual-size: guest-visible size in bytes
@@ -115373,7 +116148,8 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0fa36c0d2fd102338f073d14f9b2054a
 +# @backend-name: expected monitor-visible backend name
 +# @snapshot-node-name: expected current root node
 +# @overlay-node-name: detached empty qcow2 node to install
-+# @snapshot-file-path: expected absolute current root file path
++# @snapshot-file-path: diagnostic root file display path; identity is
++#     checked through the retained descriptor and device/inode fields
 +# @snapshot-file-device: expected st_dev of open root file
 +# @snapshot-file-inode: expected st_ino of open root file
 +#
@@ -115391,16 +116167,17 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..0fa36c0d2fd102338f073d14f9b2054a
 +##
 +# @CrucibleHotForkBlockSealedRoot:
 +#
-+# An exact installed overlay over a read-only snapshot.  The file path
-+# and device/inode identify the sealed current qcow2 file for external
-+# digest and child reopen; its prior backing chain remains part of the
-+# current guest disk and must also be retained by the caller.
++# An exact installed overlay over a read-only snapshot.  Device/inode
++# identify the retained regular-file descriptor.  The display path is
++# diagnostic metadata and does not authorize a file reopen.  Its prior
++# backing chain remains part of the guest disk and must be retained by
++# the caller.
 +#
 +# @backend-id: process-local BlockBackend identity
 +# @backend-name: exact monitor-visible backend name
 +# @overlay-node-name: installed empty qcow2 node
 +# @snapshot-node-name: immediate read-only backing node
-+# @snapshot-file-path: absolute path of sealed current qcow2 file
++# @snapshot-file-path: diagnostic display path of the sealed file
 +# @snapshot-file-device: st_dev of the open sealed file
 +# @snapshot-file-inode: st_ino of the open sealed file
 +# @virtual-size: guest-visible size in bytes
@@ -147217,7 +147994,7 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589
      g_test_add_func("/aio-gsource/flush",                   test_source_flush);
      g_test_add_func("/aio-gsource/bh/schedule",             test_source_bh_schedule);
 diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
-index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994312e9025 100644
+index 4257b3f8153d722eafe10afd68641e553ae48926..2c937d73784153790cf7f0867b638edc794fe02f 100644
 --- a/tests/unit/test-block-backend.c
 +++ b/tests/unit/test-block-backend.c
 @@ -24,9 +24,100 @@
@@ -147321,7 +148098,7 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994
  
  static void test_drain_aio_error_flush_cb(void *opaque, int ret)
  {
-@@ -70,6 +161,1371 @@ static void test_drain_all_aio_error(void)
+@@ -70,6 +161,1762 @@ static void test_drain_all_aio_error(void)
      blk_unref(blk);
  }
  
@@ -147781,8 +148558,7 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994
 +    int replacement_fd = mkstemp(replacement);
 +    BlockDriverState *root;
 +    QemuBlockBackendHotForkReadOnlySource *source;
-+    BdrvCrucibleHotForkFileState original, rejected;
-+    Error *local_err = NULL;
++    BdrvCrucibleHotForkFileState original, retained;
 +
 +    g_assert_cmpint(fd, >=, 0);
 +    g_assert_cmpint(replacement_fd, >=, 0);
@@ -147795,16 +148571,14 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994
 +    g_assert_cmpint(rename(path, saved), ==, 0);
 +    g_assert_cmpint(rename(replacement, path), ==, 0);
 +
-+    g_assert_false(qemu_block_backend_hot_fork_read_only_source_freeze(
-+        source, &local_err));
-+    g_assert_nonnull(local_err);
-+    g_assert_nonnull(strstr(error_get_pretty(local_err), "file identity"));
-+    error_free(local_err);
-+    rejected = test_hot_fork_file_state(root);
-+    g_assert_cmpuint(rejected.device, ==, original.device);
-+    g_assert_cmpuint(rejected.inode, ==, original.inode);
-+    g_assert_false(rejected.read_only);
-+    g_assert_false(qemu_block_backend_hot_fork_read_only_source_is_frozen(source));
++    /* Replacing the launch pathname cannot replace the actual pinned file. */
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_freeze(
++        source, &error_abort));
++    retained = test_hot_fork_file_state(root);
++    g_assert_cmpuint(retained.device, ==, original.device);
++    g_assert_cmpuint(retained.inode, ==, original.inode);
++    g_assert_true(retained.read_only);
++    g_assert_true(qemu_block_backend_hot_fork_read_only_source_is_frozen(source));
 +
 +    g_assert_cmpint(rename(path, replacement), ==, 0);
 +    g_assert_cmpint(rename(saved, path), ==, 0);
@@ -148428,6 +149202,7 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994
 +    HotForkSourceSetFixture fixture;
 +    QemuBlockHotForkSourceSet *sources;
 +    QemuBlockHotForkChildFiles *plan;
++    QemuBlockHotForkGraphReceipt graph = { 0 };
 +    QemuBlockHotForkChildFile files[2], wrong[2];
 +    char paths[2][80];
 +    uint8_t original[1024], changed[1024], observed[1024];
@@ -148613,6 +149388,31 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994
 +        close(external);
 +    }
 +
++    g_assert_false(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 2, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, NULL));
++    g_assert_false(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 64, 1, &graph, NULL));
++    g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, &error_abort));
++    g_assert_cmpuint(graph.count, ==, 6);
++    g_assert_cmpuint(graph.members[0].root_index, ==, 0);
++    g_assert_cmpuint(graph.members[0].backend_id, ==, 0);
++    g_assert_cmpint(graph.members[0].parent_index, ==, -1);
++    g_assert_cmpstr(graph.members[1].edge_name, ==, "file");
++    g_assert_true(graph.members[1].file_backed);
++    g_assert_true(graph.members[1].originally_writable_file);
++    g_assert_cmpuint(strlen(graph.members[1].file_sha256), ==, 64);
++    g_assert_cmpuint(graph.members[2].root_index, ==, 1);
++    g_assert_cmpuint(graph.members[2].backend_id, >, 0);
++    g_assert_cmpint(graph.members[3].parent_index, ==, 0);
++    g_assert_cmpuint(graph.members[4].root_index, ==, 2);
++    g_assert_false(graph.members[5].originally_writable_file);
++    qemu_block_hot_fork_graph_receipt_destroy(&graph);
++    g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, &error_abort));
++    g_assert_cmpuint(graph.count, ==, 6);
++    qemu_block_hot_fork_graph_receipt_destroy(&graph);
++
 +    child = fork();
 +    g_assert_cmpint(child, >=, 0);
 +    if (child == 0) {
@@ -148688,12 +149488,380 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994
 +    g_assert_true(qemu_block_hot_fork_source_set_free(sources, &error_abort));
 +    test_hot_fork_source_set_cleanup(&fixture);
 +}
++
++static void test_hot_fork_source_graph_receipt_stale(void)
++{
++    HotForkSourceSetFixture fixture;
++    QemuBlockHotForkSourceSet *sources;
++    QemuBlockHotForkChildFiles *plan;
++    QemuBlockHotForkSourceSetInventory inventory;
++    QemuBlockHotForkGraphReceipt graph = { 0 };
++    QemuBlockHotForkChildFile files[2];
++    char base_path[] = "/tmp/qemu-hot-fork-chain-base-XXXXXX";
++    char child_paths[2][80];
++    BdrvChild *backing;
++    char *original_edge;
++    struct stat original_stat;
++    struct timespec original_times[2];
++    uint8_t original_byte, changed_byte;
++    pid_t child;
++    int base, status;
++    size_t index;
++
++    test_hot_fork_source_set_setup(&fixture, false);
++    blk_unref(fixture.roots[2].backend);
++    unlink(fixture.paths[2]);
++    base = mkstemp(base_path);
++    g_assert_cmpint(base, >=, 0);
++    close(base);
++    bdrv_img_create(base_path, "qcow2", NULL, NULL, NULL,
++                    HOT_FORK_SNAPSHOT_SIZE, BDRV_O_RDWR, true, &error_abort);
++    bdrv_img_create(fixture.paths[2], "qcow2", base_path, "qcow2", NULL,
++                    HOT_FORK_SNAPSHOT_SIZE, BDRV_O_RDWR, true, &error_abort);
++    {
++        QDict *options = qdict_new();
++
++        qdict_put_str(options, "driver", "qcow2");
++        qdict_put_str(options, "node-name", "set-readonly-chain");
++        qdict_put_str(options, "file.driver", "file");
++        qdict_put_str(options, "file.filename", fixture.paths[2]);
++        fixture.roots[2].backend =
++            blk_new_open(NULL, NULL, options, 0, &error_abort);
++        fixture.roots[2].root = blk_bs(fixture.roots[2].backend);
++    }
++    for (index = 0; index < G_N_ELEMENTS(files); index++) {
++        g_snprintf(child_paths[index], sizeof(child_paths[index]),
++                    "/tmp/qemu-hot-fork-chain-child-%zu-XXXXXX", index);
++        files[index] = (QemuBlockHotForkChildFile) {
++            .node = fixture.roots[index].root->file->bs,
++            .descriptor = mkstemp(child_paths[index]),
++        };
++        g_assert_cmpint(files[index].descriptor, >=, 0);
++    }
++
++    sources = qemu_block_hot_fork_source_set_new(
++        fixture.roots, G_N_ELEMENTS(fixture.roots), &error_abort);
++    g_assert_true(qemu_block_hot_fork_source_set_freeze(sources,
++                                                        &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, &error_abort));
++    g_assert_cmpuint(graph.count, ==, 8);
++    {
++        int64_t backing_index = -1;
++        bool backing_file_found = false;
++
++        for (index = 0; index < graph.count; index++) {
++            QemuBlockHotForkGraphMember *member = &graph.members[index];
++
++            if (member->root_index == 2 &&
++                !strcmp(member->edge_name, "backing")) {
++                backing_index = member->node_index;
++                g_assert_cmpint(member->parent_index, ==, 0);
++            }
++        }
++        g_assert_cmpint(backing_index, >=, 0);
++        for (index = 0; index < graph.count; index++) {
++            QemuBlockHotForkGraphMember *member = &graph.members[index];
++
++            if (member->root_index == 2 && member->file_backed &&
++                member->parent_index == backing_index) {
++                g_autofree char *contents = NULL;
++                g_autofree char *digest = NULL;
++                gsize length;
++
++                g_assert_cmpstr(member->file_path, ==, base_path);
++                g_assert_true(g_file_get_contents(base_path, &contents,
++                                                  &length, NULL));
++                g_assert_cmpuint(member->file_size, ==, length);
++                digest = g_compute_checksum_for_data(
++                    G_CHECKSUM_SHA256, (const guchar *)contents, length);
++                g_assert_cmpstr(member->file_sha256, ==, digest);
++                backing_file_found = true;
++            }
++        }
++        g_assert_true(backing_file_found);
++    }
++    qemu_block_hot_fork_graph_receipt_destroy(&graph);
++
++    {
++        BlockDriverState *descendant = fixture.roots[2].root->backing->bs;
++        char original_name[sizeof(descendant->node_name)];
++
++        memcpy(original_name, descendant->node_name, sizeof(original_name));
++        g_strlcpy(descendant->node_name, "changed-chain-node",
++                  sizeof(descendant->node_name));
++        g_assert_false(qemu_block_hot_fork_source_set_query(
++            sources, &inventory, NULL));
++        g_assert_false(qemu_block_hot_fork_source_set_graph_receipt(
++            sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, NULL));
++        memcpy(descendant->node_name, original_name, sizeof(original_name));
++    }
++
++    backing = fixture.roots[2].root->backing;
++    original_edge = backing->name;
++    backing->name = g_strdup("swapped-backing");
++    g_assert_false(qemu_block_hot_fork_source_set_query(sources,
++                                                        &inventory, NULL));
++    g_free(backing->name);
++    backing->name = original_edge;
++    g_assert_true(qemu_block_hot_fork_source_set_query(sources,
++                                                       &inventory,
++                                                       &error_abort));
++    {
++        BlockDriverState *unexpected = bdrv_new();
++
++        g_assert_false(qemu_block_hot_fork_source_set_graph_receipt(
++            sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, NULL));
++        bdrv_unref(unexpected);
++        g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++            sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph,
++            &error_abort));
++        qemu_block_hot_fork_graph_receipt_destroy(&graph);
++    }
++    plan = qemu_block_hot_fork_child_files_prepare(
++        sources, files, G_N_ELEMENTS(files), 16 * HOT_FORK_SNAPSHOT_SIZE,
++        &error_abort);
++    g_assert_nonnull(plan);
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++
++    {
++        g_autofree char *retained_path = g_strdup_printf("%s-retained", base_path);
++        int replacement;
++
++        g_assert_cmpint(rename(base_path, retained_path), ==, 0);
++        replacement = open(base_path, O_CREAT | O_EXCL | O_RDWR, 0600);
++        g_assert_cmpint(replacement, >=, 0);
++        close(replacement);
++        g_assert_false(qemu_block_hot_fork_source_set_graph_receipt(
++            sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, NULL));
++        g_assert_null(qemu_block_hot_fork_child_files_prepare(
++            sources, files, G_N_ELEMENTS(files),
++            16 * HOT_FORK_SNAPSHOT_SIZE, NULL));
++        g_assert_cmpint(unlink(base_path), ==, 0);
++        g_assert_cmpint(rename(retained_path, base_path), ==, 0);
++    }
++
++    base = open(base_path, O_RDWR);
++    g_assert_cmpint(base, >=, 0);
++    g_assert_cmpint(fstat(base, &original_stat), ==, 0);
++    original_times[0] = original_stat.st_atim;
++    original_times[1] = original_stat.st_mtim;
++    g_assert_cmpint(pread(base, &original_byte, 1, 1024), ==, 1);
++    changed_byte = original_byte ^ 0xff;
++    g_assert_cmpint(pwrite(base, &changed_byte, 1, 1024), ==, 1);
++    g_assert_cmpint(futimens(base, original_times), ==, 0);
++    g_assert_false(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, NULL));
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        test_hot_fork_child_alarm(15);
++        g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
++        _exit(0);
++    }
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    g_assert_true(qemu_block_hot_fork_child_files_free(plan, &error_abort));
++    g_assert_null(qemu_block_hot_fork_child_files_prepare(
++        sources, files, G_N_ELEMENTS(files), 16 * HOT_FORK_SNAPSHOT_SIZE,
++        NULL));
++    g_assert_cmpint(pwrite(base, &original_byte, 1, 1024), ==, 1);
++    g_assert_cmpint(futimens(base, original_times), ==, 0);
++    close(base);
++
++    g_assert_true(qemu_block_hot_fork_source_set_restore(sources,
++                                                        &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_free(sources,
++                                                     &error_abort));
++    for (index = 0; index < G_N_ELEMENTS(files); index++) {
++        status = close(files[index].descriptor);
++        g_assert_cmpint(status, ==, 0);
++        unlink(child_paths[index]);
++    }
++    test_hot_fork_source_set_cleanup(&fixture);
++    unlink(base_path);
++}
++
++static void test_hot_fork_source_graph_descriptor_custody(void)
++{
++    HotForkSourceSetFixture fixture;
++    QemuBlockHotForkSourceSet *sources;
++    QemuBlockHotForkGraphReceipt graph = { 0 };
++    char ancestor[] = "/tmp/qemu-graph-private-XXXXXX";
++    struct stat metadata[3], denied;
++    size_t index, files = 0;
++
++    if (geteuid() == 0) {
++        g_test_skip("Descriptor custody test requires unprivileged DAC checks");
++        return;
++    }
++    test_hot_fork_source_set_setup(&fixture, false);
++    g_assert_nonnull(mkdtemp(ancestor));
++    for (index = 0; index < G_N_ELEMENTS(fixture.paths); index++) {
++        char destination[64];
++
++        g_snprintf(destination, sizeof(destination), "%s/file-%zu",
++                    ancestor, index);
++        g_assert_cmpint(rename(fixture.paths[index], destination), ==, 0);
++        g_strlcpy(fixture.paths[index], destination,
++                  sizeof(fixture.paths[index]));
++        g_assert_cmpint(stat(destination, &metadata[index]), ==, 0);
++    }
++    g_assert_cmpint(chmod(ancestor, 0), ==, 0);
++    g_assert_cmpint(stat(fixture.paths[0], &denied), ==, -1);
++    g_assert_cmpint(errno, ==, EACCES);
++
++    /* Native roots, including VMState, retain their actual open files even
++     * though neither the launch path nor the display path is traversable. */
++    sources = qemu_block_hot_fork_source_set_new(
++        fixture.roots, G_N_ELEMENTS(fixture.roots), &error_abort);
++    g_assert_true(qemu_block_hot_fork_source_set_freeze(sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, &error_abort));
++    for (index = 0; index < graph.count; index++) {
++        QemuBlockHotForkGraphMember *member = &graph.members[index];
++
++        if (member->file_backed) {
++            struct stat *original = &metadata[member->root_index];
++
++            g_assert_cmpuint(member->file_device, ==, original->st_dev);
++            g_assert_cmpuint(member->file_inode, ==, original->st_ino);
++            g_assert_cmpstr(member->file_path, ==,
++                            fixture.paths[member->root_index]);
++            g_assert_cmpuint(strlen(member->file_sha256), ==, 64);
++            files++;
++        }
++    }
++    g_assert_cmpuint(files, ==, G_N_ELEMENTS(fixture.roots));
++    qemu_block_hot_fork_graph_receipt_destroy(&graph);
++    g_assert_true(qemu_block_hot_fork_source_set_restore(sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_free(sources, &error_abort));
++
++    g_assert_cmpint(chmod(ancestor, 0700), ==, 0);
++    test_hot_fork_source_set_cleanup(&fixture);
++    g_assert_cmpint(rmdir(ancestor), ==, 0);
++}
++
++static void test_hot_fork_source_graph_repeated_children(void)
++{
++    HotForkSourceSetFixture fixture;
++    QemuBlockHotForkSourceSet *sources;
++    QemuBlockHotForkSourceSetInventory inventory;
++    QemuBlockHotForkGraphReceipt graph = { 0 };
++    QemuBlockHotForkChildFile files[2];
++    char paths[2][80];
++    size_t index;
++    unsigned iteration;
++
++    test_hot_fork_source_set_setup(&fixture, false);
++    for (index = 0; index < G_N_ELEMENTS(files); index++) {
++        g_snprintf(paths[index], sizeof(paths[index]),
++                    "/tmp/qemu-hot-fork-repeated-%zu-XXXXXX", index);
++        files[index] = (QemuBlockHotForkChildFile) {
++            .node = fixture.roots[index].root->file->bs,
++            .descriptor = mkstemp(paths[index]),
++        };
++        g_assert_cmpint(files[index].descriptor, >=, 0);
++    }
++    sources = qemu_block_hot_fork_source_set_new(
++        fixture.roots, G_N_ELEMENTS(fixture.roots), &error_abort);
++    g_assert_true(qemu_block_hot_fork_source_set_restored_current(
++        sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_freeze(sources, &error_abort));
++    g_assert_false(qemu_block_hot_fork_source_set_restored_current(sources, NULL));
++    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++
++    for (iteration = 0; iteration < 3; iteration++) {
++        QemuBlockHotForkChildFiles *plan;
++        pid_t child;
++        int status;
++
++        g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++            sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, &error_abort));
++        g_assert_cmpuint(graph.count, ==, 6);
++        qemu_block_hot_fork_graph_receipt_destroy(&graph);
++        for (index = 0; index < G_N_ELEMENTS(files); index++) {
++            g_assert_cmpint(ftruncate(files[index].descriptor, 0), ==, 0);
++        }
++        plan = qemu_block_hot_fork_child_files_prepare(
++            sources, files, G_N_ELEMENTS(files),
++            16 * HOT_FORK_SNAPSHOT_SIZE, &error_abort);
++        g_assert_nonnull(plan);
++        child = fork();
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            test_hot_fork_child_alarm(15);
++            g_assert_false(qemu_block_hot_fork_source_set_restored_current(
++                sources, NULL));
++            g_assert_null(qemu_block_hot_fork_source_set_new(
++                fixture.roots, G_N_ELEMENTS(fixture.roots), NULL));
++            g_assert_true(qemu_block_hot_fork_child_files_install(
++                plan, &error_abort));
++            {
++                QemuBlockHotForkSourceSet *descendant_sources;
++                QemuBlockHotForkGraphReceipt descendant_graph = { 0 };
++                BdrvCrucibleHotForkFileState adopted =
++                    test_hot_fork_file_state(fixture.roots[0].root);
++
++                descendant_sources = qemu_block_hot_fork_source_set_new(
++                    fixture.roots, G_N_ELEMENTS(fixture.roots), &error_abort);
++                g_assert_false(qemu_block_hot_fork_source_set_has_graph_receipt(
++                    descendant_sources));
++                g_assert_true(qemu_block_hot_fork_source_set_freeze(
++                    descendant_sources, &error_abort));
++                g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++                    descendant_sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE,
++                    &descendant_graph, &error_abort));
++                g_assert_cmpuint(descendant_graph.members[1].file_device,
++                                  ==, adopted.device);
++                g_assert_cmpuint(descendant_graph.members[1].file_inode,
++                                  ==, adopted.inode);
++                g_assert_cmpstr(descendant_graph.members[1].file_path,
++                                 ==, paths[0]);
++                qemu_block_hot_fork_graph_receipt_destroy(&descendant_graph);
++                g_assert_true(qemu_block_hot_fork_source_set_restore(
++                    descendant_sources, &error_abort));
++                g_assert_true(qemu_block_hot_fork_source_set_free(
++                    descendant_sources, &error_abort));
++            }
++            _exit(0);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++        g_assert_true(qemu_block_hot_fork_child_files_free(plan, &error_abort));
++        g_assert_true(qemu_block_hot_fork_source_set_query(
++            sources, &inventory, &error_abort));
++        g_assert_true(inventory.frozen);
++        g_assert_true(qemu_block_hot_fork_source_set_has_graph_receipt(sources));
++    }
++
++    g_assert_true(qemu_block_hot_fork_source_set_restore(sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_restored_current(
++        sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_free(sources, &error_abort));
++    sources = qemu_block_hot_fork_source_set_new(
++        fixture.roots, G_N_ELEMENTS(fixture.roots), &error_abort);
++    g_assert_false(qemu_block_hot_fork_source_set_has_graph_receipt(sources));
++    g_assert_true(qemu_block_hot_fork_source_set_freeze(sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_graph_receipt(
++        sources, 64, 16 * HOT_FORK_SNAPSHOT_SIZE, &graph, &error_abort));
++    qemu_block_hot_fork_graph_receipt_destroy(&graph);
++    g_assert_true(qemu_block_hot_fork_source_set_restore(sources, &error_abort));
++    g_assert_true(qemu_block_hot_fork_source_set_free(sources, &error_abort));
++    for (index = 0; index < G_N_ELEMENTS(files); index++) {
++        close(files[index].descriptor);
++        unlink(paths[index]);
++    }
++    test_hot_fork_source_set_cleanup(&fixture);
++}
 +#endif
 +
  int main(int argc, char **argv)
  {
      bdrv_init();
-@@ -77,9 +1533,43 @@ int main(int argc, char **argv)
+@@ -77,9 +1924,49 @@ int main(int argc, char **argv)
  
      g_test_init(&argc, &argv, NULL);
  
@@ -148733,6 +149901,12 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994
 +                    test_hot_fork_native_io_after_worker_retirement);
 +    g_test_add_func("/block-backend/hot_fork_child_native_files",
 +                    test_hot_fork_child_native_files);
++    g_test_add_func("/block-backend/hot_fork_source_graph_receipt_stale",
++                    test_hot_fork_source_graph_receipt_stale);
++    g_test_add_func("/block-backend/hot_fork_source_graph_repeated_children",
++                    test_hot_fork_source_graph_repeated_children);
++    g_test_add_func("/block-backend/hot_fork_source_graph_descriptor_custody",
++                    test_hot_fork_source_graph_descriptor_custody);
 +#endif
  
      return g_test_run();
