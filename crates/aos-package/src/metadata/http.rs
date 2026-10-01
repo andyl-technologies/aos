@@ -91,6 +91,25 @@ pub trait MetadataHttp: Send + Sync {
         headers: &[(&str, &str)],
     ) -> Result<HttpResponse>;
 
+    /// Fetches a pinned bundle with a hard response-size bound.
+    ///
+    /// # Errors
+    ///
+    /// Returns transport, hash, or size-limit failures.
+    async fn get_pinned_limited(
+        &self,
+        url: &str,
+        sha256: &str,
+        maximum: u64,
+    ) -> Result<HttpResponse> {
+        let response = self.get_pinned(url, sha256, &[]).await?;
+        anyhow::ensure!(
+            response.body.len() as u64 <= maximum,
+            "metadata response exceeds size limit"
+        );
+        Ok(response)
+    }
+
     /// Issue a PUT with the given body and request headers.
     ///
     /// # Errors
@@ -177,6 +196,20 @@ impl MetadataHttp for EngineHttp {
             req = req.with_header(k, v);
         }
         self.run(req).await
+    }
+
+    async fn get_pinned_limited(
+        &self,
+        url: &str,
+        sha256: &str,
+        maximum: u64,
+    ) -> Result<HttpResponse> {
+        self.run(
+            TransferRequest::get(url)
+                .with_hash(HashAlgorithm::Sha256, sha256)
+                .with_maximum_bytes(maximum),
+        )
+        .await
     }
 
     async fn put(

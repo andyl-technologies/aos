@@ -276,7 +276,7 @@ pub(crate) async fn execute_remote_sql(
                     expected_rows: statement.expected_rows,
                 })
                 .collect::<Vec<_>>();
-            backend.checked_batch(&checked).await?;
+            backend.checked_batch_owned(checked).await?;
             Ok(RemoteSqlResponse::default())
         }
     }

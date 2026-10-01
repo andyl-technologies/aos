@@ -54,7 +54,7 @@ wasm-bindgen-futures = "0.4"
 tracing = { workspace = true }
 
 serde = { workspace = true }
-serde_json = { workspace = true }
+serde_json = { workspace = true, features = ["raw_value"] }
 serde-wasm-bindgen = "0.6"
 anyhow = { workspace = true }
 hex = { workspace = true }

@@ -1044,6 +1044,17 @@ mod tests {
     use super::*;
     use crate::types::{ApmMeta, ModuleAbiCompat};
 
+    #[test]
+    fn retained_bundle_evaluation_locks_the_entire_source_tree() {
+        let root = "/nix/store/cccccccccccccccccccccccccccccccc-source";
+        let input = std::path::PathBuf::from(format!("{root}/host.nix"));
+        let expression =
+            super::locked_store_input(&input, Some(&format!("sha256:{}", "a".repeat(64)))).unwrap();
+        assert!(expression.contains(&format!("path = \"{root}\"")));
+        assert!(expression.contains("narHash = "));
+        assert!(expression.ends_with("+ \"/host.nix\")"));
+    }
+
     fn member(pkg: &str, config_output: Option<&str>) -> WorkingSetMember {
         WorkingSetMember {
             registry: None,
