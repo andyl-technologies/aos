@@ -299,7 +299,32 @@
         aos = aosFor system;
         pkgs = aos.pkgs.buildPackages;
         aosCli = pkgs.aos.overrideAttrs (_: {doCheck = false;});
+        # Reuse the package's vendor output, not a second downloader or recipe.
+        # The real wrapper executable also covers nix develop -c cargo commands.
+        registryCargo = builtins.derivation {
+          name = "aos-cargo-with-vendor";
+          system = coordinatorSystem;
+          builder = "${pkgs.bash}/bin/bash";
+          args = [
+            "-c"
+            ''
+              set -euo pipefail
+              ${pkgs.coreutils}/bin/mkdir -p "$out/bin" "$out/share/cargo"
+              ${pkgs.sed}/bin/sed \
+                -e 's|@vendor@|${aosCli.passthru.cargoDeps}|g' \
+                "${aosCli.passthru.cargoDeps}/.cargo/config.toml" \
+                > "$out/share/cargo/config.toml"
+              ${pkgs.sed}/bin/sed \
+                -e 's|@bash@|${pkgs.bash}|g' \
+                -e 's|@cargo@|${pkgs.rust}|g' \
+                -e "s|@vendor-config@|$out/share/cargo/config.toml|g" \
+                ${./lib/cargo-vendor/cargo-with-vendor.sh} > "$out/bin/cargo"
+              ${pkgs.coreutils}/bin/chmod 0555 "$out/bin/cargo"
+            ''
+          ];
+        };
         packages = [
+          registryCargo
           aosCli
           aosCli.apm
           aosCli.apr
