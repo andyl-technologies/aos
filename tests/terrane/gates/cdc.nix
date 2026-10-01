@@ -3,7 +3,12 @@
   # a matching test, even after test modules are reorganized.
   runTests = ''
     run_tests() {
-      cargo test --frozen --offline "$@" > test-output 2>&1
+      if cargo test --frozen --offline "$@" > test-output 2>&1; then
+        :
+      else
+        cat test-output >&2
+        return 1
+      fi
       cat test-output
       if ! python3 -c 'import re, pathlib, sys; sys.exit(not re.search(r"test result: ok\. [1-9][0-9]* passed", pathlib.Path("test-output").read_text()))'; then
         printf 'gate filter executed no tests\n' >&2
