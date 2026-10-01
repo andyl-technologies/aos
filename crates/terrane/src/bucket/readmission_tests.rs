@@ -154,7 +154,9 @@ pub(super) async fn publish_members(
     bucket: &FileBucket<TokioLocalFs, TokioClock, Validator>,
     members: &[&[u8]],
 ) -> PackId {
-    let guard = bucket.exclusive().await.unwrap();
+    let guard = super::held::SingleHeld::acquire(bucket).await.unwrap();
+    let held = guard.destination();
+    let observed = held.observe_publication().await.unwrap();
     let catalog = bucket.catalog().await.unwrap();
     let id = PackId::generate(&bucket.inner.fs).await.unwrap();
     let mut writer = PackWriter::new(id, PackClass::Data, false);
@@ -162,25 +164,24 @@ pub(super) async fn publish_members(
         writer.append_raw(EntryKind::Chunk, member).unwrap();
     }
     let sealed = writer.seal().unwrap();
-    bucket
-        .immutable(&BucketKey::parse(&id.pack_key()).unwrap(), sealed.bytes())
-        .await
-        .unwrap();
-    bucket
-        .immutable(
-            &BucketKey::parse(&id.index_key()).unwrap(),
-            sealed.index_object(),
-        )
-        .await
-        .unwrap();
+    let artifacts =
+        super::containers::admitted_artifacts(id, sealed.bytes(), sealed.index_object()).unwrap();
+    crate::store::native_publication_effects::stage_container(
+        &bucket.inner.fs,
+        &observed,
+        &artifacts,
+    )
+    .await
+    .unwrap();
     let index = PackIndexSnapshot::decode(sealed.index_object(), 1).unwrap();
     let inventory =
         super::containers::inventory_entry(id, sealed.bytes(), sealed.index_object()).unwrap();
     bucket.verified_container(&inventory).await.unwrap();
     bucket
-        .publish_pack_catalog(catalog, index, inventory)
+        .publish_pack_catalog(&held, &observed, catalog, index, inventory)
         .await
         .unwrap();
+    drop(observed);
     drop(guard);
     id
 }

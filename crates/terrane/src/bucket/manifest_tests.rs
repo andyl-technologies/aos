@@ -106,15 +106,32 @@ async fn publishing_after_a_legacy_manifest_preserves_existing_bodies() {
     let path = bucket
         .root()
         .join(format!("objects/index/{generation}/MANIFEST"));
+    let selected_manifest = tokio::fs::read(&path).await.unwrap();
     let mut manifest =
-        terrane_core::bucket::GenerationManifest::decode(&tokio::fs::read(&path).await.unwrap())
-            .unwrap();
+        terrane_core::bucket::GenerationManifest::decode(&selected_manifest).unwrap();
     // Key 5 is optional: this is the same valid live body catalog without
     // separately named whole-pack and detached-index container admission.
     manifest.inventory = None;
-    tokio::fs::write(path, manifest.encode().unwrap())
+    tokio::fs::write(&path, manifest.encode().unwrap())
         .await
         .unwrap();
+
+    assert_eq!(bucket.get(&original_id, None).await.unwrap(), raw(original));
+    assert!(
+        FileBucket::open(
+            config(bucket.root().to_owned()),
+            TokioLocalFs,
+            TokioClock,
+            Validator
+        )
+        .await
+        .is_err()
+    );
+    assert!(bucket.catalog().await.unwrap().inventory.is_some());
+
+    // The selected manifest cannot lose completeness through an unselected
+    // cache edit. Exact administrative repair restores the durable artifact.
+    tokio::fs::write(path, selected_manifest).await.unwrap();
 
     let reopened = FileBucket::open(
         config(bucket.root().to_owned()),

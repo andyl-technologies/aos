@@ -264,85 +264,37 @@ async fn legacy_unknown_retirement_never_loses_its_last_physical_evidence() {
             crate::pack::MergedShard::decode(&shard.encode(), generation, shard.shard()).unwrap()
         })
         .collect::<Vec<_>>();
-    bucket
-        .publish_shards(incomplete, generation, &shards)
-        .await
-        .unwrap();
-    let selected = bucket.catalog().await.unwrap();
-    assert!(selected.exclusions.is_some());
+    let before = bucket.selected_publication_locked().await.unwrap();
     assert!(matches!(
         bucket
-            .verified_body(&selected, &index_identity)
+            .publish_shards(incomplete, generation, &shards)
             .await
             .unwrap_err()
             .kind(),
-        StoreErrorKind::Unsupported
+        StoreErrorKind::Corrupt(_)
     ));
+    let selected = bucket.catalog().await.unwrap();
+    assert!(selected.inventory.is_some() && selected.exclusions.is_some());
+    let after = bucket.selected_publication_locked().await.unwrap();
+    assert_eq!(before.state, after.state);
+    assert_eq!(before.digest, after.digest);
+
+    // Incomplete legacy evidence cannot replace the current selected catalog
+    // or authorize physical loss. Direct legacy lookup remains fail closed.
     let mut legacy = selected;
     legacy.exclusions = None;
     legacy.inventory = None;
-    let generation = bucket.next_generation(&legacy).await.unwrap();
-    let shards = legacy
-        .shards
-        .iter()
-        .map(|shard| {
-            crate::pack::MergedShard::decode(&shard.encode(), generation, shard.shard()).unwrap()
-        })
-        .collect::<Vec<_>>();
-    bucket
-        .publish_shards(legacy, generation, &shards)
-        .await
-        .unwrap();
+    assert!(matches!(
+        bucket
+            .verified_body(&legacy, &index_identity)
+            .await
+            .unwrap_err()
+            .kind(),
+        StoreErrorKind::Unsupported
+    ));
     drop(guard);
-    assert!(matches!(
-        bucket
-            .put(upload(
-                &raw(body),
-                &identity,
-                body.len(),
-                &bucket.inner.config.chunk_profile,
-                ChunkPosition::Final
-            ))
-            .await
-            .unwrap_err()
-            .kind(),
-        StoreErrorKind::Unsupported
-    ));
-    assert!(matches!(
-        bucket.exclude(&identity).await.unwrap_err().kind(),
-        StoreErrorKind::Unsupported
-    ));
-    assert!(matches!(
-        bucket.get(&index_identity, None).await.unwrap_err().kind(),
-        StoreErrorKind::Unsupported
-    ));
-    assert!(matches!(
-        bucket
-            .has(std::slice::from_ref(&index_identity))
-            .await
-            .unwrap_err()
-            .kind(),
-        StoreErrorKind::Unsupported
-    ));
-    assert!(matches!(
-        bucket
-            .published_identities(IdentityKind::Index)
-            .await
-            .unwrap_err()
-            .kind(),
-        StoreErrorKind::Unsupported
-    ));
-    assert!(matches!(
-        bucket
-            .put(ContentUpload::Meta(
-                MetaUpload::new(IdentityKind::Index, &index).unwrap()
-            ))
-            .await
-            .unwrap_err()
-            .kind(),
-        StoreErrorKind::Unsupported
-    ));
-    assert_eq!(bucket.catalog().await.unwrap().exclusions, None);
+    assert!(bucket.root().join(old.pack_key()).is_file());
+    assert!(bucket.root().join(old.index_key()).is_file());
     assert_eq!(bucket.has(&[identity]).await.unwrap(), vec![false]);
     let reopened = FileBucket::open(
         config(bucket.root().to_owned()),
@@ -352,7 +304,7 @@ async fn legacy_unknown_retirement_never_loses_its_last_physical_evidence() {
     )
     .await
     .unwrap();
-    assert_eq!(reopened.catalog().await.unwrap().exclusions, None);
+    assert!(reopened.catalog().await.unwrap().exclusions.is_some());
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
 }
 
@@ -591,7 +543,9 @@ async fn publish_members_with_index_alias(
         ))
         .await
         .unwrap();
-    let guard = bucket.exclusive().await.unwrap();
+    let guard = super::held::SingleHeld::acquire(bucket).await.unwrap();
+    let held = guard.destination();
+    let observed = held.observe_publication().await.unwrap();
     let catalog = bucket.catalog().await.unwrap();
     let independent = catalog
         .shards
@@ -601,21 +555,23 @@ async fn publish_members_with_index_alias(
         .unwrap();
     assert_ne!(independent.pack(), id);
     assert_eq!(independent.entry().kind(), EntryKind::Index);
-    bucket
-        .immutable(&BucketKey::parse(&id.pack_key()).unwrap(), sealed.bytes())
-        .await
-        .unwrap();
-    bucket
-        .immutable(&BucketKey::parse(&id.index_key()).unwrap(), &index_bytes)
-        .await
-        .unwrap();
+    let artifacts =
+        super::containers::admitted_artifacts(id, sealed.bytes(), &index_bytes).unwrap();
+    crate::store::native_publication_effects::stage_container(
+        &bucket.inner.fs,
+        &observed,
+        &artifacts,
+    )
+    .await
+    .unwrap();
     let generation = bucket.next_generation(&catalog).await.unwrap();
     let index = PackIndexSnapshot::decode(&index_bytes, generation).unwrap();
     let inventory = super::containers::inventory_entry(id, sealed.bytes(), &index_bytes).unwrap();
     bucket
-        .publish_pack_catalog(catalog, index, inventory)
+        .publish_pack_catalog(&held, &observed, catalog, index, inventory)
         .await
         .unwrap();
+    drop(observed);
     drop(guard);
     (id, identity, index_bytes)
 }

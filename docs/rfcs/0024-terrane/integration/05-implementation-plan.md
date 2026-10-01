@@ -464,8 +464,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the older collector snapshot lacks those later backend corrections. The actual
   trunk native build now reports 27 diagnostics, down from the lease adoption's
   64, with real Guard types and consumers still absent. This source integration
-  does not qualify the full task; backend test closure and Guard/reference
-  integration precede current runtime gates.
+  does not qualify the full task; Guard/reference integration precedes current
+  runtime gates. Nine reviewed backend fixture paths now match the frozen
+  bucket graph and preserve actual initialization, retained effects, fault
+  interception, whole selected records and absent-name predecessor assertions.
+  Capability and manifest cache recovery uses selected history; legacy unknown
+  authority remains refused. The mandatory repository formatting sequence
+  passes; these fixtures still require the complete Guard graph to execute.
   The declared opened-directory retention test module is restored exactly
   from its reviewed source. It preserves actual descriptor, ancestry, kernel
   exclusion and queued/running cancellation assertions. The exact mandatory

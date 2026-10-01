@@ -366,18 +366,20 @@ async fn manifest_and_every_listed_artifact_are_required_for_generation_visibili
     let manifest = tokio::fs::read(&manifest_path).await.unwrap();
     tokio::fs::remove_file(&manifest_path).await.unwrap();
 
-    assert!(bucket.get(&identity, None).await.is_err());
-    assert!(
-        FileBucket::open(
-            config(bucket.root().to_owned()),
-            TokioLocalFs,
-            TokioClock,
-            Validator
-        )
-        .await
-        .is_err()
+    assert_eq!(bucket.get(&identity, None).await.unwrap(), raw(plaintext));
+    let recovered = FileBucket::open(
+        config(bucket.root().to_owned()),
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        recovered.get(&identity, None).await.unwrap(),
+        raw(plaintext)
     );
-    tokio::fs::write(&manifest_path, &manifest).await.unwrap();
+    assert_eq!(tokio::fs::read(&manifest_path).await.unwrap(), manifest);
     let decoded = terrane_core::bucket::GenerationManifest::decode(&manifest).unwrap();
     let shard = bucket.root().join(format!(
         "objects/index/{generation}/{}.idx",

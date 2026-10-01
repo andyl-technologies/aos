@@ -43,6 +43,10 @@ impl LocalFs for ReadOnlyFs {
         self.denied()
     }
 
+    async fn lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.lock_existing_exclusive(path).await
+    }
+
     async fn write_new(&self, _path: &Path, _bytes: &[u8]) -> std::io::Result<()> {
         self.denied()
     }
@@ -76,7 +80,11 @@ impl LocalFs for ReadOnlyFs {
     }
 
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
-        let bytes = TokioLocalFs.read(path).await?;
+        self.read_nofollow(path).await
+    }
+
+    async fn read_nofollow(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        let bytes = TokioLocalFs.read_nofollow(path).await?;
         if path.file_name().is_some_and(|name| name == "CAPABILITIES") {
             let read = self.capability_reads.fetch_add(1, Ordering::SeqCst) + 1;
             if self.empty_capability_read == Some(read) {
@@ -159,9 +167,13 @@ async fn legacy_fixture() -> (
     let mut capabilities =
         BucketCapabilities::decode(&TokioLocalFs.read(&cap_path).await.unwrap()).unwrap();
     capabilities.layout_version = 1;
+    capabilities.publication_protocol = None;
     capabilities.ref_names = None;
     let original = capabilities.encode().unwrap();
     tokio::fs::write(cap_path, &original).await.unwrap();
+    tokio::fs::remove_dir_all(super::tests::control_path(bucket.root()))
+        .await
+        .unwrap();
     (bucket, identity, record, legacy_log, original)
 }
 
@@ -375,6 +387,8 @@ async fn v2_effects_refuse_changed_version_under_the_actual_root_exclusion() {
     assert_eq!(capabilities.layout_version, 2);
     capabilities.layout_version = 1;
     let changed = capabilities.encode().unwrap();
+    super::tests::corrupt_selected_capabilities(&bucket, |selected| selected.layout_version = 1)
+        .await;
     tokio::fs::write(&cap_path, &changed).await.unwrap();
     let record = RefRecord::first([1; 32], 1, Locality::default()).selected();
     assert!(matches!(
@@ -383,7 +397,7 @@ async fn v2_effects_refuse_changed_version_under_the_actual_root_exclusion() {
             .await
             .unwrap_err()
             .kind(),
-        StoreErrorKind::Unsupported
+        StoreErrorKind::Corrupt(_)
     ));
     assert!(matches!(
         bucket
@@ -391,7 +405,7 @@ async fn v2_effects_refuse_changed_version_under_the_actual_root_exclusion() {
             .await
             .unwrap_err()
             .kind(),
-        StoreErrorKind::Unsupported
+        StoreErrorKind::Corrupt(_)
     ));
     let encoded = raw(b"other");
     let offered = chunk_identity(b"other");
@@ -408,11 +422,11 @@ async fn v2_effects_refuse_changed_version_under_the_actual_root_exclusion() {
             .await
             .unwrap_err()
             .kind(),
-        StoreErrorKind::Unsupported
+        StoreErrorKind::Corrupt(_)
     ));
     assert!(matches!(
         bucket.exclude(&offered).await.unwrap_err().kind(),
-        StoreErrorKind::Unsupported
+        StoreErrorKind::Corrupt(_)
     ));
     assert_eq!(TokioLocalFs.read(&cap_path).await.unwrap(), changed);
     assert!(
@@ -429,9 +443,20 @@ async fn v2_migrated_numbered_log_coexists_with_a_numeric_descendant_ref() {
     let bucket = fixture().await;
     let parent = "refs/heads/_/a";
     let descendant = "refs/heads/_/a/00000000000000000001";
-    let first = RefRecord::first([7; 32], 1, Locality::default());
+    let first = RefRecord::first([7; 32], 1, Locality::default()).selected();
+    bucket
+        .ref_log_append(parent, 1, &log(first.clone(), None))
+        .await
+        .unwrap();
+    assert_eq!(
+        bucket.ref_cas(parent, None, &first).await.unwrap(),
+        RefCasOutcome::Applied
+    );
+
+    // A retained legacy location cannot collide with suffix-safe ref payloads
+    // or selected candidate siblings, including numeric descendant names.
     let legacy_log = RefLogRecord {
-        record: first.clone(),
+        record: RefRecord::first([7; 32], 1, Locality::default()),
         previous_commit: None,
         expected_previous: None,
         committed_previous: None,
@@ -439,24 +464,14 @@ async fn v2_migrated_numbered_log_coexists_with_a_numeric_descendant_ref() {
         reason: RefLogReason::Commit,
         timestamp: 1,
     };
-    let parent_key = BucketKey::ref_record(parent).unwrap();
     let log_key = BucketKey::reflog(parent, 1).unwrap();
-    for (key, bytes) in [
-        (&parent_key, first.encode().unwrap()),
-        (&log_key, legacy_log.encode().unwrap()),
-    ] {
-        let path = bucket.root().join(key.as_str());
-        TokioLocalFs
-            .create_dir_all(path.parent().unwrap())
-            .await
-            .unwrap();
-        TokioLocalFs.write_new(&path, &bytes).await.unwrap();
-    }
-    let cap_path = bucket.root().join("CAPABILITIES");
-    let mut capabilities =
-        BucketCapabilities::decode(&TokioLocalFs.read(&cap_path).await.unwrap()).unwrap();
-    capabilities.ref_names = Some(vec![parent.into()]);
-    tokio::fs::write(cap_path, capabilities.encode().unwrap())
+    let path = bucket.root().join(log_key.as_str());
+    TokioLocalFs
+        .create_dir_all(path.parent().unwrap())
+        .await
+        .unwrap();
+    TokioLocalFs
+        .write_new(&path, &legacy_log.encode().unwrap())
         .await
         .unwrap();
 
@@ -471,14 +486,11 @@ async fn v2_migrated_numbered_log_coexists_with_a_numeric_descendant_ref() {
     );
     let next = first.advance([9; 32], 2).unwrap().selected();
     bucket
-        .ref_log_append(parent, 2, &log(next.clone(), Some(first)))
+        .ref_log_append(parent, 2, &log(next.clone(), Some(first.clone())))
         .await
         .unwrap();
     assert_eq!(
-        bucket
-            .ref_cas(parent, Some(&legacy_log.record), &next)
-            .await
-            .unwrap(),
+        bucket.ref_cas(parent, Some(&first), &next).await.unwrap(),
         RefCasOutcome::Applied
     );
 
@@ -660,4 +672,149 @@ async fn v1_readonly_refuses_an_empty_backend_response_after_initial_validation(
         original
     );
     tokio::fs::remove_dir_all(fixture.root()).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registered_profile_ignores_missing_corrupt_and_stale_cache_without_effects() {
+    let bucket = fixture().await;
+    let fs = ReadOnlyFs::default();
+    let mut opening = config(bucket.root().to_owned());
+    let configured = opening.publication_control.as_ref().unwrap();
+    let cap_path = bucket.root().join("CAPABILITIES");
+    let original = TokioLocalFs.read_nofollow(&cap_path).await.unwrap();
+    let original = BucketCapabilities::decode(&original).unwrap();
+    let control = super::tests::control_path(bucket.root());
+    let registration = TokioLocalFs
+        .read_nofollow(&control.join("backend-registration.cbor"))
+        .await
+        .unwrap();
+    let mut stale = original.clone();
+    stale.profile.seed = [99; 32];
+
+    for cache in [
+        Some(stale.encode().unwrap()),
+        Some(b"corrupt cache".to_vec()),
+        None,
+    ] {
+        match &cache {
+            Some(bytes) => tokio::fs::write(&cap_path, bytes).await.unwrap(),
+            None => tokio::fs::remove_file(&cap_path).await.unwrap(),
+        }
+
+        let profile = publication::registered_profile(&fs, bucket.root(), configured)
+            .await
+            .unwrap();
+        assert_eq!(profile, original.profile);
+        assert_eq!(fs.effects.load(Ordering::SeqCst), 0);
+        assert_eq!(fs.capability_reads.load(Ordering::SeqCst), 0);
+        assert_eq!(TokioLocalFs.read_nofollow(&cap_path).await.ok(), cache);
+        assert_eq!(
+            TokioLocalFs
+                .read_nofollow(&control.join("backend-registration.cbor"))
+                .await
+                .unwrap(),
+            registration
+        );
+    }
+
+    opening.chunk_profile = ChunkProfile::cdc_1m(original.profile.seed);
+    let reopened = FileBucket::open(opening, TokioLocalFs, TokioClock, Validator)
+        .await
+        .unwrap();
+    assert_eq!(
+        BucketCapabilities::decode(&TokioLocalFs.read_nofollow(&cap_path).await.unwrap())
+            .unwrap()
+            .profile,
+        original.profile
+    );
+    drop(reopened);
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+    tokio::fs::remove_dir_all(control).await.unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn registered_profile_checks_protected_genesis_and_never_activates_pending() {
+    use crate::bucket::held::SingleHeld;
+    use terrane_core::gc::publication::{Activation, BackendRegistration};
+
+    let bucket = fixture().await;
+    let configured = config(bucket.root().to_owned())
+        .publication_control
+        .unwrap();
+    let control = super::tests::control_path(bucket.root());
+    let registration_path = control.join("backend-registration.cbor");
+    let mut registration = BackendRegistration::decode(
+        &TokioLocalFs
+            .read_nofollow(&registration_path)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    registration.activation = Activation::Pending;
+    registration.genesis = None;
+    let pending = registration.encode().unwrap();
+    let holder = SingleHeld::acquire(&bucket).await.unwrap();
+    tokio::fs::write(&registration_path, &pending)
+        .await
+        .unwrap();
+    drop(holder);
+    tokio::fs::write(
+        bucket.root().join("publication/PORTABLE"),
+        b"untrusted pointer",
+    )
+    .await
+    .unwrap();
+    let fs = ReadOnlyFs::default();
+
+    let profile = publication::registered_profile(&fs, bucket.root(), &configured)
+        .await
+        .unwrap();
+    assert_eq!(profile.seed, [0; 32]);
+    assert_eq!(
+        TokioLocalFs
+            .read_nofollow(&registration_path)
+            .await
+            .unwrap(),
+        pending
+    );
+    assert_eq!(
+        TokioLocalFs
+            .read_nofollow(&bucket.root().join("publication/PORTABLE"))
+            .await
+            .unwrap(),
+        b"untrusted pointer"
+    );
+    assert_eq!(fs.effects.load(Ordering::SeqCst), 0);
+
+    let mut wrong_owner = configured.clone();
+    wrong_owner.operator_uid = wrong_owner.operator_uid.checked_add(1).unwrap();
+    assert!(
+        publication::registered_profile(&fs, bucket.root(), &wrong_owner)
+            .await
+            .is_err()
+    );
+    tokio::fs::write(control.join("publication/commits/0"), b"broken genesis")
+        .await
+        .unwrap();
+    assert!(
+        publication::registered_profile(&fs, bucket.root(), &configured)
+            .await
+            .is_err()
+    );
+    let lock = BucketKey::parse("CAPABILITIES").unwrap();
+    tokio::fs::remove_file(bucket.root().join(lock.lock_name()))
+        .await
+        .unwrap();
+    assert!(
+        publication::registered_profile(&fs, bucket.root(), &configured)
+            .await
+            .is_err()
+    );
+    assert!(!bucket.root().join(lock.lock_name()).exists());
+    assert_eq!(fs.effects.load(Ordering::SeqCst), 0);
+
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+    tokio::fs::remove_dir_all(control).await.unwrap();
 }

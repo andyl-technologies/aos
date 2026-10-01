@@ -165,31 +165,9 @@ async fn independent_candidates_select_one_history_under_concurrent_cas() {
 async fn selected_candidates_coexist_with_legacy_numbered_files() {
     let bucket = fixture().await;
     let name = "refs/heads/_/legacy";
-    let first = RefRecord::first([1; 32], 1, Locality::default());
-    let mut first_log = log(first.clone(), None);
-    first_log.expected_previous = None;
-    let key = BucketKey::ref_record(name).unwrap();
-    let guard = bucket.exclusive().await.unwrap();
-    // Fixture setup authors migrated bytes; ordinary append cannot migrate.
-    let first_log_key = BucketKey::reflog(name, 1).unwrap();
-    bucket
-        .install(&first_log_key, &first_log.encode().unwrap(), false)
-        .await
-        .unwrap();
-    bucket
-        .install(&key, &first.encode().unwrap(), false)
-        .await
-        .unwrap();
-    let cap_key = BucketKey::parse("CAPABILITIES").unwrap();
-    let mut capabilities =
-        BucketCapabilities::decode(&bucket.read_optional(&cap_key).await.unwrap().unwrap())
-            .unwrap();
-    capabilities.ref_names = None;
-    bucket
-        .install(&cap_key, &capabilities.encode().unwrap(), true)
-        .await
-        .unwrap();
-    drop(guard);
+    let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
+    let first_log = log(first.clone(), None);
+    bucket.prepared_cas(name, None, &first).await.unwrap();
 
     // An orphaned legacy file already occupies the next sequence. The selected
     // sibling has a different filename, and never inherits that orphan's body.
@@ -280,13 +258,20 @@ async fn complete_ref_inventory_survives_reopen_index_publication_and_ref_remova
         ))
         .await
         .unwrap();
-    tokio::fs::remove_file(
-        bucket
-            .root()
-            .join(BucketKey::ref_record(name).unwrap().as_str()),
-    )
-    .await
-    .unwrap();
+    let guard = bucket.exclusive().await.unwrap();
+    let selected = bucket.selected_publication_locked().await.unwrap();
+    bucket
+        .publish_raw_locked(
+            &selected,
+            vec![terrane_core::gc::publication::LogicalChange {
+                key: BucketKey::ref_record(name).unwrap().as_str().into(),
+                expected: Some(record.encode().unwrap()),
+                new: None,
+            }],
+        )
+        .await
+        .unwrap();
+    drop(guard);
     let reopened = FileBucket::open(
         config(bucket.root().to_owned()),
         TokioLocalFs,
@@ -300,11 +285,18 @@ async fn complete_ref_inventory_survives_reopen_index_publication_and_ref_remova
         vec![name.to_string(), tag.to_string()]
     );
     assert_eq!(reopened.ref_get(name).await.unwrap(), None);
-    let replacement = RefRecord::first([3; 32], 2, Locality::default()).selected();
+    let replacement = record.advance([3; 32], 2).unwrap().selected();
+    let mut candidate = log(replacement.clone(), None);
+    candidate.previous_commit = Some(record.commit);
+    candidate.committed_previous = Some(record);
     reopened
-        .prepared_cas(name, None, &replacement)
+        .ref_log_append(name, replacement.seq, &candidate)
         .await
         .unwrap();
+    assert_eq!(
+        reopened.ref_cas(name, None, &replacement).await.unwrap(),
+        RefCasOutcome::Applied
+    );
     assert_eq!(
         reopened.ref_names().await.unwrap(),
         vec![name.to_string(), tag.to_string()]
@@ -313,7 +305,7 @@ async fn complete_ref_inventory_survives_reopen_index_publication_and_ref_remova
 }
 
 #[tokio::test]
-async fn legacy_unknown_inventory_allows_existing_advances_but_rejects_new_names() {
+async fn legacy_unknown_inventory_refuses_unregistered_existing_and_new_advances() {
     let bucket = fixture().await;
     let name = "refs/heads/_/legacy";
     let first = RefRecord::first([1; 32], 1, Locality::default());
@@ -342,34 +334,49 @@ async fn legacy_unknown_inventory_allows_existing_advances_but_rejects_new_names
         .unwrap();
     drop(guard);
 
-    let reopened = FileBucket::open(
-        config(bucket.root().to_owned()),
-        TokioLocalFs,
-        TokioClock,
-        Validator,
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        reopened.ref_names().await.unwrap_err().kind(),
-        &StoreErrorKind::Unsupported
-    );
-    let next = first.advance([2; 32], 2).unwrap().selected();
-    reopened
-        .prepared_cas(name, Some(&first), &next)
+    tokio::fs::remove_dir_all(super::tests::control_path(bucket.root()))
         .await
         .unwrap();
-    assert_eq!(reopened.ref_get(name).await.unwrap(), Some(next));
+    assert!(matches!(
+        FileBucket::open(
+            config(bucket.root().to_owned()),
+            TokioLocalFs,
+            TokioClock,
+            Validator
+        )
+        .await
+        .err()
+        .unwrap()
+        .kind(),
+        StoreErrorKind::Unsupported
+    ));
+
+    let next = first.advance([2; 32], 2).unwrap().selected();
+    assert!(
+        bucket
+            .prepared_cas(name, Some(&first), &next)
+            .await
+            .is_err()
+    );
     let another = RefRecord::first([3; 32], 2, Locality::default()).selected();
-    assert_eq!(
-        reopened
+    assert!(
+        bucket
             .prepared_cas("refs/heads/_/new", None, &another)
             .await
-            .unwrap_err()
-            .kind(),
-        &StoreErrorKind::Unsupported
+            .is_err()
     );
-    assert_eq!(reopened.ref_get("refs/heads/_/new").await.unwrap(), None);
+    assert_eq!(
+        tokio::fs::read(bucket.root().join(key.as_str()))
+            .await
+            .unwrap(),
+        first.encode().unwrap()
+    );
+    assert!(
+        !bucket
+            .root()
+            .join(BucketKey::ref_record("refs/heads/_/new").unwrap().as_str())
+            .exists()
+    );
     let persisted = BucketCapabilities::decode(
         &tokio::fs::read(bucket.root().join("CAPABILITIES"))
             .await
@@ -390,7 +397,7 @@ async fn opening_an_existing_empty_root_is_not_fresh_initialization_authority() 
             Ok(_) => panic!("existing root without CAPABILITIES was accepted"),
             Err(error) => error,
         };
-    assert!(matches!(error.kind(), StoreErrorKind::Corrupt(_)));
+    assert_eq!(error.kind(), &StoreErrorKind::Unsupported);
     assert!(!root.join("CAPABILITIES").exists());
     tokio::fs::remove_dir_all(root).await.unwrap();
     tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
@@ -401,17 +408,11 @@ async fn a_head_missing_from_a_complete_inventory_is_corruption() {
     let bucket = fixture().await;
     let name = "refs/heads/_/hidden";
     let record = RefRecord::first([1; 32], 1, Locality::default()).selected();
-    bucket
-        .ref_log_append(name, 1, &log(record.clone(), None))
-        .await
-        .unwrap();
-    let key = BucketKey::ref_record(name).unwrap();
-    let guard = bucket.exclusive().await.unwrap();
-    bucket
-        .install(&key, &record.encode().unwrap(), false)
-        .await
-        .unwrap();
-    drop(guard);
+    bucket.prepared_cas(name, None, &record).await.unwrap();
+    super::tests::corrupt_selected_capabilities(&bucket, |capabilities| {
+        capabilities.ref_names = Some(Vec::new())
+    })
+    .await;
     assert!(matches!(
         bucket.ref_get(name).await.unwrap_err().kind(),
         StoreErrorKind::Corrupt(_)

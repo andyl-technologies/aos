@@ -32,6 +32,72 @@ impl LocalFs for FaultFs {
         TokioLocalFs.initialize_publication(request).await
     }
 
+    fn retain_native_exclusion(
+        &self,
+        held: &Self::Lock,
+    ) -> std::io::Result<crate::store::NativeExclusion> {
+        TokioLocalFs.retain_native_exclusion(held)
+    }
+
+    async fn execute_retained_effect(
+        &self,
+        effect: crate::store::NativeFsEffect,
+    ) -> Result<(), crate::store::NativeEffectFailure> {
+        use crate::store::{EffectFault, EffectFaultProbe};
+
+        let mut faults = Vec::new();
+        match effect.fault_probe() {
+            EffectFaultProbe::FileSync if self.fail_sync.swap(false, Ordering::SeqCst) => {
+                faults.push(EffectFault::BeforeFileSync);
+            }
+            EffectFaultProbe::WriteNew(_) if self.overwrite_existing.load(Ordering::SeqCst) => {
+                faults.push(EffectFault::ReplaceCreateOnce);
+            }
+            EffectFaultProbe::RenameNoReplace(path) => {
+                if self.overwrite_existing.load(Ordering::SeqCst) {
+                    faults.push(EffectFault::ReplaceCreateOnce);
+                }
+                if path.file_name().is_some_and(|name| name == "MANIFEST")
+                    && self.fail_manifest.swap(false, Ordering::SeqCst)
+                {
+                    faults.push(EffectFault::BeforeRename);
+                }
+                if path
+                    .parent()
+                    .is_some_and(|parent| parent.ends_with("refs/heads/_"))
+                    && self.fail_ref_directory_sync.swap(false, Ordering::SeqCst)
+                {
+                    faults.push(EffectFault::BeforeDirectorySync);
+                }
+            }
+            EffectFaultProbe::Rename(path)
+                if path
+                    .parent()
+                    .is_some_and(|parent| parent.ends_with("refs/heads/_"))
+                    && self.fail_ref_directory_sync.swap(false, Ordering::SeqCst) =>
+            {
+                faults.push(EffectFault::BeforeDirectorySync);
+            }
+            EffectFaultProbe::DirectorySync(path)
+                if path.ends_with("refs/heads/_")
+                    && self.fail_ref_directory_sync.swap(false, Ordering::SeqCst) =>
+            {
+                faults.push(EffectFault::BeforeDirectorySync);
+            }
+            _ => {}
+        }
+        if let Some(path) = self.unavailable_read.lock().unwrap().clone() {
+            faults.push(EffectFault::UnavailableRead(path));
+        }
+        TokioLocalFs
+            .execute_retained_effect(effect.inject_test_faults(faults))
+            .await
+    }
+
+    async fn lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        TokioLocalFs.lock_existing_exclusive(path).await
+    }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }
@@ -53,6 +119,27 @@ impl LocalFs for FaultFs {
 
     async fn read_range(&self, path: &Path, range: ByteRange) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.read_range(path, range).await
+    }
+
+    async fn read_nofollow(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        let unavailable = self.unavailable_read.lock().unwrap().as_deref() == Some(path);
+        if unavailable {
+            self.failed_reads.fetch_add(1, Ordering::SeqCst);
+            return Err(std::io::Error::other(
+                "injected backend nofollow read unavailable",
+            ));
+        }
+        TokioLocalFs.read_nofollow(path).await
+    }
+
+    async fn set_permissions_and_sync(
+        &self,
+        path: &Path,
+        permissions: std::fs::Permissions,
+    ) -> std::io::Result<()> {
+        TokioLocalFs
+            .set_permissions_and_sync(path, permissions)
+            .await
     }
 
     async fn write_new(&self, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -214,11 +301,10 @@ async fn startup_refuses_a_binding_that_overwrites_create_once_keys() {
     let result = FileBucket::open(config(root.clone()), broken, TokioClock, Validator).await;
 
     assert!(matches!(result, Err(error) if error.kind() == &StoreErrorKind::Unsupported));
-    assert!(
-        FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
-            .await
-            .is_err()
-    );
+    let reopened = FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
+        .await
+        .unwrap();
+    assert_eq!(reopened.ref_names().await.unwrap(), Vec::<String>::new());
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
 

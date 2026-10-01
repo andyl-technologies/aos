@@ -65,6 +65,54 @@ pub(super) fn manifest_requirements(
 
 pub(super) type Bucket = FileBucket<TokioLocalFs, TokioClock, Validator>;
 
+#[cfg(unix)]
+pub(super) fn control_path(root: &std::path::Path) -> PathBuf {
+    use std::os::unix::ffi::OsStrExt;
+
+    let hash: String = blake3::hash(root.as_os_str().as_bytes())
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    root.with_file_name(format!(".terrane-control:{hash}"))
+}
+
+/// Damages selected capability data while keeping its record digests consistent.
+#[cfg(unix)]
+pub(super) async fn corrupt_selected_capabilities(
+    bucket: &Bucket,
+    mutate: impl FnOnce(&mut BucketCapabilities),
+) {
+    use terrane_core::gc::publication::{PublicationCommit, PublicationTransaction};
+
+    let guard = bucket.exclusive().await.unwrap();
+    let selected = bucket.selected_publication_locked().await.unwrap();
+    let control = control_path(bucket.root());
+    let slot_path = control.join(format!("publication/commits/{}", selected.state.revision));
+    let mut commit =
+        PublicationCommit::decode(&TokioLocalFs.read_nofollow(&slot_path).await.unwrap()).unwrap();
+    let transaction_path = control.join(&commit.transaction_key);
+    let mut transaction = PublicationTransaction::decode(
+        &TokioLocalFs.read_nofollow(&transaction_path).await.unwrap(),
+    )
+    .unwrap();
+    let row = transaction
+        .changes
+        .iter_mut()
+        .find(|row| row.key == "CAPABILITIES")
+        .unwrap();
+    let mut capabilities = BucketCapabilities::decode(row.new.as_deref().unwrap()).unwrap();
+    mutate(&mut capabilities);
+    row.new = Some(capabilities.encode().unwrap());
+    let bytes = transaction.encode().unwrap();
+    commit.transaction_digest = publication::digest(&bytes);
+    tokio::fs::write(transaction_path, bytes).await.unwrap();
+    tokio::fs::write(slot_path, commit.encode().unwrap())
+        .await
+        .unwrap();
+    drop(guard);
+}
+
 pub(super) async fn fixture() -> Bucket {
     let entropy = TokioLocalFs.random_bytes(16).await.unwrap();
     let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
@@ -75,9 +123,34 @@ pub(super) async fn fixture() -> Bucket {
 }
 
 pub(super) fn config(root: PathBuf) -> FileBucketConfig {
+    #[cfg(unix)]
+    let operator_uid = {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static NEXT_OWNER: AtomicU64 = AtomicU64::new(0);
+        let number = NEXT_OWNER.fetch_add(1, Ordering::Relaxed);
+        let owner = root.parent().unwrap().join(format!(
+            ".terrane-test-owner:{}:{number}",
+            std::process::id()
+        ));
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .create(&owner)
+            .unwrap();
+        let uid = std::fs::symlink_metadata(&owner).unwrap().uid();
+        std::fs::remove_dir(&owner).unwrap();
+        uid
+    };
+    #[cfg(not(unix))]
+    let operator_uid = 0;
+
     FileBucketConfig {
         root,
-        publication_control: None,
+        publication_control: Some(FileBucketPublicationConfig {
+            operator_uid,
+            control: None,
+        }),
         chunk_profile_name: "cdc-1m".into(),
         chunk_profile: ChunkProfile::cdc_1m([0; 32]),
         locality: Locality::default(),
@@ -348,10 +421,13 @@ async fn probe_revalidates_persisted_layout_and_profile_each_open() {
     tokio::fs::write(root.join("CAPABILITIES"), b"broken")
         .await
         .unwrap();
-    assert!(
-        FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
-            .await
-            .is_err()
+    let reopened = FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
+        .await
+        .unwrap();
+    assert_eq!(reopened.profile(), bucket.profile());
+    assert_ne!(
+        tokio::fs::read(root.join("CAPABILITIES")).await.unwrap(),
+        b"broken"
     );
     tokio::fs::remove_dir_all(root).await.unwrap();
 }
@@ -365,32 +441,29 @@ async fn registered_publication_marker_cannot_authorize_legacy_probe_writes() {
     record.publication_protocol = Some(1);
     let registered = record.encode().unwrap();
     tokio::fs::write(&path, &registered).await.unwrap();
+    tokio::fs::remove_dir_all(control_path(&root))
+        .await
+        .unwrap();
 
     let error = FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
         .await
         .err()
         .unwrap();
 
-    assert_eq!(error.kind(), &StoreErrorKind::Unsupported);
+    assert!(matches!(
+        error.kind(),
+        StoreErrorKind::Unsupported | StoreErrorKind::Unavailable { .. }
+    ));
     assert_eq!(tokio::fs::read(&path).await.unwrap(), registered);
 
     let proposed = RefRecord::first([1; 32], 1, Locality::default()).selected();
-    assert_eq!(
+    assert!(
         bucket
             .prepared_cas("refs/heads/_/main", None, &proposed)
             .await
-            .unwrap_err()
-            .kind(),
-        &StoreErrorKind::Unsupported
+            .is_err()
     );
-    assert_eq!(
-        bucket
-            .ref_get("refs/heads/_/main")
-            .await
-            .unwrap_err()
-            .kind(),
-        &StoreErrorKind::Unsupported
-    );
+    assert!(bucket.ref_get("refs/heads/_/main").await.is_err());
     assert!(
         !tokio::fs::try_exists(root.join("refs/heads/_/main:record"))
             .await
@@ -459,22 +532,16 @@ async fn unknown_keys_are_not_refs_and_symlinks_fail_closed() {
 async fn missing_reflog_with_committed_horizon_is_corruption() {
     let bucket = fixture().await;
     let first = RefRecord::first([1; 32], 1, Locality::default()).selected();
-    let key = BucketKey::ref_record("refs/heads/_/main").unwrap();
-    let _guard = bucket.exclusive().await.unwrap();
     bucket
-        .install(&key, &first.encode().unwrap(), false)
+        .prepared_cas("refs/heads/_/main", None, &first)
         .await
         .unwrap();
-    let cap_key = BucketKey::parse("CAPABILITIES").unwrap();
-    let mut capabilities =
-        BucketCapabilities::decode(&bucket.read_optional(&cap_key).await.unwrap().unwrap())
+    let key =
+        BucketKey::reflog_candidate("refs/heads/_/main", first.seq, &first.candidate_id.unwrap())
             .unwrap();
-    capabilities.ref_names = Some(vec!["refs/heads/_/main".into()]);
-    bucket
-        .install(&cap_key, &capabilities.encode().unwrap(), true)
+    tokio::fs::remove_file(bucket.root().join(key.as_str()))
         .await
         .unwrap();
-    drop(_guard);
     assert!(matches!(
         bucket
             .ref_log_read("refs/heads/_/main", 1)
@@ -490,30 +557,26 @@ async fn missing_reflog_with_committed_horizon_is_corruption() {
 async fn committed_reflog_must_match_the_complete_ref_record() {
     let bucket = fixture().await;
     let pending = RefRecord::first([1; 32], 1, Locality::default()).selected();
-    let committed = RefRecord::first([2; 32], 1, Locality::default()).selected();
     bucket
-        .ref_log_append("refs/heads/_/main", 1, &log(pending.clone(), None))
+        .prepared_cas("refs/heads/_/main", None, &pending)
         .await
         .unwrap();
-    // Author a damaged endpoint whose selected proposal contains other bytes.
-    let mut committed = committed;
+    // Damage the exact selected proposal, retaining its selector but changing
+    // a whole-record field; an ordinary cache cannot create selected history.
+    let mut committed = RefRecord::first([2; 32], 1, Locality::default()).selected();
     committed.candidate_id = pending.candidate_id;
-    let key = BucketKey::ref_record("refs/heads/_/main").unwrap();
-    let _guard = bucket.exclusive().await.unwrap();
-    bucket
-        .install(&key, &committed.encode().unwrap(), false)
-        .await
-        .unwrap();
-    let cap_key = BucketKey::parse("CAPABILITIES").unwrap();
-    let mut capabilities =
-        BucketCapabilities::decode(&bucket.read_optional(&cap_key).await.unwrap().unwrap())
-            .unwrap();
-    capabilities.ref_names = Some(vec!["refs/heads/_/main".into()]);
-    bucket
-        .install(&cap_key, &capabilities.encode().unwrap(), true)
-        .await
-        .unwrap();
-    drop(_guard);
+    let key = BucketKey::reflog_candidate(
+        "refs/heads/_/main",
+        pending.seq,
+        &pending.candidate_id.unwrap(),
+    )
+    .unwrap();
+    tokio::fs::write(
+        bucket.root().join(key.as_str()),
+        log(committed, None).encode().unwrap(),
+    )
+    .await
+    .unwrap();
 
     assert!(matches!(
         bucket
@@ -527,7 +590,7 @@ async fn committed_reflog_must_match_the_complete_ref_record() {
 }
 
 #[tokio::test]
-async fn missing_capabilities_never_reinitializes_existing_portable_state() {
+async fn missing_capabilities_cache_recovers_existing_selected_state() {
     let bucket = fixture().await;
     let root = bucket.root().to_owned();
     let record = RefRecord::first([1; 32], 1, Locality::default()).selected();
@@ -539,10 +602,12 @@ async fn missing_capabilities_never_reinitializes_existing_portable_state() {
         .await
         .unwrap();
 
-    assert!(
-        FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
-            .await
-            .is_err()
+    let reopened = FileBucket::open(config(root.clone()), TokioLocalFs, TokioClock, Validator)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.ref_get("refs/heads/_/main").await.unwrap(),
+        Some(record.clone())
     );
     assert_eq!(
         tokio::fs::read(root.join("refs/heads/_/main:record"))

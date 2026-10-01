@@ -89,6 +89,8 @@ async fn held_buckets_source_readonly_destination_durable_and_independent_reopen
             .len(),
         1
     );
+    drop(source_adapter);
+    drop(adapter);
     drop(pair);
     let reopened = FileBucket::open(
         config(destination.root().to_owned()),
@@ -208,6 +210,43 @@ async fn held_buckets_cancellation_releases_both_namespace_guards() {
     tokio::fs::remove_dir_all(right.root()).await.unwrap();
 }
 
+#[tokio::test]
+async fn registered_profile_uses_actual_existing_namespace_exclusion() {
+    let bucket = fixture().await;
+    let fs = ObservedFs::new();
+    let configured = config(bucket.root().to_owned())
+        .publication_control
+        .unwrap();
+    let root = bucket.root().to_owned();
+    let held = SingleHeld::acquire(&bucket).await.unwrap();
+    fs.arm();
+    let reading_fs = fs.clone();
+    let profile = tokio::spawn(async move {
+        publication::registered_profile(&reading_fs, &root, &configured).await
+    });
+
+    tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, fs.attempts.acquire())
+        .await
+        .unwrap()
+        .unwrap()
+        .forget();
+    assert_eq!(fs.acquired.available_permits(), 0);
+    assert!(!profile.is_finished());
+
+    drop(held);
+    let profile = tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, profile)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(fs.acquired.available_permits(), 1);
+    assert_eq!(profile, bucket.profile());
+    tokio::fs::remove_dir_all(bucket.root()).await.unwrap();
+    tokio::fs::remove_dir_all(super::tests::control_path(bucket.root()))
+        .await
+        .unwrap();
+}
+
 #[derive(Clone)]
 struct ObservedFs {
     attempts: Arc<tokio::sync::Semaphore>,
@@ -232,6 +271,21 @@ impl ObservedFs {
 #[async_trait::async_trait]
 impl LocalFs for ObservedFs {
     type Lock = crate::store::TokioFileLock;
+
+    fn retain_native_exclusion(
+        &self,
+        held: &Self::Lock,
+    ) -> std::io::Result<crate::store::NativeExclusion> {
+        TokioLocalFs.retain_native_exclusion(held)
+    }
+
+    async fn execute_retained_effect(
+        &self,
+        effect: crate::store::NativeFsEffect,
+    ) -> Result<(), crate::store::NativeEffectFailure> {
+        TokioLocalFs.execute_retained_effect(effect).await
+    }
+
     async fn lock_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
         let observed = self.observe.load(std::sync::atomic::Ordering::SeqCst);
         if observed {
@@ -244,12 +298,38 @@ impl LocalFs for ObservedFs {
         Ok(guard)
     }
 
+    async fn lock_existing_exclusive(&self, path: &Path) -> std::io::Result<Self::Lock> {
+        let observed = self.observe.load(std::sync::atomic::Ordering::SeqCst);
+        if observed {
+            self.attempts.add_permits(1);
+        }
+        let guard = TokioLocalFs.lock_existing_exclusive(path).await?;
+        if observed {
+            self.acquired.add_permits(1);
+        }
+        Ok(guard)
+    }
+
     async fn random_bytes(&self, length: usize) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.random_bytes(length).await
     }
 
     async fn read(&self, path: &Path) -> std::io::Result<Vec<u8>> {
         TokioLocalFs.read(path).await
+    }
+
+    async fn read_nofollow(&self, path: &Path) -> std::io::Result<Vec<u8>> {
+        TokioLocalFs.read_nofollow(path).await
+    }
+
+    async fn set_permissions_and_sync(
+        &self,
+        path: &Path,
+        permissions: std::fs::Permissions,
+    ) -> std::io::Result<()> {
+        TokioLocalFs
+            .set_permissions_and_sync(path, permissions)
+            .await
     }
 
     async fn read_range(
@@ -501,6 +581,8 @@ async fn held_buckets_identity_matches_independently_opened_physical_namespace()
         pair.source().physical_identity(),
         pair.destination().physical_identity()
     );
+    drop(source_adapter);
+    drop(destination_adapter);
     drop(pair);
     exercise_single_namespace(&independent_source, &source).await;
     tokio::fs::remove_dir_all(source.root()).await.unwrap();
@@ -565,6 +647,8 @@ async fn exercise_single_namespace(
     .await
     .unwrap();
     assert!(!writer.is_finished());
+    drop(source);
+    drop(destination);
     drop(held);
     tokio::time::timeout(DURABLE_OPERATION_TIMEOUT, writer)
         .await
@@ -615,9 +699,13 @@ async fn single_held_refuses_legacy_before_coordination_effects() {
     let mut capabilities =
         BucketCapabilities::decode(&TokioLocalFs.read(&capability_path).await.unwrap()).unwrap();
     capabilities.layout_version = 1;
+    capabilities.publication_protocol = None;
     capabilities.ref_names = None;
     let original = capabilities.encode().unwrap();
     tokio::fs::write(&capability_path, &original).await.unwrap();
+    tokio::fs::remove_dir_all(super::tests::control_path(bucket.root()))
+        .await
+        .unwrap();
     tokio::fs::remove_dir_all(bucket.root().join(".terrane-locks"))
         .await
         .unwrap();
