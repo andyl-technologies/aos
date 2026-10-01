@@ -14,6 +14,9 @@ compile_error!("CRATE-7: wasm host futures do not support the send feature");
 mod native_clock;
 #[cfg(feature = "std")]
 mod native_effect;
+
+#[cfg(feature = "std")]
+pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
 #[cfg(all(feature = "std", test))]

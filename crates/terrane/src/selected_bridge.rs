@@ -68,6 +68,7 @@ pub(crate) struct CheckedMutation<'operation, 'held> {
     changes: Vec<LogicalChange>,
     evidence: CheckedEvidence,
     final_check: Box<FinalCheck<'operation>>,
+    effect_context: Option<native_guard::GuardEffectContext>,
 }
 
 /// Distinguishes the privately checked kinds of repository publication.
@@ -80,6 +81,14 @@ enum CheckedEvidence {
 }
 
 impl<'operation, 'held> CheckedMutation<'operation, 'held> {
+    /// Borrows actual owned authority and consumed-control inputs, when retained.
+    ///
+    /// Absence refuses checked physical effects before staging or repair. It
+    /// never permits substituting raw publication for a checked operation.
+    pub(crate) fn effect_context(&self) -> Option<&native_guard::GuardEffectContext> {
+        self.effect_context.as_ref()
+    }
+
     /// Rechecks genuine operation authority immediately before slot dispatch.
     ///
     /// The backend invokes this after every asynchronous staging operation and
