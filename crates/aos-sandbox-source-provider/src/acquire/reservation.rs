@@ -338,30 +338,11 @@ pub(crate) fn reserve_acquire(
             ledger.recovered.catalog.catalog_digest,
         )
     };
-    let attempt = reserved_attempt(
-        projection.provider_authority().clone(),
-        projection.root_mount_authority().clone(),
+    let attempt = crate::transaction::reserved_acquire_attempt(
+        verified,
         root_record_signer,
-        SourceProviderMethod::Acquire,
-        attempt_evidence.request_id(),
-        attempt_evidence.signed_request_digest(),
-        digest_acquire_request(request),
-        normalized_intent.digest(),
-        request.acquisition_sequence(),
-        attempt_evidence.attempt_digest(),
-        projection.session_binding(),
-        request.sequence(),
-        request.deadline_seconds(),
-        projection.verified_at_seconds(),
-        projection.current_valid_until_seconds(),
-        projection.proof_class_capabilities(),
-        projection.supports_recursive(),
-        projection.supports_kernel_coupled(),
-        projection.root_mount_process_instance(),
-        projection.provider_process_instance(),
-        projection.signer_set_commitment(),
+        &normalized_intent,
         ledger.pending_recovery_bridge.as_ref(),
-        attempt_evidence.canonical_signed_request().to_vec(),
     );
     let (mut session, _persist_history) = prepare_session(
         ledger,
@@ -550,36 +531,16 @@ fn reserve_acquire_rebind(
     };
     let projection = verified.ingress_projection();
     let request = verified.request();
-    let attempt_evidence = verified.attempt();
     let superseded_pending_attempt = existing_session.as_ref().and_then(|session| {
         (session.session_binding != projection.session_binding())
             .then_some(session.pending_attempt_digest)
             .flatten()
     });
-    let attempt = reserved_attempt(
-        projection.provider_authority().clone(),
-        projection.root_mount_authority().clone(),
+    let attempt = crate::transaction::reserved_acquire_attempt(
+        verified,
         projection.ordered_signers()[1].clone(),
-        SourceProviderMethod::Acquire,
-        attempt_evidence.request_id(),
-        attempt_evidence.signed_request_digest(),
-        digest_acquire_request(request),
-        normalized_intent.digest(),
-        request.acquisition_sequence(),
-        attempt_evidence.attempt_digest(),
-        projection.session_binding(),
-        request.sequence(),
-        request.deadline_seconds(),
-        projection.verified_at_seconds(),
-        projection.current_valid_until_seconds(),
-        projection.proof_class_capabilities(),
-        projection.supports_recursive(),
-        projection.supports_kernel_coupled(),
-        projection.root_mount_process_instance(),
-        projection.provider_process_instance(),
-        projection.signer_set_commitment(),
+        &normalized_intent,
         ledger.pending_recovery_bridge.as_ref(),
-        attempt_evidence.canonical_signed_request().to_vec(),
     );
     let (session, persist_history) = prepare_session(
         ledger,

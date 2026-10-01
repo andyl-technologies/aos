@@ -34,7 +34,7 @@ use crate::state::ProviderLedgerV1;
 use crate::transaction::{
     authorize_current_reservation, classify_attempt, commit_records, confirm_current_after_commit,
     confirm_current_session_after_commit, preflight_completion_capacity, prepare_session,
-    reserve_session, reserved_attempt, validate_projection, validate_session_capacity,
+    reserve_session, validate_projection, validate_session_capacity,
 };
 use crate::{DurableAcquireRebindPermitV1, DurableAcquireReplayV1, ProviderAdmissionDispositionV1};
 
