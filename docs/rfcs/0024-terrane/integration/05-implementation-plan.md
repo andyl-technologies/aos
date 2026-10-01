@@ -368,6 +368,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   descriptor-range cases, four ordered control-walk cases and four index-policy
   cases. Actual Active-open integration and complete native qualification
   remain pending; fresh and Pending activation remain separate work.
+  The five-file existing-Active candidate has completed source review and
+  genuine task rebase onto the shared hooks. It classifies exact registration
+  under the existing exclusion, retains its actual descriptor before repair,
+  dispatches fixed present-key create-new and descriptor-bound range probes,
+  and refuses an eligible successor with a stale whole CAPABILITIES preimage
+  before staging. Its eight actual startup cases await native execution on
+  the assembled source. Full fresh/Pending retention remains incomplete.
   The verify-on-get, ranged-get and file-CAS gates now require the appropriate
   exact held-content selectors and reject missing tests. Complete effect routing
   remains pending.
@@ -443,7 +450,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the nine owned source files checks the genuine producer, exact whole lease
   and preserved successor, consumed registration controls, retained clock and
   cancellation durability. A final retained clock check before receipt
-  acknowledgment is being added. Rustdoc, no-default-feature compilation and
+  acknowledgment has been added. Its separate actual regression fails before
+  the correction and passes afterward: the lease remains selected, but the
+  expired clock prevents a success receipt. Corrected Rc and formatting checks
+  are still running on their existing session. Earlier rustdoc,
+  no-default-feature compilation and
   mandatory formatting pass; strict Clippy remains blocked by 22 inherited
   unfinished-production diagnostics. Native source integration, runner-wide
   lease fencing and complete gate qualification remain pending.
