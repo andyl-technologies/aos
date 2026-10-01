@@ -655,8 +655,10 @@ in {
       artifactOwner = path: name: let
         owners = provenance.dependencyOwnersOfAttr path name;
       in
-        if path == ["environment" "etc"] && name == "profile"
-        then sharedArtifactOwner "environment.etc.profile" (owners ++ systemPackageOwners)
+        # Both login PATH files embed the resolved system package paths.
+        if path == ["environment" "etc"]
+          && builtins.elem name ["profile" "profile.d/10-apm-path.sh"]
+        then sharedArtifactOwner "environment.etc.${name}" (owners ++ systemPackageOwners)
         else if path == ["environment" "etc"] && name == "pam/environment"
         then sharedArtifactOwner "environment.etc.pam/environment" (owners ++ systemPackageOwners ++ sessionVariableOwners)
         else if builtins.length owners == 1
@@ -998,6 +1000,7 @@ in {
     environment.systemPackages = [
       pkgs.bash
       pkgs.coreutils
+      pkgs.glibc-tools
       pkgs.findutils
       pkgs.grep
       pkgs.sed

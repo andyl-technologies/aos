@@ -282,7 +282,9 @@ pub async fn run(
         Err(e) => printer.warning(&format!("could not prune orphaned overlays: {e}")),
     }
 
-    if nudge_system && !json_mode {
+    // Containers intentionally inherit their system-provisioned registry into
+    // user scope; recommending --system would suggest an unavailable operation.
+    if nudge_system && !json_mode && !crate::runtime_boundary::is_container() {
         printer.warning(
             "Synced a system registry into the root user's tree; \
              pass --system to update /var/lib/apm with state in /etc/apm.",

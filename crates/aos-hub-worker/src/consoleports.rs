@@ -1256,11 +1256,16 @@ impl WorkerReindexer {
             placement,
         }
     }
-}
 
-#[async_trait(?Send)]
-impl Reindexer for WorkerReindexer {
-    async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>> {
+    /// Indexes the captured placement while preserving deferred outcomes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when placement resolution, verification, or persistence fails.
+    pub(crate) async fn index(
+        &self,
+        registry: &RegistryRecord,
+    ) -> Result<aos_hub_core::indexer::IndexOutcome> {
         // Resolve the exact placement captured before the generation claim —
         // the hub R2 bucket by prefix, or its external S3/R2 binding — then run
         // the shared single-registry index.
@@ -1271,13 +1276,20 @@ impl Reindexer for WorkerReindexer {
             Arc::clone(&self.egress),
         );
         let fetch = provider.placement_fetcher(&self.placement).await?;
-        let outcome = aos_hub_core::indexer::index_and_record_from_placement(
+        aos_hub_core::indexer::index_and_record_from_placement(
             &self.db,
             fetch.as_ref(),
             registry,
             Some(self.placement.id),
         )
-        .await?;
+        .await
+    }
+}
+
+#[async_trait(?Send)]
+impl Reindexer for WorkerReindexer {
+    async fn reindex(&self, registry: &RegistryRecord) -> Result<Option<String>> {
+        let outcome = self.index(registry).await?;
         // Return the indexed commit (when the run wasn't an empty/pending no-op)
         // so the caller can cross-reference the indexed revision in audit state.
         Ok((!outcome.commit.is_empty()).then(|| outcome.commit))

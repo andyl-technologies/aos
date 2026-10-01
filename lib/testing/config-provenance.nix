@@ -172,8 +172,10 @@
 in
   assert manifest.ownership.etc."systemd/network/20-host.network" == "@host";
   assert manifest.ownership.etc.profile == "@base";
+  assert manifest.ownership.etc."profile.d/10-apm-path.sh" == "@base";
   assert manifest.ownership.etc."pam/environment" == "@base";
   assert hostComposedManifest.ownership.etc.profile == "@host";
+  assert hostComposedManifest.ownership.etc."profile.d/10-apm-path.sh" == "@host";
   assert hostComposedManifest.ownership.etc."pam/environment" == "@host";
   assert hostComposedManifest.ownership.storePaths.${testAgentPath} == "@host";
   assert hostSessionManifest.ownership.etc.profile == "@base";

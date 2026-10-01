@@ -627,6 +627,7 @@ let
     "getent"
     "glusterfs-client"
     "glibc"
+    "glibc-tools"
     "gperftools"
     "hdparm"
     # The complete iperf3 build retains SCTP through Linux lksctp-tools.
