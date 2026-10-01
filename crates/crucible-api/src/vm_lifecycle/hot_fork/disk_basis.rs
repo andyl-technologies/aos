@@ -10,9 +10,6 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crucible::ContentHash;
-use crucible_qemu::{
-    QmpHotForkBlockSealRequest, QmpHotForkBlockSealState, QmpHotForkBlockSnapshotBinding,
-};
 
 use super::hot_fork_boundary_error;
 use crucible::SchedulerError;
@@ -101,20 +98,32 @@ impl ProductionVmHotForkDiskBasis {
     }
 }
 
+/// Identity copied only from an authenticated seal by the native adapter.
+pub(super) struct NativeDiskSealIdentity {
+    pub(super) source_pid: i64,
+    pub(super) generation: u64,
+    pub(super) backend_id: u64,
+    pub(super) snapshot_identity: (u64, u64),
+}
+
 /// Original open inodes retained by the prepared source world.
-pub(super) struct ProductionVmHotForkDiskCustody {
+pub(super) struct PinnedHotForkDiskFiles {
     basis: ProductionVmHotForkDiskBasis,
-    request: QmpHotForkBlockSealRequest,
     snapshot: File,
     boot: File,
     vmstate: File,
     detached: File,
 }
 
-impl ProductionVmHotForkDiskCustody {
+impl PinnedHotForkDiskFiles {
+    /// Authenticates the original files against the native seal and boot asset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when inode custody, file contents, or the admitted boot
+    /// image differs, or when a file changes while it is being hashed.
     pub(super) fn capture(
-        receipt: &QmpHotForkBlockSealState,
-        request: &QmpHotForkBlockSealRequest,
+        seal: NativeDiskSealIdentity,
         snapshot: (File, &Path),
         boot: (File, &Path),
         expected_boot: ContentHash,
@@ -126,19 +135,11 @@ impl ProductionVmHotForkDiskCustody {
         let (vmstate, vmstate_path) = vmstate;
         let (detached, detached_path) = detached;
 
-        if !receipt.seals(std::slice::from_ref(request))
-            || request.candidate().file_path() != snapshot_path
-        {
-            return Err(hot_fork_boundary_error(
-                "native block seal differs from the retained current root",
-            ));
-        }
-
         let (snapshot_identity, snapshot_content) =
             hash_owned_file(&snapshot, snapshot_path, "sealed current root")?;
-        if snapshot_identity != request.candidate().file_identity() {
+        if snapshot_identity != seal.snapshot_identity {
             return Err(hot_fork_boundary_error(
-                "sealed root inode differs from QEMU's open current file",
+                "sealed root inode differs from the native open current file",
             ));
         }
         let (boot_identity, boot_content) =
@@ -155,9 +156,9 @@ impl ProductionVmHotForkDiskCustody {
         let (detached_identity, detached_content) =
             hash_owned_file(&detached, detached_path, "new empty root overlay")?;
         let basis = ProductionVmHotForkDiskBasis {
-            source_pid: receipt.qemu_pid(),
-            seal_generation: receipt.receipt_generation(),
-            backend_id: request.candidate().backend_id(),
+            source_pid: seal.source_pid,
+            seal_generation: seal.generation,
+            backend_id: seal.backend_id,
             snapshot_path: snapshot_path.to_owned(),
             snapshot_identity,
             snapshot_content,
@@ -173,7 +174,6 @@ impl ProductionVmHotForkDiskCustody {
         };
         Ok(Self {
             basis,
-            request: request.clone(),
             snapshot,
             boot,
             vmstate,
@@ -181,16 +181,17 @@ impl ProductionVmHotForkDiskCustody {
         })
     }
 
+    /// Returns the independently authenticated continuation disk basis.
     pub(super) fn basis(&self) -> &ProductionVmHotForkDiskBasis {
         &self.basis
     }
 
-    pub(super) fn native_current(&self, state: &QmpHotForkBlockSealState) -> bool {
-        state.qemu_pid() == self.basis.source_pid
-            && state.receipt_generation() == self.basis.seal_generation
-            && state.seals(std::slice::from_ref(&self.request))
-    }
-
+    /// Rechecks immutable bytes and all retained file identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an original file cannot be inspected or changes
+    /// during full content authentication.
     pub(super) fn current(&self) -> Result<bool, SchedulerError> {
         let immutable = [
             (
@@ -220,22 +221,6 @@ impl ProductionVmHotForkDiskCustody {
             &self.basis.detached_path,
             self.basis.detached_identity,
         )?)
-    }
-
-    pub(super) fn snapshot_binding(
-        &self,
-        request: &QmpHotForkBlockSealRequest,
-    ) -> Result<QmpHotForkBlockSnapshotBinding, SchedulerError> {
-        QmpHotForkBlockSnapshotBinding::new(
-            request.candidate().backend_id(),
-            request.candidate().backend_name(),
-            request.overlay_node_name(),
-            request.candidate().root_node_name(),
-            blake3::Hash::from_bytes(self.basis.snapshot_content.bytes),
-        )
-        .map_err(|error| {
-            hot_fork_boundary_error(format!("bind sealed current root to template: {error}",))
-        })
     }
 }
 
