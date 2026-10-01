@@ -1240,6 +1240,34 @@ impl QemuPreparedRunDirectory {
         validate_guarded_launch_requirements(self.launch_resources, contract)?;
         self.revalidate_identity().map(|_| ())
     }
+
+    pub(super) fn validate_retained_source_helper_basis(
+        &self,
+        contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        // A live source already owns its initialized root. Keep the original
+        // attempt authority while refusing incomplete or replaced launch files.
+        if self.admitted_ceiling != contract.admitted_resource_ceiling()
+            || !Arc::ptr_eq(&self.attempt_binding, &contract.attempt_binding)
+            || self.exact_device_state_materialization
+                == PreparedDeviceStateMaterialization::Updating
+            || !self.launch_resources.has_root_overlay()
+            || matches!(
+                self.root_overlay_materialization,
+                PreparedRootOverlayMaterialization::Absent
+                    | PreparedRootOverlayMaterialization::Updating
+            )
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        validate_guarded_launch_requirements(self.launch_resources, contract)?;
+        let vmstate = self.revalidate_identity()?;
+        let root = self.revalidate_root_overlay_identity()?;
+        if vmstate.st_size <= 0 || root.st_size <= 0 {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        Ok(())
+    }
 }
 
 fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, QemuSpawnError> {

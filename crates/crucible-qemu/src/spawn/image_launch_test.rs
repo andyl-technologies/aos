@@ -3,6 +3,118 @@
 use super::*;
 
 #[test]
+fn retained_source_helper_preserves_original_attempt_and_ready_file_authority()
+-> Result<(), Box<dyn Error>> {
+    let command = guarded_resource_test_command()?;
+    let (cgroup_read, cgroup_write) = pipe_pair()?;
+    let cancellation = event_fd_for_test()?;
+    let contract =
+        QemuChildProcessContract::for_test(cgroup_write, cancellation, current_file_size_limit()?);
+    let directory = tempfile::tempdir()?;
+    let vmstate_path = directory.path().join(crate::DEFAULT_VMSTATE_FILE_NAME);
+    let root_path = directory.path().join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
+    std::fs::write(&vmstate_path, b"initialized VMState container")?;
+    std::fs::write(&root_path, b"initialized source root")?;
+    let mut prepared = QemuPreparedRunDirectory::open_for_test_requirements(
+        command.resource_requirements(),
+        directory.path(),
+        &contract,
+    )?;
+    let executable = env::current_exe()?;
+    let args = [
+        std::ffi::OsString::from("--exact"),
+        std::ffi::OsString::from("spawn::tests::pre_exec_vmstate_name_matches_the_launch_contract"),
+    ];
+
+    let fresh = run_guarded_image_tool_for_purpose(
+        &executable,
+        &args,
+        "reject fresh helper on retained source",
+        &prepared,
+        &contract,
+        GuardedImageToolPurpose::FreshLaunch,
+    );
+    assert!(matches!(
+        fresh,
+        Err(QemuGuardedImagePreparationError {
+            source: QemuSpawnError::PreparedLaunchAdmissionChanged,
+            child: None,
+        })
+    ));
+    run_guarded_image_tool_for_purpose(
+        &executable,
+        &args,
+        "run retained source helper",
+        &prepared,
+        &contract,
+        GuardedImageToolPurpose::RetainedHotForkSource,
+    )?;
+    let mut placement = [0_u8; 2];
+    std::fs::File::from(cgroup_read).read_exact(&mut placement)?;
+    assert_eq!(&placement, CGROUP_ATTACH_SELF);
+
+    let foreign = QemuChildProcessContract::for_test(
+        contract.cgroup_procs.try_clone()?,
+        contract.cancellation_event.try_clone()?,
+        current_file_size_limit()?,
+    );
+    assert_eq!(
+        contract.admitted_resource_ceiling(),
+        foreign.admitted_resource_ceiling()
+    );
+    assert!(matches!(
+        prepared.validate_retained_source_helper_basis(&foreign),
+        Err(QemuSpawnError::PreparedLaunchAdmissionChanged)
+    ));
+
+    for state in [
+        materialization::PreparedRootOverlayMaterialization::Absent,
+        materialization::PreparedRootOverlayMaterialization::Updating,
+    ] {
+        prepared.root_overlay_materialization = state;
+        assert!(
+            prepared
+                .validate_retained_source_helper_basis(&contract)
+                .is_err()
+        );
+    }
+    prepared.root_overlay_materialization =
+        materialization::PreparedRootOverlayMaterialization::Provisioned;
+    prepared.exact_device_state_materialization =
+        materialization::PreparedDeviceStateMaterialization::Updating;
+    assert!(
+        prepared
+            .validate_retained_source_helper_basis(&contract)
+            .is_err()
+    );
+    prepared.exact_device_state_materialization =
+        materialization::PreparedDeviceStateMaterialization::Provisioned;
+
+    std::fs::write(&root_path, b"")?;
+    assert!(
+        prepared
+            .validate_retained_source_helper_basis(&contract)
+            .is_err()
+    );
+    std::fs::write(&root_path, b"initialized source root")?;
+    std::fs::rename(&root_path, directory.path().join("original-root"))?;
+    std::fs::write(&root_path, b"replacement root")?;
+    assert!(matches!(
+        prepared.validate_retained_source_helper_basis(&contract),
+        Err(QemuSpawnError::PreparedRootOverlayChanged { .. })
+    ));
+    std::fs::remove_file(&root_path)?;
+    std::fs::rename(directory.path().join("original-root"), &root_path)?;
+    std::fs::rename(&vmstate_path, directory.path().join("original-vmstate"))?;
+    std::fs::write(&vmstate_path, b"replacement VMState")?;
+    assert!(matches!(
+        prepared.validate_retained_source_helper_basis(&contract),
+        Err(QemuSpawnError::PreparedDeviceStateChanged { .. })
+    ));
+    Ok(())
+}
+
+#[test]
 fn guarded_absolute_overlay_is_bound_to_its_exact_generation() -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
     let directory = Path::new("/pinned/generation");

@@ -121,7 +121,8 @@ impl QemuPreparedRunDirectory {
                 source: io::Error::new(io::ErrorKind::InvalidInput, "invalid root or size"),
             }));
         }
-        self.validate_helper_basis(process_contract).map_err(fail)?;
+        self.validate_retained_source_helper_basis(process_contract)
+            .map_err(fail)?;
         let image_tool = qemu_executable.with_file_name("qemu-img");
         if !image_tool.is_absolute() {
             return Err(fail(QemuSpawnError::FreshImageToolPath {
@@ -173,12 +174,13 @@ impl QemuPreparedRunDirectory {
             OsString::from(&file_name),
             OsString::from(format!("{virtual_size}B")),
         ];
-        crate::spawn::run_guarded_image_tool(
+        crate::spawn::run_guarded_image_tool_for_purpose(
             &image_tool,
             &args,
             "create detached hot-fork root overlay",
             self,
             process_contract,
+            crate::spawn::GuardedImageToolPurpose::RetainedHotForkSource,
         )?;
 
         let named = openat(
