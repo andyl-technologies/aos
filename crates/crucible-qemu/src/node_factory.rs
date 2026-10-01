@@ -51,6 +51,10 @@ impl<S> QemuQmpMachineControlChannel for QemuQmpExactSnapshotControlChannel<S>
 where
     S: QmpTimeoutStream,
 {
+    fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
+        self.vmstate.is_paused_for_hot_fork_template()
+    }
+
     fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
         self.vmstate.stop_for_checkpoint()
     }

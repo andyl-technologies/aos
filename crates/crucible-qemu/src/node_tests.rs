@@ -1510,27 +1510,74 @@ pub(crate) fn node_set_hot_fork_source(
     fail_during_preparation: bool,
 ) -> Result<QemuNode, Box<dyn Error>> {
     if !fail_during_preparation {
-        return Ok(
-            super::test_support::hot_fork::scripted_hot_fork_source_for_test(
-                super::test_support::hot_fork::QemuTestHotForkOutcome::Forked,
-            )?,
-        );
+        let mut node = super::test_support::hot_fork::scripted_hot_fork_source_for_test(
+            super::test_support::hot_fork::QemuTestHotForkOutcome::Forked,
+        )?;
+        node.synchronize_observed_time()?;
+        return Ok(node);
     }
+    node_set_failing_hot_fork_source_with_log(shared_log())
+}
+
+#[cfg(target_os = "linux")]
+fn node_set_failing_hot_fork_source_with_log(log: SharedLog) -> Result<QemuNode, Box<dyn Error>> {
     let (setup_identity, host_barrier, image) = held_hot_fork_ring_image()?;
     let barrier = crate::QmpHotForkPluginBarrierState::one_quiescent(15, host_barrier.ring_count());
-    scripted_hot_fork_capture_node(
-        shared_log(),
+    let mut node = scripted_hot_fork_capture_node(
+        log,
         setup_identity,
         setup_identity,
         host_barrier,
         image,
         [barrier; 8],
-        if fail_during_preparation {
-            DescriptorScript::PreparationRequestBasisMismatch
-        } else {
-            DescriptorScript::Success
-        },
-    )
+        DescriptorScript::PreparationRequestBasisMismatch,
+    )?;
+    node.synchronize_observed_time()?;
+    Ok(node)
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_template_preparation_keeps_the_exactly_stopped_source_owned() -> Result<(), Box<dyn Error>>
+{
+    let log = shared_log();
+    let node_id = node_id("vm-a");
+    let mut nodes = QemuNodeSet::new();
+    nodes.insert(
+        node_id.clone(),
+        node_set_failing_hot_fork_source_with_log(Arc::clone(&log))?,
+    );
+    let source_process = nodes.process_identity(&node_id)?;
+    log.lock().unwrap().clear();
+
+    let error = nodes
+        .prepare_retained_hot_fork_template(
+            &node_id,
+            ContentHash::from_bytes(b"stopped-preparation-refusal"),
+            EventLog::new(),
+            crate::QemuLaunchResourceRequirements::from_vm_shape(128, 1, true),
+            &[],
+            64 * 1024 * 1024,
+        )
+        .expect_err("mismatched QMP preparation response must refuse the template");
+    assert!(
+        error
+            .to_string()
+            .contains("prepare retained hot-fork template")
+    );
+    assert_eq!(nodes.process_identity(&node_id)?, source_process);
+    assert!(nodes.abort_retained_hot_fork_template(&node_id, None)?);
+
+    let calls = recorded(&log);
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| *call == &ChannelCall::QmpStop)
+            .count(),
+        1
+    );
+    assert!(!calls.contains(&ChannelCall::QmpContinue));
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]

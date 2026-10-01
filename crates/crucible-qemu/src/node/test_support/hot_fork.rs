@@ -207,6 +207,7 @@ struct ScriptedQmpMachineControl {
     retained_children: BTreeMap<u64, ScriptedRetainedChild>,
     next_process_contract_generation: u64,
     next_child_files_generation: u64,
+    paused: bool,
     aborted: bool,
     outcome: QemuTestHotForkOutcome,
 }
@@ -315,6 +316,7 @@ pub fn scripted_hot_fork_source_with_script_for_test(
             retained_children: BTreeMap::new(),
             next_process_contract_generation: PROCESS_CONTRACT_GENERATION,
             next_child_files_generation: CHILD_FILES_GENERATION,
+            paused: false,
             aborted: false,
             outcome,
         },
@@ -834,6 +836,10 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
 }
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
+        Ok(self.paused)
+    }
+
     #[cfg(unix)]
     fn install_exact_checkpoint_descriptor(
         &mut self,
@@ -885,10 +891,18 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
     }
 
     fn stop_for_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        if self.paused {
+            return Err(QemuNodeChannelError::new(
+                "stop for checkpoint",
+                "a stopped scripted source cannot publish another execution pause",
+            ));
+        }
+        self.paused = true;
         Ok(())
     }
 
     fn resume_after_checkpoint(&mut self) -> Result<(), QemuNodeChannelError> {
+        self.paused = false;
         Ok(())
     }
 

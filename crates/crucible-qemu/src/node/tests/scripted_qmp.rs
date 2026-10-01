@@ -3,6 +3,10 @@
 use super::*;
 
 impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
+    fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
+        Ok(false)
+    }
+
     fn query_hot_fork_child_runtime(
         &mut self,
     ) -> Result<crate::QmpHotForkChildRuntimeState, QemuNodeChannelError> {
