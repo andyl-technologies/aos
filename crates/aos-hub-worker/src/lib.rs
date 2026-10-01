@@ -1424,6 +1424,11 @@ mod entry {
         }
 
         #[cfg(feature = "do-e2e")]
+        if req.method() == Method::Post && req.url()?.path() == "/_e2e/external-copy-stream" {
+            return crate::external_object::copy_conformance_fetch(req).await;
+        }
+
+        #[cfg(feature = "do-e2e")]
         if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-guard" {
             return crate::direct_guard::conformance_fetch(req, &env).await;
         }

@@ -8,12 +8,16 @@
 //! No domain is enabled by this module or by its local fault fixture.
 
 mod config;
+mod copy;
 mod delete_config;
 mod deletion;
 mod observation;
 mod protocol;
 mod stage;
 mod state;
+
+#[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
+pub(crate) use copy::conformance_fetch as copy_conformance_fetch;
 
 #[cfg(target_arch = "wasm32")]
 mod executor;
