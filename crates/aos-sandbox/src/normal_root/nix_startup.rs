@@ -29,6 +29,7 @@ use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
 use crate::immutable_image::{RetainedImmutableFileV1, require_readonly_launch_flags};
+use crate::systemd_property_data;
 
 use super::{NormalRootStartupErrorV1 as Error, images, profile::ImagePinV1, service, startup};
 
@@ -492,13 +493,12 @@ fn decode_delivery(properties: &[OwnedValue], unit: &[OwnedValue], role: Role, p
     let [cgroup, files, extras, maximum, stored, context, bounding, ambient, nnp] = properties else {
         return Err(Error::Service);
     };
-    let Value::Structure(context) = &**context else { return Err(Error::Service); };
-    let [Value::Bool(false), Value::Str(context)] = context.fields() else { return Err(Error::Service); };
+    let context = systemd_property_data::explicit_context(context).ok_or(Error::Service)?;
     let Value::Array(files) = &**files else { return Err(Error::Service); };
     let Value::Array(extras) = &**extras else { return Err(Error::Service); };
     let cgroup_path = format!("/{}", role.cgroup());
     if <&str>::try_from(cgroup).ok() != Some(cgroup_path.as_str())
-        || context.as_str() != role.context()
+        || context != role.context()
         || u64::try_from(bounding).ok() != Some(role.capabilities())
         || u64::try_from(ambient).ok() != Some(0)
         || bool::try_from(nnp).ok() != Some(true)

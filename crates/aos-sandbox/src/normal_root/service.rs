@@ -8,6 +8,8 @@ use std::time::Duration;
 
 use aos_systemd::{OwnedValue, SystemdClient, Value};
 
+use crate::systemd_property_data;
+
 use super::{
     NormalRootStartupErrorV1, PID1_FD_NAME, PROFILE_FD_NAME,
     profile::{CONTEXT, UNIT},
@@ -95,33 +97,15 @@ pub(super) fn require_peer_launch(
             return Err(NormalRootStartupErrorV1::Service);
         }
     }
-    let Value::Array(commands) = &**start else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    let [Value::Structure(command)] = commands.inner() else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    let [
-        Value::Str(path),
-        Value::Array(argv),
-        Value::Bool(false),
-        Value::U64(_),
-        Value::U64(_),
-        Value::U64(_),
-        Value::U64(_),
-        Value::U32(command_pid),
-        Value::I32(_),
-        Value::I32(_),
-    ] = command.fields()
-    else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
+    let command = systemd_property_data::single_exec_start(start)
+        .ok_or(NormalRootStartupErrorV1::Service)?;
+
     let expected = std::iter::once(profile.executable.path.clone())
         .chain(profile.identities.map(|identity| identity.to_string()))
         .collect::<Vec<_>>();
-    if path.as_str() != profile.executable.path || *command_pid != pid
-        || argv.len() != expected.len()
-        || argv.inner().iter().zip(&expected).any(|(actual, expected)| {
+    if command.path != profile.executable.path || command.pid != pid
+        || command.argv.len() != expected.len()
+        || command.argv.iter().zip(&expected).any(|(actual, expected)| {
             !matches!(actual, Value::Str(actual) if actual.as_str() == expected)
         })
     {
@@ -200,15 +184,11 @@ pub(super) fn decode(
     else {
         return Err(NormalRootStartupErrorV1::Service);
     };
-    let Value::Structure(context) = &**context else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
-    let [Value::Bool(false), Value::Str(context)] = context.fields() else {
-        return Err(NormalRootStartupErrorV1::Service);
-    };
+    let context = systemd_property_data::explicit_context(context)
+        .ok_or(NormalRootStartupErrorV1::Service)?;
     let expected_cgroup = format!("/system.slice/{UNIT}");
     if <&str>::try_from(cgroup).ok() != Some(expected_cgroup.as_str())
-        || context.as_str() != CONTEXT
+        || context != CONTEXT
         || u64::try_from(bounding).ok() != Some(0)
         || u64::try_from(ambient).ok() != Some(0)
         || bool::try_from(nnp).ok() != Some(true)
@@ -241,13 +221,8 @@ pub(super) fn decode_unit(
     {
         return Err(NormalRootStartupErrorV1::Service);
     }
-    let mut id = [0; 16];
-    for (slot, value) in id.iter_mut().zip(invocation.inner()) {
-        *slot = u8::try_from(value).map_err(|_| NormalRootStartupErrorV1::Service)?;
-    }
-    if id == [0; 16] {
-        return Err(NormalRootStartupErrorV1::Service);
-    }
+    let id = systemd_property_data::nonzero_invocation_bytes(invocation.inner())
+        .ok_or(NormalRootStartupErrorV1::Service)?;
     let fragment = <&str>::try_from(fragment).map_err(|_| NormalRootStartupErrorV1::Service)?;
     if fragment.len() > 1024
         || !fragment.starts_with('/')

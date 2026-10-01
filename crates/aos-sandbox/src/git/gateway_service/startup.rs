@@ -29,6 +29,7 @@ use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 use crate::immutable_image::RetainedImmutableFileV1;
+use crate::systemd_property_data;
 
 use super::GitGatewayServiceErrorV1 as Error;
 
@@ -327,16 +328,8 @@ fn decode_delivery(
     let Value::Array(invocation) = &**invocation else {
         return Err(Error::Service);
     };
-    if invocation.len() != 16 {
-        return Err(Error::Service);
-    }
-    let mut id = [0; 16];
-    for (destination, value) in id.iter_mut().zip(invocation.inner()) {
-        *destination = u8::try_from(value).map_err(|_| Error::Service)?;
-    }
-    if id == [0; 16] {
-        return Err(Error::Service);
-    }
+    let id = systemd_property_data::nonzero_invocation_bytes(invocation.inner())
+        .ok_or(Error::Service)?;
 
     let fragment = std::fs::canonicalize(path).map_err(|_| Error::Image)?;
     if !fragment.starts_with("/nix/store") || !fragment.ends_with(UNIT) {
@@ -430,9 +423,7 @@ fn empty_array(value: &OwnedValue) -> bool {
 }
 
 fn exact_context(value: &OwnedValue) -> bool {
-    matches!(&**value, Value::Structure(value)
-        if matches!(value.fields(), [Value::Bool(false), Value::Str(context)]
-            if context.as_str() == CONTEXT))
+    systemd_property_data::explicit_context(value) == Some(CONTEXT)
 }
 
 fn exact_address_families(value: &OwnedValue) -> bool {
@@ -460,21 +451,12 @@ fn exact_address_families(value: &OwnedValue) -> bool {
 }
 
 fn exact_command(value: &OwnedValue, arguments: &[String; 5], pid: u32) -> bool {
-    let Value::Array(commands) = &**value else {
+    let Some(command) = systemd_property_data::single_exec_start(value) else {
         return false;
     };
-    let [Value::Structure(command)] = commands.inner() else {
-        return false;
-    };
-    let [
-        Value::Str(path), Value::Array(argv), Value::Bool(false),
-        Value::U64(_), Value::U64(_), Value::U64(_), Value::U64(_),
-        Value::U32(command_pid), Value::I32(_), Value::I32(_),
-    ] = command.fields() else {
-        return false;
-    };
-    path.as_str() == arguments[0] && *command_pid == pid && argv.len() == arguments.len()
-        && argv.inner().iter().zip(arguments).all(|(value, expected)| {
+
+    command.path == arguments[0] && command.pid == pid && command.argv.len() == arguments.len()
+        && command.argv.iter().zip(arguments).all(|(value, expected)| {
             matches!(value, Value::Str(value) if value.as_str() == expected)
         })
 }
