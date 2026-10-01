@@ -6,7 +6,9 @@
 //! unsafe parent or leaf metadata is rejected before reading any record body.
 
 use super::{StoreErrorKind, StoreFailure};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(all(feature = "tokio", unix))]
+use std::path::PathBuf;
 
 /// Carries a fixed read-only protected-record recipe derived by the backend.
 ///
@@ -14,8 +16,11 @@ use std::path::{Path, PathBuf};
 /// validation with a callback. The recipe establishes neither exclusion nor
 /// selected-state authority; its caller retains the complete resolver fences.
 pub struct NativeProtectedRead {
+    #[cfg(all(feature = "tokio", unix))]
     path: PathBuf,
+    #[cfg(all(feature = "tokio", unix))]
     parents: Vec<PathBuf>,
+    #[cfg(all(feature = "tokio", unix))]
     owner: u32,
 }
 
@@ -29,6 +34,7 @@ pub struct NativeProtectedRecord {
 
 impl NativeProtectedRead {
     /// Derives every ordered duplicate from an already registered control key.
+    #[cfg(all(feature = "tokio", unix))]
     pub(crate) fn for_record(control: &Path, key: &str, owner: u32) -> Self {
         let mut parent = control.to_owned();
         let mut parents = Vec::new();
@@ -45,6 +51,14 @@ impl NativeProtectedRead {
             parents,
             owner,
         }
+    }
+
+    /// Names the unavailable optional recipe without retaining unused native data.
+    ///
+    /// Bindings without native execution keep the complete scalar read path.
+    #[cfg(not(all(feature = "tokio", unix)))]
+    pub(crate) fn for_record(_control: &Path, _key: &str, _owner: u32) -> Self {
+        Self {}
     }
 
     /// Executes every fixed observation and body read on the current worker.
