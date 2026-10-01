@@ -81,8 +81,8 @@ pub use managed::{
     UploadRequest, UploadSource,
 };
 pub use multipart::{
-    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
-    MultipartSource, MultipartUploadRequest, MultipartUploadResult,
+    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionMissing,
+    MultipartSessionState, MultipartSource, MultipartUploadRequest, MultipartUploadResult,
 };
 pub use pool::{ConnectionPool, PoolConfig};
 pub use progress::{

@@ -3,7 +3,7 @@ name = "aos-release-signer"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-description = "File-backed release signing adapter for the aos release signer-exchange protocol"
+description = "File-backed release signing adapter for the aos maintain release signer-exchange protocol"
 
 [[bin]]
 name = "aos-release-signer"

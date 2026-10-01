@@ -7,7 +7,7 @@
 //!
 //! What gets fetched is selected by the registry's [`TrackingMode`]: a
 //! pinned commit, a branch head, a specific tag, the best tag matching a
-//! semver constraint, the remote default branch, or a *channel*. Channel
+//! semver constraint, the remote default channel, or an explicit channel. Channel
 //! tracking is the production rollout path: the host's partition object is
 //! fetched from the static origin, its signed channel-tag -> release-tag
 //! chain is verified, and freshness/monotonic-floor rules guard against
@@ -30,6 +30,7 @@ use futures_util::{StreamExt, stream};
 
 use crate::download::join_cache_url;
 use crate::provenance::{self, PACKAGE_PROVENANCE_TRANSPARENCY_LOG};
+use crate::registry::transport::{RegistryRead, RegistryTransport};
 use crate::registry::{channel, fetch, keys, repo, tuf, verify};
 use crate::security::{self, KeyStore, TrustedKey, key_fingerprint};
 use crate::types::{
@@ -189,6 +190,23 @@ pub(crate) async fn sync_git_with_continuity(
         preflight_git_native_http_origin(&client, &git_url).await?;
     }
     ensure_repo(&repo_dir, &git_url).await?;
+    // HEAD identifies a channel; its frontier commit supplies trust metadata,
+    // while package contents are selected only by the signed partition chain.
+    let implicit_default = matches!(tracking_mode, TrackingMode::Default);
+    let effective_tracking = if implicit_default {
+        let channel = match state.default_channel.as_ref() {
+            Some(channel) => {
+                crate::types::validate_channel_name(channel)
+                    .context("persisted default registry channel is invalid")?;
+                channel.clone()
+            }
+            None => discover_default_channel(&repo_dir, &git_url, &client).await?,
+        };
+        TrackingMode::Channel(channel)
+    } else {
+        tracking_mode.clone()
+    };
+    let tracking_mode = &effective_tracking;
     let previous_selected_commit = state.last_commit.clone();
     let previous_floor = state.floor.clone();
     let mut retained_before = fetch::parse_retained(&state.retained)?;
@@ -506,6 +524,15 @@ pub(crate) async fn sync_git_with_continuity(
         }
     }
     state.last_commit = Some(new_commit.clone());
+    state.selected_channel = match tracking_mode {
+        TrackingMode::Channel(channel) => Some(channel.clone()),
+        _ => None,
+    };
+    state.default_channel = if implicit_default {
+        state.selected_channel.clone()
+    } else {
+        None
+    };
     if enforcing {
         state.last_roster_commit = Some(roster_commit);
     }
@@ -788,6 +815,47 @@ fn is_plain_http_url(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
+/// Discovers symbolic HEAD without treating its commit as a selected release.
+async fn discover_default_channel(
+    repo_dir: &Path,
+    origin: &str,
+    client: &reqwest::Client,
+) -> Result<String> {
+    if !origin.starts_with("git://") && !origin.starts_with("ssh://") {
+        let engine = std::sync::Arc::new(aos_net::TransferEngine::with_http_client(
+            aos_net::TransferEngineConfig::default(),
+            client.clone(),
+        ));
+        return RegistryTransport::new(origin)?
+            .with_engine(engine)
+            .default_channel()
+            .await;
+    }
+
+    let repo_dir = repo_dir.to_path_buf();
+    let origin = origin.to_string();
+    tokio::task::spawn_blocking(move || {
+        let repository = git2::Repository::open_bare(&repo_dir)?;
+        let mut remote = repository.remote_anonymous(&origin)?;
+        let mut callbacks = git2::RemoteCallbacks::new();
+        callbacks.credentials(repo::credentials);
+        let connection = remote.connect_auth(git2::Direction::Fetch, Some(callbacks), None)?;
+        let reference = connection
+            .list()?
+            .iter()
+            .find(|reference| reference.name() == "HEAD")
+            .context("registry does not advertise HEAD")?;
+        let channel = reference
+            .symref_target()
+            .and_then(|target| target.strip_prefix("refs/heads/"))
+            .context("registry HEAD must identify a default release channel")?;
+        crate::types::validate_channel_name(channel)?;
+        Ok(channel.to_string())
+    })
+    .await
+    .context("default channel discovery task failed")?
+}
+
 /// Probe an HTTP origin to confirm it serves the git-native dumb-HTTP
 /// layout (`HEAD` and `info/refs`).
 ///
@@ -875,12 +943,12 @@ async fn fetch_refs(
         TrackingMode::Tag(tag) => vec![format!("+refs/tags/{tag}:refs/tags/{tag}")],
         // Need all tags to do semver matching.
         TrackingMode::Version(_) => vec!["+refs/tags/*:refs/tags/*".to_string()],
-        // Follow the remote's default branch HEAD when no explicit selector
-        // is configured.
-        TrackingMode::Default => vec!["+HEAD:refs/remotes/origin/HEAD".to_string()],
+        TrackingMode::Default => {
+            bail!("default registry tracking must resolve a release channel before fetching")
+        }
     };
 
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if super::transport::uses_static_git_reader(url) {
         return super::dumb_http::fetch_with_optional_head(
             repo_dir,
             url,
@@ -977,7 +1045,9 @@ async fn resolve_fetch_head(repo_dir: &Path, tracking_mode: &TrackingMode) -> Re
             // List all tags, parse as semver, pick the best match.
             return resolve_best_version_tag(repo_dir, req).await;
         }
-        TrackingMode::Default => "refs/remotes/origin/HEAD".to_string(),
+        TrackingMode::Default => {
+            bail!("default registry tracking must resolve a signed channel release")
+        }
     };
 
     Ok(ResolvedHead {
@@ -1019,14 +1089,24 @@ async fn resolve_channel_head(
         Some(bucket) => bucket,
         None => channel::select_registry_bucket(&config.name, &channel::generate_bucket_salt()),
     };
+    let engine = std::sync::Arc::new(aos_net::TransferEngine::with_http_client(
+        aos_net::TransferEngineConfig::default(),
+        client.clone(),
+    ));
+    let transport = RegistryTransport::new(base_url)?.with_engine(engine);
 
     let probes = stream::iter(
         channel::probe_order(assigned_bucket)
             .into_iter()
             .map(|bucket| {
-                let client = client.clone();
-                let url = join_cache_url(base_url, &channel::partition_path(channel_name, bucket));
-                async move { (bucket, fetch_channel_partition(&client, &url).await) }
+                let transport = transport.clone();
+                let relative = channel::partition_path(channel_name, bucket);
+                async move {
+                    (
+                        bucket,
+                        transport.read_optional(&relative, 1024 * 1024).await,
+                    )
+                }
             }),
     )
     .buffered(CHANNEL_PARTITION_FETCH_CONCURRENCY);
@@ -1074,30 +1154,6 @@ async fn resolve_channel_head(
         bail!("channel '{channel_name}' has no usable partition: {err}");
     }
     bail!("channel '{channel_name}' has no usable partition")
-}
-
-/// Fetch one channel partition object from the static registry origin.
-///
-/// Returns `Ok(None)` when the partition does not exist (404), allowing the
-/// caller to continue through the deterministic fallback order.
-async fn fetch_channel_partition(client: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>> {
-    let response = client
-        .get(url)
-        .send()
-        .await
-        .with_context(|| format!("fetching channel partition {url}"))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
-    }
-    if !response.status().is_success() {
-        bail!("GET {url} failed with {}", response.status());
-    }
-
-    response
-        .bytes()
-        .await
-        .map(|bytes| Some(bytes.to_vec()))
-        .with_context(|| format!("reading channel partition {url}"))
 }
 
 /// Verifies one fetched partition against its channel name and release tag.
@@ -1239,7 +1295,7 @@ async fn resolve_best_version_tag(
 /// Parse a tag string as a semver `Version`, stripping a leading `v` prefix,
 /// removing leading zeros from components (e.g. `02` -> `2`), and appending
 /// `.0` for two-component versions like `2026.02`.
-fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
+pub(crate) fn parse_tag_as_semver(tag: &str) -> Option<semver::Version> {
     let stripped = tag.strip_prefix('v').unwrap_or(tag);
     let parts: Vec<&str> = stripped.split('.').collect();
     let normalized: Vec<String> = parts
@@ -2370,7 +2426,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_tracking_resolves_remote_head_without_tags() {
+    async fn explicit_branch_tracking_resolves_frontier_without_tags() {
         let tmp = tempfile::TempDir::new().unwrap();
         let work_dir = tmp.path().join("work");
         let origin_dir = tmp.path().join("origin.git");
@@ -2455,7 +2511,7 @@ mod tests {
         fetch_refs(
             &repo_dir,
             &origin_dir.to_string_lossy(),
-            &TrackingMode::Default,
+            &TrackingMode::Branch("stable".into()),
             false,
             &progress,
             &mut repo::VerifiedObjectGraph::new(&repo_dir),
@@ -2463,10 +2519,25 @@ mod tests {
         )
         .await
         .unwrap();
-        let resolved = resolve_fetch_head(&repo_dir, &TrackingMode::Default)
+        let resolved = resolve_fetch_head(&repo_dir, &TrackingMode::Branch("stable".into()))
             .await
             .unwrap();
 
+        assert_eq!(
+            discover_default_channel(
+                &repo_dir,
+                &origin_dir.to_string_lossy(),
+                &reqwest::Client::new()
+            )
+            .await
+            .unwrap(),
+            "stable"
+        );
+        assert!(
+            resolve_fetch_head(&repo_dir, &TrackingMode::Default)
+                .await
+                .is_err()
+        );
         assert_eq!(resolved.commit, expected);
         assert_eq!(resolved.release_tag, None);
         let output = git(&repo_dir).args(["tag", "-l"]).output().await.unwrap();

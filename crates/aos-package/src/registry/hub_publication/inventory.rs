@@ -4,11 +4,11 @@ use anyhow::{Context as _, Result};
 use aos_remote::hub_types;
 
 /// Keeps the admitted publication manifest with its pinned root directory handle.
-pub(crate) struct PinnedPublication {
+pub struct PinnedPublication {
     /// Admitted manifest used to begin the staged publication.
-    pub(crate) request: hub_types::BeginRegistryPublicationRequest,
+    pub request: hub_types::BeginRegistryPublicationRequest,
     /// Directory handle used to open objects beneath the admitted root.
-    pub(crate) root: std::os::fd::OwnedFd,
+    pub root: std::os::fd::OwnedFd,
 }
 
 // A complete package origin includes immutable Git/index objects and paired
@@ -16,11 +16,7 @@ pub(crate) struct PinnedPublication {
 // files, so keep admission bounded at a capacity that leaves useful headroom
 // for catalog and history growth between releases.
 /// Bounds the number of objects admitted into one publication.
-///
-/// # Errors
-///
-/// Returns an error if request validation, credential resolution, or a hub API call fails.
-pub(super) const MAX_PUBLICATION_OBJECTS: usize = 50_000;
+pub const MAX_PUBLICATION_OBJECTS: usize = 50_000;
 
 // Entries include directories. A valid 50,000-object surface needs additional
 // room for its directory structure without relaxing the object limit.
@@ -35,10 +31,7 @@ const MAX_PUBLICATION_DIRECTORY_DEPTH: usize = 32;
 /// # Errors
 ///
 /// Returns an error if files cannot be read or violate publication path, size, or hash rules.
-pub(crate) fn publication_from_root(
-    root: &std::path::Path,
-    registry: &str,
-) -> Result<PinnedPublication> {
+pub fn publication_from_root(root: &std::path::Path, registry: &str) -> Result<PinnedPublication> {
     use sha2::{Digest as _, Sha256};
 
     let mut objects = std::collections::BTreeMap::new();
@@ -89,9 +82,9 @@ fn validate_publication_pack_indexes(
 ) -> Result<()> {
     for path in objects
         .keys()
-        .filter(|path| aos_package::registry::surface_keymap::is_git_pack_index_path(path))
+        .filter(|path| crate::registry::surface_keymap::is_git_pack_index_path(path))
     {
-        let companion = aos_package::registry::pack_index::companion_pack_path(path)
+        let companion = crate::registry::pack_index::companion_pack_path(path)
             .with_context(|| format!("deriving companion pack path for {path}"))?;
         anyhow::ensure!(
             objects.contains_key(&companion),
@@ -101,16 +94,16 @@ fn validate_publication_pack_indexes(
         let index = read_pinned_publication_file(
             index_file,
             path,
-            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
+            crate::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
         )?;
         let pack_object = &objects[&companion];
         let pack_file = snapshot_publication_object(root, pack_object)?;
         let pack = read_pinned_publication_file(
             pack_file,
             &companion,
-            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
+            crate::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
         )?;
-        aos_package::registry::pack_index::validate_against_pack(path, &index, &pack)
+        crate::registry::pack_index::validate_against_pack(path, &index, &pack)
             .with_context(|| format!("validating publication pack/index pair {path}"))?;
     }
     Ok(())
@@ -233,8 +226,20 @@ fn collect_publication_objects(
             metadata.is_file(),
             "publication surface contains non-file {relative}"
         );
+        if let Some(digest) = relative.strip_prefix("oci/blobs/sha256/") {
+            anyhow::ensure!(
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                "OCI candidate path is not a canonical digest key: {relative}"
+            );
+            // Distribution admission owns repository membership and parsed
+            // graph projections. Generic registry uploads cannot establish it.
+            continue;
+        }
         anyhow::ensure!(
-            aos_package::registry::surface_keymap::is_machine_path(&relative),
+            crate::registry::surface_keymap::is_machine_path(&relative),
             "publication surface contains unsupported path {relative}"
         );
         anyhow::ensure!(
@@ -287,27 +292,27 @@ fn publication_input(
     let metadata = file
         .metadata()
         .with_context(|| format!("reading pinned publication object {relative}"))?;
-    if aos_package::registry::surface_keymap::is_loose_git_object_path(relative) {
+    if crate::registry::surface_keymap::is_loose_git_object_path(relative) {
         anyhow::ensure!(
-            metadata.len() <= aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
+            metadata.len() <= crate::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES,
             "loose Git object {relative} exceeds the {}-byte publication limit",
-            aos_package::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
+            crate::registry::MAX_PUBLISHED_LOOSE_OBJECT_BYTES
         );
     }
-    if aos_package::registry::surface_keymap::is_git_pack_index_path(relative) {
+    if crate::registry::surface_keymap::is_git_pack_index_path(relative) {
         let bytes = read_pinned_publication_file(
             file.try_clone()?,
             relative,
-            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
+            crate::registry::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,
         )?;
-        aos_package::registry::pack_index::validate(relative, &bytes)
+        crate::registry::pack_index::validate(relative, &bytes)
             .with_context(|| format!("validating publication pack index {relative}"))?;
     }
-    if aos_package::registry::surface_keymap::is_git_pack_path(relative) {
+    if crate::registry::surface_keymap::is_git_pack_path(relative) {
         anyhow::ensure!(
-            metadata.len() <= aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
+            metadata.len() <= crate::registry::pack_index::MAX_PUBLISHED_PACK_BYTES,
             "Git pack {relative} exceeds the {}-byte publication limit",
-            aos_package::registry::pack_index::MAX_PUBLISHED_PACK_BYTES
+            crate::registry::pack_index::MAX_PUBLISHED_PACK_BYTES
         );
     }
     file.seek(SeekFrom::Start(0))?;
@@ -323,15 +328,15 @@ fn publication_input(
         path: relative.to_string(),
         sha256: digest,
         byte_size: i64::try_from(metadata.len()).context("publication object is too large")?,
-        kind: if aos_package::registry::surface_keymap::cache_control(relative)
-            == aos_package::registry::surface_keymap::MUTABLE_CACHE_CONTROL
+        kind: if crate::registry::surface_keymap::cache_control(relative)
+            == crate::registry::surface_keymap::MUTABLE_CACHE_CONTROL
         {
             "mutable_pointer"
         } else {
             "immutable"
         }
         .into(),
-        media_type: aos_package::registry::surface_keymap::content_type(relative).into(),
+        media_type: crate::registry::surface_keymap::content_type(relative).into(),
     })
 }
 
@@ -340,7 +345,7 @@ fn publication_input(
 /// # Errors
 ///
 /// Returns an error if the identity tuples cannot be encoded.
-pub(crate) fn publication_generation(
+pub fn publication_generation(
     objects: &[hub_types::RegistryPublicationObjectInput],
 ) -> Result<String> {
     use sha2::{Digest as _, Sha256};
@@ -368,7 +373,7 @@ pub(crate) fn publication_generation(
 /// # Errors
 ///
 /// Returns an error if inventory validation fails or the supplied manifest differs.
-pub(super) fn pinned_publication_from_root(
+pub fn pinned_publication_from_root(
     root: &std::path::Path,
     mut request: hub_types::BeginRegistryPublicationRequest,
 ) -> Result<PinnedPublication> {
@@ -457,7 +462,7 @@ fn open_publication_object(root: &std::os::fd::OwnedFd, relative: &str) -> Resul
 /// # Errors
 ///
 /// Returns an error if the file cannot be copied or differs from its admitted size or hash.
-pub(crate) fn snapshot_publication_object(
+pub fn snapshot_publication_object(
     root: &std::os::fd::OwnedFd,
     expected: &hub_types::RegistryPublicationObjectInput,
 ) -> Result<std::fs::File> {
@@ -519,7 +524,7 @@ fn copy_and_hash_exact(
 ///
 /// Returns an error for non-UTF-8 input, an unresolvable symref, or a commit
 /// that is not a lowercase SHA-256 object id.
-pub(crate) fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<String> {
+pub fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<String> {
     let head = std::str::from_utf8(head)
         .context("HEAD is not UTF-8")?
         .trim();
@@ -547,7 +552,7 @@ pub(crate) fn publication_default_commit(head: &[u8], refs: &[u8]) -> Result<Str
 /// # Errors
 ///
 /// Returns an error if the manifest cannot be read or decoded.
-pub(super) fn publication_manifest_request(
+pub fn publication_manifest_request(
     manifest: &std::path::Path,
     registry: &str,
 ) -> Result<hub_types::BeginRegistryPublicationRequest> {
@@ -565,7 +570,7 @@ pub(super) fn publication_manifest_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::hub::publication::publication_objects_in_upload_order;
+    use crate::registry::hub_publication::publication_objects_in_upload_order;
 
     #[test]
     fn publication_surface_derives_a_complete_stable_request() {
@@ -649,8 +654,8 @@ mod tests {
 
         let pinned = publication_from_root(root, "andyl/main").unwrap();
         for object in &pinned.request.objects {
-            let expected = if aos_package::registry::surface_keymap::cache_control(&object.path)
-                == aos_package::registry::surface_keymap::MUTABLE_CACHE_CONTROL
+            let expected = if crate::registry::surface_keymap::cache_control(&object.path)
+                == crate::registry::surface_keymap::MUTABLE_CACHE_CONTROL
             {
                 "mutable_pointer"
             } else {
@@ -659,7 +664,7 @@ mod tests {
             assert_eq!(object.kind, expected, "{}", object.path);
             assert_eq!(
                 object.media_type,
-                aos_package::registry::surface_keymap::content_type(&object.path),
+                crate::registry::surface_keymap::content_type(&object.path),
                 "{}",
                 object.path
             );

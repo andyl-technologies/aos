@@ -123,7 +123,7 @@ pub(super) struct MaintainerConfig {
     /// TUF root trust.
     #[serde(default)]
     pub(super) tuf: Option<TufConfig>,
-    /// Reviewer key used by `aos release review`.
+    /// Reviewer key used by `aos maintain release review`.
     #[serde(default)]
     pub(super) reviewer: Option<ReviewerConfig>,
     /// Alert delivery path exercised by `alert-delivery` fitness.

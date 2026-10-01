@@ -1,7 +1,7 @@
 ##! aos-release-signer — file-backed release signing adapter
 ##!
 ##! Builds the `aos-release-signer` binary from the shared `crates/` cargo
-##! workspace. `aos release` commands invoke a deployment-configured signer
+##! workspace. `aos maintain release` commands invoke a deployment-configured signer
 ##! executable with the `sign-exchange-v1` operation; this adapter serves that
 ##! protocol from operator-owned key files for registries without an HSM, such
 ##! as `andyl/testing`.

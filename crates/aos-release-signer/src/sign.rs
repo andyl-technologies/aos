@@ -32,6 +32,9 @@ pub const RESPONSE_SCHEMA_V1: &str = "aos.release.signature-response/v1";
 /// SSHSIG namespace for Git commit and tag objects.
 const GIT_SSHSIG_NAMESPACE: &str = "git";
 
+/// SSHSIG namespace for registry catalog metadata, separate from bundle TUF.
+const CATALOG_TUF_SSHSIG_NAMESPACE: &str = "aos-registry-tuf-v1";
+
 /// SSHSIG namespace for package provenance DSSE envelopes.
 ///
 /// This must equal `aos_package::provenance::DSSE_SIGNATURE_NAMESPACE`; the
@@ -65,6 +68,7 @@ pub fn sign_exchange(
     }
     request.verify_payload_bytes(&exchange.payload)?;
     authorize(config, &request)?;
+    validate_catalog_metadata(config, &request, &exchange.payload)?;
 
     let entry = config
         .key(&request.key_id)
@@ -116,6 +120,30 @@ fn authorize(config: &SignerConfigV1, request: &SigningRequest) -> Result<()> {
             request.key_id,
             request.role
         );
+    }
+    Ok(())
+}
+
+fn validate_catalog_metadata(config: &SignerConfigV1, request: &SigningRequest, payload: &[u8]) -> Result<()> {
+    let SigningContext::CatalogTuf { catalog_registry, metadata_role, metadata_version } = &request.context else {
+        return Ok(());
+    };
+    let entry = config.key(&request.key_id).context("catalog authority is not configured")?;
+    let crate::config::KeyMaterial::OpensshEd25519 { trust_line, .. } = &entry.material else {
+        bail!("catalog metadata requires an OpenSSH registry roster identity");
+    };
+    let alias = trust_line.split(':').next().context("registry trust line has no alias")?;
+    if alias != catalog_registry {
+        bail!("catalog alias does not match the authorized registry roster key");
+    }
+    let metadata: serde_json::Value = canonical::from_slice(payload, "registry catalog metadata")?;
+    let expected_schema = format!("https://andyl.com/aos/registry/tuf/{metadata_role}/v1");
+    if metadata.get("schema").and_then(serde_json::Value::as_str) != Some(expected_schema.as_str())
+        || metadata.get("spec_version").and_then(serde_json::Value::as_str) != Some("aos-tuf-1")
+        || metadata.get("registry").and_then(serde_json::Value::as_str) != Some(catalog_registry.as_str())
+        || metadata.get("version").and_then(serde_json::Value::as_u64) != Some(*metadata_version)
+    {
+        bail!("catalog metadata headers differ from the authorized signing context");
     }
     Ok(())
 }
@@ -204,6 +232,7 @@ fn produce(
 fn sshsig_namespace(request: &SigningRequest) -> Result<&'static str> {
     match (&request.context, request.operation) {
         (SigningContext::Git { .. }, SigningOperation::SignGitObject) => Ok(GIT_SSHSIG_NAMESPACE),
+        (SigningContext::CatalogTuf { .. }, SigningOperation::SignPayload) => Ok(CATALOG_TUF_SSHSIG_NAMESPACE),
         (SigningContext::Payload { artifact_kind }, SigningOperation::SignPayload)
             if artifact_kind == "package-provenance-dsse" =>
         {
@@ -214,7 +243,7 @@ fn sshsig_namespace(request: &SigningRequest) -> Result<&'static str> {
         {
             Ok(CONTAINER_DSSE_SIGNATURE_NAMESPACE)
         }
-        _ => bail!("SSHSIG signing is limited to Git objects and provenance DSSE"),
+        _ => bail!("SSHSIG signing requires Git, registry catalog metadata, or provenance DSSE context"),
     }
 }
 
@@ -415,6 +444,51 @@ mod tests {
             assert!(public.verify(other_namespace, payload, &signature).is_err());
             assert!(public.verify("git", payload, &signature).is_err());
         }
+    }
+
+    #[test]
+    fn catalog_metadata_provider_binds_role_version_and_separate_namespace() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = config(dir.path());
+        let payload = br#"{"schema":"https://andyl.com/aos/registry/tuf/targets/v1","spec_version":"aos-tuf-1","registry":"test","version":2}"#;
+        let mut request = request(SignerRole::Registry, "registry-v1", payload);
+        request.algorithm = SignatureAlgorithm::SshsigEd25519;
+        request.context = SigningContext::CatalogTuf {
+            catalog_registry: "test".into(),
+            metadata_role: "targets".into(), metadata_version: 2,
+        };
+
+        let signed = sign_exchange(&config, &exchange(&request, payload)).unwrap();
+        let armored = base64::engine::general_purpose::STANDARD
+            .decode(&signed.response.signature_base64).unwrap();
+        let signature = ssh_key::SshSig::from_pem(&armored).unwrap();
+        let KeyMaterial::OpensshEd25519 { trust_line, .. } = &config.keys[1].material else {
+            panic!("expected registry OpenSSH authority");
+        };
+        let blob = trust_line.rsplit(':').next().unwrap();
+        let public = ssh_key::PublicKey::from_openssh(&format!("ssh-ed25519 {blob}")).unwrap();
+
+        public.verify(CATALOG_TUF_SSHSIG_NAMESPACE, payload, &signature).unwrap();
+        assert!(public.verify("git", payload, &signature).is_err());
+        assert!(public.verify(PROVENANCE_SSHSIG_NAMESPACE, payload, &signature).is_err());
+        request.context = SigningContext::CatalogTuf {
+            catalog_registry: "test".into(),
+            metadata_role: "root".into(), metadata_version: 2,
+        };
+        assert!(sign_exchange(&config, &exchange(&request, payload)).is_err());
+        request.context = SigningContext::CatalogTuf {
+            catalog_registry: "test".into(),
+            metadata_role: "targets".into(), metadata_version: 3,
+        };
+        assert!(sign_exchange(&config, &exchange(&request, payload)).is_err());
+        request.role = SignerRole::TufTargets;
+        assert!(sign_exchange(&config, &exchange(&request, payload)).is_err());
+        request.role = SignerRole::Registry;
+        request.context = SigningContext::CatalogTuf {
+            catalog_registry: "another-alias".into(),
+            metadata_role: "targets".into(), metadata_version: 2,
+        };
+        assert!(sign_exchange(&config, &exchange(&request, payload)).is_err());
     }
 
     #[test]

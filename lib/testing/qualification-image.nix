@@ -112,7 +112,7 @@ in
       ${native.python3}/bin/python3 \
         ${scenario}/share/aos-release/qualification-image.py
 
-      exec ${native.aos}/bin/aos release step qualification respond \
+      exec ${native.aos}/bin/aos maintain release step qualification respond \
         --request request.json \
         --scenarios scenario-registry.json \
         --report scenario-report.json \

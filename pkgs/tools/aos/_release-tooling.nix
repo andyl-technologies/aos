@@ -1,7 +1,7 @@
 ##! pkgs/tools/aos/_release-tooling.nix — The installed release tooling closure
 #
 # One store path holds the release coordinator CLI together with the native
-# qualification executors it may drive. `aos release` discovers both from
+# qualification executors it may drive. `aos maintain release` discovers both from
 # this layout instead of reading store paths from the maintainer
 # configuration (see crates/aos/src/commands/release/tooling.rs):
 #

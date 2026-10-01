@@ -215,6 +215,19 @@ impl CacheBackend for FsBackend {
         content_disposition: Option<&str>,
         sha256: Option<&str>,
     ) -> Result<()> {
+        if let Some(expected) =
+            sha256.filter(|_| cache_control == Some(super::IMMUTABLE_CACHE_CONTROL))
+        {
+            let root = self.root.clone();
+            let relative = relative_path.to_owned();
+            let source = source.to_path_buf();
+            let expected = expected.to_owned();
+            return tokio::task::spawn_blocking(move || {
+                super::fs_resume::put(&root, &relative, &source, &expected)
+            })
+            .await
+            .context("filesystem upload task failed")?;
+        }
         let url = self.file_url(relative_path);
         let mut req = TransferRequest::put_file(&url, source.to_path_buf());
         add_static_metadata_headers(
@@ -229,6 +242,23 @@ impl CacheBackend for FsBackend {
             .await
             .with_context(|| format!("writing static file {url}"))?;
         Ok(())
+    }
+
+    async fn put_immutable_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        sha256: &str,
+    ) -> Result<()> {
+        let root = self.root.clone();
+        let relative = relative_path.to_owned();
+        let source = source.to_path_buf();
+        let sha256 = sha256.to_owned();
+        tokio::task::spawn_blocking(move || {
+            super::fs_resume::put(&root, &relative, &source, &sha256)
+        })
+        .await
+        .context("filesystem immutable upload task failed")?
     }
 
     async fn get_static_object(

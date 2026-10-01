@@ -161,6 +161,7 @@ pub async fn run_cache(
             }
 
             warn_on_cache_gc(
+                &dir,
                 &output,
                 registry_cache_max_age_days(config, &registry_name),
                 printer,
@@ -171,13 +172,20 @@ pub async fn run_cache(
         CacheCommand::Gc {
             registry,
             max_age,
-            dry_run,
+            dry_run: gc_dry_run,
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let output = config.registry_cache_path(&registry_name);
+            let registry_dir = config.scope.registries_path().join(&registry_name);
+            let dry_run = dry_run || *gc_dry_run;
             let max_age_days =
                 max_age.unwrap_or_else(|| registry_cache_max_age_days(config, &registry_name));
-            let report = nixcache::gc_static_cache(&output, max_age_days, *dry_run)?;
+            let collection =
+                crate::registry::staging::LocalStageStore::open_read_only(&registry_dir)?
+                    .gc_cache(&output, max_age_days, dry_run)?;
+            let report = collection.cache;
+            let objects = collection.objects;
+            let generated = collection.generated;
             if printer.mode() == OutputMode::Json {
                 printer.json(&serde_json::json!({
                     "action": "cache_gc",
@@ -190,12 +198,29 @@ pub async fn run_cache(
                     "deleted_bytes": report.deleted_bytes,
                     "deleted_bytes_human": format_size(report.deleted_bytes),
                     "hashes": report.hashes,
+                    "stage_object_candidates": objects.candidates,
+                    "stage_objects_deleted": objects.deleted_files,
+                    "stage_object_bytes_deleted": objects.deleted_bytes,
+                    "stage_object_digests": objects.digests,
+                    "stage_generated_candidates": generated.candidates,
+                    "stage_generated_deleted_revisions": generated.deleted_revisions,
+                    "stage_generated_deleted_files": generated.deleted_files,
+                    "stage_generated_deleted_bytes": generated.deleted_bytes,
+                    "stage_generated_revisions": generated.revisions,
                 }));
-            } else if *dry_run {
+            } else if dry_run {
                 printer.info(&format!(
                     "Would delete {} staged cache pair(s) older than {max_age_days} day(s) from {}.",
                     report.candidates,
                     output.display(),
+                ));
+                printer.info(&format!(
+                    "Would delete {} unreferenced candidate object(s) beyond the 24-hour grace period.",
+                    objects.candidates,
+                ));
+                printer.info(&format!(
+                    "Would delete {} retired generated candidate directory(s).",
+                    generated.candidates,
                 ));
             } else {
                 printer.success(&format!(
@@ -203,6 +228,15 @@ pub async fn run_cache(
                     report.deleted_files,
                     format_size(report.deleted_bytes),
                     output.display(),
+                ));
+                printer.success(&format!(
+                    "Deleted {} unreferenced candidate object(s) ({}).",
+                    objects.deleted_files,
+                    format_size(objects.deleted_bytes),
+                ));
+                printer.success(&format!(
+                    "Deleted {} retired generated candidate directory(s).",
+                    generated.deleted_revisions,
                 ));
             }
             Ok(())

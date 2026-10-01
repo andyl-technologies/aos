@@ -65,6 +65,9 @@ pub fn CopyableCommand(
     client: &'static str,
     /// Complete command retained as both selectable text and clipboard data.
     command: String,
+    /// Accessible description of the command's purpose.
+    #[prop(default = "pull command")]
+    action: &'static str,
 ) -> impl IntoView {
     view! {
         <div class="copy-row container-pull-command">
@@ -74,7 +77,7 @@ pub fn CopyableCommand(
                 type="button"
                 class="hash-copy copy-btn"
                 data-copy-value=command
-                aria-label=format!("Copy {client} pull command")
+                aria-label=format!("Copy {client} {action}")
             >
                 "copy"
             </button>

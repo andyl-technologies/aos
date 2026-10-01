@@ -157,7 +157,7 @@ aos_dev_release() {
   # of the caller's default development mode.
   local cli
   cli=$(nix-build "$aos_dev_root/default.nix" -A pkgs.aos --no-out-link)
-  "$cli/bin/aos" release "$@"
+  "$cli/bin/aos" maintain release "$@"
 }
 
 aos_dev_completion() {

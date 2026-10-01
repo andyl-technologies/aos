@@ -1,4 +1,4 @@
-//! `aos release advance --to <destination>`: drive a release forward.
+//! `aos maintain release advance --to <destination>`: drive a release forward.
 //!
 //! The driver is a loop over [`observe`] and [`planner::next`]: observe the
 //! journal and work directory, compute the next step, run it in process, and
@@ -14,7 +14,7 @@
 use std::path::Path;
 use std::time::SystemTime;
 
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result, bail, ensure};
 use aos_core::nix::NixRunner;
 use aos_core::output::Printer;
 use aos_release::plan::SurfaceRole;
@@ -26,7 +26,7 @@ use super::planner::{self, Next, Options, Step};
 use super::steps::Driver;
 use super::workdir::{self, Phase, WorkDir, digest_string};
 use super::{Session, keys, observe, print_waiting};
-use crate::cli::{ReleaseAdvanceArgs, ReleasePlanArgs};
+use crate::cli::{ReleaseAdvanceArgs, ReleaseDestinationArgs, ReleasePlanArgs};
 
 /// Upper bound on steps one invocation runs; each step changes durable state.
 const MAX_STEPS: usize = 512;
@@ -55,6 +55,14 @@ pub(super) async fn run(
             destination.rings.len()
         );
     }
+    if args.stop_after_upload {
+        let prior_state = session
+            .work
+            .latest_journal(&session.plan)?
+            .and_then(|(_, journal)| journal.summary.state_of(&destination.name));
+        require_unpublished_upload_target(prior_state, &destination.name)?;
+    }
+
     warn_on_config_drift(&session, printer)?;
     if let Some(directory) = &args.override_dir {
         refreeze_with_override(&session, directory, nix, printer)?;
@@ -63,7 +71,7 @@ pub(super) async fn run(
 
     let driver = Driver {
         session: &session,
-        nix,
+        nix: Some(nix),
         printer,
     };
     let mut previous: Option<Step> = None;
@@ -79,6 +87,24 @@ pub(super) async fn run(
             now: SystemTime::now(),
         };
         match planner::next(&observation.release, &facts, &options)? {
+            Next::Run(Step::Publish) if args.stop_after_upload => {
+                super::steps::publish_destination(
+                    &session,
+                    &destination,
+                    &observation,
+                    true,
+                    args.stage_revision,
+                    printer,
+                )
+                .await?;
+                printer.success(&format!(
+                    "{} is fully uploaded and unreleased; run aos maintain release publish --to {} --work {}",
+                    destination.name,
+                    destination.name,
+                    session.work.root().display()
+                ));
+                return Ok(());
+            }
             Next::Run(step) => {
                 let label = step.describe(&destination.name);
                 if previous.as_ref() == Some(&step) {
@@ -218,4 +244,160 @@ fn superseded_path(work: &WorkDir) -> Result<std::path::PathBuf> {
         .map(|attempt| work.join(format!("plan.superseded-{attempt}.json")))
         .find(|candidate| !candidate.exists())
         .context("no free superseded-plan name")
+}
+
+/// Publishes an uploaded destination after checking every current admission again.
+///
+/// # Errors
+///
+/// Returns an error for missing candidate evidence, failed publication or timestamp
+/// verification, or a planner state requiring preparation before publication.
+pub(super) async fn publish(args: &ReleaseDestinationArgs, printer: &Printer) -> Result<()> {
+    let session = Session::open(args.config.as_deref(), args.work.as_deref())?;
+    let destination = session.destination(&args.to)?.clone();
+    if !session
+        .work
+        .staged_upload_record(&destination.name)
+        .is_file()
+    {
+        bail!(
+            "{} has no completed immutable upload; run aos maintain release advance --to {} --stop-after-upload",
+            destination.name,
+            destination.name
+        );
+    }
+    if let Some(expected) = args.stage_revision {
+        let stage: aos_registry_surface::staging::StageRecord =
+            serde_json::from_slice(&capture::control_file(
+                &session
+                    .work
+                    .staged_upload(&destination.name)
+                    .join("stage.json"),
+                "candidate stage record",
+            )?)?;
+        stage.revision.validate()?;
+        ensure!(
+            expected == stage.revision.revision,
+            "candidate revision changed: selected {expected}, current {}",
+            stage.revision.revision
+        );
+    }
+
+    let driver = Driver {
+        session: &session,
+        nix: None,
+        printer,
+    };
+    let mut previous: Option<Step> = None;
+    for _ in 0..MAX_STEPS {
+        let observation = observe::release(&session)?;
+        if let Some((path, _)) = &observation.journal {
+            session.work.record_latest_journal(path)?;
+        }
+        let facts = observe::destination(&session, &observation, &destination)?;
+        if facts.state.is_some()
+            && facts
+                .surface_metadata
+                .as_ref()
+                .is_none_or(|metadata| metadata.timestamp_published)
+        {
+            publication_complete(&destination.name, printer);
+            return Ok(());
+        }
+        let options = Options {
+            accept_transaction: false,
+            ring_limit: None,
+            now: SystemTime::now(),
+        };
+        match planner::next(&observation.release, &facts, &options)? {
+            Next::Run(step) if publication_step(&step) => {
+                if previous.as_ref() == Some(&step) {
+                    bail!(
+                        "{} completed without changing the publication state",
+                        step.describe(&destination.name)
+                    );
+                }
+                if step == Step::Publish {
+                    super::steps::publish_destination(
+                        &session,
+                        &destination,
+                        &observation,
+                        false,
+                        args.stage_revision,
+                        printer,
+                    )
+                    .await?;
+                } else {
+                    driver.execute(&step, &destination, &observation).await?;
+                }
+                previous = Some(step);
+            }
+            Next::Run(_) if facts.state.is_some() => {
+                publication_complete(&destination.name, printer);
+                return Ok(());
+            }
+            Next::Run(step) => bail!(
+                "{} must complete before publication; run aos maintain release advance --to {} --stop-after-upload",
+                step.describe(&destination.name),
+                destination.name
+            ),
+            Next::Wait(instruction) => bail!("publication is blocked: {instruction}"),
+            Next::Done(message) => {
+                printer.success(&message);
+                return Ok(());
+            }
+        }
+    }
+    bail!("publication ran {MAX_STEPS} steps without reaching a stopping point")
+}
+
+fn publication_complete(destination: &str, printer: &Printer) {
+    printer.success(&format!(
+        "{destination} publication is complete; run aos maintain release advance --to {destination} to continue rollout"
+    ));
+}
+
+/// Limits explicit publication to release visibility and its discovery metadata.
+pub(super) fn publication_step(step: &Step) -> bool {
+    matches!(
+        step,
+        Step::Publish
+            | Step::PublishTimestamp
+            | Step::RefreshTimestamp
+            | Step::RetireTimestamp
+            | Step::ComposeSurface
+    )
+}
+
+/// Rejects upload-only continuation once a destination is publicly released.
+fn require_unpublished_upload_target(
+    state: Option<aos_release::state::ReleaseState>,
+    destination: &str,
+) -> Result<()> {
+    if state.is_some() {
+        bail!(
+            "{destination} is already published; --stop-after-upload cannot continue its rollout"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use aos_release::state::ReleaseState;
+
+    #[test]
+    fn upload_only_resumption_rejects_every_published_distribution_state() {
+        assert!(require_unpublished_upload_target(None, "staging/edge").is_ok());
+        for state in [
+            ReleaseState::Published,
+            ReleaseState::Rolling,
+            ReleaseState::Complete,
+        ] {
+            let error = require_unpublished_upload_target(Some(state), "staging/edge")
+                .expect_err("upload-only command must stop before rollout effects");
+            assert!(error.to_string().contains("already published"));
+        }
+    }
 }

@@ -55,7 +55,7 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     qualification.validate()?;
     if request.public_evidence_policy_digest != qualification.digest()? {
         bail!(
-            "reviewed request must bind the complete shared qualification policy; inspect aos release step contract"
+            "reviewed request must bind the complete shared qualification policy; inspect aos maintain release step contract"
         );
     }
     let accepted = apply_overrides(args, &qualification, &mut request)?;

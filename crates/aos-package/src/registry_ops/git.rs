@@ -340,7 +340,7 @@ pub(crate) fn refresh_registry_object_store(dir: &Path) -> Result<()> {
 
 /// List the registry's release versions: every git tag whose name parses
 /// as semver, sorted ascending and deduplicated.
-pub(in crate::registry_ops) fn semver_tag_versions(dir: &Path) -> Result<Vec<semver::Version>> {
+pub(crate) fn semver_tag_versions(dir: &Path) -> Result<Vec<semver::Version>> {
     let tags = git(dir, &["tag", "--list"])?;
     Ok(semver_versions_from_tag_list(&tags))
 }
