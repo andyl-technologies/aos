@@ -240,7 +240,7 @@ pub(crate) async fn inspect_metadata(
     env: &Env,
     plan: &aos_hub_core::storage_work::StorageWorkPlan,
 ) -> Result<aos_hub_core::storage_work::StorageWorkResult> {
-    use aos_hub_core::storage_work::{StorageWorkOperation, StorageWorkOutcome};
+    use aos_hub_core::storage_work::StorageWorkOperation;
 
     let StorageWorkOperation::InspectMirrorLiveMetadata { target } = &plan.operation else {
         anyhow::bail!("not a live metadata query");
@@ -271,6 +271,46 @@ pub(crate) async fn inspect_metadata(
         );
         Ok(())
     };
+    let cutoff = plan
+        .issued_at
+        .checked_add(LIVE_STREAM_SECONDS)
+        .context("live query cutoff overflow")?;
+    let (outcome, source_bytes) = query_source(
+        target,
+        cutoff,
+        config.uncertainty,
+        target.maximum_bytes.min(live.maximum_bytes),
+        &before_dispatch,
+        &|| config.latest_now(),
+    )
+    .await?;
+    Ok(crate::surface::storage_work_result(
+        plan,
+        outcome,
+        source_bytes,
+    ))
+}
+
+/// Runs the same bounded query bytes path after independent caller authority.
+/// Both callers retain their original admission and qualified clock callbacks.
+async fn query_source(
+    target: &HybridLiveDeliveryTarget,
+    cutoff: i64,
+    uncertainty: u64,
+    maximum: u64,
+    before_dispatch: &dyn Fn() -> Result<()>,
+    latest_now: &dyn Fn() -> Result<u64>,
+) -> Result<(aos_hub_core::storage_work::StorageWorkOutcome, u64)> {
+    use aos_hub_core::storage_work::StorageWorkOutcome;
+
+    target.validate()?;
+    ensure!(
+        target.class == HybridLiveDeliveryClass::Metadata
+            && maximum > 0
+            && maximum <= target.maximum_bytes
+            && maximum <= 128 * 1024,
+        "bulk query refused"
+    );
     let _buffer = crate::mirror_import::buffers::acquire(true, &before_dispatch).await?;
     let _capacity = provider_capacity::acquire_class_checked(
         1,
@@ -278,7 +318,6 @@ pub(crate) async fn inspect_metadata(
         &before_dispatch,
     )
     .await?;
-    let maximum = target.maximum_bytes.min(live.maximum_bytes);
     let headers = Headers::new();
     headers.set("accept-encoding", "identity")?;
     let mut init = RequestInit::new();
@@ -286,28 +325,20 @@ pub(crate) async fn inspect_metadata(
         .with_headers(headers)
         .with_redirect(RequestRedirect::Manual);
     let request = Request::new_with_init(target.upstream_url()?.as_str(), &init)?;
-    let cutoff = plan
-        .issued_at
-        .checked_add(LIVE_STREAM_SECONDS)
-        .context("live query cutoff overflow")?;
     let _cancellation = SourceCancellation::new()?;
     let signal = worker::AbortSignal::from(_cancellation.0.signal());
-    let response = bounded(cutoff, config.uncertainty, async {
+    let response = bounded(cutoff, uncertainty, async {
         before_dispatch()?;
         provider_capacity::record_dispatch();
         Ok(Fetch::Request(request).send_with_signal(&signal).await?)
     })
     .await?;
     ensure!(
-        i64::try_from(config.latest_now()?)? < cutoff,
+        i64::try_from(latest_now()?)? < cutoff,
         "live query response expired"
     );
     if response.status_code() == 404 {
-        return Ok(crate::surface::storage_work_result(
-            plan,
-            StorageWorkOutcome::NotFound,
-            0,
-        ));
+        return Ok((StorageWorkOutcome::NotFound, 0));
     }
     ensure!(
         response.status_code() == 200,
@@ -333,12 +364,12 @@ pub(crate) async fn inspect_metadata(
     );
     let bytes = bounded(
         cutoff,
-        config.uncertainty,
+        uncertainty,
         crate::direct_digest::read_bounded_native(response, usize::try_from(maximum)?),
     )
     .await?;
     ensure!(
-        i64::try_from(config.latest_now()?)? < cutoff
+        i64::try_from(latest_now()?)? < cutoff
             && declared.is_none_or(|size| size == bytes.len() as u64),
         "live query expired or truncated"
     );
@@ -348,11 +379,7 @@ pub(crate) async fn inspect_metadata(
         size: bytes.len() as u64,
         content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
     };
-    Ok(crate::surface::storage_work_result(
-        plan,
-        outcome,
-        bytes.len() as u64,
-    ))
+    Ok((outcome, bytes.len() as u64))
 }
 
 struct SourceCancellation(worker::web_sys::AbortController);

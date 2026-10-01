@@ -98,6 +98,13 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == STORAGE_WORK_PATH {
         return execute_storage_work(request, env).await;
     }
+    if path == aos_hub_core::hybrid_ingress::live::candidate::query::LIVE_QUERY_CANDIDATE_PATH {
+        #[cfg(feature = "do-e2e")]
+        return crate::mirror_live::candidate::query::fetch(request, env).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
     if path == aos_hub_core::hybrid_ingress::live::candidate::LIVE_CANDIDATE_PATH {
         #[cfg(feature = "do-e2e")]
         return crate::mirror_live::candidate::fetch(request, env).await;

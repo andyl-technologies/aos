@@ -4,6 +4,8 @@
 //! authenticates only reserved controlled source requests; this route never
 //! writes a provider object or grants public ingress authority.
 
+pub(crate) mod query;
+
 use anyhow::{ensure, Result};
 use aos_hub_core::hybrid_ingress::live::candidate::{
     verify_mirror_live_candidate, LIVE_CANDIDATE_CONTROL_BYTES,

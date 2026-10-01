@@ -7,6 +7,8 @@
 //! control = {run_id, source, script, original ingress, fixture-only live target}
 //! ```
 
+pub mod query;
+
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 
