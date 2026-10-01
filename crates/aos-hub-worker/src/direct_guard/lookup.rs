@@ -14,12 +14,17 @@ use crate::direct_upload::{config::QualifiedConfig, journal, storage, verificati
 /// Returns a Worker error when the bounded response cannot be constructed.
 pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Response> {
     match handle(&mut request, env).await {
-        Ok(signed) => response(signed, request.url()?.path() == DIRECT_FINAL_GUARD_PATH),
+        Ok((signed, body)) => {
+            let path = request.url()?.path().to_owned();
+            let response = response(signed, path == DIRECT_FINAL_GUARD_PATH)?;
+            crate::control_receipt::emit_buffered_response(&path, &body, &response).await;
+            Ok(response)
+        }
         Err(_) => Response::error("direct storage authority lookup refused", 409),
     }
 }
 
-async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl> {
+async fn handle(request: &mut Request, env: &Env) -> Result<(SignedDirectControl, Vec<u8>)> {
     ensure!(
         request.method() == Method::Post,
         "direct authority lookup method differs"
@@ -27,6 +32,11 @@ async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl>
     let body = crate::hybrid::read_bounded_body(request, MAX_DIRECT_CONTROL_BYTES)
         .await?
         .ok_or_else(|| anyhow::anyhow!("direct authority lookup body exceeds bound"))?;
+    let signed = handle_body(request, env, &body).await?;
+    Ok((signed, body))
+}
+
+async fn handle_body(request: &Request, env: &Env, body: &[u8]) -> Result<SignedDirectControl> {
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     let key = transport::key(env)?;
     if request.url()?.path() == DIRECT_FINAL_GUARD_PATH {

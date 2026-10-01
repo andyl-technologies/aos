@@ -686,7 +686,14 @@ pub(crate) async fn capabilities(
             headers.set("content-type", "application/json")?;
             headers.set("cache-control", "private, no-store")?;
             headers.set(STORAGE_WORK_SIGNATURE_HEADER, &signed.signature)?;
-            Ok(Response::from_bytes(signed.body)?.with_headers(headers))
+            let response = Response::from_bytes(signed.body)?.with_headers(headers);
+            crate::control_receipt::emit_buffered_response(
+                aos_hub_core::storage_work::STORAGE_CAPABILITIES_PATH,
+                body,
+                &response,
+            )
+            .await;
+            Ok(response)
         }
         Err(_) => Response::error("direct protected capability unavailable", 409),
     }

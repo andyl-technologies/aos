@@ -127,12 +127,21 @@ async fn relay(request: &mut Request, env: &Env, candidate: bool) -> Result<Resp
         .with_headers(headers)
         .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let internal = Request::new_with_init(&format!("https://physical-guard{path}"), &init)?;
-    Ok(env
+    let mut response = env
         .durable_object("HYBRID_OBJECT_GUARD")?
         .id_from_name(&address)?
         .get_stub()?
         .fetch_with_request(internal)
-        .await?)
+        .await?;
+    if !candidate {
+        crate::control_receipt::emit_forwarded_response(
+            MIRROR_GUARD_LOOKUP_PATH,
+            &body,
+            &mut response,
+        )
+        .await;
+    }
+    Ok(response)
 }
 
 /// Signs only actual held positive progress while the existing guard gate is held.

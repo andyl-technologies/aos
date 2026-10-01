@@ -1078,7 +1078,10 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
     let headers = Headers::new();
     headers.set("content-type", "application/json")?;
     headers.set("cache-control", "private, no-store")?;
-    Ok(Response::from_json(&capabilities)?.with_headers(headers))
+    let response = Response::from_json(&capabilities)?.with_headers(headers);
+    crate::control_receipt::emit_buffered_response(STORAGE_CAPABILITIES_PATH, &body, &response)
+        .await;
+    Ok(response)
 }
 
 async fn probe_storage_credential(mut request: Request, env: &Env) -> Result<Response> {
@@ -1198,7 +1201,10 @@ async fn control_storage_binding(mut request: Request, env: &Env) -> Result<Resp
     );
     let headers = Headers::new();
     headers.set("cache-control", "private, no-store")?;
-    Ok(Response::from_json(&acknowledgement)?.with_headers(headers))
+    let response = Response::from_json(&acknowledgement)?.with_headers(headers);
+    crate::control_receipt::emit_buffered_response(STORAGE_BINDING_CONTROL_PATH, &body, &response)
+        .await;
+    Ok(response)
 }
 
 async fn frozen_cleanup_head(mut request: Request, env: &Env) -> Result<Response> {

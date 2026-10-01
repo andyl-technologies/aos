@@ -83,13 +83,16 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
             .with_headers(headers)
             .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
         let forwarded = Request::new_with_init(&format!("https://hybrid-binding{path}"), &init)?;
-        Ok::<_, anyhow::Error>(
-            env.durable_object("HYBRID_BINDING_STATE")?
-                .id_from_name(&format!("{deployment}:binding:{binding_id}"))?
-                .get_stub()?
-                .fetch_with_request(forwarded)
-                .await?,
-        )
+        let mut response = env
+            .durable_object("HYBRID_BINDING_STATE")?
+            .id_from_name(&format!("{deployment}:binding:{binding_id}"))?
+            .get_stub()?
+            .fetch_with_request(forwarded)
+            .await?;
+        if path == STORAGE_BINDING_ADOPTION_PATH {
+            crate::control_receipt::emit_forwarded_response(&path, &body, &mut response).await;
+        }
+        Ok::<_, anyhow::Error>(response)
     }
     .await;
     match result {

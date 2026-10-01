@@ -124,6 +124,9 @@
 
 pub mod keymap;
 
+#[cfg(any(target_arch = "wasm32", test))]
+mod control_receipt;
+
 // The method-agnostic nested-console bridge seam is compiled for the Worker
 // and for native unit tests. Keeping the Workers request conversion outside
 // this module makes the routing boundary testable without a JS runtime.

@@ -72,7 +72,18 @@ pub(crate) async fn fetch(
     candidate: bool,
 ) -> worker::Result<Response> {
     match relay(&mut request, env, candidate).await {
-        Ok(signed) => response(signed),
+        Ok((signed, body)) => {
+            let response = response(signed)?;
+            if !candidate {
+                crate::control_receipt::emit_buffered_response(
+                    MIRROR_GUARD_BATCH_LOOKUP_PATH,
+                    &body,
+                    &response,
+                )
+                .await;
+            }
+            Ok(response)
+        }
         Err(_) => Response::error("mirror final guard batch unavailable", 409),
     }
 }
@@ -81,7 +92,7 @@ async fn relay(
     request: &mut Request,
     env: &Env,
     candidate: bool,
-) -> Result<SignedMirrorGuardControl> {
+) -> Result<(SignedMirrorGuardControl, Vec<u8>)> {
     let (lookup, body, signature) = authenticate(request, env, candidate).await?;
     let observations = stream::iter(0..lookup.items.len())
         .map(|index| relay_one(env, &lookup, &body, &signature, index, candidate))
@@ -108,7 +119,8 @@ async fn relay(
         results,
         observed_at,
     };
-    sign_mirror_guard_batch_reply(&key(env)?, &reply, &lookup)
+    let signed = sign_mirror_guard_batch_reply(&key(env)?, &reply, &lookup)?;
+    Ok((signed, body))
 }
 
 async fn relay_one(
