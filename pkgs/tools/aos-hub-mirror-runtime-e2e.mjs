@@ -24,6 +24,7 @@ await writeFile(join(root, "provider.mjs"), await readFile(manifest.providerFixt
 
 await writeFile(join(root, "wrapper.mjs"), await readFile(new URL("./aos-hub-mirror-runtime-worker.mjs", import.meta.url)), { flag: "wx" });
 await writeFile(join(root, "upstream.mjs"), await readFile(new URL("./aos-hub-mirror-runtime-source.mjs", import.meta.url)), { flag: "wx" });
+await writeFile(join(root, "guard-state.mjs"), await readFile(new URL("./aos-hub-mirror-runtime-guard-state.mjs", import.meta.url)), { flag: "wx" });
 
 const fixtureVars = { ...manifest.vars, HUB_TOPOLOGY: "hybrid" };
 const bindings = Object.entries(fixtureVars).map(([name, value]) =>
@@ -39,7 +40,8 @@ const config :Workerd.Config = (
 const main :Workerd.Worker=(
  modules=[(name="wrapper.mjs",esModule=embed "wrapper.mjs"),
   (name="shim.mjs",esModule=embed "shim.mjs"),(name="index.wasm",wasm=embed "index.wasm"),
-  (name="provider.mjs",esModule=embed "provider.mjs")],
+  (name="provider.mjs",esModule=embed "provider.mjs"),
+  (name="guard-state.mjs",esModule=embed "guard-state.mjs")],
  compatibilityDate="2024-09-09",compatibilityFlags=["nodejs_compat"],globalOutbound="upstream",
  durableObjectNamespaces=[(className="HybridObjectGuard",uniqueKey="mirror-guard",enableSql=true),
   (className="MirrorFixtureStore",uniqueKey="mirror-provider",enableSql=true)],
@@ -106,6 +108,7 @@ const tls = {
   key: await readFile(manifest.tlsKey),
 };
 const proxy = createServer(tls, async (request, response) => {
+  let stage = "fixture-route";
   try {
     if (request.url === "/__fixture/restart" && request.method === "POST") {
       await stop();
@@ -132,12 +135,13 @@ const proxy = createServer(tls, async (request, response) => {
       body.push(chunk);
     }
     const encoded = requestBytes ? Buffer.concat(body) : undefined;
-    const control = encoded && ["/__hub/mirror-candidate", "/__hub/mirror-candidate-query"].includes(request.url)
+    const control = encoded && ["/__hub/mirror-candidate", "/__hub/mirror-candidate-query", "/_internal/storage/v1/execute"].includes(request.url)
       ? JSON.parse(encoded) : undefined;
     const acknowledged = control?.operation?.items?.some(item => item.step.kind === "acknowledge")
       || control?.operation?.step?.kind === "acknowledge";
     const loseReply = loseAcknowledgement && acknowledged;
     if (loseReply) loseAcknowledgement = false;
+    stage = "worker-fetch";
     const result = await fetch(workerOrigin + request.url, {
       method: request.method,
       headers: request.headers,
@@ -145,6 +149,7 @@ const proxy = createServer(tls, async (request, response) => {
       signal: AbortSignal.timeout(600000),
     });
     response.writeHead(loseReply ? 502 : result.status, loseReply ? {} : Object.fromEntries(result.headers));
+    stage = "worker-reply";
     let replyBytes = 0;
     const reply = [];
     if (result.body) for await (const chunk of result.body) {
@@ -163,6 +168,7 @@ const proxy = createServer(tls, async (request, response) => {
     }
     const capacity = result.headers.get("x-aos-mirror-candidate-capacity");
     const buffers = result.headers.get("x-aos-mirror-candidate-buffers");
+    stage = "control-observation";
     const typed = control && result.ok ? JSON.parse(Buffer.concat(reply)) : null;
     observations.push({
       generation: requestGeneration, path: request.url, status: result.status, lostReply: loseReply,
@@ -180,6 +186,13 @@ const proxy = createServer(tls, async (request, response) => {
     await observationWrites;
     response.end();
   } catch {
+    // Keep a value-free failure stage; an ambiguous request never becomes a
+    // fabricated control result, provider effect or successful acknowledgement.
+    observations.push({ generation, fixtureFailureStage: stage });
+    const snapshot = JSON.stringify(observations, null, 2);
+    observationWrites = observationWrites.then(() =>
+      writeFile(join(root, "controls.json"), snapshot, { mode: 0o600 }));
+    await observationWrites;
     if (!response.headersSent) response.writeHead(502);
     response.end();
   }

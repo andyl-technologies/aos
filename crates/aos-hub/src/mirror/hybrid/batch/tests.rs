@@ -27,7 +27,10 @@ const GUARD_KEY: &[u8] = b"mirror-independent-guard-fixture-key";
 
 mod guard_batch;
 mod runtime;
+#[cfg(feature = "test-support")]
+mod runtime_gc;
 mod runtime_membership;
+mod runtime_purposes;
 
 use guard_batch::execute as guard_execute;
 

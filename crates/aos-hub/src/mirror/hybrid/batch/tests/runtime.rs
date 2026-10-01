@@ -37,6 +37,17 @@ impl Drop for Runner {
 #[tokio::test]
 #[ignore = "requires the source-built current Worker artifact and workerd"]
 async fn actual_worker_none_zstd_publication_and_restart() {
+    connected_runtime(false).await;
+}
+
+#[cfg(feature = "test-support")]
+#[tokio::test]
+#[ignore = "requires the source-built current Worker artifact and workerd"]
+async fn actual_worker_managed_gc_and_unknown_restart() {
+    connected_runtime(true).await;
+}
+
+async fn connected_runtime(gc_only: bool) {
     let root = PathBuf::from(std::env::var("AOS_MIRROR_RUNTIME_EVIDENCE").unwrap());
     std::fs::create_dir_all(&root).unwrap();
     let source = std::env::var("AOS_MIRROR_RUNTIME_SOURCE_SHA256").unwrap();
@@ -249,6 +260,18 @@ async fn actual_worker_none_zstd_publication_and_restart() {
         .add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap())
         .build()
         .unwrap();
+    if gc_only {
+        #[cfg(feature = "test-support")]
+        super::runtime_gc::run(&root, &db, &registry, &query_http, origin, &ca).await;
+        assert!(root.join("gc-observations.json").is_file());
+        std::fs::write(
+            root.join("GC-PASS"),
+            b"controlled managed physical guard only\n",
+        )
+        .unwrap();
+        return;
+    }
+
     super::runtime_membership::run(&root, &db, &registry, &client, &query_http, origin).await;
     let selected = vec![
         (

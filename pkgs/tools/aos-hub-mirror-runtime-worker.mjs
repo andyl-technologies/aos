@@ -4,6 +4,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { fetch as rustFetch, HybridObjectGuard as RustGuard, getMemory } from "./shim.mjs";
 import { mirrorFixtureEnv, MirrorFixtureStore } from "./provider.mjs";
+import { guardState } from "./guard-state.mjs";
 
 export { MirrorFixtureStore };
 
@@ -25,6 +26,10 @@ export class HybridObjectGuard extends RustGuard {
   }
 
   async fetch(request) {
+    if (new URL(request.url).pathname === "/__fixture/guard-state") {
+      const { claimId } = await request.json();
+      return Response.json(await guardState(this.fixtureState.storage, claimId));
+    }
     if (new URL(request.url).pathname === "/__fixture/cache") {
       const { action } = await request.json();
       const storage = this.fixtureState.storage;
@@ -57,6 +62,21 @@ export default class extends WorkerEntrypoint {
     const path = new URL(request.url).pathname;
     if (path === "/__fixture/memory") {
       return Response.json({ wasmBytes: getMemory().buffer.byteLength });
+    }
+    if (path === "/__fixture/guard-state" && request.method === "POST") {
+      const input = await request.clone().json();
+      if (typeof input.key !== "string"
+          || !/^\.aos-mirror-qualification\/[a-f0-9]{32}\/final\/[a-zA-Z0-9_.\/-]+$/.test(input.key)
+          || input.key.split("/").some(part => ["", ".", ".."].includes(part))
+          || typeof input.claimId !== "string"
+          || !/^[a-zA-Z0-9_.:-]{1,128}$/.test(input.claimId)) {
+        return new Response(null, { status: 400 });
+      }
+      const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input.key))))
+        .map(byte => byte.toString(16).padStart(2, "0")).join("");
+      const namespace = this.env.HYBRID_OBJECT_GUARD;
+      const guard = namespace.get(namespace.idFromName(`${this.env.HUB_DEPLOYMENT_ID}:${digest}`));
+      return guard.fetch("https://fixture/__fixture/guard-state", request);
     }
     if (path === "/__fixture/cache" && request.method === "POST") {
       const input = await request.clone().json();
