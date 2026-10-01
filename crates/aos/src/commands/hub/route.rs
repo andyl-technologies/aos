@@ -261,7 +261,8 @@ fn merge_route_spec(
                     )),
                 });
             }
-            current.base_path.clear();
+            // The server resolves direct paths from gateway placement. Preserve
+            // that resolved path so an update retains the route's URL identity.
             current.access_policy = None;
         }
         "hub-proxy" | "hub-redirect" => {
@@ -702,6 +703,51 @@ async fn route_mutation(
 mod tests {
     use super::*;
     use crate::cli::HubAccessPolicyArgs;
+
+    #[test]
+    fn direct_route_updates_preserve_the_resolved_base_path() {
+        let current = hub_types::RouteSpec {
+            endpoint_id: "endpoint:cdn".into(),
+            endpoint_generation: 3,
+            base_path: "/andyl/testing".into(),
+            capabilities: Some(hub_types::RouteCapabilities {
+                serves_git: true,
+                ..Default::default()
+            }),
+            target: Some(hub_types::RouteTarget {
+                target: Some(hub_types::route_target::Target::DirectGatewayPlacement(
+                    hub_types::DirectGatewayPlacementTarget {
+                        placement_name: "primary".into(),
+                        gateway_id: "gateway:cdn".into(),
+                        gateway_generation: 1,
+                    },
+                )),
+            }),
+            ..Default::default()
+        };
+        let input = HubRouteSpecArgs {
+            endpoint: None,
+            endpoint_generation: Some(4),
+            base_path: None,
+            mode: None,
+            placement: None,
+            placement_policy: None,
+            gateway: Some("gateway:cdn@2".into()),
+            serves: vec![],
+            policy: HubAccessPolicyArgs::default(),
+        };
+
+        let updated = merge_route_spec(current, &input).unwrap();
+
+        assert_eq!(updated.base_path, "/andyl/testing");
+        assert_eq!(updated.endpoint_generation, 4);
+        let Some(hub_types::route_target::Target::DirectGatewayPlacement(target)) =
+            updated.target.and_then(|target| target.target)
+        else {
+            panic!("expected a direct gateway target");
+        };
+        assert_eq!(target.gateway_generation, 2);
+    }
 
     #[test]
     fn route_update_masks_name_each_changed_wire_field_once() {
