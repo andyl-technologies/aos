@@ -135,9 +135,9 @@ impl PluginNinePIo {
             .completion_current(&token.device_token, DeviceIoRequestOutcome::Completed)
             .map_err(|source| NinePIoError::DeviceIoFreeze { source })?;
 
-        let read_index = inbound_ring.header.read_index();
+        let read_index = PluginShmemOrdering::consumer_read_index(inbound_ring.header);
         let head = peek_head_frame(inbound_ring)?;
-        if inbound_ring.header.read_index() != read_index {
+        if PluginShmemOrdering::consumer_read_index(inbound_ring.header) != read_index {
             return Ok(None);
         }
         let Some(frame) = head else {
@@ -170,7 +170,7 @@ impl PluginNinePIo {
     ) -> Result<bool, NinePIoError> {
         if observed.ring_index != self.inbound_ring_index
             || observed.ring_generation != inbound_ring.registered_generation()
-            || inbound_ring.header.read_index() != observed.read_index
+            || PluginShmemOrdering::consumer_read_index(inbound_ring.header) != observed.read_index
         {
             return Ok(false);
         }
