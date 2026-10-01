@@ -45,6 +45,7 @@ mod catalog_tests;
 
 pub mod load;
 pub(crate) mod staging;
+mod staging_cache;
 
 use std::collections::BTreeMap;
 
