@@ -575,15 +575,27 @@ pub struct HierarchyProtectedJournalOwnerV1<'journal> {
 /// ancestry. In particular, local replay supplies no Controller receipt,
 /// independent rollback floor, deletion permit, or physical drain evidence.
 #[must_use = "local Tree inventory must retain its original journal borrow"]
-#[allow(dead_code, reason = "structural DATA awaits its separate consumer")]
+#[allow(dead_code, reason = "the retained ancestry consumer is Linux-only")]
 pub(crate) struct RetainedTreeInventoryDataV1<'journal> {
     journal: &'journal Journal,
     sequence: u64,
     heads: BTreeMap<ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1>,
 }
 
-#[allow(dead_code, reason = "structural DATA awaits its separate consumer")]
+#[allow(dead_code, reason = "the retained ancestry consumer is Linux-only")]
 impl RetainedTreeInventoryDataV1<'_> {
+    // Only hierarchy's existing readback validator can reborrow this owner;
+    // these accessors neither reopen it nor export a detached writer token.
+    pub(super) const fn journal(&self) -> &Journal {
+        self.journal
+    }
+
+    pub(super) const fn heads(
+        &self,
+    ) -> &BTreeMap<ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1> {
+        &self.heads
+    }
+
     /// Returns the original shared-journal watermark, without granting authority.
     pub(crate) const fn journal_sequence(&self) -> u64 {
         self.sequence
@@ -636,7 +648,7 @@ impl RetainedTreeInventoryDataV1<'_> {
 ///
 /// Rejects lost named custody, invalid complete lineage replay, or a changed
 /// journal watermark. Controller receipt/floor authentication remains absent.
-#[allow(dead_code, reason = "structural DATA awaits its separate consumer")]
+#[allow(dead_code, reason = "the retained ancestry consumer is Linux-only")]
 pub(crate) fn retained_tree_inventory_data_v1(
     source: &mut ProtectedSourceDomainJournalOwnerV1,
 ) -> Result<RetainedTreeInventoryDataV1<'_>, HierarchyProtectedJournalErrorV1> {

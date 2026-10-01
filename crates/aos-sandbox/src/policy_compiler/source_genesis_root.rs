@@ -32,6 +32,7 @@ pub use controller_readback::{
 };
 pub use coordinator::coordinate_provisioned_source_genesis_v1;
 pub use current::CurrentRootSourceGenesisFloorV1;
+pub(in crate::policy_compiler) use flight::CompletedRootSourceGenesisFloorV1;
 pub use flight::{HeldRootSourceGenesisIntentV1, RootSourceGenesisFloorProofV1};
 pub use records::{
     ROOT_SOURCE_GENESIS_INTENT_BYTES_V1, RootSourceGenesisIntentRecordV1,

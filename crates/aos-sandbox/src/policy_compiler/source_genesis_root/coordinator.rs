@@ -16,9 +16,10 @@ use crate::hierarchy::controller_genesis_input::{
     ControllerSourceGenesisInputErrorV1, ProvisionedControllerSourceGenesisInputV1,
 };
 use crate::hierarchy::genesis_profile::SourceGenesisErrorV1;
+use crate::hierarchy::protected_journal::retained_tree_inventory_data_v1;
 use crate::hierarchy::source_genesis::{
     acknowledge_source_tree_genesis_v1, append_source_tree_genesis_v1,
-    observe_source_genesis_attempt_v1,
+    observe_retained_source_genesis_v1, observe_source_genesis_attempt_v1,
 };
 use crate::lifecycle::protected_journal_join::ProtectedSourceDomainJournalOwnerV1;
 use crate::normal_root::ProductionControllerNormalRootProfileV1;
@@ -114,7 +115,29 @@ pub fn coordinate_provisioned_source_genesis_v1(
         signer,
     )?;
     flight.send_phase(Phase::Complete, &complete)?;
-    flight.finish(&floor)?;
+    let completed = flight.receive_completed(&floor)?;
+    drop(acknowledged);
+
+    // Root still retains its current floor on this original Completed flight.
+    // Reborrow the same Source writer for complete inventory and actual ACK
+    // readback; the private ancestry loan cannot outlive this window.
+    {
+        let inventory =
+            retained_tree_inventory_data_v1(source).map_err(SourceGenesisErrorV1::from)?;
+        let acknowledged = observe_retained_source_genesis_v1(
+            &inventory,
+            completed.source_uid(),
+            input.project(),
+        )?;
+        super::super::public_create_source::consume_completed_gen1_ancestry_v1(
+            &controller,
+            &acknowledged,
+            &inventory,
+            &completed,
+        )?;
+    }
+
+    flight.finish(completed)?;
     input.recheck()?;
     Ok(floor.floor().digest())
 }

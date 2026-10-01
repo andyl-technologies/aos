@@ -103,6 +103,22 @@ impl SourceGenesisLocationV1 {
 }
 
 impl HeldSourceTreeGenesisObservationV1<'_> {
+    // Same original owner, not equality of detached names or receipt data.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn require_retained_inventory_v1(
+        &self,
+        inventory: &super::protected_journal::RetainedTreeInventoryDataV1<'_>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        self.recheck()?;
+        inventory.recheck()?;
+        if !std::ptr::eq(self.journal, inventory.journal())
+            || self.sequence != inventory.journal_sequence()
+        {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        Ok(())
+    }
+
     /// Returns the actual observed phase, not Root authority or freshness.
     #[must_use]
     pub fn state(&self) -> SourceTreeGenesisStateV1 {
@@ -532,7 +548,7 @@ fn capture_observation(
 // borrow. This avoids a second full Tree/lineage replay just to select a cut;
 // it cannot adopt decoded/historical rows across owners or coordinator phases.
 fn capture_validated_observation(
-    journal: &mut Journal,
+    journal: &Journal,
     uid: u32,
     selection: SourceGenesisSelectionV1,
     location: SourceGenesisLocationV1,
@@ -576,6 +592,42 @@ pub(crate) fn validate_actual_rows(
 ) -> Result<SourceGenesisRowsV1, SourceGenesisErrorV1> {
     let rows = journal.source_tree_genesis_rows_v1()?;
     let heads = replay_closed_tree_lineage_v1(journal)?;
+    validate_rows_with_lineage(journal, rows, &heads)
+}
+
+// The inventory already performed the same complete lineage replay while
+// borrowing this original writer. Reuse the receipt/member validator below;
+// neither a decoded row nor an unrelated journal can nominate this cut.
+#[cfg(target_os = "linux")]
+pub(crate) fn observe_retained_source_genesis_v1<'source>(
+    inventory: &'source super::protected_journal::RetainedTreeInventoryDataV1<'_>,
+    uid: u32,
+    project: ProjectId,
+) -> Result<HeldSourceTreeGenesisObservationV1<'source>, SourceGenesisErrorV1> {
+    inventory.recheck()?;
+    let journal = inventory.journal();
+    require_location(journal, uid)?;
+    let rows = validate_rows_with_lineage(
+        journal,
+        journal.source_tree_genesis_rows_v1()?,
+        inventory.heads(),
+    )?;
+    let observed = capture_validated_observation(
+        journal,
+        uid,
+        SourceGenesisSelectionV1::Present(project),
+        SourceGenesisLocationV1::Fixed,
+        rows,
+    )?;
+    inventory.recheck()?;
+    Ok(observed)
+}
+
+fn validate_rows_with_lineage(
+    journal: &Journal,
+    rows: SourceGenesisRowsV1,
+    heads: &std::collections::BTreeMap<ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1>,
+) -> Result<SourceGenesisRowsV1, SourceGenesisErrorV1> {
     if heads.len() != rows.receipts.len()
         || heads
             .keys()

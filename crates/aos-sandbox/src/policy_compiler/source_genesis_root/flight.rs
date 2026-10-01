@@ -112,6 +112,27 @@ impl RootSourceGenesisFloorProofV1<'_> {
     }
 }
 
+// Only receipt of Completed on the original held stream constructs this loan.
+// Its floor remains borrowed; a decoded floor or earlier Anchored reply cannot
+// select the current-ancestry consumer.
+pub(in crate::policy_compiler) struct CompletedRootSourceGenesisFloorV1<'completed, 'flight> {
+    proof: &'completed RootSourceGenesisFloorProofV1<'flight>,
+}
+
+impl CompletedRootSourceGenesisFloorV1<'_, '_> {
+    pub(in crate::policy_compiler) fn floor(&self) -> &SourceHierarchyFloorRecordV1 {
+        self.proof.floor()
+    }
+
+    pub(in crate::policy_compiler) fn source_uid(&self) -> u32 {
+        self.proof.source_uid()
+    }
+
+    pub(in crate::policy_compiler) fn recheck(&self) -> Result<(), SourceGenesisErrorV1> {
+        self.proof.recheck()
+    }
+}
+
 // Private to the same-flight coordinator. There is no adoption constructor
 // accepting caller-supplied peers, subjects, floor bytes, or ready flags.
 pub(super) struct OriginalRootGenesisFlightV1<'profile> {
@@ -315,16 +336,31 @@ impl<'profile> OriginalRootGenesisFlightV1<'profile> {
         })
     }
 
-    pub(super) fn finish(
+    pub(super) fn receive_completed<'completed, 'flight>(
         &self,
-        proof: &RootSourceGenesisFloorProofV1<'_>,
-    ) -> Result<(), SourceGenesisErrorV1> {
+        proof: &'completed RootSourceGenesisFloorProofV1<'flight>,
+    ) -> Result<CompletedRootSourceGenesisFloorV1<'completed, 'flight>, SourceGenesisErrorV1> {
+        if !std::ptr::eq(self, proof.origin) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
         proof.recheck()?;
         let (_, completed) = self.receive_phase(&[Phase::Completed])?;
         require_completed_digest(&completed, proof.floor().digest().as_bytes())?;
+        proof.recheck()?;
+        Ok(CompletedRootSourceGenesisFloorV1 { proof })
+    }
+
+    pub(super) fn finish(
+        &self,
+        completed: CompletedRootSourceGenesisFloorV1<'_, '_>,
+    ) -> Result<(), SourceGenesisErrorV1> {
+        if !std::ptr::eq(self, completed.proof.origin) {
+            return Err(SourceGenesisErrorV1::Stale);
+        }
+        completed.recheck()?;
         // Completed was received on the original held stream. Finish may make
         // Root close immediately, so no later open-queue predicate is asserted.
-        self.send_phase(Phase::Finish, &completed)
+        self.send_phase(Phase::Finish, completed.floor().digest().as_bytes())
     }
 
     fn receive_phase(&self, allowed: &[Phase]) -> Result<(Phase, Vec<u8>), SourceGenesisErrorV1> {
@@ -493,6 +529,27 @@ mod tests {
     use std::os::unix::net::UnixStream;
 
     use super::*;
+
+    #[test]
+    fn completed_window_accepts_only_original_completed_phase_and_nonce_data() {
+        let nonce = [31; 16];
+        let floor = [32; 32];
+        let frame = encode_root_source_genesis_frame_v1(Phase::Completed, nonce, &floor).unwrap();
+
+        assert_eq!(
+            select_reply_phase(&frame[..32], &[Phase::Completed], nonce).unwrap(),
+            Phase::Completed,
+        );
+        assert!(select_reply_phase(&frame[..32], &[Phase::Completed], [33; 16]).is_err());
+        for phase in [Phase::Anchored, Phase::Complete, Phase::Finish] {
+            let substituted =
+                encode_root_source_genesis_frame_v1(phase, nonce, &vec![0; phase.payload_bytes()])
+                    .unwrap();
+            assert!(
+                select_reply_phase(&substituted[..32], &[Phase::Completed], nonce).is_err(),
+            );
+        }
+    }
 
     #[test]
     fn live_creator_does_not_hide_original_queue_shutdown() {
