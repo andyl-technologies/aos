@@ -101,7 +101,9 @@ in
         ];
       };
     };
-    inherit version src;
+    inherit src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     buildDeps =
       [buildPackages.cmake buildPackages.gnumake buildPackages.nasm buildPackages.patch]

@@ -70,7 +70,8 @@ in
   mkLlvmDerivation {
     pname = "llvm";
     inherit platformSupport;
-    inherit version;
+    # Pin the full toolchain: C API stability does not cover C++ APIs or IR.
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

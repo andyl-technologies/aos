@@ -114,7 +114,9 @@ in
       };
     };
 
-    inherit version;
+    # Perl guarantees maintenance-series compatibility, not all future 5.x.
+    # https://perldoc.perl.org/perlpolicy
+    version = "=${version}";
 
     # Two outputs: $out is the scrubbed, ship-ready interpreter; $dev
     # preserves the unmodified Config.pm / Config_heavy.pl so a future

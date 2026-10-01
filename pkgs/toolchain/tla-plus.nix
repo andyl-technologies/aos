@@ -132,7 +132,7 @@ in
       };
     };
 
-    inherit version;
+    version = "=${version}";
     src = tlaSource;
 
     buildDeps = [buildJdk buildPackages.python3];

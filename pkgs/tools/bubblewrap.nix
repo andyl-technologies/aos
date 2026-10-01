@@ -89,7 +89,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/containers/bubblewrap/releases/download/v${version}/bubblewrap-${version}.tar.xz"];
       hash = "051kgb4s6vrr5qld6fxsag59ybgqz489jj27qykvnfiy6q3x0q4p";

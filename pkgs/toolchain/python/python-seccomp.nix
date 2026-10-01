@@ -89,7 +89,7 @@ mkDerivation {
       ];
     };
   };
-  version = libseccomp.version;
+  version = "=${libseccomp.version}";
   src = libseccomp.src;
 
   buildDeps = [buildPackages.python3 buildPackages.cython];

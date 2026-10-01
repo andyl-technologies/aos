@@ -108,7 +108,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://www.x.org/releases/individual/lib/libXdmcp-${version}.tar.xz"];
       hash = "1312l8x3asib77wgf123w3nbabnky61mb6pnmmqapbf350l259fq";

@@ -102,7 +102,10 @@ in
       };
     };
 
-    inherit version src;
+    # Fish removes deprecated interfaces within a major release series.
+    # https://fishshell.com/docs/current/relnotes.html
+    version = "=${version}";
+    inherit src;
 
     buildDeps =
       [rust cmake ninja gettext pkg-config python3]

@@ -79,7 +79,9 @@ in
       };
     };
 
-    inherit version src goModules;
+    inherit src goModules;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     goPackage = "./cmd";
     goOutput = "docker-compose";
     ldflags = "-s -w -X github.com/docker/compose/v5/internal.Version=${version}";

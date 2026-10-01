@@ -68,7 +68,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep the exact release until a broader upstream compatibility policy is verified.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://files.pythonhosted.org/packages/source/p/pygments/pygments-${version}.tar.gz"];

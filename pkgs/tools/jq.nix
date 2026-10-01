@@ -109,7 +109,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     outputs = ["out" "dev"];
 
     src = upstream.components.main.sources.source;

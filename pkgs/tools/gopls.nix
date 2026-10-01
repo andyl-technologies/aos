@@ -83,7 +83,9 @@ in
       };
     };
 
-    inherit version src goModules;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
+    inherit src goModules;
     postPatch = ''cd gopls'';
     goPackage = ".";
     goOutput = "gopls";

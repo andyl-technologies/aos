@@ -74,7 +74,9 @@ in
       };
     };
 
-    inherit version;
+    # lxml permits feature removal in later x.y.0 releases.
+    # https://lxml.de/6.0/changes-6.0.2.html
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/lxml/lxml/archive/refs/tags/lxml-${version}.tar.gz"];

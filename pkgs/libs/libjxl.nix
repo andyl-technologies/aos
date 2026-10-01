@@ -110,7 +110,9 @@ in
         ];
       };
     };
-    inherit (sources) version src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${sources.version}";
+    inherit (sources) src;
     passthru.evidenceSources = [sources.src sources.skcms sources.sjpeg sources.googletest sources.testdata];
 
     buildDeps = [buildPackages.cmake buildPackages.gnumake buildPackages.pkg-config buildPackages.python3 buildPackages.asciidoc buildPackages.doxygen buildPackages.graphviz buildPackages.git buildPackages.openjdk openjdk];

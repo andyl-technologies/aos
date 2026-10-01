@@ -108,7 +108,9 @@ in
         ];
       };
     };
-    inherit version;
+    # Upstream permits ABI changes in minor releases; keep this patch series.
+    # https://openexr.com/en/latest/install.html
+    version = "~${version}";
     src = fetchurl {
       urls = ["https://github.com/AcademySoftwareFoundation/openexr/archive/refs/tags/v${version}.tar.gz"];
       hash = "1amxprzv1f9sfk5mrinyc4xi52v237j1kwm4wf5zk72dxaqdapj4";

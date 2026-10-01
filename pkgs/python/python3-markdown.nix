@@ -70,7 +70,9 @@ in
       };
     };
 
-    inherit version;
+    # Python-Markdown permits incompatible changes in minor releases.
+    # https://python-markdown.github.io/contributing/#versions
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/Python-Markdown/markdown/archive/refs/tags/${version}.tar.gz"];

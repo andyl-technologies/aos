@@ -11,6 +11,7 @@
     releaseCompatibility = import ./release-compatibility.nix;
     releaseCompatibilityRecipes = import ./release-compatibility-recipes.nix {inherit pkgs;};
     versionShorthand = import ./version-shorthand.nix {inherit pkgs;};
+    upstreamVersionPolicy = import ./upstream-version-policy.nix {inherit pkgs;};
     semver = import ./semver.nix;
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;

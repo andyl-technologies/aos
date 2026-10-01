@@ -73,7 +73,9 @@ in
       };
     };
 
-    inherit version src goModules;
+    inherit src goModules;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     goPackage = "./cmd/rootlesskit";
     goOutput = "rootlesskit";
     doCheck = false;

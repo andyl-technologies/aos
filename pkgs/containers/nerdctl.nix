@@ -133,7 +133,9 @@ in
       };
     };
 
-    inherit version src;
+    inherit src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     inherit goModules;
     update = upstream.updateWithArtifacts {inherit goModules;};

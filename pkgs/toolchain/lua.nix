@@ -63,7 +63,8 @@ in
       };
     };
 
-    inherit version;
+    # Lua API and ABI compatibility is confined to this minor series.
+    version = "~${version}";
 
     src = fetchurl {
       urls = ["https://www.lua.org/ftp/lua-${version}.tar.gz"];

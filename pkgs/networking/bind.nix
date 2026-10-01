@@ -100,7 +100,9 @@ in
       };
     };
 
-    inherit version;
+    # ISC preserves compatibility within the 9.20 stable branch.
+    # https://kb.isc.org/docs/aa-00896
+    version = "~${version}";
     outputs = ["out" "dnsutils"];
 
     src = fetchurl {

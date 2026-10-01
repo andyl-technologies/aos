@@ -128,7 +128,9 @@ in
       };
     };
 
-    inherit version;
+    # Minor releases can change CLI JSON; keep this interface release fixed.
+    # https://nix.dev/manual/nix/2.34/release-notes/rl-2.32
+    version = "=${version}";
 
     # `out` ships the CLI + shared libraries (the runtime image uses the nix
     # CLI only); `dev` holds the headers and pkg-config files. Keeping the

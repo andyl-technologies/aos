@@ -66,7 +66,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://kernel.org/pub/linux/utils/net/bridge-utils/bridge-utils-${version}.tar.xz"];
       hash = "sha256-ph2L5PGhQFxgyO841UTwwYwFszubB+W0sxAzU2Fl5g4=";

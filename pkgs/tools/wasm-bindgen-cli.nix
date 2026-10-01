@@ -85,7 +85,10 @@ in
       };
     };
 
-    inherit version src;
+    # The CLI and generated Wasm must use the same bindgen schema version.
+    # https://github.com/wasm-bindgen/wasm-bindgen/blob/0.2.126/crates/shared/src/lib.rs
+    version = "=${version}";
+    inherit src;
 
     cargoDeps = fetchCargoDeps {
       inherit src;

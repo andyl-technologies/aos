@@ -143,7 +143,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/mm2/Little-CMS/releases/download/lcms${version}/lcms2-${version}.tar.gz"];
       hash = "1j0m505qqsj1frmx8iyv8sylmfjc5q1sh51004hwkysrmdxlzidz";

@@ -130,7 +130,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://www.x.org/releases/individual/app/mkfontscale-${version}.tar.xz"];
       hash = "0phsn0fvbm0wd805znlqyawialrh1s2pir9fz7ihwv4vgahr4550";

@@ -146,7 +146,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/lovell/libimagequant/archive/v${version}.tar.gz"];
       hash = "1ysdjvcylj0844qk2k2av11ppxfbrbix98shkmf9flhhgd5silj7";

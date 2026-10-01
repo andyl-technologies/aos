@@ -71,7 +71,9 @@ in
       };
     };
 
-    inherit version;
+    # Pallets feature releases can remove previously deprecated public APIs.
+    # https://palletsprojects.com/versions
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/pallets/markupsafe/archive/refs/tags/${version}.tar.gz"];

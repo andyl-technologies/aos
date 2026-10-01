@@ -129,7 +129,9 @@ in
       };
     };
 
-    inherit version;
+    # Slapd configuration and storage backends can change within 2.x.
+    # https://www.openldap.org/doc/admin25/appendix-upgrading.html
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

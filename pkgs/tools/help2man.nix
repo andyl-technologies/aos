@@ -107,7 +107,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://ftp.gnu.org/gnu/help2man/help2man-${version}.tar.xz"];
       hash = "0kzxla1w0w4z5la255lg9q51wy3qx8f1b0i6gbhaz9pcybg4yzjd";

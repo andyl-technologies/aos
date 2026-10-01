@@ -134,7 +134,10 @@ in
       };
     };
 
-    inherit (linuxSource) version src;
+    inherit (linuxSource) src;
+    # Kernel module APIs and ABI are not stable across releases.
+    # https://www.kernel.org/doc/html/latest/process/stable-api-nonsense.html
+    version = "=${linuxSource.version}";
     update = linuxSource.updateFor "linux";
 
     # `out` is the slim runtime kernel (compressed vmlinuz + modules). The

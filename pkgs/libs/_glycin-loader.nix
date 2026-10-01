@@ -31,7 +31,9 @@ in
     };
     pname = loaderName;
     inherit qualification;
-    inherit (sources) version src cargoDeps;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${sources.version}";
+    inherit (sources) src cargoDeps;
     buildDeps = [buildPackages.pkg-config];
     runtimeDeps = [libseccomp] ++ loaderDeps;
     cargoFlags = "-p ${loaderName}";

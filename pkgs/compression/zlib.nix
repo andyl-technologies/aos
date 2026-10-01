@@ -174,7 +174,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = upstream.components.main.sources.source;
     update = upstream.forPackage {member = "zlib";};

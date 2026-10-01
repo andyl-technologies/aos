@@ -65,7 +65,7 @@ in
       };
     };
 
-    inherit version;
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://ftpmirror.gnu.org/autoconf-archive/autoconf-archive-${version}.tar.xz"];
       hash = "sha256-e81dABkW86UO10NvT3AOPSsbrePtgDIZxZLWJQKlc2M=";

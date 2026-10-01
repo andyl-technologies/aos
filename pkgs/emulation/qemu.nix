@@ -425,7 +425,9 @@ in
     };
 
       inherit pname;
-      inherit version;
+      # QEMU permits deprecated interface removal without a major-version bump.
+      # https://www.qemu.org/docs/master/about/deprecated.html
+      version = "=${version}";
 
       src = fetchurl {
         urls = [

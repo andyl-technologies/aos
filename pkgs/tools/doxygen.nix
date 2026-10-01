@@ -105,7 +105,9 @@ in
         ];
       };
     };
-    inherit version src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
+    inherit src;
 
     buildDeps = [buildPackages.cmake buildPackages.gnumake buildPackages.flex buildPackages.bison buildPackages.python3 buildPackages.libxml2];
     runtimeDeps = [perl bash bibtex sqlite];

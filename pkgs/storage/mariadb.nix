@@ -315,7 +315,10 @@ in
       };
     };
 
-    inherit version;
+    # MariaDB second-component changes are server-series upgrades,
+    # requiring migration and incompatibility review.
+    # https://mariadb.com/docs/server/clients-and-utilities/deployment-tools/mariadb-upgrade
+    version = "=${version}";
 
     src = source;
 

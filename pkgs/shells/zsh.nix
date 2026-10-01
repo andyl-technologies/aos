@@ -68,7 +68,9 @@ in
       };
     };
 
-    inherit version;
+    # Zsh documents scripting incompatibilities within its major release series.
+    # https://github.com/zsh-users/zsh
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

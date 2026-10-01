@@ -72,7 +72,11 @@ mkDerivation {
     };
   };
 
-  version = workerd-source.version;
+  # Inherit the source package's release policy alongside its exact version.
+  version =
+    if workerd-source.versionRequirement == null
+    then workerd-source.version
+    else workerd-source.versionRequirement;
   src = null;
 
   buildDeps = [];

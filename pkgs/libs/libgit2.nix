@@ -140,7 +140,9 @@ in
       };
     };
 
-    inherit version;
+    # Upstream guarantees ABI and systems API stability within a minor release.
+    # https://github.com/libgit2/libgit2/blob/main/docs/api-stability.md
+    version = "~${version}";
 
     src = upstream.components.main.sources.source;
     update = upstream.update;

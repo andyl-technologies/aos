@@ -101,7 +101,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/ngtcp2/ngtcp2/releases/download/v${version}/ngtcp2-${version}.tar.bz2"];

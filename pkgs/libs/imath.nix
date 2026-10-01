@@ -110,7 +110,9 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep the ABI requirement within the minor-version namespace.
+    # https://imath.readthedocs.io/en/latest/install.html
+    version = "~${version}";
     src = fetchurl {
       urls = ["https://github.com/AcademySoftwareFoundation/Imath/archive/refs/tags/v${version}.tar.gz"];
       hash = "1y7r5pnyyvqbvr0disxy8zbnh4v9qzciahlxw04byi8zyari4371";

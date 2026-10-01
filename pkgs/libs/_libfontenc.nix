@@ -18,7 +18,8 @@ in
       role = "public-package";
     };
     pname = "libfontenc";
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://www.x.org/releases/individual/lib/libfontenc-${version}.tar.xz"];
       hash = "1qkky8647gmv2qcy07444r76cgxbrcvd49qxzvah625ibiq950wx";

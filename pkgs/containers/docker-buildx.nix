@@ -78,7 +78,9 @@ in
       };
     };
 
-    inherit version src goModules;
+    inherit src goModules;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     goPackage = "./cmd/buildx";
     goOutput = "docker-buildx";
     ldflags = "-s -w -X github.com/docker/buildx/version.Package=github.com/docker/buildx -X github.com/docker/buildx/version.Version=v${version}";

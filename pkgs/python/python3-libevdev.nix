@@ -84,7 +84,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep the exact release until a broader upstream compatibility policy is verified.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://files.pythonhosted.org/packages/86/ff/4f8ab38330965168be742b772bcd151a7a052ea17b2481c43a607875d4ed/libevdev-${version}.tar.gz"];
       hash = "13ay87cyka8hlyaid7mxwcw91fpsfdmws5qirfg7nxh12k6njcyw";

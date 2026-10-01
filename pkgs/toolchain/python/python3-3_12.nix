@@ -91,7 +91,8 @@ in
       };
     };
 
-    inherit version;
+    # Ordinary extension ABI compatibility is confined to this minor series.
+    version = "~${version}";
 
     src = fetchurl {
       urls = [

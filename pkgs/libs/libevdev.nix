@@ -77,7 +77,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://www.freedesktop.org/software/libevdev/libevdev-${version}.tar.xz"];
       hash = "19mzc3h6kq166vv46bg8y4xpv38rmqxl6mnk5axib3qhf54q5bqc";

@@ -156,7 +156,9 @@ in
       };
     };
 
-    inherit version;
+    # GNU has introduced incompatible network behavior within the 1.x series.
+    # https://lists.gnu.org/archive/html/info-gnu/2016-06/msg00004.html
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

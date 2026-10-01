@@ -67,7 +67,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/Cyan4973/xxHash/archive/refs/tags/v${version}.tar.gz"];
       hash = "0cnd998anlmd8gg6fpx2jmwcwri5d74zgbdkg65d7hz76l4jff2p";

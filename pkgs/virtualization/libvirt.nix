@@ -200,7 +200,9 @@ in
       };
     };
 
-    inherit version;
+    # Daemon configuration is excluded from the public API stability promise.
+    # https://libvirt.org/support.html
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://download.libvirt.org/libvirt-${version}.tar.xz"];

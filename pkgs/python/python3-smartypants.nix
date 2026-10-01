@@ -92,7 +92,8 @@ mkDerivation {
       ];
     };
   };
-  version = "2.0.2";
+  # Keep the exact release until a broader upstream compatibility policy is verified.
+  version = "=2.0.2";
   src = fetchurl {
     urls = ["https://files.pythonhosted.org/packages/6c/8f/a033f78196d9467b402d100ec40b95166d43fa2642693f23f771473d8195/smartypants-2.0.2.tar.gz"];
     hash = "39d64ce1d7cc6964b698297bdf391bc12c3251b7f608e6e55d857cd7c5f800c6";

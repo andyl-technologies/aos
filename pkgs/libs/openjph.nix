@@ -113,7 +113,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/aous72/OpenJPH/archive/refs/tags/${version}.tar.gz"];
       hash = "06gp62pf6jzqdk8w71jmmp8lgm32fnrk08gz4cnk5qayivhypcaw";

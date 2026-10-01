@@ -70,7 +70,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep the exact release until a broader upstream compatibility policy is verified.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/sqlalchemy/mako/archive/refs/tags/rel_1_3_10.tar.gz"];

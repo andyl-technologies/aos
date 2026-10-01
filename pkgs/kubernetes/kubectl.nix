@@ -70,7 +70,10 @@ mkGoPackage {
     };
   };
 
-  inherit (kubeSource) version src;
+  inherit (kubeSource) src;
+  # Kubernetes CLI removal follows deprecation windows, not major versions.
+  # https://kubernetes.io/docs/reference/deprecation-policy/
+  version = "=${kubeSource.version}";
 
   goPackage = "./cmd/kubectl";
   goOutput = "kubectl";
