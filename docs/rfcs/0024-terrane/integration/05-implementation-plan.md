@@ -452,10 +452,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cancellation durability. A final retained clock check before receipt
   acknowledgment has been added. Its separate actual regression fails before
   the correction and passes afterward: the lease remains selected, but the
-  expired clock prevents a success receipt. Corrected Rc and formatting checks
-  are still running on their existing session. Earlier rustdoc,
-  no-default-feature compilation and
-  mandatory formatting pass; strict Clippy remains blocked by 22 inherited
+  expired clock prevents a success receipt. The corrected independent Rc case
+  passes in its actual test process, and both mandatory formatting commands
+  exit successfully. Earlier rustdoc and no-default-feature compilation pass;
+  strict Clippy remains blocked by 22 inherited
   unfinished-production diagnostics. Native source integration, runner-wide
   lease fencing and complete gate qualification remain pending.
   Narrowed
