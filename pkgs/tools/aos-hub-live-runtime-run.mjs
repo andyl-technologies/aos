@@ -2,6 +2,7 @@
 // Native authorization and hosted acceptance remain UNKNOWN in this experiment.
 
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import diagnostics from "node:diagnostics_channel";
 import { readFile, stat, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import {
@@ -27,6 +28,43 @@ const queryKey = await privateKey(plan.queryKeyFile);
 if (streamKey.equals(queryKey)) throw new Error("Controlled query and stream key roles must differ");
 const sign = (key, domain, bytes) => createHmac("sha256", key)
   .update("aos-storage-work-v1\0").update(domain).update(bytes).digest("hex");
+
+// Only the sequential cancellation control owns a socket association. Metadata
+// concurrency and every other request keep their existing transport behavior.
+let pendingCancellation = null;
+diagnostics.channel("undici:client:sendHeaders").subscribe(({ socket, request }) => {
+  if (!pendingCancellation || request.path !== "/__hub/mirror-live-candidate") return;
+  pendingCancellation.assignments += 1;
+  pendingCancellation.socket = socket;
+});
+
+function resetCancellation(opened, clientBytes) {
+  const association = opened.cancellation;
+  const socket = association?.socket;
+  if (!association || association.controlId !== opened.id || association.assignments !== 1
+      || !socket || socket.remoteAddress !== "127.0.0.1" || socket.remotePort !== Number(new URL(origin).port)
+      || !Number.isInteger(socket.localPort) || socket.destroyed || socket.connecting
+      || typeof socket.resetAndDestroy !== "function") {
+    throw new Error("The exact cancellation request socket is unavailable");
+  }
+
+  // Closing an HTTP read-half can leave the server's write-half valid. This
+  // controlled case deliberately tears down the connection before reader.cancel.
+  const facts = {
+    transport: "explicit_tcp_reset", controlId: opened.id, clientBytes,
+    localPort: socket.localPort, remotePort: socket.remotePort,
+    resetStartedUtcMilliseconds: Date.now(), resetRequestedUtcMilliseconds: null,
+    socketClosedUtcMilliseconds: null, socketClosedHadError: null,
+  };
+  opened.cancellationFacts = facts;
+  socket.once("close", hadError => {
+    facts.socketClosedUtcMilliseconds = Date.now();
+    facts.socketClosedHadError = hadError;
+  });
+  socket.resetAndDestroy();
+  facts.resetRequestedUtcMilliseconds = Date.now();
+}
+
 const records = [];
 const results = [];
 let sequence = 0;
@@ -95,13 +133,21 @@ async function openControl(spec) {
   const sourceWatermark = sourceSequenceWatermark(admissionSources);
   const started = performance.now();
   const dispatchStartedUtcMilliseconds = Date.now();
-  const response = await fetch(origin + (query ? "/__hub/mirror-live-query-candidate" : "/__hub/mirror-live-candidate"), {
-    method: "POST", headers: { "x-aos-storage-work-signature": signature, "content-type": "application/json" }, body: bytes,
-    signal: AbortSignal.timeout(610000),
-  });
+  const cancellation = spec.cancelAfterBytes ? { controlId: id, assignments: 0, socket: null } : null;
+  if (cancellation && pendingCancellation) throw new Error("Cancellation controls must be sequential");
+  let response;
+  if (cancellation) pendingCancellation = cancellation;
+  try {
+    response = await fetch(origin + (query ? "/__hub/mirror-live-query-candidate" : "/__hub/mirror-live-candidate"), {
+      method: "POST", headers: { "x-aos-storage-work-signature": signature, "content-type": "application/json" }, body: bytes,
+      signal: AbortSignal.timeout(610000),
+    });
+  } finally {
+    if (cancellation) pendingCancellation = null;
+  }
   const responseReceivedUtcMilliseconds = Date.now();
   const opened = { id, control, requestBytes: bytes, response, started, query, spec, sourceWatermark,
-    admissionSources, dispatchStartedUtcMilliseconds, responseReceivedUtcMilliseconds };
+    admissionSources, dispatchStartedUtcMilliseconds, responseReceivedUtcMilliseconds, cancellation };
   opened.initialSourceIdentity = await captureSourceIdentity(opened);
   return opened;
 }
@@ -122,6 +168,7 @@ async function bodyRecord(opened, responseSha256, clientBytes, streamErrored, ca
     id: opened.id, route: opened.query ? "query" : "stream", path: opened.spec.path, status: opened.response.status,
     requestSha256: sha(opened.requestBytes), requestBytes: opened.requestBytes.length,
     responseSha256, clientBytes, streamErrored, cancelled,
+    clientCancellation: opened.cancellationFacts ?? null,
     wallMilliseconds: performance.now() - opened.started,
     sourceWatermark: opened.sourceWatermark,
     sourceIdentity: opened.initialSourceIdentity ?? await captureSourceIdentity(opened),
@@ -153,6 +200,7 @@ async function consume(opened) {
         hash.update(value);
         if (query) queryChunks.push(Buffer.from(value));
         if (spec.cancelAfterBytes && clientBytes >= spec.cancelAfterBytes) {
+          resetCancellation(opened, clientBytes);
           await reader.cancel();
           cancelled = true;
           break;
@@ -293,6 +341,8 @@ try {
     if (spec.expectStreamError && !(actual[0].streamErrored || actual[0].status >= 400)) violations.push("length_refusal");
     const originalSource = actual[0].sourceIdentity && after.find(item => item.sequence === actual[0].sourceIdentity.sequence);
     if (spec.requireSourceCancellation && originalSource?.cancelled !== true) violations.push("source_cancel");
+    if (spec.cancelAfterBytes && (actual[0].clientCancellation?.transport !== "explicit_tcp_reset"
+        || !Number.isSafeInteger(actual[0].clientCancellation?.resetRequestedUtcMilliseconds))) violations.push("client_reset");
     if (spec.requireMetadataBeforeBulkEOF && !metadataBeforeBulkEOF) violations.push("metadata_capacity");
     if (spec.requirePositiveQueryReply && !(actual[0].querySourceBytes > 0 && actual[0].queryReplyBytes <= 256 * 1024)) violations.push("actual_query");
     results.push({ case: spec.name, controlledState: violations.length ? "FAIL" : "PASS", productionState: "UNKNOWN", violations, controls: actual.map(item => item.id), source: fresh, concurrentMemory });
