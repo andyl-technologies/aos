@@ -1,6 +1,6 @@
-//! Actual audited SQLite enumeration into the paired encrypted record protocol.
+//! Shared audited native enumeration into paired encrypted logical records.
 //!
-//! One source transaction survives audit and every table page. Only caller-owned
+//! One SQLite/PostgreSQL transaction survives audit and every table page. Only caller-owned
 //! sinks and explicit archive key custody are used; no source is opened through
 //! a migrating initializer, and no runtime, filesystem or provider is installed.
 
@@ -15,6 +15,7 @@ use super::super::root::{
     ExcludedArchiveKey, FreshArchiveId, SignedDeclaredRoot,
 };
 use super::super::{FreshStreamKey, StreamContext, StreamEncoder, StreamLimits, StreamRole};
+use super::source::Source;
 use super::wire::*;
 use super::{schema, DatabaseCaptureCounts};
 use crate::backend::sqlite_snapshot::{
@@ -97,24 +98,36 @@ pub async fn capture_sqlite<M: Write, P: Write>(
     rng: &mut impl TryCryptoRng,
     options: SqliteCaptureOptions,
 ) -> Result<DatabaseCaptureOutput<M, P>> {
-    capture_inner(source, metadata, private, custody, rng, options)
+    async {
+        let (reader, audit) = source.audit_source(options.audit).await?;
+        capture_inner(
+            Source::Sqlite { reader, audit },
+            metadata,
+            private,
+            custody,
+            rng,
+            options.pages,
+            options.streams,
+        )
         .await
-        .map_err(|_| anyhow::anyhow!("snapshot SQLite database capture failed"))
+    }
+    .await
+    .map_err(|_| anyhow::anyhow!("snapshot SQLite database capture failed"))
 }
 
 async fn capture_inner<M: Write, P: Write>(
-    source: SqliteSnapshotReader,
+    mut source: Source,
     metadata: M,
     private: P,
     custody: CaptureKeyCustody<'_>,
     rng: &mut impl TryCryptoRng,
-    options: SqliteCaptureOptions,
+    pages: SqliteSnapshotLimits,
+    streams: StreamLimits,
 ) -> Result<DatabaseCaptureOutput<M, P>> {
-    let (mut source, audit) = source.audit_source(options.audit).await?;
     let classifier = SnapshotClassifier::from_sqlite_schema(source.schema())?;
     let tables = source.schema().tables.clone();
     ensure!(
-        tables.len() == audit.table_counts().len(),
+        tables.len() == source.table_counts().len(),
         "snapshot source count coverage differs"
     );
     let archive = FreshArchiveId::generate(rng)?;
@@ -135,7 +148,7 @@ async fn capture_inner<M: Write, P: Write>(
             metadata,
             metadata_key,
             StreamContext::new(archive_bytes, StreamRole::Metadata),
-            options.streams,
+            streams,
         )?,
         records: 0,
     };
@@ -144,24 +157,20 @@ async fn capture_inner<M: Write, P: Write>(
             private,
             private_key,
             StreamContext::new(archive_bytes, StreamRole::Private),
-            options.streams,
+            streams,
         )?,
         records: 0,
     };
     for role in ["metadata", "private"] {
         let header = Header {
             kind: "header".into(),
-            profile: PROFILE.into(),
+            profile: source.profile().into(),
             archive_id: archive_id.clone(),
             role: role.into(),
             schema: schema(&classifier)?,
             table_count: tables.len().to_string(),
-            audit: Audit {
-                integrity: "passed".into(),
-                compiled_checks: "passed".into(),
-                declared_foreign_keys: "passed".into(),
-                checked_expressions: audit.checked_expressions().to_string(),
-            },
+            audit: source.audit(),
+            source: source.declaration(),
         };
         if role == "metadata" {
             metadata.write(&header)?;
@@ -172,7 +181,7 @@ async fn capture_inner<M: Write, P: Write>(
 
     let mut counts = DatabaseCaptureCounts::default();
     for (ordinal, table) in tables.iter().enumerate() {
-        let table_count = &audit.table_counts()[ordinal];
+        let table_count = source.table_counts()[ordinal].clone();
         ensure!(
             table_count.table == table.name,
             "snapshot source count order differs"
@@ -193,7 +202,7 @@ async fn capture_inner<M: Write, P: Write>(
         let mut seen_rows = 0u64;
         let mut cursor = source.table(&table.name)?;
         loop {
-            let page = cursor.next_page(options.pages).await?;
+            let page = cursor.next_page(pages).await?;
             for row in page.rows {
                 add(&mut seen_rows, 1)?;
                 ensure!(
@@ -305,8 +314,20 @@ async fn capture_inner<M: Write, P: Write>(
         })?;
         add(&mut counts.tables, 1)?;
     }
-    write_end(&mut metadata, &archive_id, "metadata", &counts)?;
-    write_end(&mut private, &archive_id, "private", &counts)?;
+    write_end(
+        &mut metadata,
+        &archive_id,
+        "metadata",
+        &counts,
+        source.profile(),
+    )?;
+    write_end(
+        &mut private,
+        &archive_id,
+        "private",
+        &counts,
+        source.profile(),
+    )?;
     source.close().await?;
     let (metadata, metadata_summary) = metadata.encoder.finish()?;
     let (private, private_summary) = private.encoder.finish()?;
@@ -329,10 +350,11 @@ fn write_end<W: Write>(
     archive_id: &str,
     role: &str,
     counts: &DatabaseCaptureCounts,
+    profile: &str,
 ) -> Result<()> {
     writer.write(&End {
         kind: "end".into(),
-        profile: PROFILE.into(),
+        profile: profile.into(),
         archive_id: archive_id.into(),
         role: role.into(),
         table_count: counts.tables.to_string(),
@@ -341,4 +363,46 @@ fn write_end<W: Write>(
         private_cells: counts.private_cells.to_string(),
         records: writer.records.to_string(),
     })
+}
+
+/// Explicit bounded pages and streams for an already audited PostgreSQL source.
+#[cfg(feature = "postgres")]
+#[derive(Debug, Clone, Copy)]
+pub struct PostgresCaptureOptions {
+    /// Native value memory limits checked before each source page fetch.
+    pub pages: SqliteSnapshotLimits,
+    /// Independent bounds on each encrypted output stream.
+    pub streams: StreamLimits,
+}
+
+/// Captures an admitted PostgreSQL snapshot with distinct version-two audit facts.
+///
+/// The signed outer root remains framing-only. Exact source references and Hub
+/// authorization originals are encrypted, never adopted as live target authority.
+/// Failure leaves provisional ciphertext only; new capture requires fresh keys.
+///
+/// # Errors
+///
+/// Rejects source limits/deadlines, classification, count/custody mismatches,
+/// entropy failures and sink failures, without source values or SQL diagnostics.
+#[cfg(feature = "postgres")]
+pub async fn capture_postgres<M: Write, P: Write>(
+    source: crate::backend::postgres_snapshot::PostgresSnapshotReader,
+    metadata: M,
+    private: P,
+    custody: CaptureKeyCustody<'_>,
+    rng: &mut impl TryCryptoRng,
+    options: PostgresCaptureOptions,
+) -> Result<DatabaseCaptureOutput<M, P>> {
+    capture_inner(
+        Source::Postgres(source),
+        metadata,
+        private,
+        custody,
+        rng,
+        options.pages,
+        options.streams,
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("snapshot PostgreSQL database capture failed"))
 }

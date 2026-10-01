@@ -33,6 +33,23 @@ enum SnapshotCommand {
         #[command(flatten)]
         custody: CustodyArgs,
     },
+    /// Capture an existing PostgreSQL 18 source into a private encrypted directory.
+    CapturePostgres {
+        /// Read an explicit PostgreSQL URL from this existing private file (16KiB cap).
+        #[arg(long)]
+        source_database_url_file: PathBuf,
+        /// Publish this new archive directory; it must not already exist.
+        #[arg(long)]
+        output: PathBuf,
+        /// Use this dedicated exporter signer identity.
+        #[arg(long)]
+        signer_id: String,
+        /// Read an existing private file containing a raw 32-byte Ed25519 seed.
+        #[arg(long)]
+        signing_seed_file: PathBuf,
+        #[command(flatten)]
+        custody: CustodyArgs,
+    },
     /// Verify records and retained SQL constraints without importing or activating.
     VerifyCapture {
         /// Read this existing private archive directory.
@@ -140,6 +157,7 @@ pub(crate) async fn run(arguments: &SnapshotArgs) -> Result<()> {
 
     let custody = match &arguments.command {
         SnapshotCommand::CaptureSqlite { custody, .. }
+        | SnapshotCommand::CapturePostgres { custody, .. }
         | SnapshotCommand::VerifyCapture { custody, .. } => custody,
     };
     let budget = custody.budget()?;
@@ -173,6 +191,41 @@ pub(crate) async fn run(arguments: &SnapshotArgs) -> Result<()> {
                 budget,
             )
             .await
+        }
+        SnapshotCommand::CapturePostgres {
+            source_database_url_file,
+            output,
+            signer_id,
+            signing_seed_file,
+            custody,
+        } => {
+            #[cfg(feature = "postgres")]
+            {
+                workflow::capture_postgres(
+                    source_database_url_file,
+                    output,
+                    &CaptureCredentials {
+                        signer_id: signer_id.clone(),
+                        signing_seed_file: signing_seed_file.clone(),
+                        wrapping: custody.wrapping(),
+                        signer_trust_file: custody.signer_trust_file.clone(),
+                        exclusion_files: custody.exclude_key_file.clone(),
+                    },
+                    budget,
+                )
+                .await
+            }
+            #[cfg(not(feature = "postgres"))]
+            {
+                let _ = (
+                    source_database_url_file,
+                    output,
+                    signer_id,
+                    signing_seed_file,
+                    custody,
+                );
+                anyhow::bail!("PostgreSQL capture requires a build with the postgres feature")
+            }
         }
         SnapshotCommand::VerifyCapture { archive, custody } => {
             workflow::verify(

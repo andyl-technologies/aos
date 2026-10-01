@@ -1,4 +1,4 @@
-//! Closed cell-sized JSONL records for database_capture/v1.
+//! Closed cell-sized JSONL records with immutable SQLite v1 and PostgreSQL v2.
 //!
 //! Every physical line is a typed record followed by LF. Strings escape their
 //! own newlines; frame boundaries have no logical meaning. Metadata and private
@@ -20,6 +20,39 @@ use crate::snapshot::capture::PrivateScalarWire;
 use crate::snapshot::{PrivateDependencyReason, SnapshotPrivateDependency, SnapshotScalar};
 
 pub(super) const PROFILE: &str = "database_capture/v1";
+pub(super) const POSTGRES_PROFILE: &str = "database_capture/v2";
+
+#[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub(super) struct PostgresSource {
+    pub engine: String,
+    pub major: String,
+    pub isolation: String,
+    pub access: String,
+    pub audit: String,
+    pub catalogue_sha256: String,
+}
+
+impl PostgresSource {
+    pub(super) fn new(catalogue_sha256: String) -> Self {
+        Self {
+            engine: "postgresql".into(),
+            major: "18".into(),
+            isolation: "repeatable_read".into(),
+            access: "read_only".into(),
+            audit: "compiled_constraints_and_counts/v1".into(),
+            catalogue_sha256,
+        }
+    }
+
+    pub(super) fn expected() -> Self {
+        Self::new(
+            include_str!("../../../backend/postgres_snapshot/current8.sha256")
+                .trim()
+                .into(),
+        )
+    }
+}
 pub(super) const CONTROL_CAP: usize = 16 * 1024;
 pub(super) const CELL_CAP: usize = 6 * 1024 * 1024 + CONTROL_CAP;
 
@@ -97,6 +130,8 @@ pub(super) struct Header {
     pub schema: Schema,
     pub table_count: String,
     pub audit: Audit,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<PostgresSource>,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Eq)]

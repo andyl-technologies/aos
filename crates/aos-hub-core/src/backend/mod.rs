@@ -413,6 +413,9 @@ pub use sqlx::SqlxBackend;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod sqlite_snapshot;
 
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub mod postgres_snapshot;
+
 // Per-statement query timing (RFC-0004 ch.14 Phase A): a `Backend` decorator
 // that records each statement's wall-clock duration for a `Server-Timing`
 // header, so the per-request Worker database cost is measurable at the call site.

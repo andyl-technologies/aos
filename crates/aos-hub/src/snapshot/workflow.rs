@@ -40,6 +40,11 @@ use super::scratch::{
 };
 use super::{CaptureCredentials, VerifyCredentials};
 
+#[cfg(feature = "postgres")]
+mod postgres;
+#[cfg(feature = "postgres")]
+pub use postgres::capture_postgres;
+
 /// Value-free failure stage, including the irreversible publication boundary.
 #[derive(Debug, thiserror::Error)]
 pub enum SnapshotError {
@@ -52,6 +57,9 @@ pub enum SnapshotError {
     /// The existing source could not be securely admitted or schema-validated.
     #[error("snapshot existing SQLite source is unavailable or invalid")]
     Source,
+    /// The PostgreSQL source or private connection-file custody was rejected.
+    #[error("snapshot existing PostgreSQL source is unavailable or invalid")]
+    PostgresSource,
     /// No completed published archive was produced.
     #[error("snapshot capture failed before publication")]
     Capture,
@@ -298,7 +306,7 @@ impl<T: Write> Write for BudgetIo<T> {
 pub struct SnapshotReport {
     /// Exact report format for offline local constraints, never a restore grant.
     pub schema_version: &'static str,
-    /// The executed operation: capture_sqlite or verify_capture.
+    /// The executed capture_sqlite, capture_postgres or verify_capture operation.
     pub operation: &'static str,
     /// Reconstructed records and independently replayed retained SQL constraints.
     pub verification_scope: &'static str,
@@ -318,6 +326,9 @@ pub struct SnapshotReport {
     pub synthetic_lineage_rows: usize,
     /// Source audit provenance is an authenticated exporter declaration.
     pub source_audit_scope: &'static str,
+    /// Distinct PostgreSQL declaration, absent for immutable SQLite v1 reports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_engine: Option<&'static str>,
     /// Separately required contracts before any stronger recovery acceptance.
     pub pending_recovery_requirements: [&'static str; 5],
 }
@@ -336,6 +347,8 @@ fn report(operation: &'static str, verified: &VerifiedRetainedSqliteCapture) -> 
         checked_retained_tables: verified.checked_tables(),
         synthetic_lineage_rows: verified.synthetic_lineage_rows(),
         source_audit_scope: "authenticated_exporter_declaration",
+        source_engine: (verified.records().declared_source_audit().source_engine() == "postgresql")
+            .then_some("postgresql"),
         pending_recovery_requirements: [
             "application_and_object_closure",
             "original_sealing_key_custody",
@@ -429,7 +442,7 @@ pub async fn capture(
         .check_identity()
         .map_err(|_| SnapshotError::Source)?;
     budget.check()?;
-    let mut stage = Stage::create(destination).map_err(|_| SnapshotError::Output)?;
+    let stage = Stage::create(destination).map_err(|_| SnapshotError::Output)?;
     let metadata = BudgetIo {
         inner: BufWriter::new(
             stage
@@ -465,6 +478,19 @@ pub async fn capture(
     admitted
         .check_identity()
         .map_err(|_| SnapshotError::Source)?;
+    finish_capture(stage, output, custody, budget, "capture_sqlite").await
+}
+
+async fn finish_capture(
+    mut stage: Stage,
+    output: aos_hub_core::snapshot::archive::records::DatabaseCaptureOutput<
+        BudgetIo<BufWriter<std::fs::File>>,
+        BudgetIo<BufWriter<std::fs::File>>,
+    >,
+    custody: super::credentials::LoadedCapture,
+    budget: SnapshotBudget,
+    operation: &'static str,
+) -> Result<SnapshotReport, SnapshotError> {
     let metadata = output
         .metadata
         .inner
@@ -502,7 +528,7 @@ pub async fn capture(
         PublishError::BeforeRename => SnapshotError::Output,
         PublishError::DurabilityUnconfirmed => SnapshotError::PublishedDurabilityUnconfirmed,
     })?;
-    Ok(report("capture_sqlite", &observed))
+    Ok(report(operation, &observed))
 }
 
 /// Verifies a private archive's actual paired streams using external signer trust.

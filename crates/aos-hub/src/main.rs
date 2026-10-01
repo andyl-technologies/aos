@@ -2757,6 +2757,7 @@ mod production_vm_coverage {
         OfflineSnapshotCustody {
             dispatch_arm: &'static str,
             operation: &'static str,
+            fixture: &'static str,
         },
     }
 
@@ -2765,10 +2766,17 @@ mod production_vm_coverage {
             "snapshot capture-sqlite" => NativeCommandQualification::OfflineSnapshotCustody {
                 dispatch_arm: "SnapshotCommand::CaptureSqlite",
                 operation: "workflow::capture",
+                fixture: "async fn actual_capture_publishes_private_files_and_verifies_without_source_mutation()",
+            },
+            "snapshot capture-postgres" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::CapturePostgres",
+                operation: "workflow::capture_postgres",
+                fixture: "async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals()",
             },
             "snapshot verify-capture" => NativeCommandQualification::OfflineSnapshotCustody {
                 dispatch_arm: "SnapshotCommand::VerifyCapture",
                 operation: "workflow::verify",
+                fixture: "async fn actual_capture_publishes_private_files_and_verifies_without_source_mutation()",
             },
             _ => NativeCommandQualification::NativeOperationsVm,
         }
@@ -2800,15 +2808,17 @@ mod production_vm_coverage {
             .into_iter()
             .filter(|leaf| match command_qualification(leaf) {
                 NativeCommandQualification::NativeOperationsVm => !source.contains(leaf),
-                NativeCommandQualification::OfflineSnapshotCustody { dispatch_arm, operation } => {
+                NativeCommandQualification::OfflineSnapshotCustody {
+                    dispatch_arm,
+                    operation,
+                    fixture,
+                } => {
                     // These commands run before Hub initialization. Their real
                     // encrypted capture/readback and custody qualification has
                     // its own executable fixture rather than a running server.
                     !snapshot_dispatch.contains(dispatch_arm)
                         || !snapshot_dispatch.contains(operation)
-                        || !snapshot_qualification.contains(
-                            "async fn actual_capture_publishes_private_files_and_verifies_without_source_mutation()",
-                        )
+                        || !snapshot_qualification.contains(fixture)
                         || !snapshot_qualification.contains(operation)
                 }
             })

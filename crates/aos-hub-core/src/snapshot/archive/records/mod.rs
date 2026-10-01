@@ -1,7 +1,10 @@
 //! Typed encrypted database capture with exact private-row reconstruction.
 //!
-//! The closed `database_capture/v1` JSONL protocol accounts for every current
-//! table, including empty tables and explicit transient/lineage omissions.
+//! The immutable SQLite `database_capture/v1` and distinct PostgreSQL
+//! `database_capture/v2` JSONL profiles account for every admitted table,
+//! including empty tables and explicit transient/lineage omissions. Version two
+//! declares PostgreSQL read-only repeatable-read catalogue/constraint evidence;
+//! it never substitutes that evidence for a SQLite physical integrity check.
 //! Verification joins metadata and private cells in one-row order, reclassifies
 //! exact originals, checks counts and requires logical ends plus authenticated
 //! frame END/EOF and both actual signed-summary matches.
@@ -39,7 +42,13 @@ mod wire;
 mod sqlite;
 
 #[cfg(not(target_arch = "wasm32"))]
+mod source;
+
+#[cfg(not(target_arch = "wasm32"))]
 pub use sqlite::{capture_sqlite, CaptureKeyCustody, DatabaseCaptureOutput, SqliteCaptureOptions};
+
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub use sqlite::{capture_postgres, PostgresCaptureOptions};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
@@ -50,10 +59,22 @@ use wire::*;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredSourceAudit {
     checked_expressions: u64,
+    postgres: bool,
 }
 
 impl DeclaredSourceAudit {
-    /// Returns the exporter's declared count of successfully evaluated CHECKs.
+    /// Returns the independently authenticated source engine declaration.
+    ///
+    /// This describes exporter evidence, not independent provider authority.
+    pub fn source_engine(&self) -> &'static str {
+        if self.postgres {
+            "postgresql"
+        } else {
+            "sqlite"
+        }
+    }
+
+    /// Returns declared checked expressions: CHECKs in v1, CHECKs and FKs in v2.
     pub fn checked_expressions(&self) -> u64 {
         self.checked_expressions
     }
@@ -190,7 +211,9 @@ pub fn verify_database_capture_with_schema<M: Read, P: Read>(
     let private_header: Header = private.read(CONTROL_CAP)?;
     check_header(&private_header, &classifier, &archive_id, "private")?;
     ensure!(
-        header.audit == private_header.audit,
+        header.audit == private_header.audit
+            && header.source == private_header.source
+            && header.profile == private_header.profile,
         "snapshot source audit declarations differ"
     );
 
@@ -306,8 +329,20 @@ pub fn verify_database_capture_with_schema<M: Read, P: Read>(
         );
         add(&mut counts.tables, 1)?;
     }
-    check_end(&mut metadata, &archive_id, "metadata", &counts)?;
-    check_end(&mut private, &archive_id, "private", &counts)?;
+    check_end(
+        &mut metadata,
+        &archive_id,
+        "metadata",
+        &counts,
+        &header.profile,
+    )?;
+    check_end(
+        &mut private,
+        &archive_id,
+        "private",
+        &counts,
+        &header.profile,
+    )?;
     root.reconcile_declared_summary(
         StreamRole::Metadata,
         metadata
@@ -327,6 +362,7 @@ pub fn verify_database_capture_with_schema<M: Read, P: Read>(
         counts,
         audit: DeclaredSourceAudit {
             checked_expressions: number(&header.audit.checked_expressions)?,
+            postgres: header.profile == POSTGRES_PROFILE,
         },
     })
 }
@@ -363,15 +399,22 @@ fn check_header(
 ) -> Result<()> {
     ensure!(
         header.kind == "header"
-            && header.profile == PROFILE
             && header.archive_id == archive_id
             && header.role == role
             && header.schema == schema(classifier)?
             && number(&header.table_count)? == classifier.tables.len() as u64,
         "snapshot record header differs"
     );
+    let postgres = header.profile == POSTGRES_PROFILE;
     ensure!(
-        header.audit.integrity == "passed"
+        (header.profile == PROFILE && header.source.is_none())
+            || (postgres
+                && classifier.manifest().version == 8
+                && header.source.as_ref() == Some(&PostgresSource::expected())),
+        "snapshot source profile differs"
+    );
+    ensure!(
+        header.audit.integrity == if postgres { "not_observed" } else { "passed" }
             && header.audit.compiled_checks == "passed"
             && header.audit.declared_foreign_keys == "passed",
         "snapshot source audit declaration is invalid"
@@ -385,12 +428,13 @@ fn check_end<R: Read>(
     archive_id: &str,
     role: &str,
     counts: &DatabaseCaptureCounts,
+    profile: &str,
 ) -> Result<()> {
     let prior_records = reader.records;
     let end: End = reader.read(CONTROL_CAP)?;
     ensure!(
         end.kind == "end"
-            && end.profile == PROFILE
+            && end.profile == profile
             && end.archive_id == archive_id
             && end.role == role
             && number(&end.table_count)? == counts.tables

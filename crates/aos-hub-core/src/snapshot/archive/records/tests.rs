@@ -1005,3 +1005,46 @@ async fn signed_invalid_sql_count_and_metadata_singleton_counts_reject() {
         });
     }
 }
+
+#[test]
+fn distinct_postgres_header_requires_exact_closed_source_and_generation() {
+    let classifier = current_classifier().unwrap();
+    let mut header = Header {
+        kind: "header".into(),
+        profile: POSTGRES_PROFILE.into(),
+        archive_id: "test-archive".into(),
+        role: "metadata".into(),
+        schema: schema(&classifier).unwrap(),
+        table_count: classifier.tables.len().to_string(),
+        audit: Audit {
+            integrity: "not_observed".into(),
+            compiled_checks: "passed".into(),
+            declared_foreign_keys: "passed".into(),
+            checked_expressions: "1200".into(),
+        },
+        source: Some(PostgresSource::expected()),
+    };
+    check_header(&header, &classifier, "test-archive", "metadata").unwrap();
+    for (field, value) in [
+        ("major", "17"),
+        ("isolation", "read_committed"),
+        ("access", "read_write"),
+        ("audit", "provider_qualified"),
+        ("catalogue_sha256", "untrusted"),
+    ] {
+        let mut malformed = serde_json::to_value(&header).unwrap();
+        malformed["source"][field] = json!(value);
+        let malformed: Header = serde_json::from_value(malformed).unwrap();
+        assert!(check_header(&malformed, &classifier, "test-archive", "metadata").is_err());
+    }
+    header.source = None;
+    assert!(check_header(&header, &classifier, "test-archive", "metadata").is_err());
+    header.source = Some(PostgresSource::expected());
+    header.profile = PROFILE.into();
+    assert!(check_header(&header, &classifier, "test-archive", "metadata").is_err());
+    let legacy = SnapshotClassifier::for_supported_generation(7).unwrap();
+    header.profile = POSTGRES_PROFILE.into();
+    header.schema = schema(&legacy).unwrap();
+    header.table_count = legacy.tables.len().to_string();
+    assert!(check_header(&header, &legacy, "test-archive", "metadata").is_err());
+}

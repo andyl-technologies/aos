@@ -1,7 +1,8 @@
-# Offline SQLite database capture
+# Inert database capture
 
-`aos-hub snapshot capture-sqlite` and `verify-capture` expose the audited
-SQLite reader and encrypted database record protocol on Linux. They capture
+`aos-hub snapshot capture-sqlite`, `capture-postgres` and `verify-capture`
+expose audited SQL readers and encrypted database records on Linux. PostgreSQL
+capture requires the `postgres` build feature. They capture
 and verify current database rows and exact private originals, replaying retained
 SQL constraints independently in a disposable private in-memory database. They do not
 produce a complete portable Hub, import SQL, restore objects, or authorize
@@ -126,7 +127,7 @@ No plaintext scratch file is created, and no perfect memory erasure is claimed.
 The sanitized v2 JSON report says `retained_sqlite_constraints` with signed
 root profile `framing_only`. It proves paired grammar, exact private-cell
 reconstruction/reclassification, current classifier/schema identity, all
-267 table markers/counts, authenticated framing END/EOF/root summaries and
+admitted table markers/counts, authenticated framing END/EOF/root summaries and
 independent retained SQL PK/UNIQUE/CHECK/FK/integrity/count checks under the
 trusted compiled schema. `checked_retained_tables` is the independent replay
 count; `synthetic_lineage_rows` reports two derived compiled-schema markers,
@@ -140,3 +141,82 @@ custody, live external journal continuity and activation/old-writer fencing
 remain explicit pending recovery contracts. This report cannot be used as a
 whole-Hub completeness receipt or an activation grant. The independently
 qualified v1 records-only implementation and receipt remain historical proof.
+
+## Inert PostgreSQL capture
+
+A build with the `postgres` feature also exposes `capture-postgres`. Its source
+connection comes only from `--source-database-url-file`: an existing private
+UTF-8 file, at most 16KiB, containing an explicit PostgreSQL URL with user,
+host and database. Archive custody rules also apply to that file. The URL is
+never written into the archive or report. There is no environment or runtime
+connection fallback and no source initializer or migration.
+
+```text
+aos-hub snapshot capture-postgres \
+  --source-database-url-file /private/source/postgres.url \
+  --output /private/archives/postgres-capture-1 \
+  --signer-id offline-export --signing-seed-file /private/keys/export.seed \
+  --signer-trust-file /private/keys/trust.json \
+  --metadata-wrapping-id metadata-wrap --metadata-wrapping-key-file /private/keys/metadata.key \
+  --private-wrapping-id private-wrap --private-wrapping-key-file /private/keys/private.key
+```
+
+This first PostgreSQL source supports only the exact current generation-eight
+schema, UTF-8 server/client text encoding and admitted PostgreSQL 18 catalogue
+semantics. Other encodings are refused before length-first values can expand
+through conversion. The tested source engine
+is the AOS-built PostgreSQL 18.6. Other major versions and altered/unknown
+catalogue objects fail closed. Admission compares normalized logical types,
+defaults, constraints and indexes; database names, roles, OIDs and physical
+constraint/index names are excluded. Default collation implementation details
+are not portability identities. The compiled semantic catalogue commitment is
+regenerated from production migrations in the actual PostgreSQL source test.
+
+One dedicated `REPEATABLE READ READ ONLY` transaction spans catalogue admission,
+compiled CHECK/FK data checks, all table counts and row enumeration. The reader
+holds `ACCESS SHARE` on selected tables: ordinary writes and VACUUM can proceed,
+but heap rewrite/drop cannot invalidate the source. Internal `ctid` locators
+order only this held snapshot; they are never exported or used as logical IDs.
+This physical-locator dependence is PostgreSQL-specific and establishes no
+cross-engine row-order or ciphertext equality. Declared IDs and exact original
+cell values remain unchanged. Sequence definitions are admitted, but PostgreSQL's
+non-MVCC sequence allocation state is not exported. Target allocation floors
+and deleted identity reuse require the later explicit import contract; this
+capture cannot grant that authority from existing row maxima.
+
+Catalogue admission bounds facts to 16,384, each detail to 128KiB and total
+detail bytes to 16MiB before client allocation. Pages admit at most 256 rows,
+1MiB per cell and 8MiB value payload; cell lengths are read before values.
+The complete source transaction has a 300-second ceiling, individual SQL
+statements at most 30 seconds, and lock waits at most five seconds, clipped by
+remaining operation time. Exceeding a bound refuses a completed capture.
+
+The encrypted record profile is `database_capture/v2`; immutable SQLite
+`database_capture/v1` and historical generation-three through eight verification
+remain unchanged. Version two explicitly identifies PostgreSQL/read-only
+repeatable-read admission and its semantic catalogue commitment. It declares
+compiled constraint/count checks, **not** a SQLite-style physical integrity
+check. `verify-capture` independently reconstructs these paired encrypted
+records and replays retained constraints in private SQLite scratch memory.
+Reports add `source_engine: "postgresql"`; their signed root is still
+`framing_only`, and all pending recovery requirements remain present.
+
+### Private data and credential coverage
+
+This is a deliberate inert SQL capture, not a normal complete portable Hub
+artifact. The existing classifier retains encrypted private originals including
+Hub password/token/invitation hashes, invitation/IdP ciphertexts, private plans,
+retained operation/session receipts and SQL sealed signing-key cells such as
+`draft_signing_key`. Both streams are encrypted; the metadata stream names and
+commits private dependencies instead of exposing their original contents.
+Authentication ceremony/session tables classified as transient are omitted.
+Unknown settings and unclassified structured originals refuse capture.
+
+Provider material and runtime sealing/issuer/guard/exporter private keys live
+outside the source SQL catalogue and are not collected. SQL secret-version
+references are original source references, never target credentials or renewed
+validation. Existing sealed bytes are preserved without loading their sealing
+key. A future complete portability artifact must explicitly separate these key
+and authorization dependencies, close the referenced object inventory, perform
+storage-local transfer and reconcile current remote journals before any inert
+import or fenced activation. This command performs none of those later steps.

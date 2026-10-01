@@ -744,3 +744,141 @@ fn absolute_source_keeps_full_ancestor_custody_when_root_is_foreign() {
         assert!(SourceAdmission::open(&absolute).is_err());
     }
 }
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires the dedicated disposable PostgreSQL 18 test source"]
+async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals() {
+    use aos_hub_core::backend::Backend;
+    use aos_hub_core::snapshot::archive::records::verify_database_capture;
+    use aos_hub_core::snapshot::archive::StreamLimits;
+    use aos_hub_core::value::Value;
+
+    let url_path =
+        std::env::var_os("AOS_PG_SNAPSHOT_TEST_URL_FILE").expect("private disposable source URL");
+    let url = fs::read(url_path).unwrap();
+    let f = fixture();
+    let connection_file = private_file(f.directory.path(), "postgres.url", &url);
+    let bad_connection_file = private_file(
+        f.directory.path(),
+        "invalid-postgres.url",
+        b"https://PRIVATE-URL-NEVER-PRINT.invalid/source",
+    );
+    let absent_output = f.directory.path().join("refused-postgres-capture");
+    let refusal = workflow::capture_postgres(
+        &bad_connection_file,
+        &absent_output,
+        &f.credentials,
+        budget(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(refusal, SnapshotError::PostgresSource));
+    assert!(!refusal.to_string().contains("PRIVATE-URL-NEVER-PRINT"));
+    assert!(!absent_output.exists());
+    fs::set_permissions(&connection_file, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(
+        workflow::capture_postgres(&connection_file, &absent_output, &f.credentials, budget())
+            .await
+            .unwrap_err(),
+        SnapshotError::PostgresSource
+    ));
+    assert!(!absent_output.exists());
+    fs::set_permissions(&connection_file, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let backend = SqlxBackend::connect_postgres(std::str::from_utf8(&url).unwrap().trim())
+        .await
+        .unwrap();
+    backend.migrate_schema().await.unwrap();
+    let SqlxBackend::Postgres(pool) = backend else {
+        panic!("PostgreSQL required")
+    };
+    sqlx::query("INSERT INTO users(id,email,display_name,created_at,password_hash) VALUES \
+        (17017,'pg-original@snapshot.invalid','λ original\nname',9223372036854775807,'private-credential-PG-NEVER-PRINT')")
+        .execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO route_url_reservations(id,digest_scheme,reservation_key_version,reservation_digest,created_at) \
+        VALUES ('snapshot-binary','hmac_sha256_v1',1,$1,1)")
+        .bind(vec![7_u8; 32]).execute(&pool).await.unwrap();
+    sqlx::query("INSERT INTO sessions(id_hash,user_id,created_at,last_seen_at,expires_at,last_authenticated_at) \
+        VALUES ('pg-transient-NOT-EXPORTED',17017,1,1,2,1)").execute(&pool).await.unwrap();
+    let destination = f.directory.path().join("postgres-capture");
+
+    let captured =
+        workflow::capture_postgres(&connection_file, &destination, &f.credentials, budget())
+            .await
+            .unwrap();
+    let checked = workflow::verify(&destination, &reader_credentials(&f), budget())
+        .await
+        .unwrap();
+    assert_eq!(captured.operation, "capture_postgres");
+    assert_eq!(captured.source_engine, Some("postgresql"));
+    assert_eq!(checked.source_engine, Some("postgresql"));
+    assert_eq!(captured.tables, 279);
+    assert_eq!(checked.retained_rows, captured.retained_rows);
+    assert!(captured.private_cells > 0);
+    assert_eq!(captured.signed_root_profile, "framing_only");
+    assert_eq!(captured.verification_scope, "retained_sqlite_constraints");
+
+    let custody = load_capture(&f.credentials).unwrap();
+    let mut originals = Vec::new();
+    let mut binary = Vec::new();
+    let record_report = verify_database_capture(
+        &fs::read(destination.join("archive.json")).unwrap(),
+        &custody.trust,
+        &custody.wrapping,
+        &custody.exclusions,
+        fs::File::open(destination.join("metadata.aosh")).unwrap(),
+        fs::File::open(destination.join("private.aosh")).unwrap(),
+        StreamLimits::default(),
+        |table, _, row| {
+            if table == "users" {
+                row.with_private_row(|row| originals.push(row.clone()));
+            }
+            if table == "route_url_reservations" {
+                row.with_private_row(|row| binary.push(row.clone()));
+            }
+            assert_ne!(table, "sessions");
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        record_report.declared_source_audit().source_engine(),
+        "postgresql"
+    );
+    assert_eq!(originals.len(), 1);
+    assert_eq!(
+        originals[0].value(2),
+        Some(&Value::Text("λ original\nname".into()))
+    );
+    assert_eq!(originals[0].value(3), Some(&Value::Int(i64::MAX)));
+    assert_eq!(
+        originals[0].value(5),
+        Some(&Value::Text("private-credential-PG-NEVER-PRINT".into()))
+    );
+    assert_eq!(binary[0].value(3), Some(&Value::Bytes(vec![7_u8; 32])));
+    for name in filesystem::FILES {
+        let bytes = fs::read(destination.join(name)).unwrap();
+        for secret in [
+            &url[..],
+            b"private-credential-PG-NEVER-PRINT",
+            b"pg-transient-NOT-EXPORTED",
+        ] {
+            assert!(!bytes.windows(secret.len()).any(|value| value == secret));
+        }
+    }
+    let unchanged: String = sqlx::query_scalar("SELECT password_hash FROM users WHERE id=17017")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(unchanged, "private-credential-PG-NEVER-PRINT");
+    sqlx::query("DELETE FROM route_url_reservations WHERE id='snapshot-binary'")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM users WHERE id=17017")
+        .execute(&pool)
+        .await
+        .unwrap();
+    pool.close().await;
+}

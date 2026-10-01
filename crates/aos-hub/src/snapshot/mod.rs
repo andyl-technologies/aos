@@ -1,6 +1,6 @@
 //! Offline database capture without serving or provider initialization.
 //!
-//! This module exposes audited Native SQLite capture and private local archive
+//! This module exposes audited Native SQLite/PostgreSQL capture and private archive
 //! orchestration. It never initializes a Hub, installs storage authority,
 //! imports SQL, executes jobs or authorizes activation.
 
