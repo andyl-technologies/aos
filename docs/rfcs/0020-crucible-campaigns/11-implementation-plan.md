@@ -122,7 +122,7 @@ Primary crates: `crucible`, `crucible-protocol`, `crucible-shmem`,
   schedule encoding with branch-point identity separated from materialization.
 - [x] **T-CAM-2.3** Normalize genuine explorable decisions through the selection
   envelope and reject every noncurrent schedule artifact before interpretation.
-  Current schedule decoding rejects every schema other than V2 before decision
+  Current schedule decoding rejects every schema other than V4 before decision
   decoding, and campaign selections use the strict canonical envelope. Live
   World-network outcomes and bounded preemption branches now use parent-bound
   campaign selections as their branch identities; raw RNG draws and preemption
@@ -153,10 +153,10 @@ groups bind canonical member order to exact declarations and admit a value only
 after every member and relational constraint validates. Exact domain identities
 retain presentation and landmarks while semantic identities intentionally omit
 those non-semantic fields. Declarations, opportunities, class identities,
-semantic branch points and edges, origin-bearing selections, and Schedule V3's
+semantic branch points and edges, origin-bearing selections, and Schedule V4's
 strict selection envelope are content addressed and replay validated before
 application. `gate:typed-choice` runs the complete campaign model suite, its
-focused public gate, and the execution-model Schedule V3 envelope test.
+focused public gate, and the execution-model Schedule V4 envelope test.
 
 `nix-build -A checks.crucible.phase4.packagedCampaignChoiceVm --no-out-link`
 runs the public packaged campaign flight against the current QEMU and plugin.
@@ -176,17 +176,17 @@ vocabulary. `crucible-guest` emits immutable setup registrations and validates
 that a reply exactly occupies the lent request buffer without a stale sequence
 or dirty tail. Golden vectors, every-truncation decoding, malformed range and
 reserved-field cases, and allocation-before-bound regressions run under
-`gate:abi-conformance`. This completes only T-CAM-2.4: catalog freezing,
-scenario/declaration reconciliation, host doorbell dispatch, narrowed-domain
-authority, and pending-request checkpoint ownership remain T-CAM-2.5.
+`gate:abi-conformance`. This establishes the T-CAM-2.4 protocol contract;
+T-CAM-2.5 also covers catalog freezing, scenario/declaration reconciliation,
+host dispatch, narrowed-domain authority, and exact pending-request checkpoint
+ownership.
 
 The GPL-side plugin now also exposes a policy-free selectable callback core. It
 decodes register/request messages at the exact trap coordinate, delegates them
 to a typed catalog/decision authority, rejects guest-owned replies and stale
 service replies, and writes one zero-padded reply through the existing
-same-icount guest-input capability. This does not complete T-CAM-2.5: the live
-runtime still needs to supply and persist the launch-authenticated inputs. The
-plugin-side catalog state now enforces nonzero scenario ceilings under hard
+same-icount guest-input capability. The plugin-side catalog state enforces
+nonzero scenario ceilings under hard
 4,096-declaration/1,000,000-request caps, exact required/optional declaration
 matching, strictly advancing sequences, no late registration, and one
 incarnation-bound pending request retained until an exact-sequence reply. The
@@ -216,8 +216,10 @@ closed until its continuation exists. The daemon now resolves node-qualified
 requests against the scenario, validates bounded narrowed domains, derives the
 stable runtime opportunity, stops discovery without replying, applies exact
 defaults for deterministic continuation, and consumes authenticated campaign
-selections at the matching thin-replay boundary. Durable checkpoint composition
-remains required to complete T-CAM-2.5.
+selections at the matching thin-replay boundary. Checkpoint capture includes
+the guarded choice replay closure; the production exact-checkpoint store writes
+that closure as a content-addressed child and validates it on load.
+
 The process-neutral `CRUCSCP4` catalog-plan codec freezes the sealed
 descriptor body, including exact expectations, limits, registered identifiers,
 sequence watermarks, completed counters, and a complete pending request/trap
@@ -2207,11 +2209,11 @@ Primary crates: `crucible-cli`, `crucible-api`, and `crucible-daemon`.
   schedule plus both semantic and verifier-backed artifact identities, and
   atomically installs a new bounded scenario/schedule/import-manifest directory
   without opening repository state. Non-genesis configuration authoring now
-  admits a nonempty byte-canonical Schedule V3, rejects noncurrent, empty, or
+  admits a nonempty byte-canonical Schedule V4, rejects noncurrent, empty, or
   unresolved-selection inputs, independently verifies the derived configuration
   artifact, and installs the same bounded no-replace import bundle. Strict offline
   decision authoring now compiles bounded `delivery-order`, `rng-draw`,
-  `override`, and both `preemption` forms into a byte-checked canonical Schedule V3
+  `override`, and both `preemption` forms into a byte-checked canonical Schedule V4
   without exposing noncurrent app-random or repository-authenticated selection
   construction. Policy authoring now resolves exact selectable
   IDs and bounded all-tags predicates through an exact matching canonical
