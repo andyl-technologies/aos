@@ -320,6 +320,7 @@ fn configure_pure_eval_command(
     let store = std::env::var_os("AOS_NIX_EVAL_STORE");
 
     command.env_clear();
+    super::configure_eval_nix_command(command, store.as_deref())?;
     if let Some(store) = store {
         command.arg("--store").arg(store);
     }
@@ -598,7 +599,8 @@ fn configure_realise_command(
     substituters: &[String],
     nix_cache_dir: &Path,
     verbose: u8,
-) {
+) -> Result<()> {
+    super::configure_eval_nix_command(command, std::env::var_os("AOS_NIX_EVAL_STORE").as_deref())?;
     command.env("XDG_CACHE_HOME", nix_cache_dir);
     command.arg("--realise").arg(store_path);
     if !substituters.is_empty() {
@@ -612,6 +614,7 @@ fn configure_realise_command(
     if verbose > 0 {
         command.arg("-v");
     }
+    Ok(())
 }
 
 impl ConfigOutputFetcher for SubstituterFetcher {
@@ -626,7 +629,7 @@ impl ConfigOutputFetcher for SubstituterFetcher {
             &self.substituters,
             &self.nix_cache_dir,
             self.verbose,
-        );
+        )?;
         let output = cmd
             .output()
             .context("failed to spawn `nix-store --realise`")?;
@@ -1382,7 +1385,8 @@ mod tests {
             ],
             Path::new("/run/aos-eval/nix-cache"),
             1,
-        );
+        )
+        .expect("ordinary realization command remains valid");
 
         let args = command
             .get_args()

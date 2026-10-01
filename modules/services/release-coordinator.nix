@@ -1,9 +1,16 @@
 ##! modules/services/release-coordinator.nix — Canonical release maintainer services.
 ##!
 ##! Provides a manually started content-release coordinator plus independently
-##! scheduled timestamp, backup, and restore-verification jobs. Deployment
-##! configuration supplies hermetic wrapper programs and credential source
-##! paths; neither secrets nor maintainer-machine identities enter the store.
+##! scheduled timestamp, backup, restore-verification, and alert-delivery
+##! check jobs. Deployment configuration supplies hermetic wrapper programs and
+##! credential source paths; neither secrets nor maintainer-machine identities
+##! enter the store.
+##!
+##! The two unattended checks (restore verification and alert delivery) record
+##! machine-run fitness attestations under a shared, group-writable fitness
+##! root. Production destination profiles consume those attestations with a
+##! 14 day maximum age; operator-run exercises are recorded manually with
+##! `aos release fitness run <kind>` and age out after 90 days.
 {
   config,
   lib,
@@ -20,12 +27,31 @@
     builtins.attrNames cfg.releaseCredentials
     ++ builtins.attrNames cfg.timestampCredentials
     ++ builtins.attrNames cfg.backupCredentials
-    ++ builtins.attrNames cfg.alertCredentials;
+    ++ builtins.attrNames cfg.alertCredentials
+    ++ builtins.attrNames cfg.fitnessCredentials;
   credentialPaths =
     builtins.attrValues cfg.releaseCredentials
     ++ builtins.attrValues cfg.timestampCredentials
     ++ builtins.attrValues cfg.backupCredentials
-    ++ builtins.attrValues cfg.alertCredentials;
+    ++ builtins.attrValues cfg.alertCredentials
+    ++ builtins.attrValues cfg.fitnessCredentials;
+
+  # The alert-delivery check exercises the alert path as the alert role and
+  # then signs an attestation, so it loads both credential sets. Merging with
+  # `//` would silently drop a colliding name; an assertion rejects overlap.
+  alertCheckCredentials = cfg.alertCredentials // cfg.fitnessCredentials;
+  overlappingAlertCheckNames =
+    builtins.attrNames (builtins.intersectAttrs cfg.alertCredentials cfg.fitnessCredentials);
+
+  # Role state directories. The fitness root may not coincide with one of them:
+  # tmpfiles would then fight StateDirectoryMode over the same directory.
+  roleStateDirectories = [
+    "/var/lib/aos-release-coordinator"
+    "/var/lib/aos-release-timestamp"
+    "/var/lib/aos-release-backup"
+    "/var/lib/aos-release-monitor"
+  ];
+
   hardened = {
     Type = "oneshot";
     NoNewPrivileges = true;
@@ -95,6 +121,12 @@ in {
       description = ''
         Absolute path to the hermetic clean-directory restore verification
         wrapper. A successful exit must prove restored evidence integrity.
+        After a successful restore the wrapper records a `storage-restore`
+        fitness attestation with
+        `aos release fitness run storage-restore --report <retained report>`,
+        signing through the release-evidence signer whose material arrives via
+        fitnessCredentials. Production destination profiles accept that
+        attestation for at most 14 days.
       '';
     };
 
@@ -104,6 +136,22 @@ in {
       description = ''
         Absolute path to the hermetic operator-alert wrapper. systemd passes
         the failed unit name as its sole argument.
+      '';
+    };
+
+    alertCheckProgram = lib.mkOption {
+      type = optionalProgram;
+      default = null;
+      description = ''
+        Absolute path to the hermetic alert-delivery check wrapper, run weekly
+        as the alert role. It must trigger the alert path with a synthetic unit
+        name, confirm delivery to the configured on-call destination, and then
+        record an `alert-delivery` fitness attestation with
+        `aos release fitness run alert-delivery --report <retained report>`.
+        Production destination profiles accept that attestation for at most
+        14 days. Operator exercises (authority recovery, Hub restore, key
+        rotation) are not automated here; operators record them with
+        `aos release fitness run <kind>` and they age out after 90 days.
       '';
     };
 
@@ -131,6 +179,30 @@ in {
       description = "Credential source files loaded only for release-operation alerts.";
     };
 
+    fitnessCredentials = lib.mkOption {
+      type = credentialSet;
+      default = {};
+      description = ''
+        Credential source files for the release-evidence signer that signs
+        machine-run fitness attestations. They are loaded only by the restore
+        verification and alert-delivery check services and must not share a
+        file or, for the alert-delivery check, a name with alertCredentials.
+      '';
+    };
+
+    fitnessRoot = lib.mkOption {
+      type = absolutePath;
+      default = "/var/lib/aos-release-coordinator/fitness";
+      description = ''
+        Directory holding signed fitness attestations as
+        `<kind>/<performed_at>.json`. It is created setgid and group-writable
+        for the aos-release-fitness group so the release, backup, and monitor
+        roles can each record attestations; every maintainer configuration
+        used on the machine must set `fitness_root` to this path, because
+        `aos release fitness` and `aos release advance` read it from there.
+      '';
+    };
+
     timestampCalendar = lib.mkOption {
       type = lib.types.str;
       default = "*-*-* 00/12:00:00";
@@ -147,6 +219,15 @@ in {
       type = lib.types.str;
       default = "Mon *-*-* 04:00:00";
       description = "systemd calendar for unattended backup restore verification.";
+    };
+
+    alertCheckCalendar = lib.mkOption {
+      type = lib.types.str;
+      default = "weekly";
+      description = ''
+        systemd calendar for the alert-delivery check. Keep the interval
+        inside the 14 day attestation age accepted by production profiles.
+      '';
     };
   };
 
@@ -173,8 +254,16 @@ in {
         message = "releaseCoordinator.alertProgram must be configured";
       }
       {
+        assertion = cfg.alertCheckProgram != null;
+        message = "releaseCoordinator.alertCheckProgram must be configured";
+      }
+      {
         assertion = builtins.length credentialPaths == builtins.length (lib.unique credentialPaths);
-        message = "release, timestamp, and backup services must use disjoint credential files";
+        message = "release, timestamp, backup, alert, and fitness services must use disjoint credential files";
+      }
+      {
+        assertion = overlappingAlertCheckNames == [];
+        message = "releaseCoordinator.alertCredentials and fitnessCredentials must not share a credential name";
       }
       {
         assertion = builtins.all (name: builtins.match "[A-Za-z0-9_.-]+" name != null) credentialNames;
@@ -183,6 +272,14 @@ in {
       {
         assertion = builtins.all (path: !lib.hasPrefix "/nix/store/" path) credentialPaths;
         message = "release coordinator credentials must not be sourced from the Nix store";
+      }
+      {
+        assertion = !lib.hasPrefix "/nix/store/" cfg.fitnessRoot;
+        message = "releaseCoordinator.fitnessRoot must not be inside the Nix store";
+      }
+      {
+        assertion = !builtins.elem cfg.fitnessRoot roleStateDirectories;
+        message = "releaseCoordinator.fitnessRoot must not be a release role's state directory";
       }
     ];
 
@@ -207,6 +304,12 @@ in {
         gid = 807;
         members = [];
       };
+      # Shared write access to the fitness root; membership is granted through
+      # each role's extraGroups below.
+      aos-release-fitness = {
+        gid = 808;
+        members = [];
+      };
     };
     aos.users.users = {
       aos-release = {
@@ -215,7 +318,7 @@ in {
         home = "/var/lib/aos-release-coordinator";
         shell = "/sbin/nologin";
         description = "AOS content release coordinator";
-        extraGroups = ["aos-release-lock"];
+        extraGroups = ["aos-release-lock" "aos-release-fitness"];
       };
       aos-release-timestamp = {
         uid = 804;
@@ -231,7 +334,7 @@ in {
         home = "/var/lib/aos-release-backup";
         shell = "/sbin/nologin";
         description = "AOS release backup and restore verification";
-        extraGroups = ["aos-release" "aos-release-timestamp" "aos-release-lock"];
+        extraGroups = ["aos-release" "aos-release-timestamp" "aos-release-lock" "aos-release-fitness"];
       };
       aos-release-monitor = {
         uid = 806;
@@ -239,12 +342,17 @@ in {
         home = "/var/lib/aos-release-monitor";
         shell = "/sbin/nologin";
         description = "AOS release operation alerts";
-        extraGroups = [];
+        extraGroups = ["aos-release-fitness"];
       };
     };
 
+    # The fitness root is setgid so attestations written by any role stay
+    # group-owned. The attestation-producing services relax their umask to
+    # 0027 so the release role can read what the backup and monitor roles
+    # recorded; their own state directories are 0700, so nothing else opens up.
     environment.etc."tmpfiles.d/aos-release-coordinator.conf".text = ''
       d /run/lock/aos-release 0770 root aos-release-lock - -
+      d ${cfg.fitnessRoot} 2770 aos-release aos-release-fitness - -
     '';
 
     systemd.services.aos-release-coordinator = {
@@ -322,6 +430,9 @@ in {
       timerConfig = timerDefaults // {OnCalendar = cfg.backupCalendar;};
     };
 
+    # The restore check stays network-denied: the release-evidence signer is a
+    # local executable, so recording the storage-restore attestation needs
+    # only the fitness root and the signer credentials.
     systemd.services.aos-release-restore-check = {
       description = "Verify an AOS release evidence backup by restoring it";
       after = ["aos-release-backup.service"];
@@ -337,6 +448,9 @@ in {
           RuntimeDirectory = "aos-release-restore-check";
           RuntimeDirectoryMode = "0700";
           WorkingDirectory = "/var/lib/aos-release-backup";
+          ReadWritePaths = [cfg.fitnessRoot];
+          UMask = "0027";
+          LoadCredential = renderCredentials cfg.fitnessCredentials;
           PrivateNetwork = true;
           RestrictAddressFamilies = ["AF_UNIX"];
           TimeoutStartSec = "6h";
@@ -346,6 +460,41 @@ in {
       description = "Schedule clean-directory AOS release backup verification";
       wantedBy = ["timers.target"];
       timerConfig = timerDefaults // {OnCalendar = cfg.restoreCheckCalendar;};
+    };
+
+    # The monitor role must reach the fitness root beneath the coordinator's
+    # 0750 state directory without joining the aos-release group. An empty
+    # read-only tmpfs replaces the coordinator directory in this unit's mount
+    # namespace and only the fitness root is bound back in, so the alert role
+    # sees no other release state.
+    systemd.services.aos-release-alert-check = {
+      description = "Exercise AOS release alert delivery and record its fitness";
+      after = ["network-online.target"];
+      wants = ["network-online.target"];
+      unitConfig.OnFailure = ["aos-release-alert@%n.service"];
+      serviceConfig =
+        networked
+        // {
+          ExecStart = cfg.alertCheckProgram;
+          User = "aos-release-monitor";
+          Group = "aos-release-monitor";
+          StateDirectory = "aos-release-monitor";
+          StateDirectoryMode = "0700";
+          RuntimeDirectory = "aos-release-alert-check";
+          RuntimeDirectoryMode = "0700";
+          WorkingDirectory = "/var/lib/aos-release-monitor";
+          TemporaryFileSystem = ["/var/lib/aos-release-coordinator:ro"];
+          BindPaths = [cfg.fitnessRoot];
+          ReadWritePaths = [cfg.fitnessRoot];
+          UMask = "0027";
+          LoadCredential = renderCredentials alertCheckCredentials;
+          TimeoutStartSec = "30m";
+        };
+    };
+    systemd.timers.aos-release-alert-check = {
+      description = "Schedule the weekly AOS release alert-delivery check";
+      wantedBy = ["timers.target"];
+      timerConfig = timerDefaults // {OnCalendar = cfg.alertCheckCalendar;};
     };
 
     systemd.services."aos-release-alert@" = {

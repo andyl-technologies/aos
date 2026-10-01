@@ -398,7 +398,7 @@ class PackageScenario:
         self.package = match.group("package")
         if (
             self.case.get("schema_version")
-            != "aos.release.qualification-case/v2"
+            != "aos.release.qualification-case/v1"
             or self.case["requirement_id"] != "package-function"
             or self.case["phase"] != "staging"
             or self.case["platform"] != PLATFORM

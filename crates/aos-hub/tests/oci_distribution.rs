@@ -540,11 +540,12 @@ async fn spawn_registry_with_rollout(
     access_policy_kind: &str,
     container_rollout: aos_hub_core::container_rollout::ContainerRollout,
 ) -> RunningRegistry {
-    spawn_registry_with_delayed_cancellation(
+    spawn_registry_with_options(
         visibility,
         auxiliary_repository,
         access_policy_kind,
         container_rollout,
+        RegistryDatabaseMode::InMemory,
         false,
     )
     .await
@@ -584,11 +585,18 @@ async fn observe_upload_cancellation_unavailability(
     axum::response::Response::from_parts(parts, axum::body::Body::new(observed))
 }
 
-async fn spawn_registry_with_delayed_cancellation(
+#[derive(Clone, Copy)]
+enum RegistryDatabaseMode {
+    InMemory,
+    FileBacked,
+}
+
+async fn spawn_registry_with_options(
     visibility: &str,
     auxiliary_repository: bool,
     access_policy_kind: &str,
     container_rollout: aos_hub_core::container_rollout::ContainerRollout,
+    database_mode: RegistryDatabaseMode,
     delay_first_cancel_response: bool,
 ) -> RunningRegistry {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
@@ -603,14 +611,12 @@ async fn spawn_registry_with_delayed_cancellation(
         aos_hub::image_snapshot::ImageSnapshotStore::open(temporary.path()).unwrap();
     let surface_root = temporary.path().join("surface");
     fs::create_dir_all(surface_root.join("objects")).unwrap();
-    let database = if delay_first_cancel_response {
-        // A cancelled SQLx acquire can discard its connection. The retry must
-        // retain the committed upload state independently of that connection.
-        Database::open(&temporary.path().join("hub.sqlite"))
+    let database = match database_mode {
+        // Persist retry state independently of any one pool connection.
+        RegistryDatabaseMode::FileBacked => Database::open(&temporary.path().join("hub.sqlite"))
             .await
-            .unwrap()
-    } else {
-        Database::open_in_memory().await.unwrap()
+            .unwrap(),
+        RegistryDatabaseMode::InMemory => Database::open_in_memory().await.unwrap(),
     };
     let db = Arc::new(database);
     let org_id = db.create_org("oci-native", "Native OCI").await.unwrap();
@@ -2189,7 +2195,16 @@ async fn authenticated_upload_lifecycle_and_real_client_preserve_exact_bytes() {
 
 #[tokio::test]
 async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_graph() {
-    let registry = spawn_registry("private", true, "hub_auth").await;
+    // Exercise cancellation against the durable database used by the server.
+    let registry = spawn_registry_with_options(
+        "private",
+        true,
+        "hub_auth",
+        aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
+        RegistryDatabaseMode::FileBacked,
+        false,
+    )
+    .await;
     let aos_token = exchange_oci_token(&registry, &["repository:aos:pull,push"]).await;
     let mount_token = exchange_oci_token(
         &registry,
@@ -2301,6 +2316,18 @@ async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_gra
             .unwrap()
             .is_empty(),
         "successful best-effort cancellation cleanup must leave no pending candidate"
+    );
+    let replacement = Database::open(&registry._temporary.path().join("hub.sqlite"))
+        .await
+        .unwrap();
+    assert_eq!(
+        replacement
+            .oci_operations_metrics(aos_hub_core::clock::now_unix_secs())
+            .await
+            .unwrap()
+            .uploads_cancelled,
+        1,
+        "a new database connection must observe the committed cancellation"
     );
 
     let amd64 = image_graph_for(
@@ -2442,11 +2469,12 @@ async fn real_client_mounts_cancels_and_roundtrips_a_complete_multi_platform_gra
 
 #[tokio::test]
 async fn real_client_retries_a_committed_upload_cancellation_after_response_timeout() {
-    let registry = spawn_registry_with_delayed_cancellation(
+    let registry = spawn_registry_with_options(
         "private",
         false,
         "hub_auth",
         aos_hub_core::container_rollout::ContainerRollout::all_enabled(),
+        RegistryDatabaseMode::FileBacked,
         true,
     )
     .await;

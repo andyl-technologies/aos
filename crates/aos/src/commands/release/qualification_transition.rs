@@ -1,4 +1,19 @@
-//! Authority signatures and fresh qualification at rollout hold points.
+//! Signed qualification decisions and their admission by later steps.
+//!
+//! A destination's qualification runs in up to three phases:
+//!
+//! - `staging`: observations over the staging surface's exact bytes, signed
+//!   as a qualification receipt; `publish` admits it for a production
+//!   destination (and a production Hub re-imports it);
+//! - `rollout`: fresh health observations before one ring, signed as an
+//!   admission that names the destination, ring, partition range, prior
+//!   generation, and the exact input journal;
+//! - `complete`: observations after the soak, signed as an admission over the
+//!   rolling journal.
+//!
+//! Each signed decision is accompanied by its canonical report, the retained
+//! executor reports under `reports/`, and independent reviews as
+//! `review-*.json`, which admission re-verifies.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -6,26 +21,45 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use aos_core::output::Printer;
-use aos_release::evidence::QualificationReportV1;
+use aos_release::evidence::QualificationReport;
 use aos_release::manifest::ReleaseManifestV1;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::{PlannedDestination, ReleasePlan};
 use aos_release::qualification::QualificationPhase;
-use aos_release::qualification_admission::QualificationAdmissionV1;
+use aos_release::qualification_admission::{
+    QUALIFICATION_ADMISSION, QualificationAdmission, QualificationRolloutIntent,
+};
 use aos_release::receipt::{
-    RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT_V1, SignedReceiptEnvelopeV1,
+    QualificationReceipt, RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope,
     verify_signed_receipt_with_key,
 };
 use aos_release::signing::{
-    SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
+    SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequest,
     TrustedEd25519Key,
 };
+use aos_release::state::ReleaseState;
 use aos_release::{Sha256Digest, canonical};
 
-use super::{capture, qualification_run, signer::ExternalSigner, verify};
+use super::journal::Journal;
+use super::{capture, qualification_run, signer::ExternalSigner, surface};
 use crate::cli::ReleaseQualifyRunArgs;
 
+/// Policy id carried by every staging-phase qualification receipt.
+pub(super) const STAGING_POLICY_ID: &str = "full-release-qualification";
+
+/// A verified staging-phase qualification for one production destination.
+pub(super) struct AdmittedQualification {
+    /// Exact signed qualification envelope.
+    pub(super) signed: Vec<u8>,
+    /// SHA-256 of `signed`, recorded as journal evidence.
+    pub(super) digest: Sha256Digest,
+    /// Canonical qualification receipt payload.
+    pub(super) payload: Vec<u8>,
+}
+
+/// Verifies independent reviews of an exact report for one destination.
 pub(super) fn verify_reviews(
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
+    destination: &str,
     report: &[u8],
     paths: &[PathBuf],
     keys: &[TrustedEd25519Key],
@@ -34,73 +68,111 @@ pub(super) fn verify_reviews(
         .iter()
         .map(|path| capture::control_file(path, "qualification review"))
         .collect::<Result<Vec<_>>>()?;
-    aos_release::qualification_admission::verify_reviews(plan, report, &reviews, keys)
+    aos_release::qualification_admission::verify_reviews(plan, destination, report, &reviews, keys)
 }
 
-pub(super) async fn sign(
-    args: &ReleaseQualifyRunArgs,
-    plan: &ReleasePlanV1,
-    manifest_digest: Sha256Digest,
-    publication_receipt_digest: Sha256Digest,
-    report: &[u8],
-    reports: &BTreeMap<String, Vec<u8>>,
-    publication: &[u8],
+/// Returns whether the destination's profile selects any case at `phase`.
+pub(super) fn phase_has_cases(
+    plan: &ReleasePlan,
+    manifest: &ReleaseManifestV1,
+    destination: &str,
     phase: QualificationPhase,
-    printer: &Printer,
-) -> Result<()> {
-    let journal = capture::control_file(
+) -> Result<bool> {
+    Ok(
+        !aos_release::qualification_evidence::cases(plan, manifest, Some(destination), phase)?
+            .is_empty(),
+    )
+}
+
+/// Inputs of one rollout or completion admission signature.
+pub(super) struct AdmissionSigning<'a> {
+    /// Operator arguments naming the authority, nonce, ring, and output.
+    pub(super) args: &'a ReleaseQualifyRunArgs,
+    /// Frozen plan.
+    pub(super) plan: &'a ReleasePlan,
+    /// Destination whose phase is admitted.
+    pub(super) destination: &'a PlannedDestination,
+    /// Final manifest identity.
+    pub(super) manifest_digest: Sha256Digest,
+    /// Destination surface publication receipt.
+    pub(super) publication: &'a surface::SignedReceipt,
+    /// Canonical report bytes.
+    pub(super) report: &'a [u8],
+    /// Retained executor reports keyed by evidence id.
+    pub(super) reports: &'a BTreeMap<String, Vec<u8>>,
+    /// Hold point.
+    pub(super) phase: QualificationPhase,
+}
+
+/// Signs a rollout or completion admission and persists the evidence tree.
+pub(super) async fn sign(signing: AdmissionSigning<'_>, printer: &Printer) -> Result<()> {
+    let AdmissionSigning {
+        args,
+        plan,
+        destination,
+        manifest_digest,
+        publication,
+        report,
+        reports,
+        phase,
+    } = signing;
+    let journal = Journal::read(
         args.journal
             .as_deref()
             .context("rollout/completion qualification requires --journal")?,
         "qualification input journal",
     )?;
-    let entries = aos_release::state::parse_journal(&journal)?;
-    let state = aos_release::verify::verify_journal(&entries)?;
-    let latest = entries.last().context("empty qualification journal")?;
-    let plan_digest = Sha256Digest::of_bytes(&canonical::to_vec(plan)?);
-    if latest.plan_digest != plan_digest
-        || latest.manifest_digest != Some(manifest_digest)
-        || (phase == QualificationPhase::Rollout
-            && !matches!(
-                state,
-                aos_release::state::ReleaseState::Promoted
-                    | aos_release::state::ReleaseState::Rolling
-            ))
-        || (phase == QualificationPhase::Complete
-            && state != aos_release::state::ReleaseState::Rolling)
-    {
-        bail!("qualification journal is not at the requested release hold point");
+    journal.require_release(plan, manifest_digest)?;
+    match phase {
+        QualificationPhase::Rollout => {
+            journal.summary.require_rolling_allowed(&destination.name)?
+        }
+        QualificationPhase::Complete => {
+            if journal.summary.state_of(&destination.name) != Some(ReleaseState::Rolling) {
+                bail!(
+                    "completion qualification requires {} to be rolling",
+                    destination.name
+                );
+            }
+        }
+        _ => bail!("only rollout and completion admissions are signed here"),
     }
+    if !journal.contains_evidence(publication.digest) {
+        bail!("qualification journal does not record the destination's publication receipt");
+    }
+
+    let rollout = match phase {
+        QualificationPhase::Rollout => Some(QualificationRolloutIntent::for_ring(
+            destination,
+            args.ring.context("rollout qualification requires --ring")?,
+            args.prior_generation
+                .context("rollout qualification requires --prior-generation")?,
+        )?),
+        _ => None,
+    };
     let (key_id, path) = args
         .authority_key
         .split_once('=')
         .context("authority key must be KEY_ID=PATH")?;
-    let rollout = args
-        .rollout_intent
-        .as_ref()
-        .map(|path| {
-            canonical::from_slice(
-                &capture::control_file(path, "qualification rollout intent")?,
-                "qualification rollout intent",
-            )
-        })
-        .transpose()?;
-    let admission = QualificationAdmissionV1 {
-        schema_version: "aos.release.qualification-admission/v1".into(),
+    let plan_digest = Sha256Digest::of_bytes(&canonical::to_vec(plan)?);
+    let admission = QualificationAdmission {
+        schema_version: QUALIFICATION_ADMISSION.into(),
         phase,
+        destination: destination.name.clone(),
         rollout,
         registry: plan.registry.clone(),
         release_id: plan.release_id.clone(),
         plan_digest,
         manifest_digest,
-        publication_receipt_digest,
-        journal_digest: Sha256Digest::of_bytes(&journal),
+        publication_receipt_digest: publication.digest,
+        journal_digest: Sha256Digest::of_bytes(&journal.bytes),
         report_digest: Sha256Digest::of_bytes(report),
         policy_digest: plan.public_evidence_policy_digest,
         authority_id: key_id.to_owned(),
         admitted_at: args.qualified_at.clone(),
     };
     admission.validate(plan, &args.qualified_at)?;
+
     let payload = canonical::to_vec(&admission)?;
     let digest = Sha256Digest::separated(RECEIPT_SIGNATURE_DOMAIN, &payload);
     let role = plan
@@ -112,9 +184,13 @@ pub(super) async fn sign(
         key_id,
         &capture::control_file(Path::new(path), "qualification public key")?,
     )?;
-    let request = SigningRequestV1 {
+    let request = SigningRequest {
         schema_version: aos_release::signing::SIGNING_REQUEST_DOMAIN.into(),
-        request_id: format!("qualification-admission/{}", plan.release_id),
+        request_id: format!(
+            "qualification-admission/{}/{}",
+            plan.release_id,
+            destination.name.replace('/', "-")
+        ),
         nonce: args.authority_nonce.clone(),
         registry: plan.registry.clone(),
         release_id: plan.release_id.clone(),
@@ -143,14 +219,14 @@ pub(super) async fn sign(
             &args.authority_verification_identity,
         )
         .await?;
-    let envelope = SignedReceiptEnvelopeV1 {
-        schema_version: SIGNED_RECEIPT_V1.into(),
+    let envelope = SignedReceiptEnvelope {
+        schema_version: SIGNED_RECEIPT.into(),
         key_id: key_id.to_owned(),
         payload: serde_json::to_value(&admission)?,
         signature_base64: response.signature_base64.clone(),
     };
     let signed = canonical::to_vec(&envelope)?;
-    let (_, verified): (String, QualificationAdmissionV1) = verify_signed_receipt_with_key(
+    let (_, verified): (String, QualificationAdmission) = verify_signed_receipt_with_key(
         &signed,
         &BTreeMap::from([(key_id.to_owned(), key.public_key)]),
     )?;
@@ -159,7 +235,7 @@ pub(super) async fn sign(
     }
     qualification_run::persist(
         &args.output,
-        publication,
+        &publication.bytes,
         report,
         reports,
         &payload,
@@ -168,49 +244,75 @@ pub(super) async fn sign(
         &args.review_receipts,
     )?;
     printer.success(&format!(
-        "Signed {:?} qualification for {}",
-        phase, plan.release_id
+        "Signed {phase:?} qualification of {} for {}",
+        destination.name, plan.release_id
     ));
     Ok(())
 }
 
-pub(super) fn verify_admission(
-    plan: &ReleasePlanV1,
-    manifest: &ReleaseManifestV1,
-    directory: Option<&Path>,
-    key_specs: &[String],
-    manifest_keys: &[TrustedEd25519Key],
-    phase: QualificationPhase,
-    rollout: Option<&aos_release::qualification_admission::QualificationRolloutIntent>,
-    journal: &[u8],
-    production_digest: Sha256Digest,
-    manifest_digest: Sha256Digest,
-) -> Result<Option<Sha256Digest>> {
-    if plan.qualification.is_none() {
+/// Inputs of one rollout or completion admission check.
+pub(super) struct AdmissionCheck<'a> {
+    /// Frozen plan.
+    pub(super) plan: &'a ReleasePlan,
+    /// Final manifest.
+    pub(super) manifest: &'a ReleaseManifestV1,
+    /// Destination whose channel operation is admitted.
+    pub(super) destination: &'a PlannedDestination,
+    /// Signed qualification directory, when supplied.
+    pub(super) directory: Option<&'a Path>,
+    /// Qualification authority keys as `KEY_ID=PATH`.
+    pub(super) key_specs: &'a [String],
+    /// Release-evidence keys for independent reviews.
+    pub(super) review_keys: &'a [TrustedEd25519Key],
+    /// Hold point.
+    pub(super) phase: QualificationPhase,
+    /// Exact channel operation the rollout admission must name.
+    pub(super) rollout: Option<&'a QualificationRolloutIntent>,
+    /// Exact input journal bytes.
+    pub(super) journal: &'a [u8],
+    /// Destination surface publication receipt digest.
+    pub(super) publication_digest: Sha256Digest,
+    /// Final manifest identity.
+    pub(super) manifest_digest: Sha256Digest,
+}
+
+/// Verifies a signed rollout or completion admission when the phase has cases.
+///
+/// Returns the signed admission digest to record, or `None` when the
+/// destination's profile selects no case at this phase (in which case no
+/// directory may be supplied).
+pub(super) fn verify_admission(check: AdmissionCheck<'_>) -> Result<Option<Sha256Digest>> {
+    let name = check.destination.name.as_str();
+    if !phase_has_cases(check.plan, check.manifest, name, check.phase)? {
+        if check.directory.is_some() {
+            bail!(
+                "{name} has no {:?} qualification; omit --qualification",
+                check.phase
+            );
+        }
         return Ok(None);
     }
-    let directory =
-        directory.context("shared-contract channel operations require --qualification")?;
+    let directory = check
+        .directory
+        .with_context(|| format!("{name} requires a signed {:?} qualification", check.phase))?;
     let signed = capture::control_file(
         &directory.join("signed-qualification.json"),
         "signed hold-point qualification",
     )?;
-    let keys: BTreeMap<_, _> = verify::load_trusted_keys(key_specs)?
-        .into_iter()
-        .map(|key| (key.key_id, key.public_key))
-        .collect();
-    let (key, admission): (String, QualificationAdmissionV1) =
+    let keys = surface::key_map(check.key_specs)?;
+    let (key, admission): (String, QualificationAdmission) =
         verify_signed_receipt_with_key(&signed, &keys)?;
-    let now = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
-    admission.validate(plan, &now)?;
+    let now = super::journal::now_utc();
+    admission.validate(check.plan, &now)?;
     if admission.authority_id != key
-        || admission.phase != phase
-        || admission.rollout.as_ref() != rollout
-        || admission.manifest_digest != manifest_digest
-        || admission.publication_receipt_digest != production_digest
-        || admission.journal_digest != Sha256Digest::of_bytes(journal)
+        || admission.phase != check.phase
+        || admission.destination != name
+        || admission.rollout.as_ref() != check.rollout
+        || admission.manifest_digest != check.manifest_digest
+        || admission.publication_receipt_digest != check.publication_digest
+        || admission.journal_digest != Sha256Digest::of_bytes(check.journal)
     {
-        bail!("qualification admission is for another release, receipt, phase, or journal");
+        bail!("qualification admission is for another destination, receipt, phase, or journal");
     }
     let report = capture::control_file(
         &directory.join("qualification-report.json"),
@@ -220,51 +322,104 @@ pub(super) fn verify_admission(
     if Sha256Digest::of_bytes(&report) != admission.report_digest {
         bail!("qualification observation digest mismatch");
     }
-    let parsed: QualificationReportV1 = canonical::from_slice(&report, "hold-point observations")?;
-    if parsed.phase != Some(phase)
-        || parsed.manifest_digest != manifest_digest
-        || parsed.staging_receipt_digest != production_digest
+    let parsed: QualificationReport = canonical::from_slice(&report, "hold-point observations")?;
+    if parsed.phase != check.phase
+        || parsed.manifest_digest != check.manifest_digest
+        || parsed.staging_receipt_digest != check.publication_digest
     {
         bail!("qualification report scope mismatch");
     }
-    parsed.validate_phase(plan, manifest, phase, &now)?;
+    parsed.validate_phase(check.plan, check.manifest, name, check.phase, &now)?;
     verify_report_files(directory, &parsed)?;
-    verify_reviews(plan, &report, &review_paths(directory)?, manifest_keys)?;
+    verify_reviews(
+        check.plan,
+        name,
+        &report,
+        &review_paths(directory)?,
+        check.review_keys,
+    )?;
     Ok(Some(Sha256Digest::of_bytes(&signed)))
 }
 
-/// Rechecks the retained report bodies and independent reviews at admission.
-pub(super) fn verify_staging_report(
-    plan: &ReleasePlanV1,
+/// Verifies one staging-phase evidence directory for a production destination.
+///
+/// The directory holds `qualification-report.json`, `signed-qualification.json`,
+/// `reports/`, and `review-*.json`. The report must name the destination and
+/// the exact staging receipt, remain fresh now, and carry the destination's
+/// review threshold; the receipt must be signed by the plan's single
+/// qualification authority.
+pub(super) fn verify_staging_evidence(
+    plan: &ReleasePlan,
     manifest: &ReleaseManifestV1,
-    report_path: &Path,
-    report: &[u8],
-    receipt: &aos_release::receipt::QualificationReceiptV1,
-    keys: &[TrustedEd25519Key],
-) -> Result<()> {
-    if plan.qualification.is_none() {
-        return Ok(());
+    destination: &str,
+    directory: &Path,
+    staging_digest: Sha256Digest,
+    manifest_digest: Sha256Digest,
+    qualification_keys: &[String],
+    review_keys: &[TrustedEd25519Key],
+) -> Result<AdmittedQualification> {
+    let report_bytes = capture::control_file(
+        &directory.join("qualification-report.json"),
+        "qualification report",
+    )?;
+    canonical::require_canonical(&report_bytes, "qualification report")?;
+    let report: QualificationReport = canonical::from_slice(&report_bytes, "qualification report")?;
+    if report.destination != destination {
+        bail!("staging qualification report names a different destination");
     }
-    let now = humantime::format_rfc3339(std::time::SystemTime::now()).to_string();
-    let admitted = humantime::parse_rfc3339(&receipt.qualified_at)?;
-    if admitted > humantime::parse_rfc3339(&now)? {
-        bail!("qualification authority time is in the future");
-    }
+    report.validate(plan, manifest, staging_digest, manifest_digest)?;
+
+    let signed = capture::control_file(
+        &directory.join("signed-qualification.json"),
+        "signed qualification receipt",
+    )?;
+    let keys = surface::key_map(qualification_keys)?;
+    let (key_id, receipt): (String, QualificationReceipt) =
+        verify_signed_receipt_with_key(&signed, &keys)?;
+    receipt.validate()?;
     let role = plan
         .signers
         .iter()
         .find(|role| role.role == SignerRole::Qualification)
         .context("missing planned qualification authority")?;
-    if role.threshold != 1 || role.key_ids.as_slice() != [receipt.authority_id.as_str()] {
+    if key_id != receipt.authority_id
+        || role.threshold != 1
+        || role.key_ids.as_slice() != [receipt.authority_id.as_str()]
+    {
         bail!("qualification signer differs from the frozen plan");
     }
-    let parsed: QualificationReportV1 = canonical::from_slice(report, "staging report")?;
-    parsed.validate_phase(plan, manifest, QualificationPhase::Staging, &now)?;
-    let directory = report_path
-        .parent()
-        .context("qualification report lacks parent directory")?;
-    verify_report_files(directory, &parsed)?;
-    verify_reviews(plan, report, &review_paths(directory)?, keys)
+    if receipt.staging_receipt_digest != staging_digest
+        || receipt.manifest_digest != manifest_digest
+        || receipt.policy_id != STAGING_POLICY_ID
+        || receipt.policy_digest != plan.public_evidence_policy_digest
+        || receipt.report_digest != Sha256Digest::of_bytes(&report_bytes)
+    {
+        bail!("qualification receipt does not bind the exact staged release");
+    }
+    let now = super::journal::now_utc();
+    if humantime::parse_rfc3339(&receipt.qualified_at)? > humantime::parse_rfc3339(&now)? {
+        bail!("qualification authority time is in the future");
+    }
+    report.validate_phase(
+        plan,
+        manifest,
+        destination,
+        QualificationPhase::Staging,
+        &now,
+    )?;
+    verify_report_files(directory, &report)?;
+    verify_reviews(
+        plan,
+        destination,
+        &report_bytes,
+        &review_paths(directory)?,
+        review_keys,
+    )?;
+    Ok(AdmittedQualification {
+        digest: Sha256Digest::of_bytes(&signed),
+        payload: canonical::to_vec(&receipt)?,
+        signed,
+    })
 }
 
 fn review_paths(directory: &Path) -> Result<Vec<PathBuf>> {
@@ -283,7 +438,7 @@ fn review_paths(directory: &Path) -> Result<Vec<PathBuf>> {
     Ok(paths)
 }
 
-fn verify_report_files(directory: &Path, report: &QualificationReportV1) -> Result<()> {
+fn verify_report_files(directory: &Path, report: &QualificationReport) -> Result<()> {
     for record in &report.evidence {
         let bytes = capture::control_file(
             &directory

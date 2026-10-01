@@ -5,19 +5,27 @@
   strings = option (lib.types.listOf lib.types.str);
   positive = lib.types.addCheck lib.types.int (value: value > 0);
   natural = lib.types.addCheck lib.types.int (value: value >= 0);
+  # A channel has 256 partitions; a ring names how many are reached so far.
+  partitionCount = lib.types.addCheck lib.types.int (value: value >= 1 && value <= 256);
+  surface = lib.types.enum ["staging" "production"];
+  # Binding identities a fitness attestation may carry; see the contract design.
+  fitnessBinding = lib.types.enum ["surface" "hub-schema" "signer-roster" "tooling" "alert-config"];
   environments = import ./_environment-types.nix {inherit lib;};
   closed = options:
     lib.types.submodule {
       inherit options;
       config._module.strict = true;
     };
+  ring = closed {
+    partitions = option partitionCount "Cumulative channel partitions reached by this ring; the last ring reaches 256.";
+    observe_seconds = option natural "Minimum observation window before the next ring may advance.";
+  };
 in {
-  inherit positive natural closed option text strings environments;
+  inherit positive natural closed option text strings environments surface ring;
   requirement = closed {
     phase = option (lib.types.enum ["build" "staging" "rollout" "complete"]) "Release hold point requiring this evidence.";
     scope = option (lib.types.enum ["release" "packages" "images" "containers"]) "Artifact population expanded into cases.";
     method = (option (lib.types.enum ["automated" "operator"]) "Source of the observation.") // {default = "automated";};
-    production_only = (option lib.types.bool "Requires the claim only for main-registry release classes.") // {default = false;};
     checks = strings "Acceptance conditions required in every observation.";
     regressions = (strings "Source regression gates; these do not replace release execution.") // {default = [];};
     invalidated_by = (strings "Identities whose change invalidates evidence.") // {default = ["subject" "policy" "executor" "environment"];};
@@ -34,11 +42,57 @@ in {
     required = (option lib.types.bool "Requires the target artifact in every release.") // {default = true;};
     environment = option environments.profile "Typed compatibility scope and execution topology.";
   };
-  threshold = closed {
-    soak_seconds = option positive "Minimum measured workload observation duration.";
-    exercise_max_age_seconds = option positive "Maximum age of operational evidence.";
-    require_independent_review = option lib.types.bool "Requires independent signed review.";
-    require_complete_matrix = option lib.types.bool "Rejects blocked package/platform cells.";
+  profile = closed {
+    description = text "Human-readable summary of the obligations this profile bundles.";
+    requirements = strings "Release- and package-scoped requirement identities required at their own phase.";
+    claims = option (lib.types.enum ["none" "functional" "qualified"]) "Target claim selection: functional selects A2 staging claims, qualified adds A3 complete claims.";
+    change_scoped = (option lib.types.bool "Applies image, container and package obligations only to targets changed relative to the predecessor.") // {default = false;};
+    soak_seconds = option natural "Minimum observed window for A3 claims and rollout observation.";
+    review_threshold = option natural "Distinct release-evidence reviewer signatures required over the staging report.";
+    require_complete_matrix = (option lib.types.bool "Rejects blocked package/platform cells.") // {default = false;};
+    review_registry_transaction = (option lib.types.bool "Requires operator acceptance of the isolated registry transaction before finalization.") // {default = false;};
+    fitness =
+      (option (lib.types.attrsOf (closed {
+        max_age_seconds = option positive "Maximum age of the fitness attestation at admission.";
+      })) "Fitness attestation kinds required at admission, keyed by kind.")
+      // {default = {};};
+    rollout =
+      (option (closed {
+        rings = option (lib.types.listOf ring) "Ordered cumulative rollout rings.";
+      }) "Channel rollout schedule.")
+      // {
+        default = {
+          rings = [
+            {
+              partitions = 256;
+              observe_seconds = 0;
+            }
+          ];
+        };
+      };
+    override =
+      (option (closed {
+        soak_seconds = option lib.types.bool "Permits a signed override to relax the soak window.";
+        rings = option lib.types.bool "Permits a signed override to relax the rollout rings.";
+      }) "Fields a signed profile override may relax.")
+      // {
+        default = {
+          soak_seconds = false;
+          rings = false;
+        };
+      };
+  };
+  destination = closed {
+    surface = option surface "Publication surface role receiving the release.";
+    registry_tier = option (lib.types.enum ["testing" "production"]) "Registry tier the destination belongs to.";
+    channel = option (lib.types.enum ["edge" "candidate" "stable"]) "Channel kind; per-train channels map to their kind.";
+    profile = text "Profile whose obligations gate publication to this destination.";
+    after = (option (lib.types.listOf surface) "Surface roles that must already hold a published admission for the same release.") // {default = [];};
+  };
+  fitnessKind = closed {
+    method = option (lib.types.enum ["automated" "operator"]) "Source of the attestation.";
+    bindings = option (lib.types.listOf fitnessBinding) "Identities the attestation carries and that must match live values at admission.";
+    checks = strings "Checks every attestation of this kind must report as passed.";
   };
   packageRule = closed {
     role = option (lib.types.enum ["general-catalog" "qualified-workload" "system-integrity"]) "Functional consequences and inherited dependency obligations.";

@@ -3,7 +3,7 @@
 use anyhow::{Result, bail};
 use aos_release::digest::Sha256Digest;
 use aos_release::signing::{
-    SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequestV1,
+    SignatureAlgorithm, SignerRole, SigningContext, SigningOperation, SigningRequest,
 };
 
 /// Fully constrained signing intent emitted by image mechanics.
@@ -30,7 +30,7 @@ pub trait ImageRequestAuthorizer: Send + Sync {
     ///
     /// Returns an error when no reviewed signer policy authorizes the intent
     /// or a unique anti-replay nonce cannot be allocated.
-    fn authorize(&self, intent: &ImageSigningIntent<'_>) -> Result<SigningRequestV1>;
+    fn authorize(&self, intent: &ImageSigningIntent<'_>) -> Result<SigningRequest>;
 }
 
 /// Verifies that a coordinator-supplied request exactly implements an intent.
@@ -40,7 +40,7 @@ pub trait ImageRequestAuthorizer: Send + Sync {
 /// Returns an error for any role, mechanism, operation, context, or payload
 /// mismatch. The caller must separately bind release, plan, approval policy,
 /// key id, provider revision, and nonce when constructing the request.
-pub fn verify_intent(request: &SigningRequestV1, intent: &ImageSigningIntent<'_>) -> Result<()> {
+pub fn verify_intent(request: &SigningRequest, intent: &ImageSigningIntent<'_>) -> Result<()> {
     request.validate()?;
     if request.role != intent.role
         || request.algorithm != intent.algorithm
