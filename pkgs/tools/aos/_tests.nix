@@ -2436,13 +2436,19 @@ in {
         fi
         grep -q 'upload_urls = \[' \
           "$config/apm/registries.d/host-install-channel.toml"
-        run_clean ${self}/bin/apr --json cache generate \
-          --registry host-install-channel \
-          --output "$work/install-static-cache-output/cache" \
-          --key "$work/host-install-cache-signing-key" \
-          --cache-url "http://127.0.0.1:$install_cache_port/cache" \
-          --priority 77 \
-          --no-commit > "$work/apr-cache-host-install.json"
+        # CPU parallelism must not exhaust descriptor limits while querying
+        # the source closure or opening NAR dumps. Keep this limit local to
+        # the cache-generation regression so later workflows retain theirs.
+        (
+          ulimit -n 128
+          run_clean ${self}/bin/apr --json cache generate \
+            --registry host-install-channel \
+            --output "$work/install-static-cache-output/cache" \
+            --key "$work/host-install-cache-signing-key" \
+            --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --priority 77 --jobs 512 \
+            --no-commit > "$work/apr-cache-host-install.json"
+        )
         ${pkgs.jq}/bin/jq -e \
           --arg output "$work/install-static-cache-output/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
