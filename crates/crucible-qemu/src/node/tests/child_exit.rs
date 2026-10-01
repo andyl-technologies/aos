@@ -45,6 +45,24 @@ fn child_poll_preserves_signal_termination_as_unclean() -> Result<(), Box<dyn Er
     Ok(())
 }
 
+#[test]
+fn failed_helper_cleanup_reaps_original_child_and_is_idempotent() -> Result<(), Box<dyn Error>> {
+    let child = Command::new("sleep").arg("60").spawn()?;
+    let mut child = QemuNodeChild::new(child);
+    let process_id = child.process_id();
+
+    // A zero deadline can leave cleanup pending; retry must use the original
+    // Child instead of rediscovering wait authority from a process number.
+    let _first_cleanup = child.force_kill_and_reap_failed_helper(Duration::ZERO);
+    child.force_kill_and_reap_failed_helper(Duration::from_secs(5))?;
+
+    assert_eq!(child.process_id(), process_id);
+    assert!(child.reaped());
+    child.force_kill_and_reap_failed_helper(Duration::ZERO)?;
+    assert!(child.try_wait_natural_exit().is_err());
+    Ok(())
+}
+
 fn wait_for_test_child_exit_pending(child: &QemuNodeChild) -> Result<(), Box<dyn Error>> {
     let pid = Pid::from_child(&child.child);
     waitid(

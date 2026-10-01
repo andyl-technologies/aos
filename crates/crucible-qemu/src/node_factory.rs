@@ -120,6 +120,44 @@ where
         self.vmstate.query_hot_fork_plugin_barrier()
     }
 
+    fn hold_hot_fork_block_barrier(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockBarrierState, QemuNodeChannelError> {
+        self.vmstate.hold_hot_fork_block_barrier()
+    }
+
+    fn query_hot_fork_source_graph(
+        &mut self,
+        expected_qemu_pid: i64,
+        expected_template_generation: u64,
+    ) -> Result<crate::QmpHotForkSourceGraphReceipt, QemuNodeChannelError> {
+        self.vmstate
+            .query_hot_fork_source_graph(expected_qemu_pid, expected_template_generation)
+    }
+
+    fn query_hot_fork_block_seal(
+        &mut self,
+    ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {
+        self.vmstate.query_hot_fork_block_seal()
+    }
+
+    fn add_hot_fork_detached_root_overlay(
+        &mut self,
+        request: &crate::QmpHotForkBlockSealRequest,
+        file_path: &std::path::Path,
+    ) -> Result<(), QemuNodeChannelError> {
+        self.vmstate
+            .add_hot_fork_detached_root_overlay(request, file_path)
+    }
+
+    fn seal_hot_fork_block_roots(
+        &mut self,
+        inventory: &crate::QmpHotForkBlockSealState,
+        roots: &[crate::QmpHotForkBlockSealRequest],
+    ) -> Result<crate::QmpHotForkBlockSealState, QemuNodeChannelError> {
+        self.vmstate.seal_hot_fork_block_roots(inventory, roots)
+    }
+
     fn prepare_hot_fork_template(
         &mut self,
         block_snapshot_bindings: &[crate::QmpHotForkBlockSnapshotBinding],

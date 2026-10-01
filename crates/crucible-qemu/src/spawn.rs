@@ -28,9 +28,11 @@ use crate::{
     QemuNodeChild,
 };
 
+mod image_launch;
 mod materialization;
 mod run_directory;
 
+use image_launch::{GuardedLaunchImagePins, GuardedSetupProbeCommand, guarded_launch_args};
 pub(crate) use materialization::QemuProductionExactRestoreSource;
 pub(crate) use materialization::SealedAtomicExactRestoreInputs;
 pub(crate) use materialization::{
@@ -938,7 +940,11 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     run_directory.validate_launch_basis(command, contract)?;
     run_directory.revalidate()?;
     let image_pins = GuardedLaunchImagePins::new(run_directory)?;
-    let launch_args = guarded_launch_args(command.args(), image_pins.overlay.is_some())?;
+    let launch_args = guarded_launch_args(
+        command.args(),
+        image_pins.overlay.is_some(),
+        run_directory.path(),
+    )?;
     let (mut resources, child_resources) = create_spawn_resources(region_len)?;
     resources.fault_node_hash = command.plugin_fault_node_hash();
     let child = spawn_process_with_resources(
@@ -980,87 +986,6 @@ struct QemuSpawnChildResources {
     control_socket: OwnedFd,
     shmem_fd: OwnedFd,
     wake_fd: OwnedFd,
-}
-
-struct GuardedLaunchImagePins {
-    vmstate: OwnedFd,
-    overlay: Option<GuardedOverlayImagePins>,
-}
-
-struct GuardedOverlayImagePins {
-    read: OwnedFd,
-    write: OwnedFd,
-}
-
-impl GuardedLaunchImagePins {
-    fn new(run_directory: &QemuPreparedRunDirectory) -> Result<Self, QemuSpawnError> {
-        // QEMU's OFD locks must not remain owned by the retained authority.
-        let vmstate_file = run_directory.open_vmstate_for_launch()?;
-        let vmstate = duplicate_cloexec_fd(
-            vmstate_file.as_raw_fd(),
-            "pin guarded VMState launch descriptor",
-        )?;
-        let overlay = match run_directory.open_direct_root_overlay_for_launch()? {
-            Some((read, write)) => Some(GuardedOverlayImagePins {
-                read: duplicate_cloexec_fd(
-                    read.as_raw_fd(),
-                    "pin read-only guarded root-overlay launch descriptor",
-                )?,
-                write: duplicate_cloexec_fd(
-                    write.as_raw_fd(),
-                    "pin read-write guarded root-overlay launch descriptor",
-                )?,
-            }),
-            None => None,
-        };
-        Ok(Self { vmstate, overlay })
-    }
-}
-
-fn guarded_launch_args(args: &[String], has_overlay: bool) -> Result<Vec<String>, QemuSpawnError> {
-    let vmstate_name = format!("file.filename={}", crate::DEFAULT_VMSTATE_FILE_NAME);
-    let overlay_name = format!("file={}", crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
-    let mut vmstate_count = 0;
-    let mut overlay_count = 0;
-    let mut rewritten = Vec::with_capacity(args.len() + 6);
-
-    rewritten.extend([
-        String::from("-add-fd"),
-        format!("fd={QEMU_VMSTATE_LAUNCH_FD},set=1,opaque=crucible-vmstate"),
-    ]);
-    if has_overlay {
-        rewritten.extend([
-            String::from("-add-fd"),
-            format!(
-                "fd={QEMU_ROOT_OVERLAY_READ_LAUNCH_FD},set=2,opaque=crucible-root-overlay-read"
-            ),
-            String::from("-add-fd"),
-            format!(
-                "fd={QEMU_ROOT_OVERLAY_WRITE_LAUNCH_FD},set=2,opaque=crucible-root-overlay-write"
-            ),
-        ]);
-    }
-
-    for arg in args {
-        let mut value = arg.clone();
-        if value.contains(&vmstate_name) {
-            vmstate_count += value.matches(&vmstate_name).count();
-            value = value.replace(&vmstate_name, "file.filename=/dev/fdset/1");
-        }
-        if value.contains(&overlay_name) {
-            overlay_count += value.matches(&overlay_name).count();
-            value = value.replace(&overlay_name, "file=/dev/fdset/2");
-        }
-        rewritten.push(value);
-    }
-
-    if vmstate_count != 1 || overlay_count != usize::from(has_overlay) {
-        return Err(invalid_input(
-            "bind guarded QEMU block roots",
-            "canonical VMState or root-overlay launch path is missing or duplicated",
-        ));
-    }
-    Ok(rewritten)
 }
 
 fn create_spawn_resources(
@@ -1195,6 +1120,51 @@ pub(crate) fn run_guarded_qemu_setup_probe(
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
 ) -> Result<Output, QemuGuardedImagePreparationError> {
+    let fail = |source| QemuGuardedImagePreparationError {
+        source,
+        child: None,
+    };
+    run_directory
+        .validate_launch_basis(launch, process_contract)
+        .and_then(|()| run_directory.revalidate())
+        .map_err(fail)?;
+    let overlay = run_directory
+        .open_direct_root_overlay_for_probe()
+        .and_then(|overlay| {
+            overlay
+                .map(|file| {
+                    duplicate_cloexec_fd(file.as_raw_fd(), "pin read-only QEMU setup overlay")
+                })
+                .transpose()
+        })
+        .map_err(fail)?;
+    let probe_args =
+        image_launch::guarded_probe_args(args, overlay.is_some(), run_directory.path())
+            .map_err(fail)?;
+    let setup = GuardedSetupProbeCommand {
+        args: &probe_args,
+        root_overlay: overlay.as_ref(),
+    };
+    run_guarded_qemu_setup_probe_inner(
+        launch,
+        setup,
+        input,
+        maximum_output_bytes,
+        timeout,
+        run_directory,
+        process_contract,
+    )
+}
+
+fn run_guarded_qemu_setup_probe_inner(
+    launch: &QemuLaunchCommand,
+    setup: GuardedSetupProbeCommand<'_>,
+    input: &[u8],
+    maximum_output_bytes: usize,
+    timeout: Duration,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+) -> Result<Output, QemuGuardedImagePreparationError> {
     if let Err(source) = run_directory
         .validate_launch_basis(launch, process_contract)
         .and_then(|()| run_directory.revalidate())
@@ -1209,11 +1179,16 @@ pub(crate) fn run_guarded_qemu_setup_probe(
     let mut command = Command::new(launch.executable());
     command
         .env_clear()
-        .args(args)
+        .args(setup.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    install_guarded_helper_authority(&mut command, run_directory, process_contract);
+    install_guarded_helper_authority_with_probe_pin(
+        &mut command,
+        run_directory,
+        process_contract,
+        setup.root_overlay.map(AsRawFd::as_raw_fd),
+    );
 
     let mut child = command
         .spawn()
@@ -1378,6 +1353,15 @@ fn install_guarded_helper_authority(
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
 ) {
+    install_guarded_helper_authority_with_probe_pin(command, run_directory, process_contract, None);
+}
+
+fn install_guarded_helper_authority_with_probe_pin(
+    command: &mut Command,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+    probe_overlay: Option<RawFd>,
+) {
     let expected_parent_pid = unsafe {
         // SAFETY: `getpid` has no preconditions.
         libc::getpid()
@@ -1401,6 +1385,10 @@ fn install_guarded_helper_authority(
             install_prepared_run_directory(directory)?;
             if let Some(credentials) = contract.credentials {
                 install_child_credentials(credentials)?;
+            }
+            if let Some(overlay) = probe_overlay {
+                dup_to_fixed_child_fd(overlay, QEMU_ROOT_OVERLAY_READ_LAUNCH_FD)?;
+                close_child_source_fd(overlay)?;
             }
             set_parent_death_signal(expected_parent_pid)
         });
@@ -1477,6 +1465,13 @@ fn retryable_probe_io(error: &io::Error) -> bool {
     )
 }
 
+/// Distinguishes original image provisioning from a retained source helper.
+#[derive(Clone, Copy)]
+enum GuardedImageToolPurpose {
+    FreshLaunch,
+    RetainedHotForkSource,
+}
+
 fn run_guarded_image_tool(
     executable: &Path,
     args: &[std::ffi::OsString],
@@ -1484,7 +1479,33 @@ fn run_guarded_image_tool(
     run_directory: &QemuPreparedRunDirectory,
     process_contract: &QemuChildProcessContract,
 ) -> Result<(), QemuGuardedImagePreparationError> {
-    if let Err(source) = run_directory.validate_helper_basis(process_contract) {
+    run_guarded_image_tool_for_purpose(
+        executable,
+        args,
+        operation,
+        run_directory,
+        process_contract,
+        GuardedImageToolPurpose::FreshLaunch,
+    )
+}
+
+fn run_guarded_image_tool_for_purpose(
+    executable: &Path,
+    args: &[std::ffi::OsString],
+    operation: &'static str,
+    run_directory: &QemuPreparedRunDirectory,
+    process_contract: &QemuChildProcessContract,
+    purpose: GuardedImageToolPurpose,
+) -> Result<(), QemuGuardedImagePreparationError> {
+    let admission = match purpose {
+        GuardedImageToolPurpose::FreshLaunch => {
+            run_directory.validate_helper_basis(process_contract)
+        }
+        GuardedImageToolPurpose::RetainedHotForkSource => {
+            run_directory.validate_retained_source_helper_basis(process_contract)
+        }
+    };
+    if let Err(source) = admission {
         return Err(QemuGuardedImagePreparationError {
             source,
             child: None,

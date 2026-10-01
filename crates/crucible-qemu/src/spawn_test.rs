@@ -20,6 +20,9 @@ use crate::launch::{
 
 use super::*;
 
+#[path = "spawn/image_launch_test.rs"]
+mod image_launch_tests;
+
 const PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_CHILD_PROBE";
 const SOURCE_FDS_ENV: &str = "CRUCIBLE_QEMU_SPAWN_SOURCE_FDS";
 const PINNED_CWD_PROBE_ENV: &str = "CRUCIBLE_QEMU_SPAWN_PINNED_CWD_PROBE";
@@ -1424,7 +1427,7 @@ fn inherited_block_roots_survive_names_replaced_after_exec() -> Result<(), Box<d
 fn guarded_launch_rewrites_only_authenticated_block_roots() -> Result<(), Box<dyn Error>> {
     let command = guarded_resource_test_command()?;
     let canonical = command.args();
-    let guarded = guarded_launch_args(canonical, true)?;
+    let guarded = guarded_launch_args(canonical, true, Path::new("/pinned/generation"))?;
 
     assert_eq!(guarded[0], "-add-fd");
     assert_eq!(guarded[2], "-add-fd");
@@ -1449,13 +1452,13 @@ fn guarded_launch_rewrites_only_authenticated_block_roots() -> Result<(), Box<dy
         .ok_or("canonical VMState argument is missing")?;
     let mut duplicated = canonical.to_vec();
     duplicated.extend(["-blockdev".to_owned(), vmstate_arg.clone()]);
-    assert!(guarded_launch_args(&duplicated, true).is_err());
+    assert!(guarded_launch_args(&duplicated, true, Path::new("/pinned/generation")).is_err());
     let missing_vmstate = canonical
         .iter()
         .filter(|arg| *arg != vmstate_arg)
         .cloned()
         .collect::<Vec<_>>();
-    assert!(guarded_launch_args(&missing_vmstate, true).is_err());
+    assert!(guarded_launch_args(&missing_vmstate, true, Path::new("/pinned/generation")).is_err());
     Ok(())
 }
 
@@ -1872,9 +1875,12 @@ impl GuardedProbeFixture {
         maximum_output_bytes: usize,
         timeout: Duration,
     ) -> Result<QemuGuardedImagePreparationError, Box<dyn Error>> {
-        match run_guarded_qemu_setup_probe(
+        match run_guarded_qemu_setup_probe_inner(
             &self.command,
-            &self.args,
+            GuardedSetupProbeCommand {
+                args: &self.args,
+                root_overlay: None,
+            },
             &[],
             maximum_output_bytes,
             timeout,

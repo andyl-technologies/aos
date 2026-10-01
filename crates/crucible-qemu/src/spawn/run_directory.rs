@@ -1049,6 +1049,27 @@ impl QemuPreparedRunDirectory {
         Ok(File::from(overlay))
     }
 
+    /// Duplicates the pinned VMState container for stopped-source custody.
+    ///
+    /// The native block seal inventories device backends, while VMState is a
+    /// separate parentless writable node. The host retains and hashes its
+    /// original inode independently until child-private copying completes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuSpawnError`] if the named directory or VMState inode
+    /// differs from the prepared generation or the descriptor cannot be cloned.
+    pub fn open_vmstate_for_hot_fork(&self) -> Result<File, QemuSpawnError> {
+        self.revalidate_identity()?;
+        self.vmstate
+            .try_clone()
+            .map(File::from)
+            .map_err(|source| QemuSpawnError::Io {
+                operation: "duplicate pinned hot-fork VMState container",
+                source,
+            })
+    }
+
     /// Invalidates destinations after any fork exchange without a success token.
     ///
     /// This operation can only remove launch authority. It is safe after an
@@ -1219,6 +1240,34 @@ impl QemuPreparedRunDirectory {
         validate_guarded_launch_requirements(self.launch_resources, contract)?;
         self.revalidate_identity().map(|_| ())
     }
+
+    pub(super) fn validate_retained_source_helper_basis(
+        &self,
+        contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        // A live source already owns its initialized root. Keep the original
+        // attempt authority while refusing incomplete or replaced launch files.
+        if self.admitted_ceiling != contract.admitted_resource_ceiling()
+            || !Arc::ptr_eq(&self.attempt_binding, &contract.attempt_binding)
+            || self.exact_device_state_materialization
+                == PreparedDeviceStateMaterialization::Updating
+            || !self.launch_resources.has_root_overlay()
+            || matches!(
+                self.root_overlay_materialization,
+                PreparedRootOverlayMaterialization::Absent
+                    | PreparedRootOverlayMaterialization::Updating
+            )
+        {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        validate_guarded_launch_requirements(self.launch_resources, contract)?;
+        let vmstate = self.revalidate_identity()?;
+        let root = self.revalidate_root_overlay_identity()?;
+        if vmstate.st_size <= 0 || root.st_size <= 0 {
+            return Err(QemuSpawnError::PreparedLaunchAdmissionChanged);
+        }
+        Ok(())
+    }
 }
 
 fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, QemuSpawnError> {
@@ -1357,37 +1406,45 @@ impl QemuPreparedRunDirectory {
             return Ok(None);
         }
 
+        // Each fdset candidate needs its own access mode and open-file description.
+        let read = self.open_direct_root_overlay(OFlags::RDONLY)?;
+        let write = self.open_direct_root_overlay(OFlags::RDWR)?;
+        Ok(Some((read, write)))
+    }
+
+    pub(super) fn open_direct_root_overlay_for_probe(
+        &self,
+    ) -> Result<Option<OwnedFd>, QemuSpawnError> {
+        self.root_overlay
+            .as_ref()
+            .map(|_| self.open_direct_root_overlay(OFlags::RDONLY))
+            .transpose()
+    }
+
+    fn open_direct_root_overlay(&self, mode: OFlags) -> Result<OwnedFd, QemuSpawnError> {
         let path = self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
         let identity = self
             .root_overlay_identity
             .ok_or_else(|| QemuSpawnError::PreparedRootOverlayNotReady { path: path.clone() })?;
-        // QEMU opens a cache=none qcow2 first read-only, then read-write. Each
-        // fdset candidate needs its own access mode and open-file description.
-        let open_mode = |mode: OFlags, operation| -> Result<OwnedFd, QemuSpawnError> {
-            let direct = openat(
-                &self.directory,
-                crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
-                mode | OFlags::DIRECT | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-            )
-            .map_err(|source| QemuSpawnError::Io {
-                operation,
-                source: source.into(),
-            })?;
-            let metadata = fstat(&direct).map_err(|source| QemuSpawnError::Io {
-                operation: "inspect direct guarded root overlay",
-                source: source.into(),
-            })?;
-            if !identity.matches(&metadata)
-                || FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-            {
-                return Err(QemuSpawnError::PreparedRootOverlayChanged { path: path.clone() });
-            }
-            Ok(direct)
-        };
-
-        let read = open_mode(OFlags::RDONLY, "open read-only direct guarded root overlay")?;
-        let write = open_mode(OFlags::RDWR, "open read-write direct guarded root overlay")?;
-        Ok(Some((read, write)))
+        let direct = openat(
+            &self.directory,
+            crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
+            mode | OFlags::DIRECT | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "open direct guarded root overlay",
+            source: source.into(),
+        })?;
+        let metadata = fstat(&direct).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect direct guarded root overlay",
+            source: source.into(),
+        })?;
+        if !identity.matches(&metadata)
+            || FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayChanged { path });
+        }
+        Ok(direct)
     }
 }

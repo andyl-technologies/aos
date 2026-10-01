@@ -885,6 +885,7 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
         config,
         checkpoint,
         immutable_root_images: roots,
+        disk_bases,
         block_bindings: blocks,
         ninep_bindings: ninep,
         active_host_io,
@@ -893,6 +894,7 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
     assert_eq!(checkpoint.node_generations, generations);
     assert_eq!(roots, expected_roots);
+    assert!(disk_bases.is_empty());
     assert!(blocks.is_empty());
     assert!(ninep.is_empty());
     assert!(active_host_io.is_empty());
