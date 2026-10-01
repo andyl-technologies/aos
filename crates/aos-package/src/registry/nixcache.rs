@@ -56,6 +56,13 @@ use super::store::StoreMap;
 /// expensive while yielding little additional transfer-size reduction.
 const NAR_ZSTD_LEVEL: i32 = 3;
 
+/// Bounds store subprocesses independently of the compression thread budget.
+///
+/// Large builders may expose hundreds of cores with a 1,024-descriptor limit.
+/// Each metadata query or NAR dump also owns pipes and files, so CPU capacity
+/// must not determine how many store processes can be open at once.
+const MAX_STORE_PROCESS_WORKERS: usize = 16;
+
 /// Maximum uploads kept in flight per destination. The `aos_net`
 /// connection pool enforces the real per-host limit (8 connections);
 /// this only bounds how many file reads/requests we stage at once.
@@ -311,8 +318,13 @@ pub async fn generate_static_cache_with_roots(
     let total = entries.len();
     let path_count = total + remote_skipped;
     let sem = Arc::new(Semaphore::new(workers));
+    let process_sem = Arc::new(Semaphore::new(workers.min(MAX_STORE_PROCESS_WORKERS)));
     let mut handles = Vec::with_capacity(total);
     for (index, entry) in entries.into_iter().enumerate() {
+        let process_permit = Arc::clone(&process_sem)
+            .acquire_owned()
+            .await
+            .context("acquiring store process permit")?;
         let reused = entry.reusable.is_some();
         let threads = if reused {
             1
@@ -340,6 +352,7 @@ pub async fn generate_static_cache_with_roots(
         let signer = Arc::clone(&signer);
         handles.push(tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            let _process_permit = process_permit;
             write_cache_entry(
                 &entry,
                 output_dir.as_path(),
@@ -429,14 +442,14 @@ fn resolve_jobs(explicit: Option<usize>) -> usize {
 }
 
 /// Concurrently gather [`CachePathInfo`] for every path, bounded by
-/// `workers`. Each task validates the path, queries `nix path-info`, and
-/// enforces the store/ blessing gate. The first failure aborts.
+/// `workers` and the store-process limit. Each task validates the path, queries
+/// `nix path-info`, and enforces the store/ blessing gate. The first failure aborts.
 async fn gather_all_path_info(
     paths: &[String],
     store_graph: &Arc<StoreMap>,
     workers: usize,
 ) -> Result<Vec<CachePathInfo>> {
-    let sem = Arc::new(Semaphore::new(workers));
+    let sem = Arc::new(Semaphore::new(workers.min(MAX_STORE_PROCESS_WORKERS)));
     let mut handles = Vec::with_capacity(paths.len());
     for path in paths {
         let permit = Arc::clone(&sem)
