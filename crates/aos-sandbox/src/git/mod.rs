@@ -18,6 +18,8 @@ mod history;
 #[cfg(all(target_os = "linux", feature = "git-helper-mechanics"))]
 mod helper_process;
 #[cfg(target_os = "linux")]
+mod http_handshake;
+#[cfg(target_os = "linux")]
 pub(crate) mod http_owner;
 mod journal;
 mod lease_recovery;
