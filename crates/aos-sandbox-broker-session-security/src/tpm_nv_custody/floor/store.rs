@@ -464,6 +464,15 @@ impl<'origin, 'startup> HostSidecarStoreV1<'origin, 'startup> {
         self.custody.journal_mut()
     }
 
+    pub(in crate::tpm_nv_custody) fn loan_host_lock(
+        &mut self,
+    ) -> Result<ProtectedJournalLockCustodyV1, HostOwnedJournalErrorV1> {
+        self.validate_held()?;
+        let loan = self.custody.journal_mut().loan_protected_lock_custody()?;
+        self.validate_held()?;
+        Ok(loan)
+    }
+
     pub(in crate::tpm_nv_custody) fn require_projection(
         &mut self,
         checkpoint: HostFloorCheckpointDataV1,
