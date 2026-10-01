@@ -447,9 +447,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   successor validation. Their complete source review checks held identity,
   whole preimages, absent-name history, opaque Notes and unchanged burn ownership;
   all seven match both qualified bucket and collector graphs and pass scoped
-  source formatting. Activation, task-owned tests and complete native graph
-  integration remain pending, as does the full trunk gate set; these shared
-  prerequisite adoptions do not qualify a task merge.
+  source formatting. The 17 reviewed activation and publication-test paths
+  now also match the frozen bucket graph exactly. The native creator, retained
+  activation and same-registration Pending recovery consume the original
+  opened-directory and coordination receipts; their tests keep actual lock,
+  incarnation, ancestry, fault and complete-transcript assertions. Scoped AOS
+  source formatting passes. A current trunk native build stops at the missing
+  collector observation body before qualification, so these source adoptions
+  do not claim native gates or a task merge. Complete native graph integration
+  and the full trunk gate set remain pending.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
