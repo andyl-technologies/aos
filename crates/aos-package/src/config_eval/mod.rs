@@ -1762,7 +1762,13 @@ fn enrich_manifest(
     let config_closure_hash = config_module_closure_hash(&config_outputs, &config_nar_hashes)?;
     let (config_registry, config_release_tag, config_tag_signer_key, config_realization) =
         config_module_release_identity(&outcome.working_set)?;
-    let host_store_path = add_fixed_input_to_store(&cmd.host_nix)?;
+    let host_store_path = if host_bytes.starts_with(b"# aos.config-bundle/v1 ") {
+        // Keep the entrypoint inside its recursive fixed source. Flattening it
+        // would sever relative imports and omit their GC root on later boots.
+        cmd.host_nix.clone()
+    } else {
+        add_fixed_input_to_store(&cmd.host_nix)?
+    };
     let runtime_modules =
         runtime_module_manifest_input(&cmd.runtime_modules, cmd.runtime_module_root.as_deref())?;
 
@@ -2400,6 +2406,21 @@ fn add_fixed_eval_host_source(path: &Path, eval_root: &Path) -> Result<PathBuf> 
     std::fs::copy(path, source.join("host.nix"))
         .with_context(|| format!("copying authorized host input {}", path.display()))?;
 
+    if let Some(parent) = path.parent() {
+        let bytes = std::fs::read(path)?;
+        if bytes.starts_with(b"# aos.config-bundle/v1 ") {
+            let bundle_bytes = std::fs::read(parent.join(crate::metadata::bundle::BUNDLE_FILE))
+                .context("bundle host input requires its complete authenticated source")?;
+            let bundle = crate::metadata::bundle::parse(&bundle_bytes)?
+                .context("host source contains an invalid bundle")?;
+            anyhow::ensure!(
+                bytes == bundle.host_module(&bundle_bytes).as_bytes(),
+                "host wrapper does not bind source bundle"
+            );
+            crate::metadata::bundle::copy_source(parent, &source)?;
+        }
+    }
+
     let output = std::process::Command::new("nix-store")
         .envs(aos_core::nix::aos_management_nix_env())
         .args(["--add-fixed", "--recursive", "sha256"])
@@ -2745,6 +2766,21 @@ where
             source.inputs.host_nix.content_hash,
             actual_host_hash,
         );
+    }
+
+    if host_bytes.starts_with(b"# aos.config-bundle/v1 ") {
+        let root = Path::new(&retained.host_nix_ref)
+            .parent()
+            .context("retained bundle has no source root")?;
+        let bundle_bytes = std::fs::read(root.join(crate::metadata::bundle::BUNDLE_FILE))
+            .context("reading retained configuration bundle")?;
+        let bundle = crate::metadata::bundle::parse(&bundle_bytes)?
+            .context("retained host source is not a configuration bundle")?;
+        anyhow::ensure!(
+            host_bytes == bundle.host_module(&bundle_bytes).as_bytes(),
+            "retained host wrapper does not bind its original bundle"
+        );
+        bundle.verify_tree(&root.join(crate::metadata::bundle::SOURCE_DIR))?;
     }
 
     if retained.config_module_paths.len() != source.inputs.config_modules.nar_hashes.len() {

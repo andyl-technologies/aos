@@ -93,6 +93,8 @@ struct ProducerImageInfo {
     #[serde(default)]
     module_abi: Option<u32>,
     compatible_targets: Vec<ImageTarget>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    configuration_capabilities: Vec<String>,
     uki: PortableUkiInfo,
     #[serde(default)]
     disk_size_mi_b: Option<u64>,
