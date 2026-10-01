@@ -10,6 +10,8 @@
 mod credentials;
 mod original_registration;
 mod registration;
+#[cfg(target_os = "linux")]
+mod socket;
 mod stream;
 
 use std::collections::BTreeMap;
@@ -49,6 +51,33 @@ pub enum PublicApiSessionError {
     /// The connection, certificate, credential snapshot, or bounded lifetime is no longer current.
     #[error("public API session is no longer current")]
     Stale,
+}
+
+/// Retains concrete original-socket failures separately from generic TLS errors.
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum PublicApiOriginalSocketErrorV1 {
+    /// The existing TLS identity or finite session is no longer current.
+    #[error(transparent)]
+    Session(#[from] PublicApiSessionError),
+    /// The concrete accepted socket failed its actual kernel observation.
+    #[error("original public socket observation failed")]
+    Socket(#[source] socket::OriginalPublicSocketErrorV1),
+    /// A generic identity-only session has no concrete original socket.
+    #[error("original public socket custody is unavailable")]
+    MissingOriginal,
+}
+
+/// Retains a same-original shutdown failure without treating it as drain.
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum GitPublicTransportShutdownErrorV1 {
+    /// The peer never owned a concrete original socket observation.
+    #[error("original Git public socket custody is unavailable")]
+    MissingOriginal,
+    /// The actual same-original socket shutdown syscall failed.
+    #[error("original Git public socket shutdown failed")]
+    Shutdown(#[source] rustix::io::Errno),
 }
 
 /// Owns the fixed protected server configuration and registered client identities.
@@ -107,6 +136,41 @@ impl PublicApiSessionAcceptor {
     where
         IO: AsyncRead + AsyncWrite + Unpin,
     {
+        self.accept_original(io, None).await
+    }
+
+    /// Authenticates a concrete TCP stream with its retained original socket.
+    ///
+    /// The duplicate is observation custody, not a competing TLS reader or a
+    /// Git grant. Lower TLS handshake cancellation remains a separate contract.
+    ///
+    /// # Errors
+    ///
+    /// Preserves concrete socket capture failure or the existing TLS failure.
+    #[cfg(target_os = "linux")]
+    pub(crate) async fn accept_tcp(
+        &self,
+        io: tokio::net::TcpStream,
+    ) -> Result<
+        AuthenticatedPublicApiStream<tokio::net::TcpStream>,
+        PublicApiOriginalSocketErrorV1,
+    > {
+        use std::os::fd::AsFd as _;
+
+        let original = socket::OriginalPublicSocketV1::capture(io.as_fd())
+            .map_err(PublicApiOriginalSocketErrorV1::Socket)?;
+        self.accept_original(io, Some(original)).await.map_err(Into::into)
+    }
+
+    async fn accept_original<IO>(
+        &self,
+        io: IO,
+        #[cfg(target_os = "linux")] original: Option<socket::OriginalPublicSocketV1>,
+        #[cfg(not(target_os = "linux"))] _original: Option<()>,
+    ) -> Result<AuthenticatedPublicApiStream<IO>, PublicApiSessionError>
+    where
+        IO: AsyncRead + AsyncWrite + Unpin,
+    {
         self.credentials.recheck()?;
         let stream = tokio::time::timeout(HANDSHAKE_TIMEOUT, self.acceptor.accept(io))
             .await
@@ -145,6 +209,8 @@ impl PublicApiSessionAcceptor {
             credentials: self.credentials.clone(),
             active: AtomicBool::new(true),
             deadline,
+            #[cfg(target_os = "linux")]
+            original,
         }));
         peer.recheck()?;
         Ok(AuthenticatedPublicApiStream::new(stream, peer))
@@ -167,6 +233,8 @@ struct PeerState {
     credentials: Arc<credentials::Credentials>,
     active: AtomicBool,
     deadline: u64,
+    #[cfg(target_os = "linux")]
+    original: Option<socket::OriginalPublicSocketV1>,
 }
 
 impl PublicApiPeer {
@@ -210,6 +278,71 @@ impl PublicApiPeer {
     #[must_use]
     pub fn session_binding(&self) -> [u8; 32] {
         self.0.session_binding
+    }
+
+    /// Rechecks the real accepted socket and permanently retires failed evidence.
+    ///
+    /// # Errors
+    ///
+    /// Rejects generic identity-only sessions, expired identity or changed socket.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn recheck_original_socket(&self) -> Result<(), PublicApiOriginalSocketErrorV1> {
+        let result = self.recheck()
+            .map_err(PublicApiOriginalSocketErrorV1::Session)
+            .and_then(|()| {
+                self.0.original.as_ref()
+                    .ok_or(PublicApiOriginalSocketErrorV1::MissingOriginal)?
+                    .recheck()
+                    .map_err(PublicApiOriginalSocketErrorV1::Socket)
+            });
+        if result.is_err() {
+            self.close();
+        }
+        result
+    }
+
+    /// Samples the retained original socket's cookie without creating custody.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the same failures as the original socket recheck.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn original_socket_cookie(
+        &self,
+    ) -> Result<std::num::NonZeroU64, PublicApiOriginalSocketErrorV1> {
+        self.recheck_original_socket()?;
+        let original = self.0.original.as_ref()
+            .ok_or(PublicApiOriginalSocketErrorV1::MissingOriginal)?;
+        Ok(original.cookie())
+    }
+
+    /// Returns the same authenticated peer's finite original BOOTTIME cutoff.
+    ///
+    /// # Errors
+    ///
+    /// Rejects retired, expired or changed TLS peer evidence.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn deadline_boottime_nanoseconds(&self) -> Result<u64, PublicApiSessionError> {
+        self.recheck()?;
+        Ok(self.0.deadline)
+    }
+
+    /// Retires Git peer evidence before shutting down its same-original socket.
+    ///
+    /// This must work after currentness fails, so it performs no fresh recheck.
+    /// The retained descriptor is not released and shutdown is not child drain.
+    ///
+    /// # Errors
+    ///
+    /// Preserves missing original custody or the actual shutdown syscall failure.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn end_original_git_transport(
+        &self,
+    ) -> Result<(), GitPublicTransportShutdownErrorV1> {
+        self.close();
+        let original = self.0.original.as_ref()
+            .ok_or(GitPublicTransportShutdownErrorV1::MissingOriginal)?;
+        original.end_original().map_err(GitPublicTransportShutdownErrorV1::Shutdown)
     }
 
     /// Rechecks connection lifetime, certificate validity, and protected registration.
