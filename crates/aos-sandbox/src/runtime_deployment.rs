@@ -12,6 +12,7 @@ mod genesis;
 mod preparation;
 mod collector;
 mod comparison;
+mod invocation;
 
 pub use startup::{
     ProductionRuntimeDeploymentStartupCaptureV1, ProductionRuntimeDeploymentStartupPartsV1,
@@ -27,6 +28,7 @@ pub use comparison::{
     RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
 };
 pub use crate::journal::RuntimeDeploymentNativeTransactionDataV1;
+pub use invocation::{HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1};
 
 pub(crate) use genesis::VerifiedDeploymentGenesisV1;
 pub(crate) use genesis::{

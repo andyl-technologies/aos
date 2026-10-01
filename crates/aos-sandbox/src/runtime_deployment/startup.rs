@@ -27,6 +27,7 @@ use sha2::{Digest as _, Sha256};
 use crate::immutable_image::{RetainedImmutableFileV1, require_readonly_launch_flags};
 
 use super::service_policy::RetainedDeploymentServicePolicyV1;
+use super::invocation::HostPhysicalInvocationStateV1;
 use super::{
     HELPER_CONTEXT, LISTENER_FD_NAME, OWNER_CONTEXT, PID1_FD_NAME, PROFILE_FD_NAME, SOCKET_PATH,
     UNIT, RuntimeDeploymentStartupErrorV1,
@@ -287,6 +288,7 @@ impl ProductionRuntimeDeploymentStartupCaptureV1 {
             process,
             identity,
             service,
+            host_physical_invocation: HostPhysicalInvocationStateV1::new(),
         };
         startup.recheck()?;
         listener
@@ -326,6 +328,7 @@ pub struct ProductionRuntimeDeploymentStartupV1 {
     process: PidFd,
     identity: PidFdProcessIdentity,
     service: RetainedDeploymentServicePolicyV1,
+    host_physical_invocation: HostPhysicalInvocationStateV1,
 }
 
 impl ProductionRuntimeDeploymentStartupV1 {
@@ -453,6 +456,18 @@ impl ProductionRuntimeDeploymentStartupV1 {
 
     pub(crate) const fn invocation_id(&self) -> [u8; 16] {
         self.service.invocation_id()
+    }
+
+    // Every Origins admitted from this actual startup shares this one-shot.
+    // Ordinary comparison-only rechecks do not claim a physical invocation.
+    pub(super) fn host_physical_invocation_state(&self) -> &HostPhysicalInvocationStateV1 {
+        &self.host_physical_invocation
+    }
+
+    pub(super) fn retain_host_invocation_population(
+        &self,
+    ) -> aos_sandbox_linux::Result<aos_sandbox_linux::cgroup::CgroupPopulationMonitor> {
+        self.service.retain_host_invocation_population()
     }
 
     pub(crate) fn require_child(
