@@ -4,6 +4,7 @@
   stdenv,
   mkCargoPackage,
   fetchCargoVendor,
+  util-linux,
 }: let
   version = "0.1.0";
   src = import ./aos/_workspace-source.nix {inherit lib;};
@@ -27,6 +28,10 @@ in
     cargoNextest = true;
     cargoTestFlags = lib.concatStringsSep " " (map (package: "-p ${package}") testPackages);
     doCheck = true;
+    cargoCheckWrapper =
+      if stdenv.buildPlatform.isLinux
+      then import ./terrane/_protected-check.nix {inherit util-linux;}
+      else script: script;
     passthru = {inherit cargoDeps;};
     meta.description = "Branchable content-addressed filesystem store";
   }

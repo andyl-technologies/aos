@@ -598,6 +598,7 @@
     "cargoNextest"
     "cargoNextestOpenFilesLimit"
     "cargoNextestMaxTestThreads"
+    "cargoCheckWrapper"
     "nextestFlags"
     "cargoFlags"
     "buildType"
