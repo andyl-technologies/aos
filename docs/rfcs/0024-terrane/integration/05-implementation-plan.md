@@ -326,17 +326,25 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   independent reopen. A genuine ordinary branch dispatch also preserves its
   exact chained predecessor and whole old head; intervening pack/index Raw
   preparation slots are verified separately, and the rejected target stays
-  absent. The latest joint run includes all 33 ref selectors and nine native
-  backend cases: 38 pass and four fail. Both consumed-registration checks,
-  the directory-failure/abandoned-candidate outcomes, queued native cancellation
-  and all four complete parent-batch regressions pass. The Guard rejection
+  absent. The combined content and D-82 candidate builds with the reviewed
+  pure retirement and collector prerequisites. Its latest joint run includes
+  all 33 ref selectors and 22 backend cases: 46 pass and nine fail. The two
+  raw burn-association checks and retained content/quarantine checks pass,
+  as do directory-failure/abandoned-candidate outcomes, queued native
+  cancellation and all four complete parent-batch regressions. The Guard rejection
   witness checks its exact predecessor and absent target before reopening;
   reopening separately selects only a distinct canonical Raw capability update.
-  Remaining failures are cancellation arrival and multiwriter duration under
-  their unchanged bounds, the log fault hook's retained-effect target, and a
-  retirement-association fixture rejected before its intended publication check.
-  The fixture's canonical complete successor correction awaits qualification.
-  Complete effect routing remains pending.
+  The canonical retirement-association fixture and actual retained log fault
+  correction pass their separate four-case qualification. Remaining failures
+  in the broader run are cancellation arrival and multiwriter duration under
+  unchanged bounds, Pack/Index fault hooks and the registration hook selecting
+  an earlier preparatory Raw slot, and five positive copy/GC-retirement cases
+  that still return Unsupported. Reviewed test-only retargeting selects the
+  actual retained content rename and staged Guard/Candidate transaction while
+  preserving whole predecessor, head and absent-target assertions; its native
+  qualification remains pending. A fresh per-operation held-content candidate
+  also awaits qualification and preservation of the original physical cache
+  namespace checks. Complete effect routing remains pending.
   Ordered ancestry and record-parent batching preserve all
   metadata observations, duplicate reads, exact payload reads and initial/final
   fences. The CAS gate
@@ -389,6 +397,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   present and byte-verified before removal. Complete trunk source
   integration and Nix qualification remain pending. No decoded checkpoint,
   elapsed bound or physical intent grants native collection authority.
+  A separate shared opaque lease carrier and anchored producer/executor hooks
+  now distinguish selected lease publication from ordinary Raw writes and
+  collection permission. Its dedicated producer must verify the actual
+  current Guard, whole selected lease, exact injected clock and genuinely
+  consumed protected controls; submitted effects retain their real exclusions
+  through durability. These declarations grant no authority and remain
+  unqualified until the producer, fixed consumer and positive native singleton
+  lease tests are integrated.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,

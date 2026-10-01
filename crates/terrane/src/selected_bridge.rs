@@ -8,6 +8,12 @@
 #[path = "guard/selected.rs"]
 pub(crate) mod native_guard;
 
+// Collector lease verification has its own producer. Decoded lease records
+// cannot construct the selected transition or its retained effect context.
+/// Verifies selected collector leases before constructing their private handoff.
+#[path = "gc/selected.rs"]
+pub(crate) mod native_collection;
+
 // This test-only descendant constructs typed deadline checks for effect mechanics
 // without exposing a production callback or authority factory.
 #[cfg(all(feature = "std", test))]
@@ -53,6 +59,71 @@ impl OwnedFinalCheck {
     /// Preserves current request or deadline rejection from the checked producer.
     pub(crate) fn recheck(&self) -> Result<(), StoreFailure> {
         (self.check)()
+    }
+}
+
+/// Binds one privately verified lease transition to its actual held selection.
+///
+/// Lease publication changes one complete logical value and the consecutive
+/// selected revision. It cannot manufacture collection, lineage or permanent
+/// retirement authority. Only the descendant collector producer initializes it.
+pub(crate) struct CheckedGcLease<'operation, 'held> {
+    observed: &'operation SelectedObservation<'held>,
+    next: PublicationState,
+    change: LogicalChange,
+    effects: GcLeaseEffectContext,
+}
+
+/// Retains genuine lease-time checks and every consumed protected control.
+///
+/// Actual native descriptor receipts keep the controls excluded through each
+/// submitted effect and its durability acknowledgment. An empty caller list or
+/// decoded configuration cannot construct this context.
+pub(crate) struct GcLeaseEffectContext {
+    final_check: OwnedFinalCheck,
+    controls: Vec<crate::guard::RetainedControls>,
+}
+
+impl GcLeaseEffectContext {
+    /// Retains the producer's exact owned clock and final lease check.
+    pub(crate) fn final_check(&self) -> OwnedFinalCheck {
+        self.final_check.clone()
+    }
+
+    /// Borrows all actual consumed control receipts retained by the producer.
+    pub(crate) fn controls(&self) -> &[crate::guard::RetainedControls] {
+        &self.controls
+    }
+}
+
+impl<'operation, 'held> CheckedGcLease<'operation, 'held> {
+    /// Borrows the complete observation checked for this lease operation.
+    pub(crate) fn observed(&self) -> &'operation SelectedObservation<'held> {
+        self.observed
+    }
+
+    /// Borrows the exact whole selected successor checked by the producer.
+    pub(crate) fn next(&self) -> &PublicationState {
+        &self.next
+    }
+
+    /// Borrows the single complete lease expectation and replacement.
+    pub(crate) fn change(&self) -> &LogicalChange {
+        &self.change
+    }
+
+    /// Borrows genuine retained inputs for the dedicated lease effect lane.
+    pub(crate) fn effect_context(&self) -> &GcLeaseEffectContext {
+        &self.effects
+    }
+
+    /// Rechecks actual lease time immediately before the selected-slot dispatch.
+    ///
+    /// # Errors
+    /// Preserves current lease expiry, clock continuity or operation rejection
+    /// established by the genuine producer's owned check.
+    pub(crate) fn recheck_before_slot(&self) -> Result<(), StoreFailure> {
+        self.effects.final_check.recheck()
     }
 }
 
