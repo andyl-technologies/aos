@@ -1,4 +1,4 @@
-# Run with: bash tools/aos-cloud-vm <command> [options]
+# Run with: bash tools/aos-cloud-vm/aos-cloud-vm.sh <command> [options]
 # Provider CLIs run on the operator's workstation. No ambient project, region,
 # network, image, or on-demand fallback is selected by this tool.
 set -euo pipefail
@@ -8,7 +8,7 @@ fail() { printf 'aos-cloud-vm: %s\n' "$*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null || fail "required command is unavailable: $1"; }
 usage() {
     cat <<'HELP'
-Usage: bash tools/aos-cloud-vm plan|image-create|vm-create|up|delete [options]
+Usage: bash tools/aos-cloud-vm/aos-cloud-vm.sh plan|image-create|vm-create|up|delete [options]
 
 Required: --provider gcp|aws --name NAME --state-dir DIRECTORY
   --hub HTTPS_ORIGIN --registry NAME --release IMMUTABLE_RELEASE --package NAME

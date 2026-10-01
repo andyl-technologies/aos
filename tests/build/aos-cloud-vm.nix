@@ -17,7 +17,9 @@ pkgs.mkDerivation {
       name = "check";
       script = ''
         export NIX_REMOTE=dummy://
-        ${pkgs.python3}/bin/python3 "$src/tools/test_aos_cloud_vm.py"
+        ${pkgs.bash}/bin/bash -n "$src/tools/aos-cloud-vm/aos-cloud-vm.sh"
+        ${pkgs.bash}/bin/bash "$src/tools/aos-cloud-vm/aos-cloud-vm.sh" --help > /dev/null
+        ${pkgs.python3}/bin/python3 "$src/tools/aos-cloud-vm/test_aos_cloud_vm.py"
         mkdir -p "$out"
         echo PASS > "$out/result"
       '';
