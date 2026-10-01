@@ -2144,6 +2144,8 @@ in
         name = "networking-envoy-config-module";
         rootfsDeps = [self renderedBootstrap];
         testScript = ''
+          # Systemd creates the service log directory in a fully booted system.
+          mkdir -p /var/log/aos-pkg-envoy
           envoy --mode validate --config-path ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy-check' ${renderedBootstrap}
           ${pkgs.grep}/bin/grep -q 'envoy.reloadable_features.check' ${renderedBootstrap}
