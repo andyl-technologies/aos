@@ -312,13 +312,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   duplicated exclusion without stronger generic clock or lock bounds. Native
   and supported non-Send builds qualify the shared seam; private factories,
   final consumed-control fencing and complete effect routing remain pending.
-  The combined retained-effect and held-read candidate passes 31 selected
-  native regressions and all 61 supported non-Send tests. Actual descriptor
+  The combined retained-effect and held-read candidate passes 36 selected
+  native regressions and all 63 supported non-Send tests. Actual descriptor
   rebinding, queued expiry and cancellation checks preserve the original
   exclusions through physical completion. The private factory namespace and
-  producer-owned effect-context handoff are present; genuine producer sealing,
-  directory-mode qualification and full routing remain incomplete. Ordered
-  ancestry and record-parent batching preserve all metadata observations,
+  producer-owned effect-context handoff are present. Reviewed directory repair
+  compares the captured name and opened descriptor before exact 0700 repair,
+  rechecks other consumed inputs and the unchanged clock, and refuses unreadable
+  owner-masked creation before protected handoff. The actual guard producer
+  retains successful current requests and complete consumed control receipts;
+  complete routing and refusal when registration changes during staging remain
+  unqualified. Ordered ancestry and record-parent batching preserve all metadata observations,
   duplicate reads, exact payload reads and initial/final fences. The CAS gate
   now requires their actual cardinality, error-priority and ancestry regressions;
   the complete current gate build remains pending vendor qualification.
