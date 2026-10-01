@@ -27,51 +27,25 @@ use super::{
 };
 use super::runtime_deployment_sidecar_history::RetainedDeploymentNativeHistoryV1;
 
+/// Selects observation of this fixed main writer, never a caller-supplied policy.
+#[derive(Clone, Copy)]
+enum MainHistoryObservationV1 {
+    AuditOnly,
+    RetainNative,
+}
+
 impl Journal {
     /// Retains bounded native transactions under the unchanged main audit.
     pub(crate) fn capture_runtime_deployment_main_history_v1(
         &self,
         owner: &VerifiedDeploymentGenesisV1<'_>,
     ) -> Result<RetainedDeploymentNativeHistoryV1, JournalError> {
-        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
-        self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
-        )?;
-        require_deployment_row_bound_v1(self.state.len())
-            .map_err(|_| JournalError::ProtectedBoundary)?;
-        if self.committed_transactions > MAIN_LIMITS.maximum_transactions {
-            return Err(JournalError::LimitExceeded("deployment native transactions"));
-        }
-
-        let witness = self.protected_writer_name_witness()?;
-        let physical = FileIdentity::of(&self.file)?;
-        if physical.size > MAIN_LIMITS.maximum_journal_bytes {
-            return Err(JournalError::JournalTooLarge);
-        }
-        let result = (|| {
-            let mut history = HistoryAuditV1::from_bindings(
-                &self.state, owner.exact_bytes(), owner.claims(), owner.publisher_verifier(),
-            )?;
-            history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.size)?);
-            let mut reader = ReadAtCursorV1::new(&self.file, physical.size);
-            let replayed = replay_observed(&mut reader, MAIN_LIMITS, Some(&mut history))?;
-            history.finish(&replayed)?;
-            self.require_deployment_replayed_snapshot(&replayed, physical.size)?;
-            self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.size)?;
-            let retained = history.retained.take().ok_or(JournalError::ProtectedBoundary)?;
-            retained.finish(&replayed)?;
-            Ok(retained)
-        })();
-
-        self.require_protected_named_location(
-            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
-        )?;
-        self.validate_protected_writer_name_witness(&witness)?;
-        if FileIdentity::of(&self.file)? != physical {
-            return Err(JournalError::StaleAuthoritySnapshot);
-        }
-        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
-        result
+        // RetainNative can return success only with its finished collector.
+        self.observe_runtime_deployment_main_history_v1(
+            owner,
+            MainHistoryObservationV1::RetainNative,
+        )?
+        .ok_or(JournalError::ProtectedBoundary)
     }
 
     /// Audits actual native associations on this original fixed main writer.
@@ -88,6 +62,20 @@ impl Journal {
         &self,
         owner: &VerifiedDeploymentGenesisV1<'_>,
     ) -> Result<(), JournalError> {
+        self.observe_runtime_deployment_main_history_v1(
+            owner,
+            MainHistoryObservationV1::AuditOnly,
+        )
+        .map(|_| ())
+    }
+
+    // Both closed modes observe the same original writer and physical cut.
+    // AuditOnly must not allocate a collector or add the pair's extra checks.
+    fn observe_runtime_deployment_main_history_v1(
+        &self,
+        owner: &VerifiedDeploymentGenesisV1<'_>,
+        observation: MainHistoryObservationV1,
+    ) -> Result<Option<RetainedDeploymentNativeHistoryV1>, JournalError> {
         owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
         self.require_protected_named_location(
             Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
@@ -106,15 +94,33 @@ impl Journal {
 
         let result = (|| {
             let mut history = HistoryAuditV1::from_bindings(
-                &self.state, owner.exact_bytes(), owner.claims(), owner.publisher_verifier(),
+                &self.state,
+                owner.exact_bytes(),
+                owner.claims(),
+                owner.publisher_verifier(),
             )?;
+            if matches!(observation, MainHistoryObservationV1::RetainNative) {
+                history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.size)?);
+            }
+
             let mut reader = ReadAtCursorV1::new(&self.file, physical.size);
             let replayed = replay_observed(&mut reader, MAIN_LIMITS, Some(&mut history))?;
             history.finish(&replayed)?;
-            self.require_deployment_replayed_snapshot(&replayed, physical.size)
+            self.require_deployment_replayed_snapshot(&replayed, physical.size)?;
+
+            match observation {
+                MainHistoryObservationV1::AuditOnly => Ok(None),
+                MainHistoryObservationV1::RetainNative => {
+                    self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.size)?;
+                    let retained = history.retained.take()
+                        .ok_or(JournalError::ProtectedBoundary)?;
+                    retained.finish(&replayed)?;
+                    Ok(Some(retained))
+                }
+            }
         })();
 
-        // Recheck even after a failed parse. No pathname is reopened, and no
+        // Recheck even after a failed parse/copy. No pathname is reopened, and no
         // seek on the append writer's shared open-file description occurs.
         self.require_protected_named_location(
             Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
