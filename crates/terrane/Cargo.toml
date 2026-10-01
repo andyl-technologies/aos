@@ -13,13 +13,14 @@ zstd.workspace = true
 blake3.workspace = true
 xattr = { version = "=1.6.1", optional = true }
 libc = { workspace = true, optional = true }
+rustix = { workspace = true, optional = true }
 
 reqwest = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }
 
 [features]
 default = ["std"]
-std = ["dep:xattr", "dep:libc"]
+std = ["dep:xattr", "dep:libc", "dep:rustix"]
 surface-sdk = ["std"]
 send = []
 tokio = ["std", "send", "dep:tokio", "dep:reqwest"]

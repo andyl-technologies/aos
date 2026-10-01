@@ -6295,6 +6295,7 @@ dependencies = [
  "blake3",
  "libc",
  "reqwest",
+ "rustix 1.1.4",
  "serde",
  "terrane-core",
  "tokio",
