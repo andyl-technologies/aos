@@ -231,15 +231,9 @@ fn retained_container_layout(
             .path()
             .join("blobs/sha256")
             .join(descriptor.digest.encoded());
-        // Both paths share the private candidate filesystem. Hard links keep
-        // multi-gigabyte retries cheap; neither verifier nor upload mutates them.
-        if let Err(error) = fs::hard_link(&source, &destination) {
-            if error.kind() == std::io::ErrorKind::CrossesDevices {
-                fs::copy(&source, &destination)?;
-            } else {
-                return Err(error).context("linking retained OCI candidate object");
-            }
-        }
+        // The layout verifier requires independently owned files. CAS objects
+        // may have other retained links, so each layout gets its own inode.
+        fs::copy(&source, &destination).context("copying retained OCI candidate object")?;
     }
     let index = ImageIndex::from_json(&serde_json::to_vec(&serde_json::json!({
         "schemaVersion": 2,

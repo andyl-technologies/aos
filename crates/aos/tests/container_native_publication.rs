@@ -72,7 +72,6 @@ struct RunningHub {
     replica_surface: PathBuf,
     authority: String,
     origin: String,
-    provisioning_token: String,
     bearer: String,
     observations: Arc<Mutex<Vec<ControlObservation>>>,
     server: tokio::task::JoinHandle<()>,
@@ -140,18 +139,12 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         ],
     )?;
     let upload_url = format!("{}{}", hub.origin, hub.registry.slug);
-    run_apr(
+    assert_hub_stage_target(&hub, &upload_url).await?;
+    bootstrap_signed_registry(
         &home,
-        &[
-            "origin",
-            "upload",
-            "--registry",
-            APR_REGISTRY,
-            "--upload-url",
-            &upload_url,
-            "--token",
-            &hub.provisioning_token,
-        ],
+        &authoring_registry,
+        &hub,
+        &workspace.path().join("bootstrap-surface"),
     )?;
     git_output(
         &authoring_registry,
@@ -206,7 +199,51 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
         prepared.revision.source_branch,
         "dplecki/container-candidate"
     );
-    assert!(prepared.revision.container.is_some());
+    let container = prepared
+        .revision
+        .container
+        .as_ref()
+        .context("prepared candidate lacks its complete OCI graph")?;
+    let remote = aos_package::registry::hub_stage::HubStageClient::connect(
+        &hub.origin,
+        &hub.registry.slug,
+        Some(&hub.bearer),
+    )
+    .await?
+    .show(&prepared.revision.id)
+    .await
+    .with_context(|| {
+        format!(
+            "Hub did not retain the admitted candidate after APR transfer:\n{}",
+            String::from_utf8_lossy(&preparation.stderr)
+        )
+    })?;
+    assert_eq!(remote.record.revision, prepared.revision);
+    assert_eq!(
+        remote.record.state,
+        aos_registry_surface::staging::StageState::Draft
+    );
+    assert!(!remote.publication_id.is_empty());
+    assert_eq!(
+        remote
+            .missing_paths
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>(),
+        container
+            .descriptors
+            .iter()
+            .map(|descriptor| format!("oci/blobs/sha256/{}", descriptor.digest.encoded()))
+            .collect::<std::collections::BTreeSet<_>>(),
+        "only the required replica's OCI placements remain unverified"
+    );
+    for descriptor in &container.descriptors {
+        let key = oci_blob_object_key(descriptor.digest);
+        let bytes = fs::read(hub.surface.join(&key))?;
+        assert_eq!(Sha256Digest::digest(&bytes), descriptor.digest);
+        assert_eq!(bytes.len() as u64, descriptor.size);
+        assert!(!hub.replica_surface.join(key).exists());
+    }
     let stage_path = workspace.path().join("registry-stage.json");
     fs::write(&stage_path, serde_json::to_vec(&prepared)?)?;
     assert!(
@@ -749,6 +786,76 @@ version = "0.1.0"
     Ok((trust_key, key_path, registry))
 }
 
+async fn assert_hub_stage_target(hub: &RunningHub, upload_url: &str) -> Result<()> {
+    let discovery = aos_package::registry::staging::hub::target(upload_url, APR_REGISTRY).await;
+    if let Ok(Some(target)) = &discovery {
+        assert_eq!(target.origin, hub.origin.trim_end_matches('/'));
+        assert_eq!(target.registry, hub.registry.slug);
+        return Ok(());
+    }
+
+    let client = reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let mut response = client
+        .get(format!("{}.well-known/aos-deployment", hub.origin))
+        .send()
+        .await?;
+    let status = response.status();
+    let deployment_id = response
+        .headers()
+        .get("x-aos-deployment-id")
+        .map(|value| value.to_str().unwrap_or("<invalid header>").to_owned());
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await? {
+        let remaining = 1_024_usize.saturating_sub(body.len());
+        body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        if body.len() == 1_024 {
+            break;
+        }
+    }
+    bail!(
+        "Hub staging target discovery failed: {discovery:?}; deployment response: \
+         status={status}, deployment_id={deployment_id:?}, body={:?}",
+        String::from_utf8_lossy(&body)
+    )
+}
+
+fn bootstrap_signed_registry(
+    home: &Path,
+    authoring_registry: &Path,
+    hub: &RunningHub,
+    surface: &Path,
+) -> Result<()> {
+    // The supported Hub publication CLI admits and commits the real signed
+    // predecessor before APR prepares the new retained candidate.
+    fs::create_dir_all(surface)?;
+    for file in
+        aos_package::registry::static_upload::collect_static_origin_files(authoring_registry)?
+    {
+        let destination = surface.join(file.relative_path);
+        fs::create_dir_all(destination.parent().context("bootstrap object parent")?)?;
+        fs::copy(file.source, destination)?;
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+        .env("HOME", home)
+        .args(["hub", "registry", "publish", "upload", &hub.registry.slug])
+        .arg("--root")
+        .arg(surface)
+        .args(["--hub", &hub.origin, "--token", &hub.bearer])
+        .output()
+        .context("running typed Hub registry bootstrap")?;
+    if !output.status.success() {
+        bail!(
+            "aos hub registry publish upload failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+    Ok(())
+}
+
 async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).await?;
     let address = listener.local_addr()?;
@@ -933,7 +1040,6 @@ async fn spawn_hub(workspace: &Path, trust_key: &str) -> Result<RunningHub> {
         replica_surface,
         authority,
         origin,
-        provisioning_token,
         bearer,
         observations,
         server,

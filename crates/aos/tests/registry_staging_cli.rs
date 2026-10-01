@@ -323,27 +323,33 @@ fn interrupted_upload_resumes_without_publication() -> Result<()> {
     let fixture = Fixture::new()?;
     let interrupted_origin = fixture.temporary.path().join("origin-interrupted");
     copy_directory(&fixture.origin, &interrupted_origin)?;
+    let original_permissions = directory_permissions(&interrupted_origin)?;
+    for (directory, permissions) in &original_permissions {
+        let mut read_only = permissions.clone();
+        read_only.set_readonly(true);
+        fs::set_permissions(directory, read_only)?;
+    }
     fixture.commit_note("immutable bytes retained across upload interruption\n")?;
-    let commit = git_output(&fixture.registry, &["rev-parse", "HEAD"])?;
-    let blocked_object =
-        interrupted_origin.join(format!("objects/{}/{}", &commit[..2], &commit[2..]));
-    fs::create_dir_all(&blocked_object)?;
     let destinations = [
         format!("file://{}", fixture.origin.display()),
         format!("file://{}", interrupted_origin.display()),
     ];
     let initial_refs = fs::read(fixture.origin.join("info/refs"))?;
-    let initial_object_count = file_count(&fixture.origin.join("objects"))?;
+    let initial_file_count = file_count(&fixture.origin)?;
 
     // Required mirrors transfer one phase at a time. The first mirror completes
-    // its immutable inventory before the second rejects this absent-object key.
-    let interrupted = fixture.release_stage_to(VERSION, STAGE, None, false, &destinations)?;
+    // its immutable inventory before the second rejects creation of new files.
+    let interrupted_result = fixture.release_stage_to(VERSION, STAGE, None, false, &destinations);
+    for (directory, permissions) in original_permissions {
+        fs::set_permissions(directory, permissions)?;
+    }
+    let interrupted = interrupted_result?;
     assert!(
         !interrupted.status.success(),
-        "an immutable destination key cannot name a directory"
+        "immutable writes must fail on the read-only mirror"
     );
     assert!(
-        file_count(&fixture.origin.join("objects"))? > initial_object_count,
+        file_count(&fixture.origin)? > initial_file_count,
         "immutable Git bytes should have uploaded before the interruption: {}",
         output_text(&interrupted)
     );
@@ -356,7 +362,6 @@ fn interrupted_upload_resumes_without_publication() -> Result<()> {
     assert!(!interrupted_origin.join("refs/tags/1.0.0").exists());
     let revision = stage_revision(&fixture.show_stage()?)?;
 
-    fs::remove_dir(&blocked_object)?;
     let resumed = fixture.release_stage_to(VERSION, STAGE, Some(revision), true, &destinations)?;
     require_success(&resumed, &["release", "--stage", "--resume"])?;
     fixture.assert_unpublished()?;
@@ -845,6 +850,17 @@ fn file_count(directory: &Path) -> Result<usize> {
         count += if path.is_dir() { file_count(&path)? } else { 1 };
     }
     Ok(count)
+}
+
+fn directory_permissions(directory: &Path) -> Result<Vec<(PathBuf, fs::Permissions)>> {
+    let mut permissions = vec![(directory.to_owned(), fs::metadata(directory)?.permissions())];
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        if entry.file_type()?.is_dir() {
+            permissions.extend(directory_permissions(&entry.path())?);
+        }
+    }
+    Ok(permissions)
 }
 
 fn restrict_private_key(path: &Path) -> Result<()> {

@@ -857,7 +857,8 @@ fn is_reserved_control_path(path: &str) -> bool {
         || registry_document_path(trimmed).is_some()
         || matches!(
             trimmed,
-            "_assets"
+            ".well-known/aos-deployment"
+                | "_assets"
                 | "account"
                 | "activate"
                 | "auth"
@@ -4556,6 +4557,7 @@ mod tests {
             "/",
             "/healthz",
             "/metrics",
+            "/.well-known/aos-deployment",
             "/oauth2/token",
             "/aos.hub.v1.RouteService/ListRoutes",
             "/-/org/acme/caches",
@@ -4578,6 +4580,8 @@ mod tests {
             "/objects/aa/bb",
             "/nar/archive.nar.zst",
             "/hash.narinfo",
+            "/.well-known/aos-deployment/",
+            "/.well-known/other",
         ] {
             assert!(
                 !is_reserved_control_path(serving_path),

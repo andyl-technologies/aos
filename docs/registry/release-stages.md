@@ -29,6 +29,18 @@ release; initialize or advance a channel separately afterward. `--stage` and
 `--from-stage` reject channel convenience flags. Direct releases retain their
 existing optional channel workflow.
 
+For an initial Hub registry bootstrap, publish the prepared signed static
+surface with its configured Hub authentication profile:
+
+```sh
+aos hub registry publish upload acme/cdn --root /srv/acme/bootstrap-surface \
+  --hub https://hub.example.com
+```
+
+`apr origin upload` uses static/cache transports; it is not the typed Hub
+registry publisher. Subsequent staged `apr release` operations use the shared
+canonical Hub stage adapter.
+
 A stage is also independent of an environment. A registry may have unpublished
 stages on its production surface or its staging surface. RFC-0017's
 `staging/candidate` names a deployment and channel destination; it does not

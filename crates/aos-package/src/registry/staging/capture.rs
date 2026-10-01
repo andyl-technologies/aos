@@ -152,20 +152,14 @@ impl LocalStageStore {
             if path.starts_with("channels/") {
                 continue;
             }
-            if keymap::is_loose_git_object_path(&path)
-                || matches!(
-                    file.class,
-                    StaticOriginClass::ImageDisk
-                        | StaticOriginClass::Immutable
-                        | StaticOriginClass::Receipt
-                )
-            {
+            if !keymap::is_mutable_path(&path) {
                 let kind = match file.class {
                     StaticOriginClass::ImageDisk => "image-disk",
                     StaticOriginClass::Receipt => "receipt",
                     _ => "catalog",
                 };
-                let object = self.capture_object(&path, &file.source, kind, file.content_type)?;
+                let object =
+                    self.capture_object(&path, &file.source, kind, keymap::content_type(&path))?;
                 inventory.insert(path, object);
             } else {
                 let bytes = match path.as_str() {
