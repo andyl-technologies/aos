@@ -62,12 +62,14 @@ in
             expected=$2
             index=$3
             layers=$4
+            mapping=''${5:-}
             mkdir "$label"
             actual=rejected
             if (
               cd "$label"
               "$CONFIG_SHELL" ${../../lib/build/oci/evidence-platforms.sh} \
-                "$fixture_root/$index" "$fixture_root/layout" "$fixture_root/$layers"
+                "$fixture_root/$index" "$fixture_root/layout" "$fixture_root/$layers" \
+                "''${mapping:+$fixture_root/$mapping}"
             ) > "$label.log" 2>&1; then
               actual=accepted
             fi
@@ -93,6 +95,17 @@ in
 
           check_binding single accepted single-index.json single-closure.json
           check_binding multi-reversed-inputs accepted multi-index.json multi-closure.json
+
+          jq -n --slurpfile amd amd.json --slurpfile arm arm.json '[
+            {path: "/nix/store/shared-runtime", layer: {digest: $amd[0].digest}},
+            {path: "/nix/store/shared-runtime", layer: {digest: $arm[0].digest}}
+          ]' > shared-map.json
+          check_binding shared-across-platforms accepted multi-index.json multi-closure.json shared-map.json
+
+          jq -s . amd.json arm.json metadata.json > combined-layers.json
+          write_manifest combined amd64 combined-layers.json
+          write_index combined-index.json combined.descriptor.json
+          check_binding shared-within-platform rejected combined-index.json multi-closure.json shared-map.json
 
           jq -s . arm.json amd.json unused.json > extra-closure.json
           check_binding unattached-layer rejected multi-index.json extra-closure.json
