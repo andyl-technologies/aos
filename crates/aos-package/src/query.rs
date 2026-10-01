@@ -114,7 +114,7 @@ pub async fn search(
     } else {
         for (name, registry, version, description) in &results {
             printer.plain(&format!(
-                "{name} {version} [registry: {registry}]\n  {description}"
+                "{name} {version} [registry: {registry}] - {description}"
             ));
         }
     }
@@ -180,7 +180,7 @@ async fn search_installed(
     } else {
         for (name, registry, version, description) in &results {
             printer.plain(&format!(
-                "{name} {version} [registry: {registry}]\n  {description}"
+                "{name} {version} [registry: {registry}] - {description}"
             ));
         }
     }
