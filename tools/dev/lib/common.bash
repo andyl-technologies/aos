@@ -5,12 +5,15 @@ aos_dev_error() {
 
 aos_dev_usage() {
   cat <<'HELP'
-Usage: bash ./aos-dev [cache flags] <command> [arguments]
+Usage: aos-dev [cache flags] <command> [arguments]
+
+Outside the dev shell: bash ./tools/dev/aos-dev [cache flags] <command> [arguments]
 
 Commands:
   list [packages|images|containers|checks|builds|evals] [filter]
   build <package|image|container|check|build|eval> <name> [Nix flags]
   run <package|image|container> <name> [arguments]
+  run <aos|apm|apr> [arguments]  Build or fetch an ordinary packaged CLI, then run it
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
   release <arguments>       Run the existing release CLI without shared caches
@@ -27,9 +30,16 @@ Target names come from 'list'; a filter narrows the output by name. 'build'
 accepts ordinary nix-build flags after the target, such as --no-out-link or
 --dry-run. 'all packages' builds the package aggregate; 'all builds' also
 includes images, containers, and system roots. 'all ci' runs formatting,
-evaluation, broad builds, and checks, and can take a long time.
+evaluation, broad builds, and checks, and can take a long time. Running aos, apm,
+or apr uses ordinary production derivations without shared compiler caches.
+This also applies to 'run package aos', 'run package apm', and 'run package apr'.
 
-Development builds enable all four options by default:
+Builds use the production testing binary cache and its dedicated Nix signing
+key. Missing binaries build from source; failed substitutions also fall back
+to source builds. --release and --no-cache disable shared compiler caches,
+while retaining binary substitution and source fallback.
+
+Development builds enable these options by default:
   --[no-]go-cache           Share Go compilation artifacts
   --[no-]bazel-cache        Share Bazel disk action artifacts
   --[no-]rust-target-cache  Persist Cargo's target directory
@@ -73,11 +83,11 @@ Use --release or --no-cache for ordinary derivations and no requested cache
 mounts. A daemon-wide static mount remains visible in release sandboxes; use
 a separate builder if release qualification requires a cache-free sandbox.
 Examples:
-  bash ./aos-dev --no-bazel-cache build package aos --no-out-link
-  bash ./aos-dev cache rust intermediates --limit 50
-  bash ./aos-dev cache go prune --before 2026-09-01 --compact
-  bash ./aos-dev --release build package aos --no-out-link
-  source <(bash ./aos-dev completion bash)
+  bash ./tools/dev/aos-dev --no-bazel-cache build package aos --no-out-link
+  bash ./tools/dev/aos-dev cache rust intermediates --limit 50
+  bash ./tools/dev/aos-dev cache go prune --before 2026-09-01 --compact
+  bash ./tools/dev/aos-dev --release build package aos --no-out-link
+  source <(bash ./tools/dev/aos-dev completion bash)
 The optional sandbox probe may build the source bootstrap tools if they are
 absent on a fresh host.
 HELP
@@ -87,9 +97,28 @@ aos_dev_require_command() {
   command -v "$1" >/dev/null 2>&1 || aos_dev_error "required command '$1' is unavailable"
 }
 
+# Append rather than replace caller settings, including sandbox configuration.
+aos_dev_configure_nix() {
+  [[ ${aos_dev_nix_configured:-false} != true ]] || return 0
+
+  local config
+  config=$(nix --extra-experimental-features nix-command eval --raw \
+    --file "$aos_dev_root/tools/dev/nix-config.nix" text)
+  export NIX_CONFIG="${NIX_CONFIG:+$NIX_CONFIG$'\n'}$config"
+  aos_dev_nix_configured=true
+}
+
+# Tool execution uses the ordinary production identity even in development mode.
+aos_dev_nix_build_ordinary() {
+  local aos_dev_mode=release
+  aos_dev_nix_build "$@"
+}
+
 # All build and run commands eventually pass through this wrapper. Keeping the
 # mode decision here prevents a new command from forgetting release isolation.
 aos_dev_nix_build() {
+  aos_dev_configure_nix
+
   local -a command=(nix-build "$aos_dev_root/default.nix")
 
   if [[ $aos_dev_mode == development ]]; then

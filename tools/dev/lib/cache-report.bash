@@ -59,7 +59,7 @@ aos_dev_cache_record_builds() {
 
 aos_dev_cache_backend_help() {
   cat <<HELP
-Usage: bash ./aos-dev cache $1 <command> [options]
+Usage: bash ./tools/dev/aos-dev cache $1 <command> [options]
 
 Commands:
   status                 Show disk use and number of stored entries

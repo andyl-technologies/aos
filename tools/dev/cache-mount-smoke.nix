@@ -7,7 +7,7 @@
   accacheCacheDir ? null,
   accacheStateDir ? null,
 }: let
-  aos = import ../default.nix {};
+  aos = import ../../default.nix {};
   # The bootstrap Bash and coreutils are i686 binaries, usable directly on
   # x86_64. Their identities stay stable across ordinary package revisions.
   # Other hosts use their native AOS packages for the same sandbox probe.

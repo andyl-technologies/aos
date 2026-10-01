@@ -3,6 +3,16 @@
 
   inputs = {};
 
+  # Dedicated public Nix key from the testing authority inventory. An empty
+  # or unavailable production testing cache may fall back to source builds.
+  nixConfig = {
+    extra-substituters = ["https://cdn.aos.andyl.org/andyl/testing/"];
+    extra-trusted-public-keys = [
+      "andyl-testing-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To="
+    ];
+    fallback = true;
+  };
+
   outputs = _: let
     systems = [
       "x86_64-linux"
@@ -265,11 +275,16 @@
     devShells = genAttrs systems (
       system: let
         aos = aosFor system;
-        aosCli = aos.pkgs.aos.overrideAttrs (_: {doCheck = false;});
+        devNixConfig = import ./tools/dev/nix-config.nix;
+        devLauncher = aos.pkgs.writeShellScriptBin "aos-dev" ''
+          exec ${aos.pkgs.bash}/bin/bash "''${AOS_DEV_ROOT:?Enter the AOS dev shell first}/tools/dev/aos-dev" "$@"
+        '';
         packages = [
-          aosCli
-          aosCli.apm
-          aosCli.apr
+          devLauncher
+          aos.pkgs.bash
+          aos.pkgs.nix
+          aos.pkgs.alejandra
+          aos.pkgs.acl
           aos.pkgs.just
           aos.pkgs.rust
           aos.pkgs.rust.dev
@@ -281,10 +296,7 @@
           aos.pkgs.openssl
           aos.pkgs.sqlite
           aos.pkgs.protobuf
-          # Runtime tools the aos/apm/apr binaries shell out to by bare name
-          # (see runtimeTools in pkgs/tools/aos/aos.nix), so impure cargo runs
-          # in the dev shell resolve the same AOS-built tools the hermetic build
-          # uses instead of falling back to whatever is installed on the host.
+          # Runtime tools for CLI binaries built incrementally in this shell.
           aos.pkgs.git
           aos.pkgs.gnupg
           aos.pkgs.openssh
@@ -322,6 +334,20 @@
               else ""
             )
             + ''
+              # Prefer the live checkout so edits to the script are immediately
+              # visible. Explicit flake paths outside a checkout use the snapshot;
+              # AOS_DEV_ROOT can select a live checkout in that case.
+              if [ -z "''${AOS_DEV_ROOT:-}" ]; then
+                aos_dev_checkout=$(${aos.pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null || true)
+                if [ -f "$aos_dev_checkout/tools/dev/aos-dev" ]; then
+                  export AOS_DEV_ROOT="$aos_dev_checkout"
+                else
+                  export AOS_DEV_ROOT="${./.}"
+                fi
+                unset aos_dev_checkout
+              fi
+              export NIX_CONFIG="''${NIX_CONFIG:+$NIX_CONFIG
+              }${devNixConfig.text}"
               export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
               export OPENSSL_DIR="${aos.pkgs.openssl}"
               export OPENSSL_NO_VENDOR=1

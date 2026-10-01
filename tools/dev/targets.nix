@@ -3,7 +3,7 @@
   scope ? "",
   crossSystem ? null,
 }: let
-  aos = import ../. {inherit crossSystem;};
+  aos = import ../.. {inherit crossSystem;};
   names = builtins.attrNames;
   join = builtins.concatStringsSep "\n";
   isDerivation = value: builtins.isAttrs value && (value.type or null) == "derivation";
@@ -71,5 +71,6 @@
       "eval-standalone"
     ];
   };
-in
-  join values.${category}
+in {
+  text = join values.${category};
+}

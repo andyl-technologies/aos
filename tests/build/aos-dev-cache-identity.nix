@@ -45,7 +45,7 @@
     sharedGoCacheDir = "/aos-build-cache/go";
     sharedBazelCacheDir = "/aos-build-cache/bazel";
   };
-  cacheMountProbe = import ../../dev/cache-mount-smoke.nix {
+  cacheMountProbe = import ../../tools/dev/cache-mount-smoke.nix {
     goCacheDir = "/aos-build-cache/go";
     bazelCacheDir = "/aos-build-cache/bazel";
     rustCacheDir = "/aos-build-cache/rust";

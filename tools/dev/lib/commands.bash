@@ -20,20 +20,36 @@ aos_dev_build() {
 }
 
 aos_dev_run() {
+  aos_dev_configure_nix
+
+  case ${1:-} in
+    aos|apm|apr)
+      local tool=$1
+      shift
+      aos_dev_run_tool "$tool" "$@"
+      return
+      ;;
+  esac
+
   local category=${1:-} name=${2:-}
   [[ -n $category && -n $name ]] || aos_dev_error 'run requires a category and target name'
   shift 2
   category=$(aos_dev_category "$category") || aos_dev_error "unknown run category '$category'"
 
+  if [[ $category == packages && ( $name == aos || $name == apm || $name == apr ) ]]; then
+    aos_dev_run_tool "$name" "$@"
+    return
+  fi
+
   if [[ $category == images ]]; then
     # A qcow2 image is run by the AOS VM CLI, which is itself a Nix package.
-    # Build both through the selected mode so the same cache policy applies.
+    # The image uses the selected build mode; its CLI retains production identity.
     [[ $name == *:qcow2 ]] || aos_dev_error 'VM run requires a qcow2 image'
     local image
     image=$(aos_dev_build image "$name" --no-out-link)
     # The AOS VM command accepts a built disk image and its own run flags.
     local vm
-    vm=$(aos_dev_nix_build -A pkgs.aos-vm --no-out-link)
+    vm=$(aos_dev_nix_build_ordinary -A pkgs.aos-vm --no-out-link)
     exec "$vm/bin/aos" vm run "$image/aos-${name%%:*}.qcow2" "$@"
   fi
 
@@ -76,6 +92,17 @@ aos_dev_run() {
   [[ ${#programs[@]} == 1 && -x ${programs[0]} ]] || \
     aos_dev_error "cannot select a program in $output/bin; run an executable there explicitly"
   exec "${programs[0]}" "$@"
+}
+
+aos_dev_run_tool() {
+  local tool=$1 attr=pkgs.aos output
+  shift
+  if [[ $tool != aos ]]; then
+    attr+=".$tool"
+  fi
+
+  output=$(aos_dev_nix_build_ordinary -A "$attr" --no-out-link)
+  exec "$output/bin/$tool" "$@"
 }
 
 aos_dev_all() {
@@ -130,6 +157,8 @@ aos_dev_all_builds() {
 }
 
 aos_dev_fmt() {
+  aos_dev_configure_nix
+
   # Formatting tools come from AOS's own source-built package set. They do
   # not need the shared compiler caches to inspect or format the checkout.
   local language=nix
@@ -153,10 +182,12 @@ aos_dev_fmt() {
 }
 
 aos_dev_release() {
+  aos_dev_configure_nix
+
   # Release operations always use the ordinary package identity, regardless
   # of the caller's default development mode.
   local cli
-  cli=$(nix-build "$aos_dev_root/default.nix" -A pkgs.aos --no-out-link)
+  cli=$(aos_dev_nix_build_ordinary -A pkgs.aos --no-out-link)
   "$cli/bin/aos" release "$@"
 }
 
@@ -164,14 +195,14 @@ aos_dev_completion() {
   # The generated function retains this checkout path. Completion asks the
   # same target lister as the CLI, so new attrs appear without shell edits.
   [[ ${1:-} == bash ]] || aos_dev_error 'only Bash completion is available'
-  printf 'aos-dev() { bash %q "$@"; }\n' "$aos_dev_root/aos-dev"
+  printf 'aos-dev() { bash %q "$@"; }\n' "$aos_dev_root/tools/dev/aos-dev"
   cat <<'COMPLETION'
 _aos_dev_complete() {
   local current=${COMP_WORDS[COMP_CWORD]}
   if (( COMP_CWORD == 1 )); then
     COMPREPLY=( $(compgen -W 'list build run all fmt release cache completion help --release --no-cache --cache --cache-dir --go-cache --no-go-cache --bazel-cache --no-bazel-cache --rust-target-cache --no-rust-target-cache --rust-incremental --no-rust-incremental --accache --no-accache' -- "$current") )
   elif (( COMP_CWORD == 2 )); then
-    COMPREPLY=( $(compgen -W 'package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
+    COMPREPLY=( $(compgen -W 'aos apm apr package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
     COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" 2>/dev/null)" -- "$current") )
   fi
@@ -234,6 +265,6 @@ aos_dev_main() {
     cache) aos_dev_cache_command "$@" ;;
     completion) aos_dev_completion "$@" ;;
     help|-h|--help) aos_dev_usage ;;
-    *) aos_dev_error "unknown command '$command'; run 'bash ./aos-dev help'" ;;
+    *) aos_dev_error "unknown command '$command'; run 'bash ./tools/dev/aos-dev help'" ;;
   esac
 }
