@@ -666,7 +666,7 @@ impl Schedule {
     /// # Errors
     ///
     /// Returns [`EngineError::ScenarioSerialization`] for malformed input, a
-    /// schedule identity mismatch, or any schema other than current version 3.
+    /// schedule identity mismatch, or any schema other than current version 4.
     pub fn from_compact_binary(bytes: &[u8]) -> Result<Self, EngineError> {
         let mut reader = ScenarioBinaryReader::new(bytes, SCHEDULE_BINARY_MAGIC_V4)?;
         let schedule = read_schedule_binary(&mut reader)?;

@@ -69,7 +69,7 @@ pub(super) fn compile_campaign_configuration(
     let schedule_body = schedule.to_compact_binary();
     if schedule_body != supplied_schedule {
         return Err(usage_error(
-            "campaign configuration schedule is not canonical current-schema Schedule V2",
+            "campaign configuration schedule is not canonical current-schema Schedule V4",
         ));
     }
 

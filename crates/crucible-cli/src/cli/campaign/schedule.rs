@@ -1,4 +1,4 @@
-//! Strict offline authoring for canonical Schedule V2 bodies.
+//! Strict offline authoring for canonical Schedule V4 bodies.
 
 use super::*;
 
