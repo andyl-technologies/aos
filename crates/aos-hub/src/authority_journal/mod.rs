@@ -271,12 +271,13 @@ pub struct AuthorityClockSession {
 }
 
 impl AuthorityClockSession {
-    /// Commits a conservatively bounded clock ceiling under this exact live session.
+    /// Commits an actual observation floor and interval under this exact live session.
     ///
     /// Acknowledgment follows the same-file EXTRA commit. The clock adapter must
     /// then obtain a fresh post-commit observation and validate the independent
     /// uncertainty/latency/rounding bounds before exposing a qualified value.
-    /// Retaining a ceiling alone proves no clock qualification or usable time.
+    /// The floor is the sampled wall time, not the interval's padded upper bound.
+    /// Retaining it alone proves no clock qualification or usable time.
     ///
     /// # Errors
     /// Returns an error for rollback, uncertainty/session mismatch, corruption,

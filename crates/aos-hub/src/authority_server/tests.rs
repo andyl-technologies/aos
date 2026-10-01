@@ -1,8 +1,9 @@
 //! Actual loopback HTTP and retained SQLite control/issuance regressions.
 //!
-//! Fixed clocks and qualification digests are test fixtures. These tests prove
-//! real local HTTP/persistence paths, not hosted TLS, physical-volume novelty,
-//! qualified clock uncertainty, capacity or provider dispatch.
+//! Fixed clocks and qualification digests are test fixtures; NativeClock cases
+//! sample actual UTC. These tests prove real local HTTP/persistence paths, not
+//! hosted TLS, physical-volume novelty, qualified clock uncertainty, capacity
+//! or provider dispatch.
 
 use std::sync::atomic::{AtomicI64, Ordering};
 
@@ -19,6 +20,8 @@ use aos_hub_core::storage_authority::{
 };
 
 use super::*;
+
+mod native_clock;
 
 struct FixedClock(AtomicI64);
 

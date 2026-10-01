@@ -98,11 +98,14 @@ impl ClockSource for NativeClock {
                 .checked_add(padding)
                 .context("clock uncertainty overflow")?;
             ensure!(
-                start >= self.uncertainty,
+                start >= uncertainty,
                 "clock interval has a negative lower bound"
             );
+            // Retain the actual sample as the monotonic floor. Commit latency
+            // widens the interval; it must not manufacture a future observation
+            // that an immediate consumer would mistake for clock rollback.
             let interval = LeaseClock {
-                observed_at: ceiling,
+                observed_at: start,
                 uncertainty,
             };
             self.session.retain_ceiling(interval)?;
@@ -122,7 +125,7 @@ impl ClockSource for NativeClock {
                     && final_sample <= ceiling,
                 "clock observation exceeded reviewed interval"
             );
-            LeaseInteger::new(ceiling)?;
+            LeaseInteger::new(start)?;
             Ok(interval)
         })();
         if result.is_err() {
