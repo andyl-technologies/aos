@@ -49,7 +49,34 @@ pub(crate) async fn deliver(
         key.verify_live_delivery(compact, request, i64::try_from(now)?)?;
         Ok(())
     };
-    let maximum = target.maximum_bytes.min(live.maximum_bytes);
+    stream_source(
+        target.clone(),
+        if request.method == "HEAD" {
+            Method::Head
+        } else {
+            Method::Get
+        },
+        request
+            .issued_at
+            .checked_add(LIVE_STREAM_SECONDS)
+            .context("live stream cutoff overflow")?,
+        config.uncertainty,
+        target.maximum_bytes.min(live.maximum_bytes),
+        &before_dispatch,
+    )
+    .await
+}
+
+/// Shares the exact native stream path between production and closed experiments.
+/// Authority is authenticated by the caller and rechecked after every admission wait.
+async fn stream_source(
+    target: HybridLiveDeliveryTarget,
+    method: Method,
+    stream_cutoff: i64,
+    uncertainty: u64,
+    maximum: u64,
+    before_dispatch: &dyn Fn() -> Result<()>,
+) -> Result<Response> {
     let metadata = target.class == HybridLiveDeliveryClass::Metadata;
     let buffer = crate::mirror_import::buffers::acquire(metadata, &before_dispatch).await?;
     let capacity = provider_capacity::acquire_class_checked(
@@ -65,29 +92,20 @@ pub(crate) async fn deliver(
 
     let headers = Headers::new();
     headers.set("accept-encoding", "identity")?;
-    let method = if request.method == "HEAD" {
-        Method::Head
-    } else {
-        Method::Get
-    };
     let mut init = RequestInit::new();
     init.with_method(method.clone())
         .with_headers(headers)
         .with_redirect(RequestRedirect::Manual);
     let upstream = Request::new_with_init(target.upstream_url()?.as_str(), &init)?;
-    let stream_cutoff = request
-        .issued_at
-        .checked_add(LIVE_STREAM_SECONDS)
-        .context("live stream cutoff overflow")?;
     let cancellation = SourceCancellation::new()?;
     let signal = worker::AbortSignal::from(cancellation.0.signal());
-    let response = bounded(stream_cutoff, config.uncertainty, async {
+    let response = bounded(stream_cutoff, uncertainty, async {
         before_dispatch()?;
         provider_capacity::record_dispatch();
         Ok(Fetch::Request(upstream).send_with_signal(&signal).await?)
     })
     .await?;
-    let now = i64::try_from(config.latest_now()?)?;
+    let now = qualified_latest_now(uncertainty)?;
     ensure!(
         now < stream_cutoff,
         "live source response arrived after stream cutoff"
@@ -136,7 +154,7 @@ pub(crate) async fn deliver(
         _capacity: capacity,
         budget: LiveBodyBudget::new(maximum, declared)?,
         cutoff: stream_cutoff,
-        uncertainty: config.uncertainty,
+        uncertainty: uncertainty,
     };
     let output = stream::try_unfold(state, |mut state| async move {
         if state.budget.ended() {
@@ -372,3 +390,12 @@ async fn bounded<T>(
         futures_util::future::Either::Right(_) => anyhow::bail!("live source deadline reached"),
     }
 }
+
+fn qualified_latest_now(uncertainty: u64) -> Result<i64> {
+    aos_hub_core::clock::now_unix_secs()
+        .checked_add(i64::try_from(uncertainty)?)
+        .context("live clock overflow")
+}
+
+#[cfg(feature = "do-e2e")]
+pub(crate) mod candidate;

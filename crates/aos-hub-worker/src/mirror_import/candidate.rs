@@ -26,6 +26,11 @@ impl CandidateMirrorAuthority {
             .ok_or_else(|| anyhow::anyhow!("mirror candidate clock overflow"))?)
     }
 
+    /// Reports the exact raw bounded clock selected for this experiment.
+    pub(crate) fn uncertainty_seconds(&self) -> u64 {
+        self.uncertainty
+    }
+
     pub(crate) fn profile_digest(&self) -> &str {
         &self.profile_digest
     }

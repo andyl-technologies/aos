@@ -10,6 +10,8 @@
 
 use super::*;
 
+pub mod candidate;
+
 /// Internal response header for fresh upstream delivery, never stored delivery.
 pub const HYBRID_LIVE_DELIVERY_HEADER: &str = "x-aos-hybrid-live-delivery";
 
