@@ -1,9 +1,9 @@
-From 6afb0234f80e08f26446eabc8c2cc2e3eebd8206 Mon Sep 17 00:00:00 2001
+From dc03b8687fe130e662da2524aa4b04690c7ccc7e Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 1 Oct 2026 00:43:54 -0700
-Subject: [PATCH] crucible: retain hot-fork custody and utility refusal
+Date: Thu, 1 Oct 2026 00:52:09 -0700
+Subject: [PATCH] crucible: retain hot-fork source and utility custody
 
-Provide deterministic execution, retained stop custody, and current-root sealing for hot forks. Keep standalone block utilities linked while refusing unsupported seal authority.
+Provide deterministic execution, retained stop custody, and current-root sealing. Bind child copies to the final pinned source bytes and size, and refuse unsupported seal authority in standalone block utilities.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -8279,10 +8279,10 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..93c6a67441c5d53f4713389958a0b910
          throttle_group_attach_aio_context(tgm, new_context);
 diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff03df6685
+index 0000000000000000000000000000000000000000..20bdc3797a3b0e4a9655e2ecbd9d392f9ad374e7
 --- /dev/null
 +++ b/block/crucible-hot-fork-source.c
-@@ -0,0 +1,1316 @@
+@@ -0,0 +1,1460 @@
 +/*
 + * Crucible native read-only block source ownership
 + *
@@ -8323,6 +8323,7 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +    BdrvCrucibleHotForkSourceDisposition disposition;
 +    BdrvCrucibleHotForkFileState file;
 +    bool file_pinned;
++    int pinned_fd;
 +} ReadOnlySourceNode;
 +
 +struct QemuBlockBackendHotForkReadOnlySource {
@@ -8337,6 +8338,19 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +    char *node_name;
 +    GArray *graph;
 +};
++
++static int source_file_open(int descriptor, int flags, Error **errp)
++{
++    char path[64];
++    int opened;
++
++    g_snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor);
++    opened = open(path, flags | O_CLOEXEC);
++    if (opened < 0) {
++        error_setg_errno(errp, errno, "Cannot open Crucible source file");
++    }
++    return opened;
++}
 +
 +static bool GRAPH_RDLOCK source_node_fork_safe(BlockDriverState *node,
 +                                               Error **errp)
@@ -8401,6 +8415,7 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +        .node = node,
 +        .parent = parent,
 +        .driver = node->drv,
++        .pinned_fd = -1,
 +        .disposition = node->drv ?
 +            node->drv->bdrv_crucible_hot_fork_source_disposition :
 +            BDRV_CRUCIBLE_HOT_FORK_SOURCE_UNSUPPORTED,
@@ -8436,6 +8451,16 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +            return false;
 +        }
 +        entry.file_pinned = true;
++        /* A separate open description avoids retaining QEMU's file locks. */
++        entry.pinned_fd = source_file_open(entry.file.descriptor, O_RDONLY, errp);
++        if (entry.pinned_fd < 0) {
++            BdrvCrucibleHotForkFileState released;
++
++            node->drv->bdrv_crucible_hot_fork_file(
++                node, BDRV_CRUCIBLE_HOT_FORK_FILE_UNPIN,
++                &released, &error_abort);
++            return false;
++        }
 +    }
 +    bdrv_ref(node);
 +    g_array_append_val(graph, entry);
@@ -8445,6 +8470,17 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +        }
 +    }
 +    return true;
++}
++
++static bool source_file_pin_matches(const ReadOnlySourceNode *entry)
++{
++    struct stat pinned;
++
++    return entry->pinned_fd >= 0 &&
++           fstat(entry->pinned_fd, &pinned) == 0 &&
++           S_ISREG(pinned.st_mode) &&
++           pinned.st_dev == entry->file.device &&
++           pinned.st_ino == entry->file.inode;
 +}
 +
 +static bool GRAPH_RDLOCK source_graph_matches(
@@ -8470,7 +8506,8 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +    if (entry->file_pinned &&
 +        (!entry->driver->bdrv_crucible_hot_fork_file(
 +            node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY, &file, errp) ||
-+         file.device != entry->file.device || file.inode != entry->file.inode)) {
++         file.device != entry->file.device || file.inode != entry->file.inode ||
++         !source_file_pin_matches(entry))) {
 +        if (!errp || !*errp) {
 +            error_setg(errp, "Crucible source file identity changed externally");
 +        }
@@ -8521,6 +8558,7 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +                    entry->node, BDRV_CRUCIBLE_HOT_FORK_FILE_UNPIN,
 +                    &file, &error_abort);
 +                assert(released);
++                close(entry->pinned_fd);
 +            }
 +        }
 +    }
@@ -9120,8 +9158,10 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +typedef struct HotForkChildFileEntry {
 +    BlockDriverState *node;
 +    BdrvCrucibleHotForkFileState source;
++    int original_fd;
 +    struct stat destination;
 +    off_t source_size;
++    uint8_t digest[32];
 +    bool private_file;
 +    int destination_fd;
 +    int prepared_fd;
@@ -9165,6 +9205,7 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +                &g_array_index(source->graph, ReadOnlySourceNode, visit);
 +            HotForkChildFileEntry entry = {
 +                .node = node->node,
++                .original_fd = node->pinned_fd,
 +                .private_file = !node->file.read_only,
 +                .destination_fd = -1,
 +                .prepared_fd = -1,
@@ -9177,7 +9218,10 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +                !node->driver->bdrv_crucible_hot_fork_file_child ||
 +                !node->driver->bdrv_crucible_hot_fork_file(
 +                    node->node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY,
-+                    &entry.source, errp) || !entry.source.read_only) {
++                    &entry.source, errp) || !entry.source.read_only ||
++                !source_file_pin_matches(node) ||
++                entry.source.device != node->file.device ||
++                entry.source.inode != node->file.inode) {
 +                if (!errp || !*errp) {
 +                    error_setg(errp, "Crucible child lacks a bounded frozen "
 +                               "file disposition");
@@ -9255,19 +9299,6 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +    return true;
 +}
 +
-+static int child_file_open(int descriptor, int flags, Error **errp)
-+{
-+    char path[64];
-+    int opened;
-+
-+    g_snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor);
-+    opened = open(path, flags | O_CLOEXEC);
-+    if (opened < 0) {
-+        error_setg_errno(errp, errno, "Cannot open Crucible child file capability");
-+    }
-+    return opened;
-+}
-+
 +static bool child_file_copy(int source, int destination, off_t size, Error **errp)
 +{
 +    g_autofree uint8_t *buffer = NULL;
@@ -9334,24 +9365,126 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +    return true;
 +}
 +
++static bool child_file_digest(int descriptor, off_t size,
++                              uint8_t digest[32], Error **errp)
++{
++    g_autoptr(GChecksum) checksum = g_checksum_new(G_CHECKSUM_SHA256);
++    g_autofree uint8_t *buffer = g_malloc(HOT_FORK_CHILD_COPY_CHUNK);
++    off_t offset = 0;
++    gsize length = 32;
++
++    while (offset < size) {
++        size_t remaining = MIN(size - offset, HOT_FORK_CHILD_COPY_CHUNK);
++        size_t read_bytes = 0;
++
++        while (read_bytes < remaining) {
++            ssize_t result = pread(descriptor, buffer + read_bytes,
++                                    remaining - read_bytes, offset + read_bytes);
++            if (result < 0 && errno == EINTR) {
++                continue;
++            }
++            if (result <= 0) {
++                error_setg_errno(errp, result < 0 ? errno : EIO,
++                                 "Cannot hash frozen Crucible child file");
++                return false;
++            }
++            read_bytes += result;
++        }
++        g_checksum_update(checksum, buffer, remaining);
++        offset += remaining;
++    }
++    g_checksum_get_digest(checksum, digest, &length);
++    return length == 32;
++}
++
++static bool child_file_original_matches(const HotForkChildFileEntry *entry,
++                                        const struct stat *current)
++{
++    struct stat original;
++
++    if (entry->original_fd < 0 || fstat(entry->original_fd, &original) < 0 ||
++        !S_ISREG(original.st_mode) ||
++        original.st_dev != entry->source.device ||
++        original.st_ino != entry->source.inode ||
++        (entry->private_file && original.st_size != entry->source_size)) {
++        return false;
++    }
++    return !current || (current->st_dev == original.st_dev &&
++                        current->st_ino == original.st_ino &&
++                        (!entry->private_file ||
++                         current->st_size == original.st_size));
++}
++
++static bool child_file_digest_matches(const HotForkChildFileEntry *entry,
++                                      Error **errp)
++{
++    uint8_t original[32], prepared[32];
++
++    if (!child_file_digest(entry->original_fd, entry->source_size,
++                           original, errp) ||
++        !child_file_digest(entry->prepared_fd, entry->source_size,
++                           prepared, errp)) {
++        return false;
++    }
++    if (memcmp(original, entry->digest, sizeof(original)) ||
++        memcmp(prepared, entry->digest, sizeof(prepared))) {
++        error_setg(errp, "Crucible child copy lost its original file content");
++        return false;
++    }
++    return true;
++}
++
++static bool child_file_prepared_matches(const HotForkChildFileEntry *entry,
++                                        Error **errp)
++{
++    struct stat actual;
++    dev_t device = entry->private_file ?
++        entry->destination.st_dev : entry->source.device;
++    ino_t inode = entry->private_file ?
++        entry->destination.st_ino : entry->source.inode;
++
++    if (fstat(entry->prepared_fd, &actual) < 0 ||
++        actual.st_dev != device || actual.st_ino != inode ||
++        !child_file_original_matches(entry, NULL)) {
++        return false;
++    }
++    if (!entry->private_file) {
++        return true;
++    }
++    if (actual.st_size != entry->destination.st_size ||
++        actual.st_mtim.tv_sec != entry->destination.st_mtim.tv_sec ||
++        actual.st_mtim.tv_nsec != entry->destination.st_mtim.tv_nsec) {
++        return false;
++    }
++    /* A copied file can change while preserving its mtime. */
++    return child_file_digest_matches(entry, errp);
++}
++
 +static bool child_file_prepare(HotForkChildFileEntry *entry, Error **errp)
 +{
 +    struct stat source, destination, after;
++    uint8_t copied[32], original[32];
 +    int reader = -1, writer = -1;
 +    bool prepared = false;
 +
-+    reader = child_file_open(entry->source.descriptor, O_RDONLY, errp);
++    reader = source_file_open(entry->source.descriptor, O_RDONLY, errp);
 +    if (reader < 0) {
 +        goto out;
 +    }
 +    if (fstat(reader, &source) < 0 || source.st_dev != entry->source.device ||
 +        source.st_ino != entry->source.inode ||
++        !child_file_original_matches(entry, &source) ||
 +        (entry->private_file && source.st_size != entry->source_size)) {
 +        error_setg(errp, "Crucible source file changed before private copy");
 +        goto out;
 +    }
 +    if (entry->private_file) {
-+        writer = child_file_open(entry->destination_fd, O_RDWR, errp);
++        /* PREPARE may have written the pinned file; bind its final bytes here. */
++        if (!child_file_digest(entry->original_fd, source.st_size,
++                               original, errp)) {
++            goto out;
++        }
++        writer = source_file_open(entry->destination_fd, O_RDWR, errp);
 +        if (writer < 0) {
 +            goto out;
 +        }
@@ -9369,6 +9502,16 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +            error_setg(errp, "Crucible private copy has an unexpected length");
 +            goto out;
 +        }
++        if (!child_file_digest(reader, source.st_size, copied, errp) ||
++            memcmp(original, copied, sizeof(original)) ||
++            !child_file_digest(writer, source.st_size, entry->digest, errp) ||
++            memcmp(original, entry->digest, sizeof(original))) {
++            if (!errp || !*errp) {
++                error_setg(errp, "Crucible private copy differs from its "
++                           "original pinned source");
++            }
++            goto out;
++        }
 +    }
 +    if (fstat(reader, &after) < 0 || source.st_size != after.st_size ||
 +        source.st_mtim.tv_sec != after.st_mtim.tv_sec ||
@@ -9376,8 +9519,8 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +        error_setg(errp, "Frozen Crucible source changed during private copy");
 +        goto out;
 +    }
-+    entry->prepared_fd = child_file_open(entry->private_file ? writer : reader,
-+                                          entry->source.flags, errp);
++    entry->prepared_fd = source_file_open(
++        entry->private_file ? writer : reader, entry->source.flags, errp);
 +    prepared = entry->prepared_fd >= 0;
 +out:
 +    if (reader >= 0) {
@@ -9453,9 +9596,10 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +        const HotForkChildFileEntry *entry =
 +            &g_array_index(plan->files, HotForkChildFileEntry, index);
 +
-+        if (maximum - count < 2) {
++        if (maximum - count < 3) {
 +            return -1;
 +        }
++        descriptors[count++] = entry->original_fd;
 +        descriptors[count++] = entry->source.descriptor;
 +        descriptors[count++] = entry->prepared_fd;
 +    }
@@ -9553,18 +9697,8 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +        for (index = 0; index < plan->files->len; index++) {
 +            HotForkChildFileEntry *entry =
 +                &g_array_index(plan->files, HotForkChildFileEntry, index);
-+            struct stat actual;
-+            dev_t device = entry->private_file ?
-+                entry->destination.st_dev : entry->source.device;
-+            ino_t inode = entry->private_file ?
-+                entry->destination.st_ino : entry->source.inode;
 +
-+            if (fstat(entry->prepared_fd, &actual) < 0 ||
-+                actual.st_dev != device || actual.st_ino != inode ||
-+                (entry->private_file &&
-+                 (actual.st_size != entry->destination.st_size ||
-+                  actual.st_mtim.tv_sec != entry->destination.st_mtim.tv_sec ||
-+                  actual.st_mtim.tv_nsec != entry->destination.st_mtim.tv_nsec)) ||
++            if (!child_file_prepared_matches(entry, errp) ||
 +                !entry->node->drv->bdrv_crucible_hot_fork_file_child(
 +                    entry->node, plan->owner, entry->prepared_fd, errp)) {
 +                if (!errp || !*errp) {
@@ -9586,6 +9720,16 @@ index 0000000000000000000000000000000000000000..363253b8b6a32dc21da851484969f1ff
 +                        node->node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY,
 +                        &node->file, errp)) {
 +                    return false;
++                }
++                if (node->file_pinned) {
++                    int pin = source_file_open(node->file.descriptor,
++                                               O_RDONLY, errp);
++
++                    if (pin < 0) {
++                        return false;
++                    }
++                    close(node->pinned_fd);
++                    node->pinned_fd = pin;
 +                }
 +            }
 +        }
@@ -62104,10 +62248,10 @@ index e078b36b2d57f295ce978622cfbcba8a0a36a9f9..2016d37d1e2ebbd80e3041accf35703e
  
  #endif
 diff --git a/include/system/block-backend-global-state.h b/include/system/block-backend-global-state.h
-index c3849640df9f61c70f82f0534b42f400c27f424a..f404e899f09212521c1f80b00bde9c84acb013f7 100644
+index c3849640df9f61c70f82f0534b42f400c27f424a..eaa95f1077589bc83a15c8a84bd1f2cc9d61defe 100644
 --- a/include/system/block-backend-global-state.h
 +++ b/include/system/block-backend-global-state.h
-@@ -15,6 +15,304 @@
+@@ -15,6 +15,305 @@
  
  #include "block-backend-common.h"
  
@@ -62341,9 +62485,10 @@ index c3849640df9f61c70f82f0534b42f400c27f424a..f404e899f09212521c1f80b00bde9c84
 +
 +/*
 + * Lists every descriptor the immediate child must inherit for one prepared
-+ * plan: the pinned source descriptors the inherited graph still references and
-+ * the prepared replacements. Returns the count, or -1 when the plan is not
-+ * this process's unconsumed plan or maximum is too small.
++ * plan: the independent original-file pins, the source descriptors the
++ * inherited graph still references, and the prepared replacements. Returns
++ * the count, or -1 when the plan is not this process's unconsumed plan or
++ * maximum is too small.
 + */
 +ssize_t qemu_block_hot_fork_child_files_descriptors(
 +    const QemuBlockHotForkChildFiles *plan, int *descriptors, size_t maximum);
@@ -147072,7 +147217,7 @@ index b3ca4d8a596ea045d11cf7cc9c241e7ef04f61e1..6e635d5f9e406c81fe9ddd2cb57fe589
      g_test_add_func("/aio-gsource/flush",                   test_source_flush);
      g_test_add_func("/aio-gsource/bh/schedule",             test_source_bh_schedule);
 diff --git a/tests/unit/test-block-backend.c b/tests/unit/test-block-backend.c
-index 4257b3f8153d722eafe10afd68641e553ae48926..7f8d6173eac2447e67b016022d3580b93843cdfc 100644
+index 4257b3f8153d722eafe10afd68641e553ae48926..764f993f2cc8ffd4e69d44bfa2b49994312e9025 100644
 --- a/tests/unit/test-block-backend.c
 +++ b/tests/unit/test-block-backend.c
 @@ -24,9 +24,100 @@
@@ -147176,7 +147321,7 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..7f8d6173eac2447e67b016022d3580b9
  
  static void test_drain_aio_error_flush_cb(void *opaque, int ret)
  {
-@@ -70,6 +161,1259 @@ static void test_drain_all_aio_error(void)
+@@ -70,6 +161,1371 @@ static void test_drain_all_aio_error(void)
      blk_unref(blk);
  }
  
@@ -148332,7 +148477,7 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..7f8d6173eac2447e67b016022d3580b9
 +    g_assert_nonnull(plan);
 +    {
 +        BlockDriverState *leaf = NULL;
-+        int descriptors[8];
++        int descriptors[12];
 +
 +        /* Coordinator lookups: one writable leaf per originally writable root. */
 +        g_assert_true(qemu_block_hot_fork_source_set_writable_leaf(
@@ -148344,9 +148489,9 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..7f8d6173eac2447e67b016022d3580b9
 +        g_assert_false(qemu_block_hot_fork_source_set_writable_leaf(
 +            sources, fixture.roots[1].root->file->bs, &leaf, NULL));
 +        g_assert_cmpint(qemu_block_hot_fork_child_files_descriptors(
-+            plan, descriptors, G_N_ELEMENTS(descriptors)), ==, 6);
++            plan, descriptors, G_N_ELEMENTS(descriptors)), ==, 9);
 +        g_assert_cmpint(qemu_block_hot_fork_child_files_descriptors(
-+            plan, descriptors, 5), ==, -1);
++            plan, descriptors, 8), ==, -1);
 +    }
 +    g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
 +    g_assert_false(qemu_block_hot_fork_source_set_restore(sources, NULL));
@@ -148356,6 +148501,118 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..7f8d6173eac2447e67b016022d3580b9
 +        g_assert_true(parent_files[index].read_only);
 +    }
 +    g_assert_true(qemu_aio_hot_fork_prepare_thread_pools(&error_abort));
++
++    {
++        struct stat copied;
++        struct timespec original_times[2];
++        uint8_t tampered = 0x5a;
++
++        g_assert_cmpint(fstat(files[0].descriptor, &copied), ==, 0);
++        original_times[0] = copied.st_atim;
++        original_times[1] = copied.st_mtim;
++        g_assert_cmpint(pwrite(files[0].descriptor, &tampered, 1, 1024), ==, 1);
++        g_assert_cmpint(futimens(files[0].descriptor, original_times), ==, 0);
++        child = fork();
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            test_hot_fork_child_alarm(15);
++            g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
++            _exit(0);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++        g_assert_true(qemu_block_hot_fork_child_files_free(plan, &error_abort));
++        for (index = 0; index < G_N_ELEMENTS(files); index++) {
++            g_assert_cmpint(ftruncate(files[index].descriptor, 0), ==, 0);
++        }
++        plan = qemu_block_hot_fork_child_files_prepare(
++            sources, files, G_N_ELEMENTS(files), 16 * HOT_FORK_SNAPSHOT_SIZE,
++            &error_abort);
++        g_assert_nonnull(plan);
++    }
++
++    {
++        struct stat copied;
++        struct timespec original_times[2];
++        uint8_t appended = 0x5a;
++
++        g_assert_cmpint(fstat(files[1].descriptor, &copied), ==, 0);
++        original_times[0] = copied.st_atim;
++        original_times[1] = copied.st_mtim;
++        g_assert_cmpint(pwrite(files[1].descriptor, &appended, 1,
++                               copied.st_size), ==, 1);
++        g_assert_cmpint(futimens(files[1].descriptor, original_times), ==, 0);
++        child = fork();
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            test_hot_fork_child_alarm(15);
++            g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
++            _exit(0);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++        g_assert_cmpint(ftruncate(files[1].descriptor, copied.st_size), ==, 0);
++        g_assert_cmpint(futimens(files[1].descriptor, original_times), ==, 0);
++    }
++
++    {
++        struct stat pinned;
++        struct timespec original_times[2];
++        uint8_t original_byte, tampered;
++        int external = open(fixture.paths[0], O_RDWR);
++
++        g_assert_cmpint(external, >=, 0);
++        g_assert_cmpint(fstat(external, &pinned), ==, 0);
++        original_times[0] = pinned.st_atim;
++        original_times[1] = pinned.st_mtim;
++        g_assert_cmpint(pread(external, &original_byte, 1, 1024), ==, 1);
++        tampered = original_byte ^ 0xff;
++        g_assert_cmpint(pwrite(external, &tampered, 1, 1024), ==, 1);
++        g_assert_cmpint(futimens(external, original_times), ==, 0);
++        child = fork();
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            test_hot_fork_child_alarm(15);
++            g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
++            _exit(0);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++        g_assert_cmpint(pwrite(external, &original_byte, 1, 1024), ==, 1);
++        g_assert_cmpint(futimens(external, original_times), ==, 0);
++        close(external);
++    }
++
++    {
++        struct stat pinned;
++        struct timespec original_times[2];
++        uint8_t appended = 0x5a;
++        int external = open(fixture.paths[0], O_RDWR);
++
++        g_assert_cmpint(external, >=, 0);
++        g_assert_cmpint(fstat(external, &pinned), ==, 0);
++        original_times[0] = pinned.st_atim;
++        original_times[1] = pinned.st_mtim;
++        g_assert_cmpint(pwrite(external, &appended, 1, pinned.st_size), ==, 1);
++        g_assert_cmpint(futimens(external, original_times), ==, 0);
++        child = fork();
++        g_assert_cmpint(child, >=, 0);
++        if (child == 0) {
++            test_hot_fork_child_alarm(15);
++            g_assert_false(qemu_block_hot_fork_child_files_install(plan, NULL));
++            _exit(0);
++        }
++        g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++        g_assert_true(WIFEXITED(status));
++        g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++        g_assert_cmpint(ftruncate(external, pinned.st_size), ==, 0);
++        g_assert_cmpint(futimens(external, original_times), ==, 0);
++        close(external);
++    }
++
 +    child = fork();
 +    g_assert_cmpint(child, >=, 0);
 +    if (child == 0) {
@@ -148436,7 +148693,7 @@ index 4257b3f8153d722eafe10afd68641e553ae48926..7f8d6173eac2447e67b016022d3580b9
  int main(int argc, char **argv)
  {
      bdrv_init();
-@@ -77,9 +1421,43 @@ int main(int argc, char **argv)
+@@ -77,9 +1533,43 @@ int main(int argc, char **argv)
  
      g_test_init(&argc, &argv, NULL);
  
