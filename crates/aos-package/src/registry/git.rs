@@ -1294,12 +1294,11 @@ async fn extract_packages(repo_dir: &Path, commit: &str, output_dir: &Path) -> R
     extract_tree_dir(repo_dir, commit, "packages", output_dir, true).await
 }
 
-/// Materializes the verified maintainer roster beside cached provenance.
+/// Materializes the verified registry identity and roster beside provenance.
 ///
-/// Install-time provenance verification deliberately reads both artifacts
-/// from the authenticated cache tree. Keeping `keys.toml` only in the
-/// registry-root mirror would make a successfully synced signed registry
-/// impossible to install from.
+/// Install-time verification binds signing keys and builder identities to the
+/// committed registry name, which may differ from the consumer's local alias.
+/// These inputs must accompany provenance in the authenticated cache tree.
 async fn extract_registry_cache_trust(
     repo_dir: &Path,
     commit: &str,
@@ -1308,7 +1307,14 @@ async fn extract_registry_cache_trust(
     tokio::fs::create_dir_all(registry_cache_dir)
         .await
         .with_context(|| format!("creating {}", registry_cache_dir.display()))?;
-    extract_optional_root_file(repo_dir, commit, registry_cache_dir, "keys.toml").await
+    for file in ["registry.toml", "keys.toml"] {
+        // Replace stale files and symlinks before materializing authenticated
+        // bytes, and remove old identities when the selected commit lacks one.
+        remove_cached_registry_artifact_target(&registry_cache_dir.join(file)).await?;
+        extract_optional_root_file(repo_dir, commit, registry_cache_dir, file).await?;
+    }
+
+    Ok(())
 }
 
 /// Extract the `store/` realisation graph from a git tree (RFC-0005).
@@ -2541,6 +2547,10 @@ mod tests {
         tokio::fs::write(work_dir.join("keys.toml"), "schema = 1\n")
             .await
             .unwrap();
+        let manifest = "[registry]\nname = \"canonical-registry\"\n";
+        tokio::fs::write(work_dir.join("registry.toml"), manifest)
+            .await
+            .unwrap();
 
         // Add and commit.
         let _ = git(&work_dir).args(["add", "."]).output().await;
@@ -2593,6 +2603,13 @@ mod tests {
         assert!(content.contains("curl"));
 
         let cache_dir = tmp.path().join("authenticated-cache");
+        tokio::fs::create_dir_all(&cache_dir).await.unwrap();
+        let outside = tmp.path().join("outside-registry.toml");
+        tokio::fs::write(&outside, "must remain unchanged")
+            .await
+            .unwrap();
+        std::os::unix::fs::symlink(&outside, cache_dir.join("registry.toml")).unwrap();
+
         extract_registry_cache_trust(&repo_dir, &commit, &cache_dir)
             .await
             .unwrap();
@@ -2602,6 +2619,26 @@ mod tests {
                 .unwrap(),
             "schema = 1\n"
         );
+        assert_eq!(
+            tokio::fs::read_to_string(cache_dir.join("registry.toml"))
+                .await
+                .unwrap(),
+            manifest
+        );
+        assert_eq!(
+            tokio::fs::read_to_string(&outside).await.unwrap(),
+            "must remain unchanged"
+        );
+
+        tokio::fs::remove_file(work_dir.join("registry.toml"))
+            .await
+            .unwrap();
+        let removed_commit = commit_all(&work_dir, "remove registry identity").await;
+        extract_registry_cache_trust(&work_dir, &removed_commit, &cache_dir)
+            .await
+            .unwrap();
+        assert!(!cache_dir.join("registry.toml").exists());
+        assert!(cache_dir.join("keys.toml").is_file());
     }
 
     #[tokio::test]

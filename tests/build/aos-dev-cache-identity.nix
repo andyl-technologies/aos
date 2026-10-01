@@ -51,6 +51,12 @@
     rustCacheDir = "/aos-build-cache/rust";
   };
 in
+  assert builtins.all (name:
+    builtins.isString plain.pkgs.${name}.pname
+    && plain.pkgs.${name}.pname != ""
+    && plain.pkgs.${name}.pname == rustShared.pkgs.${name}.pname
+    && plain.pkgs.${name}.version == rustShared.pkgs.${name}.version)
+  ["bash" "coreutils" "gnumake" "sed" "grep" "findutils" "gawk" "diffutils" "tar" "gzip" "patch"];
   assert builtins.all (name: plain.pkgs.${name}.drvPath == compilerShared.pkgs.${name}.drvPath)
   ["accache" "rust" "go" "llvm" "gcc-libs" "openjdk" "bazel"];
   assert compilerShared.pkgs.aos.ACCACHE_DIR == "/custom/compiler-cache";

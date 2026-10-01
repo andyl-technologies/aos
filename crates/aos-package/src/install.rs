@@ -58,7 +58,7 @@ use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{
-    ApmMeta, InstalledMeta, PackageMeta, package_requires_provenance,
+    ApmMeta, InstalledMeta, PackageMeta, RegistryRootConfig, package_requires_provenance,
     validate_attestation_provenance_ref, validate_registry_name,
 };
 use super::verify::verify_downloads;
@@ -930,7 +930,7 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
 ) -> Result<usize> {
     let mut verified = 0;
     let mut transparency_logs = HashMap::<String, String>::new();
-    let mut trusted_keys = HashMap::<String, Vec<provenance::TrustedProvenanceKey>>::new();
+    let mut trusted_keys = HashMap::<String, RegistryProvenanceTrust>::new();
 
     for (registry_name, meta) in entries {
         let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
@@ -953,9 +953,9 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
         };
         let key_id = provenance::verify_package_statement(
             meta,
-            registry_name,
+            &registry_trusted_keys.registry_name,
             &jsonl,
-            registry_trusted_keys,
+            &registry_trusted_keys.keys,
         )
         .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
         let transparency_log = match transparency_logs.entry(registry_name.to_string()) {
@@ -979,7 +979,7 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
                     )
                 })?;
         provenance::verify_key_allowed_for_transparency_sequence(
-            registry_trusted_keys,
+            &registry_trusted_keys.keys,
             &key_id,
             sequence,
         )
@@ -1030,12 +1030,35 @@ fn read_provenance_artifact(
     )
 }
 
+/// Binds provenance verification to the identity in the cached registry manifest.
+struct RegistryProvenanceTrust {
+    registry_name: String,
+    keys: Vec<provenance::TrustedProvenanceKey>,
+}
+
 fn read_registry_provenance_trusted_keys(
     registry_cache_root: &Path,
-    registry_name: &str,
-) -> Result<Vec<provenance::TrustedProvenanceKey>> {
-    let (path, content) =
-        read_registry_cache_artifact(registry_cache_root, registry_name, "keys.toml", "keys.toml")?;
+    registry_alias: &str,
+) -> Result<RegistryProvenanceTrust> {
+    let (manifest_path, manifest) = read_registry_cache_artifact(
+        registry_cache_root,
+        registry_alias,
+        "registry.toml",
+        "registry manifest",
+    )?;
+    let manifest: RegistryRootConfig = toml::from_str(&manifest)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let registry_name = manifest.registry.name;
+    validate_registry_name(&registry_name)?;
+
+    // Cache directories and operator policies use the local alias. Signing
+    // keys and builder identities belong to the committed registry identity.
+    let (path, content) = read_registry_cache_artifact(
+        registry_cache_root,
+        registry_alias,
+        "keys.toml",
+        "keys.toml",
+    )?;
     let roster: keys::KeysToml =
         toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     if roster.schema != keys::KEYS_TOML_SCHEMA {
@@ -1103,7 +1126,10 @@ fn read_registry_provenance_trusted_keys(
             retired_before_sequence: Some(retired_before_sequence),
         });
     }
-    Ok(trusted)
+    Ok(RegistryProvenanceTrust {
+        registry_name,
+        keys: trusted,
+    })
 }
 
 fn read_registry_cache_artifact(
@@ -2226,6 +2252,11 @@ mod tests {
     fn write_test_provenance_keys(root: &Path, registry_name: &str) {
         let registry_root = root.join(registry_name);
         std::fs::create_dir_all(&registry_root).unwrap();
+        std::fs::write(
+            registry_root.join("registry.toml"),
+            format!("[registry]\nname = {registry_name:?}\n"),
+        )
+        .unwrap();
         let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
         keys::write_keys_toml(
             &registry_root,
@@ -2470,6 +2501,111 @@ mod tests {
         .unwrap();
 
         assert_eq!(count, 1);
+    }
+
+    fn aliased_provenance_fixture(root: &Path) -> PackageMeta {
+        let meta = attested_sample_package();
+        let registry_root = root.join("test-reg");
+        let path = registry_root.join(meta.attestation.provenance.as_deref().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let jsonl = provenance_statement(&meta);
+        std::fs::write(path, &jsonl).unwrap();
+        write_test_provenance_keys(root, "test-reg");
+        write_transparency_log(root, "test-reg", &meta, &jsonl);
+        std::fs::rename(registry_root, root.join("local-alias")).unwrap();
+        meta
+    }
+
+    fn verify_aliased_provenance(root: &Path, meta: PackageMeta) -> Result<usize> {
+        let mut closure = sample_closure(meta.clone(), vec![meta]);
+        closure.registry_name = "local-alias".to_string();
+        verify_install_provenance_from_cache(root, &[closure])
+    }
+
+    #[test]
+    fn verify_install_provenance_uses_committed_identity_for_local_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+
+        assert_eq!(verify_aliased_provenance(tmp.path(), meta).unwrap(), 1);
+    }
+
+    #[test]
+    fn verify_install_provenance_keeps_root_owner_policy_bound_to_local_alias() {
+        let tmp = TempDir::new().unwrap();
+        let mut meta = aliased_provenance_fixture(tmp.path());
+        add_owned_root(&mut meta, "firewall");
+        let signers = HashSet::from([TEST_PROVENANCE_KEY_ID.to_string()]);
+        let entries = [("local-alias", &meta)];
+        let canonical_policy = HashMap::from([("test-reg".to_string(), signers.clone())]);
+
+        let error = verify_package_provenance_entries_from_cache_inner(
+            tmp.path(),
+            entries,
+            &canonical_policy,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("operator allowlist"));
+
+        let alias_policy = HashMap::from([("local-alias".to_string(), signers)]);
+        let count =
+            verify_package_provenance_entries_from_cache_inner(tmp.path(), entries, &alias_policy)
+                .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_foreign_key_namespace_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        std::fs::write(
+            tmp.path().join("local-alias/registry.toml"),
+            "[registry]\nname = \"foreign-reg\"\n",
+        )
+        .unwrap();
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(error.to_string().contains("expected 'foreign-reg'"));
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_foreign_builder_identity_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        // The same public key is trusted in another registry, but the signed
+        // builder still names test-reg. A valid signature cannot cross domains.
+        write_test_provenance_keys(tmp.path(), "local-alias");
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(format!("{error:#}").contains("builder"), "{error:#}");
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_missing_manifest_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        std::fs::remove_file(tmp.path().join("local-alias/registry.toml")).unwrap();
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(error.to_string().contains("reading registry manifest"));
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_symlink_manifest_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        let manifest = tmp.path().join("local-alias/registry.toml");
+        let outside = tmp.path().join("outside.toml");
+        std::fs::rename(&manifest, &outside).unwrap();
+        std::os::unix::fs::symlink(outside, manifest).unwrap();
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("registry manifest path 'registry.toml' must not contain symlinks"),
+            "{error:#}",
+        );
     }
 
     #[test]

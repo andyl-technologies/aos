@@ -256,7 +256,7 @@
       cond =
         manifest.etc."systemd/system/vendor.service"
         == {
-          kind = "symlink";
+          kind = "store-symlink";
           target = "${packagedUnits}/lib/systemd/system/vendor.service";
         };
       msg = "systemd-generate: package unit was not preserved by asDropinIfExists";
@@ -269,7 +269,7 @@
       cond =
         manifest.etc."systemd/system/vendor.service.d/10-vendor.conf"
         == {
-          kind = "symlink";
+          kind = "store-symlink";
           target = "${packagedUnits}/lib/systemd/system/vendor.service.d/10-vendor.conf";
         };
       msg = "systemd-generate: package drop-in was not merged";

@@ -351,19 +351,19 @@ pub(super) fn assert_plugin_and_series_surfaces() -> Result<(), Box<dyn Error>> 
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"run_horizon=plugin-stop_at-4000000000\"",
+        "require_line \"$s11_result\" \"run_horizon=plugin-stop_at-8000000000\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"periodic_samples_expected=40\"",
+        "require_line \"$s11_result\" \"periodic_samples_expected=80\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"periodic_samples_observed=40\"",
+        "require_line \"$s11_result\" \"periodic_samples_observed=80\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,
-        "require_line \"$s11_result\" \"samples=41\"",
+        "require_line \"$s11_result\" \"samples=81\"",
     );
     assert_contains(
         &qemu_rr_quantum_icount,

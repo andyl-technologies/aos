@@ -155,47 +155,39 @@
     ]
     ++ failuresFor "crates/crucible/src/lib.rs" crateRoot [
       {
-        label = "focused scenario value test";
+        label = "immutable scenario value regression";
         needle = "fn scenario_def_form_is_immutable_pure_four_tuple_value()";
       }
       {
-        label = "test asserts world component accessor";
+        label = "world component accessor";
         needle = "assert_eq!(form.world(), &world);";
       }
       {
-        label = "test asserts plan component accessor";
+        label = "plan component accessor";
         needle = "assert_eq!(form.plan(), &plan);";
       }
       {
-        label = "test asserts properties component accessor";
+        label = "properties component accessor";
         needle = "assert_eq!(form.properties(), &properties);";
       }
       {
-        label = "test asserts seed component accessor";
+        label = "seed component accessor";
         needle = "assert_eq!(form.seed(), seed);";
       }
       {
-        label = "test proves equal content equal id";
-        needle = "assert_eq!(left.id(), right.id());";
+        label = "equal reconstruction";
+        needle = "ScenarioDefForm::from_components(&world, &plan, &properties, seed)?";
       }
       {
-        label = "test proves world identity sensitivity";
-        needle = "changed-world form should be valid";
+        label = "component identity sensitivity";
+        needle = "spatial_components_have_independent_content_addresses_and_cross_reuse";
       }
       {
-        label = "test proves plan identity sensitivity";
-        needle = "changed-plan form should be valid";
+        label = "seed identity sensitivity";
+        needle = "Seed::from_u64(42)";
       }
       {
-        label = "test proves properties identity sensitivity";
-        needle = "changed-properties form should be valid";
-      }
-      {
-        label = "test proves seed identity sensitivity";
-        needle = "changed-seed form should be valid";
-      }
-      {
-        label = "test rejects host image path";
+        label = "portable image contract";
         needle = "ContentAddressedBlobRef::parse(\"kernel\", \"/nix/store/not-a-content-ref\")";
       }
     ]

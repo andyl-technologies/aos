@@ -45,6 +45,7 @@
       ++ [
         bashPkg
         coreutilsPkg
+        pkgs.grep
         utilLinuxPkg
         bootstrapTools
       ]
@@ -81,9 +82,9 @@
       allDeps
     );
 
-    # Bootstrap toolchain paths for compilation inside the VM
-    btBase = builtins.toString bootstrapTools;
-    dynamicLinker = "${btBase}/lib/${lib.platform.dynamicLinker}";
+    # Split libc paths for compilation inside the VM
+    libc = pkgs.glibc;
+    libcDev = libc.dev or libc;
 
     initScript = ''
       #!/bin/sh
@@ -97,10 +98,10 @@
       export PATH="/usr/local/bin:${depPaths}:/bin:/usr/bin:/sbin:/usr/sbin"
       export HOME=/tmp
 
-      # Bootstrap gcc needs explicit include/library paths (no ccWrapper in VM)
-      export C_INCLUDE_PATH="${btBase}/include-glibc"
-      export LIBRARY_PATH="${btBase}/lib"
-      export LD_LIBRARY_PATH="${btBase}/lib"
+      # The VM compiler uses the same split libc outputs as the build stdenv.
+      export C_INCLUDE_PATH="${libcDev}/include"
+      export LIBRARY_PATH="${libc}/lib"
+      export LD_LIBRARY_PATH="${libc}/lib"
 
       mount -t proc proc /proc
       mount -t sysfs sysfs /sys
@@ -179,7 +180,6 @@
       COREUTILS = builtins.toString coreutilsPkg;
       UTIL_LINUX = builtins.toString utilLinuxPkg;
       BOOTSTRAP = builtins.toString bootstrapTools;
-      DYNAMIC_LINKER = dynamicLinker;
       REGINFO = builtins.toString regInfo;
 
       phases = [
@@ -268,50 +268,18 @@
 
                         # Create gcc/g++/ld/cpp wrapper scripts in the VM-local
                         # /usr/local/bin. These do not reference the host rootfs.
-                        # (must shadow raw bootstrap gcc in PATH — see init PATH ordering)
-                        # Raw bootstrap gcc doesn't know about our glibc or dynamic linker paths
 
-                        # Discover C++ include paths (same logic as pkgs/default.nix ccWrapper)
-                        # Guard: only probe if include/c++ exists (cc-wrapper may not have it)
-                        BT_ROOT=$(dirname $BOOTSTRAP/lib)
-                        BT_CXX=""
-                        BT_CXX_ARCH=""
-                        BT_CXX_BACKWARD=""
-                        BT_GCC_LIB=""
-                        if [ -d "$BT_ROOT/include/c++" ]; then
-                          CXX_VER=$(ls "$BT_ROOT/include/c++")
-                          BT_CXX="$BT_ROOT/include/c++/$CXX_VER"
-                          BT_CXX_ARCH=$(ls -d "$BT_CXX"/*-linux-gnu 2>/dev/null | head -1 || true)
-                          BT_CXX_BACKWARD="$BT_CXX/backward"
-                        fi
-                        if [ -d "$BOOTSTRAP/lib/gcc" ]; then
-                          BT_GCC_LIB=$(ls -d "$BOOTSTRAP/lib/gcc"/*/*/ 2>/dev/null | head -1 || true)
-                        fi
-
-                        cat > rootfs/usr/local/bin/gcc << GCCWRAP
-            #!/bin/sh
-            exec $BOOTSTRAP/bin/gcc -B$BOOTSTRAP/lib -isystem $BOOTSTRAP/include-glibc -L$BOOTSTRAP/lib -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYNAMIC_LINKER -Wl,-rpath,$BOOTSTRAP/lib -Wl,-rpath,$BT_GCC_LIB "\$@"
-            GCCWRAP
-                        cp rootfs/usr/local/bin/gcc rootfs/usr/local/bin/cc
-
-                        # g++ uses -nostdinc++ then re-adds C++ headers before glibc
-                        # (fixes #include_next from cstdlib finding stdlib.h)
-                        cat > rootfs/usr/local/bin/g++ << GPPWRAP
-            #!/bin/sh
-            exec $BOOTSTRAP/bin/g++ -nostdinc++ -isystem $BT_CXX -isystem $BT_CXX_ARCH -isystem $BT_CXX_BACKWARD -isystem $BOOTSTRAP/include-glibc -B$BOOTSTRAP/lib -L$BOOTSTRAP/lib -L$BT_GCC_LIB -Wl,-dynamic-linker=$DYNAMIC_LINKER -Wl,-rpath,$BOOTSTRAP/lib -Wl,-rpath,$BT_GCC_LIB "\$@"
-            GPPWRAP
-                        cp rootfs/usr/local/bin/g++ rootfs/usr/local/bin/c++
-
+                        # Reuse the source-built stdenv wrappers. bootstrapTools
+                        # is a compiler wrapper, not a combined GCC/glibc tree;
+                        # its embedded flags select the proper split outputs.
+                        for compiler in gcc cc g++ c++ ld; do
+                          ln -s "$BOOTSTRAP/bin/$compiler" "rootfs/usr/local/bin/$compiler"
+                        done
                         cat > rootfs/usr/local/bin/cpp << CPPWRAP
             #!/bin/sh
-            exec $BOOTSTRAP/bin/cpp -isystem $BOOTSTRAP/include-glibc "\$@"
+            exec $BOOTSTRAP/bin/gcc -E "\$@"
             CPPWRAP
-
-                        cat > rootfs/usr/local/bin/ld << LDWRAP
-            #!/bin/sh
-            exec $BOOTSTRAP/bin/ld -L$BOOTSTRAP/lib -L$BT_GCC_LIB -dynamic-linker=$DYNAMIC_LINKER -rpath $BOOTSTRAP/lib -rpath $BT_GCC_LIB "\$@"
-            LDWRAP
-                        chmod +x rootfs/usr/local/bin/gcc rootfs/usr/local/bin/cc rootfs/usr/local/bin/g++ rootfs/usr/local/bin/c++ rootfs/usr/local/bin/cpp rootfs/usr/local/bin/ld
+                        chmod +x rootfs/usr/local/bin/cpp
 
                         # util-linux is built without reboot(8), but the
                         # headless init needs an orderly reboot syscall so

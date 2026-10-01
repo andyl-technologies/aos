@@ -8,10 +8,18 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  eventCatalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  eventCatalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/src/lib.rs;
-  payloadTest = builtins.readFile ../../crates/crucible/tests/event_log_payload.rs;
+  libSource = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/lib.rs;
+  };
+  payloadTest =
+    builtins.readFile ../../crates/crucible/tests/event_log_payload.rs
+    + builtins.readFile ../../crates/crucible/tests/fault_observation_log.rs;
   formalTraceTest = builtins.readFile ../../crates/crucible/tests/formal_trace_export.rs;
   reproductionTest = builtins.readFile ../../crates/crucible/tests/assertion_violation_reproduction.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
@@ -186,7 +194,7 @@
       }
       {
         label = "fault typed accessor tested";
-        needle = "fault_payload.fault(\"fault\")";
+        needle = "entry.event_payload().string(\"binding\")";
       }
       {
         label = "level typed accessor tested";
@@ -208,7 +216,7 @@
       }
       {
         label = "diagnostic typed details asserted";
-        needle = "diagnostic.details=10";
+        needle = "diagnostic.details=9";
       }
       {
         label = "diagnostic strings hex encoded";
@@ -306,6 +314,7 @@ in
               --target-dir "$TMPDIR/crucible-event-log-payload-target" \
               -p crucible \
               --test event_log_payload \
+              --test fault_observation_log \
               --test assertion_violation_reproduction \
               --test formal_trace_export \
               -- --test-threads=1

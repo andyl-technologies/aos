@@ -257,7 +257,7 @@
     ++ failuresFor "crates/crucible-qemu/tests/debug_gdbstub.rs" qemuTest [
       {
         label = "QEMU debug gdbstub gate";
-        needle = "debug_gdbstub_is_fourth_out_of_band_launch_channel";
+        needle = "debug_gdbstub_launch_does_not_expose_guest_activation_device";
       }
       {
         label = "QEMU proxy mediation gate";

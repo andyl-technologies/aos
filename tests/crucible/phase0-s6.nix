@@ -4,7 +4,9 @@
 }: let
   boundedSchedulerPreemptionCheck = import ./phase0-bounded-scheduler-preemption.nix {inherit pkgs lib;};
   cadence = 200000000;
-  horizon = 3600000000;
+  # The current Linux boot and address probe complete before six billion
+  # instructions, inside the finite spin workload's reproducible window.
+  horizon = 6000000000;
   rrSwitchQuantum = 4096;
   probeSource = builtins.readFile ./phase0-s6-probe.c;
 
@@ -197,7 +199,7 @@ in
       pkgs.grep
       pkgs.jq
       pkgs.qemu-crucible
-      pkgs.socat
+      pkgs.python3
       pkgs.crucible-qemu-trace-plugin
     ];
 
@@ -271,10 +273,13 @@ in
             response="$3"
             response_err="$response.err"
 
-            {
-              printf '{"execute":"qmp_capabilities"}\r\n'
-              printf '%s\r\n' "$request"
-            } | socat -T 1 - "UNIX-CONNECT:$socket" > "$response" 2> "$response_err" || true
+            # A loaded builder can delay migration admission beyond one second.
+            # Wait for the matching QMP reply rather than a transport idle gap.
+            if ! ${pkgs.python3}/bin/python3 ${./_qmp-command.py} \
+              "$socket" "$request" > "$response" 2> "$response_err"; then
+              cat "$response_err" >&2
+              return 1
+            fi
 
             if [ ! -s "$response" ]; then
               cat "$response_err" >&2

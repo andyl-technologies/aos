@@ -161,7 +161,6 @@ shape-line|crates/crucible-session/src/session/commands.rs|908
 shape-line|crates/crucible-session/src/session/engine.rs|1842
 shape-line|crates/crucible-session/src/tests/actor_runtime.rs|2238
 shape-line|crates/crucible-session/src/tests/engine_state.rs|2361
-shape-line|crates/crucible-session/tests/gate_control_responsive.rs|720
 shape-line|crates/crucible-session/tests/gate_exploration_fork.rs|632
 shape-line|crates/crucible-shmem/src/shmem/ring_accelerator.rs|706
 shape-line|crates/crucible-shmem/tests/gate_layer1_injection.rs|699

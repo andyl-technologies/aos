@@ -144,6 +144,9 @@ in
             make -j$NIX_BUILD_CORES
           ''
           else ''
+            # Tcl's Linux linker command omits a SONAME. Give each shared
+            # library its basename so consumers record a stable loader name.
+            sed -i '/^SHLIB_LD[[:space:]]*=/ s|$| -Wl,-soname,$@|' Makefile
             make -j$NIX_BUILD_CORES
           '';
       }

@@ -8,7 +8,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  catalog = builtins.readFile ../../crates/crucible/src/event_catalog.rs;
+  catalog = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible/src/event_catalog.rs;
+  };
   catalogTest = builtins.readFile ../../crates/crucible/tests/event_log_class_catalog.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
