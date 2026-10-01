@@ -20,10 +20,54 @@ use std::io::{self, Read};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use crucible_campaign::{PlannerRequest, PlannerResponse, PlannerService};
 use crucible_cas::content_store::{
     BackendCapabilities, BlobHandle, BlobSource, ByteRange, ContentId, ImmutableBlobBackend,
     PutReceipt, StoreError, StoreGraph,
 };
+
+/// Separates coordinator preflight and acceptance from the real component call.
+pub(super) struct ProfilePlannerService<S> {
+    inner: S,
+    backend: Option<Arc<ProfileBackend>>,
+    request: usize,
+}
+
+impl<S> ProfilePlannerService<S> {
+    /// Delegates to the original service and optionally reports its stage boundary.
+    pub(super) fn new(inner: S, backend: Option<Arc<ProfileBackend>>) -> Self {
+        Self {
+            inner,
+            backend,
+            request: 0,
+        }
+    }
+}
+
+impl<S: PlannerService> PlannerService for ProfilePlannerService<S> {
+    type Error = S::Error;
+
+    fn plan(&mut self, request: &PlannerRequest) -> Result<PlannerResponse, Self::Error> {
+        let Some(backend) = &self.backend else {
+            return self.inner.plan(request);
+        };
+        self.request += 1;
+        backend.report(self.request, "planner-preflight");
+
+        let started = Instant::now();
+        let result = self.inner.plan(request);
+        println!(
+            "campaign_component_profile request={} nanoseconds={} succeeded={}",
+            self.request,
+            started.elapsed().as_nanos(),
+            result.is_ok(),
+        );
+        backend.report(self.request, "planner-component");
+        result
+    }
+}
+
+const MAX_PROFILE_READ_IDS: usize = 4_096;
 
 #[derive(Default, serde::Serialize)]
 struct Counts {
@@ -36,6 +80,7 @@ struct Counts {
 struct Measurements {
     operations: BTreeMap<String, Counts>,
     immutable_reads: BTreeMap<String, u64>,
+    unlisted_immutable_reads: u64,
     batch_sizes: BTreeMap<usize, u64>,
 }
 
@@ -101,13 +146,18 @@ impl ImmutableBlobBackend for ProfileBackend {
         let started = Instant::now();
         let handle = self.inner.read(id, range)?;
         self.record("open-read-handle", started, 0);
-        *self
-            .measured
-            .lock()
-            .expect("profile lock")
-            .immutable_reads
-            .entry(id.encode())
-            .or_default() += 1;
+        // Per-stage identities are diagnostic samples, never campaign truth.
+        // Keep the operation totals exact after the fixed identity cap fills.
+        let key = id.encode();
+        let mut measured = self.measured.lock().expect("profile lock");
+        if let Some(count) = measured.immutable_reads.get_mut(&key) {
+            *count += 1;
+        } else if measured.immutable_reads.len() < MAX_PROFILE_READ_IDS {
+            measured.immutable_reads.insert(key, 1);
+        } else {
+            measured.unlisted_immutable_reads += 1;
+        }
+        drop(measured);
 
         Ok(BlobHandle::new(Arc::new(ProfileSource {
             handle,

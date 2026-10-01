@@ -108,18 +108,18 @@ impl CampaignRepository {
             choice_index_order_key(opportunity),
             opportunity.content_id(),
         )?;
-        let graph = self.merkle.insert(
+        // Only the final graph is exposed by the successor snapshot. Publish
+        // its shared trie paths once rather than retaining intermediate roots.
+        let graph = self.merkle.insert_many(
             prior_graph,
-            authoritative_choice_key(opportunity),
-            opportunity.content_id(),
-        )?;
-        let graph = self
-            .merkle
-            .insert(graph.content_id(), choice_key, opportunity.content_id())?;
-        let graph = self.merkle.insert(
-            graph.content_id(),
-            choice_index_anchor_key(),
-            choice_index.content_id(),
+            &BTreeMap::from([
+                (
+                    authoritative_choice_key(opportunity),
+                    opportunity.content_id(),
+                ),
+                (choice_key, opportunity.content_id()),
+                (choice_index_anchor_key(), choice_index.content_id()),
+            ]),
         )?;
         let fact = CampaignFact::ChoiceOpportunityDiscovered {
             parent,
@@ -274,48 +274,38 @@ impl CampaignRepository {
         if request_content != request_id.content_id() {
             return Err(integrity("branch-request-publication-id-mismatch"));
         }
-        let mut exploration = self.merkle.insert(
-            current.snapshot.roots().exploration,
-            request_key,
-            request_content,
-        )?;
-        let published = self.branch_request_index_after(
+        let published_branch_index = self.branch_request_index_after(
             current.snapshot.roots().exploration,
             &indexed_requests,
             true,
         )?;
-        if published != projected_branch_request_index {
+        if published_branch_index != projected_branch_request_index {
             return Err(integrity("branch-request-index-publication-mismatch"));
         }
-        exploration = self.merkle.insert(
-            exploration.content_id(),
-            branch_request_index_anchor_key(),
-            published,
-        )?;
         let next_frontier = self.frontier_index_after(
             current.snapshot.roots().exploration,
             &[(request_id, request.branch_point(), initial_continuation)],
             true,
         )?;
-        exploration = self.merkle.insert(
-            exploration.content_id(),
-            frontier_index_anchor_key(),
-            next_frontier,
-        )?;
-
-        let published = self.planner_scan_index_after(
+        let published_scan_index = self.planner_scan_index_after(
             current.snapshot.roots().exploration,
             &scan_requests,
             None,
             true,
         )?;
-        if published != projected_scan_index {
+        if published_scan_index != projected_scan_index {
             return Err(integrity("planner-scan-index-publication-mismatch"));
         }
-        exploration = self.merkle.insert(
-            exploration.content_id(),
-            planner_scan_index_anchor_key(),
-            published,
+        // The independently checked nested indexes are the same owner delta;
+        // commit their outer paths together under the existing bounded batch.
+        let exploration = self.merkle.insert_many(
+            current.snapshot.roots().exploration,
+            &BTreeMap::from([
+                (request_key, request_content),
+                (branch_request_index_anchor_key(), published_branch_index),
+                (frontier_index_anchor_key(), next_frontier),
+                (planner_scan_index_anchor_key(), published_scan_index),
+            ]),
         )?;
 
         let fact = CampaignFact::BranchRequestAccepted {
