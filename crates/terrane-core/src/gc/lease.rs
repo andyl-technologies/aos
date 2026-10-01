@@ -170,7 +170,11 @@ impl GcLease {
     }
 }
 
-fn key(decoder: &mut Decoder<'_>, expected: u64) -> Result<(), GcError> {
+/// Checks the next canonical map key against its registered collector field.
+///
+/// # Errors
+/// Returns a CBOR error for an invalid integer or a schema error for another key.
+pub(super) fn key(decoder: &mut Decoder<'_>, expected: u64) -> Result<(), GcError> {
     if decoder.uint()? != expected {
         return Err(GcError::Schema);
     }
