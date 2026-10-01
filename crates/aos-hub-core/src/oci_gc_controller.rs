@@ -180,7 +180,7 @@ impl OciGcDeletionController {
             .map_err(|error| ProviderFailure::repair(error.into()))?;
         let deleter = self
             .writes
-            .frozen_placement_deleter(&access)
+            .claimed_placement_deleter(&access, claim)
             .await
             .map_err(ProviderFailure::repair)?;
         conditional_delete(

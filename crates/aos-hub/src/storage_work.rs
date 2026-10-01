@@ -53,6 +53,7 @@ mod binding_custody;
 
 pub use authority::StorageAuthorityControlSynchronization;
 mod control;
+mod external_delete;
 mod external_observation;
 mod frozen;
 mod frozen_head;
@@ -2601,6 +2602,18 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
             .binding(placement.binding_id)
             .await?
             .context("hybrid staging binding is missing")?;
+        if matches!(binding.kind.as_str(), "s3" | "r2") && !binding.is_instance_default {
+            return Ok(Box::new(
+                external_delete::ExternalProbeWriter::open(
+                    Arc::clone(&self.db),
+                    Arc::clone(&self.work),
+                    placement,
+                    &binding,
+                    revision,
+                )
+                .await?,
+            ));
+        }
         anyhow::ensure!(
             binding.kind == "deployment_r2" && binding.is_instance_default,
             "hybrid staging cleanup requires deployment R2"
@@ -2618,6 +2631,23 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         expected_binding_resource_version: i64,
         delete_credential_generation: i64,
     ) -> Result<Box<dyn SurfaceWrite>> {
+        let binding = self
+            .db
+            .binding(placement.binding_id)
+            .await?
+            .context("hybrid delete binding disappeared")?;
+        if !binding.is_instance_default {
+            return Ok(Box::new(
+                external_delete::ExternalCurrentDeleter::open(
+                    Arc::clone(&self.db),
+                    Arc::clone(&self.work),
+                    placement,
+                    expected_binding_resource_version,
+                    delete_credential_generation,
+                )
+                .await?,
+            ));
+        }
         anyhow::ensure!(
             delete_credential_generation == 1,
             "invalid deployment R2 delete generation"
@@ -2658,6 +2688,34 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         Ok(Box::new(
             frozen::FrozenR2Surface::open(Arc::clone(&self.db), Arc::clone(&self.work), access)
                 .await?,
+        ))
+    }
+
+    async fn claimed_placement_deleter(
+        &self,
+        access: &FrozenSurfaceAccess,
+        claim: &aos_hub_core::db::OciGcPlacementActionClaim,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(
+            *access == claim.frozen_access(),
+            "hybrid delete access differs from claim"
+        );
+        let binding = self
+            .db
+            .binding(access.binding_id)
+            .await?
+            .context("hybrid claimed delete binding disappeared")?;
+        if binding.kind == "deployment_r2" {
+            return self.frozen_placement_deleter(access).await;
+        }
+        Ok(Box::new(
+            external_delete::ExternalClaimDeleter::open(
+                Arc::clone(&self.db),
+                Arc::clone(&self.work),
+                access,
+                claim,
+            )
+            .await?,
         ))
     }
 }
@@ -2729,6 +2787,7 @@ impl SurfaceWrite for HybridR2MultipartWriter {
                 claim_id: claim_id.into(),
                 expected_etag: etag.clone(),
                 expected_size: u64::try_from(size)?,
+                delete_binding_write_revision: None,
                 expected_hash: expected.content_hash.clone(),
                 expected_provider_version: expected.expected_provider_version.clone(),
             },

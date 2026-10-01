@@ -30,6 +30,7 @@ pub(crate) fn is_path(path: &str) -> bool {
             | STORAGE_BINDING_ADOPTION_PATH
             | STORAGE_FROZEN_CLEANUP_CUSTODY_PATH
             | STORAGE_FROZEN_CLEANUP_CREDENTIAL_STAGE_PATH
+            | STORAGE_FROZEN_DELETE_CUSTODY_PATH
     )
 }
 

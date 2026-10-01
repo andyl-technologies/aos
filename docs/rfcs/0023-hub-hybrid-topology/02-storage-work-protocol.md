@@ -255,6 +255,35 @@ claim checks or positive observation of provider deletion semantics. Persistent
 pending mutations and terminal receipts still coordinate every visible writer
 for the same physical key.
 
+External S3 conditional deletion requires an actual non-null provider version,
+strong ETag and exact size. The version selector and `If-Match` header are both
+signed; ordinary current HEAD metadata must still match before DELETE. An
+identical ETag on another version cannot substitute for the reviewed version.
+Unversioned providers and external R2 endpoints without these semantics refuse
+this operation. Managed R2 keeps its existing guard-backed deletion protocol.
+
+The executor additionally selects an independently configured delete cohort
+from `HUB_EXTERNAL_OBJECT_CONSUMER` and its matching issuer installation from
+`HUB_EXTERNAL_DELETE_CONSUMER`. That latter closed configuration retains
+`versioned_conditional_delete_evidence_digest`; it grants no provider capability
+by itself. The existing renewal service and independent keys are required, with
+no automatic credential, binding or issuer creation. Used physical guard
+configuration remains immutable; adding a cohort cannot rewrite old journals.
+
+The capability probe uses only its reserved key and at most four KiB. Its
+negative case targets the current version with the previous ETag, so providers
+that ignore `If-Match` cannot pass through a HEAD-only check. Positive cleanup
+can remove the two exact probe versions, and must then observe absence. Hashing
+runs beside storage; Native receives metadata, never the probe read body.
+Read/write probe cohorts must separately cover these bounded operations.
+
+Frozen deletion uses the closed `frozen-delete-custody` wrapper over the existing
+SQL claim, adding its actual provider version. Exact terminal lookup precedes
+renewal or retained-material resolution. An unresolved turn rejects even a
+renewed claim; no timeout, HEAD, mismatch or transport retry clears it. Provider
+qualification remains a separate launch gate from these implementation and
+fixture contracts.
+
 ## Closed operation set
 
 The first protocol version has explicit operation families. Each has a schema,

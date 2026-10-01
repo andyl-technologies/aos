@@ -43,6 +43,10 @@ impl SecretVersionResolver for RetainedSecrets {
 }
 
 async fn fixture() -> Fixture {
+    fixture_with_inventory(false).await
+}
+
+async fn fixture_with_inventory(versioned: bool) -> Fixture {
     let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
     let pool = match &backend {
         SqlxBackend::Sqlite(pool) => pool.clone(),
@@ -236,8 +240,19 @@ async fn fixture() -> Fixture {
         expected_checkpoint_ordinal: 0,
         expected_provider_cursor: None,
         next_provider_cursor: None,
-        last_listed_key: None,
-        entries: Vec::new(),
+        last_listed_key: versioned.then(|| aos_hub_core::db::oci_blob_object_key(digest)),
+        entries: if versioned {
+            vec![aos_hub_core::db::OciProviderInventoryEntryInput {
+                object_key: aos_hub_core::db::oci_blob_object_key(digest),
+                object_digest: digest,
+                observed_hash: digest,
+                byte_size: 10,
+                strong_etag: "\"original\"".into(),
+                provider_version: Some("original-version".into()),
+            }]
+        } else {
+            Vec::new()
+        },
         now: now - 3,
         lease_seconds: 100,
     })
@@ -279,7 +294,7 @@ async fn fixture() -> Fixture {
         .await
         .unwrap()
         .unwrap();
-    assert!(!claim.inventory_entry_present);
+    assert_eq!(claim.inventory_entry_present, versioned);
 
     // Current credentials can advance without publishing this retained one.
     let rotated = db
@@ -308,6 +323,10 @@ async fn fixture() -> Fixture {
 
 #[derive(Clone, Copy)]
 enum Reply {
+    DeleteAcknowledged,
+    DeleteWrongVersion,
+    DeleteRevokeCredential,
+    DeleteLostReply,
     Absent,
     WrongFingerprint,
     RevokeCredential,
@@ -353,6 +372,29 @@ async fn worker(
                         }).unwrap();
                     assert!(!std::str::from_utf8(&signed.body).unwrap().contains("value_base64"));
                     return ([(STORAGE_WORK_SIGNATURE_HEADER, signed.signature)], signed.body);
+                }
+                if uri.path() == STORAGE_FROZEN_DELETE_CUSTODY_PATH {
+                    let request = verify_storage_frozen_delete_custody(&key, signature, &body,
+                        "deployment-1", aos_hub_core::clock::now_unix_secs()).unwrap();
+                    assert!(!std::str::from_utf8(&body).unwrap().contains("value_base64"));
+                    assert_eq!(request.claim.action_id, expected.action_id);
+                    assert_eq!(request.claim.claim_token, expected.claim_token);
+                    assert_eq!(request.claim.snapshot.credentials[0].generation, 1);
+                    assert_eq!(request.expected_provider_version, "original-version");
+                    assert_eq!(request.claim.operation, StorageFrozenCleanupOperation::DeleteIfMatches);
+                    count.fetch_add(1, Ordering::SeqCst);
+                    if matches!(reply, Reply::DeleteRevokeCredential) {
+                        sqlx::query("UPDATE binding_credential_revisions SET validation_state='invalid' WHERE binding_id=?1 AND purpose='delete' AND generation=1")
+                            .bind(expected.binding_id).execute(&pool).await.unwrap();
+                    }
+                    let provider_version = if matches!(reply, Reply::DeleteWrongVersion) { "replacement" } else { "original-version" };
+                    let response = StorageFrozenDeleteCustodyReply { request,
+                        outcome: aos_hub_core::storage_authority::external_object::ExternalObjectOutcome::DeleteAcknowledged {
+                            provider_version: provider_version.into(), etag: "\"original\"".into(),
+                        }, observed_at: aos_hub_core::clock::now_unix_secs() };
+                    let signed = sign_storage_frozen_delete_custody_reply(&key, &response).unwrap();
+                    let signature = if matches!(reply, Reply::DeleteLostReply) { "0".repeat(64) } else { signed.signature };
+                    return ([(STORAGE_WORK_SIGNATURE_HEADER, signature)], signed.body);
                 }
                 assert_eq!(uri.path(), STORAGE_FROZEN_CLEANUP_CUSTODY_PATH);
                 let request = verify_storage_frozen_cleanup_custody(
@@ -477,6 +519,7 @@ async fn worker(
         )
         .build()
         .unwrap();
+    client.semantic_observation_http = client.http.clone();
     (client, requests, task)
 }
 
@@ -734,4 +777,68 @@ async fn claimed_opener_authorizes_only_its_real_claim_key() {
         .is_err());
     assert_eq!(requests.load(Ordering::SeqCst), 1);
     task.abort();
+}
+
+#[tokio::test]
+async fn versioned_delete_uses_the_reviewed_frozen_claim_and_rejects_changed_receipts() {
+    use crate::storage_work::HybridSurfaceWrites;
+    use aos_hub_core::surface_write::SurfaceWriteProvider as _;
+    use aos_hub_core::surface_write::{
+        SurfaceDeleteOutcome, SurfaceDeletePrecondition,
+    };
+
+    for reply in [
+        Reply::DeleteAcknowledged,
+        Reply::DeleteWrongVersion,
+        Reply::DeleteRevokeCredential,
+        Reply::DeleteLostReply,
+    ] {
+        let fixture = fixture_with_inventory(true).await;
+        let (client, requests, task) = worker(&fixture, reply).await;
+        let client = Arc::new(client);
+        let writes = HybridSurfaceWrites::new(Arc::clone(&fixture.db), Arc::clone(&client));
+        let deleter = writes.claimed_placement_deleter(
+            &fixture.claim.frozen_access(),
+            &fixture.claim,
+        )
+        .await
+        .unwrap();
+        let expected = SurfaceDeletePrecondition {
+            etag: fixture.claim.expected_strong_etag.clone(),
+            content_hash: Some(fixture.claim.expected_hash.to_string()),
+            size: Some(i64::try_from(fixture.claim.expected_size).unwrap()),
+            expected_provider_version: fixture.claim.expected_provider_version.clone(),
+        };
+        let result = deleter
+            .delete_if_matches_claimed(
+                &fixture.claim.object_key,
+                &expected,
+                &fixture.claim.action_id,
+            )
+            .await;
+        if matches!(reply, Reply::DeleteAcknowledged) {
+            assert!(matches!(
+                result.unwrap(),
+                SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { .. }
+            ));
+        } else {
+            assert!(result.is_err());
+        }
+        // The only external call is signed metadata. There is no Native object
+        // body read, credential resolution, or retry after ambiguous admission.
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(deleter.delete(&fixture.claim.object_key).await.is_err());
+        let mut changed = expected;
+        changed.expected_provider_version = Some("replacement".into());
+        assert!(deleter
+            .delete_if_matches_claimed(
+                &fixture.claim.object_key,
+                &changed,
+                &fixture.claim.action_id
+            )
+            .await
+            .is_err());
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        task.abort();
+    }
 }

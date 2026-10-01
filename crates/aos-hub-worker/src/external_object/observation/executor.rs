@@ -203,6 +203,7 @@ pub(super) async fn execute_authorized(
     let object = match response.status_code() {
         404 => None,
         200 => Some(ExternalObjectHead {
+            provider_version: None,
             bytes: response
                 .headers()
                 .get("content-length")?

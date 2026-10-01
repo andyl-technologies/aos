@@ -1,4 +1,4 @@
-//! Exact archival delete material resolution for frozen cleanup HEAD claims.
+//! Exact archival delete material for frozen metadata and conditional cleanup.
 
 use super::{
     runtime::{credential_key, read, write, Outcome},
@@ -6,8 +6,9 @@ use super::{
 };
 use anyhow::{ensure, Result};
 use aos_hub_core::storage_work::{
-    binding_custody::*, StorageCredentialMaterial, StorageFrozenCleanupHeadResult,
-    StorageFrozenCleanupOperation, StorageWorkKey,
+    binding_custody::*, StorageBindingPublication, StorageCredentialMaterial,
+    StorageCredentialSelector, StorageFrozenCleanupHeadResult, StorageFrozenCleanupOperation,
+    StorageWorkKey, StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -93,14 +94,48 @@ pub(super) async fn handle(
         ));
     }
 
-    let challenge = verify_storage_frozen_cleanup_custody(&key, signature, body, &deployment, now)?;
+    let deletion = if path == STORAGE_FROZEN_DELETE_CUSTODY_PATH {
+        Some(verify_storage_frozen_delete_custody(
+            &key,
+            signature,
+            body,
+            &deployment,
+            now,
+        )?)
+    } else {
+        None
+    };
+    let challenge = match &deletion {
+        Some(request) => request.claim.clone(),
+        None => verify_storage_frozen_cleanup_custody(&key, signature, body, &deployment, now)?,
+    };
     ensure!(
         challenge.snapshot.binding_id == binding_id
-            && challenge.operation == StorageFrozenCleanupOperation::Head,
+            && challenge.operation
+                == if deletion.is_some() {
+                    StorageFrozenCleanupOperation::DeleteIfMatches
+                } else {
+                    StorageFrozenCleanupOperation::Head
+                },
         "frozen custody address or operation differs"
     );
     fence(storage, &challenge).await?;
-    crate::external_object::check_cleanup_ready(env, &challenge).await?;
+    if let Some(request) = &deletion {
+        // Positive historical receipt lookup precedes material retention and
+        // renewal. A held unknown original never receives another permit.
+        let plan = delete_plan(request)?;
+        let publication = StorageBindingPublication {
+            snapshot: challenge.snapshot.clone(),
+            materials: Vec::new(),
+        };
+        if let Some(result) =
+            crate::external_object::lookup_delete_plan(env, &plan, &publication).await?
+        {
+            return delete_reply(storage, &key, request, result.outcome).await;
+        }
+    } else {
+        crate::external_object::check_cleanup_ready(env, &challenge).await?;
+    }
     let record_key = credential_key(&challenge.snapshot, &challenge.snapshot.credentials[0])?;
     refuse_revoked(storage, &record_key).await?;
     let material = if let Some(mut held) = read::<HeldCredential>(storage, &record_key).await? {
@@ -138,6 +173,12 @@ pub(super) async fn handle(
         }
     };
     let physical = challenge.with_material(material, now)?;
+    if let Some(request) = &deletion {
+        let plan = delete_plan(request)?;
+        let result =
+            crate::external_object::execute_delete_plan(env, &plan, &physical.publication).await?;
+        return delete_reply(storage, &key, request, result.outcome).await;
+    }
     let encoded = zeroize::Zeroizing::new(serde_json::to_vec(&physical)?);
     let signature = key.sign_frozen_cleanup_body(&encoded)?;
     let grant = crate::hybrid_frozen_cleanup::FrozenCleanupHead::authorize(
@@ -172,6 +213,77 @@ pub(super) async fn handle(
         &StorageFrozenCleanupCustodyReply {
             request: challenge,
             result,
+            observed_at,
+        },
+    )?))
+}
+
+fn delete_plan(request: &StorageFrozenDeleteCustodyRequest) -> Result<StorageWorkPlan> {
+    let claim = &request.claim;
+    let snapshot = &claim.snapshot;
+    let plan = StorageWorkPlan {
+        version: 1,
+        plan_id: claim.request_id.clone(),
+        deployment_id: snapshot.deployment_id.clone(),
+        issued_at: claim.issued_at,
+        expires_at: claim.expires_at,
+        placement_id: claim.access.placement_id,
+        placement_resource_version: claim.access.placement_resource_version,
+        binding_id: snapshot.binding_id,
+        binding_resource_version: snapshot.binding_resource_version,
+        binding_kind: snapshot.binding_kind.clone(),
+        binding_snapshot_revision: Some(snapshot.revision()?),
+        credential_references: vec![StorageCredentialSelector {
+            purpose: "delete".into(),
+            generation: claim.access.delete_credential_generation,
+        }],
+        placement_prefix: claim.access.placement_prefix.clone(),
+        operation: StorageWorkOperation::DeleteIfMatches {
+            path: claim.path.clone(),
+            claim_id: claim.action_id.clone(),
+            expected_etag: claim
+                .expected_etag
+                .clone()
+                .ok_or_else(|| anyhow::anyhow!("frozen delete ETag absent"))?,
+            expected_size: claim.expected_size,
+            expected_hash: Some(claim.expected_hash.to_string()),
+            expected_provider_version: Some(request.expected_provider_version.clone()),
+            delete_binding_write_revision: Some(claim.access.binding_write_revision),
+        },
+    };
+    plan.validate(
+        &snapshot.deployment_id,
+        aos_hub_core::clock::now_unix_secs(),
+    )?;
+    Ok(plan)
+}
+
+async fn delete_reply(
+    storage: &Storage,
+    key: &StorageWorkKey,
+    request: &StorageFrozenDeleteCustodyRequest,
+    outcome: StorageWorkOutcome,
+) -> Result<Outcome> {
+    use aos_hub_core::storage_authority::external_object::ExternalObjectOutcome;
+    let outcome = match outcome {
+        StorageWorkOutcome::ObjectDeleted { etag } => ExternalObjectOutcome::DeleteAcknowledged {
+            provider_version: request.expected_provider_version.clone(),
+            etag,
+        },
+        StorageWorkOutcome::NotFound => ExternalObjectOutcome::DeleteAbsent,
+        StorageWorkOutcome::DeletePreconditionFailed => {
+            ExternalObjectOutcome::DeletePreconditionFailed
+        }
+        _ => anyhow::bail!("frozen delete returned another effect"),
+    };
+    let observed_at = aos_hub_core::clock::now_unix_secs();
+    request.validate(&request.claim.snapshot.deployment_id, observed_at)?;
+    write(storage, "credential-custody/clock/v1", &observed_at).await?;
+    Ok(Outcome::Reply(sign_storage_frozen_delete_custody_reply(
+        key,
+        &StorageFrozenDeleteCustodyReply {
+            request: request.clone(),
+            outcome,
             observed_at,
         },
     )?))

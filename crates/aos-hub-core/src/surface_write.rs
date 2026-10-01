@@ -285,6 +285,15 @@ pub fn md5_multipart_etag(parts: &[PartTag]) -> Result<Option<String>> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWrite: BackendBounds {
+    /// Requires an actual provider version for this adapter's conditional deletes.
+    ///
+    /// This constraint grants no capability. Probes must reject unsupported
+    /// provider metadata before dispatch; other adapters retain their existing
+    /// conditional ETag/guard semantics.
+    fn conditional_delete_requires_provider_version(&self) -> bool {
+        false
+    }
+
     /// Reports the exact multipart protocol version implemented by this backend.
     ///
     /// Callers must check this capability before creating a durable ticket or
@@ -602,6 +611,25 @@ pub trait SurfaceWriteProvider: BackendBounds {
     ) -> Result<Box<dyn SurfaceWrite>> {
         let _ = access;
         anyhow::bail!("this provider does not support frozen conditional deletion")
+    }
+
+    /// Builds a frozen deleter with its genuine live OCI cleanup claim.
+    ///
+    /// Remote adapters use the opaque claim token for metadata-only retained
+    /// credential custody. Other providers retain their existing frozen path.
+    ///
+    /// # Errors
+    /// Returns an error for changed access/claim scope or unavailable exact IO.
+    async fn claimed_placement_deleter(
+        &self,
+        access: &FrozenSurfaceAccess,
+        claim: &crate::db::OciGcPlacementActionClaim,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(
+            *access == claim.frozen_access(),
+            "delete access differs from claim"
+        );
+        self.frozen_placement_deleter(access).await
     }
 }
 

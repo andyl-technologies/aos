@@ -516,3 +516,6 @@ pub fn verify_storage_binding_adoption_reply(
 
 #[cfg(test)]
 mod tests;
+
+mod deletion;
+pub use deletion::*;

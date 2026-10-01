@@ -20,6 +20,9 @@ use crate::storage_work::{StorageWorkKey, StorageWorkOperation, StorageWorkPlan}
 /// Exact delegated-stage and server-owned external multipart controls.
 pub mod stage;
 
+/// Exact provider-incarnation commitments for conditional deletion.
+pub mod deletion;
+
 /// Metadata-only guarded HEAD intervals and explicitly historical replay.
 pub mod observation;
 
@@ -175,10 +178,25 @@ impl ExternalObjectRequest {
         ensure!(
             matches!(
                 self.plan.operation,
-                StorageWorkOperation::PutMetadata { .. } | StorageWorkOperation::Head { .. }
+                StorageWorkOperation::PutMetadata { .. }
+                    | StorageWorkOperation::PutProbe { .. }
+                    | StorageWorkOperation::Head { .. }
+                    | StorageWorkOperation::DeleteIfMatches { .. }
+                    | StorageWorkOperation::InspectSha256 { .. }
             ) && self.plan.binding_kind != "deployment_r2",
             "unsupported external object operation"
         );
+        if let StorageWorkOperation::InspectSha256 {
+            path,
+            max_source_bytes,
+            ..
+        } = &self.plan.operation
+        {
+            ensure!(
+                crate::storage_work::admitted_probe_path(path) && *max_source_bytes <= 4096,
+                "compact external inspection is restricted to bounded reserved probes"
+            );
+        }
         Ok(())
     }
 }
@@ -208,6 +226,24 @@ pub enum ExternalObjectOutcome {
         /// None denotes this turn's exact provider HEAD 404, not write settlement.
         object: Option<ExternalObjectHead>,
     },
+    /// Positive conditional DELETE acknowledgement for the retained version.
+    DeleteAcknowledged {
+        /// Exact actual provider version acknowledged by the provider.
+        provider_version: String,
+        /// Exact entity tag signed into the conditional request.
+        etag: String,
+    },
+    /// Positive absence observation for the exact retained deletion turn.
+    DeleteAbsent,
+    /// The provider refused the exact version/entity-tag precondition.
+    DeletePreconditionFailed,
+    /// Exact bounded reserved-probe bytes hashed beside storage.
+    ProbeEvidence {
+        /// Actual provider metadata for the returned body snapshot.
+        object: ExternalObjectHead,
+        /// SHA-256 of the complete bounded body, without returning those bytes.
+        sha256: String,
+    },
 }
 
 /// Bounded provider metadata from one historical HEAD turn.
@@ -218,4 +254,7 @@ pub struct ExternalObjectHead {
     pub bytes: String,
     /// Exact strong ETag returned by that HEAD; it is not an incarnation stamp.
     pub etag: String,
+    /// Actual immutable provider version, absent on historical nonversioned heads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
 }

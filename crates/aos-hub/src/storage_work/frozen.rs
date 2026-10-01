@@ -168,6 +168,7 @@ impl SurfaceWrite for FrozenR2Surface {
                 claim_id: claim_id.into(),
                 expected_etag: etag.clone(),
                 expected_size: u64::try_from(size)?,
+                delete_binding_write_revision: None,
                 expected_hash: expected.content_hash.clone(),
                 expected_provider_version: expected.expected_provider_version.clone(),
             })

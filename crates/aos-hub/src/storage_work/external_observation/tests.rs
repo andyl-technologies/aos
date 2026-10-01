@@ -90,6 +90,7 @@ async fn server(
                     guard_stamp: stamp,
                     observed_at: aos_hub_core::clock::now_unix_secs().to_string(),
                     object: Some(ExternalObjectHead {
+                        provider_version: None,
                         bytes: "9007199254740993".into(),
                         etag: "\"exact-provider-etag\"".into(),
                     }),

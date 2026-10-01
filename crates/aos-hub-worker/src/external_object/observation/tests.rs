@@ -24,6 +24,7 @@ fn observation(turn: super::protocol::Pending) -> Receipt {
             guard_stamp: turn.stamp.clone(),
             observed_at: "102".into(),
             object: Some(ExternalObjectHead {
+                        provider_version: None,
                 bytes: "3".into(),
                 etag: "\"object\"".into(),
             }),

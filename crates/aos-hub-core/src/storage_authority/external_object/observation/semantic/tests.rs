@@ -20,6 +20,7 @@ fn observation(request: &SemanticExternalObservationRequest) -> ExternalObservat
         guard_stamp: request.expected_guard_stamp.clone(),
         observed_at: "101".into(),
         object: Some(ExternalObjectHead {
+                        provider_version: None,
             bytes: "9007199254740993".into(),
             etag: "\"exact-object\"".into(),
         }),

@@ -40,8 +40,18 @@ pub(super) struct Intent {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum Effect {
-    Put { sha256: String, bytes: u32 },
+    Put {
+        sha256: String,
+        bytes: u32,
+    },
     Head,
+    ProbeHash {
+        maximum_bytes: u32,
+    },
+    Delete {
+        expected:
+            aos_hub_core::storage_authority::external_object::deletion::ExternalDeletePrecondition,
+    },
 }
 
 impl Effect {
@@ -49,6 +59,8 @@ impl Effect {
         match self {
             Self::Put { .. } => LeaseEffect::Put,
             Self::Head => LeaseEffect::Head,
+            Self::ProbeHash { .. } => LeaseEffect::Read,
+            Self::Delete { .. } => LeaseEffect::ConditionalDelete,
         }
     }
 }
@@ -67,6 +79,15 @@ impl Intent {
                 digest_string(sha256)
                     && *bytes as usize <= aos_hub_core::storage_work::MAX_METADATA_BYTES,
                 "invalid metadata commitment"
+            );
+        }
+        if let Effect::Delete { expected } = &self.effect {
+            expected.validate()?;
+        }
+        if let Effect::ProbeHash { maximum_bytes } = self.effect {
+            ensure!(
+                (1..=4096).contains(&maximum_bytes),
+                "reserved probe hash bound invalid"
             );
         }
         Ok(())
@@ -108,8 +129,38 @@ impl Receipt {
                         "invalid historical size"
                     );
                     ensure!(value.etag.len() <= 1024, "oversized historical ETag");
+                    ensure!(
+                        value
+                            .provider_version
+                            .as_deref()
+                            .is_none_or(aos_hub_core::storage_work::valid_provider_version),
+                        "invalid provider version"
+                    );
                     aos_hub_core::surface_write::strong_if_match_etag(&value.etag)?;
                 }
+            }
+            (
+                Effect::Delete { expected },
+                Outcome::DeleteAcknowledged {
+                    provider_version,
+                    etag,
+                },
+            ) => {
+                ensure!(
+                    *provider_version == expected.provider_version && *etag == expected.etag,
+                    "provider acknowledged another deletion incarnation"
+                );
+            }
+            (Effect::Delete { .. }, Outcome::DeleteAbsent | Outcome::DeletePreconditionFailed) => {}
+            (Effect::ProbeHash { maximum_bytes }, Outcome::ProbeEvidence { object, sha256 }) => {
+                ensure!(
+                    digest_string(sha256)
+                        && object.bytes.parse::<u32>()?.to_string() == object.bytes
+                        && object.bytes.parse::<u32>()? <= *maximum_bytes
+                        && object.provider_version.as_deref().is_none_or(aos_hub_core::storage_work::valid_provider_version),
+                    "reserved probe snapshot identity invalid"
+                );
+                aos_hub_core::surface_write::strong_if_match_etag(&object.etag)?;
             }
             _ => anyhow::bail!("terminal outcome differs from turn"),
         }
@@ -132,6 +183,7 @@ pub(super) struct GuardRequest {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum GuardOperation {
+    Lookup { intent: Intent },
     Begin { intent: Intent, lease: String },
     Terminal { receipt: Receipt },
 }
@@ -139,6 +191,7 @@ pub(super) enum GuardOperation {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum GuardReply {
+    Unseen,
     Dispatch {
         turn: Pending,
         floor: EpochLeaseFloor,

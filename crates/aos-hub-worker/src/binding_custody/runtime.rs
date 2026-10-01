@@ -61,6 +61,11 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
             verify_storage_frozen_cleanup_custody(&key, &signature, &body, &deployment, now)?
                 .snapshot
                 .binding_id
+        } else if path == STORAGE_FROZEN_DELETE_CUSTODY_PATH {
+            verify_storage_frozen_delete_custody(&key, &signature, &body, &deployment, now)?
+                .claim
+                .snapshot
+                .binding_id
         } else if path == STORAGE_FROZEN_CLEANUP_CREDENTIAL_STAGE_PATH {
             verify_storage_frozen_cleanup_credential_stage(
                 &key,
@@ -336,7 +341,9 @@ pub(crate) async fn handle(
                 publication,
             })
         }
-        STORAGE_FROZEN_CLEANUP_CUSTODY_PATH | STORAGE_FROZEN_CLEANUP_CREDENTIAL_STAGE_PATH => {
+        STORAGE_FROZEN_CLEANUP_CUSTODY_PATH
+        | STORAGE_FROZEN_CLEANUP_CREDENTIAL_STAGE_PATH
+        | STORAGE_FROZEN_DELETE_CUSTODY_PATH => {
             super::frozen::handle(
                 request.url()?.path(),
                 &body,

@@ -8,6 +8,40 @@ use crate::sigv4::{DirectPartCopySource, DirectSignedProviderRequest, PresignPar
 use super::S3Surface;
 
 impl S3Surface {
+    /// Signs metadata observation of one exact external provider version.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid path/version, expired material or signing failure.
+    pub fn versioned_head_url(
+        &self,
+        path: &str,
+        provider_version: &str,
+        now: i64,
+        maximum_ttl: u32,
+    ) -> Result<String> {
+        self.with_direct_params(path, now, maximum_ttl, |params| {
+            crate::sigv4::presign_versioned_head(params, provider_version)
+        })
+    }
+
+    /// Signs one conditional DELETE of the reviewed immutable provider version.
+    ///
+    /// # Errors
+    /// Returns an error for unsafe coordinates, public access, invalid version,
+    /// entity tag, clock, lifetime, or signing failure.
+    pub fn versioned_conditional_delete_url(
+        &self,
+        path: &str,
+        provider_version: &str,
+        etag: &str,
+        now: i64,
+        maximum_ttl: u32,
+    ) -> Result<String> {
+        self.with_direct_params(path, now, maximum_ttl, |params| {
+            crate::sigv4::presign_versioned_conditional_delete(params, provider_version, etag)
+        })
+    }
+
     /// Signs exact private-stage UploadPart with negotiated length/checksum.
     ///
     /// # Errors

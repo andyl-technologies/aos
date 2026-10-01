@@ -125,6 +125,26 @@ impl ExternalObjectGuard {
         let storage = self.state.storage();
         let prior = load_head(&storage).await?;
         match message.operation {
+            GuardOperation::Lookup { intent } => {
+                ensure!(intent.scope == message.scope, "lookup scope differs");
+                intent.validate()?;
+                let existing = load_receipt(&storage, &intent.operation_id).await?;
+                match &prior {
+                    Some(head) => {
+                        head.validate(&config, &message.scope)?;
+                        if let Some(receipt) = existing {
+                            ensure!(receipt.turn.intent == intent, "lookup original changed");
+                            return Ok(GuardReply::Terminal { receipt });
+                        }
+                        head.require_cleanup_ready()?;
+                        Ok(GuardReply::Unseen)
+                    }
+                    None => {
+                        ensure!(existing.is_none(), "receipt without retained head");
+                        Ok(GuardReply::Unseen)
+                    }
+                }
+            }
             GuardOperation::Begin { intent, lease } => {
                 crate::direct_guard::deny_legacy(&storage).await?;
                 ensure!(intent.scope == message.scope, "begin scope differs");

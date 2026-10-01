@@ -8,6 +8,8 @@
 //! No domain is enabled by this module or by its local fault fixture.
 
 mod config;
+mod delete_config;
+mod deletion;
 mod observation;
 mod protocol;
 mod stage;
@@ -16,14 +18,16 @@ mod state;
 #[cfg(target_arch = "wasm32")]
 mod executor;
 #[cfg(target_arch = "wasm32")]
-mod storage;
-#[cfg(target_arch = "wasm32")]
 mod frozen;
+#[cfg(target_arch = "wasm32")]
+mod storage;
 #[cfg(target_arch = "wasm32")]
 pub(crate) use frozen::check_cleanup_ready;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use executor::{deny_legacy, fetch, PATH};
+#[cfg(target_arch = "wasm32")]
+pub(crate) use executor::{execute_delete_plan, execute_probe_plan, lookup_delete_plan};
 #[cfg(target_arch = "wasm32")]
 pub(crate) use observation::fetch as fetch_observation;
 #[cfg(target_arch = "wasm32")]
@@ -49,6 +53,6 @@ pub(crate) use stage::{
 };
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
 mod frozen_tests;
+#[cfg(test)]
+mod tests;

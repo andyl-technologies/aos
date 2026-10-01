@@ -77,6 +77,24 @@ pub(crate) async fn execute_external_storage_work(
     plan: &StorageWorkPlan,
     publication: &StorageBindingPublication,
 ) -> Result<Option<StorageWorkResult>> {
+    if matches!(plan.operation, StorageWorkOperation::DeleteIfMatches { .. }) {
+        return crate::external_object::execute_delete_plan(env, plan, publication)
+            .await
+            .map(Some);
+    }
+    let probe = match &plan.operation {
+        StorageWorkOperation::PutProbe { path, .. }
+        | StorageWorkOperation::Head { path }
+        | StorageWorkOperation::InspectSha256 { path, .. } => {
+            aos_hub_core::storage_work::admitted_probe_path(path)
+        }
+        _ => false,
+    };
+    if probe {
+        return crate::external_object::execute_probe_plan(env, plan, publication)
+            .await
+            .map(Some);
+    }
     crate::external_object::deny_legacy(env, &publication.snapshot)?;
     let now = aos_hub_core::clock::now_unix_secs();
     let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
@@ -747,6 +765,7 @@ pub(crate) async fn execute_r2_storage_work(
             expected_size,
             expected_hash,
             expected_provider_version,
+            ..
         } => {
             let object_key = plan.object_key(path)?;
             let claim = crate::hybrid_object::DeleteClaim {

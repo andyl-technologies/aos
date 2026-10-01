@@ -119,6 +119,7 @@ fn deletion(path: &str, claim: &str, object: &StorageObjectIdentity) -> StorageW
         claim_id: claim.into(),
         expected_etag: object.etag.clone(),
         expected_size: object.size,
+        delete_binding_write_revision: None,
         expected_hash: None,
         expected_provider_version: object.provider_version.clone(),
     }

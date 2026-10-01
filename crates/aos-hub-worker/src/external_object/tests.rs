@@ -244,6 +244,11 @@ pub(super) fn receipt(head: &Head) -> Receipt {
     let outcome = match turn.intent.effect {
         Effect::Put { .. } => Outcome::PutAcknowledged,
         Effect::Head => Outcome::HistoricalHead { object: None },
+        Effect::Delete { ref expected } => Outcome::DeleteAcknowledged {
+            provider_version: expected.provider_version.clone(),
+            etag: expected.etag.clone(),
+        },
+        Effect::ProbeHash { .. } => panic!("hash probes need actual bounded evidence"),
     };
     Receipt { turn, outcome }
 }

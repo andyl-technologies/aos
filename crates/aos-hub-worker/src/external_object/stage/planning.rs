@@ -409,8 +409,37 @@ async fn acquire_lease(
     domain: &Domain,
     cohort: &LeaseCohort,
 ) -> Result<String> {
+    acquire_configured_lease(
+        env,
+        object,
+        &domain.issuer_installation,
+        cohort,
+        &domain.staging_prefix,
+    )
+    .await
+}
+
+/// Acquires only an independently configured cohort's existing issuer lease.
+///
+/// # Errors
+/// Returns an error for changed installation/cohort pins, missing renewal
+/// authority, or an issuer reply that fails exact signature/time validation.
+pub(in crate::external_object) async fn acquire_configured_lease(
+    env: &Env,
+    object: &ObjectConfig,
+    installation: &aos_hub_core::storage_authority::lease::control::IssuerInstallation,
+    cohort: &LeaseCohort,
+    cache_prefix: &str,
+) -> Result<String> {
+    installation.validate()?;
+    ensure!(
+        installation.authority == cohort.authority
+            && installation.executor_identity == object.executor_identity,
+        "renewal cohort is not independently configured"
+    );
     let cache_key = digest(&(
-        domain,
+        installation,
+        cache_prefix,
         &object.issuer_key_id,
         &object.issuer_public_key,
         &object.timing_profile,
@@ -448,7 +477,7 @@ async fn acquire_lease(
     let now = object.clock().observed_at;
     let request = IssuerRequest {
         protocol_version: 1,
-        installation: domain.issuer_installation.clone(),
+        installation: installation.clone(),
         nonce: hex::encode(nonce),
         issued_at: LeaseInteger::new(now)?,
         expires_at: LeaseInteger::new(
@@ -463,7 +492,7 @@ async fn acquire_lease(
             )?,
         },
     };
-    request.validate(&domain.issuer_installation, now)?;
+    request.validate(installation, now)?;
     let body = serde_json::to_vec(&request)?;
     ensure!(
         body.len() <= MAX_ISSUER_REPLY,
@@ -473,7 +502,9 @@ async fn acquire_lease(
     ensure!(
         renewal != env.secret("HUB_STORAGE_WORK_KEY")?.to_string()
             && renewal != env.secret("HUB_EXTERNAL_OBJECT_GUARD_KEY")?.to_string()
-            && renewal != env.secret("HUB_EXTERNAL_STAGE_KEY")?.to_string(),
+            && env
+                .secret("HUB_EXTERNAL_STAGE_KEY")
+                .map_or(true, |key| renewal != key.to_string()),
         "issuer renewal key must be independent"
     );
     let signature = sign_issuer_request(&StorageWorkKey::new(renewal)?, &body)?;
@@ -494,7 +525,7 @@ async fn acquire_lease(
     let verifier = object.verifier()?;
     let reply = verify_issuer_reply_at_time(&verifier, &request, &bytes, || Ok(object.clock()))?;
     ensure!(
-        reply.installation == domain.issuer_installation
+        reply.installation == *installation
             && reply.current.journal.policy.timing_profile == object.timing_profile,
         "issuer renewal policy differs from independent configuration"
     );
@@ -503,7 +534,11 @@ async fn acquire_lease(
         .ok_or_else(|| anyhow::anyhow!("issuer omitted requested lease"))?;
     // This temporary verifier floor establishes cache eligibility only. Every
     // real effect still validates against its permanent addressed guard floor.
-    let cache_scope = format!("{}/lease-cache-probe", domain.staging_prefix);
+    let cache_scope = if cache_prefix.is_empty() {
+        "lease-cache-probe".to_owned()
+    } else {
+        format!("{cache_prefix}/lease-cache-probe")
+    };
     let cache_floor = EpochLeaseFloor::initialize_fresh_guard(
         cohort.authority.clone(),
         object.executor_identity.clone(),

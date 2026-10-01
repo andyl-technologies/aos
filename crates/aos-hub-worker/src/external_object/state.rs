@@ -321,6 +321,15 @@ impl Head {
                 stage_configuration: None,
             });
         }
+        if matches!(
+            receipt.outcome,
+            super::protocol::Outcome::DeleteAcknowledged { .. }
+                | super::protocol::Outcome::DeleteAbsent
+        ) {
+            // Keep all historical receipts, but an acknowledged deletion can
+            // no longer provide a current positive observation pointer.
+            next.visible_receipt = None;
+        }
         Ok(next)
     }
 }
