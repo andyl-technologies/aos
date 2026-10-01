@@ -31,7 +31,7 @@ let
     (artifact "policy" (source (repo + "/pkgs/system/_aos-host-policy")))
     // {
       moduleDeps = [kmod tunables lower (artifact "service-management" (source (repo + "/pkgs/system/_service-management")))];
-    runtimeDeps = [(artifact "ca-certificates" null)];
+      runtimeDeps = map (name: artifact name null) ["ca-certificates" "coreutils" "bash"];
     };
   serviceSource = source (repo + "/pkgs/system/_service-management");
   operatorSource = builtins.toFile "platform-operator-policy.nix" ''
@@ -42,6 +42,20 @@ let
       ];
       options.aos.security.ebpfLsm.enable = lib.mkOption {type=lib.types.bool;default=false;};
       aos.abilities.configuration.operations.file.handler.program = {type="derivation";outPath="${program.outPath}";meta.mainProgram="handler";};
+      aos.users.groups.operator = {
+        gid = 1000;
+        members = [];
+      };
+      aos.users.users.operator = {
+        uid = 1000;
+        group = "operator";
+      };
+
+      aos.abilities.identity.operations.group.handler.program = {type="derivation";outPath="${program.outPath}";meta.mainProgram="handler";};
+      aos.abilities.identity.operations.principal.handler.program = {type="derivation";outPath="${program.outPath}";meta.mainProgram="handler";};
+      aos.abilities.identity.operations.membership.handler.program = {type="derivation";outPath="${program.outPath}";meta.mainProgram="handler";};
+      aos.abilities.serviceManagement.operations.realize.handler.program = {type="derivation";outPath="${program.outPath}";meta.mainProgram="handler";};
+      aos.abilities.mount.operations.ensure.handler.program = {type="derivation";outPath="${program.outPath}";meta.mainProgram="handler";};
       aos.abilities.network.operations.configure.handler.program = {type="derivation";outPath="${program.outPath}";meta.mainProgram="handler";};
     }
   '';
@@ -81,6 +95,10 @@ let
     };
     modules = [(repo + "/lib/effects/module.nix") (repo + "/modules/base/kernel.nix") (repo + "/modules/base/networking.nix") {aos.activation.scope = ["profile" "fixture"];}];
   };
+  identities = runtime.config.aos.abilities.identity.operations;
+  operatorPrincipal = identities.principal.effects.host-user-operator;
+  operatorGroup = identities.group.effects.host-group-operator;
+  fileEffects = builtins.attrValues runtime.config.aos.abilities.configuration.operations.file.effects;
 in
   assert runtime.config.aos.activation.graph == image.config.aos.activation.graph;
   assert builtins.length runtime.config.aos.activation.graph.order >= 5;
@@ -88,6 +106,7 @@ in
   == [
     "pki/tls/certs/ca-bundle.crt"
     "profile"
+    "profile.d/10-apm-path.sh"
     "security/limits.d/aos-hardening.conf"
     "ssl/certs/ca-bundle.crt"
     "ssl/certs/ca-certificates.crt"
@@ -97,4 +116,13 @@ in
   # generated Nix, even though recording its leaves requires a traversal.
   assert builtins.isString (builtins.head treeAdditions.packages).drvPath;
   assert treeAdditions.configuration == [];
+
+  assert identities.principal.effects.host-user-root.input.allocation == "existing";
+  assert operatorPrincipal.lifetime == "persistent";
+  assert operatorGroup.input.requested_id == 1000;
+  assert operatorPrincipal.input.requested_id == 1000;
+  assert operatorPrincipal.input.primary_group == operatorGroup.outputs.name;
+
+  # Account updates must preserve identities owned by independently selected packages.
+  assert builtins.all (effect: !(builtins.elem effect.input.path ["/etc/passwd" "/etc/group" "/etc/shadow"])) fileEffects;
   assert runtime.config.aos.kernel.sysctl."net.core.wmem_max" == "9000000"; true

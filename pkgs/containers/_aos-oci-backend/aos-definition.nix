@@ -10,13 +10,14 @@
   evidenceOverrides ? [],
   platform,
 }: let
-  coreRoots = [pkgs.glibc pkgs.gcc-libs pkgs.ca-certificates];
+  coreRoots = [pkgs.glibc pkgs.glibc-tools pkgs.glibc-locales pkgs.gcc-libs pkgs.ca-certificates];
+  shellRoots = [pkgs.bash pkgs.coreutils pkgs.findutils pkgs.grep pkgs.sed pkgs.gawk];
   # The CLI is intentionally split into independently portable outputs.  Keep
   # all three commands in the image closure and expose their canonical names
   # explicitly; the server login profile is not the authority for the base
   # image's documented command surface.
   cliRoots = [pkgs.aos pkgs.aos.apm pkgs.aos.apr];
-  packageRoots = lib.uniqueBy builtins.toString (coreRoots ++ systemPackageSlice ++ cliRoots);
+  packageRoots = lib.uniqueBy builtins.toString (coreRoots ++ shellRoots ++ systemPackageSlice ++ cliRoots);
 in {
   config = {
     name = "aos";
@@ -31,13 +32,13 @@ in {
       }
       {
         name = "system-userland";
-        roots = systemPackageSlice;
+        roots = lib.uniqueBy builtins.toString (shellRoots ++ systemPackageSlice);
         subtractRoots = coreRoots;
       }
       {
         name = "aos-cli";
         roots = cliRoots;
-        subtractRoots = coreRoots ++ systemPackageSlice;
+        subtractRoots = coreRoots ++ shellRoots ++ systemPackageSlice;
       }
     ];
 
@@ -109,6 +110,10 @@ in {
           path = "/tmp";
           mode = "1777";
         }
+        {
+          path = "/var/tmp";
+          mode = "1777";
+        }
         {path = "/work";}
         {
           path = "/var/cache/apm";
@@ -127,7 +132,7 @@ in {
 
     runtime = {
       entrypoint = ["/usr/bin/aos-container-init"];
-      command = ["/usr/bin/aos" "--help"];
+      command = ["/bin/bash"];
       environment = {
         AOS_RUNTIME = "container";
         HOME = "/root";
@@ -137,6 +142,8 @@ in {
         XDG_DATA_HOME = "/root/.local/share";
         XDG_STATE_HOME = "/root/.local/state";
         NIX_REMOTE = "local";
+        LANG = "C.UTF-8";
+        LOCPATH = "${pkgs.glibc-locales}/lib/locale";
         SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
         NIX_SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt";
         PATH = "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";

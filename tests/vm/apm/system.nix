@@ -362,7 +362,7 @@
   # Preamble for headless system tests.
   # These tests use rootfsDeps mode, where the test script is PID 1 and the
   # stage-2 aos-nix-db.service never runs. The headless rootfs still ships
-  # /aos-registration, so load that stream explicitly after setting up Nix's
+  # /usr/lib/aos/nix-registration, so load that stream explicitly after setting up Nix's
   # runtime library path.
   # nix-store needs its runtime libraries (RPATH doesn't cover all deps yet)
   nixLibPath = builtins.concatStringsSep ":" (map (p: "${p}/lib") [
@@ -425,7 +425,7 @@
         # Nix DB from the same registration stream full images load at boot.
         export NIX_REMOTE=""
         nix-store --init || true
-        nix-store --load-db < /aos-registration
+        nix-store --load-db < /usr/lib/aos/nix-registration
         mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
         if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
           ${pkgs.util-linux}/bin/mount --bind \
@@ -445,7 +445,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
     mkdir -p /var/lib/profiles /nix/var/nix/gcroots/aos-profiles
     if ! ${pkgs.util-linux}/bin/mountpoint -q /nix/var/nix/gcroots/aos-profiles; then
       ${pkgs.util-linux}/bin/mount --bind \

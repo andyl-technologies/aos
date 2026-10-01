@@ -8,6 +8,7 @@ import sys
 import tempfile
 import tomllib
 import unittest
+from unittest.mock import patch
 
 
 handler_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_systemd-abilities/service-handler.py"
@@ -41,6 +42,85 @@ class NativeHandlerTests(unittest.TestCase):
         rendered = handler_module.realize_service(service())["units"]["example.service"]
         self.assertIn('"a b" "$$USER" "%%i"', rendered)
         self.assertIn("Restart=on-failure", rendered)
+
+    def test_temporary_parent_mask_preserves_explicit_child_bind(self):
+        value = service()
+        value["isolation"] = {
+            "privilege": "unprivileged", "network": "host", "temporary_directory": "shared",
+            "filesystem": "read-only-system", "home_access": "inaccessible",
+            "process_visibility": "host", "termination_scope": "all-processes",
+            "permit_core_dumps": False, "devices": [],
+            "host_paths": [{"source": "/var/lib/coordinator/fitness", "mode": "read-write"}],
+            "temporary_filesystems": [{"path": "/var/lib/coordinator", "read_only": True}],
+        }
+        rendered = handler_module.realize_service(value)["units"]["example.service"]
+        self.assertIn('TemporaryFileSystem="/var/lib/coordinator:ro"', rendered)
+        self.assertIn('BindPaths="/var/lib/coordinator/fitness"', rendered)
+
+    def test_daemon_scheduling_and_socket_directory_are_rendered(self):
+        value = service()
+        value["resources"] = {"resource_group": "aos-pkg-example-builds"}
+        value["scheduling"] = {"cpu_policy": "batch", "nice": 0, "io_class": "best-effort", "io_priority": 5}
+        value["socket_activation"] = {"sockets": [{
+            "name": "daemon", "enabled": True, "endpoints": [],
+            "mode": "0666", "directory_mode": "0755", "prerequisites": ["policy"], "remove_on_stop": True,
+        }]}
+        units = handler_module.realize_service(value)["units"]
+        self.assertIn("Slice=aos-pkg-example-builds.slice", units["example.service"])
+        self.assertIn("CPUSchedulingPolicy=batch", units["example.service"])
+        socket = next(text for name, text in units.items() if name.endswith(".socket"))
+        self.assertIn("DirectoryMode=0755", socket)
+        self.assertIn("Requires=policy.service", socket)
+
+    def test_resource_group_cannot_escape_owning_package(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["resources"] = {"resource_group": "aos-pkg-foreign-builds"}
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            with self.assertRaisesRegex(ValueError, "owning package"):
+                instance.service("apply")
+
+    def test_removal_guard_refusal_preserves_service_and_receipt(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"]["removal_guard"] = [{
+                "executable": {"path": "/nix/store/control/bin/control", "arguments": ["drained"]},
+                "ignore_failure": False,
+            }]
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            calls = []
+            instance.manager = lambda *args, **kwargs: (calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""))
+            with patch.object(handler_module.subprocess, "run") as guard:
+                instance.service("apply")
+                guard.assert_not_called()
+                before = dict(instance.receipt)
+                calls.clear()
+                guard.return_value = subprocess.CompletedProcess([], 1, "", "workers remain")
+                with self.assertRaisesRegex(ValueError, "workers remain"):
+                    instance.service("remove")
+                self.assertEqual(instance.receipt, before)
+                self.assertTrue((Path(root) / "example.service").exists())
+                self.assertEqual(calls, [])
+
+    def test_disabling_service_stops_listener_without_removal_guard(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = service()
+            value["lifecycle"]["removal_guard"] = [{
+                "executable": {"path": "/nix/store/control/bin/control", "arguments": ["drained"]},
+                "ignore_failure": False,
+            }]
+            initial = handler_module.Handler(invocation("serviceManagement", "realize", value), "unused", root, Path(root) / "state")
+            initial.manager = lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "", "")
+            initial.service("apply")
+            disabled = dict(value, enabled=False, auto_start=False)
+            updated = handler_module.Handler(invocation("serviceManagement", "realize", disabled, "disabled", {}), "unused", root, Path(root) / "state")
+            calls = []
+            updated.manager = lambda *args, **kwargs: (calls.append(args) or subprocess.CompletedProcess(args, 0, "", ""))
+            with patch.object(handler_module.subprocess, "run") as guard:
+                updated.service("apply")
+                guard.assert_not_called()
+            self.assertTrue(any(call[0] == "stop" and "example.service" in call for call in calls))
+            self.assertTrue((Path(root) / "example.service").exists())
 
     def test_structured_toml_roundtrips_nested_keys_and_arrays(self):
         value = {"server": {"name": "a b", "enabled": True, "ports": [443, 8443]}, "plugins.io.example": {"path": "/run/example", "registries": [{"host": "registry.example", "tls": True}]}}

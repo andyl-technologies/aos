@@ -262,7 +262,24 @@ async fn download(args: &ImageDownloadArgs, printer: &Printer) -> Result<()> {
             .as_deref()
             .unwrap_or(&args.selection.registry)
     ));
-    let image = resolve_image(&args.selection, args.retries, &activity, printer).await?;
+    let mut image = resolve_image(&args.selection, args.retries, &activity, printer).await?;
+    if args.metadata_only {
+        let info = image
+            .image_info
+            .take()
+            .context("image has no authenticated metadata companion")?;
+        image.filename = info.filename;
+        image.download_url = info.download_url;
+        image.object_key = info.object_key;
+        image.media_type = info.media_type;
+        image.byte_size = info.byte_size;
+        image.sha256 = info.sha256;
+        image.store_path = info.store_path;
+        image.nar_hash = info.nar_hash;
+        image.nar_size = info.nar_size;
+        image.format = "image-info".to_string();
+        image.compression = "none".to_string();
+    }
     activity.finish();
     validate_filename(&image.filename)?;
     validate_sha256(&image.sha256)?;

@@ -311,7 +311,7 @@ pub fn build_registry_lookup(
 /// or when any present configured registry cannot be loaded or carries
 /// unsupported metadata.
 pub fn get_sysroot_references(config: &ApmConfig) -> Result<Option<(Vec<String>, String, String)>> {
-    match std::fs::symlink_metadata(Path::new("/aos-toplevel")) {
+    match std::fs::symlink_metadata(Path::new("/usr/lib/aos/toplevel")) {
         Ok(_) => {}
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error).context("inspecting the running AOS toplevel"),

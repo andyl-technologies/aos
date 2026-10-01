@@ -103,9 +103,9 @@
         inherit fetchurl buildPackages;
       }
     else null;
-  # Leave other bootstrap build scripts byte-identical to reuse their outputs.
+  # JDK 11 and later invoke MIG while generating the Darwin serviceability agent.
   darwinMigCompiler =
-    if isDarwinCross && major == 17
+    if isDarwinCross && major >= 11
     then ''
 
       # Apple's MIG driver must preprocess Mach definitions with the
@@ -122,6 +122,13 @@
     if major <= 10
     then "--with-freetype-include=${freetype}/include/freetype2 --with-freetype-lib=${freetype}/lib"
     else "--with-freetype=bundled";
+  # JDK 9 still uses pre-C23 unspecified-argument C declarations. Confine
+  # their compatibility mode to C; the build phase removes copied VM flags.
+  darwinLegacyCFlag =
+    if major == 9
+    then "-std=gnu17 "
+    else "";
+
   # Their Clang setup predates the compiler's C++17 default and requires the
   # same GNU C++98 dialect that the GCC path already selects upstream.
   darwinLegacyCxxFlag =
@@ -392,7 +399,141 @@ in
           # This was fixed upstream in JDK 11.0.8+ but never backported to JDK 9/10.
           if [ -f make/common/MakeBase.gmk ]; then
             sed -i 's/$(eval -include $(call DependOnVariableFileName, $1, $2))/$(if $(wildcard $(call DependOnVariableFileName, $1, $2)),$(eval include $(call DependOnVariableFileName, $1, $2)))/' make/common/MakeBase.gmk
-          fi
+          fi${
+            if isDarwinCross && major == 10
+            then ''
+
+              # Clang treats an empty C parameter list as a zero-argument
+              # prototype; the implementation and callers pass JNIEnv.
+              encodingHeader=src/java.base/share/native/libjava/jni_util.h
+              test "$(grep -Fc 'void initializeEncoding();' "$encodingHeader")" -eq 1
+              sed -i 's/void initializeEncoding();/void initializeEncoding(JNIEnv *env);/' "$encodingHeader"
+
+              # The dlsym result is assigned to main_fptr's two-argument
+              # function pointer; use that signature in the explicit cast.
+              launcherSource=src/java.base/macosx/native/libjli/java_md_macosx.c
+              test "$(grep -Fc 'main_fptr = (int (*)())dlsym' "$launcherSource")" -eq 1
+              sed -i 's/main_fptr = (int (\*)())dlsym/main_fptr = (int (*)(int, char **))dlsym/' "$launcherSource"
+
+              # The printing helper takes the same JNI arguments at its
+              # declaration, definition, and three call sites.
+              printerSource=src/java.desktop/macosx/native/libawt_lwawt/awt/CPrinterJob.m
+              test "$(grep -Fc 'createDefaultNSPrintInfo();' "$printerSource")" -eq 1
+              sed -i 's/createDefaultNSPrintInfo();/createDefaultNSPrintInfo(JNIEnv* env, jstring printer);/' "$printerSource"
+
+              # Modern Clang supplies bool in C23, C++, and Objective-C;
+              # the macOS debugger's old compatibility typedef conflicts.
+              debuggerHeader=src/jdk.hotspot.agent/macosx/native/libsaproc/libproc.h
+              test "$(grep -Fc '#ifndef bool' "$debuggerHeader")" -eq 1
+              sed -i 's/#ifndef bool/#if !defined(__cplusplus) \&\& !defined(__OBJC__) \&\& (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L) \&\& !defined(bool)/' "$debuggerHeader"
+
+              # AWT stores typed callbacks in unions through AnyFunc. Clang's
+              # current C mode no longer treats AnyFunc() as an open signature;
+              # cast only the four generic initializer entries explicitly.
+              graphicsHeader=src/java.desktop/share/native/libawt/java2d/loops/GraphicsPrimitiveMgr.h
+              test "$(grep -Fc '{FUNC}' "$graphicsHeader")" -eq 4
+              sed -i 's/{FUNC}/{(AnyFunc *)(FUNC)}/g' "$graphicsHeader"
+
+              # MediaLib loads four different function signatures through
+              # one table. Use their upstream prototypes at each call site.
+              mediaSource=src/java.desktop/share/native/libawt/awt/medialib/awt_ImagingLib.c
+              python3 - "$mediaSource" <<'PY'
+              from pathlib import Path
+              import sys
+
+              path = Path(sys.argv[1])
+              source = path.read_text()
+              include = '#include "awt_ImagingLib.h"\n'
+              if source.count(include) != 1:
+                  raise SystemExit("unexpected MediaLib header layout")
+              source = source.replace(include, include + '#include "mlib_image_proto.h"\n')
+
+              signatures = {
+                  "MLIB_CONVKERNCVT": "ImageConvKernelConvert",
+                  "MLIB_CONVMxN": "ImageConvMxN",
+                  "MLIB_AFFINE": "ImageAffine",
+                  "MLIB_LOOKUP": "ImageLookUp",
+              }
+              for slot, function in signatures.items():
+                  old = f"(*sMlibFns[{slot}].fptr)"
+                  new = f"((__typeof__(&__mlib_{function}))sMlibFns[{slot}].fptr)"
+                  if source.count(old) != 2:
+                      raise SystemExit(f"unexpected MediaLib calls for {slot}")
+                  source = source.replace(old, new)
+
+              path.write_text(source)
+              PY
+            ''
+            else ""
+          }${
+            if isDarwinCross && major >= 11 && major <= 16
+            then ''
+
+              # Older launchers cast dlsym(main) to an unspecified signature;
+              # Clang now requires the two arguments declared by main_fptr.
+              launcherCount=0
+              for launcherSource in \
+                src/java.base/macosx/native/libjli/java_md_macosx.c \
+                src/java.base/macosx/native/libjli/java_md_macosx.m; do
+                if [ -f "$launcherSource" ]; then
+                  test "$(grep -Fc 'main_fptr = (int (*)())dlsym' "$launcherSource")" -eq 1
+                  sed -i 's/main_fptr = (int (\*)())dlsym/main_fptr = (int (*)(int, char **))dlsym/' "$launcherSource"
+                  launcherCount=$((launcherCount + 1))
+                fi
+              done
+              test "$launcherCount" -eq 1
+
+              # The printing helper's declaration must match its JNI
+              # definition and the call sites that pass both arguments.
+              printerSource=src/java.desktop/macosx/native/libawt_lwawt/awt/CPrinterJob.m
+              test "$(grep -Fc 'createDefaultNSPrintInfo();' "$printerSource")" -eq 1
+              sed -i 's/createDefaultNSPrintInfo();/createDefaultNSPrintInfo(JNIEnv* env, jstring printer);/' "$printerSource"
+
+              # The AWT primitive table stores typed callbacks through a
+              # generic union member. Clang's current C mode requires the
+              # initializer conversion to be explicit.
+              graphicsHeader=src/java.desktop/share/native/libawt/java2d/loops/GraphicsPrimitiveMgr.h
+              test "$(grep -Fc '{FUNC}' "$graphicsHeader")" -eq 4
+              sed -i 's/{FUNC}/{(AnyFunc *)(FUNC)}/g' "$graphicsHeader"
+
+              # Modern Clang supplies bool in C23, C++, and Objective-C;
+              # the macOS debugger's old compatibility typedef conflicts.
+              debuggerHeader=src/jdk.hotspot.agent/macosx/native/libsaproc/libproc.h
+              test "$(grep -Fc '#ifndef bool' "$debuggerHeader")" -eq 1
+              sed -i 's/#ifndef bool/#if !defined(__cplusplus) \&\& !defined(__OBJC__) \&\& (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 202311L) \&\& !defined(bool)/' "$debuggerHeader"
+
+              # MediaLib stores four distinct typed functions in one table.
+              # Preserve each source signature at its indirect call sites.
+              mediaSource=src/java.desktop/share/native/libawt/awt/medialib/awt_ImagingLib.c
+              python3 - "$mediaSource" <<'PY'
+              from pathlib import Path
+              import sys
+
+              path = Path(sys.argv[1])
+              source = path.read_text()
+              include = '#include "awt_ImagingLib.h"\n'
+              if source.count(include) != 1:
+                  raise SystemExit("unexpected MediaLib header layout")
+              source = source.replace(include, include + '#include "mlib_image_proto.h"\n')
+
+              signatures = {
+                  "MLIB_CONVKERNCVT": "ImageConvKernelConvert",
+                  "MLIB_CONVMxN": "ImageConvMxN",
+                  "MLIB_AFFINE": "ImageAffine",
+                  "MLIB_LOOKUP": "ImageLookUp",
+              }
+              for slot, function in signatures.items():
+                  old = f"(*sMlibFns[{slot}].fptr)"
+                  new = f"((__typeof__(&__mlib_{function}))sMlibFns[{slot}].fptr)"
+                  if source.count(old) != 2:
+                      raise SystemExit(f"unexpected MediaLib calls for {slot}")
+                  source = source.replace(old, new)
+
+              path.write_text(source)
+              PY
+            ''
+            else ""
+          }
         '';
       }
       {
@@ -1195,7 +1336,7 @@ in
                           --with-version-build=${build} \
                           --with-version-opt=aos \
                           --with-version-pre= \
-                          --with-extra-cflags="-Wno-error -fcommon -fno-delete-null-pointer-checks ${darwinFrameworkFlags}" \
+                          --with-extra-cflags="${darwinLegacyCFlag}-Wno-error -fcommon -fno-delete-null-pointer-checks ${darwinFrameworkFlags}" \
                           --with-extra-cxxflags="-Wno-error -fno-delete-null-pointer-checks ${darwinLegacyCxxFlag} ${darwinFrameworkFlags}" \
                           --with-extra-ldflags="$darwinLdflags ${darwinFrameworkFlags} ${darwinFrameworkRpathFlags}" \
                           --with-jobs=$NIX_BUILD_CORES \

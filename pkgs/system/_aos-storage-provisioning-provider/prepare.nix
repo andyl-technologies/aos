@@ -27,6 +27,9 @@
     lsblk = "${dependencies.util-linux}/bin/lsblk";
     sfdisk = "${dependencies.util-linux}/sbin/sfdisk";
     udevadm = "${dependencies.systemd}/bin/udevadm";
+    mdadm = "${dependencies.mdadm}/sbin/mdadm";
+    mkfs_ext4 = "${dependencies.e2fsprogs}/sbin/mkfs.ext4";
+    mkfs_xfs = "${dependencies.xfsprogs}/sbin/mkfs.xfs";
   };
   metadataTools = {
     inherit (tools) blkid;

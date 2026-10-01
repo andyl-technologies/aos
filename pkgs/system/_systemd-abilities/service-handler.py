@@ -217,6 +217,7 @@ def process_features(unit, value):
         unit.repeat("Environment", [f"{token(k)}={v}" for k, v in environment["variables"].items()], encode=quote)
         unit.add("ExecSearchPath", ":".join(absolute(p) + "/bin" for p in environment["search_path"]))
     resources = value.get("resources") or {}
+    unit.add("Slice", token(resources["resource_group"]) + ".slice" if resources.get("resource_group") else None)
     for field, directive in {"open_files": "LimitNOFILE", "processes": "LimitNPROC", "tasks": "TasksMax", "locked_memory_bytes": "LimitMEMLOCK", "memory_high_bytes": "MemoryHigh", "memory_max_bytes": "MemoryMax", "memory_swap_max_bytes": "MemorySwapMax"}.items():
         limit = resources.get(field)
         if limit:
@@ -224,6 +225,7 @@ def process_features(unit, value):
     unit.add("OOMPolicy", resources.get("oom_policy"))
     scheduling = value.get("scheduling")
     if scheduling:
+        unit.add("CPUSchedulingPolicy", scheduling.get("cpu_policy"))
         unit.add("Nice", scheduling["nice"])
         unit.add("IOSchedulingClass", scheduling["io_class"])
         unit.add("IOSchedulingPriority", scheduling["io_priority"])
@@ -265,6 +267,8 @@ def process_features(unit, value):
         unit.add("ProtectProc", "invisible" if isolation["process_visibility"] == "private" else "default")
         unit.add("KillMode", {"all-processes": "control-group", "main-process": "process", "mixed": "mixed"}[isolation["termination_scope"]])
         unit.add("LimitCORE", "infinity" if isolation["permit_core_dumps"] else "0")
+        for entry in isolation.get("temporary_filesystems", []):
+            unit.add("TemporaryFileSystem", quote(absolute(entry["path"]) + (":ro" if entry["read_only"] else ":rw")))
         for entry in isolation["host_paths"]:
             unit.add("BindReadOnlyPaths" if entry["mode"] == "read-only" else "BindPaths", quote(absolute(entry["source"])))
         if isolation.get("root_directory"):
@@ -466,6 +470,10 @@ def realize_service(value):
         document.add("Description", quote(lifecycle["description"] + " (" + socket["name"] + ")"), "Unit")
         document.add("Service", unit_name, "Socket")
         document.add("SocketMode", socket["mode"], "Socket")
+        document.add("DirectoryMode", socket.get("directory_mode", "0755"), "Socket")
+        for prerequisite in socket.get("prerequisites", []):
+            document.add("After", unit_ref(prerequisite), "Unit")
+            document.add("Requires", unit_ref(prerequisite), "Unit")
         document.add("SocketUser", socket.get("owner"), "Socket")
         document.add("SocketGroup", socket.get("group"), "Socket")
         document.add("RemoveOnStop", yes(socket["remove_on_stop"]), "Socket")
@@ -757,6 +765,10 @@ class Handler:
         return fields
 
     def service(self, action):
+        group = (self.value.get("resources") or {}).get("resource_group")
+        identity = self.invocation["effect"]["identity"]
+        if group and (len(identity) < 4 or not group.startswith("aos-pkg-" + identity[-4] + "-")):
+            raise ValueError("service resource group must be a descendant of its owning package")
         realization = realize_service(self.value)
         unit_name = realization["resource"]
         result = {"resource": unit_name, "path": str(self.unit_directory / unit_name)}
@@ -822,6 +834,11 @@ class Handler:
                     raise ValueError("service definition changed outside its owning effect")
             if not self.links_safe(prior_links):
                 raise ValueError("service installation link changed outside its owning effect")
+            for guard in self.value["lifecycle"].get("removal_guard", []):
+                executable = guard["executable"]
+                checked = subprocess.run([absolute(executable["path"]), *executable["arguments"]], capture_output=True, text=True, check=False)
+                if checked.returncode and not guard["ignore_failure"]:
+                    raise ValueError("service removal guard rejected retirement: " + checked.stderr[:4096])
             if self.receipt.get("owner") == "ability":
                 self.save(dict(self.receipt, removing=True, dispatching=True))
                 self.manager("stop", *self.receipt.get("starts", []), *self.receipt.get("units", {}))
@@ -862,6 +879,10 @@ class Handler:
         self.manager("daemon-reload")
         if old_resource and old_resource != unit_name and owner == "ability":
             self.manager("stop", old_resource)
+        if owner == "ability" and not self.value["enabled"]:
+            # Disabling keeps owned definitions and surviving worker identities.
+            # Retirement guards apply only when removing the package's effect.
+            self.manager("stop", *self.receipt.get("starts", []), *realization["units"])
         if owner == "ability" and self.value["enabled"] and self.value["auto_start"]:
             if realization["starts"]:
                 self.manager("start", *realization["starts"])

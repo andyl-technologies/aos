@@ -78,13 +78,13 @@ pub enum SystemTransitionMode {
 /// File name of the generation-state JSON inside the system profile dir.
 const IMAGE_STATE_FILE: &str = "state.json";
 const IMAGE_PROFILE_DIR: &str = "/var/lib/profiles/image";
-const RUNNING_TOPLEVEL_LINK: &str = "/aos-toplevel";
+const RUNNING_TOPLEVEL_LINK: &str = "/usr/lib/aos/toplevel";
 const MAX_IMAGE_METADATA_BYTES: u64 = 64 * 1024;
 
 /// Resolves the booted image generation from immutable image identity.
 ///
 /// The `/var` image index is accepted only after its running record agrees
-/// with the baked `/aos-toplevel` pointer, native module-library NAR identity,
+/// with the baked `/usr/lib/aos/toplevel` pointer, native module-library NAR identity,
 /// evaluation descriptor, executor, and package metadata. Boot measurement
 /// verification is performed separately by the selected boot implementation.
 ///
@@ -957,7 +957,8 @@ mod tests {
         let logical_toplevel =
             PathBuf::from(format!("/nix/store/{}-running-toplevel", "0".repeat(32)));
         let toplevel = immutable_root.join(logical_toplevel.strip_prefix("/").unwrap());
-        let toplevel_link = immutable_root.join("aos-toplevel");
+        let toplevel_link = immutable_root.join("usr/lib/aos/toplevel");
+        std::fs::create_dir_all(toplevel_link.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&image_profile).unwrap();
         std::fs::create_dir_all(toplevel.join("meta")).unwrap();
         let image = ImageGeneration {

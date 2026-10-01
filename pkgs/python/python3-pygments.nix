@@ -4,6 +4,7 @@
   mkDerivation,
   fetchurl,
   python3,
+  buildPackages,
 }: let
   version = "2.20.0";
   sitePackages = "lib/python3.14/site-packages";
@@ -76,7 +77,7 @@ in
       hash = "sha256-Z1fNA3aAU/+Z8wOcGjbWwKoLJjQ4/KsXUgswowOoK18=";
     };
 
-    buildDeps = [];
+    buildDeps = [buildPackages.python3];
     runtimeDeps = [python3];
     propagatedDeps = [python3];
 
@@ -101,7 +102,9 @@ in
           raise SystemExit(main(sys.argv))
           PY
           chmod 0755 "$out/bin/pygmentize"
-          "$out/bin/pygmentize" -V
+          # Check the installed Python launcher without executing a foreign
+          # target interpreter on the build platform.
+          ${buildPackages.python3}/bin/python3 "$out/bin/pygmentize" -V
         '';
       }
     ];

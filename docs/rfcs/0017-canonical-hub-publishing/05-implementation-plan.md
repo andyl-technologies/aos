@@ -265,7 +265,7 @@ The pipeline is production-ready only when:
   state transitions from public keys;
 - a clean AOS client can install packages and every advertised image from the
   production Hub route;
-- exact staged bytes, exact promoted bytes, and manifest bytes agree;
+- exact staging bytes, exact production bytes, and manifest bytes agree;
 - a compromised online Hub, upload, timestamp, or channel credential cannot
   authorize new release content or bootable code;
 - recovery from loss of the maintainer host, a Hub deployment, object storage,

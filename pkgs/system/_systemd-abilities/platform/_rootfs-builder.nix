@@ -13,7 +13,7 @@
 ##! /etc is an empty mountpoint (the runtime overlay mounts on top in
 ##! stage-1); /run/etc is also an empty mountpoint
 ##! (run-etc-setup.service mounts a tmpfs there). The seed pointer
-##! at `/aos-toplevel` is what aos-seed-profiles.service reads on
+##! at `/usr/lib/aos/toplevel` is what aos-seed-profiles.service reads on
 ##! first boot to populate apm's profile state, breaking the
 ##! initrd→toplevel→initrd derivation cycle that direct interpolation
 ##! of `${config.system.build.toplevel}` in initrd service scripts
@@ -259,14 +259,15 @@ in
               # Full /usr merge, including the conventional /usr/sbin →
               # /usr/bin compatibility link expected by the selected manager.
               #
-              # The image's Nix closure lives at /nix.lower/store; /nix is an
+              # The image's Nix closure lives at /usr/lib/aos/nix/store; /nix is an
               # empty mountpoint where nix-overlay-setup.service stacks an
-              # overlayfs in the initrd (lowerdir=/nix.lower, upperdir on the
-              # /var partition). At runtime, /nix/store/... and /nix.lower/store/...
+              # overlayfs in the initrd (lowerdir=/usr/lib/aos/nix, upperdir on the
+              # /var partition). At runtime, /nix/store/... and /usr/lib/aos/nix/store/...
               # both resolve to the closure — the former through the overlay
               # (matching the path embedded in every binary's RUNPATH and
               # shebang), the latter directly on disk for inspection.
-              mkdir -p rootfs/nix.lower/store
+              mkdir -p rootfs/usr/lib/aos/nix/store
+              printf 'aos.config-bundle/v1\n' > rootfs/usr/lib/aos/configuration-capabilities
               mkdir -p rootfs/nix
               mkdir -p rootfs/usr/bin rootfs/usr/lib
               ln -sfn bin rootfs/usr/sbin
@@ -291,6 +292,7 @@ in
               # /boot would otherwise be missing in production.
               mkdir -p rootfs/boot
               mkdir -m 0700 rootfs/root
+              mkdir -m 0755 rootfs/home
               # Root-owned APM authoring config lives on the read-only rootfs,
               # so create it here instead of asking tmpfiles to mutate /root at
               # boot.
@@ -308,7 +310,7 @@ in
                   printf '\r    [%d/%d]' "$count" "$total"
                 fi
                 if [ -e "$p" ]; then
-                  cp -a "$p" rootfs/nix.lower/store/
+                  cp -a "$p" rootfs/usr/lib/aos/nix/store/
                 else
                   echo ""
                   echo "    WARN: store path does not exist: $p" >&2
@@ -386,28 +388,28 @@ in
               # republish this link in the initrd-owned /run before switch-root.
               ln -s "$TOPLEVEL" rootfs/run/current-system
 
-              # ── 8. /aos-toplevel seed pointer ──────────────────────────────
+              # ── 8. /usr/lib/aos/toplevel seed pointer ──────────────────────────────
               # First-boot bootstrap: aos-seed-profiles.service reads this
               # symlink to populate /var/lib/profiles/system/gen-1/toplevel
               # without referencing config.system.build.toplevel directly
               # (which would create an initrd→toplevel→initrd cycle). The
-              # rootfs already references the toplevel via /nix.lower/store,
+              # rootfs already references the toplevel via /usr/lib/aos/nix/store,
               # so adding the symlink doesn't introduce a new derivation
               # edge. See spec v12 §6.1.
-              ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
+              ln -sfn "$TOPLEVEL" rootfs/usr/lib/aos/toplevel
 
               # The native host controller consumes this authenticated bundle
               # before a profile generation has been published.
               mkdir -p rootfs/usr/lib/aos/host/deployment
               cp -a "$TOPLEVEL/host-deployment/." rootfs/usr/lib/aos/host/deployment/
 
-              # ── 9. /aos-registration Nix DB seed ───────────────────────────
+              # ── 9. /usr/lib/aos/nix-registration Nix DB seed ───────────────────────────
               # Stage-2 loads this plain text `nix-store --load-db` stream to
               # register the image closure without canonicalising/chowning store
               # contents. Copy the bytes instead of symlinking the derivation.
-              cp "$REGINFO/registration" rootfs/aos-registration
-              registrationDigest=$(sha256sum rootfs/aos-registration)
-              printf '%s\n' "''${registrationDigest%% *}" > rootfs/aos-registration.sha256
+              cp "$REGINFO/registration" rootfs/usr/lib/aos/nix-registration
+              registrationDigest=$(sha256sum rootfs/usr/lib/aos/nix-registration)
+              printf '%s\n' "''${registrationDigest%% *}" > rootfs/usr/lib/aos/nix-registration.sha256
 
               # /etc/machine-id no longer touched here — stage-1's
               # aos-machine-id.service generates /var/etc/machine-id on

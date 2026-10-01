@@ -30,6 +30,11 @@ in {
   aos.abilities.identity.operations = {
     membership = {
       input.options = {
+        mode = lib.mkOption {
+          type = lib.types.enum ["add" "replace"];
+          default = "add";
+          description = "Add owned memberships or replace the exact member set of a provider-owned group.";
+        };
         group = lib.mkOption {
           type = lib.types.deferred lib.types.str;
           description = "Existing group whose explicit members are granted membership.";
@@ -64,6 +69,11 @@ in {
           type = lib.types.enum ["disabled" "enabled"];
           default = "disabled";
           description = "Whether the account may use an interactive login shell.";
+        };
+        login_shell = lib.mkOption {
+          type = lib.types.deferred (lib.types.nullOr lib.types.pathInStore);
+          default = null;
+          description = "Optional immutable login executable used when login access is enabled; otherwise the pinned defaults apply.";
         };
         primary_group = lib.mkOption {
           type = lib.types.nullOr (lib.types.deferred lib.types.str);

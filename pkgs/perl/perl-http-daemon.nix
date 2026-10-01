@@ -2,6 +2,7 @@
 {
   lib,
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   perl-clone,
@@ -14,7 +15,7 @@
 }: let
   version = "6.17";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     platformSupport = {
       build = [
         {

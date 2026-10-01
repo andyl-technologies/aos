@@ -14,7 +14,9 @@ use aos_contract::Sha256Digest;
 
 use super::proof::{ArtifactIdentity, SourceAuthorization};
 use super::reader::VerifiedAuthorization;
-use crate::config_eval::provisioning_sources::add_fixed_input_to_store;
+use crate::config_eval::provisioning_sources::{
+    add_fixed_input_to_store, materialize_authorized_host_source,
+};
 use crate::deployment::retention::ArtifactAdmission;
 use crate::native_deployment::{EvaluationInput, NativeDeploymentCommand};
 use crate::store::temp_roots::TemporaryRoots;
@@ -85,9 +87,9 @@ pub(super) fn apply(
         .tempdir()?;
     let worktree = scratch.path().join("worktree");
     fs::create_dir(&worktree)?;
-    fs::write(
-        worktree.join("host.nix"),
+    materialize_authorized_host_source(
         verified.input.host_module.as_deref().unwrap_or("{}\n"),
+        &worktree,
     )?;
     // This private tree contains only bytes from the verified receipt. The
     // importer still checks no-follow traversal, modes and all source limits;

@@ -9,6 +9,12 @@
   patchelf,
   systemd,
   util-linux,
+  mdadm,
+  e2fsprogs,
+  xfsprogs,
+  bash,
+  coreutils,
+  jq,
   aos,
   aos-metadata-provider,
   aos-nix-store-provider,
@@ -91,13 +97,21 @@ in
     cargoTestFlags = "-p aos-block-storage-provider -p aos-storage-provisioning";
     doCheck = true;
     buildDeps = [patchelf];
-    runtimeDeps = [systemd util-linux aos];
+    runtimeDeps = [systemd util-linux mdadm e2fsprogs xfsprogs bash coreutils jq aos];
 
     module = ./_aos-storage-provisioning-provider;
     moduleDeps = [aos-metadata-provider aos-nix-store-provider service-management storage-interface aos-boot-storage];
     preBuild = staticBuildSetup;
 
     postInstall = ''
+      sed -e 's|@bash@|${bash}|g' \
+          -e 's|@coreutils@|${coreutils}|g' \
+          -e 's|@jq@|${jq}|g' \
+          -e 's|@mdadm@|${mdadm}|g' \
+          -e 's|@systemd@|${systemd}|g' \
+          -e 's|@util-linux@|${util-linux}|g' \
+          ${./_aos-storage-provisioning-provider/aos-storage-topology.sh} > "$out/bin/aos-storage-topology"
+      chmod 0555 "$out/bin/aos-storage-topology"
       test -x "$out/bin/aos-storage-provisioning-provider"
       test -x "$out/bin/aos-storage-provisioning-marker-observer"
       if patchelf --print-interpreter "$out/bin/aos-storage-provisioning-provider" \

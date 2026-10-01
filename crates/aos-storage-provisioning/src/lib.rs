@@ -8,6 +8,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod topology;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path};
 
@@ -67,7 +69,7 @@ pub struct AuthorizedProvisioningInput {
     pub schema: String,
     /// Identifies whether operator input or image defaults supply the plan.
     pub source: CanonicalProvisioningSource,
-    /// Carries exact authenticated `host.nix` bytes for operator input.
+    /// Carries the exact authenticated Nix module or source-bundle JSON for operator input.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host_module: Option<String>,
     /// Authenticates [`Self::host_module`] when operator input is present.
@@ -205,8 +207,19 @@ pub fn validate_authorized_provisioning_input(input: &AuthorizedProvisioningInpu
         input.host_module_sha256.as_deref(),
     ) {
         (CanonicalProvisioningSource::Operator, Some(module), Some(digest)) => {
-            if module.len() > 131_072 {
-                bail!("authorized host module exceeds the runtime result bound");
+            let bundle_payload = serde_json::from_str::<serde_json::Value>(module)
+                .ok()
+                .is_some_and(|value| {
+                    value.get("schema").and_then(serde_json::Value::as_str)
+                        == Some("aos.config-bundle/v1")
+                });
+            let limit = if bundle_payload {
+                16 * 1024 * 1024
+            } else {
+                131_072
+            };
+            if module.len() > limit {
+                bail!("authorized host payload exceeds the runtime result bound");
             }
             validate_digest(digest, "host module digest")?;
             let actual = format!("sha256:{}", hex_digest(module.as_bytes()));
@@ -319,6 +332,25 @@ pub struct ProvisioningPlan {
 pub struct StoragePlan {
     /// Logical partition name to definition.
     pub partitions: BTreeMap<String, PartitionSpec>,
+    /// Logical MD array definitions, validated against declared partitions.
+    #[serde(default)]
+    pub arrays: BTreeMap<String, ArraySpec>,
+}
+
+/// One Linux MD array bound from declared partitions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+pub struct ArraySpec {
+    /// MD RAID level: `raid0`, `raid1`, `raid10`, `raid5`, or `raid6`.
+    pub level: String,
+    /// Logical partition names forming the array, in declaration order.
+    pub members: Vec<String>,
+    /// Filesystem created on the assembled array (`ext4` or `xfs`), or
+    /// `null` for a raw array.
+    pub format: Option<String>,
+    /// Declared encryption, or `null` for the image policy default.
+    #[serde(default)]
+    pub encryption: Option<String>,
 }
 
 /// One additive partition definition.
@@ -340,6 +372,9 @@ pub struct PartitionSpec {
     pub weight: i64,
     /// Optional initial filesystem format.
     pub format: Option<String>,
+    /// Declared volume encryption, or null for measured-boot policy defaults.
+    #[serde(default)]
+    pub encryption: Option<String>,
     /// Optional deterministic partition UUID.
     pub uuid: Option<String>,
     /// Whether this partition consumes remaining free space.
@@ -364,6 +399,9 @@ pub struct CanonicalProvisioningPlan {
     pub measured_boot: bool,
     /// Maps logical partition keys to their normalized definitions.
     pub partitions: BTreeMap<String, CanonicalPartitionSpec>,
+    /// Checked MD arrays retained exactly for native provisioning.
+    #[serde(default)]
+    pub arrays: BTreeMap<String, ArraySpec>,
 }
 
 /// Identifies the authenticated source of one provisioning plan.
@@ -458,6 +496,9 @@ pub struct CanonicalPartitionSpec {
     /// Optional initial filesystem format.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub format: Option<String>,
+    /// Declared volume encryption, or null for measured-boot policy defaults.
+    #[serde(default)]
+    pub encryption: Option<String>,
     /// Deterministic GPT partition UUID.
     pub uuid: String,
     /// Whether this partition consumes remaining free space.
@@ -523,6 +564,7 @@ pub fn canonicalize_provisioning_plan(
                     size_max: partition.size_max,
                     weight: partition.weight,
                     format: partition.format,
+                    encryption: partition.encryption,
                     uuid,
                     grow: partition.grow,
                     grow_fs: partition.grow_fs,
@@ -537,6 +579,7 @@ pub fn canonicalize_provisioning_plan(
         source,
         marker_uuid,
         measured_boot,
+        arrays: plan.storage.arrays,
         partitions,
     })
 }
@@ -593,14 +636,15 @@ pub fn validate_provisioning_plan(plan: &ProvisioningPlan, measured_boot: bool) 
         }
         if partition.label == "var" && partition.device.is_none() {
             root_var = true;
-            if measured_boot && partition.format.is_some() {
-                bail!("measured boot requires root-disk var to remain raw");
+            if !matches!(partition.format.as_deref(), None | Some("ext4")) {
+                bail!("the root-disk var partition must carry ext4");
             }
         }
     }
     if !root_var {
         bail!("storage plan must declare label 'var' on the root disk");
     }
+    topology::resolve_topology(plan, measured_boot)?;
     Ok(())
 }
 
@@ -761,10 +805,12 @@ mod tests {
         ProvisioningPlan {
             schema: "aos.provisioning-plan/v1".into(),
             storage: StoragePlan {
+                arrays: BTreeMap::new(),
                 partitions: BTreeMap::from([
                     (
                         "swap".into(),
                         PartitionSpec {
+                            encryption: None,
                             device: Some("/dev/disk/by-id/qualification-disk".into()),
                             label: "swap".into(),
                             partition_type: "swap".into(),
@@ -781,6 +827,7 @@ mod tests {
                     (
                         "var".into(),
                         PartitionSpec {
+                            encryption: None,
                             device: None,
                             label: "var".into(),
                             partition_type: "linux-generic".into(),

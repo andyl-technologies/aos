@@ -508,8 +508,24 @@ impl TransferProgress {
         }
     }
 
-    /// Changes the phase label without resetting byte progress.
+    /// Resumes byte-oriented reporting without resetting the byte counter.
     pub fn phase(&self, action: &str) {
+        self.inner.progress.set_style(transfer_style(
+            self.inner.total_bytes.load(Ordering::Relaxed),
+        ));
+        self.set_phase_label(action);
+    }
+
+    /// Reports local processing without a transfer rate or byte-based ETA.
+    ///
+    /// The byte counter is retained so a later call to [`phase`](Self::phase)
+    /// can resume reporting downloads on the same line.
+    pub fn activity_phase(&self, action: &str) {
+        self.inner.progress.set_style(activity_style());
+        self.set_phase_label(action);
+    }
+
+    fn set_phase_label(&self, action: &str) {
         if let Ok(mut current) = self.inner.action.lock() {
             current.clear();
             current.push_str(action);
@@ -709,6 +725,79 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Clone, Debug, Default)]
+    struct CapturedTerminal(Arc<Mutex<String>>);
+
+    impl indicatif::TermLike for CapturedTerminal {
+        fn width(&self) -> u16 {
+            160
+        }
+
+        fn move_cursor_up(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_down(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_right(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn move_cursor_left(&self, _: usize) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn write_line(&self, text: &str) -> std::io::Result<()> {
+            self.write_str(text)
+        }
+
+        fn write_str(&self, text: &str) -> std::io::Result<()> {
+            self.0.lock().unwrap().push_str(text);
+            Ok(())
+        }
+
+        fn clear_line(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+
+        fn flush(&self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn local_processing_hides_transfer_metrics_and_downloads_restore_them() {
+        for total in [0, 4096] {
+            let terminal = CapturedTerminal::default();
+            let printer = Printer::new(0, false, false).with_progress_mode(ProgressMode::Tty);
+            printer
+                .progress
+                .set_draw_target(ProgressDrawTarget::term_like(Box::new(terminal.clone())));
+            let progress = printer.transfer("Downloading", total);
+            progress.inner.progress.disable_steady_tick();
+            progress.inc(1024);
+            progress.inner.progress.tick();
+            assert!(terminal.0.lock().unwrap().contains("/s"));
+
+            terminal.0.lock().unwrap().clear();
+            progress.activity_phase("Installing registry catalog");
+            progress.inner.progress.tick();
+            let processing = terminal.0.lock().unwrap().clone();
+            assert!(processing.contains("Installing registry catalog"));
+            assert!(!processing.contains("/s"));
+            assert!(!processing.contains("ETA"));
+            assert_eq!(progress.position(), 1024);
+
+            terminal.0.lock().unwrap().clear();
+            progress.phase("Downloading more objects");
+            progress.inner.progress.tick();
+            assert!(terminal.0.lock().unwrap().contains("/s"));
+            assert_eq!(progress.position(), 1024);
+        }
+    }
 
     #[test]
     fn every_progress_kind_uses_the_shared_spinner() {

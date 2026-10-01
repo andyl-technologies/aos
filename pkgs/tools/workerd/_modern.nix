@@ -40,7 +40,17 @@
     hash = "0w6dy0k7bxr8ar54hw82makqbpp66nj1c6s5q2rfn0r6jx5zxiws";
   };
   isArmCross = stdenv.isCross && stdenv.hostPlatform.system == "aarch64-linux";
-  crossToolchain = callPackage ./_cross-toolchain.nix {};
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  isSupportedCross = isArmCross || isDarwinCross;
+  crossRepositoryName =
+    if isDarwinCross
+    then "aos_darwin_toolchain"
+    else "aos_arm64_toolchain";
+  crossToolchain = callPackage (
+    if isDarwinCross
+    then ./_darwin-toolchain.nix
+    else ./_cross-toolchain.nix
+  ) {};
   targetRustRepository = callPackage ./_rust-repository.nix {};
   targetGcc = stdenv.cc.cc;
   # Generators execute on the build platform even when their output is compiled
@@ -130,8 +140,8 @@
       "rules_python++pip+v8_python_deps_314_markupsafe_sdist_594c6780" = "${pythonRepositories}/markupsafe";
       "+pyodide+pyodide-314.0.0" = pyodide;
     }
-    // lib.optionalAttrs isArmCross {
-      "rules_rust++rust+rust_linux_x86_64__aarch64-unknown-linux-gnu__stable_tools" = targetRustRepository;
+    // lib.optionalAttrs isSupportedCross {
+      "rules_rust++rust+rust_linux_x86_64__${stdenv.hostPlatform.config}__stable_tools" = targetRustRepository;
     };
 
   # Keep the dependency archive independent of the source-built tool outputs.
@@ -150,7 +160,7 @@
       "${scrub nativeStdenv.gcc}" = "__AOS_BOOTSTRAP_GCC__";
       "${scrub nativeStdenv.glibc}" = "__AOS_BOOTSTRAP_GLIBC__";
     }
-    // lib.optionalAttrs isArmCross {
+    // lib.optionalAttrs isSupportedCross {
       "${scrub crossToolchain}" = "__AOS_ARM64_TOOLCHAIN__";
     };
 
@@ -159,8 +169,13 @@
       ${python3}/bin/python3 ${./prepare-modern-toolchains.py} \
         --python ${python3}/bin/python3 --rust ${rust} --bash ${bash}/bin/bash
     ''
-    + lib.optionalString isArmCross ''
-      ${python3}/bin/python3 ${./prepare-modern-cross.py} --toolchain ${crossToolchain}
+    + lib.optionalString isSupportedCross ''
+      ${python3}/bin/python3 ${./prepare-modern-cross.py} --toolchain ${crossToolchain} \
+        --repository-name ${crossRepositoryName} --target-os ${
+        if isDarwinCross
+        then "darwin"
+        else "linux"
+      }
     '';
 
   configureEnvironment = ''
@@ -170,10 +185,72 @@
     export LC_ALL=C.UTF-8 LANG=C.UTF-8
   '';
 in
-  assert (!stdenv.isCross && stdenv.hostPlatform.system == "x86_64-linux") || isArmCross;
+  assert (!stdenv.isCross && stdenv.hostPlatform.system == "x86_64-linux") || isSupportedCross;
     mkBazelPackage {
       pname = "workerd-modern-source";
-      inherit version;
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The Worker computes and returns the JSON result 42 with HTTP status 200.";
+          "files" = {
+            "worker.capnp" = "using Workerd = import \"/workerd/workerd.capnp\";\nconst config :Workerd.Config = (\n  services = [(name = \"main\", worker = (\n    modules = [(name = \"worker\", esModule = embed \"worker.js\")],\n    compatibilityDate = \"2024-09-09\"\n  ))],\n  sockets = [(name = \"http\", http = (), service = \"main\")]\n);\n";
+            "worker.js" = "export default {\n  async fetch(request) {\n    const result = Number(await request.text()) + 2;\n    return new Response(JSON.stringify({ result }), {\n      headers: { \"content-type\": \"application/json\" }\n    });\n  }\n};\n";
+          };
+          "input" = "A local Worker module and an HTTP POST containing the number 40.";
+          "operation" = "Start the runtime on an inherited loopback socket, execute the Worker through HTTP, and stop the service.";
+          "steps" = [
+            {
+              "argv" = [
+                "@python@"
+                "-c"
+                "import http.client, json, socket, subprocess, tempfile, time\n\nwith socket.socket() as listener, tempfile.TemporaryFile() as log:\n    listener.bind((\"127.0.0.1\", 0))\n    listener.listen()\n    port = listener.getsockname()[1]\n    command = [\"@out@/bin/workerd\", \"serve\", \"worker.capnp\",\n               \"--socket-fd\", f\"http={listener.fileno()}\"]\n    process = subprocess.Popen(command, pass_fds=(listener.fileno(),),\n                               stdout=log, stderr=log)\n    try:\n        deadline = time.monotonic() + 20\n        while True:\n            if process.poll() is not None or time.monotonic() >= deadline:\n                log.seek(0)\n                raise AssertionError(log.read().decode(errors=\"replace\"))\n\n            connection = http.client.HTTPConnection(\"127.0.0.1\", port, timeout=2)\n            try:\n                connection.request(\"POST\", \"/qualification\", body=\"40\")\n                response = connection.getresponse()\n                body = response.read()\n                assert response.status == 200, (response.status, body)\n                assert response.getheader(\"content-type\") == \"application/json\"\n                assert json.loads(body) == {\"result\": 42}, body\n                break\n            except (OSError, http.client.HTTPException):\n                time.sleep(0.1)\n            finally:\n                connection.close()\n    finally:\n        process.terminate()\n        try:\n            process.wait(timeout=10)\n        except subprocess.TimeoutExpired:\n            process.kill()\n            process.wait(timeout=5)\n\nprint(\"workerd-source operation passed\")\n"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "workerd-source operation passed\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "Workerd rejects the malformed configuration with a parse error.";
+          "files" = {
+            "invalid.capnp" = "this is not capnp\n";
+          };
+          "input" = "A service configuration containing bytes that are not valid Cap'n Proto source.";
+          "operation" = "Parse the malformed configuration before starting the runtime.";
+          "steps" = [
+            {
+              "argv" = [
+                "@python@"
+                "-c"
+                "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/workerd\", \"serve\", \"invalid.capnp\"], capture_output=True, text=True, timeout=10)\noutput = result.stdout + result.stderr\nassert result.returncode != 0 and (\"error\" in output.lower() or \"failed\" in output.lower())\n\nsys.stderr.write(\"workerd-source rejected invalid input\\n\")\nraise SystemExit(7)\n"
+              ];
+              "exit_code" = 7;
+              "observes_rejection" = true;
+              "stderr" = {
+                "exact" = "workerd-source rejected invalid input\n";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+      };
+
+      # Keep module compatibility at this release until a broader policy is reviewed.
+      version = "=${version}";
       inherit src;
 
       tools = [
@@ -204,7 +281,9 @@ in
       # The linked runtime uses LLVM's C++ ABI and unwind shared libraries.
       # Preserve their runpaths when build-only references are scrubbed.
       runtimeDeps =
-        if isArmCross
+        if isDarwinCross
+        then [stdenv.darwinRuntimes]
+        else if isArmCross
         then [glibc]
         else [llvm];
       inherit scrubMap;
@@ -221,10 +300,10 @@ in
           "rules_cc++cc_configure_extension+local_config_cc"
           "rules_cc++cc_configure_extension+local_config_cc_toolchains"
         ]
-        ++ lib.optionals isArmCross ["+local_repository+aos_arm64_toolchain"];
+        ++ lib.optionals isSupportedCross ["+local_repository+${crossRepositoryName}"];
       # Native and ARM64 analysis produce the same pinned dependency snapshot;
       # local toolchain repositories are regenerated for the selected target.
-      depsHash = "sha256-7vU7V20b8HnQHqpzW+2SuwkZihPmZMoUIpbfWZt+8TQ=";
+      depsHash = "sha256-FGjai5OCbqKGqWMdBnDrpcNsH7MfSk0WaVNPWbrDSqw=";
       bazelTarget = "//src/workerd/server:workerd";
       bazelFlags =
         [
@@ -236,25 +315,30 @@ in
           "--repo_env=CC=${nativeClang}/bin/clang"
         ]
         ++ lib.mapAttrsToList (name: path: "--override_repository=${name}=${path}") repositories
-        ++ lib.optionals isArmCross [
-          "--platforms=@aos_arm64_toolchain//:target-platform"
-          "--extra_toolchains=@aos_arm64_toolchain//:registered-toolchain"
-          "--@v8//bazel/config:v8_target_cpu=arm64"
+        ++ lib.optionals isSupportedCross [
+          "--platforms=@${crossRepositoryName}//:target-platform"
+          "--extra_toolchains=@${crossRepositoryName}//:registered-toolchain"
+          "--@v8//bazel/config:v8_target_cpu=${
+            if stdenv.hostPlatform.isAarch64
+            then "arm64"
+            else "x64"
+          }"
         ];
 
       postPatch = prepareSource;
       fetchPostPatch = configureEnvironment;
       postFetch = ''
         ${python3}/bin/python3 ${./clean-bazel-tool-downloads.py} "$bazelOut/external"
+        ${python3}/bin/python3 ${./strip-opaque-deps.py} "$bazelOut/external"
       '';
       preBazelBuild =
         configureEnvironment
-        + lib.optionalString isArmCross ''
+        + lib.optionalString isSupportedCross ''
           # Shared Bazel setup supplies native compatibility libraries for Rust
-          # generators. Target links must resolve their ARM64 counterparts.
+          # generators. Target links must resolve their own platform libraries.
           sed -i "\\|^build --linkopt=-L$TMPDIR/rust-link-libs$|d" .bazelrc
           if grep -Fqx "build --linkopt=-L$TMPDIR/rust-link-libs" .bazelrc; then
-            echo "Native compatibility libraries leaked into the ARM64 link" >&2
+            echo "Native compatibility libraries leaked into the target link" >&2
             exit 1
           fi
 
@@ -262,6 +346,21 @@ in
           # of depending on transitive includes from the C++ standard library.
           patch -d "$TMPDIR/repo-overrides/+http_archive+v8" -p1 < ${./v8-memcopy-climits.patch}
           patch -d "$TMPDIR/repo-overrides/+http+ncrypto" -p1 < ${./ncrypto-climits.patch}
+          ${lib.optionalString isDarwinCross ''
+            # V8 defaults generator tools to its target configuration to share
+            # compilation. Cross builds must execute those generators on Linux.
+            python3 - "$TMPDIR/repo-overrides/+http_archive+v8/bazel/defs.bzl" <<'PY'
+            from pathlib import Path
+            import sys
+
+            definitions = Path(sys.argv[1])
+            source = definitions.read_text()
+            original = '    return "target"\n'
+            if source.count(original) != 1:
+                raise SystemExit("Unexpected V8 generator configuration")
+            definitions.write_text(source.replace(original, '    return "exec"\n'))
+            PY
+          ''}
         ''
         + ''
           sed -i '1s|^#!/usr/bin/env bash$|#!${bash}/bin/bash|' tools/unix/workspace-status.sh
@@ -340,7 +439,7 @@ in
           "--java_runtime_version=local_jdk"
           "--tool_java_runtime_version=local_jdk"
         ]
-        ++ lib.optionals (!isArmCross) [
+        ++ lib.optionals (!isSupportedCross) [
           "--linkopt=-lc++abi"
           "--linkopt=-lunwind"
         ]
@@ -353,7 +452,13 @@ in
 
       installPhase =
         (
-          if isArmCross
+          if isDarwinCross
+          then ''
+            mkdir -p "$out/bin" "$out/share/licenses/workerd"
+            cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"
+            cp LICENSE "$out/share/licenses/workerd/LICENSE"
+          ''
+          else if isArmCross
           then ''
             mkdir -p "$out/bin" "$out/lib" "$out/share/licenses/workerd"
             cp bazel-bin/src/workerd/server/workerd "$out/bin/workerd"

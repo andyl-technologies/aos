@@ -12,7 +12,7 @@
   evaluationRuntime = dependencies.aos.packageRuntime;
   evaluationProgram = evaluationRuntime // {meta = (evaluationRuntime.meta or {}) // {mainProgram = "aos-provisioning-configuration-evaluator";};};
 in {
-  imports = [./configuration.nix ./prepare.nix];
+  imports = [./configuration.nix ./prepare.nix ./topology.nix];
   aos.abilities = {
     provisioningMarker.operations.observe = {
       input.options = {

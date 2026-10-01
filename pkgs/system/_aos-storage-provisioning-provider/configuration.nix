@@ -46,13 +46,19 @@
       };
 
       format = lib.mkOption {
-        type = lib.types.nullOr (lib.types.enum ["ext4" "vfat" "swap"]);
+        type = lib.types.nullOr (lib.types.enum ["ext4" "xfs" "vfat" "swap"]);
         default = null;
         description = ''
           Initial filesystem format. null leaves the partition raw; on an
           unmeasured image the renderer formats the reserved var partition
           ext4 when this remains null.
         '';
+      };
+
+      encryption = lib.mkOption {
+        type = lib.types.nullOr (lib.types.enum ["none" "tpm2"]);
+        default = null;
+        description = "Volume encryption; null follows measured-boot policy. Array members must leave this unset.";
       };
 
       uuid = lib.mkOption {
@@ -80,8 +86,35 @@
       };
     };
   });
+  arrayType = lib.types.submodule {
+    options = {
+      level = lib.mkOption {
+        type = lib.types.enum ["raid0" "raid1" "raid5" "raid6" "raid10"];
+        description = "Linux MD RAID level; member counts are checked before provisioning.";
+      };
+      members = lib.mkOption {
+        type = lib.types.listOf lib.types.str;
+        description = "Logical partition names used exclusively by this array.";
+      };
+      format = lib.mkOption {
+        type = lib.types.nullOr (lib.types.enum ["ext4" "xfs"]);
+        default = null;
+        description = "Initial array filesystem; null retains a raw array.";
+      };
+      encryption = lib.mkOption {
+        type = lib.types.nullOr (lib.types.enum ["none" "tpm2"]);
+        default = null;
+        description = "Array encryption; null follows measured-boot policy.";
+      };
+    };
+  };
 in {
   options.aos.provisioning = {
+    storage.arrays = lib.mkOption {
+      type = lib.types.attrsOf arrayType;
+      default = {};
+      description = "MD arrays committed with the one-time storage transaction.";
+    };
     storage.partitions = lib.mkOption {
       type = lib.types.attrsOf partitionType;
       default = {};

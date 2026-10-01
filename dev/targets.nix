@@ -1,8 +1,9 @@
 {
   category,
   scope ? "",
+  crossSystem ? null,
 }: let
-  aos = import ../. {};
+  aos = import ../. {inherit crossSystem;};
   names = builtins.attrNames;
   join = builtins.concatStringsSep "\n";
   isDerivation = value: builtins.isAttrs value && (value.type or null) == "derivation";
@@ -19,7 +20,7 @@
         "docker"
         "metadata"
       ]
-  ) (names aos.containerImages ++ ["aos-testing"]);
+  ) (names aos.containerImages ++ ["aos-testing" "aos-testing-staging"]);
   buildNames = builtins.concatMap (
     variant:
       map (name: "${variant}:${name}") (

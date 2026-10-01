@@ -67,8 +67,32 @@ pub(super) fn add_fixed_eval_host_source(
     validate_source(path)?;
     let source = eval_root.join("host-input/source");
     fs::create_dir_all(&source).context("creating authorized host source directory")?;
-    fs::copy(path, source.join("host.nix")).context("copying authorized host policy")?;
+    let payload = fs::read_to_string(path).context("reading authorized host policy")?;
+    materialize_authorized_host_source(&payload, &source)?;
     Ok(import(&source, true, timeout_ms, cancellation, temporary_roots)?.join("host.nix"))
+}
+
+/// Materializes exact authorized operator bytes beneath a fresh source root.
+///
+/// Configuration bundles retain their original document and every validated
+/// source file beside the generated entrypoint wrapper. Literal Nix inputs
+/// remain a single entrypoint file.
+///
+/// # Errors
+/// Returns an error for an invalid bundle, a preexisting source tree, or I/O.
+pub(crate) fn materialize_authorized_host_source(payload: &str, root: &Path) -> Result<()> {
+    if let Some(bundle) = aos_metadata::bundle::parse(payload.as_bytes())? {
+        bundle.materialize(&root.join(aos_metadata::bundle::SOURCE_DIR))?;
+        bundle.verify_tree(&root.join(aos_metadata::bundle::SOURCE_DIR))?;
+        fs::write(root.join(aos_metadata::bundle::BUNDLE_FILE), payload)?;
+        fs::write(
+            root.join("host.nix"),
+            bundle.host_module(payload.as_bytes()),
+        )?;
+    } else {
+        fs::write(root.join("host.nix"), payload)?;
+    }
+    Ok(())
 }
 
 fn validate_source(path: &Path) -> Result<()> {
@@ -187,4 +211,64 @@ fn configured_store_command(executable: &Path) -> Result<Command> {
     let mut command = Command::new(executable);
     aos_core::nix::configure_aos_nix_store(&mut command)?;
     Ok(command)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorized_literal_remains_exact() {
+        let directory = tempfile::tempdir().unwrap();
+        let payload = "{ aos.host.hostname = \"operator\"; }\n";
+
+        materialize_authorized_host_source(payload, directory.path()).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(directory.path().join("host.nix")).unwrap(),
+            payload
+        );
+        assert!(
+            !directory
+                .path()
+                .join(aos_metadata::bundle::SOURCE_DIR)
+                .exists()
+        );
+    }
+
+    #[test]
+    fn authorized_bundle_retains_complete_source_and_exact_payload() {
+        let directory = tempfile::tempdir().unwrap();
+        let payload = r#"{"schema":"aos.config-bundle/v1","entrypoint":"host.nix","files":{"host.nix":"aW1wb3J0IC4vbG9jYWwubml4Cg==","local.nix":"e30K"}}"#;
+
+        materialize_authorized_host_source(payload, directory.path()).unwrap();
+
+        let bundle = aos_metadata::bundle::parse(payload.as_bytes())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            fs::read_to_string(directory.path().join("host.nix")).unwrap(),
+            bundle.host_module(payload.as_bytes())
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join(aos_metadata::bundle::BUNDLE_FILE)).unwrap(),
+            payload
+        );
+        assert_eq!(
+            fs::read_to_string(directory.path().join("source/local.nix")).unwrap(),
+            "{}\n"
+        );
+        bundle
+            .verify_tree(&directory.path().join("source"))
+            .unwrap();
+    }
+
+    #[test]
+    fn invalid_bundle_never_materializes_a_host_wrapper() {
+        let directory = tempfile::tempdir().unwrap();
+        let payload = r#"{"schema":"aos.config-bundle/v1","entrypoint":"host.nix","files":{"../host.nix":"e30K"}}"#;
+
+        assert!(materialize_authorized_host_source(payload, directory.path()).is_err());
+        assert!(!directory.path().join("host.nix").exists());
+    }
 }

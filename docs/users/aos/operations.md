@@ -99,6 +99,17 @@ du -x -h -d 2 /var | sort -h
 journalctl --disk-usage
 ```
 
+For a host whose `host.nix` declares MD arrays, inspect assembly and
+resynchronization state; a sealed volume additionally reports its mapper:
+
+```sh
+cat /proc/mdstat
+mdadm --detail /dev/md/var
+journalctl -b -u aos-storage-topology.service
+cryptsetup status data
+findmnt -no SOURCE,FSTYPE /srv/data
+```
+
 For a ZFS-backed installation, inspect pool and encryption state:
 
 ```sh

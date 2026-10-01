@@ -210,7 +210,7 @@ implemented builder is
   closure (no host tools, sandbox-safe).
 - The FHS skeleton (`/usr/{bin,lib,sbin}` real, `/bin`/`/sbin`/`/lib`
   symlinks, empty `/etc`, `/proc`, `/sys`, `/dev`, `/run`) is staged.
-- Store closures are copied in; `/aos-registration` carries the closure-info
+- Store closures are copied in; `/usr/lib/aos/nix-registration` carries the closure-info
   stream so the embedded store is coherent.
 - `fakeroot -- mkfs.ext4 -d rootfs … root.img` produces the image — **no
   losetup, no mount**, every file owned by uid/gid 0. This is the same

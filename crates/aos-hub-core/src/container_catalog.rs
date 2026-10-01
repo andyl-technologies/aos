@@ -1,14 +1,17 @@
 //! Defines the base-image admission policy shared by indexing and publication.
 
-/// Admits the server base image through its canonical definition or alias.
+/// Admits the server and testing base images through their explicit definitions.
 pub(crate) fn admits_base_image_definition(package: &str, image: &str, attribute: &str) -> bool {
-    // Both attributes resolve to the same image. Keep the allowlist explicit so
-    // new per-system artifacts do not automatically widen the admitted catalog.
+    // Keep the supported variants explicit so other per-system artifacts do
+    // not automatically widen the admitted catalog.
     package == "aos"
         && image == "aos"
         && matches!(
             attribute,
-            "containerImages.aos" | "systems.server.build.containers.aos"
+            "containerImages.aos"
+                | "systems.server.build.containers.aos"
+                | "systems.aos-testing.build.containers.aos"
+                | "systems.aos-testing-staging.build.containers.aos"
         )
 }
 
@@ -18,7 +21,12 @@ mod tests {
 
     #[test]
     fn accepts_canonical_definition_and_alias() {
-        for attribute in ["containerImages.aos", "systems.server.build.containers.aos"] {
+        for attribute in [
+            "containerImages.aos",
+            "systems.server.build.containers.aos",
+            "systems.aos-testing.build.containers.aos",
+            "systems.aos-testing-staging.build.containers.aos",
+        ] {
             assert!(admits_base_image_definition("aos", "aos", attribute));
         }
     }
@@ -26,7 +34,7 @@ mod tests {
     #[test]
     fn rejects_other_definitions_and_identities() {
         for attribute in [
-            "systems.aos-testing.build.containers.aos",
+            "systems.other.build.containers.aos",
             "systems.server.build.containers.other",
             "containerImages.other",
             "",

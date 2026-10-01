@@ -407,6 +407,10 @@ in
             tar xf $src
             cd mariadb-${version}
 
+            # Cross probes can leave these optional warning checks unset.
+            # CMake still needs a valid condition in each generator expression.
+            patch -p1 < ${./mariadb-patches/0001-valid-optional-zip-flags.patch}
+
             # MariaDB's generic hardening probe tests ELF-only -z flags with
             # CMake's cross static-library mode, which cannot reject linker
             # options. The AOS wrapper already injects the corresponding

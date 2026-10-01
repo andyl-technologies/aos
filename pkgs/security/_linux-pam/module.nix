@@ -99,6 +99,14 @@
     ];
     session = autoOrderRules (
       [
+        # Keep login keyrings private and revoke session keys at logout.
+        {
+          name = "keyinit";
+          enable = service.startSession;
+          control = "optional";
+          modulePath = "${package}/lib/security/pam_keyinit.so";
+          args = ["force" "revoke"];
+        }
         {
           name = "env";
           enable = service.setEnvironment;
@@ -242,7 +250,9 @@
             if builtins.isList v
             then lib.concatStringsSep ":" v
             else toString v;
-        in ''${n}   DEFAULT="${value}"''
+          # SSH may supply PATH; package profiles must still take precedence.
+          override = lib.optionalString (n == "PATH") " OVERRIDE=\"${value}\"";
+        in ''${n}   DEFAULT="${value}"${override}''
       ) (lib.filterAttrs (_: v: v != null) vars)
     );
 

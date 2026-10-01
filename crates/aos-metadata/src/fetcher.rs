@@ -14,8 +14,8 @@
 //!
 //! # Data shapes
 //!
-//! - [`UserData`] — literal `host.nix`, or a size-cap transport pointer to the
-//!   exact `host.nix` bytes.
+//! - [`UserData`] — literal `host.nix`, a complete configuration bundle, or a
+//!   bounded transport pointer to either exact payload.
 //! - [`Facts`] — normalized, unauthenticated instance facts rendered to
 //!   `host-facts.nix` as `host.facts.*` ([`crate::facts_render`]).
 //! - [`StaticNetwork`] — the parsed DHCP-less network config seeded into
@@ -70,14 +70,14 @@ pub trait PlatformFetcher: Send + Sync {
     async fn fetch_facts(&self, http: &dyn MetadataHttp) -> Result<Facts>;
 }
 
-/// Operator user-data: exact inline `host.nix` bytes or a size-cap pointer.
+/// Operator user-data carrying a literal module, source bundle, or transport pointer.
 ///
 /// The `Pointer` form is the escape hatch for platforms with a small user-data
 /// cap (AWS 16 KB): a tiny JSON document naming a `host.nix` URL, its `sha256`
 /// content-pin, and an optional detached-signature URL.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UserData {
-    /// Exact literal `host.nix` bytes.
+    /// Exact inline configuration or a versioned bundle transport descriptor.
     Inline {
         /// Verbatim user-data.
         payload: Vec<u8>,
@@ -107,6 +107,24 @@ pub struct PointerDoc {
     pub sig_url: Option<String>,
 }
 
+/// Transport descriptor shared by all native cloud metadata providers.
+///
+/// ```json
+/// {"schema":"aos.config-bundle-pointer/v1","url":"https://example.org/config.json",
+///  "sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+///  "entrypoint":"entry.nix"}
+/// ```
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BundlePointer {
+    schema: String,
+    url: String,
+    sha256: String,
+    entrypoint: String,
+    #[serde(default)]
+    sig_url: Option<String>,
+}
+
 /// The concrete operator bytes after a [`UserData`] is resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedUserData {
@@ -119,9 +137,9 @@ pub struct ResolvedUserData {
 impl UserData {
     /// Resolve to concrete bytes, fetching the pointer target if necessary.
     ///
-    /// `Inline` is returned as-is. `Pointer` triggers a content-pinned GET of
-    /// `host_nix_url` (the pin is enforced by the HTTP surface) and, if
-    /// present, a GET of `sig_url`.
+    /// Recognized inline descriptors and legacy `Pointer` values trigger a
+    /// bounded, content-pinned download and optional detached-signature fetch.
+    /// Other inline payloads retain their exact bytes for authorization.
     ///
     /// # Errors
     ///
@@ -129,29 +147,116 @@ impl UserData {
     /// fails, or the signature URL is set but unreachable.
     pub async fn resolve(self, http: &dyn MetadataHttp) -> Result<ResolvedUserData> {
         match self {
-            Self::Inline { payload, sig } => Ok(ResolvedUserData { payload, sig }),
-            Self::Pointer(p) => {
-                let body = http
-                    .get_pinned(&p.host_nix_url, &p.sha256, &[])
-                    .await
-                    .with_context(|| format!("fetching host.nix pointer {}", p.host_nix_url))?
-                    .into_ok_body()
-                    .ok_or_else(|| {
-                        anyhow!("host.nix pointer {} returned no body", p.host_nix_url)
-                    })?;
-                let sig = match &p.sig_url {
-                    Some(url) => http
-                        .get(url, &[])
+            Self::Inline { payload, sig } => {
+                // The descriptor is transport only. Authentication still covers
+                // the complete resolved source document, including its entrypoint.
+                let value = serde_json::from_slice::<serde_json::Value>(&payload).ok();
+                if value
+                    .as_ref()
+                    .and_then(|value| value.get("schema"))
+                    .and_then(|value| value.as_str())
+                    == Some("aos.config-bundle-pointer/v1")
+                {
+                    let pointer: BundlePointer = serde_json::from_slice(&payload)?;
+                    anyhow::ensure!(
+                        pointer.schema == "aos.config-bundle-pointer/v1",
+                        "unsupported bundle pointer"
+                    );
+                    validate_bundle_url(&pointer.url)?;
+                    anyhow::ensure!(
+                        pointer.sha256.len() == 64
+                            && pointer
+                                .sha256
+                                .bytes()
+                                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+                        "bundle pointer requires lowercase SHA-256"
+                    );
+                    let body = http
+                        .get_pinned_limited(
+                            &pointer.url,
+                            &pointer.sha256,
+                            super::bundle::MAX_BUNDLE_BYTES,
+                        )
                         .await
-                        .with_context(|| format!("fetching signature pointer {url}"))?
+                        .map_err(|_| {
+                            anyhow!("bundle download failed integrity, size, or transport checks")
+                        })?
                         .into_ok_body()
-                        .and_then(|b| String::from_utf8(b).ok()),
-                    None => None,
-                };
-                Ok(ResolvedUserData { payload: body, sig })
+                        .context("bundle pointer returned no body")?;
+                    anyhow::ensure!(
+                        super::bundle::sha256_hex(&body) == pointer.sha256,
+                        "bundle content digest does not match descriptor"
+                    );
+                    let bundle = super::bundle::parse(&body)?
+                        .context("bundle pointer target is not a supported bundle")?;
+                    anyhow::ensure!(
+                        bundle.entrypoint == pointer.entrypoint,
+                        "bundle entrypoint differs from descriptor"
+                    );
+                    let sig = match pointer.sig_url {
+                        Some(url) => {
+                            validate_bundle_url(&url)?;
+                            Some(
+                                http.get(&url, &[])
+                                    .await
+                                    .map_err(|_| anyhow!("bundle signature download failed"))?
+                                    .into_ok_string()
+                                    .context("bundle signature returned no UTF-8 body")?,
+                            )
+                        }
+                        None => sig,
+                    };
+                    return Ok(ResolvedUserData { payload: body, sig });
+                }
+                // This also gives GCP the legacy size-cap pointer AWS already
+                // accepts, with the same integrity and authorization semantics.
+                if let Ok(pointer) = serde_json::from_slice::<PointerDoc>(&payload) {
+                    return resolve_pointer(pointer, http).await;
+                }
+                Ok(ResolvedUserData { payload, sig })
             }
+            Self::Pointer(p) => resolve_pointer(p, http).await,
         }
     }
+}
+
+fn validate_bundle_url(value: &str) -> Result<()> {
+    let url = url::Url::parse(value).context("parsing bundle URL")?;
+    anyhow::ensure!(
+        url.scheme() == "https"
+            && url.host_str().is_some()
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.fragment().is_none(),
+        "bundle URLs require HTTPS without credentials or fragments"
+    );
+    Ok(())
+}
+
+async fn resolve_pointer(pointer: PointerDoc, http: &dyn MetadataHttp) -> Result<ResolvedUserData> {
+    let payload = http
+        .get_pinned_limited(
+            &pointer.host_nix_url,
+            &pointer.sha256,
+            super::bundle::MAX_BUNDLE_BYTES,
+        )
+        .await
+        .map_err(|_| {
+            anyhow!("host configuration download failed integrity, size, or transport checks")
+        })?
+        .into_ok_body()
+        .ok_or_else(|| anyhow!("host.nix pointer returned no body"))?;
+    let sig = match pointer.sig_url {
+        Some(url) => Some(
+            http.get(&url, &[])
+                .await
+                .map_err(|_| anyhow!("configuration signature download failed"))?
+                .into_ok_string()
+                .context("signature pointer returned no UTF-8 body")?,
+        ),
+        None => None,
+    };
+    Ok(ResolvedUserData { payload, sig })
 }
 
 /// Normalized, unauthenticated instance facts.

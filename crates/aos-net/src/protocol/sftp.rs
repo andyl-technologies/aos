@@ -7,8 +7,17 @@
 //!
 //! Supports:
 //! - SFTP read/write/stat (chunked)
+//! - Atomic writes (temp sibling + rename) so readers never observe a
+//!   partially written object
+//! - Conditional writes (`If-Match` / `If-None-Match: *`) serialized by an
+//!   exclusive-create lock file; see [`super::conditional`]
 //! - SSH key + agent + password authentication
 //! - Idle session eviction
+//!
+//! The write paths live in the private `atomic` submodule, whose docs cover
+//! replacement on SFTPv3 servers and manual testing.
+
+mod atomic;
 
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -22,6 +31,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use ssh2::Session;
 
+use super::conditional::{WritePrecondition, LOCK_WAIT};
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
@@ -293,7 +303,8 @@ impl SftpProtocol {
         Ok(buf)
     }
 
-    /// Write data from a local file to a remote path in chunks.
+    /// Write data from a local file to a remote path in chunks, replacing
+    /// the destination atomically.
     fn sftp_write_from_file(
         session: &Mutex<Session>,
         remote_path: &str,
@@ -302,54 +313,20 @@ impl SftpProtocol {
         let session = session.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let sftp = session.sftp().context("opening SFTP channel")?;
 
-        if let Some(parent) = Path::new(remote_path).parent() {
-            let _ = sftp.mkdir(parent, 0o755);
-        }
-
         let mut local_file = std::fs::File::open(local_path)
             .with_context(|| format!("opening {}", local_path.display()))?;
 
-        let mut remote_file = sftp
-            .create(Path::new(remote_path))
-            .with_context(|| format!("creating {remote_path}"))?;
-
-        let mut bytes_written: u64 = 0;
-        let mut buf = vec![0u8; SFTP_CHUNK_SIZE];
-
-        loop {
-            let n = local_file
-                .read(&mut buf)
-                .with_context(|| format!("reading {}", local_path.display()))?;
-            if n == 0 {
-                break;
-            }
-            remote_file
-                .write_all(&buf[..n])
-                .with_context(|| format!("writing {remote_path}"))?;
-            bytes_written += n as u64;
-        }
-
-        Ok(bytes_written)
+        atomic::write_atomically(&sftp, remote_path, &mut local_file)
     }
 
-    /// Write byte data to a remote path in chunks.
+    /// Write byte data to a remote path in chunks, replacing the
+    /// destination atomically.
     fn sftp_write_bytes(session: &Mutex<Session>, path: &str, data: &[u8]) -> Result<()> {
         let session = session.lock().map_err(|e| anyhow::anyhow!("lock: {e}"))?;
         let sftp = session.sftp().context("opening SFTP channel")?;
 
-        if let Some(parent) = Path::new(path).parent() {
-            let _ = sftp.mkdir(parent, 0o755);
-        }
-
-        let mut file = sftp
-            .create(Path::new(path))
-            .with_context(|| format!("creating {path}"))?;
-
-        // Write in chunks to avoid oversized single write.
-        for chunk in data.chunks(SFTP_CHUNK_SIZE) {
-            file.write_all(chunk)
-                .with_context(|| format!("writing {path}"))?;
-        }
+        let mut source = data;
+        atomic::write_atomically(&sftp, path, &mut source)?;
         Ok(())
     }
 
@@ -445,6 +422,29 @@ impl Protocol for SftpProtocol {
         let (host, port, username, remote_path) = Self::parse_url(&request.url)?;
 
         let session = self.get_session(&host, port, username.as_deref(), auth)?;
+
+        if request.method == Method::Put {
+            if let Some(precondition) = WritePrecondition::from_headers(&request.headers)? {
+                let data = match &request.body {
+                    Some(TransferBody::Bytes(data)) => data.clone(),
+                    Some(TransferBody::File(path)) => tokio::fs::read(path)
+                        .await
+                        .with_context(|| format!("reading {}", path.display()))?,
+                    Some(TransferBody::Stream(_)) => {
+                        anyhow::bail!("stream body not supported for conditional SFTP writes");
+                    }
+                    None => Vec::new(),
+                };
+                return atomic::conditional_put(
+                    session,
+                    remote_path,
+                    data,
+                    precondition,
+                    LOCK_WAIT,
+                )
+                .await;
+            }
+        }
 
         match request.method {
             Method::Get => {

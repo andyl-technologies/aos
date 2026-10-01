@@ -24,24 +24,28 @@
   # The provisioning transaction derives its deterministic repart seed from
   # each target's GPT UUID. Keep only the primary GPT in the store fixture;
   # the driver expands it to the declared disk size and systemd-repart writes
-  # the canonical backup table while applying the first partition plan.
-  emptyDataDiskGpt =
-    pkgs.runCommand "aos-provisioning-empty-data-disk-gpt" {
+  # the canonical backup table while applying the first partition plan. Each
+  # extra disk gets its own GUID so no two targets share a repart seed.
+  mkEmptyDiskGpt = name: diskGuid:
+    pkgs.runCommand "aos-provisioning-empty-${name}-gpt" {
       buildDeps = [pkgs.gptfdisk];
     } ''
-        work_disk="$TMPDIR/empty-data-disk.img"
+        work_disk="$TMPDIR/empty-disk.img"
         truncate -s 4096M "$work_disk"
         ${pkgs.gptfdisk}/sbin/sgdisk --clear \
-          --disk-guid=11111111-2222-4333-8444-555555555556 \
+          --disk-guid=${diskGuid} \
           "$work_disk"
       dd if="$work_disk" of="$out/disk.gpt" bs=512 count=34 status=none
     '';
+  emptyDataDiskGpt = mkEmptyDiskGpt "data-disk" "11111111-2222-4333-8444-555555555556";
+  emptyMirrorDiskGpt = mkEmptyDiskGpt "mirror-disk" "11111111-2222-4333-8444-555555555557";
+  emptyMirrorDisk2Gpt = mkEmptyDiskGpt "mirror-disk-2" "11111111-2222-4333-8444-555555555558";
 in {
   name = "provisioning-boot";
-  # Shared image builds plus positive, fallback, multi-device, and fail-closed
-  # UEFI boots. No registry or upgrade, so this remains cheaper than
-  # install-from-image.
-  timeout = 1200;
+  # Shared image builds plus positive, fallback, multi-device, mirrored, and
+  # fail-closed UEFI boots. No registry or upgrade, so this remains cheaper
+  # than install-from-image.
+  timeout = 1800;
 
   machines = {
     node = {
@@ -88,6 +92,71 @@ in {
             sizeMax = "1G";
             format = "ext4";
           };
+        }
+      '';
+    };
+    # The system-state volume and a data volume each live on a two-member
+    # MD mirror declared entirely from host.nix. The root disk contributes
+    # the fixed `var` member; the second member and both data members sit on
+    # two extra virtio disks. The data mirror is xfs, so the initrd formats
+    # a non-default filesystem and stage 2 mounts it by label.
+    mirrored = {
+      system = systems.server-test;
+      bootMode = "image";
+      imageDiskMiB = 16384;
+      packages = ["aos-test-agent"];
+      extraDisks = [
+        {
+          serial = "aos-mirror";
+          sizeMiB = 4096;
+          source = "${emptyMirrorDiskGpt}/disk.gpt";
+        }
+        {
+          serial = "aos-mirror-2";
+          sizeMiB = 4096;
+          source = "${emptyMirrorDisk2Gpt}/disk.gpt";
+        }
+      ];
+      metadata."host.nix" = ''
+        {
+          aos.provisioning.storage = {
+            partitions = {
+              var = {
+                sizeMin = "2G";
+                sizeMax = "2G";
+                grow = false;
+              };
+              var-mirror = {
+                device = "/dev/disk/by-id/virtio-aos-mirror";
+                sizeMin = "2G";
+                sizeMax = "2G";
+                priority = 9000;
+              };
+              data-a = {
+                device = "/dev/disk/by-id/virtio-aos-mirror";
+                sizeMin = "1G";
+                sizeMax = "1G";
+                priority = 1000;
+              };
+              data-b = {
+                device = "/dev/disk/by-id/virtio-aos-mirror-2";
+                sizeMin = "1G";
+                sizeMax = "1G";
+              };
+            };
+            arrays = {
+              var = {
+                level = "raid1";
+                members = [ "var" "var-mirror" ];
+              };
+              data = {
+                level = "raid1";
+                members = [ "data-a" "data-b" ];
+                format = "xfs";
+              };
+            };
+          };
+          aos.filesystems.volumes.data.mountPoint = "/srv/data";
         }
       '';
     };
@@ -177,14 +246,16 @@ in {
       hostname = node.succeed("cat /etc/hostname").strip()
       assert hostname == "node", f"hostname is {hostname!r}, expected 'node'"
 
+      # Fleet addresses are assigned in machine-name order, so read the
+      # driver's assignment instead of hardcoding it.
       hosts = node.succeed("cat /etc/hosts")
-      assert "192.168.50.13 node" in hosts, f"/etc/hosts missing fleet entry:\n{hosts}"
+      assert f"{node.ip} node" in hosts, f"/etc/hosts missing fleet entry:\n{hosts}"
 
       # The .network baked by the identity module (MAC-matched) bound the
       # fleet IP. The guest has no `ip` tool, so read the kernel's local-route
       # trie (/proc/net/fib_trie lists configured addresses) and match the
       # address host-side. net.ifnames=0 is baked, so the NIC is eth0.
-      assert "192.168.50.13" in node.succeed(
+      assert node.ip in node.succeed(
           "cat /proc/net/fib_trie"
       ), "the baked fleet address was not assigned to any interface"
 
@@ -366,6 +437,84 @@ in {
           f"printf '%s\\n' \"$result\" | ${pkgs.jq}/bin/jq -e "
           f"'any(.[]; .activity != \"unchanged\")' >/dev/null"
       )
+
+      # Both mirrors were created in the first-boot transaction: the system
+      # state runs on /dev/md/var, the data volume on /dev/md/data mounted by
+      # its filesystem label, and every member is a linux-raid partition. The
+      # provenance marker committed only after the arrays existed.
+      MDADM = "${pkgs.mdadm}/sbin/mdadm"
+      LSBLK = "${pkgs.util-linux}/bin/lsblk"
+      LINUX_RAID = "a19d880f-05fc-4d3b-a006-743f0f84911e"
+
+      def storage_diagnostics():
+          # Collected before an assertion fails so a broken layout explains
+          # itself: unit state, kernel md state, udev symlinks, and the
+          # journal lines of the units that assemble and mount the volumes.
+          return mirrored.succeed(
+              "systemctl --failed --no-legend; echo ---; cat /proc/mdstat;"
+              " echo ---; ls -l /dev/md /dev/disk/by-label 2>&1; echo ---;"
+              " journalctl -b --no-pager -o cat -u srv-data.mount"
+              " -u 'dev-disk-by\\x2dlabel-data.device' -u aos-storage-topology"
+              " 2>&1 | tail -40"
+          )
+
+      def assert_mirrored_layout(label):
+          mirrored.succeed("systemctl is-active multi-user.target")
+          mounts = mirrored.succeed("cat /proc/mounts")
+          md_var = mirrored.succeed("readlink -f /dev/md/var").strip()
+          md_data = mirrored.succeed("readlink -f /dev/md/data").strip()
+          assert f"{md_var} /var ext4" in mounts, (
+              f"{label}: /var not on md/var:\n{mounts}\n{storage_diagnostics()}"
+          )
+          assert f"{md_data} /srv/data xfs" in mounts, (
+              f"{label}: /srv/data not on md/data as xfs:\n{mounts}\n{storage_diagnostics()}"
+          )
+          for name, level, members in (("var", "raid1", 2), ("data", "raid1", 2)):
+              detail = mirrored.succeed(f"{MDADM} --detail /dev/md/{name}")
+              assert f"Raid Level : {level}" in detail, detail
+              assert f"Raid Devices : {members}" in detail, detail
+              assert f"Name : aos:{name}" in detail, detail
+          failed = mirrored.succeed("systemctl --failed --no-legend").strip()
+          assert not failed, f"{label}: failed units: {failed!r}"
+
+      assert_mirrored_layout("first boot")
+      mirrored.succeed("test -e /dev/disk/by-partlabel/aos-provenance-operator-v1")
+      mirrored.succeed("test ! -e /dev/disk/by-partlabel/aos-provisioning-pending-v1")
+      for label in ("var", "var-mirror", "data-a", "data-b"):
+          member = mirrored.succeed(f"readlink -f /dev/disk/by-partlabel/{label}").strip()
+          member_type = mirrored.succeed(f"{LSBLK} -no PARTTYPE {member}").strip().lower()
+          assert member_type == LINUX_RAID, f"{label} has type {member_type!r}"
+      topology_log = mirrored.succeed(
+          "journalctl -b -u aos-storage-topology.service --no-pager --output=cat"
+      )
+      assert "creating raid1 array var" in topology_log, topology_log
+      assert "creating raid1 array data" in topology_log, topology_log
+      assert "committed aos-provenance-operator-v1" in topology_log, topology_log
+      mirrored.succeed("test -s /var/lib/aos-provisioning/desired/storage-arrays")
+      volumes = mirrored.succeed("cat /run/aos-metadata/storage-volumes")
+      assert "data\tarray\t/dev/md/data\tdata\tnone\txfs" in volumes, volumes
+      assert "var\tarray\t/dev/md/var\tvar\tnone\text4" in volumes, volumes
+      mirrored.succeed("echo probe > /srv/data/probe && sync")
+
+      # Later boots assemble the committed arrays from their superblocks
+      # whether or not the plan is available, and the plan-backed boot reports
+      # the arrays as coherent.
+      mirrored.reboot()
+      mirrored.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
+      assert_mirrored_layout("reboot")
+      mirrored.succeed("test \"$(cat /run/aos-metadata/storage-coherence)\" = coherent")
+      mirrored.succeed("test \"$(cat /srv/data/probe)\" = probe")
+      topology_log = mirrored.succeed(
+          "journalctl -b -u aos-storage-topology.service --no-pager --output=cat"
+      )
+      assert "creating" not in topology_log, topology_log
+      assert "array var is active" in topology_log, topology_log
+
+      mirrored.reboot_without_metadata()
+      mirrored.wait_until_succeeds("systemctl is-active multi-user.target", timeout=120)
+      assert_mirrored_layout("metadata outage")
+      mirrored.succeed("test \"$(cat /run/aos-metadata/storage-coherence)\" = unavailable")
+      mirrored.succeed("test \"$(cat /srv/data/probe)\" = probe")
 
       # Present but malformed host.nix fails before GPT mutation. This machine
       # intentionally never reaches the guest agent, so inspect its serial log

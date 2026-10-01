@@ -31,6 +31,8 @@ struct Definition {
     revision: String,
     swap_source: Option<String>,
     trigger: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    optional_mount_source: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -57,6 +59,8 @@ struct Swap {
 #[serde(deny_unknown_fields)]
 struct Mount {
     name: String,
+    #[serde(default)]
+    optional: bool,
     source: String,
     destination: String,
     #[serde(default)]
@@ -162,6 +166,7 @@ fn definition(invocation: &Invocation, ability: &str) -> Result<Definition> {
 }
 
 fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Result<Definition> {
+    let mut optional_mount_source = None;
     let (unit, title, body, target, enabled, swap_source, trigger) = match ability {
         "swap" => {
             let input: Swap = serde_json::from_value(input.clone())?;
@@ -184,24 +189,35 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
             let input: Mount = serde_json::from_value(input.clone())?;
             normalized_path(&input.source)?;
             let unit = path_unit(&input.destination, "mount")?;
-            let mut body = format!(
+            if input.optional {
+                optional_mount_source = Some(input.source.clone());
+            }
+            let mut body = if input.optional {
+                format!("ConditionPathExists={}\n\n", quoted(&input.source)?)
+            } else {
+                String::new()
+            };
+            body.push_str(&format!(
                 "[Mount]\nWhat={}\nWhere={}\n",
                 quoted(&input.source)?,
                 quoted(&input.destination)?
-            );
+            ));
             if let Some(filesystem) = input.filesystem {
                 ensure!(!filesystem.is_empty(), "empty filesystem type");
                 body.push_str(&format!("Type={}\n", quoted(&filesystem)?));
             }
-            if !input.options.is_empty() {
+            let mut options = input.options;
+            if input.optional && !options.iter().any(|option| option == "nofail") {
+                options.push("nofail".into());
+            }
+            if !options.is_empty() {
                 ensure!(
-                    input
-                        .options
+                    options
                         .iter()
                         .all(|option| !option.is_empty() && !option.contains(',')),
                     "ambiguous mount options"
                 );
-                body.push_str(&format!("Options={}\n", quoted(&input.options.join(","))?));
+                body.push_str(&format!("Options={}\n", quoted(&options.join(","))?));
             }
             if let Some(timeout) = input.timeout_millis {
                 body.push_str(&format!("TimeoutSec={timeout}ms\n"));
@@ -272,6 +288,7 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
         revision: format!("sha256:{revision}"),
         swap_source,
         trigger,
+        optional_mount_source,
     })
 }
 
@@ -512,23 +529,80 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     manager.daemon_reload().await?;
     manager.load_unit(&desired.unit).await?;
     let identity = owned_identity(&manager, &desired).await?;
-    let job = if desired.enabled {
-        manager
-            .start_unit_exact_revision(&desired.unit, &identity, &desired.revision)
-            .await?
+    let source_missing = optional_mount_source_missing(&desired)?;
+    let job = if desired.enabled && !source_missing {
+        Some(
+            manager
+                .start_unit_exact_revision(&desired.unit, &identity, &desired.revision)
+                .await?,
+        )
+    } else if !desired.enabled {
+        Some(
+            manager
+                .stop_unit_exact_revision(&desired.unit, &identity, &desired.revision)
+                .await?,
+        )
     } else {
-        manager
-            .stop_unit_exact_revision(&desired.unit, &identity, &desired.revision)
-            .await?
+        None
     };
+    if let Some(job) = job {
+        ensure!(
+            job.result.is_done(),
+            "owned unit convergence failed: {}",
+            job.result.label()
+        );
+    }
+    let active = manager
+        .active_state_exact_revision(&desired.unit, &identity, &desired.revision)
+        .await?;
     ensure!(
-        job.result.is_done(),
-        "owned unit convergence failed: {}",
-        job.result.label()
+        resource_converged(&desired, &active, source_missing),
+        "owned resource did not reach its requested availability"
     );
     receipt.complete = true;
     atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
-    Ok(json!({"resource":desired.unit}))
+    Ok(resource_outputs(&desired, &active))
+}
+
+/// Distinguishes an absent optional source from inaccessible or invalid paths.
+fn optional_mount_source_missing(desired: &Definition) -> Result<bool> {
+    let Some(source) = &desired.optional_mount_source else {
+        return Ok(false);
+    };
+    match fs::metadata(source) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn resource_converged(
+    desired: &Definition,
+    active: &aos_systemd::UnitActiveState,
+    source_missing: bool,
+) -> bool {
+    if !desired.enabled {
+        *active == aos_systemd::UnitActiveState::Inactive
+    } else {
+        active.is_active()
+            || (desired.optional_mount_source.is_some()
+                && source_missing
+                && *active == aos_systemd::UnitActiveState::Inactive)
+    }
+}
+
+fn resource_outputs(desired: &Definition, active: &aos_systemd::UnitActiveState) -> Value {
+    let mut outputs = json!({"resource":desired.unit});
+    if desired.unit.ends_with(".mount") {
+        outputs["state"] = json!(if !desired.enabled {
+            "disabled"
+        } else if active.is_active() {
+            "mounted"
+        } else {
+            "unavailable"
+        });
+    }
+    outputs
 }
 
 async fn observe(
@@ -611,11 +685,7 @@ async fn observe(
     let active = manager
         .active_state_exact_revision(&desired.unit, &identity, &desired.revision)
         .await?;
-    let converged = if desired.enabled {
-        active.is_active()
-    } else {
-        active == aos_systemd::UnitActiveState::Inactive
-    };
+    let converged = resource_converged(desired, &active, optional_mount_source_missing(desired)?);
     if !converged {
         return Ok(json!({"status":"retry-safe"}));
     }
@@ -646,12 +716,75 @@ async fn observe(
             "owned swap kernel state differs from desired activation"
         );
     }
-    Ok(json!({"status":"current","outputs":{"resource":desired.unit}}))
+    Ok(json!({"status":"current","outputs":resource_outputs(desired, &active)}))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn optional_mount_reports_absence_and_retries_when_source_appears() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("sealed-volume");
+        let desired = definition_for(
+            "optional-data",
+            &"a".repeat(64),
+            "mount",
+            &json!({
+                "name": "data", "source": source, "destination": "/srv/data",
+                "filesystem": "ext4", "optional": true
+            }),
+        )
+        .unwrap();
+        let inactive = aos_systemd::UnitActiveState::Inactive;
+
+        assert!(desired.text.contains("ConditionPathExists="));
+        assert!(desired.text.contains("Options=\"nofail\""));
+        assert!(optional_mount_source_missing(&desired).unwrap());
+        assert!(resource_converged(&desired, &inactive, true));
+        assert_eq!(
+            resource_outputs(&desired, &inactive)["state"],
+            "unavailable"
+        );
+
+        fs::write(&source, b"available source").unwrap();
+
+        assert!(!optional_mount_source_missing(&desired).unwrap());
+        assert!(!resource_converged(&desired, &inactive, false));
+        let active = aos_systemd::UnitActiveState::Active;
+        assert!(resource_converged(&desired, &active, false));
+        assert_eq!(resource_outputs(&desired, &active)["state"], "mounted");
+    }
+
+    #[test]
+    fn required_mount_never_converges_with_an_absent_source() {
+        let desired = definition_for(
+            "required-data",
+            &"a".repeat(64),
+            "mount",
+            &json!({"name": "state", "source": "/dev/disk/by-label/var", "destination": "/var"}),
+        )
+        .unwrap();
+
+        assert!(!desired.text.contains("ConditionPathExists="));
+        assert!(!desired.text.contains("nofail"));
+        assert!(!resource_converged(
+            &desired,
+            &aos_systemd::UnitActiveState::Inactive,
+            true
+        ));
+        assert!(!resource_converged(
+            &desired,
+            &aos_systemd::UnitActiveState::Failed,
+            true
+        ));
+        assert!(resource_converged(
+            &desired,
+            &aos_systemd::UnitActiveState::Active,
+            false
+        ));
+    }
 
     #[test]
     fn unit_receipt_rejects_foreign_replacements_and_recognizes_missing_owned_files() {

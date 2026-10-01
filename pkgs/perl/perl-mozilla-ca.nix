@@ -2,13 +2,14 @@
 {
   lib,
   mkDerivation,
+  buildPackages,
   fetchurl,
   perl,
   ca-certificates,
 }: let
   version = "20230821";
 in
-  import ../build-support/_perl-module.nix {inherit mkDerivation perl;} {
+  import ../build-support/_perl-module.nix {inherit mkDerivation buildPackages perl;} {
     platformSupport = {
       build = [
         {

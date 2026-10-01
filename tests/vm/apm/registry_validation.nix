@@ -118,7 +118,7 @@
     experimental-features = nix-command
     NIXCONF
     nix-store --init
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
   '';
 
   registryFixtureHelpers = ''

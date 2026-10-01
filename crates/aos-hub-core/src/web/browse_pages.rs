@@ -148,6 +148,7 @@ pub struct RegistrySetup {
     registry_url: Option<String>,
     client_name: String,
     trust_keys: Vec<String>,
+    nix_cache_public_keys: Vec<String>,
     substituters: Vec<String>,
 }
 
@@ -190,8 +191,15 @@ impl RegistrySetup {
             registry_url,
             client_name,
             trust_keys: registry.trust_keys.clone(),
+            nix_cache_public_keys: Vec::new(),
             substituters,
         }
+    }
+
+    /// Supplies the cache-specific public keys for Nix configuration.
+    pub(crate) fn with_nix_cache_public_keys(mut self, keys: Vec<String>) -> Self {
+        self.nix_cache_public_keys = keys;
+        self
     }
 
     fn add_command(&self) -> Option<String> {
@@ -241,11 +249,11 @@ impl RegistrySetup {
 
     fn plain_nix(&self) -> String {
         let mut plain = format!("substituters = {}", self.substituters.join(" "));
-        if !self.trust_keys.is_empty() {
+        if !self.nix_cache_public_keys.is_empty() {
             let _ = write!(
                 plain,
                 "\ntrusted-public-keys = {}",
-                self.trust_keys.join(" ")
+                self.nix_cache_public_keys.join(" ")
             );
         }
         plain

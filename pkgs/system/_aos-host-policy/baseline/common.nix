@@ -14,7 +14,6 @@ in {
   imports = [./boot-policy.nix];
   config = lib.mkMerge [
     {
-      environment.sessionVariables.PATH = lib.mkDefault "/run/wrappers/bin:/var/lib/profiles/system/current/bin:/var/lib/profiles/system/current/sbin";
       aos.login.profile.enable = true;
       aos.configurationLower.enable = true;
       aos.security.ebpfLsm.enable = lib.mkDefault true;

@@ -452,11 +452,11 @@
         "sourceful metadata is explicit"
 
       run_ok search-desc "$APM" search Surface
-      assert_file_contains /tmp/surface-search-desc.out "surfacepkg" "apm search finds descriptions"
+      assert_file_contains /tmp/surface-search-desc.out "^surfacepkg 1.0.0 \[registry: surface-reg\] - Surface command fixture$" "apm search labels the registry separately"
       run_ok search-names "$APM" search surface --names-only
       assert_file_contains /tmp/surface-search-names.out "surfacepkg" "apm search --names-only finds package names"
       run_ok search-installed "$APM" search surface --installed
-      assert_file_contains /tmp/surface-search-installed.out "surfacepkg" "apm search --installed filters through profile metadata"
+      assert_file_contains /tmp/surface-search-installed.out "^surfacepkg 1.0.0 \[registry: surface-reg\] - Surface command fixture$" "apm search --installed labels the source registry"
       run_ok search-installed-json "$APM" --json search surface --installed
       "$JQ" -e \
         'map(select(.name == "surfacepkg" and .registry == "surface-reg" and .version == "1.0.0")) | length == 1' \
@@ -475,16 +475,9 @@
           and .store_path == $store
           and (.dependencies | index("surface-leaf"))' \
         /tmp/surface-show-json.out >/dev/null
-      run_ok info "$APM" info surfacepkg
-      assert_file_contains /tmp/surface-info.out "Surface command fixture" \
-        "apm info prints real package metadata"
-      run_ok info-permissions "$APM" info surfacepkg --permissions
-      assert_file_contains /tmp/surface-info-permissions.out "surfacepkg" \
-        "apm info --permissions resolves the real package"
-      run_ok info-json "$APM" --json info surfacepkg
-      "$JQ" -e --arg store "$SURFACE_STORE" \
-        '.name == "surfacepkg" and .version == "1.0.0" and .store_path == $store' \
-        /tmp/surface-info-json.out >/dev/null
+      run_ok show-permissions "$APM" show surfacepkg --permissions
+      assert_file_contains /tmp/surface-show-permissions.out "surfacepkg" \
+        "apm show --permissions resolves the real package"
       run_ok list "$APM" list
       assert_file_contains /tmp/surface-list.out "surfacepkg/surface-reg" "apm list includes registry package"
       run_ok list-installed "$APM" list --installed

@@ -104,18 +104,46 @@ pub(super) fn verify(command: &NativeDeploymentCommand, number: u32) -> Result<(
     verify_identity(&proof.authorization_identity, &command.nix_store)?;
     verify_identity(&proof.host, &command.nix_store)?;
     verify_identity(&proof.facts, &command.nix_store)?;
+    let payload = authorized.host_module.as_deref().unwrap_or("{}\n");
+    let bundle = aos_metadata::bundle::parse(payload.as_bytes())?;
+    let expected_host = bundle
+        .as_ref()
+        .map(|bundle| bundle.host_module(payload.as_bytes()))
+        .unwrap_or_else(|| payload.to_owned());
     ensure!(
         read_immutable_bounded(
             &proof.host.path.join("host.nix"),
             &command.nix_store,
-            1024 * 1024
-        )? == authorized
-            .host_module
-            .as_deref()
-            .unwrap_or("{}\n")
-            .as_bytes(),
+            1024 * 1024,
+        )? == expected_host.as_bytes(),
         "accepted host source differs from the original authorization"
     );
+    if let Some(bundle) = bundle {
+        ensure!(
+            read_immutable_bounded(
+                &proof.host.path.join(aos_metadata::bundle::BUNDLE_FILE),
+                &command.nix_store,
+                aos_metadata::bundle::MAX_BUNDLE_BYTES,
+            )? == payload.as_bytes(),
+            "retained configuration bundle differs from its authorized payload"
+        );
+        use base64::Engine as _;
+        for (relative, encoded) in bundle.files {
+            let expected = base64::engine::general_purpose::STANDARD.decode(encoded)?;
+            ensure!(
+                read_immutable_bounded(
+                    &proof
+                        .host
+                        .path
+                        .join(aos_metadata::bundle::SOURCE_DIR)
+                        .join(relative),
+                    &command.nix_store,
+                    aos_metadata::bundle::MAX_BUNDLE_BYTES,
+                )? == expected,
+                "retained bundle source differs from its authorized bytes"
+            );
+        }
+    }
     let facts: aos_metadata::fetcher::Facts = serde_json::from_value(authorized.facts.value)?;
     ensure!(
         read_immutable_bounded(&proof.facts.path, &command.nix_store, 1024 * 1024)?

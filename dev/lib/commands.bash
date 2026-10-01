@@ -3,7 +3,16 @@ aos_dev_build() {
   [[ -n $category && -n $name ]] || aos_dev_error 'build requires a category and target name'
   shift 2
   category=$(aos_dev_category "$category") || aos_dev_error "unknown target category '$category'"
-  aos_dev_validate_target "$category" "$name"
+
+  # Validate cross-only roots against the same package set that Nix will build.
+  local cross_system= argument_index
+  local -a build_args=("$@")
+  for ((argument_index = 0; argument_index < ${#build_args[@]}; argument_index++)); do
+    if [[ ${build_args[argument_index]} == --argstr && ${build_args[argument_index + 1]:-} == crossSystem ]]; then
+      cross_system=${build_args[argument_index + 2]:-}
+    fi
+  done
+  aos_dev_validate_target "$category" "$name" "$cross_system"
 
   local attr
   attr=$(aos_dev_target_attr "$category" "$name")

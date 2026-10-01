@@ -8,15 +8,16 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use aos_core::nar::cache::NarInfoSigner;
 use aos_core::nar::info;
-use aos_package::registry::nixcache::generate_static_cache;
-use aos_package::registry::release::{RegistryReleaseEntry, verify_release_entries};
+use aos_package::registry::nixcache::generate_static_cache_with_roots;
+use aos_package::registry::release::RegistryReleaseEntry;
+use aos_package::registry::release::verify_release_entries;
 use aos_release::build::BuildReportV1;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::signing::{
     SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignerRole, SigningContext, SigningOperation,
-    SigningRequestV1, TrustedEd25519Key,
+    SigningRequest, TrustedEd25519Key,
 };
 use base64::Engine as _;
 
@@ -37,7 +38,7 @@ pub(super) async fn run(
         );
     }
     let plan_bytes = read_canonical(&args.plan, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
     let report_bytes = read_canonical(&args.build_report, "build report")?;
@@ -82,7 +83,12 @@ pub(super) async fn run(
         .prefix(".aos-release-cache-")
         .tempdir_in(parent)?;
     let cache = temporary.path().join("cache");
-    let report = generate_static_cache(
+    let source_roots = report
+        .sources
+        .iter()
+        .map(|source| source.store_path.clone())
+        .collect::<Vec<_>>();
+    let report = generate_static_cache_with_roots(
         &args.registry,
         &cache,
         None,
@@ -90,6 +96,7 @@ pub(super) async fn run(
         args.jobs,
         None,
         true,
+        &source_roots,
         printer,
     )
     .await?;
@@ -138,7 +145,7 @@ pub(super) async fn run(
 #[allow(clippy::too_many_arguments)]
 async fn sign_narinfos(
     cache: &Path,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     plan_digest: Sha256Digest,
     key: &TrustedEd25519Key,
     verification_identity: &str,
@@ -175,7 +182,7 @@ async fn sign_narinfos(
             &references,
         );
         let nonce = fresh_nonce(&mut nonces)?;
-        let request = SigningRequestV1 {
+        let request = SigningRequest {
             schema_version: SIGNING_REQUEST_DOMAIN.to_string(),
             request_id: format!("narinfo-{}", &nonce[..24]),
             nonce,

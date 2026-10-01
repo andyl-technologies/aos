@@ -17,7 +17,7 @@ use aos_image_finalizer::signer::ImageSigner;
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::signing::{
-    SignatureResponseV1, SigningRequestV1, TrustedEd25519Key, verify_ed25519_response,
+    SignatureResponse, SigningRequest, TrustedEd25519Key, verify_ed25519_response,
     verify_response_binding,
 };
 use base64::Engine as _;
@@ -46,7 +46,7 @@ pub(super) async fn run(
 
 async fn invoke(args: &ReleaseSignerInvokeArgs, printer: &aos_core::output::Printer) -> Result<()> {
     let request_bytes = capture::control_file(&args.request, "signing request")?;
-    let request: SigningRequestV1 = canonical::from_slice(&request_bytes, "signing request")?;
+    let request: SigningRequest = canonical::from_slice(&request_bytes, "signing request")?;
     let payload = capture::control_file(&args.payload, "signing payload")?;
     let (key_id, key_path) = parse_key_spec(&args.trusted_key)?;
     if key_id != request.key_id {
@@ -144,11 +144,11 @@ impl ExternalSigner {
     /// response that fails request binding or Ed25519 verification.
     pub(super) async fn sign_ed25519(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         payload: &[u8],
         trusted_key: &TrustedEd25519Key,
         expected_verification_identity: &str,
-    ) -> Result<SignatureResponseV1> {
+    ) -> Result<SignatureResponse> {
         request.validate()?;
         verify_payload_binding(request, payload)?;
         let request_bytes = canonical::to_vec(request)?;
@@ -156,7 +156,7 @@ impl ExternalSigner {
         if !output.is_empty() {
             bail!("detached signer returned transformed output bytes");
         }
-        let response: SignatureResponseV1 =
+        let response: SignatureResponse =
             canonical::from_slice(&response_bytes, "external signer response")?;
         verify_ed25519_response(request, &response, trusted_key)?;
         verify_public_identity(&response, trusted_key, expected_verification_identity)?;
@@ -176,12 +176,12 @@ impl ExternalSigner {
     /// a signature that does not verify over `payload` in `namespace`.
     pub(super) async fn sign_sshsig(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         payload: &[u8],
         trusted_key: &str,
         namespace: &str,
         expected_verification_identity: &str,
-    ) -> Result<(SignatureResponseV1, String)> {
+    ) -> Result<(SignatureResponse, String)> {
         request.validate()?;
         verify_payload_binding(request, payload)?;
         let request_bytes = canonical::to_vec(request)?;
@@ -189,7 +189,7 @@ impl ExternalSigner {
         if !output.is_empty() {
             bail!("detached SSHSIG signer returned transformed output bytes");
         }
-        let response: SignatureResponseV1 =
+        let response: SignatureResponse =
             canonical::from_slice(&response_bytes, "external SSHSIG response")?;
         verify_response_binding(request, &response)?;
         if response.verification_identity != expected_verification_identity {
@@ -227,11 +227,11 @@ impl ExternalSigner {
     /// identity mismatch, malformed signature bytes, or failed verification.
     pub(super) async fn sign_ed25519_payload(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         payload: &[u8],
         trusted_key: &TrustedEd25519Key,
         expected_verification_identity: &str,
-    ) -> Result<SignatureResponseV1> {
+    ) -> Result<SignatureResponse> {
         request.validate()?;
         verify_payload_binding(request, payload)?;
         let request_bytes = canonical::to_vec(request)?;
@@ -239,7 +239,7 @@ impl ExternalSigner {
         if !output.is_empty() {
             bail!("raw Ed25519 signer returned transformed output bytes");
         }
-        let response: SignatureResponseV1 =
+        let response: SignatureResponse =
             canonical::from_slice(&response_bytes, "external payload-signature response")?;
         verify_response_binding(request, &response)?;
         verify_public_identity(&response, trusted_key, expected_verification_identity)?;
@@ -325,10 +325,10 @@ impl ExternalSigner {
 
     async fn invoke_file(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         input: &Path,
         output: Option<(&Path, u64)>,
-    ) -> Result<SignatureResponseV1> {
+    ) -> Result<SignatureResponse> {
         request.validate()?;
         let input_capture = CapturedInput::open(input)?;
         if input_capture.digest != request.payload_digest {
@@ -403,7 +403,7 @@ impl ExternalSigner {
         }
         input_capture.verify_unchanged(input)?;
 
-        let response: SignatureResponseV1 =
+        let response: SignatureResponse =
             canonical::from_slice(&response_bytes, "external signer response")?;
         verify_response_binding(request, &response)?;
         if response.output_digest != output_digest {
@@ -424,11 +424,11 @@ impl ExternalSigner {
 impl ImageSigner for ExternalSigner {
     async fn transform(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         input: &Path,
         output: &Path,
         maximum_output_bytes: u64,
-    ) -> Result<SignatureResponseV1> {
+    ) -> Result<SignatureResponse> {
         if maximum_output_bytes == 0 {
             bail!("signer transformed-output limit must be nonzero");
         }
@@ -438,9 +438,9 @@ impl ImageSigner for ExternalSigner {
 
     async fn sign_detached(
         &self,
-        request: &SigningRequestV1,
+        request: &SigningRequest,
         input: &Path,
-    ) -> Result<SignatureResponseV1> {
+    ) -> Result<SignatureResponse> {
         self.invoke_file(request, input, None).await
     }
 }
@@ -605,7 +605,7 @@ async fn read_exchange_response_to_file(
     Ok((response, digest))
 }
 
-fn verify_payload_binding(request: &SigningRequestV1, payload: &[u8]) -> Result<()> {
+fn verify_payload_binding(request: &SigningRequest, payload: &[u8]) -> Result<()> {
     request.verify_payload_bytes(payload)
 }
 
@@ -654,7 +654,7 @@ async fn read_u64(reader: &mut (impl AsyncRead + Unpin)) -> Result<u64> {
 }
 
 fn verify_public_identity(
-    response: &SignatureResponseV1,
+    response: &SignatureResponse,
     trusted_key: &TrustedEd25519Key,
     expected_verification_identity: &str,
 ) -> Result<()> {
@@ -705,7 +705,7 @@ mod tests {
             key_id: "release-key".to_owned(),
             public_key: [7; 32],
         };
-        let response = SignatureResponseV1 {
+        let response = SignatureResponse {
             schema_version: "aos.release.signature-response/v1".to_owned(),
             request_digest: Sha256Digest::of_bytes("request"),
             role: SignerRole::ReleaseEvidence,
@@ -730,8 +730,8 @@ mod tests {
     }
 
     #[allow(dead_code)]
-    fn payload_request() -> SigningRequestV1 {
-        SigningRequestV1 {
+    fn payload_request() -> SigningRequest {
+        SigningRequest {
             schema_version: "aos.release.signing-request/v1".to_owned(),
             request_id: "request-1".to_owned(),
             nonce: "00".repeat(32),

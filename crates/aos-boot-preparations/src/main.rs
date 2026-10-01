@@ -162,14 +162,14 @@ fn run_deployment(
 }
 
 fn seed_store_registration(nix_store: &str) -> Result<()> {
-    let digest = fs::read_to_string("/aos-registration.sha256").map_err(|error| {
+    let digest = fs::read_to_string("/usr/lib/aos/nix-registration.sha256").map_err(|error| {
         PreparationError::io("reading verified-image registration digest", error)
     })?;
     let digest = digest.trim_end_matches('\n');
     validate_admission_digest(digest)?;
     let output = Command::new(SHA256SUM)
         .env_clear()
-        .arg("/aos-registration")
+        .arg("/usr/lib/aos/nix-registration")
         .output()
         .map_err(|error| PreparationError::io("hashing the image registration stream", error))?;
     let observed = std::str::from_utf8(&output.stdout).map_err(|error| {
@@ -182,7 +182,7 @@ fn seed_store_registration(nix_store: &str) -> Result<()> {
             "image registration stream checksum differs",
         ));
     }
-    let registration = fs::File::open("/aos-registration")
+    let registration = fs::File::open("/usr/lib/aos/nix-registration")
         .map_err(|error| PreparationError::io("opening verified registration", error))?;
     let status = Command::new(nix_store)
         .env_clear()

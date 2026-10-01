@@ -209,6 +209,27 @@ pub fn authenticate_host_nix_file(
     let Ok(bytes) = std::fs::read(host_nix_path) else {
         return Err(HostNixTrustError::MissingSignature);
     };
+    if bytes.starts_with(b"# aos.config-bundle/v1 ") {
+        let parent = host_nix_path
+            .parent()
+            .ok_or(HostNixTrustError::MissingSignature)?;
+        let bundle_bytes = std::fs::read(parent.join(crate::bundle::BUNDLE_FILE))
+            .map_err(|_| HostNixTrustError::MissingSignature)?;
+        let bundle = crate::bundle::parse(&bundle_bytes)
+            .map_err(|_| HostNixTrustError::Untrusted)?
+            .ok_or(HostNixTrustError::Untrusted)?;
+        if bytes != bundle.host_module(&bundle_bytes).as_bytes()
+            || bundle
+                .verify_tree(&parent.join(crate::bundle::SOURCE_DIR))
+                .is_err()
+        {
+            return Err(HostNixTrustError::Untrusted);
+        }
+        let signature = ["config-bundle.json.sig", "user-data.sig", "host.nix.sig"]
+            .into_iter()
+            .find_map(|name| std::fs::read_to_string(parent.join(name)).ok());
+        return authenticate_host_nix(&bundle_bytes, signature.as_deref(), trusted_dirs);
+    }
     let sig_path = sig_path_for(host_nix_path);
     let sig = std::fs::read_to_string(&sig_path).ok();
     authenticate_host_nix(&bytes, sig.as_deref(), trusted_dirs)
@@ -430,5 +451,33 @@ mod tests {
             authenticate_host_nix(payload, Some(&detached), &[temporary.path().join("empty")]),
             Err(HostNixTrustError::NoTrustedKeys)
         );
+    }
+    #[test]
+    fn signed_bundle_authentication_covers_every_source_and_wrapper() {
+        let temporary = TempDir::new().expect("temporary bundle directory");
+        let keys = temporary.path().join("trusted-config-keys.d");
+        let private = enrolled_operator(&keys, "operator", 23);
+        let payload = br#"{"schema":"aos.config-bundle/v1","entrypoint":"host.nix","files":{"host.nix":"e30K","data/settings.json":"e30K"}}"#;
+        let bundle = crate::bundle::parse(payload).unwrap().unwrap();
+        let source = temporary.path().join(crate::bundle::SOURCE_DIR);
+        bundle.materialize(&source).unwrap();
+        let host = temporary.path().join("host.nix");
+        std::fs::write(&host, bundle.host_module(payload)).unwrap();
+        std::fs::write(temporary.path().join(crate::bundle::BUNDLE_FILE), payload).unwrap();
+        std::fs::write(
+            temporary.path().join("config-bundle.json.sig"),
+            signature(&private, CONFIG_SIGNATURE_NAMESPACE, payload),
+        )
+        .unwrap();
+
+        assert!(authenticate_host_nix_file(&host, &[keys.clone()]).is_ok());
+        std::fs::write(source.join("data/settings.json"), b"changed").unwrap();
+        assert_eq!(
+            authenticate_host_nix_file(&host, &[keys.clone()]),
+            Err(HostNixTrustError::Untrusted)
+        );
+        std::fs::write(source.join("data/settings.json"), b"{}\n").unwrap();
+        std::fs::write(&host, b"import ./source/host.nix\n").unwrap();
+        assert!(authenticate_host_nix_file(&host, &[keys]).is_err());
     }
 }

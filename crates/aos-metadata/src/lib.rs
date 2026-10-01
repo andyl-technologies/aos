@@ -31,6 +31,7 @@
 //! integration-tested by the selected provider package.
 
 pub mod aws;
+pub mod bundle;
 pub mod cloud;
 pub mod detect;
 pub mod executable;

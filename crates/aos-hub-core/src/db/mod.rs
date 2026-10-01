@@ -446,6 +446,7 @@ mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
 mod direct_delivery;
+mod publication_delivery;
 pub use delivery_workflow::*;
 mod egress_nonce;
 mod gc_topology;
@@ -512,11 +513,14 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
+/// The released channel-ledger migration remains version 2; native reference
+/// projections follow it so an existing production database upgrades safely.
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
-    include_str!("migration-0002-release-ability-graphs.sql"),
-    include_str!("migration-0003-native-documentation.sql"),
-    include_str!("migration-0004-native-deployment-report.sql"),
+    include_str!("release_channel_advances.sql"),
+    include_str!("migration-0003-release-ability-graphs.sql"),
+    include_str!("migration-0004-native-documentation.sql"),
+    include_str!("migration-0005-native-deployment-report.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -4188,6 +4192,8 @@ impl Database {
                 }
             }
         }
+        // The statements own each row's parameters. Do not retain a second
+        // complete copy while preparing later projections and remote SQL.
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO packages
@@ -4195,6 +4201,7 @@ impl Database {
             &package_rows,
             "",
         )?;
+        drop(package_rows);
 
         extend_multirow_insert(
             &mut stmts,
@@ -4202,6 +4209,7 @@ impl Database {
             &version_rows,
             "",
         )?;
+        drop(version_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO version_platforms
@@ -4210,6 +4218,7 @@ impl Database {
             &platform_rows,
             "",
         )?;
+        drop(platform_rows);
         extend_multirow_insert(
             &mut stmts,
             "INSERT INTO registry_catalog_artifacts
@@ -4218,6 +4227,7 @@ impl Database {
             &catalog_rows,
             "",
         )?;
+        drop(catalog_rows);
 
         for release in &snapshot.releases {
             if let Some(existing) = self
@@ -26445,36 +26455,45 @@ requires-features = ["image-artifact-contract-v1"]
     }
 
     #[tokio::test]
-    async fn release_ability_graph_schema_upgrades_from_the_production_baseline() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("hub.db");
-        let connection = Connection::open(&path).unwrap();
-        connection
-            .execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
-            .unwrap();
-        connection.execute_batch(MIGRATIONS[0]).unwrap();
-        connection
-            .execute("INSERT INTO schema_version VALUES (1)", [])
-            .unwrap();
-        drop(connection);
+    async fn native_reference_schema_upgrades_from_released_production_versions() {
+        // Version 2 belongs to the released channel ledger, before the native
+        // reference migrations introduced by this branch.
+        for baseline_version in [1, 2] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("hub.db");
+            let connection = Connection::open(&path).unwrap();
+            connection
+                .execute_batch("CREATE TABLE schema_version (version INTEGER NOT NULL);")
+                .unwrap();
+            for migration in &MIGRATIONS[..baseline_version] {
+                connection.execute_batch(migration).unwrap();
+            }
+            connection
+                .execute(
+                    "INSERT INTO schema_version VALUES (?1)",
+                    [baseline_version as i64],
+                )
+                .unwrap();
+            drop(connection);
 
-        drop(Database::open(&path).await.unwrap());
+            drop(Database::open(&path).await.unwrap());
 
-        let connection = Connection::open(&path).unwrap();
-        let version: i64 = connection
-            .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
-            .unwrap();
-        let graph_table: i64 = connection
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master
-                 WHERE type = 'table' AND name = 'release_ability_graphs'",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
+            let connection = Connection::open(&path).unwrap();
+            let version: i64 = connection
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+                .unwrap();
+            let graph_table: i64 = connection
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE type = 'table' AND name = 'release_ability_graphs'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
 
-        assert_eq!(version, MIGRATIONS.len() as i64);
-        assert_eq!(graph_table, 1);
+            assert_eq!(version, MIGRATIONS.len() as i64);
+            assert_eq!(graph_table, 1);
+        }
     }
 
     #[test]

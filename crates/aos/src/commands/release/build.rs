@@ -14,10 +14,10 @@ use aos_release::build::{
 };
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlanV1;
+use aos_release::plan::ReleasePlan;
 use aos_release::platform::{MatrixCell, Platform};
 use aos_release::sbom::SpdxDocument;
-use aos_release::state::{JournalEntryV1, ReleaseState};
+use aos_release::state::{JournalEntry, ReleaseState};
 use serde::Deserialize;
 
 use crate::cli::ReleaseBuildArgs;
@@ -43,7 +43,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
 
     let plan_bytes = capture::control_file(&args.plan, "release plan")?;
     canonical::require_canonical(&plan_bytes, "release plan")?;
-    let plan: ReleasePlanV1 = canonical::from_slice(&plan_bytes, "release plan")?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
     plan.validate()?;
     super::artifact_profiles::require_plan(nix, &plan)?;
     let plan_digest = Sha256Digest::of_bytes(&plan_bytes);
@@ -173,7 +173,7 @@ pub(super) fn run(args: &ReleaseBuildArgs, nix: &NixRunner, printer: &Printer) -
 
 fn instantiate_planned_roots(
     nix: &NixRunner,
-    plan: &ReleasePlanV1,
+    plan: &ReleasePlan,
     planned_derivations: &[PathBuf],
 ) -> Result<()> {
     let mut instantiated = BTreeSet::new();
@@ -221,28 +221,30 @@ fn build_journal(
     report: &[u8],
     sbom: &[u8],
 ) -> Result<Vec<u8>> {
-    let planned = JournalEntryV1 {
-        schema_version: aos_release::RELEASE_JOURNAL_ENTRY_V1.to_string(),
+    let planned = JournalEntry {
+        schema_version: aos_release::RELEASE_JOURNAL_ENTRY.to_string(),
         sequence: 1,
         previous_entry_digest: None,
         plan_digest,
         manifest_digest: None,
         prior_state: None,
         new_state: ReleaseState::Planned,
+        destination: None,
         operation_ids: vec!["release-plan".to_string()],
         evidence: vec![],
         recorded_at: started_at.to_string(),
     };
     planned.validate()?;
-    let planned_digest = Sha256Digest::of_canonical("aos.release.journal-entry/v1", &planned)?;
-    let built = JournalEntryV1 {
-        schema_version: aos_release::RELEASE_JOURNAL_ENTRY_V1.to_string(),
+    let planned_digest = planned.digest()?;
+    let built = JournalEntry {
+        schema_version: aos_release::RELEASE_JOURNAL_ENTRY.to_string(),
         sequence: 2,
         previous_entry_digest: Some(planned_digest),
         plan_digest,
         manifest_digest: None,
         prior_state: Some(ReleaseState::Planned),
         new_state: ReleaseState::Built,
+        destination: None,
         operation_ids: vec!["nix-realise-check".to_string()],
         evidence: vec![Sha256Digest::of_bytes(report), Sha256Digest::of_bytes(sbom)],
         recorded_at: completed_at.to_string(),
@@ -327,11 +329,11 @@ mod tests {
             .split(|byte| *byte == b'\n')
             .filter(|line| !line.is_empty())
             .map(|line| canonical::from_slice(line, "test journal"))
-            .collect::<Result<Vec<JournalEntryV1>>>()?;
+            .collect::<Result<Vec<JournalEntry>>>()?;
 
         assert_eq!(lines.len(), 2);
         assert_eq!(
-            aos_release::verify::verify_journal(&lines)?,
+            aos_release::verify::verify_journal(&lines)?.global,
             ReleaseState::Built
         );
         Ok(())

@@ -161,7 +161,43 @@ pub async fn generate_static_cache(
     no_skip: bool,
     printer: &Printer,
 ) -> Result<StaticCacheReport> {
-    let inventory = collect_static_cache_root_inventory(registry_dir)?;
+    generate_static_cache_with_roots(
+        registry_dir,
+        output_dir,
+        key_path,
+        priority,
+        jobs,
+        membership,
+        no_skip,
+        &[],
+        printer,
+    )
+    .await
+}
+
+/// Generates a registry cache that also retains explicitly supplied store roots.
+///
+/// Additional roots and their closures are included alongside catalog roots.
+/// Release producers use these roots to retain the exact source paths recorded
+/// in build evidence, even when an output's current deriver differs.
+///
+/// # Errors
+///
+/// Returns an error for mixed store directories, missing local paths, failed
+/// Nix invocations, or unwritable cache files.
+pub async fn generate_static_cache_with_roots(
+    registry_dir: &Path,
+    output_dir: &Path,
+    key_path: Option<&Path>,
+    priority: u32,
+    jobs: Option<usize>,
+    membership: Option<&dyn CacheMembership>,
+    no_skip: bool,
+    additional_roots: &[String],
+    printer: &Printer,
+) -> Result<StaticCacheReport> {
+    let mut inventory = collect_static_cache_root_inventory(registry_dir)?;
+    inventory.roots.extend(additional_roots.iter().cloned());
     let roots = inventory.roots.into_iter().collect::<Vec<_>>();
     if roots.is_empty() {
         bail!("registry contains no store paths to cache");
@@ -1215,11 +1251,11 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                 inventory.roots.insert(path.to_string());
             }
             if let Some(outputs) = platform.get("named_outputs").and_then(TomlValue::as_table) {
-                for path in outputs
-                    .values()
-                    .filter_map(|output| output.get("store_path").and_then(TomlValue::as_str))
-                {
-                    inventory.roots.insert(path.to_string());
+                for output in outputs.values() {
+                    if let Some(path) = output.get("store_path").and_then(TomlValue::as_str) {
+                        inventory.roots.insert(path.to_string());
+                    }
+                    collect_native_companion_roots(output, inventory);
                 }
             }
             if let Some(path) = platform.get("source_drv").and_then(TomlValue::as_str)
@@ -1254,30 +1290,23 @@ fn collect_store_paths_from_package(value: &TomlValue, inventory: &mut CacheRoot
                     }
                 }
             }
-            for key in ["deployment", "module_documentation", "qualification"] {
-                if let Some(path) = platform
-                    .get(key)
-                    .and_then(|artifact| artifact.get("store_path"))
-                    .and_then(TomlValue::as_str)
-                {
-                    inventory.roots.insert(path.to_string());
-                    inventory.uncompressed.insert(path.to_string());
-                }
-            }
-            if let Some(documentation) = platform.get("documentation")
-                && let Some(path) = documentation.get("store_path").and_then(TomlValue::as_str)
-            {
-                inventory.roots.insert(path.to_string());
-                inventory.uncompressed.insert(path.to_string());
-            }
-            if let Some(ability) = platform.get("ability")
-                && let Some(path) = ability.get("store_path").and_then(TomlValue::as_str)
-            {
-                // Hub and Worker derive static reference data from the exact
-                // bounded NAR without introducing a target-specific decoder.
-                inventory.roots.insert(path.to_string());
-                inventory.uncompressed.insert(path.to_string());
-            }
+            collect_native_companion_roots(platform, inventory);
+        }
+    }
+}
+
+// Native companions are independently authenticated roots, including named
+// output envelopes. Keep their bounded source documents directly readable.
+fn collect_native_companion_roots(value: &TomlValue, inventory: &mut CacheRootInventory) {
+    for key in ["deployment", "module_documentation", "qualification"] {
+        if let Some(path) = value
+            .get(key)
+            .and_then(|artifact| artifact.get("store_path"))
+            .and_then(TomlValue::as_str)
+            .filter(|path| !path.is_empty())
+        {
+            inventory.roots.insert(path.to_owned());
+            inventory.uncompressed.insert(path.to_owned());
         }
     }
 }
@@ -1687,7 +1716,7 @@ source_nar_hash = "sha256:source"
 references = []
 
 [versions.platforms.x86_64-linux.named_outputs]
-dev = {store_path = "/nix/store/dev111-kernel"}
+dev = {store_path = "/nix/store/dev111-kernel", deployment = {store_path = "/nix/store/dev-native111-kernel-envelope"}}
 tools = {store_path = "/nix/store/tools111-kernel"}
 
 [[versions.platforms.x86_64-linux.images]]
@@ -1702,17 +1731,14 @@ store_path = "/nix/store/info111-system-image-info"
 [versions.platforms.x86_64-linux.images.delivery.artifact_contract.artifacts]
 store_path = "/nix/store/payload111-system-update-payload"
 
-[versions.platforms.x86_64-linux.documentation]
-format = "aos.package-reference/v1+json"
-store_path = "/nix/store/docs111-kernel-docs.json"
-nar_hash = "sha256:docs"
-nar_size = 6
-document_sha256 = "sha256:document"
-document_size = 5
-semantic_schema_sha256 = "sha256:semantic"
+[versions.platforms.x86_64-linux.module_documentation]
+store_path = "/nix/store/docs111-kernel-module-docs"
 
-[versions.platforms.x86_64-linux.ability]
-store_path = "/nix/store/ability111-kernel-abilities"
+[versions.platforms.x86_64-linux.deployment]
+store_path = "/nix/store/native111-kernel-envelope"
+
+[versions.platforms.x86_64-linux.qualification]
+store_path = "/nix/store/qual111-kernel-qualification"
 "#,
         )
         .unwrap();
@@ -1720,12 +1746,14 @@ store_path = "/nix/store/ability111-kernel-abilities"
         assert_eq!(
             inventory.roots.into_iter().collect::<Vec<_>>(),
             vec![
-                "/nix/store/ability111-kernel-abilities".to_string(),
+                "/nix/store/dev-native111-kernel-envelope".to_string(),
                 "/nix/store/dev111-kernel".to_string(),
-                "/nix/store/docs111-kernel-docs.json".to_string(),
+                "/nix/store/docs111-kernel-module-docs".to_string(),
                 "/nix/store/img111-system-image".to_string(),
                 "/nix/store/info111-system-image-info".to_string(),
+                "/nix/store/native111-kernel-envelope".to_string(),
                 "/nix/store/payload111-system-update-payload".to_string(),
+                "/nix/store/qual111-kernel-qualification".to_string(),
                 "/nix/store/root111-kernel".to_string(),
                 "/nix/store/src111-kernel-source".to_string(),
                 "/nix/store/tools111-kernel".to_string(),
@@ -1734,8 +1762,10 @@ store_path = "/nix/store/ability111-kernel-abilities"
         assert_eq!(
             inventory.uncompressed,
             BTreeSet::from([
-                "/nix/store/ability111-kernel-abilities".to_string(),
-                "/nix/store/docs111-kernel-docs.json".to_string(),
+                "/nix/store/dev-native111-kernel-envelope".to_string(),
+                "/nix/store/docs111-kernel-module-docs".to_string(),
+                "/nix/store/native111-kernel-envelope".to_string(),
+                "/nix/store/qual111-kernel-qualification".to_string(),
             ])
         );
     }

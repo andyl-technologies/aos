@@ -39,6 +39,7 @@ pub mod store;
 pub mod support;
 pub(crate) mod thinpack;
 pub mod tuf;
+mod verified_cache;
 pub mod verify;
 pub mod webgen;
 

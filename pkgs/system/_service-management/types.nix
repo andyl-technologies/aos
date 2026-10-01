@@ -225,6 +225,10 @@
     post_start = commands;
     stop = commands;
     post_stop = commands;
+    removal_guard = {
+      type = commands;
+      default = [];
+    };
     restart = lib.types.enum ["always" "never" "on-failure"];
     restart_token = {
       type = lib.types.nullOr restartToken;
@@ -520,6 +524,10 @@
   concurrency = request concurrencyFeature;
 
   schedulingFeature = feature {
+    cpu_policy = {
+      type = lib.types.nullOr (lib.types.enum ["other" "batch" "idle"]);
+      default = null;
+    };
     nice = integer {
       minimum = -20;
       maximum = 19;
@@ -534,6 +542,10 @@
 
   resourcesFeature =
     feature {
+      resource_group = {
+        type = lib.types.nullOr (lib.types.strMatching "aos-pkg-[a-z0-9-]+");
+        default = null;
+      };
       open_files = resourceLimit;
       processes = resourceLimit;
       tasks = resourceLimit;
@@ -718,6 +730,10 @@
         element = socketEndpoint;
         maxItems = 64;
       };
+      directory_mode = {
+        type = fileMode;
+        default = "0755";
+      };
       mode = {
         type = fileMode;
         default = "0666";
@@ -887,6 +903,18 @@
     devices = list {
       element = deviceAccess;
       maxItems = 256;
+    };
+    temporary_filesystems = {
+      type = list {
+        element = record {
+          fields = {
+            path = lib.types.deferred hostPath;
+            read_only = lib.types.bool;
+          };
+        };
+        maxItems = 256;
+      };
+      default = [];
     };
     host_paths = list {
       element = hostPathAccess;

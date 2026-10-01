@@ -1170,7 +1170,11 @@ observe plan             # authorized input + marker → CanonicalProvisioningPl
 The initrd ability graph binds these operations to selected package-owned
 providers. A service-management package may project that checked graph into
 native units, but unit names and dependency mechanics are backend details.
-Authorization failure remains fatal before storage effects.
+Authorization failure remains fatal before storage effects. The provenance
+marker commits only after every declared array is created. Storage effects
+that rewrite the GPT and rescan partition tables must complete before the
+verity provider opens the root device; an open root device during a rescan
+can cause verification to fail.
 
 ## 2. The `PlatformFetcher` trait
 
@@ -1403,15 +1407,19 @@ Rust deserializes the evaluated `aos.provisioning-plan/v1` JSON with unknown
 fields denied. It permits `null` for the root disk or stable
 `/dev/disk/by-id/...` targets, validates labels/sizes/UUIDs, rejects protected
 partition types and the reserved sentinel GUID, and permits at most one grow
-partition per device. Measured-boot `var` remains raw; the unmeasured default is
-ext4.
+partition per device. The topology layer resolves `arrays` and each volume's
+encryption against image policy, then renders `storage-arrays` and
+`storage-volumes` beside the repart definitions. A TPM-sealed volume is
+rendered raw; the unmeasured `var` default is ext4.
 
 The hard ordering is:
 
 ```text
 observe durable marker → detect platform → acquire and authorize exact host.nix
   → complete initrd fixed point → observe and validate plan
-  → dry-run every disk → commit storage effects and GPT provenance marker
+  → dry-run every disk → mutate every disk → reserve pending marker
+  → assemble/create arrays → format plain array volumes
+  → commit GPT provenance marker
   → aos-var-crypt/mount-var → switch_root → full aos-eval
 ```
 

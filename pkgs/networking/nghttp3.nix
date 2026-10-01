@@ -5,8 +5,14 @@
   fetchurl,
   cmake,
   ninja,
+  buildPackages,
+  stdenv,
 }: let
   version = "1.18.0";
+  darwinInstallNameToolFlag =
+    if stdenv.isCross && stdenv.hostPlatform.isDarwin
+    then "-DCMAKE_INSTALL_NAME_TOOL=${buildPackages.llvm}/bin/llvm-install-name-tool"
+    else "";
 in
   mkDerivation {
     platformSupport = {
@@ -123,6 +129,7 @@ in
         script = ''
           cmake -S . -B build -G Ninja \
             $cmakeFlags \
+            ${darwinInstallNameToolFlag} \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$out" \
             -DCMAKE_INSTALL_LIBDIR=lib \

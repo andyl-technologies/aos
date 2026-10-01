@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, bail, ensure};
 use aos_ability_runtime::activation::{Action, Invocation};
 use aos_storage_provisioning::{
-    PartitionSpec, ProvisioningPlan, StoragePlan, assign_missing_partition_uuids,
+    ArraySpec, PartitionSpec, ProvisioningPlan, StoragePlan, assign_missing_partition_uuids,
     normalize_marker_uuid, validate_provisioning_plan,
 };
 use serde::{Deserialize, Serialize};
@@ -64,6 +64,8 @@ struct DesiredPlan {
     marker_uuid: String,
     measured_boot: bool,
     partitions: BTreeMap<String, DesiredPartition>,
+    #[serde(default)]
+    arrays: BTreeMap<String, ArraySpec>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -102,6 +104,8 @@ struct DesiredPartition {
     #[serde(default)]
     format: Option<String>,
     #[serde(default)]
+    encryption: Option<String>,
+    #[serde(default)]
     uuid: Option<String>,
     grow: bool,
     grow_fs: bool,
@@ -123,6 +127,9 @@ struct Context {
     lsblk: PathBuf,
     sfdisk: PathBuf,
     udevadm: PathBuf,
+    mdadm: PathBuf,
+    mkfs_ext4: PathBuf,
+    mkfs_xfs: PathBuf,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -241,6 +248,7 @@ fn converge(
     }
 
     let _ = settle(&context.udevadm, remaining(deadline)?);
+    prepare_topology(desired, context, deadline)?;
     let pending = wait_for_label(PENDING_LABEL, deadline)?;
     let partition_number = partition_number(&pending)?;
     run_success(
@@ -261,6 +269,95 @@ fn converge(
         matches!(inspect_state(desired, context, target)?, DiskState::Completed(source) if source == desired.plan.source),
         "committed provisioning layout did not verify"
     );
+    Ok(())
+}
+
+/// Creates the upper storage layers before publishing the durable GPT marker.
+/// A failure leaves the pending marker intact; replay requires explicit recovery.
+fn prepare_topology(desired: &Desired, context: &Context, deadline: Instant) -> Result<()> {
+    use aos_storage_provisioning::topology::{
+        Encryption, VolumeSource, render_topology, resolve_topology,
+    };
+
+    let topology = resolve_topology(&shared_plan(&desired.plan), desired.plan.measured_boot)?;
+    let stash = Path::new("/run/aos-metadata");
+    fs::create_dir_all(stash)?;
+    render_topology(stash, &topology)?;
+    for array in &topology.arrays {
+        let device = format!("/dev/md/{}", array.name);
+        ensure!(
+            !Path::new(&device).exists(),
+            "refusing to adopt an ambient MD array {}",
+            array.name
+        );
+        for member in &array.members {
+            wait_for_path(Path::new(member), deadline)?;
+            let signature = run_native(
+                &context.blkid,
+                &["-p", "-s", "TYPE", "-o", "value", member],
+                remaining(deadline)?,
+            )?;
+            ensure!(
+                signature.status.success() || signature.status.code() == Some(2),
+                "failed to inspect MD member {member}"
+            );
+            ensure!(
+                signature.stdout.iter().all(u8::is_ascii_whitespace),
+                "MD member {member} already carries a storage signature"
+            );
+        }
+        let count = array.members.len().to_string();
+        let mut arguments = vec![
+            "--create",
+            device.as_str(),
+            "--run",
+            "--metadata=1.2",
+            "--homehost=aos",
+            "--name",
+            array.name.as_str(),
+            "--level",
+            array.level.as_str(),
+            "--raid-devices",
+            count.as_str(),
+        ];
+        arguments.extend(array.members.iter().map(String::as_str));
+        run_success(
+            &context.mdadm,
+            &arguments,
+            remaining(deadline)?,
+            "creating declared MD array",
+        )?;
+        settle(&context.udevadm, remaining(deadline)?)?;
+        wait_for_path(Path::new(&device), deadline)?;
+    }
+    for volume in &topology.volumes {
+        if volume.source != VolumeSource::Array || volume.encryption != Encryption::None {
+            continue;
+        }
+        let Some(filesystem) = volume.filesystem.as_deref() else {
+            continue;
+        };
+        let formatter = match filesystem {
+            "ext4" => &context.mkfs_ext4,
+            "xfs" => &context.mkfs_xfs,
+            _ => bail!("unsupported array filesystem {filesystem}"),
+        };
+        run_success(
+            formatter,
+            &["-q", "-L", &volume.label, &volume.device],
+            remaining(deadline)?,
+            "formatting declared MD volume",
+        )?;
+    }
+    settle(&context.udevadm, remaining(deadline)?)?;
+    Ok(())
+}
+
+fn wait_for_path(path: &Path, deadline: Instant) -> Result<()> {
+    while !path.exists() {
+        let _ = remaining(deadline)?;
+        std::thread::sleep(Duration::from_millis(100));
+    }
     Ok(())
 }
 
@@ -294,7 +391,56 @@ fn inspect_state(desired: &Desired, context: &Context, target: &str) -> Result<D
             Err(_) => return Ok(DiskState::Unknown),
         }
     }
-    Ok(DiskState::Completed(source))
+    match topology_matches(desired, context) {
+        Ok(true) => Ok(DiskState::Completed(source)),
+        Ok(false) => Ok(DiskState::Drifted(source)),
+        Err(_) => Ok(DiskState::Unknown),
+    }
+}
+
+/// Checks stored member superblocks without requiring arrays to be assembled.
+/// Missing members remain compatible with the degraded-boot assembly policy.
+fn topology_matches(desired: &Desired, context: &Context) -> Result<bool> {
+    let topology = aos_storage_provisioning::topology::resolve_topology(
+        &shared_plan(&desired.plan),
+        desired.plan.measured_boot,
+    )?;
+    for array in &topology.arrays {
+        let mut uuid = None;
+        for member in &array.members {
+            if !Path::new(member).exists() {
+                continue;
+            }
+            let output = run_native(&context.mdadm, &["--examine", "--export", member], 15_000)?;
+            if !output.status.success() {
+                return Ok(false);
+            }
+            let values = std::str::from_utf8(&output.stdout)?
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .collect::<BTreeMap<_, _>>();
+            let count = array.members.len().to_string();
+            let name = format!("aos:{}", array.name);
+            if values.get("MD_LEVEL") != Some(&array.level.as_str())
+                || values.get("MD_DEVICES") != Some(&count.as_str())
+                || !matches!(values.get("MD_NAME"), Some(value) if *value == name || *value == array.name)
+            {
+                return Ok(false);
+            }
+            let found = values
+                .get("MD_UUID")
+                .context("MD member lacks array identity")?
+                .to_string();
+            if uuid.as_ref().is_some_and(|previous| previous != &found) {
+                return Ok(false);
+            }
+            uuid = Some(found);
+        }
+        if uuid.is_none() {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 struct RenderedPlan {
@@ -341,6 +487,8 @@ fn render_provisioning_plan(
     );
     let marker_uuid = normalize_marker_uuid(marker_uuid)?;
     assign_missing_partition_uuids(plan, &marker_uuid);
+    let topology = aos_storage_provisioning::topology::resolve_topology(plan, measured_boot)?;
+    aos_storage_provisioning::topology::render_topology(scratch_dir, &topology)?;
     fs::write(
         scratch_dir.join(STORAGE_PLAN_FILE),
         serde_json::to_vec_pretty(plan).context("serializing provisioning plan")?,
@@ -380,7 +528,21 @@ fn render_provisioning_plan(
 
         for (position, (name, partition)) in partitions.into_iter().enumerate() {
             let path = directory.join(format!("{:04}-{name}.conf", position + 10));
-            fs::write(&path, render_partition(partition, measured_boot))
+            let format = if topology.members.contains(name) {
+                None
+            } else if let Some(volume) = topology.volumes.iter().find(|volume| {
+                volume.name == name
+                    && volume.source == aos_storage_provisioning::topology::VolumeSource::Partition
+            }) {
+                if volume.encryption == aos_storage_provisioning::topology::Encryption::None {
+                    volume.filesystem.as_deref()
+                } else {
+                    None
+                }
+            } else {
+                partition.format.as_deref()
+            };
+            fs::write(&path, render_partition(partition, format))
                 .with_context(|| format!("writing {}", path.display()))?;
             written.push(path);
         }
@@ -401,7 +563,7 @@ fn render_provisioning_plan(
     Ok(written)
 }
 
-fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {
+fn render_partition(partition: &PartitionSpec, format: Option<&str>) -> String {
     let mut result = format!(
         "[Partition]\nType={}\nLabel={}\nSizeMinBytes={}\nWeight={}\nGrowFileSystem={}\n",
         partition.partition_type,
@@ -415,11 +577,6 @@ fn render_partition(partition: &PartitionSpec, measured_boot: bool) -> String {
     } else if !partition.grow {
         result.push_str(&format!("SizeMaxBytes={}\n", partition.size_min));
     }
-    let format = if partition.label == "var" && !measured_boot && partition.format.is_none() {
-        Some("ext4")
-    } else {
-        partition.format.as_deref()
-    };
     if let Some(format) = format {
         result.push_str(&format!("Format={format}\n"));
     }
@@ -448,6 +605,7 @@ fn shared_plan(plan: &DesiredPlan) -> ProvisioningPlan {
                     size_max: partition.size_max.clone(),
                     weight: partition.weight,
                     format: partition.format.clone(),
+                    encryption: partition.encryption.clone(),
                     uuid: partition.uuid.clone(),
                     grow: partition.grow,
                     grow_fs: partition.grow_fs,
@@ -458,7 +616,10 @@ fn shared_plan(plan: &DesiredPlan) -> ProvisioningPlan {
         .collect();
     ProvisioningPlan {
         schema: "aos.provisioning-plan/v1".into(),
-        storage: StoragePlan { partitions },
+        storage: StoragePlan {
+            partitions,
+            arrays: plan.arrays.clone(),
+        },
     }
 }
 
@@ -658,7 +819,7 @@ fn validate_repart_plan(plan: &DesiredPlan) -> Result<()> {
         ensure!(
             matches!(
                 partition.format.as_deref(),
-                None | Some("ext4" | "vfat" | "swap")
+                None | Some("ext4" | "xfs" | "vfat" | "swap")
             ),
             "partition '{name}' uses a format unsupported by systemd-repart"
         );
@@ -671,7 +832,7 @@ fn validate_repart_plan(plan: &DesiredPlan) -> Result<()> {
 }
 
 fn validate_repart_partition_type(value: &str) -> Result<()> {
-    if matches!(value, "linux-generic" | "swap") {
+    if matches!(value, "linux-generic" | "linux-raid" | "swap") {
         return Ok(());
     }
 
@@ -795,6 +956,7 @@ mod tests {
                 source: Source::Operator,
                 marker_uuid: "01234567-89ab-cdef-8123-456789abcdef".into(),
                 measured_boot: false,
+                arrays: BTreeMap::new(),
                 partitions: BTreeMap::from([(
                     "var".into(),
                     DesiredPartition {
@@ -805,6 +967,7 @@ mod tests {
                         size_max: None,
                         weight: 1,
                         format: None,
+                        encryption: None,
                         uuid: None,
                         grow: true,
                         grow_fs: true,
@@ -813,6 +976,57 @@ mod tests {
                 )]),
             },
         }
+    }
+
+    #[test]
+    fn md_members_remain_raw_and_array_topology_is_rendered_before_commit() {
+        let mut desired = desired();
+        let mut mirror = desired.plan.partitions["var"].clone();
+        mirror.label = "var-mirror".into();
+        mirror.partition_type = "linux-raid".into();
+        mirror.grow = false;
+        desired
+            .plan
+            .partitions
+            .get_mut("var")
+            .unwrap()
+            .partition_type = "linux-raid".into();
+        desired.plan.partitions.insert("var-mirror".into(), mirror);
+        desired.plan.arrays.insert(
+            "var".into(),
+            ArraySpec {
+                level: "raid1".into(),
+                members: vec!["var".into(), "var-mirror".into()],
+                format: Some("ext4".into()),
+                encryption: None,
+            },
+        );
+        validate_desired(&desired).unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let mut plan = shared_plan(&desired.plan);
+        let paths = render_provisioning_plan(
+            directory.path(),
+            &mut plan,
+            false,
+            PENDING_LABEL,
+            &desired.plan.marker_uuid,
+        )
+        .unwrap();
+
+        for path in paths
+            .iter()
+            .filter(|path| path.file_name().unwrap().to_string_lossy().contains("var"))
+        {
+            let definition = fs::read_to_string(path).unwrap();
+            assert!(definition.contains("Type=linux-raid"));
+            assert!(!definition.contains("Format="));
+        }
+        let arrays = fs::read_to_string(directory.path().join("storage-arrays")).unwrap();
+        assert!(arrays.contains(
+            "var\traid1\t2\t/dev/disk/by-partlabel/var,/dev/disk/by-partlabel/var-mirror"
+        ));
+        let volumes = fs::read_to_string(directory.path().join("storage-volumes")).unwrap();
+        assert!(volumes.contains("var\tarray\t/dev/md/var\tvar\tnone\text4"));
     }
 
     #[test]
@@ -863,7 +1077,7 @@ mod tests {
             .partitions
             .get_mut("var")
             .expect("var")
-            .format = Some("xfs".into());
+            .format = Some("btrfs".into());
         let error =
             validate_desired(&unsupported_format).expect_err("unsupported format must fail");
         assert!(error.to_string().contains("unsupported by systemd-repart"));

@@ -349,6 +349,7 @@
       // {
         after =
           [sysrootReadiness mountVarPrerequisite deviceSettleReadiness]
+          ++ lib.optional (!cfg.zfsEnabled) (serviceResource "aos-storage-topology")
           ++ lib.optional cfg.verityEnabled bootIdentityReadiness;
         before = [
           (serviceResource "aos-config-seed")
@@ -357,6 +358,7 @@
         ];
         requires =
           [sysrootReadiness mountVarPrerequisite]
+          ++ lib.optional (!cfg.zfsEnabled) (serviceResource "aos-storage-topology")
           ++ lib.optional cfg.verityEnabled bootIdentityReadiness;
         required_by = [initrdFilesystemsReadiness];
       };

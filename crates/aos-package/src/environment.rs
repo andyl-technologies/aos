@@ -5,7 +5,7 @@
 //! state must first establish the target they are authorized to interpret as
 //! AOS. An explicit `AOS_ROOT` selects an offline root; otherwise the running
 //! root must expose the immutable AOS identity at
-//! `/aos-toplevel/os-release`.
+//! `/usr/lib/aos/toplevel/os-release`.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::env;
@@ -64,7 +64,7 @@ fn os_release_in(
     root: &Path,
     allow_installed_identity: bool,
 ) -> Result<Option<aos_doc_model::runtime::OsRelease>> {
-    let identities = ["/aos-toplevel/os-release", "/etc/os-release"];
+    let identities = ["/usr/lib/aos/toplevel/os-release", "/etc/os-release"];
     for logical in identities
         .into_iter()
         .take(if allow_installed_identity { 2 } else { 1 })
@@ -106,7 +106,7 @@ fn selected_root() -> Result<PathBuf> {
 
 /// Validates the immutable identity of an AOS root.
 fn validate_aos_root(root: &Path, live_only: bool) -> Result<()> {
-    let immutable = rooted_path(root, Path::new("/aos-toplevel/os-release"))?;
+    let immutable = rooted_path(root, Path::new("/usr/lib/aos/toplevel/os-release"))?;
     let identity = if immutable.is_file() {
         immutable.clone()
     } else if !live_only {
@@ -270,7 +270,8 @@ mod tests {
             root.path().join(&toplevel[1..]).join("os-release"),
         )
         .unwrap();
-        symlink(toplevel, root.path().join("aos-toplevel")).unwrap();
+        fs::create_dir_all(root.path().join("usr/lib/aos")).unwrap();
+        symlink(toplevel, root.path().join("usr/lib/aos/toplevel")).unwrap();
 
         validate_aos_root(root.path(), false).unwrap();
     }
@@ -278,7 +279,8 @@ mod tests {
     #[test]
     fn rejects_an_absolute_toplevel_link_that_escapes_the_offline_root() {
         let root = tempdir().unwrap();
-        symlink("/../etc", root.path().join("aos-toplevel")).unwrap();
+        fs::create_dir_all(root.path().join("usr/lib/aos")).unwrap();
+        symlink("/../etc", root.path().join("usr/lib/aos/toplevel")).unwrap();
 
         let error = validate_aos_root(root.path(), false).unwrap_err();
         assert!(format!("{error:#}").contains("rooted path escapes its AOS root"));
@@ -317,7 +319,12 @@ mod tests {
             "ID=aos\nAOS_MODULE_ABI=7\n",
         )
         .unwrap();
-        symlink("/nix/store/aos-system", root.path().join("aos-toplevel")).unwrap();
+        fs::create_dir_all(root.path().join("usr/lib/aos")).unwrap();
+        symlink(
+            "/nix/store/aos-system",
+            root.path().join("usr/lib/aos/toplevel"),
+        )
+        .unwrap();
         symlink(
             "/nix/store/os-release",
             root.path().join("nix/store/aos-system/os-release"),
@@ -329,10 +336,10 @@ mod tests {
     #[test]
     fn current_release_prefers_immutable_target_identity() {
         let root = tempdir().unwrap();
-        fs::create_dir_all(root.path().join("aos-toplevel")).unwrap();
+        fs::create_dir_all(root.path().join("usr/lib/aos/toplevel")).unwrap();
         fs::create_dir_all(root.path().join("etc")).unwrap();
         fs::write(
-            root.path().join("aos-toplevel/os-release"),
+            root.path().join("usr/lib/aos/toplevel/os-release"),
             "ID=aos\nNAME=Current OS\nVERSION_ID=2.0.0\n",
         )
         .unwrap();

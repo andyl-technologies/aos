@@ -154,13 +154,29 @@ pub fn verified_tool(
 /// Returns an error when the path is linked or special, I/O fails, or the file
 /// changes while it is hashed.
 pub fn digest_regular_file(path: &Path) -> Result<(u64, Sha256Digest)> {
+    digest_file(path, true)
+}
+
+/// Hashes a regular file in a private reconstructed image tree.
+///
+/// Firmware and tool aliases can share an inode after filesystem extraction.
+/// Symlinks and files that change during hashing remain rejected.
+///
+/// # Errors
+/// Returns an error for special files, symlinks, I/O failures, or content changes
+/// during hashing.
+pub(crate) fn digest_image_tree_file(path: &Path) -> Result<(u64, Sha256Digest)> {
+    digest_file(path, false)
+}
+
+fn digest_file(path: &Path, require_single_link: bool) -> Result<(u64, Sha256Digest)> {
     let descriptor = open(
         path,
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
         Mode::empty(),
     )
     .with_context(|| format!("opening regular file {}", path.display()))?;
-    digest_opened_regular_file(File::from(descriptor))
+    digest_opened_regular_file(File::from(descriptor), require_single_link)
 }
 
 /// Computes a SHA-256 identity while refusing links in every path component.
@@ -195,7 +211,7 @@ pub fn digest_regular_file_beneath(root: &Path, relative: &Path) -> Result<(u64,
                 Mode::empty(),
             )
             .with_context(|| format!("opening confined file {}", relative.display()))?;
-            return digest_opened_regular_file(File::from(descriptor));
+            return digest_opened_regular_file(File::from(descriptor), true);
         }
 
         let descriptor = openat(
@@ -326,9 +342,15 @@ fn digest_native_alias(
     bail!("native document alias path is empty")
 }
 
-fn digest_opened_regular_file(mut file: File) -> Result<(u64, Sha256Digest)> {
+fn digest_opened_regular_file(
+    mut file: File,
+    require_single_link: bool,
+) -> Result<(u64, Sha256Digest)> {
     let before = file.metadata()?;
-    if !before.is_file() || before.nlink() != 1 {
+    if !before.is_file() {
+        bail!("digest input must be a regular file");
+    }
+    if require_single_link && before.nlink() != 1 {
         bail!("digest input must be a single-link regular file");
     }
     let (size, digest) = hash_reader(&mut file)?;
@@ -458,6 +480,19 @@ mod tests {
             digest_regular_file_beneath(&tree, Path::new("contract.json")).is_err(),
             "a FIFO must be rejected as a special file"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn image_tree_digest_accepts_hard_links_without_relaxing_document_checks() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let file = temporary.path().join("firmware");
+        fs::write(&file, b"firmware")?;
+        fs::hard_link(&file, temporary.path().join("firmware-alias"))?;
+
+        assert!(super::digest_image_tree_file(&file).is_ok());
+        assert!(super::digest_regular_file(&file).is_err());
+        assert!(digest_regular_file_beneath(temporary.path(), Path::new("firmware")).is_err());
         Ok(())
     }
 

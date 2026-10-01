@@ -1,11 +1,16 @@
 //! Adversarial validation of the shared source-controlled qualification policy.
+//!
+//! The fixture is the contract exported by the Nix side; its destination
+//! table is sorted by `<surface>/<tier>/<channel>`.
 
 use aos_release::{
     canonical,
-    plan::ReleaseClass,
+    plan::{ReleaseClass, SurfaceRole},
     qualification::{
-        PackageExecution, QualificationContract, QualificationPhase, QualificationScope,
+        ChangeScope, ClaimSelection, PackageExecution, QualificationContract, QualificationPhase,
+        QualificationScope, change_scope::CHANGE_SCOPE,
     },
+    registry::{RegistryTier, channel_kind},
 };
 
 #[path = "../src/test_support/qualification/mod.rs"]
@@ -16,27 +21,167 @@ fn contract() -> QualificationContract {
     qualification_fixture::contract().unwrap()
 }
 
+fn gate_ids(
+    contract: &QualificationContract,
+    tier: RegistryTier,
+    surface: SurfaceRole,
+    kind: &str,
+    scope: Option<&ChangeScope>,
+) -> Vec<String> {
+    let destination = contract.destination(tier, surface, kind).unwrap();
+    contract
+        .gates(destination, scope)
+        .unwrap()
+        .into_iter()
+        .map(|gate| gate.policy_id)
+        .collect()
+}
+
+fn scope(image_affecting: bool, container_affecting: bool) -> ChangeScope {
+    ChangeScope {
+        schema_version: CHANGE_SCOPE.into(),
+        predecessor_manifest_digest: Some(aos_release::Sha256Digest::of_bytes("predecessor")),
+        image_affecting,
+        container_affecting,
+        changed_package_cells: Vec::new(),
+        reason: "test scope".into(),
+    }
+}
+
 #[test]
-fn one_contract_selects_class_obligations_without_renaming_requirements() {
+fn shipped_contract_has_the_exact_destination_table() {
     let contract = contract();
     contract.validate().unwrap();
-    let edge = contract.gates("andyl/testing", ReleaseClass::Edge).unwrap();
-    let stable = contract.gates("andyl/main", ReleaseClass::Stable).unwrap();
+    let table: Vec<_> = contract
+        .destinations
+        .iter()
+        .map(|destination| {
+            format!(
+                "{}/{}/{}={}",
+                destination.surface,
+                destination.registry_tier,
+                destination.channel,
+                destination.profile
+            )
+        })
+        .collect();
+    assert_eq!(
+        table,
+        [
+            "production/production/candidate=functional",
+            "production/production/stable=soak",
+            "production/testing/edge=smoke",
+            "staging/production/candidate=build",
+            "staging/production/stable=build",
+            "staging/testing/edge=build",
+        ]
+    );
+    assert_eq!(contract.destinations_for(RegistryTier::Testing).count(), 2);
     assert!(
-        edge.iter()
-            .all(|gate| stable.iter().any(|other| other.policy_id == gate.policy_id))
+        contract
+            .destinations_for(RegistryTier::Production)
+            .all(|destination| destination.channel != "edge")
+    );
+    assert_eq!(contract.profile("soak").unwrap().soak_seconds, 604_800);
+    assert_eq!(contract.profile("soak").unwrap().rollout.rings.len(), 4);
+    assert!(contract.profile("emergency").is_err());
+    assert!(
+        contract
+            .destination(RegistryTier::Testing, SurfaceRole::Production, "candidate")
+            .is_err()
     );
     assert!(
+        contract
+            .destination(RegistryTier::Production, SurfaceRole::Production, "edge")
+            .is_err()
+    );
+}
+
+#[test]
+fn gates_follow_the_destination_profile() {
+    let contract = contract();
+    let tier = RegistryTier::Production;
+    let staging = gate_ids(&contract, tier, SurfaceRole::Staging, "stable", None);
+    assert_eq!(staging, ["build-integrity"]);
+
+    let candidate = gate_ids(&contract, tier, SurfaceRole::Production, "candidate", None);
+    let stable = gate_ids(&contract, tier, SurfaceRole::Production, "stable", None);
+    assert!(candidate.iter().all(|id| stable.contains(id)));
+    assert!(candidate.contains(&"rollout-health".to_owned()));
+    assert!(!candidate.contains(&"rollout-observation".to_owned()));
+    assert!(!candidate.iter().any(|id| id.ends_with("-qualified")));
+    assert!(stable.contains(&"rollout-observation".to_owned()));
+    assert_eq!(
         stable
             .iter()
-            .any(|gate| gate.policy_id == "production-recovery")
+            .filter(|id| id.ends_with("-qualified"))
+            .count(),
+        4
+    );
+
+    // The same requirement has one identity across destinations, so evidence
+    // for unrelated destinations is not invalidated by soak or review changes.
+    let candidate_destination = contract
+        .destination(tier, SurfaceRole::Production, "candidate")
+        .unwrap();
+    let stable_destination = contract
+        .destination(tier, SurfaceRole::Production, "stable")
+        .unwrap();
+    let digest_of = |gates: Vec<aos_release::evidence::GateRequirement>| {
+        gates
+            .into_iter()
+            .find(|gate| gate.policy_id == "package-function")
+            .unwrap()
+            .policy_digest
+    };
+    assert_eq!(
+        digest_of(contract.gates(candidate_destination, None).unwrap()),
+        digest_of(contract.gates(stable_destination, None).unwrap())
+    );
+}
+
+#[test]
+fn change_scope_narrows_smoke_claims() {
+    let contract = contract();
+    let tier = RegistryTier::Testing;
+    let smoke = contract
+        .destination(tier, SurfaceRole::Production, "edge")
+        .unwrap();
+    assert!(contract.gates(smoke, None).is_err());
+
+    let unchanged = gate_ids(
+        &contract,
+        tier,
+        SurfaceRole::Production,
+        "edge",
+        Some(&scope(false, false)),
+    );
+    assert!(!unchanged.iter().any(|id| id.starts_with("claim-")));
+    assert!(unchanged.contains(&"package-function".to_owned()));
+
+    let containers = gate_ids(
+        &contract,
+        tier,
+        SurfaceRole::Production,
+        "edge",
+        Some(&scope(false, true)),
     );
     assert!(
-        !edge
+        containers
             .iter()
-            .any(|gate| gate.policy_id == "production-recovery")
+            .any(|id| id.starts_with("claim-container-"))
     );
-    assert_ne!(edge[0].policy_digest, stable[0].policy_digest);
+    assert!(!containers.iter().any(|id| id.starts_with("claim-disk-")));
+
+    let everything = gate_ids(
+        &contract,
+        tier,
+        SurfaceRole::Production,
+        "edge",
+        Some(&scope(true, true)),
+    );
+    assert!(everything.iter().any(|id| id.starts_with("claim-disk-")));
+    assert!(!everything.iter().any(|id| id.ends_with("-qualified")));
 }
 
 #[test]
@@ -45,7 +190,6 @@ fn omitted_or_reclassified_mandatory_requirement_is_rejected() {
         "image-update-recovery",
         "build-integrity",
         "package-function",
-        "operator-recovery",
         "rollout-health",
         "rollout-observation",
     ] {
@@ -72,19 +216,9 @@ fn omitted_or_reclassified_mandatory_requirement_is_rejected() {
 }
 
 #[test]
-fn contract_rejects_weakened_platform_and_production_obligations() {
+fn contract_rejects_weakened_platform_and_profile_obligations() {
     let mut policy = contract();
     policy.targets.pop();
-    assert!(policy.validate().is_err());
-    let mut policy = contract();
-    policy.thresholds.get_mut("stable").unwrap().soak_seconds = 0;
-    assert!(policy.validate().is_err());
-    let mut policy = contract();
-    policy
-        .thresholds
-        .get_mut("emergency")
-        .unwrap()
-        .require_independent_review = false;
     assert!(policy.validate().is_err());
     let mut policy = contract();
     policy.package_rules[0].inherit_dependency_obligations = false;
@@ -94,6 +228,121 @@ fn contract_rejects_weakened_platform_and_production_obligations() {
         system_variant: String::new(),
     });
     assert!(policy.validate().is_err());
+
+    let weaken = |change: fn(&mut QualificationContract)| {
+        let mut policy = contract();
+        change(&mut policy);
+        policy.validate()
+    };
+    fn profile(policy: &QualificationContract, name: &str) -> usize {
+        policy
+            .profiles
+            .iter()
+            .position(|profile| profile.name == name)
+            .unwrap()
+    }
+    for (label, result) in [
+        (
+            "soak below a day",
+            weaken(|policy| {
+                let index = profile(policy, "soak");
+                policy.profiles[index].soak_seconds = 86_399;
+            }),
+        ),
+        (
+            "no build-integrity",
+            weaken(|policy| {
+                let index = profile(policy, "smoke");
+                policy.profiles[index]
+                    .requirements
+                    .retain(|id| id != "build-integrity");
+            }),
+        ),
+        (
+            "qualified without observation",
+            weaken(|policy| {
+                let index = profile(policy, "soak");
+                policy.profiles[index]
+                    .requirements
+                    .retain(|id| id != "rollout-observation");
+            }),
+        ),
+        (
+            "unreviewed production claims",
+            weaken(|policy| {
+                let index = profile(policy, "functional");
+                policy.profiles[index].review_threshold = 0;
+            }),
+        ),
+        (
+            "rings not ending at 256",
+            weaken(|policy| {
+                let index = profile(policy, "soak");
+                policy.profiles[index].rollout.rings.pop();
+            }),
+        ),
+        (
+            "unknown fitness kind",
+            weaken(|policy| {
+                policy.fitness.retain(|kind| kind.kind != "key-rotation");
+            }),
+        ),
+        (
+            "target-scoped profile requirement",
+            weaken(|policy| {
+                let index = profile(policy, "smoke");
+                policy.profiles[index]
+                    .requirements
+                    .push("image-lifecycle".into());
+            }),
+        ),
+        (
+            "testing candidate",
+            weaken(|policy| {
+                policy.destinations[2].channel = "candidate".into();
+            }),
+        ),
+        (
+            "production edge",
+            weaken(|policy| {
+                policy.destinations[0].channel = "edge".into();
+                policy.destinations[0].registry_tier = RegistryTier::Production;
+            }),
+        ),
+        (
+            "duplicate destination",
+            weaken(|policy| {
+                let duplicate = policy.destinations[0].clone();
+                policy.destinations.push(duplicate);
+            }),
+        ),
+        (
+            "production without staging",
+            weaken(|policy| {
+                policy.destinations[0].after.clear();
+            }),
+        ),
+        (
+            "unknown profile",
+            weaken(|policy| {
+                policy.destinations[0].profile = "emergency".into();
+            }),
+        ),
+        (
+            "unknown identity",
+            weaken(|policy| {
+                policy.id = "aos-server".into();
+            }),
+        ),
+    ] {
+        assert!(result.is_err(), "accepted {label}");
+    }
+    assert!(
+        contract()
+            .profiles
+            .iter()
+            .any(|profile| profile.claims == ClaimSelection::Qualified)
+    );
 }
 
 #[test]
@@ -111,82 +360,51 @@ fn unknown_and_duplicate_contract_fields_fail_closed() {
 }
 
 #[test]
-fn archival_contracts_preserve_their_original_bytes_and_gate_domains() {
-    let bytes = include_bytes!("fixtures/qualification-contract-v1.json");
-    let value: serde_json::Value = serde_json::from_slice(bytes).unwrap();
-    let archived: QualificationContract =
-        canonical::from_slice(bytes, "archived qualification").unwrap();
-    archived.validate().unwrap();
+fn contract_identity_is_its_rust_canonical_encoding() {
+    let contract = contract();
+    let encoded = canonical::to_vec(&contract).unwrap();
+    let reparsed: QualificationContract = canonical::from_slice(&encoded, "re-encoded").unwrap();
+    assert_eq!(reparsed, contract);
     assert_eq!(
-        canonical::to_vec(&archived).unwrap(),
-        canonical::canonical_json(&value).unwrap()
+        contract.digest().unwrap(),
+        aos_release::Sha256Digest::of_canonical(
+            aos_release::qualification::QUALIFICATION_CONTRACT,
+            &contract
+        )
+        .unwrap()
     );
-    assert_eq!(
-        archived.digest().unwrap(),
-        aos_release::Sha256Digest::of_canonical(aos_release::qualification::CONTRACT_V1, &value)
-            .unwrap()
-    );
-    let gates = archived.gates("andyl/main", ReleaseClass::Stable).unwrap();
-    for (gate, requirement) in gates.iter().zip(value["requirements"].as_array().unwrap()) {
-        assert_eq!(
-            gate.policy_digest,
-            aos_release::Sha256Digest::of_canonical(
-                aos_release::qualification::CONTRACT_V1,
-                &(requirement, &value["thresholds"]["stable"])
-            )
-            .unwrap()
-        );
+    let text = String::from_utf8(encoded).unwrap();
+    for key in ["\"production_only\"", "\"thresholds\"", "\"configuration\""] {
+        assert!(!text.contains(key), "contract encoding carries {key}");
     }
-    let mut smuggled = value;
-    smuggled["claims"] = serde_json::to_value(contract().claims).unwrap();
-    let parsed: QualificationContract = serde_json::from_value(smuggled).unwrap();
-    assert!(parsed.validate().is_err());
 }
 
 #[test]
-fn main_edge_requires_production_assurance_and_testing_stable_does_not() {
-    let contract = contract();
-    for class in [
-        ReleaseClass::Edge,
-        ReleaseClass::Candidate,
-        ReleaseClass::Stable,
-        ReleaseClass::Emergency,
+fn release_class_and_channel_kind_derive_from_names() {
+    assert_eq!(
+        ReleaseClass::from_version("2026.9.0-dev.20260929.1").unwrap(),
+        ReleaseClass::Edge
+    );
+    assert_eq!(
+        ReleaseClass::from_version("2026.9.0-rc.2").unwrap(),
+        ReleaseClass::Candidate
+    );
+    assert_eq!(
+        ReleaseClass::from_version("2026.9.0").unwrap(),
+        ReleaseClass::Stable
+    );
+    for invalid in [
+        "v2026.9.0",
+        "2026.13.0",
+        "2025.9.0",
+        "2026.9.0-beta.1",
+        "latest",
     ] {
-        let main = contract.gates("andyl/main", class).unwrap();
-        let testing = contract.gates("andyl/testing", class).unwrap();
-        assert!(
-            main.iter()
-                .any(|gate| gate.policy_id == "production-recovery")
-        );
-        assert!(
-            !testing
-                .iter()
-                .any(|gate| gate.policy_id == "production-recovery")
-        );
-        assert!(
-            contract
-                .thresholds_for("andyl/main", class)
-                .unwrap()
-                .require_independent_review
-        );
-        assert!(
-            !contract
-                .thresholds_for("andyl/testing", class)
-                .unwrap()
-                .require_independent_review
-        );
-        assert_eq!(
-            contract
-                .thresholds_for("andyl/main", class)
-                .unwrap()
-                .soak_seconds,
-            contract
-                .thresholds_for("andyl/testing", class)
-                .unwrap()
-                .soak_seconds
-        );
-        assert_ne!(main[0].policy_digest, testing[0].policy_digest);
+        assert!(ReleaseClass::from_version(invalid).is_err(), "{invalid}");
     }
+    assert_eq!(channel_kind("stable-2026.3").unwrap(), "stable");
+    assert_eq!(channel_kind("edge").unwrap(), "edge");
+    assert!(channel_kind("emergency").is_err());
 }
 
 #[test]
@@ -200,7 +418,7 @@ fn arm64_container_evidence_requires_the_complete_tcg_topology() {
         .iter()
         .find(|target| target.id == "container-aarch64-linux")
         .unwrap();
-    let profile = target.environment.as_ref().unwrap();
+    let profile = &target.environment;
     profile.validate(Platform::Aarch64Linux).unwrap();
 
     // Test-only observations exercise admission; they are never release evidence.

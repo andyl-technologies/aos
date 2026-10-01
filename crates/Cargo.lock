@@ -209,6 +209,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "toml 0.8.23",
  "tower",
  "tracing",
  "url",
@@ -967,6 +968,7 @@ name = "aos-release-signer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-oci-types",
  "aos-release",
  "base64 0.22.1",
  "clap",
@@ -1058,6 +1060,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

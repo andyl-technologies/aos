@@ -45,7 +45,20 @@ let
     modules = [
       ../../pkgs/system/_aos-storage-provisioning-provider/configuration.nix
       {
-        aos.provisioning.storage.partitions.var.sizeMin = "8G";
+        aos.provisioning.storage = {
+          partitions = {
+            var.sizeMin = "8G";
+            sealed-a = {sizeMin = "512M";};
+            sealed-b = {sizeMin = "512M";};
+            home = {sizeMin = "512M"; encryption = "tpm2";};
+          };
+          arrays.sealed = {
+            level = "raid1";
+            members = ["sealed-a" "sealed-b"];
+            format = "xfs";
+            encryption = "tpm2";
+          };
+        };
         services.unrelated.enable = throw "closed provisioning projection forced unrelated runtime policy";
       }
     ];
@@ -58,5 +71,8 @@ in {
   redundantAuthoritativeEsps = assert builtins.length selected.config.aos.boot.storage.espDevices == 2; assert selected.config.aos.security.verity.enable; true;
   explicitRuntimeBudget = assert selected.config.aos.image.budgets.maxRuntimeClosureMiB == 1024; true;
   closedProvisioningProjection = assert plan.partitions.var.sizeMin == "8G"; assert plan.partitions.swap.type == "swap"; assert plan.partitions.swap.format == "swap"; true;
+  encryptedPartitionProjection = assert plan.partitions.home.encryption == "tpm2"; true;
+  encryptedArrayProjection = assert plan.arrays.sealed.level == "raid1"; assert plan.arrays.sealed.members == ["sealed-a" "sealed-b"]; assert plan.arrays.sealed.format == "xfs"; assert plan.arrays.sealed.encryption == "tpm2"; true;
+  plainArrayJson = assert builtins.match ".*_module.*" (builtins.toJSON (builtins.mapAttrs (_: array: builtins.removeAttrs array ["_module"]) plan.arrays)) == null; true;
   plainPartitionJson = assert builtins.match ".*_module.*" (builtins.toJSON partitions) == null; true;
 }

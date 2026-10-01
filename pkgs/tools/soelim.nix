@@ -3,6 +3,8 @@
   lib,
   mkDerivation,
   fetchurl,
+  stdenv,
+  buildPackages,
   bison,
   gnumake,
   m4,
@@ -76,7 +78,10 @@ in
       hash = "sha256-a5dX9ZK3UYtJAutq9+VFcL3Mujeocf3bLTCuOGNRHBM=";
     };
 
-    buildDeps = [bison gnumake m4 perl];
+    buildDeps =
+      if stdenv.isCross
+      then [buildPackages.bison buildPackages.gnumake buildPackages.m4 buildPackages.perl]
+      else [bison gnumake m4 perl];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -91,7 +96,10 @@ in
       {
         name = "configure";
         script = ''
-          ./configure --prefix=$out
+          ./configure --prefix=$out ${lib.optionalString stdenv.isCross ''
+            --build=${stdenv.buildPlatform.config} \
+            --host=${stdenv.hostPlatform.config}
+          ''}
         '';
       }
       {

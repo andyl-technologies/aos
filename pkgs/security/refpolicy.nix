@@ -172,6 +172,12 @@ in
           make install DESTDIR=$out
           make install-headers DESTDIR=$out
 
+          # Homes are persisted under /var and bound into their FHS locations.
+          # Apply the same labels before and after those bind mounts exist.
+          contexts="$out/etc/selinux/refpolicy/contexts/files/file_contexts.subs_dist"
+          test -f "$contexts"
+          printf '%s\n' '/var/home /home' '/var/roothome /root' >> "$contexts"
+
           checkmodule -M -m \
             -o "$out/usr/share/selinux/refpolicy/aos_base.mod" \
             ${./refpolicy-aos-base.te}

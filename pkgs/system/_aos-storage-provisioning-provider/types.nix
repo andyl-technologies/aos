@@ -20,10 +20,17 @@
     size_max = defaulted nullableText null "Maximum partition size, when bounded.";
     weight = field lib.types.int "Allocation weight.";
     format = defaulted nullableText null "Optional initial filesystem format.";
+    encryption = defaulted nullableText null "Declared encryption, or the measured-boot policy default.";
     uuid = defaulted nullableText null "Deterministic partition UUID.";
     grow = field lib.types.bool "Consume remaining available space.";
     grow_fs = field lib.types.bool "Allow filesystem growth.";
     priority = field lib.types.int "Deterministic placement priority.";
+  };
+  array = record {
+    level = field text "Validated Linux MD RAID level.";
+    members = field (lib.types.listOf text) "Logical partition names composing the array.";
+    format = defaulted nullableText null "Initial array filesystem format.";
+    encryption = defaulted nullableText null "Declared encryption, or the measured-boot policy default.";
   };
 in {
   request = record {
@@ -42,6 +49,7 @@ in {
     source = field (lib.types.enum ["operator" "fallback"]) "Configuration source committed by the durable marker.";
     marker_uuid = field text "Exact durable provisioning marker UUID.";
     measured_boot = field lib.types.bool "Measured-boot policy used to validate this plan.";
+    arrays = defaulted (lib.types.attrsOf array) {} "Canonical validated MD array definitions.";
     partitions = field (lib.types.attrsOf partition) "Canonical validated partition definitions.";
   };
   marker = record {
@@ -56,5 +64,8 @@ in {
     lsblk = field text "Exact retained block-device inspection executable.";
     sfdisk = field text "Exact retained GPT marker relabeling executable.";
     udevadm = field text "Exact retained device synchronization executable.";
+    mdadm = field text "Exact retained MD array management executable.";
+    mkfs_ext4 = field text "Exact retained ext4 formatting executable.";
+    mkfs_xfs = field text "Exact retained XFS formatting executable.";
   };
 }
