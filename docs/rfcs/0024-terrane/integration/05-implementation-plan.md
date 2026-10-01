@@ -308,6 +308,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Existing-only coordination and complete profile access support genuine
   read-only startup verification. Actual producer integration, submitted-effect
   retention and full crash/copy qualification remain incomplete.
+  Optional native binding hooks now retain the exact injected clock and actual
+  duplicated exclusion without stronger generic clock or lock bounds. Native
+  and supported non-Send builds qualify the shared seam; private factories,
+  final consumed-control fencing and complete effect routing remain pending.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -355,7 +359,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.dom-dedup-scope`.
 - [ ] **T-CRATE-1** SDK types and verbs (`Tree`, `View`, `Store`,
   `Repository`, `fork`, `commit`, `merge`, `diff`, `realize`) and the `sdk`
-  surface (checkout to a directory). — satisfies CRATE-22 to CRATE-27;
+  surface (checkout to a directory). The mandatory ext4 workflow is registered;
+  audit passes, but directory KeepConflict publication still exceeds the
+  unchanged writer deadline. Complete workflow and package qualification remain
+  pending; native I/O batching preserves every required observation and fence.
+  — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.
 
 ### T2 — Host tier
