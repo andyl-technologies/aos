@@ -149,7 +149,15 @@ A recipe `version` can carry its compatibility policy: `"^7.4.2"`, `"~7.4.2"`,
 and `"=7.4.2"` all publish exact version `7.4.2`, with caret, tilde, or equal-version
 requirements. Bare strict SemVer defaults to caret; other bare version schemes
 remain exact-only. Use one optional operator and a full version, not a compound
-range. Keep the source URL variable exact when adding an operator:
+range. The default is an authoring convention, not evidence that upstream follows
+SemVer. Check the interface the package exposes: use `~` for a documented
+patch-series guarantee, and `=` while a broader policy remains unverified.
+Compatibility of an AOS-authored module also requires review of its options,
+handlers, and effects; an upstream library ABI promise does not establish that
+contract. Keep the rationale and any upstream policy link beside the recipe's
+version declaration.
+
+Keep the source URL variable exact when adding an operator:
 
 ```nix
 { mkDerivation, fetchurl, fakeHash, ... }: let

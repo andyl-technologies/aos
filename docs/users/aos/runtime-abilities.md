@@ -275,10 +275,24 @@ schemes remain exact-only. This shorthand accepts one optional operator followed
 by a full release version, not compound ranges; there is no separate
 `moduleCompatibility` field.
 
+Recipes select this policy for their exposed interface. BIND, for example, uses
+`~9.20.27` to stay within its documented stable branch; a package without a
+reviewed broader guarantee uses an equal-version requirement. This does not
+change the source release used for download or build. Selected outputs and
+bootstrap publication preserve the owning recipe's policy.
+
+Source-language compatibility, binary ABI compatibility, configuration migration,
+and supported upgrade paths are separate promises. A range does not perform
+required migrations or enforce cluster version skew. AOS module authors must
+also preserve their own option and operation contracts within the declared range.
+
 Generated `package.versionRequirement` retains the inferred requirement. A
 consumer can therefore write `moduleDeps = [ service-interface ];` without
-repeating the interface package's declared range. To override it, use an explicit
-requirement:
+repeating the interface package's declared range. Consumers capture that range
+when their companions are generated; narrowing a provider recipe does not
+retroactively change an already-published consumer's retained requirement.
+Regenerate and publish those consumer companions to adopt the revised policy.
+To override the range, use an explicit requirement:
 
 ```nix
 { mkDerivation, service-interface, ... }:
