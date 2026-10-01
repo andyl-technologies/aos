@@ -1304,11 +1304,28 @@ async fn extract_provenance(
 
     let declared_refs = collect_declared_provenance_refs(packages_dir).await?;
     prune_cached_extra_provenance_artifacts(registry_cache_dir, &declared_refs).await?;
+    let mut artifact_paths: Vec<String> = declared_refs.iter().cloned().collect();
     if !declared_refs.is_empty() {
-        extract_required_registry_blob(
-            repo_dir,
-            commit,
+        artifact_paths.push(PACKAGE_PROVENANCE_TRANSPARENCY_LOG.to_string());
+    }
+    // Clear every old artifact before the batch read, so any missing or
+    // invalid declaration cannot leave stale provenance behind.
+    for provenance_ref in &declared_refs {
+        clear_declared_registry_artifact_target(provenance_ref, registry_cache_dir).await?;
+    }
+    if !declared_refs.is_empty() {
+        ensure_registry_artifact_parent(registry_cache_dir, PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
+            .await?;
+        remove_cached_registry_artifact_target(
+            &registry_cache_dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG),
+        )
+        .await?;
+    }
+    let mut artifacts = repo::read_required_blobs_at(repo_dir, commit, &artifact_paths).await?;
+    if let Some(log_bytes) = artifacts.remove(PACKAGE_PROVENANCE_TRANSPARENCY_LOG) {
+        write_required_registry_blob(
             PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
+            &log_bytes,
             registry_cache_dir,
         )
         .await?;
@@ -1326,12 +1343,8 @@ async fn extract_provenance(
         provenance::validate_transparency_log(&log)
             .context("validating package transparency log")?;
     }
-    for provenance_ref in &declared_refs {
-        clear_declared_registry_artifact_target(provenance_ref, registry_cache_dir).await?;
-    }
-    for provenance_ref in declared_refs {
-        extract_required_registry_blob(repo_dir, commit, &provenance_ref, registry_cache_dir)
-            .await?;
+    for (provenance_ref, bytes) in artifacts {
+        write_required_registry_blob(&provenance_ref, &bytes, registry_cache_dir).await?;
     }
 
     Ok(())
@@ -1500,43 +1513,16 @@ async fn clear_declared_registry_artifact_target(
     remove_cached_registry_artifact_target(&output_path).await
 }
 
-/// Copy one declared registry artifact blob from `commit` into the cache root.
-async fn extract_required_registry_blob(
-    repo_dir: &Path,
-    commit: &str,
+/// Write one content-verified registry artifact blob into the cache root.
+async fn write_required_registry_blob(
     tree_path: &str,
+    content: &[u8],
     registry_cache_dir: &Path,
 ) -> Result<()> {
     validate_extractable_registry_blob_ref(tree_path)?;
     let output_path = registry_cache_dir.join(Path::new(tree_path));
     ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
     remove_cached_registry_artifact_target(&output_path).await?;
-
-    let kind = repo::path_object_kind(repo_dir, commit, tree_path)
-        .await
-        .with_context(|| format!("checking registry artifact {tree_path}"))?;
-    match kind {
-        None => bail!(
-            "registry artifact '{}' declared by package metadata is missing from commit {}",
-            tree_path,
-            commit,
-        ),
-        Some(git2::ObjectType::Blob) => {}
-        Some(other) => bail!(
-            "registry artifact '{}' declared by package metadata is a {}, not a file",
-            tree_path,
-            other,
-        ),
-    }
-
-    let content = repo::read_blob_at(repo_dir, commit, tree_path)
-        .await
-        .with_context(|| format!("reading registry artifact {tree_path}"))?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "registry artifact '{tree_path}' vanished from commit {commit} during read"
-            )
-        })?;
 
     let mut output = OpenOptions::new()
         .write(true)
@@ -1546,7 +1532,7 @@ async fn extract_required_registry_blob(
         .open(&output_path)
         .with_context(|| format!("opening registry artifact {}", output_path.display()))?;
     output
-        .write_all(&content)
+        .write_all(content)
         .with_context(|| format!("writing registry artifact {}", output_path.display()))?;
     Ok(())
 }

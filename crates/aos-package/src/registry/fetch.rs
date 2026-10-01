@@ -1,8 +1,9 @@
 //! Consumer-side object fetch resolution for the git-native registry.
 //!
 //! Given a target release, this module decides how to bring the release's
-//! git objects into the local registry repo with the least transfer. Three
-//! mechanisms are tried in order:
+//! git objects into the local registry repo with the least transfer. A complete,
+//! content-verified local release needs no transfer. Otherwise three mechanisms
+//! are tried in order:
 //!
 //! 1. **AOS thin deltas** -- producer-published `delta-<base>.pack.zst`
 //!    files under `releases/<release>/objects/pack/`, usable when the
@@ -33,7 +34,8 @@ pub struct FetchPlan {
     /// The release the plan materializes.
     pub target: semver::Version,
     /// Steps to execute in order; later steps may depend on earlier ones
-    /// (e.g. a delta applied on top of a full-pack anchor).
+    /// (e.g. a delta applied on top of a full-pack anchor). Empty when the
+    /// complete release is already available locally.
     pub steps: Vec<FetchStep>,
 }
 
@@ -206,7 +208,8 @@ pub fn plan_from_artifacts(
 
 /// Resolve and fetch objects for a target release.
 ///
-/// The resolver first tries AOS-only thin deltas, then a stock-git full-pack
+/// A complete, content-verified local release returns without network access.
+/// Otherwise the resolver tries AOS-only thin deltas, then a stock-git full-pack
 /// anchor, and finally delegates to `git fetch` for the dumb-HTTP loose-object
 /// correctness floor. Unusable artifacts (corrupt download, failed index)
 /// are reported as warnings and the next mechanism is tried; fetched packs
@@ -240,6 +243,23 @@ pub(crate) async fn resolve_objects_with_progress(
     printer: &Printer,
     progress: Option<&TransferProgress>,
 ) -> Result<FetchPlan> {
+    // Ref synchronization may already have fetched this complete release.
+    // Check the content-addressed graph, not just the tag or retained-version
+    // marker, so an incomplete or damaged local cache still gets repaired.
+    let repo_path = repo_dir.to_path_buf();
+    let release_ref = format!("refs/tags/{target}");
+    let missing = tokio::task::spawn_blocking(move || {
+        super::repo::missing_objects_blocking(&repo_path, &[release_ref])
+    })
+    .await
+    .context("release object-walk task panicked")??;
+    if missing.is_empty() {
+        return Ok(FetchPlan {
+            target: target.clone(),
+            steps: Vec::new(),
+        });
+    }
+
     for base in deltas_at(target) {
         if !retained.contains(&base) {
             continue;
@@ -555,6 +575,62 @@ mod tests {
                 version("1.4.2"),
                 version("1.4.0"),
             ]
+        );
+    }
+
+    fn local_release(repo_dir: &Path) -> git2::Oid {
+        let repo = git2::Repository::init_bare(repo_dir).unwrap();
+        let blob = repo.blob(b"package metadata").unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("package.toml", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.test").unwrap();
+        let commit = repo
+            .commit(Some("HEAD"), &signature, &signature, "release", &tree, &[])
+            .unwrap();
+        let object = repo.find_object(commit, None).unwrap();
+        repo.tag_lightweight("1.0.0", &object, false).unwrap();
+        blob
+    }
+
+    #[tokio::test]
+    async fn complete_local_release_needs_no_origin_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        local_release(tmp.path());
+        let printer = Printer::new(0, true, false);
+
+        let plan = resolve_objects(
+            tmp.path(),
+            "http://127.0.0.1:1",
+            &version("1.0.0"),
+            &[],
+            &printer,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.steps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn existing_release_tag_does_not_hide_missing_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blob = local_release(tmp.path()).to_string();
+        std::fs::remove_file(tmp.path().join("objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+        let printer = Printer::new(0, true, false);
+
+        let result = resolve_objects(
+            tmp.path(),
+            "http://127.0.0.1:1",
+            &version("1.0.0"),
+            &[version("1.0.0")],
+            &printer,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "an incomplete release must still require an origin"
         );
     }
 
