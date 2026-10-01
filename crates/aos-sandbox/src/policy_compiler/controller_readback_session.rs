@@ -162,7 +162,7 @@ pub fn with_fixed_closed_controller_readback_session_v1(
     )
 }
 
-pub(super) fn fresh_root_nonce() -> io::Result<[u8; 16]> {
+pub(crate) fn fresh_root_nonce() -> io::Result<[u8; 16]> {
     let mut nonce = [0_u8; 16];
     let mut filled = 0;
     while filled < nonce.len() {

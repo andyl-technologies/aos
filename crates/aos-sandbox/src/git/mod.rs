@@ -106,6 +106,8 @@ pub use physical_effect::{
 pub use protected_evidence::{GitProtectedEvidenceErrorV1, GitProtectedEvidenceOwnerV1};
 #[cfg(target_os = "linux")]
 pub use protected_evidence::{
+    GIT_EVIDENCE_VIEW_BOOTSTRAP_MAGIC_V1, GitRootEvidenceMetadataV1,
+    GitRootEvidenceViewAttemptV1, GitRootEvidenceViewErrorV1, RootGitEvidenceViewAttemptV1,
     RootGitEvidenceProvisioningAttemptV1, RootGitEvidenceProvisioningErrorV1,
     RootGitEvidenceProvisioningOutcomeV1, RootGitEvidenceProvisioningRecoveryV1,
 };
