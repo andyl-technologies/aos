@@ -329,6 +329,9 @@ pub enum PackageCommand {
         /// Show package from this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Show permission metadata only
+        #[arg(long)]
+        permissions: bool,
         /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
@@ -365,20 +368,6 @@ pub enum PackageCommand {
         #[arg(long, env = "AOS_TOKEN", requires = "hub")]
         token: Option<String>,
         /// Read the system package profile instead of the user profile
-        #[arg(long)]
-        system: bool,
-    },
-    /// Show package information
-    Info {
-        /// Package name
-        package: String,
-        /// Show package from this registry
-        #[arg(long)]
-        registry: Option<String>,
-        /// Show permission metadata only
-        #[arg(long)]
-        permissions: bool,
-        /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
     },
@@ -1285,7 +1274,6 @@ impl PackageCommand {
             | PackageCommand::Docs { .. }
             | PackageCommand::Options { .. }
             | PackageCommand::Schema { .. }
-            | PackageCommand::Info { .. }
             | PackageCommand::List { .. }
             | PackageCommand::Depends { .. }
             | PackageCommand::Rdepends { .. }
@@ -1330,7 +1318,6 @@ impl PackageCommand {
             PackageCommand::Registry { system, .. } => *system,
             PackageCommand::Search { system, .. } => *system,
             PackageCommand::Show { system, .. } => *system,
-            PackageCommand::Info { system, .. } => *system,
             PackageCommand::List { system, .. } => *system,
             PackageCommand::Depends { system, .. } => *system,
             PackageCommand::Rdepends { system, .. } => *system,
@@ -4026,14 +4013,18 @@ pub async fn run(
             .await
         }
         PackageCommand::Show {
-            package, registry, ..
-        } => query::show(&config, package, registry.as_deref(), printer).await,
-        PackageCommand::Info {
             package,
             registry,
             permissions,
             ..
-        } => query::info(&config, package, registry.as_deref(), *permissions, printer).await,
+        } => {
+            if *permissions {
+                query::show_package_permissions(&config, package, registry.as_deref(), printer)
+                    .await
+            } else {
+                query::show(&config, package, registry.as_deref(), printer).await
+            }
+        }
         PackageCommand::List {
             installed,
             upgradable,
@@ -7637,6 +7628,7 @@ contributable = ["allowedTCPPorts"]
             PackageCommand::Show {
                 package: "curl".into(),
                 registry: None,
+                permissions: false,
                 system: true,
             }
             .is_system()

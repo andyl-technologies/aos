@@ -494,14 +494,14 @@ security-communication failure, not just a doc nit.
 
 **Options.**
 - Surface the boundary directly from the signed `[permissions]` manifest
-  (Decision 1, [permissions.md](permissions.md)) in `apm info <pkg>
+  (Decision 1, [permissions.md](permissions.md)) in `apm show <pkg>
   --permissions` / `apm show`, so isolation level is queryable before
   install/enable.
 - Default to `--private-users=no` + seccomp only where the manifest declares it;
   revisit user-namespacing later.
 
 **Resolution.** The permission manifest is the first-class, introspectable
-source of truth for isolation level. `apm info --permissions` exposes the
+source of truth for isolation level. `apm show --permissions` exposes the
 declared grants and computed confinement label before install/enable.
 
 ---
@@ -554,7 +554,7 @@ permissions/config surface.
 > carries what introspection and policy need **before download**:
 > `expose.target`, `expose.requires`, `expose.config`,
 > `expose.provides`/`expose.uses`, and the full `[permissions]` manifest — so
-> `apm info --permissions` and the host policy check work without fetching the
+> `apm show --permissions` and the host policy check work without fetching the
 > closure. The rendered unit files (+ a manifest copy) ride the closure as the
 > `pkg.expose` store path ([authoring.md](authoring.md)), covered by the NAR
 > hash. Gated on Decision 19's capability-gate field landing first.

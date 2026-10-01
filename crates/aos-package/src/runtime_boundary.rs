@@ -128,7 +128,6 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::Update { system, .. }
         | PackageCommand::Search { system, .. }
         | PackageCommand::Show { system, .. }
-        | PackageCommand::Info { system, .. }
         | PackageCommand::List { system, .. }
         | PackageCommand::Depends { system, .. }
         | PackageCommand::Rdepends { system, .. }
@@ -203,7 +202,6 @@ fn is_read_only(command: &PackageCommand) -> bool {
     match command {
         PackageCommand::Search { .. }
         | PackageCommand::Show { .. }
-        | PackageCommand::Info { .. }
         | PackageCommand::List { .. }
         | PackageCommand::Depends { .. }
         | PackageCommand::Rdepends { .. }

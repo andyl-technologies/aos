@@ -1774,17 +1774,35 @@ fn print_summary(
         }
     }
 
-    let download_size: u64 = resolved
-        .iter()
-        .map(|r| r.narinfo.file_size.unwrap_or(0))
-        .sum();
-    let installed_size: u64 = all_metas.iter().map(|m| m.nar_size).sum();
+    printer.plain(&install_size_summary(resolved, all_metas));
+}
 
-    printer.plain(&format!(
-        "Need to download {} / {} installed.",
-        format_size(download_size),
-        format_size(installed_size),
-    ));
+/// Distinguish transfer bytes from total package size and local package reuse.
+fn install_size_summary(resolved: &[ResolvedDownload], all_metas: &[&PackageMeta]) -> String {
+    let download_size: Option<u64> = resolved.iter().map(|item| item.narinfo.file_size).sum();
+    let download_size = download_size
+        .map(format_size)
+        .unwrap_or_else(|| "unknown".to_string());
+    let package_size: u64 = all_metas.iter().map(|meta| meta.nar_size).sum();
+    let downloads: HashSet<&str> = resolved
+        .iter()
+        .map(|item| item.req.store_path.as_str())
+        .collect();
+    let reused = all_metas
+        .iter()
+        .filter(|meta| !downloads.contains(meta.store_path.as_str()))
+        .count();
+
+    let mut summary = format!(
+        "Need to download {download_size}.\nPackage size including dependencies: {}.",
+        format_size(package_size),
+    );
+    if reused > 0 {
+        summary.push_str(&format!(
+            "\nReusing {reused} package(s) already available locally."
+        ));
+    }
+    summary
 }
 
 /// Build `DownloadRequest`s for the missing packages.
@@ -1906,6 +1924,54 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     const TEST_PROVENANCE_KEY_ID: &str = "builder";
+
+    fn summary_download(store_path: &str, file_size: Option<u64>) -> ResolvedDownload {
+        let mut info = narinfo::parse(&format!(
+            "StorePath: {store_path}\nURL: nar/test.nar\nNarHash: sha256:test\nNarSize: 656\n"
+        ))
+        .unwrap();
+        info.file_size = file_size;
+        ResolvedDownload {
+            req: DownloadRequest {
+                store_path: store_path.to_string(),
+                mirror_url: "https://cache.example.test".to_string(),
+                fallback_mirrors: Vec::new(),
+            },
+            narinfo: info,
+        }
+    }
+
+    #[test]
+    fn install_summary_explains_documentation_only_downloads_and_local_reuse() {
+        let mut package = sample_package("xz", "5.8.3", "/nix/store/root-xz");
+        package.nar_size = 993336;
+        let docs = summary_download("/nix/store/docs-xz.json", Some(656));
+
+        let summary = install_size_summary(&[docs], &[&package]);
+
+        assert_eq!(
+            summary,
+            "Need to download 656 B.\nPackage size including dependencies: 970.1 KiB.\nReusing 1 package(s) already available locally.",
+        );
+    }
+
+    #[test]
+    fn install_summary_does_not_claim_downloaded_packages_are_reused() {
+        let package = sample_package("xz", "5.8.3", "/nix/store/root-xz");
+        let download = summary_download(&package.store_path, Some(332180));
+
+        let summary = install_size_summary(&[download], &[&package]);
+
+        assert!(summary.starts_with("Need to download 324.4 KiB."));
+        assert!(!summary.contains("Reusing"));
+    }
+
+    #[test]
+    fn install_summary_reports_unknown_download_sizes_instead_of_zero() {
+        let download = summary_download("/nix/store/root-xz", None);
+
+        assert!(install_size_summary(&[download], &[]).starts_with("Need to download unknown."));
+    }
 
     #[test]
     fn format_size_bytes() {
