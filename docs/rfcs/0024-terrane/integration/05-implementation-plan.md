@@ -507,9 +507,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   hook and shared interfaces. Mandatory repository formatting passes. That
   native build and actual aggregate's `bundle-verify` compilation both stopped on
   29 missing algebra/ref-advance API diagnostics, before runtime tests. After
-  reviewed algebra adoption, the current native build and actual aggregate's
-  package compilation stop on the same 21 ref-advance and resulting inference
-  diagnostics; runtime qualification still cannot start. Native
+  reviewed algebra adoption, that native build and actual aggregate's
+  package compilation stopped on the same 21 ref-advance and resulting inference
+  diagnostics. Native
   admission still explicitly refuses disclosure certificates until their complete
   authenticated publication path exists. No native gate or task merge is qualified.
   Qualification exposed
@@ -545,9 +545,27 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the initializer to their actual binding; scalar fault interception and
   deadlines remain unchanged. Three fresh-reference cases and mandatory
   formatting pass on that frozen forwarding candidate. All four actual Nix
-  gates pass again with the same 16/5/3/12 exact selectors. Integration of the
-  owned adapters and joint source qualification remain pending.
+  gates pass again with the same 16/5/3/12 exact selectors on that separate
+  candidate. Joint source qualification remains pending.
   No deadline change or speedup is claimed.
+  Seventeen fully reviewed ref-advance source paths are now adopted on the
+  trunk. Sixteen of the 18 total reference paths, including the existing phase
+  tracer, match the frozen candidate exactly. The two intentional corrections
+  enforce D-83/REF-3: opaque Notes cannot acquire branch sessions or receive
+  commit-pointer policy advances. Their regression checks refusal before token
+  validation and preserves the actual selected publication stamp; it is added
+  to the ordering gate as an individual exact selector. Shared manifests,
+  lockfiles, Guard, backend and selected-effect interfaces remain unchanged.
+  The actual native production build and strict rustdoc now pass. Mandatory
+  repository formatting passes. Native Nextest and all four reference gates
+  stop before execution on three missing repository API imports and 39
+  resulting fixture type-inference diagnostics. The full current-gate aggregate
+  has the same native compilation failure. Strict all-target Clippy also reports
+  unused integration paths and remains red; warnings are not suppressed.
+  `prov-commit-verify` and `prov-disclosure-boundary` remain registered and fail
+  explicitly as pending. SDK retention and native derived dependencies still
+  require integration; no native task, certificate publication or milestone
+  exit gate is qualified by this source adoption.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -739,18 +757,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Their complete source matches the reference candidate; no manifest, lockfile,
   Guard or publication interface changed. Mandatory repository formatting passes.
   The subsequent reviewed Guard source adoption resolves those missing symbols.
-  After reviewed algebra adoption, the current native production build stops on
-  21 missing ref-advance and resulting inference diagnostics before runtime
-  qualification. Actual
+  After reviewed ref-advance adoption, the native production build and strict
+  rustdoc pass. Current native Nextest and aggregate qualification stop on
+  missing repository APIs and resulting fixture inference diagnostics. Actual
   current-authority disclosure, deletion and domain gates remain incomplete.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
 - [ ] **T-CRATE-1** SDK types and verbs (`Tree`, `View`, `Store`,
   `Repository`, `fork`, `commit`, `merge`, `diff`, `realize`) and the `sdk`
-  surface (checkout to a directory). The mandatory ext4 workflow is registered;
-  audit passes, but directory KeepConflict publication still exceeds the
-  unchanged writer deadline. Complete workflow and package qualification remain
+  surface (checkout to a directory). Native repository and protected retention
+  source still need integration on the trunk. The mandatory ext4 workflow is
+  registered; a separate candidate's audit passes, but directory KeepConflict
+  publication still exceeds the unchanged writer deadline. Complete workflow
+  and package qualification remain
   pending; native I/O batching preserves every required observation and fence.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.

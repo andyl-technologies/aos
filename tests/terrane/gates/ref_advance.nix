@@ -20,6 +20,7 @@ in {
     cd crates
     ${focusedTest}
     run_ref_test ref_advance::tests::ref_advance_ordering_survives_reopen_with_exact_log_and_commit
+    run_ref_test ref_advance::tests::notes_sidecars_refuse_branch_sessions_and_policy_advances
     run_ref_test ref_advance::fault_tests::ref_advance_ordering_pack_index_or_log_failure_never_publishes_head
     run_ref_test ref_advance::fault_tests::final_cas_directory_failure_is_indeterminate_and_fences_the_writer
     run_ref_test ref_advance::fault_tests::abandoned_durable_candidate_does_not_block_a_reopened_writer
