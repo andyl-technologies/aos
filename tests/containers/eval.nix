@@ -173,7 +173,23 @@ in
   assert server.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.container-eval.build.containers.aos";
   assert map builtins.toString aos.packageRoots
-  == map builtins.toString (lib.unique (goldenRoots ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr]));
+  == map builtins.toString (lib.unique (
+    [
+      pkgs.glibc
+      pkgs.glibc-tools
+      pkgs.glibc-locales
+      pkgs.gcc-libs
+      pkgs.ca-certificates
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.grep
+      pkgs.sed
+      pkgs.gawk
+    ]
+    ++ goldenRoots
+    ++ [pkgs.aos pkgs.aos.apm pkgs.aos.apr]
+  ));
   assert aos.packageManagement
   == {
     enable = true;
@@ -185,6 +201,9 @@ in
   == ["${pkgs.aos}/bin/aos" "${pkgs.aos.apm}/bin/apm" "${pkgs.aos.apr}/bin/apr"];
   assert aos.runtime.environment.PATH == "/var/lib/profiles/per-user/root/current/bin:/var/lib/profiles/per-user/root/current/sbin:/usr/bin:/usr/sbin:/bin";
   assert aos.runtime.environment.NIX_REMOTE == "local";
+  assert aos.runtime.environment.LANG == "C.UTF-8";
+  assert aos.runtime.environment.LOCPATH == "${pkgs.glibc-locales}/lib/locale";
+  assert builtins.any (directory: directory.path == "/var/tmp" && directory.mode == "1777") aos.filesystem.directories;
   assert aos.runtime.environment.XDG_DATA_HOME == "/root/.local/share";
   assert aos.runtime.workingDirectory == "/work";
   assert (builtins.head aos.filesystem.directories).path == "/root";
