@@ -104,6 +104,11 @@ in {
     run_bucket_test store::native_effect::tests::range::captured_range_reads_exact_bytes_at_nonzero_offset
     run_bucket_test store::native_effect::tests::range::captured_range_refuses_bytes_outside_complete_preimage
     run_bucket_test store::native_effect::tests::range::captured_range_refuses_missing_complete_preimage
+    run_bucket_test store::native_effect::directory_retention::tests::wrapped_primitives_preserve_actual_fault_identity_and_bytes
+    run_bucket_test store::native_effect::directory_retention::tests::nested_retention_refuses_before_actual_write
+    run_bucket_test store::native_effect::directory_retention::tests::actual_directory_policy_and_parent_replacements_refuse_write
+    run_bucket_test store::native_effect::directory_retention::tests::aborted_waiter_retains_directory_and_kernel_exclusion_through_durability
+    run_bucket_test store::native_effect::directory_retention::tests::queued_aborted_waiter_retains_actual_directories_and_namespace_lock
     # A permissive inherited umask must not expose a new coordination inode.
     (umask 000; run_bucket_test store::bindings::tests::native_existing_lock_never_creates_missing_coordination)
     run_core_bucket_test bucket::records::tests::capability_publication_marker_preserves_legacy_bytes_and_rejects_unknown_versions
