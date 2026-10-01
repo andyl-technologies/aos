@@ -143,10 +143,11 @@ impl CopyTopologyOriginal {
             matches!(
                 Permission::parse(&self.control_permission),
                 Some(Permission::StorageManage | Permission::PlacementManage)
-            )
-                && self.created_at.get() > 0,
+            ) && self.created_at.get() > 0,
             "invalid placement-copy control original"
         );
+        // SQL preserves the operation permission on the primary target and
+        // assigns PlacementManage to a secondary placement independently.
         for (target, expected_permission) in [
             (&self.source, Permission::PlacementManage.as_str()),
             (&self.destination, self.control_permission.as_str()),

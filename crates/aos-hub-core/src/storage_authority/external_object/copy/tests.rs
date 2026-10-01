@@ -27,8 +27,17 @@ fn sql_placement_target_selectors_are_preserved_without_normalization() {
     value.topology.source.stable_id = "registry:source/placement:Primary copy".into();
     value.topology.destination.stable_id = "registry:source/placement:Destination".into();
     value.validate().unwrap();
-    assert_eq!(value.topology.source.stable_id, "registry:source/placement:Primary copy");
-    for invalid in [" ".to_owned(), " leading".to_owned(), "trailing ".to_owned(), "bad\nname".to_owned(), "x".repeat(256)] {
+    assert_eq!(
+        value.topology.source.stable_id,
+        "registry:source/placement:Primary copy"
+    );
+    for invalid in [
+        " ".to_owned(),
+        " leading".to_owned(),
+        "trailing ".to_owned(),
+        "bad\nname".to_owned(),
+        "x".repeat(256),
+    ] {
         let mut changed = value.clone();
         changed.topology.source.stable_id = invalid;
         assert!(changed.validate().is_err());
