@@ -397,46 +397,26 @@ impl ProductionVmLifecycleLoop {
                 "source process changed during detached overlay admission",
             ));
         }
-        let held = self
+        // Sealing changes the block graph, so its writer barrier must remain
+        // unheld. The native transaction drains and flushes the stopped source,
+        // revalidates these generations, and retains its own barrier only after
+        // the fresh overlays and read-only snapshots are installed.
+        let current = self
             .inner
             .backend_mut()
-            .hold_hot_fork_disk_seal_barrier(node)
+            .query_hot_fork_disk_seal(node)
             .map_err(|error| {
-                hot_fork_boundary_error(format!("hold native block-drain barrier: {error}",))
+                hot_fork_boundary_error(format!(
+                    "refresh stopped hot-fork block inventory: {error}"
+                ))
             })?;
-        if !held.held() {
+        if current.qemu_pid() != first.qemu_pid()
+            || current.candidates() != first.candidates()
+            || current.barrier_held()
+            || current.receipt_generation() != 0
+        {
             return Err(hot_fork_boundary_error(
-                "native block-drain barrier did not retain its hold",
-            ));
-        }
-
-        let mut current = None;
-        for poll in 0..MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE {
-            let state = self
-                .inner
-                .backend_mut()
-                .query_hot_fork_disk_seal(node)
-                .map_err(|error| {
-                    hot_fork_boundary_error(
-                        format!("query held hot-fork block inventory: {error}",),
-                    )
-                })?;
-            if state.barrier_held() && state.barrier_quiescent() {
-                current = Some(state);
-                break;
-            }
-            if poll + 1 < MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE {
-                std::thread::sleep(HOT_FORK_ROLLBACK_POLL_INTERVAL);
-            }
-        }
-        let current = current.ok_or_else(|| {
-            hot_fork_boundary_error(
-                "native block-drain barrier did not become quiescent within the bounded wait",
-            )
-        })?;
-        if current.qemu_pid() != first.qemu_pid() || current.candidates() != first.candidates() {
-            return Err(hot_fork_boundary_error(
-                "writable-root inventory changed before native sealing",
+                "stopped writable-root inventory changed or already retains a native seal",
             ));
         }
         let sealed = self
