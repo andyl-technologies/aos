@@ -660,6 +660,43 @@ pub(crate) fn fork_execveat_fixed_without_authority(
     stderr: BorrowedFd<'_>,
     inherited: &[BorrowedFd<'_>],
 ) -> Result<rustix::process::Pid> {
+    let mut pending = begin_fixed_execveat_without_authority(
+        executable,
+        argument_zero,
+        arguments,
+        stdin,
+        stdout,
+        stderr,
+        inherited,
+    )?;
+    receive_exec_status(&mut pending.status)?;
+    let pid = pending.guard.pid()?;
+    pending.guard.disarm();
+    Ok(pid)
+}
+
+/// Retains the actual fork before the parent observes its exec-status pipe.
+pub(crate) struct PendingFixedExecChild {
+    guard: RawSpawnedChildGuard,
+    status: FixedExecStatusReader,
+}
+
+impl PendingFixedExecChild {
+    pub(crate) fn into_parts(self) -> (RawSpawnedChildGuard, FixedExecStatusReader) {
+        (self.guard, self.status)
+    }
+}
+
+/// Begins the same fixed child setup without blocking on its exec handshake.
+pub(crate) fn begin_fixed_execveat_without_authority(
+    executable: BorrowedFd<'_>,
+    argument_zero: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+) -> Result<PendingFixedExecChild> {
     // Locked NOROOT and NO_SETUID_FIXUP are what prevent UID 0 from regaining
     // a permitted set when the dynamic loader is entered after capset(2).
     // SAFETY: PR_GET_SECUREBITS consumes scalar arguments only.
@@ -720,16 +757,15 @@ pub(crate) fn fork_execveat_fixed_without_authority(
     }
 
     drop(error_write);
-    let mut guard = RawSpawnedChildGuard::new(raw_pid);
-    receive_exec_status(error_read.as_fd())?;
-    let pid = rustix::process::Pid::from_raw(raw_pid).ok_or_else(|| {
-        Error::invalid(
-            "fixed process PID",
-            "successful fork returned a nonpositive PID",
-        )
-    })?;
-    guard.disarm();
-    Ok(pid)
+    Ok(PendingFixedExecChild {
+        guard: RawSpawnedChildGuard::new(raw_pid),
+        status: FixedExecStatusReader {
+            descriptor: error_read,
+            bytes: [0; size_of::<libc::c_int>()],
+            offset: 0,
+            nonblocking: false,
+        },
+    })
 }
 
 fn validate_descriptor_exec_securebits(
@@ -889,46 +925,81 @@ fn child_exec_failure(error_descriptor: libc::c_int) -> ! {
     unsafe { libc::_exit(127) }
 }
 
-fn receive_exec_status(descriptor: BorrowedFd<'_>) -> Result<()> {
-    let mut bytes = [0_u8; size_of::<libc::c_int>()];
-    let mut offset = 0;
+fn receive_exec_status(status: &mut FixedExecStatusReader) -> Result<()> {
     loop {
+        if status.read_once()? {
+            return Ok(());
+        }
+    }
+}
+
+/// Owns the single canonical zero/four-byte fixed descriptor exec handshake.
+pub(crate) struct FixedExecStatusReader {
+    pub(crate) descriptor: OwnedFd,
+    bytes: [u8; size_of::<libc::c_int>()],
+    offset: usize,
+    nonblocking: bool,
+}
+
+impl FixedExecStatusReader {
+    pub(crate) fn enable_nonblocking(&mut self) -> Result<()> {
+        let flags = rustix::fs::fcntl_getfl(&self.descriptor)
+            .map_err(|error| Error::Syscall {
+                operation: "inspect fixed descriptor exec status flags",
+                source: std::io::Error::from_raw_os_error(error.raw_os_error()),
+            })?;
+        rustix::fs::fcntl_setfl(&self.descriptor, flags | rustix::fs::OFlags::NONBLOCK)
+            .map_err(|error| Error::Syscall {
+                operation: "set fixed descriptor exec status nonblocking",
+                source: std::io::Error::from_raw_os_error(error.raw_os_error()),
+            })?;
+        self.nonblocking = true;
+        Ok(())
+    }
+
+    /// Returns true only after a real zero-byte EOF with no error record.
+    pub(crate) fn read_once(&mut self) -> Result<bool> {
         // SAFETY: the remaining slice is writable for the supplied byte count.
         let count = unsafe {
             libc::read(
-                descriptor.as_raw_fd(),
-                bytes[offset..].as_mut_ptr().cast(),
-                bytes.len() - offset,
+                self.descriptor.as_raw_fd(),
+                self.bytes[self.offset..].as_mut_ptr().cast(),
+                self.bytes.len() - self.offset,
             )
         };
         if count == 0 {
-            break;
+            return if self.offset == 0 {
+                Ok(true)
+            } else {
+                Err(Error::MalformedKernelResponse {
+                    object: "fixed descriptor exec status",
+                    message: "child returned a partial error record".to_owned(),
+                })
+            };
         }
         if count < 0 {
             if std::io::Error::last_os_error().raw_os_error() == Some(libc::EINTR) {
-                continue;
+                return Ok(false);
+            }
+            if self.nonblocking
+                && std::io::Error::last_os_error().raw_os_error() == Some(libc::EAGAIN)
+            {
+                return Ok(false);
             }
             return Err(Error::syscall("read fixed descriptor exec status"));
         }
-        offset += usize::try_from(count).map_err(|_| Error::MalformedKernelResponse {
+        self.offset += usize::try_from(count).map_err(|_| Error::MalformedKernelResponse {
             object: "fixed descriptor exec status",
             message: "negative status length".to_owned(),
         })?;
-        if offset == bytes.len() {
-            let error = libc::c_int::from_ne_bytes(bytes);
+        if self.offset == self.bytes.len() {
+            let error = libc::c_int::from_ne_bytes(self.bytes);
             return Err(Error::Syscall {
                 operation: "execveat fixed descriptor process",
                 source: std::io::Error::from_raw_os_error(error),
             });
         }
-    }
-    if offset == 0 {
-        Ok(())
-    } else {
-        Err(Error::MalformedKernelResponse {
-            object: "fixed descriptor exec status",
-            message: "child returned a partial error record".to_owned(),
-        })
+        Ok(false)
     }
 }
 
@@ -1001,17 +1072,26 @@ fn check_posix(result: libc::c_int, operation: &'static str) -> Result<()> {
     }
 }
 
-struct RawSpawnedChildGuard {
+pub(crate) struct RawSpawnedChildGuard {
     pid: libc::pid_t,
     armed: bool,
 }
 
 impl RawSpawnedChildGuard {
+    pub(crate) fn pid(&self) -> Result<rustix::process::Pid> {
+        rustix::process::Pid::from_raw(self.pid).ok_or_else(|| {
+            Error::invalid(
+                "fixed process PID",
+                "successful fork returned a nonpositive PID",
+            )
+        })
+    }
+
     const fn new(pid: libc::pid_t) -> Self {
         Self { pid, armed: true }
     }
 
-    fn disarm(&mut self) {
+    pub(crate) fn disarm(&mut self) {
         self.armed = false;
     }
 }
@@ -3017,5 +3097,78 @@ mod tests {
             ensure_timestamp_before_deadline(101, 100, "test"),
             Err(Error::DeadlineExceeded { .. })
         ));
+    }
+}
+
+#[cfg(test)]
+mod fixed_exec_status_tests {
+    use super::*;
+
+    fn pipe_status(
+        bytes: &[u8],
+        close_writer: bool,
+    ) -> (FixedExecStatusReader, Option<OwnedFd>) {
+        let (reader, writer) = rustix::pipe::pipe_with(rustix::pipe::PipeFlags::CLOEXEC).unwrap();
+        if !bytes.is_empty() {
+            assert_eq!(rustix::io::write(&writer, bytes).unwrap(), bytes.len());
+        }
+        let writer = if close_writer {
+            drop(writer);
+            None
+        } else {
+            Some(writer)
+        };
+        let mut status = FixedExecStatusReader {
+            descriptor: reader,
+            bytes: [0; size_of::<libc::c_int>()],
+            offset: 0,
+            nonblocking: false,
+        };
+        status.enable_nonblocking().unwrap();
+        (status, writer)
+    }
+
+    #[test]
+    fn zero_byte_eof_is_the_only_success_record() {
+        let (mut status, _writer) = pipe_status(&[], true);
+
+        assert!(status.read_once().unwrap());
+    }
+
+    #[test]
+    fn full_native_errno_retains_original_operation_and_errno() {
+        let (mut status, _writer) = pipe_status(&libc::ENOEXEC.to_ne_bytes(), true);
+
+        assert!(matches!(
+            status.read_once().unwrap_err(),
+            Error::Syscall {
+                operation: "execveat fixed descriptor process",
+                source,
+            } if source.raw_os_error() == Some(libc::ENOEXEC)
+        ));
+    }
+
+    #[test]
+    fn partial_record_eof_keeps_original_malformed_error() {
+        let (mut status, _writer) = pipe_status(&[1, 2], true);
+
+        assert!(!status.read_once().unwrap());
+        assert!(matches!(
+            status.read_once().unwrap_err(),
+            Error::MalformedKernelResponse {
+                object: "fixed descriptor exec status",
+                message,
+            } if message == "child returned a partial error record"
+        ));
+    }
+
+    #[test]
+    fn nonblocking_pending_pipe_never_claims_exec_success() {
+        let (mut status, writer) = pipe_status(&[], false);
+
+        assert!(!status.read_once().unwrap());
+        drop(writer);
+
+        assert!(status.read_once().unwrap());
     }
 }
