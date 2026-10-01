@@ -452,11 +452,11 @@
         "sourceful metadata is explicit"
 
       run_ok search-desc "$APM" search Surface
-      assert_file_contains /tmp/surface-search-desc.out "surfacepkg 1.0.0 \[registry: surface-reg\]" "apm search labels the registry separately"
+      assert_file_contains /tmp/surface-search-desc.out "^surfacepkg 1.0.0 \[registry: surface-reg\] - Surface command fixture$" "apm search labels the registry separately"
       run_ok search-names "$APM" search surface --names-only
       assert_file_contains /tmp/surface-search-names.out "surfacepkg" "apm search --names-only finds package names"
       run_ok search-installed "$APM" search surface --installed
-      assert_file_contains /tmp/surface-search-installed.out "surfacepkg 1.0.0 \[registry: surface-reg\]" "apm search --installed labels the source registry"
+      assert_file_contains /tmp/surface-search-installed.out "^surfacepkg 1.0.0 \[registry: surface-reg\] - Surface command fixture$" "apm search --installed labels the source registry"
       run_ok search-installed-json "$APM" --json search surface --installed
       "$JQ" -e \
         'map(select(.name == "surfacepkg" and .registry == "surface-reg" and .version == "1.0.0")) | length == 1' \
