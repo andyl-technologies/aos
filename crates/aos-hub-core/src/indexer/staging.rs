@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context as _, Result, ensure};
 use aos_registry_surface::keymap;
 use aos_registry_surface::object::{self, ObjectKind, Oid};
+use aos_registry_surface::object_bundle;
 use aos_registry_surface::pack_index;
 use aos_registry_surface::refs::{parse_head, parse_info_refs};
 use aos_registry_surface::staging::StageRevision;
@@ -57,14 +58,30 @@ pub(crate) async fn validate_candidate(
             .context("release patch is absent")?,
     );
     let candidate_packs_path = format!("{release_directory}/objects/info/packs");
+    let frozen_pointers: BTreeMap<_, _> = revision
+        .publication
+        .iter()
+        .map(|pointer| (pointer.path.as_str(), pointer.bytes.as_slice()))
+        .collect();
+    let inventory: BTreeMap<_, _> = revision
+        .inventory
+        .iter()
+        .map(|object| (object.path.as_str(), object))
+        .collect();
     let mut prepared = BTreeMap::new();
     for pointer in &revision.publication {
         ensure!(
             !pointer.path.starts_with("channels/"),
             "stage publication cannot assign channel partitions"
         );
+        let bundle_name = git_bundle_name(&pointer.path);
+        let pointer_limit = match bundle_name {
+            Some("all") => object_bundle::MAX_AGGREGATE_BUNDLE_BYTES,
+            Some(_) => object_bundle::MAX_BUNDLE_BYTES,
+            None => MAX_POINTER_BYTES,
+        };
         ensure!(
-            pointer.bytes.len() <= MAX_POINTER_BYTES,
+            pointer.bytes.len() <= pointer_limit,
             "prepared stage pointer exceeds its byte limit"
         );
         // The service compares physical predecessors under its publication lease.
@@ -75,9 +92,7 @@ pub(crate) async fn validate_candidate(
         let current = if encoded_object || pack_index_object {
             None
         } else {
-            surface
-                .fetch_bounded(&pointer.path, MAX_POINTER_BYTES)
-                .await?
+            surface.fetch_bounded(&pointer.path, pointer_limit).await?
         };
         if !encoded_object && !pack_index_object {
             let current_hash = current
@@ -115,6 +130,8 @@ pub(crate) async fn validate_candidate(
                 .await?
                 .context("staged companion pack is unavailable")?;
             pack_index::validate_against_pack(&pointer.path, &pointer.bytes, &pack)?;
+        } else if let Some(bundle_name) = bundle_name {
+            validate_git_bundle(bundle_name, &pointer.bytes, &frozen_pointers)?;
         } else if pointer.path == "HEAD" {
             ensure!(
                 current.as_deref() == Some(pointer.bytes.as_slice()),
@@ -168,6 +185,15 @@ pub(crate) async fn validate_candidate(
                     );
                 }
             }
+        } else if pointer.path == "nix-cache-info" {
+            super::staging_cache::validate_cache_info(current.as_deref(), &pointer.bytes)?;
+        } else if !pointer.path.contains('/') && pointer.path.ends_with(".narinfo") {
+            super::staging_cache::validate_narinfo(
+                &pointer.path,
+                current.as_deref(),
+                &pointer.bytes,
+                &inventory,
+            )?;
         } else if !matches!(pointer.path.as_str(), "info/refs" | "tuf/timestamp.json") {
             ensure!(
                 current.as_deref() == Some(pointer.bytes.as_slice()),
@@ -317,6 +343,34 @@ pub(crate) async fn validate_candidate(
     Ok(())
 }
 
+/// Restricts accelerators to canonical shards and the optional aggregate.
+fn git_bundle_name(path: &str) -> Option<&str> {
+    let name = path.strip_prefix("objects/aos-index-v1/")?;
+    (name == "all" || object_bundle::shard_path(name).is_ok()).then_some(name)
+}
+
+/// Binds each accelerator entry to the exact canonical object frozen by the stage.
+fn validate_git_bundle(
+    name: &str,
+    bytes: &[u8],
+    frozen_pointers: &BTreeMap<&str, &[u8]>,
+) -> Result<()> {
+    let entries = if name == "all" {
+        object_bundle::decode_aggregate(bytes)?
+    } else {
+        object_bundle::decode(name, bytes)?
+    };
+    for (oid, loose) in entries {
+        object::decode_loose(&loose, Some(oid))?;
+        let path = oid.loose_path();
+        ensure!(
+            frozen_pointers.get(path.as_str()).copied() == Some(loose.as_slice()),
+            "staged Git accelerator contains an object outside its frozen canonical encodings"
+        );
+    }
+    Ok(())
+}
+
 /// Preserves the availability of already advertised Git transport objects.
 fn preserve_listing_entries(current: Option<&[u8]>, proposed: &[u8]) -> Result<()> {
     let proposed = std::str::from_utf8(proposed)?
@@ -335,4 +389,44 @@ fn preserve_listing_entries(current: Option<&[u8]>, proposed: &[u8]) -> Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn staged_git_bundles_bind_exact_frozen_canonical_encodings() {
+        let payload = b"candidate object";
+        let oid = object::hash_object(ObjectKind::Blob, payload);
+        let loose = object::encode_loose(ObjectKind::Blob, payload).unwrap();
+        let path = oid.loose_path();
+        let frozen = BTreeMap::from([(path.as_str(), loose.as_slice())]);
+        let entries = vec![(oid, loose.clone())];
+        let shard = &oid.to_hex()[..2];
+        let shard_bytes = object_bundle::encode(shard, &entries).unwrap();
+        let aggregate = object_bundle::encode_aggregate(&entries).unwrap();
+
+        validate_git_bundle(shard, &shard_bytes, &frozen).unwrap();
+        validate_git_bundle("all", &aggregate, &frozen).unwrap();
+        assert!(validate_git_bundle(shard, &shard_bytes, &BTreeMap::new()).is_err());
+
+        let different = BTreeMap::from([(path.as_str(), b"different encoding".as_slice())]);
+        assert!(validate_git_bundle(shard, &shard_bytes, &different).is_err());
+        let corrupt =
+            object_bundle::encode(shard, &[(oid, b"invalid loose bytes".to_vec())]).unwrap();
+        assert!(validate_git_bundle(shard, &corrupt, &frozen).is_err());
+        assert!(validate_git_bundle(shard, b"arbitrary bytes", &frozen).is_err());
+
+        assert_eq!(git_bundle_name("objects/aos-index-v1/all"), Some("all"));
+        assert_eq!(git_bundle_name("objects/aos-index-v1/0d"), Some("0d"));
+        for unrelated in [
+            "objects/aos-index-v1/0D",
+            "objects/aos-index-v1/0d/extra",
+            "objects/aos-index-v1/other",
+            "objects/aos-index-v2/0d",
+        ] {
+            assert_eq!(git_bundle_name(unrelated), None);
+        }
+    }
 }

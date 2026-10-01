@@ -140,7 +140,7 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     )?;
     let upload_url = format!("{}{}", hub.origin, hub.registry.slug);
     assert_hub_stage_target(&hub, &upload_url).await?;
-    bootstrap_signed_registry(
+    publish_signed_registry_surface(
         &home,
         &authoring_registry,
         &hub,
@@ -389,16 +389,11 @@ async fn signed_apr_release_admits_and_publishes_the_staged_graph() -> Result<()
     )?;
     assert_eq!(committed_sidecar, release_bytes);
 
-    run_apr(
+    publish_signed_registry_surface(
         &home,
-        &[
-            "origin",
-            "upload",
-            "--registry",
-            APR_REGISTRY,
-            "--upload-url",
-            &format!("file://{}", hub.surface.display()),
-        ],
+        &authoring_registry,
+        &hub,
+        &workspace.path().join("channel-surface"),
     )?;
     let fetch = LocalFsFetch::new(&hub.surface)
         .with_image_snapshots(Arc::clone(&hub.image_snapshots))
@@ -822,21 +817,29 @@ async fn assert_hub_stage_target(hub: &RunningHub, upload_url: &str) -> Result<(
     )
 }
 
-fn bootstrap_signed_registry(
+fn publish_signed_registry_surface(
     home: &Path,
     authoring_registry: &Path,
     hub: &RunningHub,
     surface: &Path,
 ) -> Result<()> {
-    // The supported Hub publication CLI admits and commits the real signed
-    // predecessor before APR prepares the new retained candidate.
+    // Hub publication admission binds each signed surface to its index
+    // generation. Channel promotion preserves the published default HEAD.
+    let public_head = match fs::read(hub.surface.join("HEAD")) {
+        Ok(head) => Some(head),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context("reading published registry HEAD"),
+    };
     fs::create_dir_all(surface)?;
     for file in
         aos_package::registry::static_upload::collect_static_origin_files(authoring_registry)?
     {
         let destination = surface.join(file.relative_path);
-        fs::create_dir_all(destination.parent().context("bootstrap object parent")?)?;
+        fs::create_dir_all(destination.parent().context("publication object parent")?)?;
         fs::copy(file.source, destination)?;
+    }
+    if let Some(head) = public_head {
+        fs::write(surface.join("HEAD"), head)?;
     }
     let output = Command::new(env!("CARGO_BIN_EXE_aos"))
         .env("HOME", home)
@@ -845,7 +848,7 @@ fn bootstrap_signed_registry(
         .arg(surface)
         .args(["--hub", &hub.origin, "--token", &hub.bearer])
         .output()
-        .context("running typed Hub registry bootstrap")?;
+        .context("running typed Hub registry publication")?;
     if !output.status.success() {
         bail!(
             "aos hub registry publish upload failed:\nstdout:\n{}\nstderr:\n{}",
