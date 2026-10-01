@@ -4,20 +4,16 @@
 //! floor sidecar is a separate protected Journal. These digests are
 //! observational until matched to authenticated NV under retained custody.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use aos_sandbox::{Journal, JournalTransaction, RecordNamespace};
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionDurableEndpointV1, BrokerSessionProtocolV1,
 };
-use sha2::{Digest as _, Sha256};
 
 use super::format::{FloorEndpointV1, successor_sequence};
 use super::{FloorCutV1, FloorErrorV1, FloorProfileV1};
 use crate::BrokerSessionSecurityError;
-
-const HEAD_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.head.v1\0";
-const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.broker-session.tpm-floor.transaction.v1\0";
 
 impl super::super::ProtectedBrokerSessionJournalV1 {
     /// Derives a current and prospective HEAD without committing or extending.
@@ -141,63 +137,25 @@ pub(super) fn journal_floor_cuts_v1(
     Ok((current, target))
 }
 
-/// Hashes exact sorted keys and values without copying their packet payloads.
+/// Hashes the original complete Broker map through the sole canonical engine.
+///
+/// # Errors
+///
+/// Preserves original key/order, count and cut-sentinel encoding errors.
 pub(super) fn cut_from_records_v1<'a>(
     sequence: u64,
     records: impl IntoIterator<Item = (&'a [u8], &'a [u8])>,
 ) -> Result<FloorCutV1, FloorErrorV1> {
-    let mut digest = Sha256::new();
-    digest.update(HEAD_DOMAIN);
-    digest.update([RecordNamespace::BrokerSessionTraffic as u8]);
-    digest.update(sequence.to_be_bytes());
-    let mut predecessor: Option<&[u8]> = None;
-    let mut count = 0_u64;
-    for (key, value) in records {
-        if key.is_empty() || predecessor.is_some_and(|old| old >= key) {
-            return Err(FloorErrorV1::Encoding);
-        }
-        update_bytes(&mut digest, key)?;
-        update_bytes(&mut digest, value)?;
-        count = count.checked_add(1).ok_or(FloorErrorV1::Encoding)?;
-        predecessor = Some(key);
-    }
-    digest.update(count.to_be_bytes());
-    FloorCutV1::new(sequence, digest.finalize().into())
+    crate::tpm_nv_custody::broker_cut_from_records_v1(sequence, records)
 }
 
-/// Commits ID, record order, namespace, put/delete tag, and length-delimited bytes.
+/// Commits the original Broker UUID/order/tags/bytes through the sole walker.
+///
+/// # Errors
+///
+/// Preserves original namespace, key and length encoding errors.
 pub(super) fn transaction_digest_v1(
     transaction: &JournalTransaction,
 ) -> Result<[u8; 32], FloorErrorV1> {
-    let mut digest = Sha256::new();
-    digest.update(TRANSACTION_DOMAIN);
-    digest.update(transaction.id());
-    digest.update(
-        u64::try_from(transaction.records().len())
-            .map_err(|_| FloorErrorV1::Encoding)?
-            .to_be_bytes(),
-    );
-    let mut keys = BTreeSet::new();
-    for record in transaction.records() {
-        if record.namespace() != RecordNamespace::BrokerSessionTraffic
-            || record.key().is_empty()
-            || !keys.insert(record.key())
-        {
-            return Err(FloorErrorV1::Encoding);
-        }
-        digest.update([record.namespace() as u8, u8::from(record.value().is_some())]);
-        update_bytes(&mut digest, record.key())?;
-        update_bytes(&mut digest, record.value().unwrap_or_default())?;
-    }
-    Ok(digest.finalize().into())
-}
-
-fn update_bytes(digest: &mut Sha256, bytes: &[u8]) -> Result<(), FloorErrorV1> {
-    digest.update(
-        u64::try_from(bytes.len())
-            .map_err(|_| FloorErrorV1::Encoding)?
-            .to_be_bytes(),
-    );
-    digest.update(bytes);
-    Ok(())
+    crate::tpm_nv_custody::broker_transaction_digest_v1(transaction)
 }

@@ -398,12 +398,7 @@ fn transaction_id(domain: &[u8], intent: FloorIntentV1) -> Result<[u8; 16], Floo
 
 /// An ordinal is NV-bound, so fixed sidecar geometry cannot be reset by compaction.
 fn sidecar_sequence(ordinal: u64, pending: bool) -> Result<u64, FloorErrorV1> {
-    ordinal
-        .checked_sub(1)
-        .and_then(|count| count.checked_mul(9))
-        .and_then(|frames| frames.checked_add(if pending { 8 } else { 4 }))
-        .filter(|sequence| *sequence != u64::MAX)
-        .ok_or(FloorErrorV1::Encoding)
+    crate::tpm_nv_custody::sidecar_sequence_v1(ordinal, pending)
 }
 
 fn sidecar_limits(main: JournalLimits) -> Result<JournalLimits, FloorErrorV1> {
