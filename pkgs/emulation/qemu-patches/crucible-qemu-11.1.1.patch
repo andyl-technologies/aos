@@ -1,169 +1,9 @@
-From 706f48e102f26d3230c1a536f4e53f92d72a9f08 Mon Sep 17 00:00:00 2001
+From ad5e36e9db8ad8469a575c788a738ee7b8bf14fa Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Wed, 30 Sep 2026 19:23:17 -0700
-Subject: [PATCH] crucible: integrate deterministic QEMU execution
+Date: Thu, 1 Oct 2026 00:10:43 -0700
+Subject: [PATCH] crucible: establish hot-fork runtime and source custody
 
-Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,
-retained hot fork, fault models, and device fingerprints as one atomic,
-reconstructible QEMU 11.1.1 source artifact.
-
-Store converted QEMU_CLOCK_VIRTUAL deadlines internally in picoseconds
-for deterministic sim and ordinary TCG. Preserve generic TCG's long timer
-horizon, carry exact ns-plus-phase device state through migration, and
-ceil-project that state when crossing to a non-TCG accelerator.
-
-Interpret ordinary TCG -icount shifts as nanoseconds per instruction
-at the public option boundary while retaining the picosecond internal
-clock and wide virtual horizon. Validate fixed and adaptive models
-under the versioned migration contract, and preserve fractional timer
-phase across adaptive migration and device deadlines.
-
-Exercise ordinary shift rates, deadline rounding and sim's fixed 50 ps
-model. Load and resave an armed fractional timer through actual QEMU
-migration instead of relying on an incidental adaptive timer phase.
-
-Keep RISC-V instruction triggers tied to retired instruction counts when
-adaptive icount changes its picosecond shift. Exercise fixed and adaptive
-timers, migration rejection, and fractional device clocks in QEMU tests.
-
-Model sim at 50 ps per retired instruction and carry exact phase through
-CPU budgeting, idle advance, fingerprints, fault events and results.
-Project an authenticated 4 GHz x86 TSC and retain calendar clock epochs.
-
-Reject malformed clock state and active PPC PMU migration before guest
-continuation. Preserve inactive and instruction-only PMU migration,
-ordinary-QEMU compatibility, and the GPL/Apache process boundary.
-
-Keep a bottom half alive while a nested poll drains its owner, retain the
-hot-fork inventory row through callback accounting, preserve the ARM timer
-horizon in picosecond mode, and avoid fw_cfg device lookup when no deferred
-service is pending. Wait for NBD export deletion in the upstream iotest.
-
-Yield a repeated x86 PAUSE at a partial RR turn while preserving the first
-post-handoff lock attempt and the serialized cursor. This gives contended
-firmware spin locks a deterministic handoff without lowering the normal
-4096-instruction quantum. Keep PAUSE in its translated block once no
-runnable peer remains, so the single-CPU and post-startup paths stay fast.
-
-Commit the in-flight CPU retirement prefix before anchoring an idle
-picosecond bias. Keep an opt-in idle-stage and prefix trace so
-the exact boundary can be checked without changing replay state.
-
-Represent Linux eventfd-id zero with a nonzero one-based token through
-the versioned hot-fork contracts, and reject token overflow. Exercise
-zero, positive, and overflowing identities in a QEMU unit test.
-
-Report an unrepresentable armed virtual timer deadline as a distinct
-overflow status instead of absence. Keep the full QEMU timer horizon
-and exercise the plugin-facing signed projection with wide timers.
-
-Bound long-TB instruction restoration scans with immutable code-owned
-checkpoints every 16 rows. Retain strict helper end boundaries and all
-target metadata words, reject malformed metadata without exposing partial
-outputs, and return the already authenticated TB from the private identity
-decoder without changing generic restoration or execution permissions.
-
-Preserve the fractional TCG virtual clock origin when arming relative
-coroutine sleeps. Keep nonpositive sleeps immediately eligible, diagnose
-unrepresentable deadlines before parking, and exercise actual coroutine
-wakeup and timer dispatch with coherent fractional clock samples.
-
-Preserve the exact virtual clock origin for VFIO INTx mmap timeout
-arming and pending rearming. Convert configured milliseconds with checked
-arithmetic and exercise the actual callbacks, notifier and timer dispatch
-with fractional clock samples and explicit IRQ/mmap hardware doubles.
-
-Retain fractional virtual origins in VGA text cursor and blink display
-cache deadlines. Preserve the existing periods, mode-change resets and
-non-TCG millisecond policy, and exercise actual glyph rendering at exact
-fractional boundaries without changing serialized device state.
-
-Preserve fractional CMOS RTC calendar origins and update/alarm deadlines.
-Keep guest nanosecond interfaces and non-TCG policy, reusing the existing
-optional exact-clock migration fields with legacy zero-phase defaults.
-Exercise actual RTC callbacks and serialized origin-phase round trips.
-
-Preserve fractional NVMe timestamp and power-on elapsed origins.
-Keep guest millisecond timestamp and whole-hour SMART units, retaining
-picosecond remainders until the final elapsed conversion. Add an optional
-phase migration subsection with legacy zero-phase defaults and exercise
-actual controller timestamp, SMART transfer and serialized phase checks.
-
-Preserve fractional CXL timestamp elapsed origins.
-Keep the guest unsigned-nanosecond timestamp ABI while retaining the
-internal picosecond remainder until the final elapsed conversion.
-Migrate timestamp state through an optional subsection with legacy
-unset defaults and reject malformed sub-nanosecond phases.
-
-Align exact xHCI wrap and endpoint kick timers with the retained
-microframe origin. Keep polling and callback lateness from shifting
-architectural microframe boundaries, preserve generic non-TCG behavior
-and the existing phase migration format, and exercise literal arming
-bodies with real fractional timers and serialized phase round trips.
-
-Preserve exact HPET timer history for all TCG migration.
-Retain the wide picosecond origin, extended comparator and periodic
-storm-clamp deadline even when all phases align to nanoseconds.
-Require exact TCG state on restore; keep generic non-TCG timing unchanged
-and exercise literal device timers, pin IRQs and full migration streams.
-
-Remove unreachable TCG migration reconstruction after exact-state admission.
-Retain the existing non-TCG comparator and nanosecond history reconstruction.
-
-Preserve the configured RC4030 timer frequency until final picosecond arming.
-Keep exact wide TCG origins and reject malformed nine-bit reload migration
-state before timer or IRQ effects; leave generic non-TCG timing unchanged.
-Exercise literal device callbacks and full serialized timer state.
-
-Remove unused serial transmit timestamp storage and its dead clock reads.
-
-Keep the wide TCG virtual clock until the final RISC-V CPC MTIME tick.
-Preserve the architectural 10 MHz rate, wrapping uint64 counter, unchanged
-legacy clock policy and existing migration fields. Remove the unused target
-header and unreachable read return; test literal MMIO reads and VMState.
-
-Preserve wide MIPS GIC timer deadlines in exact TCG migration.
-Keep the current counter arithmetic and legacy non-TCG wire state, adding
-a checked optional exact deadline subsection and refusing missing or wrong
-clock-mode state before timer effects. Exercise literal timers and QEMUFile.
-
-Validate asynchronous block job pause and resume progress.
-Retain actual QMP progress invariants without comparing racy pause offset
-samples to a fixed zero delta; keep test coverage and skip policy unchanged.
-
-Preserve the full signed picosecond horizon in the ptimer engine.
-Keep absolute time separate from fractional period state, validate the
-versioned exact-wide migration subsection before timer effects, and retain
-the ordinary nanosecond wire format and countdown policy tests.
-
-Reject migrated active ptimer countdowns without a period before arming.
-Preserve valid disabled zero-period state in exact and ordinary modes.
-
-Preserve full-range OpenRISC timer origins and exact pending deadlines.
-Retain genuine signed negative expiry through the versioned timer state.
-
-Preserve full-range SPARC and MIPS CPU timer origins and deadlines.
-Convert S390 TOD arithmetic without overflowing the wide clock domain.
-Link the real IRQ implementation for the configured MIPS timer unit.
-
-Preserve wide ARM, HPPA and LoongArch CPU timer origins and deadlines.
-
-Preserve wide PowerPC timer coordinates and exact precise BookE edges.
-
-Preserve full-width default APIC, HPET, RTC, PIT, serial, keyboard and ACPI PM timer state.
-
-Retain actual RTC calendar callbacks in the current GPL unit and remove obsolete split-phase test paths.
-
-Pass the source firmware directory explicitly to the pre-install multiboot check. Preserve uninitialized nonperiodic PIT startup before HPET enables its IRQ, and reject a zero periodic divisor.
-
-Preserve fullword ICH9 TCO, software SMI and periodic SMI timer state, require exact mode-tagged migration and validate all auxiliary deadlines before any timer arm.
-
-Wait for the detached call_rcu worker to process a drain callback before
-hot-fork child unit tests inspect the registry. This stabilizes the
-strict three-entry startup assertion without changing runtime behavior.
-
-Report runstate and VMStop transaction and flush facts when template
-preparation rejects the exact paused boundary; leave its guards intact.
+Provide deterministic execution with retained native stop custody. Seal current writable roots behind fresh overlays before template capture.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -11308,6 +11148,722 @@ index a57c2922d55d0a5667374239e8d3d4f2fc764d21..9e6c6af25f42c57fbe884bb36afae51f
      .supports_zoned_children = true,
      .bdrv_probe           = &raw_probe,
      .bdrv_reopen_prepare  = &raw_reopen_prepare,
+diff --git a/blockdev.c b/blockdev.c
+index 6e86c6262f96c502a56c61785d876cefad912813..07148238789cfb79b70cb9f22509fa4fedbef948 100644
+--- a/blockdev.c
++++ b/blockdev.c
+@@ -32,6 +32,8 @@
+ 
+ #include "qemu/osdep.h"
+ #include "system/block-backend.h"
++#include "system/block-backend-global-state.h"
++#include "system/block-backend-io.h"
+ #include "system/blockdev.h"
+ #include "hw/block/block.h"
+ #include "block/blockjob.h"
+@@ -45,6 +47,7 @@
+ #include "qemu/config-file.h"
+ #include "qapi/qapi-commands-block.h"
+ #include "qapi/qapi-commands-transaction.h"
++#include "qapi/qapi-commands-run-state.h"
+ #include "qapi/qapi-visit-block-core.h"
+ #include "qobject/qdict.h"
+ #include "qobject/qnum.h"
+@@ -58,7 +61,11 @@
+ #include "block/block_int.h"
+ #include "block/trace.h"
+ #include "system/runstate.h"
++#include "system/cpus.h"
+ #include "system/replay.h"
++#include "qemu/crucible-hot-fork-plugin.h"
++#include "qemu/plugin.h"
++#include "qemu/id.h"
+ #include "qemu/cutils.h"
+ #include "qemu/help_option.h"
+ #include "qemu/main-loop.h"
+@@ -1364,7 +1371,9 @@ TransactionActionDrv external_snapshot_drv = {
+ };
+ 
+ static void external_snapshot_action(TransactionAction *action,
+-                                     Transaction *tran, Error **errp)
++                                     Transaction *tran,
++                                     ExternalSnapshotState **state_out,
++                                     Error **errp)
+ {
+     int ret;
+     int flags = 0;
+@@ -1385,6 +1394,9 @@ static void external_snapshot_action(TransactionAction *action,
+     bdrv_graph_rdlock_main_loop();
+ 
+     tran_add(tran, &external_snapshot_drv, state);
++    if (state_out) {
++        *state_out = state;
++    }
+ 
+     /* 'blockdev-snapshot' and 'blockdev-snapshot-sync' have similar
+      * purpose but a different set of parameters */
+@@ -1574,7 +1586,8 @@ static void external_snapshot_commit(void *opaque)
+     /* We don't need (or want) to use the transactional
+      * bdrv_reopen_multiple() across all the entries at once, because we
+      * don't want to abort all of them if one of them fails the reopen */
+-    if (!qatomic_read(&state->old_bs->copy_on_read)) {
++    if (!qatomic_read(&state->old_bs->copy_on_read) &&
++        (state->old_bs->open_flags & BDRV_O_RDWR)) {
+         bdrv_reopen_set_read_only(state->old_bs, true, NULL);
+     }
+ }
+@@ -2159,7 +2172,7 @@ static void transaction_action(TransactionAction *act, JobTxn *block_job_txn,
+     switch (act->type) {
+     case TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT:
+     case TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT_SYNC:
+-        external_snapshot_action(act, tran, errp);
++        external_snapshot_action(act, tran, NULL, errp);
+         return;
+     case TRANSACTION_ACTION_KIND_DRIVE_BACKUP:
+         drive_backup_action(act->u.drive_backup.data,
+@@ -2282,6 +2295,642 @@ exit:
+     job_txn_unref(block_job_txn);
+ }
+ 
++/* A successful seal is single-use for one stopped source process. */
++static GPtrArray *crucible_block_sealed_roots;
++static uint64_t crucible_block_seal_backend_generation;
++static uint64_t crucible_block_seal_graph_generation;
++static uint64_t crucible_block_seal_barrier_generation;
++static uint64_t crucible_block_seal_runstate_generation;
++static uint64_t crucible_block_seal_vmstop_generation;
++static uint64_t crucible_block_seal_vmstop_request_generation;
++static pid_t crucible_block_seal_pid;
++static bool crucible_block_seal_receipt_invalidated;
++
++void qemu_crucible_block_seal_child_reset(void)
++{
++    /* A forked child cannot inherit source-process receipt authority. */
++    g_clear_pointer(&crucible_block_sealed_roots, g_ptr_array_unref);
++    crucible_block_seal_backend_generation = 0;
++    crucible_block_seal_graph_generation = 0;
++    crucible_block_seal_barrier_generation = 0;
++    crucible_block_seal_runstate_generation = 0;
++    crucible_block_seal_vmstop_generation = 0;
++    crucible_block_seal_vmstop_request_generation = 0;
++    crucible_block_seal_pid = 0;
++    crucible_block_seal_receipt_invalidated = false;
++}
++
++static bool crucible_block_seal_stop_provenance_current(void)
++{
++    uint64_t runstate = qemu_runstate_transition_generation();
++    uint64_t vmstop = qemu_plugin_crucible_vmstop_generation();
++    uint64_t request = qemu_vmstop_request_generation();
++
++    return runstate != UINT64_MAX && vmstop != UINT64_MAX &&
++        request != UINT64_MAX && vmstop != 0 &&
++        runstate == crucible_block_seal_runstate_generation &&
++        vmstop == crucible_block_seal_vmstop_generation &&
++        request == crucible_block_seal_vmstop_request_generation;
++}
++
++static bool crucible_block_seal_boundary(void)
++{
++    return runstate_check(RUN_STATE_PAUSED) &&
++        qemu_plugin_crucible_vmstop_pending() &&
++        !qemu_plugin_crucible_vmstop_admission_pending() &&
++        qemu_plugin_crucible_vmstop_flush_status() == 0 &&
++        (!qemu_plugin_crucible_vmstop_cold_origin() ||
++         qemu_crucible_cold_stop_receipt_valid());
++}
++
++static bool GRAPH_RDLOCK crucible_block_seal_file(
++    BlockDriverState *root, const char **path,
++    BdrvCrucibleHotForkFileState *file, Error **errp)
++{
++    BlockDriverState *leaf;
++    struct stat metadata;
++
++    if (!root || !root->drv ||
++        strcmp(root->drv->format_name, "qcow2") != 0 ||
++        !root->file || !(leaf = root->file->bs) || !leaf->drv ||
++        strcmp(leaf->drv->format_name, "file") != 0 ||
++        !leaf->drv->bdrv_crucible_hot_fork_file ||
++        !g_path_is_absolute(leaf->filename) ||
++        !leaf->drv->bdrv_crucible_hot_fork_file(
++            leaf, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY, file, errp)) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible block seal requires a file-backed qcow2 root");
++        }
++        return false;
++    }
++    if (lstat(leaf->filename, &metadata) < 0 ||
++        !S_ISREG(metadata.st_mode) ||
++        metadata.st_dev != file->device || metadata.st_ino != file->inode) {
++        error_setg(errp, "Crucible block seal file path no longer names the open file");
++        return false;
++    }
++    *path = leaf->filename;
++    return true;
++}
++
++static bool GRAPH_RDLOCK crucible_block_seal_empty(
++    BlockDriverState *overlay, BlockDriverState *snapshot,
++    uint64_t *virtual_size, Error **errp)
++{
++    int64_t length = bdrv_getlength(overlay);
++    int64_t offset = 0;
++
++    if (length < 0 || length != bdrv_getlength(snapshot)) {
++        error_setg(errp, "Crucible block seal overlay and snapshot sizes differ");
++        return false;
++    }
++    while (offset < length) {
++        int64_t bytes = length - offset;
++        int64_t pnum = 0;
++        int allocated = bdrv_is_allocated_above(
++            overlay, snapshot, false, offset, bytes, &pnum);
++
++        if (allocated < 0 || allocated != 0 || pnum <= 0 || pnum > bytes) {
++            error_setg(errp, "Crucible block seal overlay is not empty at "
++                       "offset %" PRId64,
++                       offset);
++            return false;
++        }
++        offset += pnum;
++    }
++    *virtual_size = length;
++    return true;
++}
++
++static CrucibleHotForkBlockSealedRoot *
++crucible_block_seal_copy_root(const CrucibleHotForkBlockSealedRoot *source)
++{
++    CrucibleHotForkBlockSealedRoot *copy = g_new0(
++        CrucibleHotForkBlockSealedRoot, 1);
++
++    *copy = *source;
++    copy->backend_name = g_strdup(source->backend_name);
++    copy->overlay_node_name = g_strdup(source->overlay_node_name);
++    copy->snapshot_node_name = g_strdup(source->snapshot_node_name);
++    copy->snapshot_file_path = g_strdup(source->snapshot_file_path);
++    return copy;
++}
++
++static bool crucible_block_seal_receipt_current(void)
++{
++    size_t index;
++
++    for (index = 0; index < crucible_block_sealed_roots->len; index++) {
++        CrucibleHotForkBlockSealedRoot *root =
++            g_ptr_array_index(crucible_block_sealed_roots, index);
++        BlockBackend *backend = blk_by_name(root->backend_name);
++        BlockDriverState *overlay = backend ? blk_bs(backend) : NULL;
++        BlockDriverState *snapshot;
++        BdrvCrucibleHotForkFileState file;
++        const char *path;
++        Error *local_err = NULL;
++        bool current;
++
++        if (!overlay) {
++            return false;
++        }
++        {
++            GRAPH_RDLOCK_GUARD_MAINLOOP();
++            snapshot = bdrv_cow_bs(overlay);
++            current = snapshot &&
++                strcmp(bdrv_get_node_name(overlay),
++                       root->overlay_node_name) == 0 &&
++                strcmp(bdrv_get_node_name(snapshot),
++                       root->snapshot_node_name) == 0 &&
++                bdrv_is_writable(overlay) && bdrv_is_read_only(snapshot) &&
++                crucible_block_seal_file(snapshot, &path, &file,
++                                         &local_err) &&
++                file.read_only &&
++                strcmp(path, root->snapshot_file_path) == 0 &&
++                file.device == root->snapshot_file_device &&
++                file.inode == root->snapshot_file_inode;
++        }
++        error_free(local_err);
++        if (!current) {
++            return false;
++        }
++    }
++    return true;
++}
++
++CrucibleHotForkBlockSealState *
++qmp_query_crucible_hot_fork_block_seal(Error **errp)
++{
++    QemuBlockBackendHotForkInventory inventory;
++    BdrvGraphHotForkBarrierState graph;
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    CrucibleHotForkBlockSealState *state = g_new0(
++        CrucibleHotForkBlockSealState, 1);
++    CrucibleHotForkBlockSealCandidateList **candidate_tail =
++        &state->candidates;
++    CrucibleHotForkBlockSealedRootList **sealed_tail =
++        &state->sealed_roots;
++    bool inventory_overflowed;
++    size_t index;
++
++    GLOBAL_STATE_CODE();
++    qemu_block_backend_hot_fork_inventory(&inventory);
++    bdrv_graph_hot_fork_barrier(BDRV_GRAPH_HOT_FORK_BARRIER_QUERY, &graph);
++    if (qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY, &barrier)) {
++        state->barrier_held = barrier.held && barrier.graph_held;
++        state->barrier_generation = barrier.generation;
++        state->barrier_quiescent = barrier.quiescent;
++        qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++    }
++    state->schema_version = 1;
++    state->qemu_pid = getpid();
++    state->backend_generation = inventory.generation;
++    state->graph_mutation_generation = graph.mutation_generation;
++
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuBlockBackendHotForkInventoryEntry *entry = &inventory.entries[index];
++        CrucibleHotForkBlockSealCandidate *candidate;
++        CrucibleHotForkBlockSealCandidateList *link;
++        BlockBackend *backend;
++        BlockDriverState *root;
++        BdrvCrucibleHotForkFileState file = { 0 };
++        const char *path = "";
++        Error *local_err = NULL;
++        int64_t size;
++
++        if (!entry->root_present || entry->external_shared ||
++            !(entry->permissions & BLK_PERM_WRITE)) {
++            continue;
++        }
++        candidate = g_new0(CrucibleHotForkBlockSealCandidate, 1);
++        candidate->backend_id = entry->backend_id;
++        candidate->backend_name = g_strdup(entry->name);
++        candidate->root_node_name = g_strdup("");
++        candidate->file_path = g_strdup("");
++        backend = entry->named ? blk_by_name(entry->name) : NULL;
++        root = backend ? blk_bs(backend) : NULL;
++        if (root) {
++            GRAPH_RDLOCK_GUARD_MAINLOOP();
++            g_free(candidate->root_node_name);
++            candidate->root_node_name = g_strdup(bdrv_get_node_name(root));
++            if (crucible_block_seal_file(root, &path, &file, &local_err) &&
++                (size = bdrv_getlength(root)) >= 0) {
++                g_free(candidate->file_path);
++                candidate->file_path = g_strdup(path);
++                candidate->file_device = file.device;
++                candidate->file_inode = file.inode;
++                candidate->virtual_size = size;
++            }
++        }
++        error_free(local_err);
++        link = g_new0(CrucibleHotForkBlockSealCandidateList, 1);
++        link->value = candidate;
++        *candidate_tail = link;
++        candidate_tail = &link->next;
++    }
++    inventory_overflowed = inventory.overflowed;
++    qemu_block_backend_hot_fork_inventory_destroy(&inventory);
++
++    if (crucible_block_sealed_roots &&
++        !crucible_block_seal_receipt_invalidated) {
++        bool current = crucible_block_seal_pid == getpid() &&
++            crucible_block_seal_stop_provenance_current() &&
++            crucible_block_seal_boundary() && !inventory_overflowed &&
++            !graph.writer_active && !graph.waiting_writers &&
++            state->barrier_held && state->barrier_quiescent &&
++            state->barrier_generation ==
++                crucible_block_seal_barrier_generation &&
++            crucible_block_seal_backend_generation ==
++                state->backend_generation &&
++            crucible_block_seal_graph_generation ==
++                state->graph_mutation_generation &&
++            crucible_block_seal_receipt_current();
++
++        if (current) {
++            state->receipt_generation = 1;
++            for (index = 0; index < crucible_block_sealed_roots->len; index++) {
++                CrucibleHotForkBlockSealedRootList *link = g_new0(
++                    CrucibleHotForkBlockSealedRootList, 1);
++
++                link->value = crucible_block_seal_copy_root(
++                    g_ptr_array_index(crucible_block_sealed_roots, index));
++                *sealed_tail = link;
++                sealed_tail = &link->next;
++            }
++        } else {
++            crucible_block_seal_receipt_invalidated = true;
++        }
++    }
++    return state;
++}
++
++bool qemu_crucible_block_seal_ready(void)
++{
++    CrucibleHotForkBlockSealState *state;
++    QemuBlockBackendHotForkInventory inventory;
++    BdrvGraphHotForkBarrierState graph;
++    bool ready;
++
++    if (!bql_locked()) {
++        return false;
++    }
++    qemu_block_backend_hot_fork_inventory(&inventory);
++    bdrv_graph_hot_fork_barrier(BDRV_GRAPH_HOT_FORK_BARRIER_QUERY, &graph);
++    ready = !inventory.overflowed && !graph.writer_active &&
++        !graph.waiting_writers;
++    qemu_block_backend_hot_fork_inventory_destroy(&inventory);
++    if (!ready) {
++        crucible_block_seal_receipt_invalidated = true;
++        return false;
++    }
++
++    state = qmp_query_crucible_hot_fork_block_seal(NULL);
++    ready = state->receipt_generation != 0;
++
++    qapi_free_CrucibleHotForkBlockSealState(state);
++    return ready;
++}
++
++static bool crucible_block_seal_validate(
++    CrucibleHotForkBlockSealRequestList *roots,
++    uint64_t expected_backend_generation,
++    uint64_t expected_graph_generation, bool check_backend_generation,
++    Error **errp)
++{
++    QemuBlockBackendHotForkInventory inventory;
++    BdrvGraphHotForkBarrierState graph;
++    CrucibleHotForkBlockSealRequestList *request = roots;
++    size_t index;
++    bool valid = false;
++
++    qemu_block_backend_hot_fork_inventory(&inventory);
++    bdrv_graph_hot_fork_barrier(BDRV_GRAPH_HOT_FORK_BARRIER_QUERY, &graph);
++    if (inventory.overflowed || graph.held || graph.writer_active ||
++        graph.waiting_writers ||
++        (check_backend_generation &&
++         inventory.generation != expected_backend_generation) ||
++        graph.mutation_generation != expected_graph_generation) {
++        error_setg(errp, "Crucible block seal backend or graph generation is stale");
++        goto out;
++    }
++    for (index = 0; index < inventory.entry_count; index++) {
++        QemuBlockBackendHotForkInventoryEntry *entry = &inventory.entries[index];
++        CrucibleHotForkBlockSealRequest *item;
++        BlockBackend *backend;
++        BlockDriverState *snapshot;
++        BlockDriverState *overlay;
++        BdrvCrucibleHotForkFileState file;
++        BdrvCrucibleHotForkFileState overlay_file;
++        BdrvChild *parent;
++        const char *path;
++        const char *overlay_path;
++        unsigned parent_count = 0;
++
++        if (!entry->root_present || entry->external_shared ||
++            !(entry->permissions & BLK_PERM_WRITE)) {
++            continue;
++        }
++        if (!request || !entry->named || !entry->name_valid) {
++            error_setg(errp, "Crucible block seal lacks one writable rooted backend");
++            goto out;
++        }
++        item = request->value;
++        if (!item || item->backend_id != entry->backend_id ||
++            strcmp(item->backend_name, entry->name) != 0 ||
++            !id_wellformed(item->backend_name) ||
++            !id_wellformed(item->snapshot_node_name) ||
++            !id_wellformed(item->overlay_node_name)) {
++            error_setg(errp, "Crucible block seal backend identity or order differs");
++            goto out;
++        }
++        backend = blk_by_name(item->backend_name);
++        snapshot = backend ? blk_bs(backend) : NULL;
++        overlay = bdrv_find_node(item->overlay_node_name);
++        if (!snapshot || !overlay || snapshot == overlay) {
++            error_setg(errp, "Crucible block seal root or overlay is missing");
++            goto out;
++        }
++        {
++            GRAPH_RDLOCK_GUARD_MAINLOOP();
++            QLIST_FOREACH(parent, &snapshot->parents, next_parent) {
++                parent_count++;
++            }
++            if (parent_count != 1 || !QLIST_EMPTY(&overlay->parents) ||
++                bdrv_cow_bs(overlay) || !bdrv_is_writable(snapshot) ||
++                !bdrv_is_writable(overlay) ||
++                !overlay->drv ||
++                strcmp(overlay->drv->format_name, "qcow2") != 0 ||
++                overlay->backing_file[0] ||
++                strcmp(bdrv_get_node_name(snapshot),
++                       item->snapshot_node_name) != 0 ||
++                !crucible_block_seal_file(snapshot, &path, &file, errp) ||
++                !crucible_block_seal_file(overlay, &overlay_path,
++                                          &overlay_file, errp) ||
++                overlay_file.read_only ||
++                strcmp(path, overlay_path) == 0 ||
++                (overlay_file.device == file.device &&
++                 overlay_file.inode == file.inode)) {
++                if (!errp || !*errp) {
++                    error_setg(errp, "Crucible block seal requires one named "
++                               "qcow2 root and separate empty file-backed "
++                               "overlay");
++                }
++                goto out;
++            }
++            if (strcmp(path, item->snapshot_file_path) != 0 ||
++                file.device != item->snapshot_file_device ||
++                file.inode != item->snapshot_file_inode) {
++                error_setg(errp, "Crucible block seal file identity changed");
++                goto out;
++            }
++        }
++        request = request->next;
++    }
++    if (request || roots == NULL) {
++        error_setg(errp, "Crucible block seal has extra roots or no writable roots");
++        goto out;
++    }
++    valid = true;
++out:
++    qemu_block_backend_hot_fork_inventory_destroy(&inventory);
++    return valid;
++}
++
++CrucibleHotForkBlockSealState *qmp_crucible_hot_fork_block_seal(
++    int64_t expected_qemu_pid, uint64_t expected_backend_generation,
++    uint64_t expected_graph_mutation_generation,
++    CrucibleHotForkBlockSealRequestList *roots, Error **errp)
++{
++    CrucibleHotForkBlockSealRequestList *request;
++    ExternalSnapshotState **snapshots = NULL;
++    GPtrArray *sealed = NULL;
++    Transaction *transaction = NULL;
++    BlockReopenQueue *reopen = NULL;
++    Error *local_err = NULL;
++    QemuBlockBackendHotForkBarrierInventory barrier;
++    size_t count = 0;
++    size_t index = 0;
++    int flush_status;
++    uint64_t runstate_generation;
++    uint64_t vmstop_generation;
++    uint64_t vmstop_request_generation;
++
++    GLOBAL_STATE_CODE();
++    if (crucible_block_sealed_roots &&
++        crucible_block_seal_pid != getpid()) {
++        qemu_crucible_block_seal_child_reset();
++    }
++    if (expected_qemu_pid != getpid() || !crucible_block_seal_boundary() ||
++        crucible_block_sealed_roots) {
++        error_setg(errp, "Crucible block seal requires one exact stopped "
++                   "source process");
++        return NULL;
++    }
++    runstate_generation = qemu_runstate_transition_generation();
++    vmstop_generation = qemu_plugin_crucible_vmstop_generation();
++    vmstop_request_generation = qemu_vmstop_request_generation();
++    if (runstate_generation == UINT64_MAX || !vmstop_generation ||
++        vmstop_generation == UINT64_MAX ||
++        vmstop_request_generation == UINT64_MAX) {
++        error_setg(errp, "Crucible block seal stop provenance is exhausted");
++        return NULL;
++    }
++    for (request = roots; request; request = request->next) {
++        if (++count > QEMU_BLOCK_BACKEND_HOT_FORK_INVENTORY_MAX) {
++            error_setg(errp, "Crucible block seal root count exceeds native bound");
++            return NULL;
++        }
++    }
++    if (!crucible_block_seal_validate(
++            roots, expected_backend_generation,
++            expected_graph_mutation_generation, true, errp)) {
++        return NULL;
++    }
++
++    bdrv_drain_all();
++    flush_status = bdrv_flush_all();
++    if (flush_status < 0) {
++        error_setg_errno(errp, -flush_status,
++                         "Crucible block seal could not flush all devices");
++        return NULL;
++    }
++    if (!crucible_block_seal_boundary() ||
++        runstate_generation != qemu_runstate_transition_generation() ||
++        vmstop_generation != qemu_plugin_crucible_vmstop_generation() ||
++        vmstop_request_generation != qemu_vmstop_request_generation() ||
++        !crucible_block_seal_validate(
++            roots, expected_backend_generation,
++            expected_graph_mutation_generation, false, errp)) {
++        if (!errp || !*errp) {
++            error_setg(errp, "Crucible block seal stop changed during flush");
++        }
++        return NULL;
++    }
++
++    transaction = tran_new();
++    snapshots = g_new0(ExternalSnapshotState *, count);
++    sealed = g_ptr_array_new_with_free_func(
++        (GDestroyNotify)qapi_free_CrucibleHotForkBlockSealedRoot);
++    for (request = roots; request; request = request->next, index++) {
++        BlockdevSnapshot snapshot = {
++            .node = request->value->snapshot_node_name,
++            .overlay = request->value->overlay_node_name,
++        };
++        TransactionAction action = {
++            .type = TRANSACTION_ACTION_KIND_BLOCKDEV_SNAPSHOT,
++            .u.blockdev_snapshot.data = &snapshot,
++        };
++
++        external_snapshot_action(&action, transaction, &snapshots[index],
++                                 &local_err);
++        if (local_err) {
++            goto abort;
++        }
++    }
++
++    index = 0;
++    for (request = roots; request; request = request->next, index++) {
++        ExternalSnapshotState *snapshot = snapshots[index];
++        CrucibleHotForkBlockSealedRoot *root = g_new0(
++            CrucibleHotForkBlockSealedRoot, 1);
++        BdrvCrucibleHotForkFileState file;
++        const char *path;
++
++        {
++            GRAPH_RDLOCK_GUARD_MAINLOOP();
++            if (!snapshot->overlay_appended ||
++                bdrv_cow_bs(snapshot->new_bs) != snapshot->old_bs ||
++                !crucible_block_seal_file(snapshot->old_bs, &path, &file,
++                                          &local_err) ||
++                strcmp(path, request->value->snapshot_file_path) != 0 ||
++                file.device != request->value->snapshot_file_device ||
++                file.inode != request->value->snapshot_file_inode ||
++                !crucible_block_seal_empty(snapshot->new_bs,
++                                            snapshot->old_bs,
++                                            &root->virtual_size, &local_err)) {
++                if (!local_err) {
++                    error_setg(&local_err, "Crucible block seal graph changed "
++                               "during append");
++                }
++            }
++        }
++        if (local_err) {
++            qapi_free_CrucibleHotForkBlockSealedRoot(root);
++            goto abort;
++        }
++        root->backend_id = request->value->backend_id;
++        root->backend_name = g_strdup(request->value->backend_name);
++        root->overlay_node_name = g_strdup(request->value->overlay_node_name);
++        root->snapshot_node_name = g_strdup(request->value->snapshot_node_name);
++        root->snapshot_file_path = g_strdup(request->value->snapshot_file_path);
++        root->snapshot_file_device = file.device;
++        root->snapshot_file_inode = file.inode;
++        root->overlay_empty = true;
++        g_ptr_array_add(sealed, root);
++
++        QDict *options = qdict_new();
++        qdict_put_bool(options, BDRV_OPT_READ_ONLY, true);
++        reopen = bdrv_reopen_queue(reopen, snapshot->old_bs, options, true);
++    }
++    if (bdrv_reopen_multiple(reopen, &local_err) < 0) {
++        reopen = NULL;
++        goto abort;
++    }
++    reopen = NULL;
++
++    for (index = 0; index < count; index++) {
++        ExternalSnapshotState *snapshot = snapshots[index];
++        BdrvCrucibleHotForkFileState file;
++        const char *path;
++
++        GRAPH_RDLOCK_GUARD_MAINLOOP();
++        if (!bdrv_is_read_only(snapshot->old_bs) ||
++            !crucible_block_seal_file(snapshot->old_bs, &path, &file,
++                                      &local_err) || !file.read_only) {
++            if (!local_err) {
++                error_setg(&local_err, "Crucible block seal did not close "
++                           "writable file custody");
++            }
++            goto reopen_abort;
++        }
++        ((CrucibleHotForkBlockSealedRoot *)
++            g_ptr_array_index(sealed, index))->snapshot_read_only = true;
++    }
++    if (!crucible_block_seal_boundary() ||
++        runstate_generation != qemu_runstate_transition_generation() ||
++        vmstop_generation != qemu_plugin_crucible_vmstop_generation() ||
++        vmstop_request_generation != qemu_vmstop_request_generation()) {
++        error_setg(&local_err, "Crucible block seal stop changed before commit");
++        goto reopen_abort;
++    }
++    if (!qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_HOLD, &barrier)) {
++        error_setg(&local_err, "Crucible block seal could not retain the "
++                   "block barrier");
++        goto reopen_abort;
++    }
++    if (!barrier.quiescent || barrier.snapshot_bound) {
++        qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++        qemu_block_backend_hot_fork_barrier(
++            QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_RELEASE, &barrier);
++        qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++        error_setg(&local_err, "Crucible block seal did not reach a quiescent barrier");
++        goto reopen_abort;
++    }
++    crucible_block_seal_barrier_generation = barrier.generation;
++    qemu_block_backend_hot_fork_barrier_inventory_destroy(&barrier);
++    tran_commit(transaction);
++    transaction = NULL;
++    g_free(snapshots);
++    snapshots = NULL;
++    crucible_block_sealed_roots = sealed;
++    crucible_block_seal_pid = getpid();
++    crucible_block_seal_runstate_generation = runstate_generation;
++    crucible_block_seal_vmstop_generation = vmstop_generation;
++    crucible_block_seal_vmstop_request_generation =
++        vmstop_request_generation;
++
++    {
++        QemuBlockBackendHotForkInventory inventory;
++        BdrvGraphHotForkBarrierState graph;
++
++        qemu_block_backend_hot_fork_inventory(&inventory);
++        bdrv_graph_hot_fork_barrier(BDRV_GRAPH_HOT_FORK_BARRIER_QUERY, &graph);
++        crucible_block_seal_backend_generation = inventory.generation;
++        crucible_block_seal_graph_generation = graph.mutation_generation;
++        qemu_block_backend_hot_fork_inventory_destroy(&inventory);
++    }
++    return qmp_query_crucible_hot_fork_block_seal(errp);
++
++reopen_abort:
++    reopen = NULL;
++    for (index = 0; index < count; index++) {
++        QDict *options = qdict_new();
++
++        qdict_put_bool(options, BDRV_OPT_READ_ONLY, false);
++        reopen = bdrv_reopen_queue(reopen, snapshots[index]->old_bs,
++                                   options, true);
++    }
++    {
++        Error *restore_err = NULL;
++
++        if (bdrv_reopen_multiple(reopen, &restore_err) < 0) {
++            error_report_err(restore_err);
++            /* A partly sealed graph cannot be returned as a live source. */
++            abort();
++        }
++    }
++    reopen = NULL;
++abort:
++    bdrv_reopen_queue_free(reopen);
++    tran_abort(transaction);
++    g_ptr_array_free(sealed, true);
++    g_free(snapshots);
++    error_propagate(errp, local_err);
++    return NULL;
++}
++
+ BlockDirtyBitmapSha256 *qmp_x_debug_block_dirty_bitmap_sha256(const char *node,
+                                                               const char *name,
+                                                               Error **errp)
 diff --git a/chardev/baum.c b/chardev/baum.c
 index ac1e535ba8e9e17497b0fef6910de8920a135f85..4d538de79f6df9cabf8e434ee71d5f409aca0982 100644
 --- a/chardev/baum.c
@@ -12014,6 +12570,31 @@ index b629575fcf808d6ee0c3e3d724d49d521dc2bb6a..78c06d8272a8f57713b64e99d776e6db
  static int tcp_chr_new_client(Chardev *chr, QIOChannelSocket *sioc)
  {
      SocketChardev *s = SOCKET_CHARDEV(chr);
+diff --git a/cpu-common.c b/cpu-common.c
+index adb76b3a786c06d08ae89c5623d26bf75755d432..5960444189a50b8bca0670a02dc40562e992834e 100644
+--- a/cpu-common.c
++++ b/cpu-common.c
+@@ -33,6 +33,12 @@ static QemuCond qemu_work_cond;
+  * under qemu_cpu_list_lock, read with atomic operations.
+  */
+ static int pending_cpus;
++static bool cpu_exec_dispatched;
++
++bool cpu_exec_has_dispatched(void)
++{
++    return qatomic_read(&cpu_exec_dispatched);
++}
+ 
+ void qemu_init_cpu_list(void)
+ {
+@@ -249,6 +255,7 @@ void end_exclusive(void)
+ /* Wait for exclusive ops to finish, and begin cpu execution.  */
+ void cpu_exec_start(CPUState *cpu)
+ {
++    qatomic_set(&cpu_exec_dispatched, true);
+     trace_cpu_exec_start(cpu->cpu_index);
+ 
+     qatomic_set(&cpu->running, true);
 diff --git a/docs/devel/tcg-icount.rst b/docs/devel/tcg-icount.rst
 index a1dcd79e0fdd5142d6e876466e397cf8a25d6d89..d2420c492edc78614bf9bf6956c4ca47e51f6757 100644
 --- a/docs/devel/tcg-icount.rst
@@ -54914,7 +55495,7 @@ index 5f3b1327de0aa287c1859bf155a47c8815ebb08d..b726a4cbd5f2dae44f78ecbaefc4a92a
  
  SiFiveUARTState *sifive_uart_create(MemoryRegion *address_space, hwaddr base,
 diff --git a/include/hw/core/cpu.h b/include/hw/core/cpu.h
-index b54035fb13b22a530692186b0afbe2718f1fb8b8..54be5539cf7777b6eb42bdf216956715dce93824 100644
+index b54035fb13b22a530692186b0afbe2718f1fb8b8..16883f1bb2d315dae0f1e13a5142700e3ac10d46 100644
 --- a/include/hw/core/cpu.h
 +++ b/include/hw/core/cpu.h
 @@ -63,6 +63,7 @@ typedef int (*WriteCoreDumpFunction)(const void *buf, size_t size,
@@ -55166,6 +55747,14 @@ index b54035fb13b22a530692186b0afbe2718f1fb8b8..54be5539cf7777b6eb42bdf216956715
  /**
   * TranslateForDebugResult: gives result of cpu_translate_for_debug()
   *
+@@ -1088,6 +1288,7 @@ void process_queued_cpu_work(CPUState *cpu);
+  * cpu_exit.
+  */
+ void cpu_exec_start(CPUState *cpu);
++bool cpu_exec_has_dispatched(void);
+ 
+ /**
+  * cpu_exec_end:
 diff --git a/include/hw/core/qdev.h b/include/hw/core/qdev.h
 index e147622341151c110e22695d26d8a0600355322c..f70c2c368549ce12bcb73b88f46e0968a1a0f03c 100644
 --- a/include/hw/core/qdev.h
@@ -60677,7 +61266,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..a0805448e2ae85f2467e7bc282f74272194060ac 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..8bcbb2c6d61a87e49ee49d66d7d1e3325725ba49 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,6 +9,7 @@
@@ -60700,7 +61289,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..a0805448e2ae85f2467e7bc282f74272
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -183,6 +189,80 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +189,86 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -60743,6 +61332,12 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..a0805448e2ae85f2467e7bc282f74272
 +bool qemu_plugin_crucible_vmstop_pending(void);
 +bool qemu_plugin_crucible_vmstop_admission_pending(void);
 +bool qemu_plugin_crucible_vmstop_quiesced(void);
++uint64_t qemu_plugin_crucible_vmstop_generation(void);
++int qemu_plugin_crucible_vmstop_cold_begin(void);
++bool qemu_plugin_crucible_vmstop_cold_publish(uint64_t generation);
++void qemu_plugin_crucible_vmstop_cold_abort(void);
++bool qemu_plugin_crucible_vmstop_cold_origin(void);
++bool qemu_plugin_crucible_vmstop_cold_receipt(uint64_t generation);
 +void qemu_plugin_crucible_vmstop_request_stopped(int flush_status);
 +int qemu_plugin_crucible_vmstop_flush_status(void);
 +void qemu_plugin_crucible_vmstop_request_complete(void);
@@ -60781,7 +61376,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..a0805448e2ae85f2467e7bc282f74272
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -237,6 +317,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -237,6 +323,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  static inline void qemu_plugin_add_opts(void)
  { }
  
@@ -60793,7 +61388,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..a0805448e2ae85f2467e7bc282f74272
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +391,126 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +397,156 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -60863,6 +61458,36 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..a0805448e2ae85f2467e7bc282f74272
 +
 +static inline bool qemu_plugin_crucible_vmstop_quiesced(void)
 +{
++    return false;
++}
++
++static inline uint64_t qemu_plugin_crucible_vmstop_generation(void)
++{
++    return 0;
++}
++
++static inline int qemu_plugin_crucible_vmstop_cold_begin(void)
++{
++    return -ENOTSUP;
++}
++
++static inline bool qemu_plugin_crucible_vmstop_cold_publish(uint64_t generation)
++{
++    (void)generation;
++    return false;
++}
++
++static inline void qemu_plugin_crucible_vmstop_cold_abort(void)
++{ }
++
++static inline bool qemu_plugin_crucible_vmstop_cold_origin(void)
++{
++    return false;
++}
++
++static inline bool qemu_plugin_crucible_vmstop_cold_receipt(uint64_t generation)
++{
++    (void)generation;
 +    return false;
 +}
 +
@@ -61787,6 +62412,20 @@ index c3849640df9f61c70f82f0534b42f400c27f424a..f404e899f09212521c1f80b00bde9c84
  /*
   * Global state (GS) API. These functions run under the BQL.
   *
+diff --git a/include/system/blockdev.h b/include/system/blockdev.h
+index 3211b16513ae0d6d5e96cab7d3cc917fe439a8d9..545bd9910cac68956756069ad9cb9e6e5cb0fae7 100644
+--- a/include/system/blockdev.h
++++ b/include/system/blockdev.h
+@@ -61,4 +61,9 @@ QemuOpts *drive_add(BlockInterfaceType type, int index, const char *file,
+ DriveInfo *drive_new(QemuOpts *arg, BlockInterfaceType block_default_type,
+                      Error **errp);
+ 
++/* True only while the same-process seal retains its original drain barrier. */
++bool qemu_crucible_block_seal_ready(void);
++/* Called in the coordinator child immediately after fork, before reinit. */
++void qemu_crucible_block_seal_child_reset(void);
++
+ #endif
 diff --git a/include/system/cpu-timers-internal.h b/include/system/cpu-timers-internal.h
 index 8c262ce139c754764f4a9b8116569d3957ef34c9..82a071310f4e04613d9a8b25303b3fd8c0b84dc3 100644
 --- a/include/system/cpu-timers-internal.h
@@ -61831,7 +62470,7 @@ index 8c262ce139c754764f4a9b8116569d3957ef34c9..82a071310f4e04613d9a8b25303b3fd8
      QEMUTimer *icount_rt_timer;
      QEMUTimer *icount_vm_timer;
 diff --git a/include/system/cpus.h b/include/system/cpus.h
-index 508444ccf1c30b215914743946066395f29db7c3..6d6b3031b49ff66006fb6a61ee3d6ada20ddf0df 100644
+index 508444ccf1c30b215914743946066395f29db7c3..247f074c9beaf9d8f499d951e0af164c703da5a4 100644
 --- a/include/system/cpus.h
 +++ b/include/system/cpus.h
 @@ -20,6 +20,13 @@ bool cpu_can_run(CPUState *cpu);
@@ -61848,6 +62487,24 @@ index 508444ccf1c30b215914743946066395f29db7c3..6d6b3031b49ff66006fb6a61ee3d6ada
  void cpu_handle_guest_debug(CPUState *cpu);
  
  /* end interface for cpus accelerator threads */
+@@ -35,6 +42,17 @@ void qemu_cpu_kick_self(void);
+ 
+ bool cpus_are_resettable(void);
+ 
++/* A cold stop is valid only for this machine's never-dispatched lifecycle. */
++void qemu_crucible_cold_stop_machine_ready(MachineState *machine);
++void qemu_crucible_cold_stop_invalidate(void);
++bool qemu_crucible_cold_stop_transition_authorized(void);
++bool qemu_crucible_cold_stop_transaction_active(void);
++void qemu_crucible_cold_stop_competing_stop(void);
++bool qemu_crucible_cold_stop_receipt_valid(void);
++uint64_t qemu_crucible_cold_stop_receipt_generation(void);
++int qemu_crucible_cold_stop_last_flush_status(void);
++int qemu_crucible_cold_stop(int64_t expected_qemu_pid, Error **errp);
++
+ void cpu_synchronize_all_states(void);
+ void cpu_synchronize_all_post_reset(void);
+ void cpu_synchronize_all_post_init(void);
 diff --git a/include/system/crucible-checkpoint.h b/include/system/crucible-checkpoint.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..f8d5ee309772dd2f2aebdb937e8aeeeda62b5723
@@ -63590,6 +64247,28 @@ index cde83fab15f5b5544047f6e8a3fcdbdf28abe2d0..cfd8d06af887fd12e5f8627a4e5542dd
 +void qemu_rtc_enable_sim_virtual_clock(void);
 +
  #endif
+diff --git a/include/system/runstate.h b/include/system/runstate.h
+index 929379adae4190256dd8b13c2dccfe9e8ec1b8de..b27c7758109e40fe0674571df94e9c687ce12d6f 100644
+--- a/include/system/runstate.h
++++ b/include/system/runstate.h
+@@ -6,6 +6,7 @@
+ 
+ bool runstate_check(RunState state);
+ void runstate_set(RunState new_state);
++void runstate_set_cold_stop_paused(void);
+ RunState runstate_get(void);
+ bool runstate_is_running(void);
+ bool runstate_needs_reset(void);
+@@ -146,6 +147,9 @@ void qemu_system_debug_request(void);
+ void qemu_system_vmstop_request(RunState reason);
+ void qemu_system_vmstop_request_prepare(void);
+ bool qemu_vmstop_requested(RunState *r);
++bool qemu_vmstop_pending(void);
++uint64_t qemu_vmstop_request_generation(void);
++uint64_t qemu_runstate_transition_generation(void);
+ ShutdownCause qemu_shutdown_requested_get(void);
+ bool qemu_force_shutdown_requested(void);
+ ShutdownCause qemu_reset_requested_get(void);
 diff --git a/include/tcg/startup.h b/include/tcg/startup.h
 index 95f574af2be90781bd488e0f30a8e7c6e1ca713a..2df736e72c69a415cf373bf2e856003965da72de 100644
 --- a/include/tcg/startup.h
@@ -63958,7 +64637,7 @@ index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..f8388da642193ddb715a55cd1825b62c
          return true;
      }
 diff --git a/migration/savevm.c b/migration/savevm.c
-index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..4a8b6db39c093f7c70437980b663df9b7b3e3736 100644
+index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..56c49945c90ef9b67f63b88561279dc2919308fa 100644
 --- a/migration/savevm.c
 +++ b/migration/savevm.c
 @@ -28,6 +28,9 @@
@@ -64520,10 +65199,12 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..4a8b6db39c093f7c70437980b663df9b
  static SaveStateEntry *find_se(const char *idstr, uint32_t instance_id)
  {
      SaveStateEntry *se;
-@@ -3011,6 +3433,12 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
+@@ -3011,6 +3433,14 @@ int qemu_loadvm_state_main(QEMUFile *f, MigrationIncomingState *mis,
      uint8_t section_type;
      int ret = 0;
  
++    qemu_crucible_cold_stop_invalidate();
++
 +    ret = migration_crucible_load_begin();
 +    if (ret != 0) {
 +        error_report(
@@ -64533,7 +65214,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..4a8b6db39c093f7c70437980b663df9b
  retry:
      while (true) {
          section_type = qemu_get_byte(f);
-@@ -3082,6 +3510,7 @@ out:
+@@ -3082,6 +3512,7 @@ out:
              goto retry;
          }
      }
@@ -64541,7 +65222,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..4a8b6db39c093f7c70437980b663df9b
      return ret;
  }
  
-@@ -3364,6 +3793,17 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
+@@ -3364,6 +3795,17 @@ bool save_snapshot(const char *name, bool overwrite, const char *vmstate,
  
      ret = 0;
  
@@ -64559,7 +65240,7 @@ index 34dd06f9f732dee7d3c6d0458da8bb67f23d76b4..4a8b6db39c093f7c70437980b663df9b
   the_end:
      bdrv_drain_all_end();
  
-@@ -3532,6 +3972,11 @@ bool load_snapshot(const char *name, const char *vmstate,
+@@ -3532,6 +3974,11 @@ bool load_snapshot(const char *name, const char *vmstate,
          return false;
      }
  
@@ -66146,10 +66827,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f061368b31c7b 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..97cfa248149fb730fe765bd8b5935c9dde628645 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6022 @@
+@@ -14,53 +14,6065 @@
   */
  
  #include "qemu/osdep.h"
@@ -66188,12 +66869,14 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f0613
 +#include "system/cpus.h"
  #include "system/runstate-action.h"
  #include "system/block-backend.h"
++#include "system/blockdev.h"
 +#include "system/crucible-hot-fork-coordinator.h"
 +#include "system/crucible-hot-fork-plugin-child.h"
  #include "qapi/error.h"
  #include "qapi/qapi-init-commands.h"
  #include "qapi/qapi-commands-control.h"
  #include "qapi/qapi-commands-misc.h"
++#include "qapi/qapi-commands-run-state.h"
  #include "qapi/qmp/qerror.h"
  #include "qapi/type-helpers.h"
 +#include "qapi/util.h"
@@ -66267,7 +66950,40 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f0613
 +    return runstate_check(RUN_STATE_PAUSED) &&
 +        qemu_plugin_crucible_vmstop_pending() &&
 +        !qemu_plugin_crucible_vmstop_admission_pending() &&
-+        qemu_plugin_crucible_vmstop_flush_status() == 0;
++        qemu_plugin_crucible_vmstop_flush_status() == 0 &&
++        (!qemu_plugin_crucible_vmstop_cold_origin() ||
++         qemu_crucible_cold_stop_receipt_valid());
++}
++
++CrucibleHotForkColdStopState *
++qmp_query_crucible_hot_fork_cold_stop(Error **errp)
++{
++    CrucibleHotForkColdStopState *state =
++        g_new0(CrucibleHotForkColdStopState, 1);
++
++    state->schema_version = 1;
++    state->qemu_pid = getpid();
++    state->cold_receipt_generation =
++        qemu_crucible_cold_stop_receipt_generation();
++    state->runstate = runstate_get();
++    state->vmstop_disposition = state->cold_receipt_generation ?
++        CRUCIBLE_HOT_FORK_COLD_STOP_DISPOSITION_STOPPED :
++        CRUCIBLE_HOT_FORK_COLD_STOP_DISPOSITION_NONE;
++    state->flush_status = qemu_crucible_cold_stop_last_flush_status();
++    return state;
++}
++
++CrucibleHotForkColdStopState *
++qmp_crucible_hot_fork_cold_stop(int64_t expected_qemu_pid, Error **errp)
++{
++    if (qemu_crucible_cold_stop(expected_qemu_pid, errp) != 0) {
++        return NULL;
++    }
++    if (!qemu_crucible_cold_stop_receipt_valid()) {
++        error_setg(errp, "cold stop receipt was invalidated before reply");
++        return NULL;
++    }
++    return qmp_query_crucible_hot_fork_cold_stop(errp);
 +}
 +
 +static uint64_t crucible_hot_fork_acknowledged_proofs(void)
@@ -70286,6 +71002,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f0613
 +    CrucibleHotForkTemplateState *report = NULL;
 +    CrucibleHotForkTemplateOutcome outcome;
 +    uint64_t acknowledged;
++    bool seal_barrier_handoff;
 +
 +    g_mutex_lock(&crucible_hot_fork_template_lock);
 +    if (crucible_hot_fork_operation_active) {
@@ -70313,13 +71030,15 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f0613
 +    if (!block_barrier) {
 +        goto out;
 +    }
++    seal_barrier_handoff = block_barrier->held &&
++        qemu_crucible_block_seal_ready();
 +
 +    switch (crucible_hot_fork_template_phase) {
 +    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE:
 +    case CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_COMPLETED:
 +        if (crucible_hot_fork_template_active || plugin_barrier->held ||
 +            rcu_barrier->held || async_worker_barrier->held ||
-+            block_barrier->held) {
++            (block_barrier->held && !seal_barrier_handoff)) {
 +            error_setg(errp, "Crucible hot-fork barrier was held outside "
 +                       "the template coordinator");
 +            goto out;
@@ -70424,11 +71143,16 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f0613
 +            g_clear_pointer(&crucible_hot_fork_template_failure_detail, g_free);
 +            crucible_hot_fork_template_active = true;
 +            crucible_hot_fork_template_abort_requested = false;
-+            crucible_hot_fork_template_phase =
++            /* The seal owns the same quiescent barrier until PREPARE
++             * adopts it; an immediate abort must then release it. */
++            crucible_hot_fork_template_phase = seal_barrier_handoff ?
++                CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD :
 +                CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING;
 +            crucible_hot_fork_template_generation++;
 +            assert(crucible_hot_fork_template_generation != 0);
-+            crucible_hot_fork_template_schedule_block_transition();
++            if (!seal_barrier_handoff) {
++                crucible_hot_fork_template_schedule_block_transition();
++            }
 +            outcome = CRUCIBLE_HOT_FORK_TEMPLATE_OUTCOME_DRAINING;
 +            break;
 +        }
@@ -72188,7 +72912,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f0613
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6037,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6080,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -72212,7 +72936,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..9d348b5336c2dce662771d65ac9f0613
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6101,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6144,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -72868,7 +73592,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..c6d205fef4c0f77bf74082de52e96bddc5002f20 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6121c1045cd74b8bc211eb0a08ac2b38a9992357 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -73805,7 +74529,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..c6d205fef4c0f77bf74082de52e96bdd
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1026,1503 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1026,1574 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -74385,6 +75109,10 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..c6d205fef4c0f77bf74082de52e96bdd
 +    qemu_plugin_crucible_idle_callback_disposition;
 +static int qemu_plugin_crucible_vmstop_state;
 +static int qemu_plugin_crucible_vmstop_flush_result;
++/* Every successful native admission owns a distinct process-local stop. */
++static uint64_t qemu_plugin_crucible_vmstop_generation_value;
++static bool qemu_plugin_crucible_vmstop_cold_admitted;
++static uint64_t qemu_plugin_crucible_vmstop_cold_generation;
 +
 +enum {
 +    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
@@ -74400,13 +75128,20 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..c6d205fef4c0f77bf74082de52e96bdd
 +        return -EPERM;
 +    }
 +
-+    qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, 0);
++    if (qatomic_read(&qemu_plugin_crucible_vmstop_generation_value) ==
++        UINT64_MAX) {
++        return -EOVERFLOW;
++    }
 +    if (qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
 +                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
 +                       QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED) !=
 +        QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE) {
 +        return -EALREADY;
 +    }
++
++    qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, 0);
++    qatomic_set(&qemu_plugin_crucible_vmstop_generation_value,
++                qatomic_read(&qemu_plugin_crucible_vmstop_generation_value) + 1);
 +
 +    return 0;
 +}
@@ -74520,9 +75255,63 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..c6d205fef4c0f77bf74082de52e96bdd
 +           qatomic_read(&qemu_plugin_crucible_vmstop_flush_result) == 0;
 +}
 +
++uint64_t qemu_plugin_crucible_vmstop_generation(void)
++{
++    return qatomic_read(&qemu_plugin_crucible_vmstop_generation_value);
++}
++
++int qemu_plugin_crucible_vmstop_cold_begin(void)
++{
++    int status = qemu_plugin_crucible_vmstop_begin();
++
++    if (status == 0) {
++        qemu_plugin_crucible_vmstop_cold_admitted = true;
++    }
++    return status;
++}
++
++bool qemu_plugin_crucible_vmstop_cold_publish(uint64_t generation)
++{
++    if (!generation || !qemu_plugin_crucible_vmstop_cold_admitted ||
++        qatomic_read(&qemu_plugin_crucible_vmstop_state) !=
++            QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED) {
++        return false;
++    }
++
++    qemu_plugin_crucible_vmstop_cold_generation = generation;
++    qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, 0);
++    qatomic_set(&qemu_plugin_crucible_vmstop_state,
++                QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
++    return true;
++}
++
++void qemu_plugin_crucible_vmstop_cold_abort(void)
++{
++    if (qemu_plugin_crucible_vmstop_cold_admitted) {
++        qatomic_set(&qemu_plugin_crucible_vmstop_state,
++                    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE);
++    }
++    qemu_plugin_crucible_vmstop_cold_admitted = false;
++    qemu_plugin_crucible_vmstop_cold_generation = 0;
++}
++
++bool qemu_plugin_crucible_vmstop_cold_origin(void)
++{
++    return qemu_plugin_crucible_vmstop_cold_admitted;
++}
++
++bool qemu_plugin_crucible_vmstop_cold_receipt(uint64_t generation)
++{
++    return generation != 0 &&
++        qemu_plugin_crucible_vmstop_cold_admitted &&
++        qemu_plugin_crucible_vmstop_cold_generation == generation &&
++        qemu_plugin_crucible_vmstop_quiesced();
++}
++
 +void qemu_plugin_crucible_vmstop_request_stopped(int flush_status)
 +{
-+    if (qatomic_read(&qemu_plugin_crucible_vmstop_state) ==
++    if (!qemu_plugin_crucible_vmstop_cold_admitted &&
++        qatomic_read(&qemu_plugin_crucible_vmstop_state) ==
 +        QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED) {
 +        qatomic_set(&qemu_plugin_crucible_vmstop_flush_result, flush_status);
 +        qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
@@ -74552,10 +75341,16 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..c6d205fef4c0f77bf74082de52e96bdd
 +
 +bool qemu_plugin_crucible_vmstop_resume_consume(void)
 +{
-+    return qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
-+                           QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
-+                           QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE) ==
-+           QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING;
++    bool consumed = qatomic_cmpxchg(&qemu_plugin_crucible_vmstop_state,
++                                    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
++                                    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE) ==
++        QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING;
++
++    if (consumed) {
++        qemu_plugin_crucible_vmstop_cold_admitted = false;
++        qemu_plugin_crucible_vmstop_cold_generation = 0;
++    }
++    return consumed;
 +}
 +
 +int qemu_plugin_crucible_single_threaded_rr(void)
@@ -114135,10 +114930,10 @@ index 22b7afed9f650c866f81aa154e6ba03dcc606c44..1d42273ed53a18559b7b421cf756f415
  # @CommandLineParameterType:
  #
 diff --git a/qapi/run-state.json b/qapi/run-state.json
-index a5771ad46815528fef2c2ebfa538d4e023a19969..ace9077a405c0a00cff6e41d3f1d62786325b23f 100644
+index a5771ad46815528fef2c2ebfa538d4e023a19969..0fa36c0d2fd102338f073d14f9b2054a30c32739 100644
 --- a/qapi/run-state.json
 +++ b/qapi/run-state.json
-@@ -132,6 +132,2731 @@
+@@ -132,6 +132,2957 @@
  { 'command': 'query-status', 'returns': 'StatusInfo',
    'allow-preconfig': true }
  
@@ -114395,6 +115190,162 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ace9077a405c0a00cff6e41d3f1d6278
 +{ 'command': 'crucible-hot-fork-block-barrier',
 +  'data': { 'action': 'CrucibleHotForkBlockBarrierAction' },
 +  'returns': 'CrucibleHotForkBlockBarrierState' }
++
++##
++# @CrucibleHotForkBlockSealCandidate:
++#
++# One currently writable rooted backend before sealing.  An empty node
++# name or file path means this graph cannot be sealed by this API.
++# File identity describes the open QEMU descriptor, not a path lookup.
++#
++# @backend-id: positive process-local BlockBackend identity
++# @backend-name: exact monitor-visible backend name
++# @root-node-name: current root node name, possibly empty
++# @file-path: absolute path of the current root file, possibly empty
++# @file-device: st_dev of the open current root file
++# @file-inode: st_ino of the open current root file
++# @virtual-size: guest-visible size in bytes
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockSealCandidate',
++  'data': { 'backend-id': 'uint64',
++            'backend-name': 'str',
++            'root-node-name': 'str',
++            'file-path': 'str',
++            'file-device': 'uint64',
++            'file-inode': 'uint64',
++            'virtual-size': 'uint64' } }
++
++##
++# @CrucibleHotForkBlockSealRequest:
++#
++# Exact current backend identity and a separately created, detached,
++# empty qcow2 overlay node.  QEMU installs all requested overlays as
++# one graph transaction; it never overwrites an overlay file.
++#
++# @backend-id: expected process-local BlockBackend identity
++# @backend-name: expected monitor-visible backend name
++# @snapshot-node-name: expected current root node
++# @overlay-node-name: detached empty qcow2 node to install
++# @snapshot-file-path: expected absolute current root file path
++# @snapshot-file-device: expected st_dev of open root file
++# @snapshot-file-inode: expected st_ino of open root file
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockSealRequest',
++  'data': { 'backend-id': 'uint64',
++            'backend-name': 'str',
++            'snapshot-node-name': 'str',
++            'overlay-node-name': 'str',
++            'snapshot-file-path': 'str',
++            'snapshot-file-device': 'uint64',
++            'snapshot-file-inode': 'uint64' } }
++
++##
++# @CrucibleHotForkBlockSealedRoot:
++#
++# An exact installed overlay over a read-only snapshot.  The file path
++# and device/inode identify the sealed current qcow2 file for external
++# digest and child reopen; its prior backing chain remains part of the
++# current guest disk and must also be retained by the caller.
++#
++# @backend-id: process-local BlockBackend identity
++# @backend-name: exact monitor-visible backend name
++# @overlay-node-name: installed empty qcow2 node
++# @snapshot-node-name: immediate read-only backing node
++# @snapshot-file-path: absolute path of sealed current qcow2 file
++# @snapshot-file-device: st_dev of the open sealed file
++# @snapshot-file-inode: st_ino of the open sealed file
++# @virtual-size: guest-visible size in bytes
++# @overlay-empty: whether no range is allocated above the snapshot
++# @snapshot-read-only: whether QEMU opened the snapshot read-only
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockSealedRoot',
++  'data': { 'backend-id': 'uint64',
++            'backend-name': 'str',
++            'overlay-node-name': 'str',
++            'snapshot-node-name': 'str',
++            'snapshot-file-path': 'str',
++            'snapshot-file-device': 'uint64',
++            'snapshot-file-inode': 'uint64',
++            'virtual-size': 'uint64',
++            'overlay-empty': 'bool',
++            'snapshot-read-only': 'bool' } }
++
++##
++# @CrucibleHotForkBlockSealState:
++#
++# Read-only inventory and retained process-local seal receipt.  A zero
++# receipt generation is diagnostic only and never authorizes PREPARE.
++# Backend and graph generations follow the graph transaction.
++#
++# @schema-version: seal API version, currently 1
++# @qemu-pid: process ID of this QEMU
++# @receipt-generation: 1 for current successful seal, otherwise 0
++# @backend-generation: current BlockBackend inventory generation
++# @graph-mutation-generation: current completed graph-write generation
++# @barrier-held: whether QEMU retains the all-block drain barrier
++# @barrier-generation: current all-block barrier generation
++# @barrier-quiescent: whether rooted backends have no in-flight I/O
++# @candidates: all non-external writable rooted backends in ID order
++# @sealed-roots: retained sealed roots when receipt is current
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkBlockSealState',
++  'data': { 'schema-version': 'uint32',
++            'qemu-pid': 'int64',
++            'receipt-generation': 'uint64',
++            'backend-generation': 'uint64',
++            'graph-mutation-generation': 'uint64',
++            'barrier-held': 'bool',
++            'barrier-generation': 'uint64',
++            'barrier-quiescent': 'bool',
++            'candidates': [ 'CrucibleHotForkBlockSealCandidate' ],
++            'sealed-roots': [ 'CrucibleHotForkBlockSealedRoot' ] } }
++
++##
++# @query-crucible-hot-fork-block-seal:
++#
++# Reports writable rooted backends and any retained seal receipt.
++# It does not install an overlay or authorize template preparation.
++#
++# Returns: @CrucibleHotForkBlockSealState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-block-seal',
++  'returns': 'CrucibleHotForkBlockSealState' }
++
++##
++# @crucible-hot-fork-block-seal:
++#
++# While a genuine hot-fork VMStop is retained, flush all block I/O,
++# transactionally install one empty qcow2 overlay for every writable
++# rooted backend, and make each former root read-only before commit.
++# The caller supplies exact current backend and file identities and
++# pre-created detached overlay nodes.  Refusal never publishes a seal
++# receipt; a failed transaction may leave caller-owned detached files.
++#
++# @expected-qemu-pid: required same-process identity
++# @expected-backend-generation: inventory generation from query
++# @expected-graph-mutation-generation: graph generation from query
++# @roots: one exact request per non-external writable rooted backend
++#
++# Returns: @CrucibleHotForkBlockSealState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-block-seal',
++  'data': { 'expected-qemu-pid': 'int64',
++            'expected-backend-generation': 'uint64',
++            'expected-graph-mutation-generation': 'uint64',
++            'roots': [ 'CrucibleHotForkBlockSealRequest' ] },
++  'returns': 'CrucibleHotForkBlockSealState' }
 +
 +##
 +# @CrucibleHotForkPluginResourceInventory:
@@ -115379,6 +116330,76 @@ index a5771ad46815528fef2c2ebfa538d4e023a19969..ace9077a405c0a00cff6e41d3f1d6278
 +                [ 'CrucibleHotForkBlockSnapshotBinding' ] },
 +  'returns': 'CrucibleHotForkTemplateState',
 +  'allow-oob': true }
++
++##
++# @CrucibleHotForkColdStopDisposition:
++#
++# The native cold-stop receipt state.  @none grants no authority.
++#
++# @none: no current receipt
++# @stopped: completed cold stop with a current native receipt
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'enum': 'CrucibleHotForkColdStopDisposition',
++  'data': [ 'none', 'stopped' ] }
++
++##
++# @CrucibleHotForkColdStopState:
++#
++# Versioned, pointer-free facts about QEMU's native cold-stop receipt.
++# A query with generation zero or disposition @none is diagnostic.
++#
++# @schema-version: contract version, currently 1
++# @qemu-pid: PID of the QEMU process returning this record
++# @cold-receipt-generation: 1 for the sole successful cold receipt in
++#     this constructed lifecycle, or zero without a current one
++# @runstate: current QEMU runstate
++# @vmstop-disposition: @stopped only for a current completed receipt
++# @flush-status: zero on success, or the last native flush failure
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'struct': 'CrucibleHotForkColdStopState',
++  'data': { 'schema-version': 'uint32',
++            'qemu-pid': 'int64',
++            'cold-receipt-generation': 'uint64',
++            'runstate': 'RunState',
++            'vmstop-disposition': 'CrucibleHotForkColdStopDisposition',
++            'flush-status': 'int' } }
++
++##
++# @crucible-hot-fork-cold-stop:
++#
++# Stop a constructed, never-dispatched simulator at a real native
++# device-flush boundary.  This is the sole PRELAUNCH to PAUSED issuer.
++# The expected PID is checked before any drain or state change.
++# Errors never publish a successful receipt.  A flush failure may be
++# retried while the same pristine machine remains in PRELAUNCH.
++#
++# @expected-qemu-pid: PID of the QEMU process the caller launched
++#
++# Returns: @CrucibleHotForkColdStopState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'crucible-hot-fork-cold-stop',
++  'data': { 'expected-qemu-pid': 'int64' },
++  'returns': 'CrucibleHotForkColdStopState' }
++
++##
++# @query-crucible-hot-fork-cold-stop:
++#
++# Report cold-stop state without creating or renewing a receipt.
++# The command response, followed by template PREPARE's own native
++# checks, is the authorization path; this query is diagnostic only.
++#
++# Returns: @CrucibleHotForkColdStopState
++#
++# Since: 10.0 (Crucible downstream extension)
++##
++{ 'command': 'query-crucible-hot-fork-cold-stop',
++  'returns': 'CrucibleHotForkColdStopState' }
 +
 +##
 +# @CrucibleHotForkOutcome:
@@ -117371,7 +118392,7 @@ index 9919b46230f1caf8be1a1b6ef00acd94678437ce..5688cd190ad09880d4faa1af38d86d39
           * cpu_exit() is not enough to kick a halted CPU out of
           * qemu_tcg_wait_io_event.  async_run_on_cpu, instead,
 diff --git a/system/cpus.c b/system/cpus.c
-index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a1868fd61 100644
+index 97e5a5edee23b70d8bd170c2b984568f4e804672..5b2752bcf8f2bf39dfe0bd675ce6bb260fabb9c5 100644
 --- a/system/cpus.c
 +++ b/system/cpus.c
 @@ -25,11 +25,13 @@
@@ -117388,7 +118409,188 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
  #include "exec/gdbstub.h"
  #include "accel/accel-cpu-ops.h"
  #include "system/hw_accel.h"
-@@ -318,6 +320,9 @@ static int do_vm_stop(RunState state, bool send_stop)
+@@ -76,6 +78,180 @@ static QemuMutex bql;
+  */
+ static const AccelOpsClass *cpus_accel;
+ 
++static struct {
++    MachineState *machine;
++    QemuThread construction_thread;
++    pid_t pid;
++    uint64_t generation;
++    uint64_t vmstop_generation;
++    int last_flush_status;
++    bool constructed;
++    bool pristine;
++    bool active;
++    bool competing_stop;
++    bool transition_authorized;
++} crucible_cold_stop;
++
++void qemu_crucible_cold_stop_machine_ready(MachineState *machine)
++{
++    g_assert(bql_locked());
++
++    if (crucible_cold_stop.constructed) {
++        qatomic_set(&crucible_cold_stop.pristine, false);
++        return;
++    }
++
++    crucible_cold_stop.machine = machine;
++    crucible_cold_stop.pid = getpid();
++    qemu_thread_get_self(&crucible_cold_stop.construction_thread);
++    crucible_cold_stop.constructed = phase_check(PHASE_MACHINE_READY);
++    qatomic_set(&crucible_cold_stop.pristine,
++                crucible_cold_stop.constructed && !cpu_exec_has_dispatched());
++}
++
++void qemu_crucible_cold_stop_invalidate(void)
++{
++    qatomic_set(&crucible_cold_stop.pristine, false);
++    qatomic_set(&crucible_cold_stop.generation, 0);
++}
++
++bool qemu_crucible_cold_stop_transition_authorized(void)
++{
++    return crucible_cold_stop.active &&
++        crucible_cold_stop.transition_authorized;
++}
++
++bool qemu_crucible_cold_stop_transaction_active(void)
++{
++    return qatomic_read(&crucible_cold_stop.active);
++}
++
++void qemu_crucible_cold_stop_competing_stop(void)
++{
++    qatomic_set(&crucible_cold_stop.competing_stop, true);
++}
++
++bool qemu_crucible_cold_stop_receipt_valid(void)
++{
++    return bql_locked() && !qemu_crucible_cold_stop_transaction_active() &&
++        crucible_cold_stop.constructed &&
++        qatomic_read(&crucible_cold_stop.pristine) &&
++        phase_check(PHASE_MACHINE_READY) &&
++        qemu_thread_is_self(&crucible_cold_stop.construction_thread) &&
++        !cpu_exec_has_dispatched() &&
++        crucible_cold_stop.pid == getpid() &&
++        crucible_cold_stop.machine == MACHINE(qdev_get_machine()) &&
++        !qemu_vmstop_pending() &&
++        crucible_cold_stop.vmstop_generation != UINT64_MAX &&
++        crucible_cold_stop.vmstop_generation ==
++            qemu_vmstop_request_generation() &&
++        runstate_check(RUN_STATE_PAUSED) &&
++        qemu_plugin_crucible_vmstop_cold_receipt(
++            qatomic_read(&crucible_cold_stop.generation));
++}
++
++uint64_t qemu_crucible_cold_stop_receipt_generation(void)
++{
++    return qemu_crucible_cold_stop_receipt_valid() ?
++        qatomic_read(&crucible_cold_stop.generation) : 0;
++}
++
++int qemu_crucible_cold_stop_last_flush_status(void)
++{
++    return crucible_cold_stop.last_flush_status;
++}
++
++int qemu_crucible_cold_stop(int64_t expected_qemu_pid, Error **errp)
++{
++    CPUState *cpu;
++    uint64_t vmstop_generation;
++    int flush_status;
++    int status;
++
++    if (expected_qemu_pid != getpid()) {
++        error_setg(errp, "cold stop QEMU PID mismatch: expected %" PRId64
++                   ", actual %ld", expected_qemu_pid, (long)getpid());
++        return -ESRCH;
++    }
++    if (!bql_locked() || !crucible_cold_stop.constructed ||
++        !phase_check(PHASE_MACHINE_READY) ||
++        !qemu_thread_is_self(&crucible_cold_stop.construction_thread) ||
++        crucible_cold_stop.machine != MACHINE(qdev_get_machine()) ||
++        crucible_cold_stop.pid != getpid() ||
++        !qatomic_read(&crucible_cold_stop.pristine) ||
++        cpu_exec_has_dispatched() ||
++        !runstate_check(RUN_STATE_PRELAUNCH) ||
++        replay_events_enabled() ||
++        qemu_vmstop_pending() || crucible_cold_stop.active ||
++        qemu_plugin_crucible_vmstop_pending()) {
++        error_setg(errp, "cold stop requires a constructed, never-dispatched "
++                   "prelaunch machine without replay or a competing stop");
++        return -EPERM;
++    }
++
++    cpu = first_cpu;
++    if (!cpu || !cpu->created || cpu->unplug) {
++        error_setg(errp, "cold stop requires a created vCPU");
++        return -EPERM;
++    }
++
++    vmstop_generation = qemu_vmstop_request_generation();
++    if (vmstop_generation == UINT64_MAX) {
++        error_setg(errp, "cold stop VMStop generation is exhausted");
++        return -EOVERFLOW;
++    }
++    status = qemu_plugin_crucible_vmstop_cold_begin();
++    if (status != 0) {
++        error_setg_errno(errp, -status,
++                         "cold stop requires the precise single-threaded simulator");
++        return status;
++    }
++
++    qatomic_set(&crucible_cold_stop.competing_stop, false);
++    qatomic_set(&crucible_cold_stop.active, true);
++    /* Device stop callbacks may queue a VMStop or dirty block state. */
++    status = vm_state_notify(0, RUN_STATE_PAUSED);
++    bdrv_drain_all();
++    flush_status = bdrv_flush_all();
++    crucible_cold_stop.last_flush_status = flush_status;
++
++    if (status == 0) {
++        status = flush_status;
++    }
++
++    if (status == 0 && (qemu_vmstop_pending() || cpu_exec_has_dispatched() ||
++                       vmstop_generation != qemu_vmstop_request_generation() ||
++                       qatomic_read(&crucible_cold_stop.competing_stop) ||
++                       replay_events_enabled() ||
++                       !qatomic_read(&crucible_cold_stop.pristine) ||
++                       !runstate_check(RUN_STATE_PRELAUNCH))) {
++        status = -EBUSY;
++    }
++    if (status == 0) {
++        /* A constructed cold lifecycle can publish only one success. */
++        crucible_cold_stop.vmstop_generation = vmstop_generation;
++        qatomic_set(&crucible_cold_stop.generation, 1);
++        if (!qemu_plugin_crucible_vmstop_cold_publish(
++                qatomic_read(&crucible_cold_stop.generation))) {
++            status = -EBUSY;
++        }
++    }
++    if (status == 0) {
++        crucible_cold_stop.transition_authorized = true;
++        runstate_set_cold_stop_paused();
++        crucible_cold_stop.transition_authorized = false;
++        qapi_event_send_stop();
++    } else {
++        qatomic_set(&crucible_cold_stop.generation, 0);
++        qemu_plugin_crucible_vmstop_cold_abort();
++        error_setg_errno(errp, status < 0 ? -status : EIO,
++                         "cold stop device drain/flush or admission failed");
++    }
++
++    qatomic_set(&crucible_cold_stop.active, false);
++    return status;
++}
++
+ bool cpu_is_stopped(CPUState *cpu)
+ {
+     return cpu->stopped || !runstate_is_running();
+@@ -318,6 +494,9 @@ static int do_vm_stop(RunState state, bool send_stop)
       */
      ret |= bdrv_flush_all();
      trace_vm_stop_flush_all(ret);
@@ -117398,7 +118600,18 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
  
      return ret;
  }
-@@ -438,7 +443,28 @@ void qemu_init_cpu_loop(void)
+@@ -327,6 +506,10 @@ static int do_vm_stop(RunState state, bool send_stop)
+  */
+ int vm_shutdown(void)
+ {
++    if (qemu_crucible_cold_stop_transaction_active()) {
++        qemu_crucible_cold_stop_competing_stop();
++        return -EBUSY;
++    }
+     return do_vm_stop(RUN_STATE_SHUTDOWN, false);
+ }
+ 
+@@ -438,7 +621,28 @@ void qemu_init_cpu_loop(void)
  
  void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data)
  {
@@ -117427,7 +118640,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
  }
  
  static void qemu_cpu_stop(CPUState *cpu, bool exit)
-@@ -506,6 +532,12 @@ void qemu_cpu_kick(CPUState *cpu)
+@@ -506,6 +710,12 @@ void qemu_cpu_kick(CPUState *cpu)
      } else { /* default */
          cpus_kick_thread(cpu);
      }
@@ -117440,7 +118653,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
  }
  
  void qemu_cpu_kick_self(void)
-@@ -611,6 +643,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
+@@ -611,6 +821,21 @@ void cpu_thread_signal_destroyed(CPUState *cpu)
      qemu_cond_signal(&qemu_cpu_cond);
  }
  
@@ -117462,7 +118675,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
  void cpu_pause(CPUState *cpu)
  {
      if (qemu_cpu_is_self(cpu)) {
-@@ -683,11 +730,34 @@ void resume_all_vcpus(void)
+@@ -683,11 +908,34 @@ void resume_all_vcpus(void)
      }
  }
  
@@ -117497,10 +118710,25 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
      bql_unlock();
      qemu_thread_join(cpu->thread);
      bql_lock();
-@@ -768,6 +838,10 @@ int vm_prepare_start(bool step_pending)
+@@ -743,6 +991,10 @@ void cpu_stop_current(void)
+ 
+ int vm_stop(RunState state)
+ {
++    if (qemu_crucible_cold_stop_transaction_active()) {
++        qemu_crucible_cold_stop_competing_stop();
++        return -EBUSY;
++    }
+     if (qemu_in_vcpu_thread()) {
+         qemu_system_vmstop_request_prepare();
+         qemu_system_vmstop_request(state);
+@@ -768,6 +1020,14 @@ int vm_prepare_start(bool step_pending)
      RunState state = vm_was_suspended ? RUN_STATE_SUSPENDED : RUN_STATE_RUNNING;
      RunState requested;
  
++    if (qemu_crucible_cold_stop_transaction_active()) {
++        qemu_crucible_cold_stop_competing_stop();
++        return -1;
++    }
 +    if (qemu_plugin_crucible_vmstop_admission_pending()) {
 +        return -1;
 +    }
@@ -117508,7 +118736,7 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
      qemu_vmstop_requested(&requested);
      if (runstate_is_running() && requested == RUN_STATE__MAX) {
          return -1;
-@@ -797,9 +871,11 @@ int vm_prepare_start(bool step_pending)
+@@ -797,9 +1057,11 @@ int vm_prepare_start(bool step_pending)
      runstate_set(state);
      vm_state_notify(1, state);
      vm_was_suspended = false;
@@ -117520,17 +118748,28 @@ index 97e5a5edee23b70d8bd170c2b984568f4e804672..47c7f9c23d3f035144ab782eaea1a24a
  void vm_start(void)
  {
      if (!vm_prepare_start(false)) {
-@@ -928,4 +1004,3 @@ void qmp_inject_nmi(Error **errp)
+@@ -820,6 +1082,10 @@ void vm_resume(RunState state)
+    current state is forgotten forever */
+ int vm_stop_force_state(RunState state)
+ {
++    if (qemu_crucible_cold_stop_transaction_active()) {
++        qemu_crucible_cold_stop_competing_stop();
++        return -EBUSY;
++    }
+     if (runstate_is_live(runstate_get())) {
+         return vm_stop(state);
+     } else {
+@@ -928,4 +1194,3 @@ void qmp_inject_nmi(Error **errp)
  {
      nmi_monitor_handle(monitor_get_cpu_index(monitor_cur()), errp);
  }
 -
 diff --git a/system/crucible-checkpoint-restore.c b/system/crucible-checkpoint-restore.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..30b6139c31c586a4579c6c23998ee3233c373323
+index 0000000000000000000000000000000000000000..8d6903c755ec5d431fa32829d4af3873864a1507
 --- /dev/null
 +++ b/system/crucible-checkpoint-restore.c
-@@ -0,0 +1,736 @@
+@@ -0,0 +1,739 @@
 +/*
 + * Crucible exact checkpoint direct/delta restore
 + *
@@ -117560,6 +118799,7 @@ index 0000000000000000000000000000000000000000..30b6139c31c586a4579c6c23998ee323
 +#include "system/cpu-timers.h"
 +#include "system/crucible-checkpoint.h"
 +#include "system/runstate.h"
++#include "system/cpus.h"
 +#include "system/tcg.h"
 +
 +#define CRUCIBLE_RESTORE_RECORD_MAX_BYTES (4 * MiB)
@@ -118101,6 +119341,8 @@ index 0000000000000000000000000000000000000000..30b6139c31c586a4579c6c23998ee323
 +    bool reserved = false;
 +    bool state_changed = false;
 +    int status;
++
++    qemu_crucible_cold_stop_invalidate();
 +
 +    if (!crucible_restore_exact_paused_boundary()) {
 +        error_setg(errp, "Crucible checkpoint restore requires the exact "
@@ -119703,10 +120945,10 @@ index 0000000000000000000000000000000000000000..d03a053bf825c69dd0bca673f693874f
 +}
 diff --git a/system/crucible-hot-fork-coordinator.c b/system/crucible-hot-fork-coordinator.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..e8f027d4691f650dec356f26638c11943a6cc7bf
+index 0000000000000000000000000000000000000000..4e8139a03068c787129ac83196cd0cd84bb905ee
 --- /dev/null
 +++ b/system/crucible-hot-fork-coordinator.c
-@@ -0,0 +1,552 @@
+@@ -0,0 +1,554 @@
 +/*
 + * Crucible main-loop hot-fork coordinator.
 + *
@@ -119720,6 +120962,7 @@ index 0000000000000000000000000000000000000000..e8f027d4691f650dec356f26638c1194
 +#include "qemu/main-loop.h"
 +#include "qemu/notify.h"
 +#include "qemu/thread.h"
++#include "system/blockdev.h"
 +#include "system/crucible-hot-fork-coordinator.h"
 +
 +#ifdef CONFIG_LINUX
@@ -119972,6 +121215,7 @@ index 0000000000000000000000000000000000000000..e8f027d4691f650dec356f26638c1194
 +    child_pid = crucible_hot_fork_create_child(
 +        operation.child_cgroup_procs_fd, &placement);
 +    if (child_pid == 0) {
++        qemu_crucible_block_seal_child_reset();
 +        /*
 +         * The copied waiter and notifier are parent-only.  Close the raw wake
 +         * descriptor before the child opens its exact descriptor transaction;
@@ -123852,7 +125096,7 @@ index 018609a4f9a4f56b5e3485f82513ab6ceebb3501..74dc67b8b0e01b3518e6c48513a2653d
  
  static void configure_rtc_base_datetime(const char *startdate)
 diff --git a/system/runstate.c b/system/runstate.c
-index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..17973c85b8b3a900eb59774fc3e0fef3fddcfab2 100644
+index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..d2bd1837a36b486acb75ba121fe61f8644917a6d 100644
 --- a/system/runstate.c
 +++ b/system/runstate.c
 @@ -43,10 +43,15 @@
@@ -123871,7 +125115,97 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..17973c85b8b3a900eb59774fc3e0fef3
  #include "qemu/sockets.h"
  #include "qemu/timer.h"
  #include "qemu/thread.h"
-@@ -590,6 +595,13 @@ void qemu_system_reset(ShutdownCause reason)
+@@ -73,6 +78,9 @@ static RunState current_run_state = RUN_STATE_PRELAUNCH;
+ /* We use RUN_STATE__MAX but any invalid value will do */
+ static RunState vmstop_requested = RUN_STATE__MAX;
+ static QemuMutex vmstop_lock;
++static uint64_t vmstop_generation;
++/* Saturation is a permanent refusal sentinel; an old stop must not recur. */
++static uint64_t runstate_transition_generation = 1;
+ 
+ typedef struct {
+     RunState from;
+@@ -247,9 +255,32 @@ void runstate_set(RunState new_state)
+         abort();
+     }
+ 
++    qemu_crucible_cold_stop_invalidate();
++    if (runstate_transition_generation != UINT64_MAX) {
++        runstate_transition_generation++;
++    }
+     current_run_state = new_state;
+ }
+ 
++void runstate_set_cold_stop_paused(void)
++{
++    g_assert(bql_locked());
++    g_assert(current_run_state == RUN_STATE_PRELAUNCH);
++    g_assert(qemu_crucible_cold_stop_transition_authorized());
++
++    trace_runstate_set(current_run_state, RunState_str(current_run_state),
++                       RUN_STATE_PAUSED, RunState_str(RUN_STATE_PAUSED));
++    if (runstate_transition_generation != UINT64_MAX) {
++        runstate_transition_generation++;
++    }
++    current_run_state = RUN_STATE_PAUSED;
++}
++
++uint64_t qemu_runstate_transition_generation(void)
++{
++    return runstate_transition_generation;
++}
++
+ RunState runstate_get(void)
+ {
+     return current_run_state;
+@@ -285,6 +316,26 @@ bool qemu_vmstop_requested(RunState *r)
+     return *r < RUN_STATE__MAX;
+ }
+ 
++bool qemu_vmstop_pending(void)
++{
++    bool pending;
++
++    qemu_mutex_lock(&vmstop_lock);
++    pending = vmstop_requested < RUN_STATE__MAX;
++    qemu_mutex_unlock(&vmstop_lock);
++    return pending;
++}
++
++uint64_t qemu_vmstop_request_generation(void)
++{
++    uint64_t generation;
++
++    qemu_mutex_lock(&vmstop_lock);
++    generation = vmstop_generation;
++    qemu_mutex_unlock(&vmstop_lock);
++    return generation;
++}
++
+ void qemu_system_vmstop_request_prepare(void)
+ {
+     qemu_mutex_lock(&vmstop_lock);
+@@ -292,6 +343,10 @@ void qemu_system_vmstop_request_prepare(void)
+ 
+ void qemu_system_vmstop_request(RunState state)
+ {
++    /* Saturation preserves non-reuse; cold admission refuses this sentinel. */
++    if (vmstop_generation != UINT64_MAX) {
++        vmstop_generation++;
++    }
+     vmstop_requested = state;
+     qemu_mutex_unlock(&vmstop_lock);
+     qemu_notify_event();
+@@ -521,6 +576,8 @@ void qemu_system_reset(ShutdownCause reason)
+     int ret;
+     ResetType type;
+ 
++    qemu_crucible_cold_stop_invalidate();
++
+     cpu_synchronize_all_states();
+ 
+     switch (reason) {
+@@ -590,6 +647,13 @@ void qemu_system_reset(ShutdownCause reason)
      }
  
      vm_set_suspended(false);
@@ -123885,7 +125219,16 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..17973c85b8b3a900eb59774fc3e0fef3
  }
  
  /*
-@@ -844,6 +856,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
+@@ -736,6 +800,8 @@ void qemu_system_guest_pvshutdown(void)
+ 
+ void qemu_system_reset_request(ShutdownCause reason)
+ {
++    qemu_crucible_cold_stop_invalidate();
++
+     if (reboot_action == REBOOT_ACTION_SHUTDOWN &&
+         reason != SHUTDOWN_CAUSE_SUBSYSTEM_RESET) {
+         shutdown_requested = reason;
+@@ -844,6 +910,13 @@ void qemu_system_shutdown_request(ShutdownCause reason)
      shutdown_requested = reason;
      if (reason == SHUTDOWN_CAUSE_HOST_QMP_QUIT) {
          force_shutdown = true;
@@ -123899,7 +125242,7 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..17973c85b8b3a900eb59774fc3e0fef3
      }
      qemu_notify_event();
  }
-@@ -856,6 +875,9 @@ static void qemu_system_powerdown(void)
+@@ -856,6 +929,9 @@ static void qemu_system_powerdown(void)
  
  static void qemu_system_shutdown(ShutdownCause cause)
  {
@@ -123910,18 +125253,20 @@ index 08acf801b0e6cdbade400a64a3de6e2d1f08d1ca..17973c85b8b3a900eb59774fc3e0fef3
      notifier_list_notify(&shutdown_notifiers, &cause);
  }
 diff --git a/system/vl.c b/system/vl.c
-index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..c6f6acf80b906791b445a7d53a464208a29f5e9b 100644
+index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..72ffb90af0fd45d08e81a8c7d1e466c1dd000436 100644
 --- a/system/vl.c
 +++ b/system/vl.c
-@@ -43,6 +43,7 @@
+@@ -43,7 +43,9 @@
  #include "qemu/hw-version.h"
  #include "qemu/uuid.h"
  #include "system/reset.h"
 +#include "system/crucible-hot-fork-coordinator.h"
  #include "system/runstate.h"
++#include "system/cpus.h"
  #include "system/runstate-action.h"
  #include "system/seccomp.h"
-@@ -450,6 +451,9 @@ static QemuOptsList qemu_icount_opts = {
+ #include "system/tcg.h"
+@@ -450,6 +452,9 @@ static QemuOptsList qemu_icount_opts = {
          }, {
              .name = "sleep",
              .type = QEMU_OPT_BOOL,
@@ -123931,7 +125276,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..c6f6acf80b906791b445a7d53a464208
          }, {
              .name = "rr",
              .type = QEMU_OPT_STRING,
-@@ -2716,16 +2720,23 @@ static void qemu_init_displays(void)
+@@ -2716,16 +2721,23 @@ static void qemu_init_displays(void)
      }
  }
  
@@ -123958,7 +125303,15 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..c6f6acf80b906791b445a7d53a464208
      if (machine_class->auto_create_sdcard) {
          bool ambigous;
  
-@@ -2820,6 +2831,14 @@ void qmp_x_exit_preconfig(Error **errp)
+@@ -2808,6 +2820,7 @@ static bool qemu_machine_creation_done(Error **errp)
+                     "type does not use that option; "
+                     "No VGA device has been created");
+     }
++    qemu_crucible_cold_stop_machine_ready(machine);
+     return true;
+ }
+ 
+@@ -2820,6 +2833,14 @@ void qmp_x_exit_preconfig(Error **errp)
  
      qemu_init_board();
      qemu_create_cli_devices();
@@ -123973,7 +125326,7 @@ index 061cbdf860bfc5f056aab26f347eeea0b82dc4e8..c6f6acf80b906791b445a7d53a464208
      if (!qemu_machine_creation_done(errp)) {
          return;
      }
-@@ -3768,6 +3787,9 @@ void qemu_init(int argc, char **argv)
+@@ -3768,6 +3789,9 @@ void qemu_init(int argc, char **argv)
      trace_init_file();
  
      qemu_init_main_loop(&error_fatal);
@@ -154617,10 +155970,10 @@ index 0000000000000000000000000000000000000000..57b2f5de179724dbb072619030cc86ec
 +}
 diff --git a/tests/unit/test-crucible-hot-fork-coordinator.c b/tests/unit/test-crucible-hot-fork-coordinator.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be2435dc52
+index 0000000000000000000000000000000000000000..4e96634a4ba9fd5cc7e825d1ba9c0aedc93a0238
 --- /dev/null
 +++ b/tests/unit/test-crucible-hot-fork-coordinator.c
-@@ -0,0 +1,298 @@
+@@ -0,0 +1,308 @@
 +/*
 + * Crucible main-loop hot-fork coordinator tests.
 + *
@@ -154636,6 +155989,7 @@ index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be
 +#include "qemu/notify.h"
 +#include "qemu/rcu.h"
 +#include "qemu/thread.h"
++#include "system/blockdev.h"
 +#include "system/crucible-hot-fork-coordinator.h"
 +
 +typedef struct CoordinatorChildReport {
@@ -154644,6 +155998,7 @@ index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be
 +    unsigned int prepare_calls;
 +    unsigned int parent_calls;
 +    unsigned int child_calls;
++    unsigned int seal_reset_calls;
 +} CoordinatorChildReport;
 +
 +typedef struct CoordinatorTestState {
@@ -154666,6 +156021,12 @@ index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be
 +} CoordinatorTestState;
 +
 +static CoordinatorTestState coordinator_test;
++static unsigned int seal_reset_calls;
++
++void qemu_crucible_block_seal_child_reset(void)
++{
++    seal_reset_calls++;
++}
 +
 +static int coordinator_prepare(void *opaque)
 +{
@@ -154699,6 +156060,7 @@ index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be
 +        .prepare_calls = state->prepare_calls,
 +        .parent_calls = state->parent_calls,
 +        .child_calls = state->child_calls,
++        .seal_reset_calls = seal_reset_calls,
 +    };
 +    do {
 +        written = write(state->report_pipe[1], &report, sizeof(report));
@@ -154776,6 +156138,7 @@ index 0000000000000000000000000000000000000000..05bca65903fd80021e579ca94d20b1be
 +    g_assert_cmpint(report.thread_id, ==, report.process_id);
 +    g_assert_cmpuint(report.prepare_calls, ==, 1);
 +    g_assert_cmpuint(report.parent_calls, ==, 0);
++    g_assert_cmpuint(report.seal_reset_calls, ==, 1);
 +    g_assert_cmpuint(report.child_calls, ==, 1);
 +
 +    return report;
