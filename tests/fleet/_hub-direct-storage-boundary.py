@@ -10,6 +10,7 @@ import json
 import hashlib
 from pathlib import Path
 import re
+from decimal import Decimal, ROUND_CEILING
 
 
 def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots):
@@ -183,6 +184,97 @@ def direct_storage_completion_receipts(text, worker_received=False):
     return normalized, completed
 
 
+DIRECT_CONTROL_RECEIPT_FIELDS = frozenset((
+    "version", "route", "compiledSource", "requestBodySha256", "replyBodySha256",
+    "requestBytes", "replyBytes", "completedAtUnixMillis",
+))
+
+DIRECT_CONTROL_RECEIPT_LIMITS = {
+    "/_internal/storage/v1/capabilities": 64 * 1024,
+    "/_internal/storage/v1/binding-adoption": 64 * 1024,
+    "/_internal/storage/v1/bindings": 64 * 1024,
+    "/_internal/storage/direct-upload-authority": 256 * 1024,
+    "/_internal/storage/direct-upload-final-guard": 256 * 1024,
+    "/_internal/storage/mirror-final-guard": 256 * 1024,
+    "/_internal/storage/mirror-final-guard-batch": 256 * 1024,
+}
+
+DIRECT_CONTROL_METADATA_ROUTES = frozenset((
+    "/_internal/storage/v1/capabilities", "/_internal/storage/v1/binding-adoption",
+    "/_internal/storage/direct-upload-authority", "/_internal/storage/direct-upload-final-guard",
+))
+
+
+def direct_control_completion_receipts(text):
+    """Parse the committed successful-handler schema without inferring permission.
+
+    Identical replay receipts remain one semantic original with all observed
+    completion times. A route with protected material still needs its own codec.
+    """
+    receipts = {}
+    for line in text.splitlines():
+        if "storage_control_complete " not in line:
+            continue
+        encoded = line.split("storage_control_complete ", 1)[1]
+        if len(encoded.encode()) > 4096:
+            raise ValueError("Worker control receipt exceeds its bounded schema")
+        value = _closed_review_json(encoded)
+        if (not isinstance(value, dict) or set(value) != DIRECT_CONTROL_RECEIPT_FIELDS
+                or type(value["version"]) is not int or value["version"] != 1
+                or not isinstance(value["route"], str)
+                or value["route"] not in DIRECT_CONTROL_RECEIPT_LIMITS):
+            raise ValueError("actual successful control receipt schema differs")
+        for name in ("compiledSource", "requestBodySha256", "replyBodySha256"):
+            if not isinstance(value[name], str) or not re.fullmatch(r"[0-9a-f]{64}", value[name]):
+                raise ValueError("actual control receipt digest is malformed")
+        for name in ("requestBytes", "replyBytes", "completedAtUnixMillis"):
+            if not isinstance(value[name], str) or not re.fullmatch(r"(?:0|[1-9][0-9]{0,15})", value[name]):
+                raise ValueError("actual control receipt count or time is noncanonical")
+        if (int(value["completedAtUnixMillis"]) == 0
+                or max(int(value["requestBytes"]), int(value["replyBytes"])) > DIRECT_CONTROL_RECEIPT_LIMITS[value["route"]]):
+            raise ValueError("actual control receipt bound or clock is invalid")
+        identity = tuple(value[name] for name in (
+            "route", "compiledSource", "requestBodySha256", "replyBodySha256", "requestBytes", "replyBytes"))
+        record = receipts.setdefault(identity, {**value, "completionObservations": set()})
+        record["completionObservations"].add(value["completedAtUnixMillis"])
+    return receipts
+
+
+def direct_control_completion_join(receipts, body, source_digest, proxy_completed, elapsed_seconds):
+    """Match actual source, bytes and handler time to the independent Worker proxy.
+
+    Both clocks belong to the receiving Worker VM. Their completed-request
+    interval is observational correlation, never an authorization clock.
+    """
+    if body["procedure"] not in DIRECT_CONTROL_METADATA_ROUTES or body["status"] != 200:
+        return None
+    identity = (body["procedure"], source_digest, body["bodies"]["request"]["sha256"],
+        body["bodies"]["response"]["sha256"], str(body["bodies"]["request"]["byteSize"]),
+        str(body["bodies"]["response"]["byteSize"]))
+    record = receipts.get(identity)
+    if record is None:
+        return None
+    if (not isinstance(proxy_completed, str) or not re.fullmatch(r"[1-9][0-9]{0,15}", proxy_completed)
+            or not isinstance(elapsed_seconds, str)
+            or not re.fullmatch(r"(?:0|[1-9][0-9]{0,12})\.[0-9]{3}", elapsed_seconds)):
+        raise ValueError("actual control proxy interval is missing or malformed")
+    finished = int(proxy_completed)
+    elapsed = int((Decimal(elapsed_seconds) * 1000).to_integral_value(rounding=ROUND_CEILING))
+    matching = sorted(value for value in record["completionObservations"]
+        if finished - elapsed - 1 <= int(value) <= finished + 1)
+    if not matching:
+        return None
+    return {"route": identity[0], "compiledSource": source_digest,
+        "requestSha256": identity[2], "replySha256": identity[3],
+        "requestBytes": int(identity[4]), "replyBytes": int(identity[5]),
+        "handlerCompletedAtUnixMillis": matching,
+        "workerProxyCompletedAtUnixMillis": proxy_completed,
+        "handlerReceiptSemanticSha256": hashlib.sha256(json.dumps({name: record[name]
+            for name in DIRECT_CONTROL_RECEIPT_FIELDS if name != "completedAtUnixMillis"},
+            sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "scope": "actual successful authenticated handler construction and independent transported byte equality; no permission, positive per-item result or settlement inference"}
+
+
 def capture_direct_storage_boundary(native, worker, tools, native_text, worker_text,
                                     runtime_text, source_digest, native_address):
     """Join every actual Native request to its independently received bytes."""
@@ -229,6 +321,8 @@ def capture_direct_storage_boundary(native, worker, tools, native_text, worker_t
             raise ValueError("actual Worker storage completion schema differs")
         plan, operation, request, source, response = matched.groups()
         completions.setdefault(plan, set()).add((operation, int(request), int(source), int(response)))
+    control_completions = direct_control_completion_receipts(runtime_text)
+    received_elapsed = {row["request_id"]: row["elapsed_seconds"] for row in worker_raw}
     captures, authenticated, unresolved, accounted = [], [], [], set()
     for original in original_bodies["bodies"]:
         identifier = original["requestId"]
@@ -245,9 +339,22 @@ def capture_direct_storage_boundary(native, worker, tools, native_text, worker_t
                     for name in ("request", "response"))):
             unresolved.append(identifier)
             continue
-        if body["procedure"] != "/_internal/storage/v1/execute" or body["status"] != 200:
-            # Other real custody/guard routes require their own actual shared
-            # codecs. Their presence cannot be converted to a metadata zero.
+        if body["procedure"] != "/_internal/storage/v1/execute":
+            positive = direct_control_completion_join(control_completions, body, source_digest,
+                worker_completed[body["requestId"]], received_elapsed[body["requestId"]])
+            if positive is None:
+                # Protected-material controls, unsupported routes and missing
+                # actual handler receipts stay unresolved even after HTTP200.
+                unresolved.append(identifier)
+                continue
+            captures.append({**body, "controlSelection": {"sourceDigest": source_digest,
+                "deploymentId": tools["deploymentId"],
+                "originalRequest": dict(original["bodies"]["request"])}})
+            authenticated.append({**positive, "requestId": body["requestId"],
+                "nativeRequestId": identifier,
+                "nativeProxyCompletedAtUnixMillis": native_completed[identifier]})
+            continue
+        if body["status"] != 200:
             unresolved.append(identifier)
             continue
         request = _closed_review_json(Path(body["bodies"]["request"]["file"]).read_bytes())

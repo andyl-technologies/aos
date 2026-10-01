@@ -161,6 +161,65 @@ def direct_storage_codec_selection(selection, source_digest):
             "byteSize": str(original["byteSize"])}}
 
 
+
+def direct_control_codec_selection(selection, source_digest):
+    """Preserve the exact independently selected original and installed audience."""
+    if (not isinstance(selection, dict) or set(selection) != {
+            "sourceDigest", "deploymentId", "originalRequest"}
+            or selection["sourceDigest"] != source_digest
+            or not isinstance(selection["deploymentId"], str)
+            or not re.fullmatch(r"[a-zA-Z0-9._-]{1,128}", selection["deploymentId"])):
+        raise ValueError("control codec selection differs from its actual source or audience")
+    original = selection["originalRequest"]
+    if (not isinstance(original, dict) or set(original) != {"file", "sha256", "byteSize"}
+            or not isinstance(original["file"], str) or not Path(original["file"]).is_absolute()
+            or not isinstance(original["sha256"], str)
+            or not re.fullmatch(r"[0-9a-f]{64}", original["sha256"])
+            or type(original["byteSize"]) is not int or not 0 <= original["byteSize"] <= WORKER_CONTROL_REPLY_LIMIT):
+        raise ValueError("control codec original descriptor differs from the captured bytes")
+    return {"sourceDigest": source_digest, "deploymentId": selection["deploymentId"],
+        "originalRequest": {**original, "file": str(Path(original["file"]).resolve()),
+            "byteSize": str(original["byteSize"])}}
+
+
+def direct_control_codec_join(item, capture, positive, source_digest):
+    """Require typed original correlation beside actual protected-handler proof."""
+    typed = item.get("control")
+    fields = {"operation", "selectedSourceDigest", "originalRequestSha256",
+        "originalRequestSemanticSha256", "deploymentIdSha256", "challengeNonceSha256",
+        "originalContextSha256", "returnedProtectedMaterialBytes", "correlationValidatorSourceSha256"}
+    selected = capture["controlSelection"]
+    original = selected["originalRequest"]
+    if (positive is None or not isinstance(typed, dict) or set(typed) != fields
+            or item["class"] != "storage_control_metadata"
+            or item["authentication"] != "not_checked_join_independent_authenticated_worker_receipt"
+            or typed["selectedSourceDigest"] != source_digest
+            or typed["originalRequestSha256"] != original["sha256"]
+            or typed["originalRequestSemanticSha256"] != item["request"]["typedSemanticSha256"]
+            or typed["deploymentIdSha256"] != hashlib.sha256(selected["deploymentId"].encode()).hexdigest()
+            or typed["returnedProtectedMaterialBytes"] != "0"
+            or positive["compiledSource"] != source_digest or positive["route"] != capture["procedure"]
+            or positive["requestSha256"] != item["request"]["sha256"]
+            or positive["replySha256"] != item["response"]["sha256"]
+            or positive["requestBytes"] != int(item["request"]["byteSize"])
+            or positive["replyBytes"] != int(item["response"]["byteSize"])
+            or not positive["handlerCompletedAtUnixMillis"]):
+        raise ValueError("typed control metadata lacks its exact actual authenticated-handler join")
+    for name in ("originalRequestSemanticSha256", "originalContextSha256", "correlationValidatorSourceSha256"):
+        if not isinstance(typed[name], str) or not re.fullmatch(r"[0-9a-f]{64}", typed[name]):
+            raise ValueError("typed control correlation commitment is invalid")
+    if (not isinstance(typed["operation"], str)
+            or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", typed["operation"])
+            or (typed["challengeNonceSha256"] is not None and (
+                not isinstance(typed["challengeNonceSha256"], str)
+                or not re.fullmatch(r"[0-9a-f]{64}", typed["challengeNonceSha256"])))):
+        raise ValueError("typed control operation or challenge commitment is invalid")
+    return {"requestId": capture["requestId"], "class": item["class"],
+        "requestBytes": int(item["request"]["byteSize"]),
+        "replyBytes": int(item["response"]["byteSize"]), "observation": typed,
+        "authenticatedHandlerReceiptSemanticSha256": positive["handlerReceiptSemanticSha256"],
+        "handlerCompletedAtUnixMillis": positive["handlerCompletedAtUnixMillis"]}
+
 def assess_direct_native_bodies(body_receipts, control_joins, provider_classification,
                                mapping, source_digest, issuer_verifier, native_executable,
                                storage_work_boundary=None, release_placements=None):
@@ -214,6 +273,10 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
             selected["storageWorkSelection"] = direct_storage_codec_selection(
                 selected["storageWorkSelection"], source_digest,
             )
+        if "controlSelection" in selected:
+            selected["controlSelection"] = direct_control_codec_selection(
+                selected["controlSelection"], source_digest,
+            )
         captures.append(selected)
     selected_corpus_bytes = body_receipts["capturedCorpusBytes"] + sum(
         int(body["byteSize"]) for capture in storage_work_boundary["captures"]
@@ -241,12 +304,13 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
         raise ValueError("combined Native capture request ownership is ambiguous")
     joined = {item["requestId"]: item for item in control_joins["joined"]}
     storage_joins = {item["requestId"]: item for item in storage_work_boundary["authenticatedCompletions"]}
-    storage_projections = []
+    storage_projections, control_projections = [], []
     seen = set()
     for item in parsed["captures"]:
         identifier = item["requestIdSha256"]
         capture = actual.get(identifier)
-        allowed = DIRECT_STORAGE_ALLOWED_BODY_CLASSES if "storageWorkSelection" in (capture or {}) else DIRECT_NATIVE_ALLOWED_BODY_CLASSES
+        outbound = "storageWorkSelection" in (capture or {}) or "controlSelection" in (capture or {})
+        allowed = DIRECT_STORAGE_ALLOWED_BODY_CLASSES if outbound else DIRECT_NATIVE_ALLOWED_BODY_CLASSES
         if (capture is None or identifier in seen or item["class"] not in allowed
                 or item["procedure"] != capture["procedure"] or item["phase"] != capture["phase"]):
             raise ValueError("codec class or original capture ownership changed")
@@ -264,6 +328,9 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
                 raise ValueError("typed logical body lacks its exact authenticated production join")
         if item["browserSource"] is not None and item["browserSource"] != provenance["browserSource"]:
             raise ValueError("browser template or compiled assets differ from the installed source")
+        if "controlSelection" in capture:
+            control_projections.append(direct_control_codec_join(item, capture,
+                storage_joins.get(capture["requestId"]), source_digest))
         if "storageWorkSelection" in capture:
             positive = storage_joins.get(capture["requestId"])
             typed = item.get("storageWork")
@@ -291,7 +358,11 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
         "sourceDigest": source_digest, "codecReportSha256": retain_direct_flow("native-codec-classifications.json", parsed),
         "reviewSha256": reviewed["reviewSha256"], "providerClassifiedReceipts": len(provider_classification["classified"]),
         "publications": sorted({item["publicationId"] for item in mapping["originals"]}),
-        "storageProjections": storage_projections,
+        "storageProjections": storage_projections, "storageControlProjections": control_projections,
+        "storageControlBudget": {"calls": len(control_projections),
+            "requestBytes": sum(row["requestBytes"] for row in control_projections),
+            "replyBytes": sum(row["replyBytes"] for row in control_projections),
+            "scope": "actual shared custody/capability/guard metadata calls; no fabricated per-release allocation"},
         "perReleaseStorageBudget": release_budget,
         "derivation": "all captured Native inbound and outbound bodies have closed supported metadata/app-shell/selected projection classes; independently matched production handler bytes and complete provider originals/callers exclude whole raw object transfer",
         "scope": "accepted A/B publication and concurrent page window only; separately retained injected-failure windows are not folded into this conclusion",
