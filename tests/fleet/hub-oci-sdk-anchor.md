@@ -55,6 +55,31 @@ Native and Worker artifacts containing the separate OCI-only purpose, one exact
 selected immutable runtime source, and the actual installed console/CLI closure.
 No older artifact may be relabeled as the new runtime.
 
+## Authenticated source join before acceptance
+
+The existing qualification driver provides a source-only `--phase clock`.
+Supply the exact selected build source/script and public origin as its private
+identity input, the distinct private conformance key, a fresh 64-hex run ID and
+a new empty output directory:
+
+```text
+<AOS Node> aos-hub-direct-qualification.mjs --phase clock
+  --origin <actual installed HTTPS origin>
+  --control-key-file <private conformance key>
+  --identity-file <selected build identity and publicOrigin>
+  --run-id <fresh64hex> --clock-uncertainty-seconds <installed decimal policy>
+  --output-dir <new private clock capture directory>
+```
+
+The actual protected Clock branch returns the compiled source/script before
+acceptance lookup or provider operations. The driver verifies its separate
+reply MAC, exact request SHA/nonce, closed Clock shape, source/script and selected
+uncertainty; it retains the actual request and signed reply. Only then does it
+write `source-identity.json` for the namespace reader. This source/clock
+observation grants no Managed Direct or OCI acceptance. The phase issues no
+Start, Begin, Enqueue, Status or provider request. Later SDK effects still
+require the independent namespace/configuration/process joins.
+
 ## Retained original and one-shot command
 
 The control request has exactly four fields:

@@ -54,7 +54,8 @@ const server = createServer({ cert: await readFile(cert), key: await readFile(pr
           deploymentId: "driver-test", publicOrigin: origin, executionKind: "hosted", objects: action.objects,
           bulkQueueName: "driver-bulk", metadataQueueName: "driver-metadata", material: { profile: { checksumAlgorithm: "md5" } } };
         result = { original }; break;
-      case "clock": result = { observedAtMillis: String(Date.now()) }; break;
+      case "clock": result = { kind: "clock", observedAtMillis: String(Date.now()),
+        uncertaintySeconds: scenario === "clock-wrong-uncertainty" ? "2" : "1", nonce: control.nonce }; break;
       case "expired_mutation": result = { observedAt: String(Math.floor(Date.now() / 1000)),
         providerBefore: { isolateId: "driver-isolate", dispatches: 0 }, providerAfter: { isolateId: "driver-isolate", dispatches: 0 } }; break;
       case "begin": break;
@@ -95,18 +96,34 @@ origin = `https://127.0.0.1:${server.address().port}`;
 const identityFile = join(root, "identity.json"), manifestFile = join(root, "manifest.json");
 await writeFile(identityFile, JSON.stringify({ sourceDigest: "ab".repeat(32), scriptVersion: "script-1", publicOrigin: origin }), { mode: 0o600 });
 await writeFile(manifestFile, JSON.stringify({ provider: { kind: "managed" }, objects: [{ file: payloadFile, metadata: false }] }), { mode: 0o600 });
-async function run(name, mode) {
+async function run(name, mode, phase = "run") {
   scenario = mode; calls.length = 0; partOrder.length = 0; uploaded = 0; receipt = null;
   const output = join(root, name); await mkdir(output, { mode: 0o700 });
   child = spawn(process.execPath, [driver, "--origin", origin, "--control-key-file", keyFile,
     "--identity-file", identityFile, "--manifest-file", manifestFile, "--output-dir", output,
-    "--wait-seconds", "0"], { env: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, stdio: ["ignore", "pipe", "pipe"] });
+    "--wait-seconds", "0", ...(phase === "clock" ? ["--phase", "clock", "--run-id", "ef".repeat(32),
+      "--clock-uncertainty-seconds", "1"] : [])], { env: { ...process.env, NODE_EXTRA_CA_CERTS: cert }, stdio: ["ignore", "pipe", "pipe"] });
   let logs = ""; child.stdout.on("data", bytes => { logs += bytes; }); child.stderr.on("data", bytes => { logs += bytes; });
   const exit = await new Promise((done, reject) => { child.once("error", reject); child.once("exit", done); });
   await writeFile(join(root, `${name}.log`), logs, { mode: 0o600 });
   return { output, exit };
 }
 try {
+  const sourceClock = await run("source-clock", "positive", "clock"); assert.equal(sourceClock.exit, 0);
+  assert.deepEqual(calls, ["clock"]); assert.equal(uploaded, 0);
+  const sourceIdentity = JSON.parse(await readFile(join(sourceClock.output, "source-identity.json")));
+  assert.deepEqual(sourceIdentity, { sourceDigest: "ab".repeat(32), scriptVersion: "script-1" });
+  const sourceObservation = JSON.parse(await readFile(join(sourceClock.output, "source-clock-observation.json")));
+  assert.equal(sourceObservation.scope, "authenticated_source_clock_only");
+  const clockRequest = await readFile(join(sourceClock.output, "00001-clock-request.json"));
+  assert.equal(JSON.parse(clockRequest).action.kind, "clock");
+  assert.equal((await readdir(sourceClock.output)).includes("original.json"), false);
+  const wrongClock = await run("source-clock-wrong-runtime", "wrong-runtime", "clock");
+  assert.notEqual(wrongClock.exit, 0); assert.deepEqual(calls, ["clock"]);
+  assert.equal((await readdir(wrongClock.output)).includes("source-identity.json"), false);
+  const wrongUncertainty = await run("source-clock-wrong-uncertainty", "clock-wrong-uncertainty", "clock");
+  assert.notEqual(wrongUncertainty.exit, 0); assert.deepEqual(calls, ["clock"]);
+  assert.equal((await readdir(wrongUncertainty.output)).includes("source-identity.json"), false);
   const positive = await run("positive", "positive"); assert.equal(positive.exit, 0);
   assert.equal(uploaded, payload.length); assert.notEqual(partOrder[0], 1);
   const runtime = JSON.parse(await readFile(join(positive.output, "runtime-raw.json")));
