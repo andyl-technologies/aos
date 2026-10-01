@@ -8,9 +8,10 @@ use aos_sandbox::{
 };
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_protocol::{
-    ProviderRequestSequenceExpectationV1, SignedSourceProviderRequestV1,
-    SourceProviderDescriptorRole, SourceProviderMethod, VerifiedProviderIngressProjectionV1,
-    VerifiedProviderRequestV1, decode_acquire_request, decode_acquire_response,
+    AcquireSourceRequestV1, ProviderRequestSequenceExpectationV1, SignedSourceProviderRequestV1,
+    SourceProviderDescriptorRole, SourceProviderMethod, SourceResourceV1,
+    VerifiedProviderIngressProjectionV1, VerifiedProviderRequestV1,
+    decode_acquire_request, decode_acquire_response,
     decode_inventory_request, decode_release_request, digest_signed_request,
 };
 use aos_sandbox_source_provider_security::ProviderSessionSupersessionEvidenceV1;
@@ -26,13 +27,14 @@ use crate::ledger::native_completion::{
 };
 use crate::limits::{MAXIMUM_TRANSACTION_BYTES, MAXIMUM_TRANSACTION_RECORDS};
 use crate::model::{
-    AttemptKeyV1, AttemptRecordV1, HolderSessionHeadRecordV1, ProviderAttemptStateV1,
+    AcquisitionRecordV1, AttemptKeyV1, AttemptRecordV1, CatalogHeadRecordV1, HolderSessionHeadRecordV1,
+    ProviderAcquisitionStateV1, ProviderAttemptStateV1,
     ProviderRecoveryWorkV1, RecoveredProviderLedgerV1, WriterIdentityV1,
 };
 use crate::state::ProviderLedgerV1;
 use crate::{
-    DurableAcquireReplayV1, DurableCachedResponseV1, ProviderAdmissionDispositionV1,
-    ProviderLedgerError,
+    DurableAcquireReplayV1, DurableCachedResponseV1, NormalizedAcquisitionIntentV1,
+    ProviderAdmissionDispositionV1, ProviderLedgerError,
 };
 
 const TRANSACTION_ID_DOMAIN: &[u8] = b"aos.sandbox.source-provider.ledger.transaction-id.v1\0";
@@ -734,8 +736,22 @@ pub(crate) fn validate_session_capacity(
     existing: &Option<HolderSessionHeadRecordV1>,
     projection: &VerifiedProviderIngressProjectionV1,
 ) -> Result<(), ProviderLedgerError> {
+    validate_session_capacity_at(&ledger.configuration, &ledger.recovered, existing, projection)
+}
+
+/// Reuses the unchanged session-count policy under the genuine original owner.
+///
+/// # Errors
+///
+/// Rejects exhausted current-holder or retained-session identity limits.
+pub(crate) fn validate_session_capacity_at(
+    configuration: &crate::state::ProtectedProviderConfigurationV1,
+    recovered: &crate::model::RecoveredProviderLedgerV1,
+    existing: &Option<HolderSessionHeadRecordV1>,
+    projection: &VerifiedProviderIngressProjectionV1,
+) -> Result<(), ProviderLedgerError> {
     if existing.is_none()
-        && ledger.recovered.sessions.len() >= ledger.configuration.limits().maximum_holders()
+        && recovered.sessions.len() >= configuration.limits().maximum_holders()
     {
         return Err(ProviderLedgerError::LimitExceeded("holder sessions"));
     }
@@ -743,8 +759,8 @@ pub(crate) fn validate_session_capacity(
         .as_ref()
         .is_none_or(|session| session.session_binding != projection.session_binding());
     if creates_history
-        && ledger.recovered.session_history.len()
-            >= ledger.configuration.limits().maximum_retained_identities()
+        && recovered.session_history.len()
+            >= configuration.limits().maximum_retained_identities()
     {
         return Err(ProviderLedgerError::LimitExceeded(
             "retained session identities",
@@ -860,14 +876,9 @@ pub(crate) fn prepare_session(
 ) -> Result<(HolderSessionHeadRecordV1, bool), ProviderLedgerError> {
     match existing {
         Some(existing) if existing.session_binding == projection.session_binding() => {
-            if (
-                existing.provider_process_id,
-                existing.provider_start_time_ticks,
-            ) != provider_execution_identity
-            {
-                return Err(ProviderLedgerError::Equivocation);
-            }
-            Ok((existing, false))
+            prepare_original_session(
+                projection, provider_execution_identity, Some(existing), first_request_sequence,
+            )
         }
         Some(existing) => {
             let digest = validate_supersession(ledger, projection, &existing)?;
@@ -879,6 +890,35 @@ pub(crate) fn prepare_session(
                 first_request_sequence,
             )?;
             Ok((session, true))
+        }
+        None => prepare_original_session(
+            projection, provider_execution_identity, None, first_request_sequence,
+        ),
+    }
+}
+
+/// Reuses genuine same-Session or absence preparation without supersession.
+///
+/// # Errors
+///
+/// Rejects a different Session, execution identity or invalid new-session data.
+pub(crate) fn prepare_original_session(
+    projection: &VerifiedProviderIngressProjectionV1,
+    provider_execution_identity: (u32, u64),
+    existing: Option<HolderSessionHeadRecordV1>,
+    first_request_sequence: u64,
+) -> Result<(HolderSessionHeadRecordV1, bool), ProviderLedgerError> {
+    match existing {
+        Some(existing) => {
+            if existing.session_binding != projection.session_binding()
+                || (
+                    existing.provider_process_id,
+                    existing.provider_start_time_ticks,
+                ) != provider_execution_identity
+            {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            Ok((existing, false))
         }
         None => Ok((
             new_session_from_projection(
@@ -1151,6 +1191,62 @@ pub(crate) fn classify_attempt(
         ProviderAttemptStateV1::Retired => Err(ProviderLedgerError::InvalidTransition(
             "retired or dead-session replay",
         )),
+    }
+}
+
+/// Forms initial Applying DATA without performing admission or journal effects.
+///
+/// The ordinary path preserves zero selection sentinels when no resource is
+/// selected; the genuine original path supplies its retained selected resource.
+pub(crate) fn reserved_acquisition(
+    projection: &VerifiedProviderIngressProjectionV1,
+    request: &AcquireSourceRequestV1,
+    attempt: &AttemptRecordV1,
+    catalog: &CatalogHeadRecordV1,
+    plan: &crate::backend::AcquirePlanV1,
+    normalized_intent: NormalizedAcquisitionIntentV1,
+    selected_resource: Option<&SourceResourceV1>,
+) -> AcquisitionRecordV1 {
+    let zero_digest = ObjectDigest::from_bytes([0; 32]);
+
+    AcquisitionRecordV1 {
+        revision: 1,
+        state: ProviderAcquisitionStateV1::Applying,
+        provider: projection.provider_authority().clone(),
+        holder: projection.root_mount_authority().clone(),
+        acquisition_id: request.acquisition_id(),
+        acquisition_sequence: request.acquisition_sequence(),
+        effect_id: plan.effect_id(),
+        normalized_intent,
+        effect_attempt_digest: attempt.attempt_digest,
+        current_attempt_digest: attempt.attempt_digest,
+
+        lease_attempt_digest: None,
+        lease_issue_generation: 0,
+        lease_id: None,
+        lease_digest: None,
+        lease_history: Vec::new(),
+
+        resource_namespace_digest: projection.resource_namespace_digest(),
+        resource_id: selected_resource.map_or([0; 32], SourceResourceV1::resource_id),
+        resource_generation: selected_resource.map_or(0, SourceResourceV1::resource_generation),
+        resource_digest: selected_resource.map_or(zero_digest, SourceResourceV1::resource_digest),
+        catalog_generation: catalog.catalog_generation,
+        catalog_digest: catalog.catalog_digest,
+        selection_generation: selected_resource.map_or(0, SourceResourceV1::selection_generation),
+        selection_digest: selected_resource.map_or(zero_digest, SourceResourceV1::selection_digest),
+
+        proof_class: 0,
+        proof_digest: zero_digest,
+        resource_commitment: zero_digest,
+        backend_id: plan.backend_id(),
+        backend_lineage_digest: plan.lineage_digest(),
+        native_no_dispatch_reservation_digest: None,
+        backend_evidence: None,
+        reopen_identity: None,
+        source_root: None,
+        release_effect_id: None,
+        signed_lease: Vec::new(),
     }
 }
 
@@ -1456,11 +1552,39 @@ fn prepare_mutations_with_shape(
             .map(|(key, value)| (key.as_slice(), value.as_slice())),
         validation_configuration.unwrap_or(&ledger.configuration),
     )?;
+    let (transaction_id, digest) = canonical_owner_transaction_id(purpose, &records)?;
+    let journal_records = records
+        .into_iter()
+        .map(|(key, value)| match value {
+            Some(value) => JournalRecord::put(RecordNamespace::SourceProviderAuthority, key, value),
+            None => JournalRecord::delete(RecordNamespace::SourceProviderAuthority, key),
+        })
+        .collect();
+    let transaction = JournalTransaction::new(transaction_id, journal_records)?;
+    Ok(PreparedLedgerMutationV1 {
+        transaction,
+        digest: ObjectDigest::from_bytes(digest),
+        prospective_recovered,
+    })
+}
+
+/// Reuses the canonical owner-transaction identity without granting a mutation.
+///
+/// # Errors
+///
+/// Rejects an invalid purpose, canonical record digest or zero transaction ID.
+pub(crate) fn canonical_owner_transaction_id(
+    purpose: &[u8],
+    records: &[(Vec<u8>, Option<Vec<u8>>)],
+) -> Result<([u8; 16], [u8; 32]), ProviderLedgerError> {
+    if purpose.is_empty() || purpose.len() > 128 {
+        return Err(ProviderLedgerError::LimitExceeded("transaction purpose bytes"));
+    }
     let mut hasher = Sha256::new();
     hasher.update(TRANSACTION_ID_DOMAIN);
     hasher.update((purpose.len() as u32).to_be_bytes());
     hasher.update(purpose);
-    for (key, value) in &records {
+    for (key, value) in records {
         hasher.update((key.len() as u32).to_be_bytes());
         hasher.update(key);
         match value {
@@ -1480,19 +1604,7 @@ fn prepare_mutations_with_shape(
     if transaction_id == [0; 16] {
         return Err(ProviderLedgerError::Corrupt("zero transaction identity"));
     }
-    let journal_records = records
-        .into_iter()
-        .map(|(key, value)| match value {
-            Some(value) => JournalRecord::put(RecordNamespace::SourceProviderAuthority, key, value),
-            None => JournalRecord::delete(RecordNamespace::SourceProviderAuthority, key),
-        })
-        .collect();
-    let transaction = JournalTransaction::new(transaction_id, journal_records)?;
-    Ok(PreparedLedgerMutationV1 {
-        transaction,
-        digest: ObjectDigest::from_bytes(digest),
-        prospective_recovered,
-    })
+    Ok((transaction_id, digest))
 }
 
 fn synchronize_session_history_mutations(

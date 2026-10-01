@@ -68,7 +68,7 @@ fn first_birth_cannot_substitute_an_empty_ingress_or_later_control_inputs() {
     assert!(original_pair_inputs(true, &ingress, Some(&controls)).is_err());
     assert!(original_pair_inputs(false, &ingress, Some(&controls)).is_err());
     assert!(ingress.borrowed_pair_v5().is_err());
-    assert!(!OriginalJournalV5::default().baseline_pending);
+    assert!(!OriginalJournalV5::default().history.baseline_pending);
 }
 
 // These vectors exercise the actual metadata latch used by owner cleanup.
@@ -76,10 +76,10 @@ fn first_birth_cannot_substitute_an_empty_ingress_or_later_control_inputs() {
 #[test]
 fn pending_first_birth_failure_preserves_identity_for_repeated_cleanup() {
     for already_failed in [false, true] {
-        let mut original = OriginalJournalV5 {
+        let mut original = OriginalJournalHistoryV5 {
             baseline_pending: true,
             failed: already_failed,
-            ..OriginalJournalV5::default()
+            ..OriginalJournalHistoryV5::default()
         };
 
         assert!(original.fail_pending_baseline());
@@ -93,7 +93,7 @@ fn pending_first_birth_failure_preserves_identity_for_repeated_cleanup() {
 
 #[test]
 fn completed_historical_baseline_is_not_failed_by_first_birth_cleanup() {
-    let mut original = OriginalJournalV5::default();
+    let mut original = OriginalJournalHistoryV5::default();
 
     assert!(!original.fail_pending_baseline());
 
@@ -108,10 +108,10 @@ fn completed_historical_baseline_is_not_failed_by_first_birth_cleanup() {
 #[test]
 fn completed_baseline_preserves_retained_metadata_and_releases_failure_identity() {
     let acquisition = ObjectDigest::from_bytes([7; 32]);
-    let mut original = OriginalJournalV5 {
+    let mut original = OriginalJournalHistoryV5 {
         baseline_pending: true,
         projection_bytes: 123,
-        ..OriginalJournalV5::default()
+        ..OriginalJournalHistoryV5::default()
     };
     original.admissions.insert(acquisition, ([8; 16], 9));
 

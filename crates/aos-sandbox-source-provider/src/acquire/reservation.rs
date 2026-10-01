@@ -388,56 +388,15 @@ pub(crate) fn reserve_acquire(
         kernel_coupled: normalized_intent.kernel_coupled(),
         backend_id,
     };
-    let acquisition = AcquisitionRecordV1 {
-        revision: 1,
-        state: ProviderAcquisitionStateV1::Applying,
-        provider: projection.provider_authority().clone(),
-        holder: projection.root_mount_authority().clone(),
-        acquisition_id: request.acquisition_id(),
-        acquisition_sequence: request.acquisition_sequence(),
-        effect_id,
+    let acquisition = crate::transaction::reserved_acquisition(
+        projection,
+        request,
+        &attempt,
+        &ledger.recovered.catalog,
+        &acquire_plan,
         normalized_intent,
-        effect_attempt_digest: attempt.attempt_digest,
-        current_attempt_digest: attempt.attempt_digest,
-        lease_attempt_digest: None,
-        lease_issue_generation: 0,
-        lease_id: None,
-        lease_digest: None,
-        lease_history: Vec::new(),
-        resource_namespace_digest: projection.resource_namespace_digest(),
-        resource_id: selected_resource
-            .as_ref()
-            .map_or([0; 32], |resource| resource.resource_id()),
-        resource_generation: selected_resource
-            .as_ref()
-            .map_or(0, |resource| resource.resource_generation()),
-        resource_digest: selected_resource
-            .as_ref()
-            .map_or(ObjectDigest::from_bytes([0; 32]), |resource| {
-                resource.resource_digest()
-            }),
-        catalog_generation: ledger.recovered.catalog.catalog_generation,
-        catalog_digest: ledger.recovered.catalog.catalog_digest,
-        selection_generation: selected_resource
-            .as_ref()
-            .map_or(0, |resource| resource.selection_generation()),
-        selection_digest: selected_resource
-            .as_ref()
-            .map_or(ObjectDigest::from_bytes([0; 32]), |resource| {
-                resource.selection_digest()
-            }),
-        proof_class: 0,
-        proof_digest: ObjectDigest::from_bytes([0; 32]),
-        resource_commitment: ObjectDigest::from_bytes([0; 32]),
-        backend_id,
-        backend_lineage_digest: acquire_plan.lineage_digest(),
-        native_no_dispatch_reservation_digest: None,
-        backend_evidence: None,
-        reopen_identity: None,
-        source_root: None,
-        release_effect_id: None,
-        signed_lease: Vec::new(),
-    };
+        selected_resource.as_ref(),
+    );
     let mut records = vec![
         (attempt_key(&key), encode_attempt(&attempt)),
         (

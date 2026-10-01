@@ -1,8 +1,10 @@
-//! Same-owned Source prefix closure and metadata-only one-shot append bridge.
+//! Same-owned Source prefix authentication and resident original append custody.
 //!
 //! The fixed ledger and challenge owners remain held in that order. Archived
 //! durable A, captured role pins and genuinely current B authenticate the same
 //! actual cuts; no archived image enters Ready or restores an original flight.
+//! The private producer child uses this sole archive/prepare/readback bridge
+//! for Applying, Requested and ChallengeIssued, stopping before Storage dispatch.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -45,8 +47,17 @@ use crate::state::ProtectedProviderConfigurationV1;
 use crate::recovery::original_source_capacity::authenticate_archived_complete_cut_v5;
 use crate::zfs_hold_verifier::ProtectedStorageZfsHoldVerifierV1;
 
+pub(super) mod producer;
+use producer::{OriginalProducerAppendV5, OriginalSourceProducerV5};
+
 #[derive(Default)]
 pub(super) struct OriginalJournalV5 {
+    history: OriginalJournalHistoryV5,
+    producer: Option<OriginalSourceProducerV5>,
+}
+
+#[derive(Default)]
+struct OriginalJournalHistoryV5 {
     archive: Option<ProtectedOriginalConfigurationArchiveV5>,
     storage: Option<ProtectedStorageZfsHoldVerifierV1>,
     current_capture: Option<RevalidatedProviderConfigurationV1>,
@@ -66,7 +77,7 @@ pub(super) struct OriginalJournalV5 {
     failed: bool,
 }
 
-impl OriginalJournalV5 {
+impl OriginalJournalHistoryV5 {
     fn fail_pending_baseline(&mut self) -> bool {
         if self.baseline_pending {
             self.failed = true;
@@ -216,7 +227,7 @@ impl<'owner> FirstBirthClosureGuardV5<'owner> {
         // Observation/prepare/preflight never clear this first-birth identity.
         if let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.owner.state.as_mut() {
             if let Some(original) = held.original.as_mut() {
-                original.complete_baseline();
+                original.history.complete_baseline();
             }
         }
         self.complete_checks();
@@ -298,8 +309,11 @@ impl FixedProviderOwnerV1 {
                 session,
                 publication,
                 OriginalJournalV5 {
-                    baseline_pending: true,
-                    recovered_execution_death,
+                    history: OriginalJournalHistoryV5 {
+                        baseline_pending: true,
+                        recovered_execution_death,
+                        ..OriginalJournalHistoryV5::default()
+                    },
                     ..OriginalJournalV5::default()
                 },
             ),
@@ -311,7 +325,7 @@ impl FixedProviderOwnerV1 {
         let pending = match self.state.as_mut() {
             Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) => {
                 if let Some(original) = held.original.as_mut() {
-                    original.fail_pending_baseline()
+                    original.history.fail_pending_baseline()
                 } else {
                     false
                 }
@@ -346,7 +360,7 @@ impl FixedProviderOwnerV1 {
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
             return Err(ProviderLedgerError::InvalidTransition("original Source owner is not held"));
         };
-        let original = held.original.get_or_insert_with(OriginalJournalV5::default);
+        let original = &mut held.original.get_or_insert_with(OriginalJournalV5::default).history;
         if original.failed {
             return Err(ProviderLedgerError::RuntimePoisoned);
         }
@@ -430,30 +444,38 @@ impl FixedProviderOwnerV1 {
         checked.map(|()| true)
     }
 
-    /// Prepares metadata only, retaining controls and input before any fallible work.
+    /// Prepares the already resident append without moving its original custody.
     pub(super) fn prepare_original_journal_append_v5(
         &mut self,
-        owners: &mut Option<JournalTransaction>,
-        controls: &mut Option<OriginalSourceControlInputsV5>,
-        slot: &mut Option<PreparedSourceOriginalV5>,
+        step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
         let mut guard = FirstBirthClosureGuardV5::new(self);
-        guard.owner.park_first_original_runtime_v5();
-        PreparedSourceOriginalV5::park(owners, controls, slot)?;
-        let retained = slot.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?;
-        let result = guard.owner.prepare_original_journal_inner_v5(retained);
+        let result = guard.owner.prepare_original_journal_inner_v5(step);
 
         if result.is_err() {
-            retained.failed = true;
+            if let Ok(retained) = guard.owner.retained_original_append_mut_v5(step) {
+                retained.failed = true;
+            }
         } else {
             guard.complete_checks();
         }
         result
     }
 
+    fn retained_original_append_mut_v5(
+        &mut self,
+        step: OriginalProducerAppendV5,
+    ) -> Result<&mut PreparedSourceOriginalV5, ProviderLedgerError> {
+        let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+            return Err(ProviderLedgerError::Unavailable);
+        };
+        held.original.as_mut().and_then(|original| original.producer.as_mut())
+            .ok_or(ProviderLedgerError::Unavailable)?.append_mut(step)
+    }
+
     fn prepare_original_journal_inner_v5(
         &mut self,
-        retained: &mut PreparedSourceOriginalV5,
+        step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
         self.retain_first_original_runtime_v5()?;
         self.observe_original_journal_v5()?;
@@ -461,6 +483,9 @@ impl FixedProviderOwnerV1 {
             return Err(ProviderLedgerError::Unavailable);
         };
         let original = held.original.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let history = &mut original.history;
+        let retained = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?
+            .append_mut(step)?;
         let projection = held.session.current_projection()?;
         retained.session = Some(projection.session_binding());
         let challenges = self.hold_challenges.original_history_v5()?;
@@ -469,17 +494,18 @@ impl FixedProviderOwnerV1 {
         authority.prepare(&mut retained.owners, &mut retained.sandbox)?;
         let prepared = retained.sandbox.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let comparison = prepared.comparison().ok_or(ProviderLedgerError::Unavailable)?;
-        if original.baseline_pending
+        if history.baseline_pending
             && !comparison.owner_edge().is_some_and(|edge| edge.kind() == SourceCapacityOwnerEdgeKindV5::Applying)
         {
             return Err(ProviderLedgerError::InvalidTransition("first original cut is not Applying"));
         }
-        let durable = Arc::clone(original.durable.as_ref().ok_or(ProviderLedgerError::Unavailable)?);
+
+        let durable = Arc::clone(history.durable.as_ref().ok_or(ProviderLedgerError::Unavailable)?);
         retained.durable = Some(Arc::clone(&durable));
-        let archive = original.archive.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?;
-        let capture = original.current_capture.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let archive = history.archive.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let capture = history.current_capture.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let catalog = aos_sandbox_source_provider_security::verify_catalog_publication(capture, &held.publication)?;
-        let current = original.current.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let current = history.current.as_ref().ok_or(ProviderLedgerError::RuntimePoisoned)?;
         let eligibility = archive.capture_deployment(
             capture,
             &catalog,
@@ -498,12 +524,12 @@ impl FixedProviderOwnerV1 {
                 .iter().find(|origin| origin.applying_transaction().id() == prepared.transaction().id())
                 .ok_or(ProviderLedgerError::Equivocation)?;
             let pair = original_pair_inputs(
-                original.baseline_pending, &self.original_ingress, retained.controls.as_ref(),
+                history.baseline_pending, &self.original_ingress, retained.controls.as_ref(),
             )?;
             require_original_pair(
                 &mut held.session, pair.0, pair.1, admission, comparison.before(), &durable, current,
             )?;
-            let storage = original.storage.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+            let storage = history.storage.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
             retained.origin = Some(archive.install_origin(
                 &durable, admission, subject.transaction().1, storage.original_enrollment_v5()?,
             )?);
@@ -516,7 +542,7 @@ impl FixedProviderOwnerV1 {
         )?);
 
         authenticate_candidate(
-            original,
+            history,
             prepared,
             retained.reference.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
             retained.eligibility.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
@@ -528,16 +554,18 @@ impl FixedProviderOwnerV1 {
         Ok(())
     }
 
-    /// Rechecks Source and Sandbox under the same owning pair before append.
+    /// Rechecks Source and Sandbox while the original append remains resident.
     pub(super) fn preflight_original_journal_append_v5(
         &mut self,
-        retained: &mut PreparedSourceOriginalV5,
+        step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
         let mut guard = FirstBirthClosureGuardV5::new(self);
-        let checked = guard.owner.preflight_original_journal_inner_v5(retained);
+        let checked = guard.owner.preflight_original_journal_inner_v5(step);
 
         if checked.is_err() {
-            retained.failed = true;
+            if let Ok(retained) = guard.owner.retained_original_append_mut_v5(step) {
+                retained.failed = true;
+            }
         } else {
             guard.complete_checks();
         }
@@ -546,64 +574,73 @@ impl FixedProviderOwnerV1 {
 
     fn preflight_original_journal_inner_v5(
         &mut self,
-        retained: &mut PreparedSourceOriginalV5,
+        step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
-        let checked = (|| {
-            if retained.failed || retained.attempted {
-                return Err(ProviderLedgerError::RuntimePoisoned);
-            }
-            self.observe_original_journal_v5()?;
-            let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
-                return Err(ProviderLedgerError::Unavailable);
-            };
-            let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
-            let projection = held.session.current_projection()?;
-            if retained.session != Some(projection.session_binding()) {
-                return Err(ProviderLedgerError::Equivocation);
-            }
-            let challenges = self.hold_challenges.original_history_v5()?;
-            let authority = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
-                .claim_source_original_native_v5(&challenges)?;
-            let prepared = retained.sandbox.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
-            let reference = retained.reference.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
-            original.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?
-                .validate_references(reference, retained.origin.as_ref())?;
-            let applying = prepared.prospective_origins().and_then(|origins| {
-                origins.iter().find(|origin| origin.applying_transaction().id() == prepared.transaction().id())
-            });
-            if let Some(origin) = applying {
-                let pair = original_pair_inputs(
-                    original.baseline_pending, &self.original_ingress, retained.controls.as_ref(),
-                )?;
-                require_original_pair(
-                    &mut held.session, pair.0, pair.1, origin,
-                    prepared.comparison().ok_or(ProviderLedgerError::Unavailable)?.before(),
-                    retained.durable.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
-                    original.current.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
-                )?;
-            }
+        let retained = self.retained_original_append_mut_v5(step)?;
+        if retained.failed || retained.attempted {
+            return Err(ProviderLedgerError::RuntimePoisoned);
+        }
+        self.observe_original_journal_v5()?;
+        let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+            return Err(ProviderLedgerError::Unavailable);
+        };
+        let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let history = &mut original.history;
+        let retained = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?
+            .append_mut(step)?;
+        let projection = held.session.current_projection()?;
+        if retained.session != Some(projection.session_binding()) {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        let challenges = self.hold_challenges.original_history_v5()?;
+        let authority = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
+            .claim_source_original_native_v5(&challenges)?;
+        let prepared = retained.sandbox.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let reference = retained.reference.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        history.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?
+            .validate_references(reference, retained.origin.as_ref())?;
+        let applying = prepared.prospective_origins().and_then(|origins| {
+            origins.iter().find(|origin| origin.applying_transaction().id() == prepared.transaction().id())
+        });
+        if let Some(origin) = applying {
+            let pair = original_pair_inputs(
+                history.baseline_pending, &self.original_ingress, retained.controls.as_ref(),
+            )?;
+            require_original_pair(
+                &mut held.session, pair.0, pair.1, origin,
+                prepared.comparison().ok_or(ProviderLedgerError::Unavailable)?.before(),
+                retained.durable.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
+                history.current.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
+            )?;
+        }
 
-            let subject = authority.archive_subject(prepared.transaction())?;
-            authenticate_candidate(original, prepared, reference,
-                retained.eligibility.as_ref().ok_or(ProviderLedgerError::Unavailable)?, &subject,
-                &challenges, authority.configured_limits())?;
-            authority.preflight(prepared)?;
-            held.session.current_projection()?;
-            Ok(())
-        })();
-        checked
+        let subject = authority.archive_subject(prepared.transaction())?;
+        authenticate_candidate(
+            history,
+            prepared,
+            reference,
+            retained.eligibility.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
+            &subject,
+            &challenges,
+            authority.configured_limits(),
+        )?;
+        authority.preflight(prepared)?;
+        held.session.current_projection()?;
+        Ok(())
     }
 
-    /// Attempts one append and retains actual readback before all Source postchecks.
+    /// Attempts one resident append and keeps actual readback before postchecks.
     pub(super) fn commit_original_journal_append_v5(
         &mut self,
-        retained: &mut PreparedSourceOriginalV5,
+        step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
         let mut guard = FirstBirthClosureGuardV5::new(self);
-        let checked = guard.owner.commit_original_journal_inner_v5(retained);
+        let checked = guard.owner.commit_original_journal_inner_v5(step);
 
         if checked.is_err() {
-            retained.failed = true;
+            if let Ok(retained) = guard.owner.retained_original_append_mut_v5(step) {
+                retained.failed = true;
+            }
         } else {
             guard.complete_commit();
         }
@@ -612,48 +649,52 @@ impl FixedProviderOwnerV1 {
 
     fn commit_original_journal_inner_v5(
         &mut self,
-        retained: &mut PreparedSourceOriginalV5,
+        step: OriginalProducerAppendV5,
     ) -> Result<(), ProviderLedgerError> {
-        self.preflight_original_journal_append_v5(retained)?;
-        retained.attempted = true;
-        let checked = (|| {
-            let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
-                return Err(ProviderLedgerError::Unavailable);
-            };
-            let challenges = self.hold_challenges.original_history_v5()?;
-            let mut authority = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
-                .claim_source_original_native_v5(&challenges)?;
-            let appended = (|| {
-                authority.commit_prepared(
-                    retained.sandbox.as_mut().ok_or(ProviderLedgerError::Unavailable)?,
-                    &mut retained.readback,
-                )?;
-                authority.validate_readback(
-                    retained.readback.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
-                )?;
+        self.preflight_original_journal_append_v5(step)?;
+        self.retained_original_append_mut_v5(step)?.attempted = true;
+        let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
+            return Err(ProviderLedgerError::Unavailable);
+        };
+        let challenges = self.hold_challenges.original_history_v5()?;
+        let mut authority = self.journal.as_mut().ok_or(ProviderLedgerError::RuntimePoisoned)?
+            .claim_source_original_native_v5(&challenges)?;
+        let appended = (|| {
+            let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+            let retained = original.producer.as_mut().ok_or(ProviderLedgerError::Unavailable)?
+                .append_mut(step)?;
+            authority.commit_prepared(
+                retained.sandbox.as_mut().ok_or(ProviderLedgerError::Unavailable)?,
+                &mut retained.readback,
+            )?;
+            authority.validate_readback(
+                retained.readback.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
+            )?;
 
-                let original = held.original.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
-                refresh_current(original, &mut held.session, &held.publication)?;
-                authenticate_replay(original, &authority.replayed_origins()?, &challenges, authority.configured_limits())?;
-                original.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?.validate_references(
-                    retained.reference.as_ref().ok_or(ProviderLedgerError::Unavailable)?, retained.origin.as_ref())?;
-                held.session.current_projection()?;
-                Ok(())
-            })();
-            if appended.is_err() {
-                authority.poison_after_owner_failure();
-                if let Some(original) = held.original.as_mut() {
-                    original.failed = true;
-                }
-            }
-            appended
+            let history = &mut original.history;
+            refresh_current(history, &mut held.session, &held.publication)?;
+            authenticate_replay(
+                history, &authority.replayed_origins()?, &challenges, authority.configured_limits(),
+            )?;
+            history.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?.validate_references(
+                retained.reference.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
+                retained.origin.as_ref(),
+            )?;
+            held.session.current_projection()?;
+            Ok(())
         })();
-        checked
+        if appended.is_err() {
+            authority.poison_after_owner_failure();
+            if let Some(original) = held.original.as_mut() {
+                original.history.failed = true;
+            }
+        }
+        appended
     }
 }
 
 fn refresh_current(
-    original: &mut OriginalJournalV5,
+    original: &mut OriginalJournalHistoryV5,
     session: &mut aos_sandbox_source_provider_security::CurrentProviderIngressSessionV1,
     publication: &[u8],
 ) -> Result<(), ProviderLedgerError> {
@@ -744,7 +785,7 @@ fn require_original_pair(
 }
 
 fn authenticate_current_prefix(
-    original: &mut OriginalJournalV5,
+    original: &mut OriginalJournalHistoryV5,
     replay: &SourceOriginalReplayViewV5<'_>,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
     limits: aos_sandbox::JournalLimits,
@@ -781,7 +822,7 @@ fn authenticate_current_prefix(
 }
 
 fn authenticate_replay(
-    original: &mut OriginalJournalV5,
+    original: &mut OriginalJournalHistoryV5,
     replay: &SourceOriginalReplayViewV5<'_>,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
     limits: aos_sandbox::JournalLimits,
@@ -863,7 +904,7 @@ fn authenticate_replay(
 }
 
 fn authenticate_candidate(
-    original: &mut OriginalJournalV5,
+    original: &mut OriginalJournalHistoryV5,
     prepared: &PreparedOriginalSourceAppendV5,
     reference: &ProtectedOriginalCutReferenceV5,
     eligibility: &Arc<ProtectedOriginalDeploymentV5>,

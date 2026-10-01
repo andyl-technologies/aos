@@ -51,11 +51,18 @@ pub(crate) struct StagedZfsHoldChallengeV1 {
     record: ChallengeRecordV1,
     transaction: JournalTransaction,
     preflight: ProtectedJournalPreflight,
+    attempted: bool,
+    original_readback: Option<Vec<u8>>,
 }
 
 impl StagedZfsHoldChallengeV1 {
     pub(crate) const fn record(&self) -> ChallengeRecordV1 {
         self.record
+    }
+
+    /// Borrows the original bytes actually read back after this staged append.
+    pub(crate) fn original_readback_v5(&self) -> Option<&[u8]> {
+        self.original_readback.as_deref()
     }
 }
 
@@ -127,6 +134,11 @@ enum ChallengeJournalLocationV1 {
     Fixed,
     #[cfg(test)]
     Fixture,
+}
+
+enum ChallengeReadbackCustodyV5 {
+    Legacy,
+    RetainOriginal,
 }
 
 impl ProtectedZfsHoldChallengesV1 {
@@ -223,13 +235,27 @@ impl ProtectedZfsHoldChallengesV1 {
             record,
             transaction,
             preflight,
+            attempted: false,
+            original_readback: None,
         })
     }
 
     fn commit_staged(
         &mut self,
-        staged: StagedZfsHoldChallengeV1,
+        mut staged: StagedZfsHoldChallengeV1,
     ) -> Result<ChallengeRecordV1, ProviderLedgerError> {
+        self.commit_staged_borrowed(&mut staged, ChallengeReadbackCustodyV5::Legacy)
+    }
+
+    /// Keeps the actual staged transaction resident for the original-only caller.
+    fn commit_staged_borrowed(
+        &mut self,
+        staged: &mut StagedZfsHoldChallengeV1,
+        custody: ChallengeReadbackCustodyV5,
+    ) -> Result<ChallengeRecordV1, ProviderLedgerError> {
+        if staged.attempted {
+            return Err(ProviderLedgerError::InvalidTransition("challenge append already attempted"));
+        }
         let (_, attempts) = self.validate_records()?;
         if attempts.contains_key(&(
             staged.record.provider_id,
@@ -249,15 +275,68 @@ impl ProtectedZfsHoldChallengesV1 {
             &staged.preflight,
             std::slice::from_ref(&staged.transaction),
         )?;
+        staged.attempted = true;
         authority.commit(&staged.transaction)?;
         let key = key(staged.record.challenge.nonce);
         let retained = authority
             .get(&key)?
             .ok_or(ProviderLedgerError::RuntimePoisoned)?;
+        let retained = match custody {
+            ChallengeReadbackCustodyV5::Legacy => retained,
+            ChallengeReadbackCustodyV5::RetainOriginal => {
+                staged.original_readback = Some(retained.to_vec());
+                staged.original_readback.as_deref().ok_or(ProviderLedgerError::RuntimePoisoned)?
+            }
+        };
         if ChallengeRecordV1::decode(&key, retained)? != staged.record {
             return Err(ProviderLedgerError::RuntimePoisoned);
         }
         Ok(staged.record)
+    }
+
+    /// Issues only the same staged nonce after genuine Source Requested readback.
+    ///
+    /// Source and challenge journals are not atomic. Their original owners stay
+    /// borrowed throughout this crossing, and the staged transaction/readback
+    /// remain in caller custody on every failure or unwind. No recovery or nonce
+    /// replacement is permitted on this hot path.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed original claims, stale Requested custody, expiry,
+    /// attempted issuance, insufficient capacity or failed append/readback.
+    pub(crate) fn commit_original_requested_v5(
+        &mut self,
+        source: &mut Journal,
+        requested: &aos_sandbox::journal::OriginalSourceProtectedReadbackV5,
+        signed: &aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2,
+        staged: &mut StagedZfsHoldChallengeV1,
+    ) -> Result<(), ProviderLedgerError> {
+        let claims = signed.request().claims();
+        if staged.record.challenge.nonce() != claims.attempt().0
+            || staged.record.challenge.attempt_digest() != claims.attempt().1
+            || (staged.record.provider_id, staged.record.acquisition_id)
+                != claims.provider_acquisition()
+            || (staged.record.holder_id, staged.record.session_binding) != claims.holder_session()
+            || (staged.record.binding_digest, staged.record.publication_head) != claims.selection()
+            || staged.record.challenge.validity() != claims.validity()
+        {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        {
+            let history = self.original_history_v5()?;
+            source.complete_source_original_replay_v5(&history)?;
+            source.claim_source_original_native_v5(&history)?
+                .require_original_requested_readback_v5(requested, signed)?;
+        }
+
+        self.commit_staged_borrowed(staged, ChallengeReadbackCustodyV5::RetainOriginal)?;
+
+        let history = self.original_history_v5()?;
+        source.complete_source_original_replay_v5(&history)?;
+        source.claim_source_original_native_v5(&history)?
+            .require_original_requested_readback_v5(requested, signed)?;
+        Ok(())
     }
 
     /// Appends or recovers only the nonce already retained in protected Requested.

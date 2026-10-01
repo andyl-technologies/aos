@@ -29,7 +29,9 @@ use super::{
     measure_appends_with_prefixes, validate_transaction,
 };
 use super::super::{
-    NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5, invalid,
+    NativeHeldCapacityRequestV3, OriginalSourceCapacityBudgetsV5,
+    OriginalSourceCapacityRecordV5, ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5,
+    invalid,
 };
 #[cfg(test)]
 use super::super::check_transfer;
@@ -74,6 +76,43 @@ pub(in crate::journal) struct OriginalSourceGeometryDataV5 {
 }
 
 impl OriginalSourceGeometryDataV5 {
+    /// Derives initial envelope DATA without inventing a provisionally funded floor.
+    ///
+    /// The canonical floor's fixed portion and reservation-key codec determine
+    /// its width. The actual retained provenance supplies the variable portion.
+    /// All physical admission and opened headroom checks remain with the writer.
+    pub(in crate::journal) fn measure_initial_envelopes(
+        continuation: &OriginalSourceContinuationDataV5,
+        limits: JournalLimits,
+    ) -> Result<OriginalSourceCapacityBudgetsV5, JournalError> {
+        if continuation.prefix() != OriginalSourceContinuationPrefixV5::Applying
+            || continuation.original().is_none()
+        {
+            return Err(invalid("original Source initial measurement requires Applying"));
+        }
+        let fixed_width = ORIGINAL_SOURCE_CAPACITY_MAXIMUM_VALUE_BYTES_V5
+            - aos_sandbox_source_provider_ledger::ledger::native_completion::
+                MAXIMUM_ORIGINAL_SOURCE_PROVENANCE_BYTES_V5;
+        let floor_width = fixed_width
+            .checked_add(continuation.provenance().to_canonical_bytes().len())
+            .ok_or(JournalError::JournalTooLarge)?;
+        let key_width = super::super::super::reservation_key([0; 32]).len();
+        let owners = continuation.current_records().collect::<OwnerView<'_>>();
+        let measured = measure_envelopes(
+            continuation, &owners, limits, key_width, floor_width, true,
+        )?;
+        if measured.normal.transactions.max(measured.poison.transactions) != 20 {
+            return Err(invalid("original Source initial continuation count"));
+        }
+
+        Ok(OriginalSourceCapacityBudgetsV5 {
+            terminal_records: measured.normal.records,
+            terminal_bytes: measured.normal.append_bytes,
+            poison_records: measured.poison.records,
+            poison_bytes: measured.poison.append_bytes,
+        })
+    }
+
     /// Measures every reducer-derived branch without Journal usage or authority.
     ///
     /// # Errors
@@ -429,6 +468,47 @@ fn measure_remaining(
     validate_cold_capsule(typed_own_source, continuation)?;
     let floor = typed_own_source.to_journal_record()?;
     let floor_width = floor.value().ok_or(JournalError::InvalidTransaction)?.len();
+    let mut result = measure_envelopes(
+        continuation, owners, limits, floor.key().len(), floor_width, floor_present,
+    )?;
+    let normal = result.normal;
+    let poison = result.poison;
+    let transactions = normal.transactions.max(poison.transactions);
+    result.remaining = if transactions == 0 {
+        None
+    } else {
+        let mut request = typed_own_source.request();
+        request.future_transactions = transactions;
+        request.terminal_records = normal.records;
+        request.terminal_bytes = normal.append_bytes;
+        request.poison_records = poison.records;
+        request.poison_bytes = poison.append_bytes;
+        require_own_debt(typed_own_source.request(), request)?;
+        // The same constructor retains immutable origin, admission and bindings.
+        OriginalSourceCapacityRecordV5::new(
+            request,
+            typed_own_source.admission_transaction_id(),
+            typed_own_source.origin_budgets(),
+            typed_own_source.original_provenance().clone(),
+        )?;
+        if continuation.prefix() == OriginalSourceContinuationPrefixV5::Applying
+            && typed_own_source.request() != request
+        {
+            return Err(invalid("original Source initial envelope differs from complete geometry"));
+        }
+        Some(request)
+    };
+    Ok(result)
+}
+
+fn measure_envelopes(
+    continuation: &OriginalSourceContinuationDataV5,
+    owners: &OwnerView<'_>,
+    limits: JournalLimits,
+    floor_key_width: usize,
+    floor_width: usize,
+    floor_present: bool,
+) -> Result<OriginalSourceGeometryDataV5, JournalError> {
     let mut alternatives = Vec::new();
     let mut normal = NativeHeldCapacityGeometryV3::default();
     let mut poison = NativeHeldCapacityGeometryV3::default();
@@ -446,7 +526,7 @@ fn measure_remaining(
         let measured = coupled_measurement(
             measured,
             alternative,
-            floor.key().len(),
+            floor_key_width,
             floor_width,
             floor_present,
         )?;
@@ -471,37 +551,11 @@ fn measure_remaining(
         poison = normal;
     }
 
-    let transactions = normal.transactions.max(poison.transactions);
-    let remaining = if transactions == 0 {
-        None
-    } else {
-        let mut request = typed_own_source.request();
-        request.future_transactions = transactions;
-        request.terminal_records = normal.records;
-        request.terminal_bytes = normal.append_bytes;
-        request.poison_records = poison.records;
-        request.poison_bytes = poison.append_bytes;
-        require_own_debt(typed_own_source.request(), request)?;
-        // This private DATA constructor preserves immutable origin, admission,
-        // provenance and bindings. It supplies no physical admission receipt.
-        OriginalSourceCapacityRecordV5::new(
-            request,
-            typed_own_source.admission_transaction_id(),
-            typed_own_source.origin_budgets(),
-            typed_own_source.original_provenance().clone(),
-        )?;
-        if continuation.prefix() == OriginalSourceContinuationPrefixV5::Applying
-            && typed_own_source.request() != request
-        {
-            return Err(invalid("original Source initial envelope differs from complete geometry"));
-        }
-        Some(request)
-    };
     Ok(OriginalSourceGeometryDataV5 {
         alternatives,
         normal,
         poison,
-        remaining,
+        remaining: None,
         staged_peak_bytes,
         staged_peak_records,
         other_frames: 0,
