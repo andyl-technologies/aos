@@ -144,11 +144,6 @@ impl ToolingEnvironment {
         Sha256Digest::of_canonical(TOOLING_DOMAIN, &closure.to_owned())
     }
 
-    /// Returns the installed executors keyed by platform.
-    pub(super) fn executors(&self) -> &BTreeMap<Platform, Executor> {
-        &self.executors
-    }
-
     /// Renders one `PLATFORM=VALUE` specification per installed executor.
     ///
     /// # Errors
@@ -281,7 +276,7 @@ mod tests {
         )?;
 
         let tooling = ToolingEnvironment::from_closure(root.path())?;
-        let executors = tooling.executors();
+        let executors = &tooling.executors;
         assert_eq!(executors.len(), 2);
         assert_eq!(
             executors[&Platform::X86_64Linux].identity,

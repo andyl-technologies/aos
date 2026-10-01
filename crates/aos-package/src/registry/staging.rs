@@ -182,41 +182,29 @@ impl LocalStageStore {
         Ok(record.revision)
     }
 
-    /// Freezes the exact ready revision before publishing prepared pointers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for stale revisions or candidates that are not ready.
-    pub fn begin_release(&self, id: &str, revision: u64) -> Result<StageRecord> {
-        self.verify_inventory(id, revision)?;
-        self.transition(id, revision, StageState::Releasing, None)
-    }
-
-    /// Records successful publication of an exact frozen revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a version mismatch, stale revision, or invalid state.
-    pub fn mark_released(&self, id: &str, revision: u64, version: &str) -> Result<StageRecord> {
-        let record = self.show(id)?;
-        if record.revision.release_id != version {
-            bail!("stage release version does not match its frozen revision");
-        }
-        self.transition(
-            id,
-            revision,
-            StageState::Released,
-            Some(version.to_string()),
-        )
-    }
-
     /// Discards a mutable stage while retaining its roots through the grace period.
     ///
     /// # Errors
     ///
     /// Returns an error for stale, frozen, or released stages.
     pub fn discard(&self, id: &str, revision: u64) -> Result<StageRecord> {
-        self.transition(id, revision, StageState::Discarded, None)
+        crate::dry_run::refuse_mutation("discard a registry candidate")?;
+        let _lock = self.lock()?;
+        let mut record = self.show(id)?;
+        self.require_revision(&record, revision)?;
+        if !matches!(
+            record.state,
+            StageState::Draft | StageState::Ready | StageState::Discarded
+        ) {
+            bail!("invalid registry stage state transition");
+        }
+        if record.state != StageState::Discarded {
+            self.retire_revision_roots(id, revision)?;
+        }
+        record.state = StageState::Discarded;
+        record.released_version = None;
+        self.write_record(&record)?;
+        Ok(record)
     }
 
     /// Returns the local immutable bytes for an inventory digest.
@@ -305,43 +293,6 @@ impl LocalStageStore {
             bail!("mutable stage record differs from immutable revision");
         }
         Ok(Some(record))
-    }
-
-    fn transition(
-        &self,
-        id: &str,
-        revision: u64,
-        state: StageState,
-        version: Option<String>,
-    ) -> Result<StageRecord> {
-        crate::dry_run::refuse_mutation("change a candidate lifecycle state")?;
-        let _lock = self.lock()?;
-        let mut record = self.show(id)?;
-        self.require_revision(&record, revision)?;
-        let allowed = match state {
-            StageState::Ready => matches!(record.state, StageState::Draft | StageState::Ready),
-            StageState::Releasing => {
-                matches!(record.state, StageState::Ready | StageState::Releasing)
-            }
-            StageState::Released => {
-                matches!(record.state, StageState::Releasing | StageState::Released)
-            }
-            StageState::Discarded => matches!(
-                record.state,
-                StageState::Draft | StageState::Ready | StageState::Discarded
-            ),
-            StageState::Draft => false,
-        };
-        if !allowed {
-            bail!("invalid registry stage state transition");
-        }
-        if state == StageState::Discarded && record.state != StageState::Discarded {
-            self.retire_revision_roots(id, revision)?;
-        }
-        record.state = state;
-        record.released_version = version;
-        self.write_record(&record)?;
-        Ok(record)
     }
 
     fn require_revision(&self, record: &StageRecord, revision: u64) -> Result<()> {

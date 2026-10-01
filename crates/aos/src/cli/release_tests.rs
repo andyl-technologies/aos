@@ -642,6 +642,27 @@ fn channel_advance_names_a_ring_not_partitions() {
 }
 
 #[test]
+fn channel_commands_reject_the_retired_production_receipt_alias() {
+    for command in ["advance", "complete"] {
+        let error = match Cli::try_parse_from([
+            "aos",
+            "maintain",
+            "release",
+            "step",
+            "channel",
+            command,
+            "--production-receipt",
+            "receipt.json",
+        ]) {
+            Ok(_) => panic!("retired production receipt flag must be rejected"),
+            Err(error) => error,
+        };
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+}
+
+#[test]
 fn new_requires_registry_version_and_image_decisions() {
     assert!(
         Cli::try_parse_from([

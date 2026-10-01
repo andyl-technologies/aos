@@ -233,11 +233,6 @@ impl<'a> RegistryStorage<'a> {
         Self { backend }
     }
 
-    /// Returns the underlying backend for conditional mutable writes.
-    pub fn backend(&self) -> &'a dyn CacheBackend {
-        self.backend
-    }
-
     /// Checks exact remote byte identity before skipping an immutable upload.
     ///
     /// # Errors

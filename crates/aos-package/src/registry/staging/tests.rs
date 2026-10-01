@@ -185,7 +185,7 @@ async fn empty_destinations_never_create_ready_or_released_records() {
     assert!(
         fixture
             .store
-            .upload("candidate", 1, &[], &AuthOptions::default(), false)
+            .upload("candidate", 1, &[], &AuthOptions::default())
             .await
             .is_err()
     );
@@ -210,7 +210,6 @@ async fn missing_predecessor_rejects_before_freezing_or_writing_pointers() {
             1,
             &fixture.destinations(),
             &AuthOptions::default(),
-            false,
         )
         .await
         .unwrap();
@@ -251,13 +250,7 @@ async fn finalization_and_retry_import_exact_tag_without_moving_author_workspace
     ];
     fixture
         .store
-        .upload(
-            "candidate",
-            1,
-            &file_destination,
-            &AuthOptions::default(),
-            false,
-        )
+        .upload("candidate", 1, &file_destination, &AuthOptions::default())
         .await
         .unwrap();
     let released = fixture
@@ -346,7 +339,6 @@ async fn absent_bootstrap_and_destination_drift_fail_closed() {
                 1,
                 &[other.to_str().unwrap().into()],
                 &AuthOptions::default(),
-                false
             )
             .await
             .is_err()
@@ -379,11 +371,13 @@ async fn frozen_partial_publication_resumes_the_exact_revision() {
             1,
             &fixture.destinations(),
             &AuthOptions::default(),
-            false,
         )
         .await
         .unwrap();
-    fixture.store.begin_release("candidate", 1).unwrap();
+    // Simulate interruption after the publisher froze this exact ready revision.
+    let mut frozen = fixture.store.show("candidate").unwrap();
+    frozen.state = StageState::Releasing;
+    fixture.store.write_record(&frozen).unwrap();
     let listing = captured
         .revision
         .publication
@@ -439,7 +433,6 @@ async fn changed_advertisement_conflicts_before_any_pointer_effect() {
             1,
             &fixture.destinations(),
             &AuthOptions::default(),
-            false,
         )
         .await
         .unwrap();
@@ -518,7 +511,6 @@ async fn completed_release_retry_preserves_a_newer_publication() {
             1,
             &fixture.destinations(),
             &AuthOptions::default(),
-            false,
         )
         .await
         .unwrap();
@@ -576,13 +568,7 @@ async fn completed_release_retry_preserves_a_newer_publication() {
         .unwrap();
     fixture
         .store
-        .upload(
-            "next",
-            1,
-            &fixture.destinations(),
-            &AuthOptions::default(),
-            false,
-        )
+        .upload("next", 1, &fixture.destinations(), &AuthOptions::default())
         .await
         .unwrap();
     fixture

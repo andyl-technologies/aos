@@ -201,13 +201,12 @@ mod tests {
         db.upsert_staged_release(id, &revision(2, 'b'), 1, None, 20)
             .await
             .unwrap();
-        let historical = db
-            .staged_release_for_publication("publication")
+        let historical_state = db
+            .staged_publication_state("publication")
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(historical.state, "superseded");
-        assert_eq!(historical.revision, first);
+        assert_eq!(historical_state, "superseded");
     }
 
     #[tokio::test]
@@ -357,14 +356,17 @@ mod tests {
         let metadata = db
             .backend
             .query_opt(
-                "SELECT LENGTH(revision_json), document_bytes FROM staged_release_revisions
+                "SELECT document_chunks, document_bytes FROM staged_release_revisions
               WHERE registry_id = ?1 AND stage_id = ?2 AND revision = 1",
                 &vals![id, stage.id],
             )
             .await
             .unwrap()
             .unwrap();
-        assert_eq!(metadata.get::<i64>(0).unwrap(), 0);
+        assert_eq!(
+            metadata.get::<i64>(0).unwrap(),
+            storage.get::<i64>(1).unwrap()
+        );
         assert_eq!(
             metadata.get::<i64>(1).unwrap(),
             storage.get::<i64>(2).unwrap()
@@ -414,6 +416,57 @@ mod tests {
             .unwrap();
         assert!(db.staged_release(id, "candidate").await.unwrap().is_some());
     }
+
+    #[tokio::test]
+    async fn staged_releases_require_complete_chunked_documents() {
+        let (db, id) = database().await;
+        let stage = revision(1, 'a');
+        db.upsert_staged_release(id, &stage, 0, None, 10)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.staged_release(id, &stage.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .revision,
+            stage
+        );
+
+        db.backend
+            .execute(
+                "UPDATE staged_release_revisions SET document_chunks = 0
+                  WHERE registry_id = ?1 AND stage_id = ?2 AND revision = 1",
+                &vals![id, stage.id],
+            )
+            .await
+            .unwrap();
+        let error = db.staged_release(id, &stage.id).await.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("invalid staged document chunk count")
+        );
+
+        db.backend
+            .execute(
+                "UPDATE staged_release_revisions SET document_chunks = 1
+                  WHERE registry_id = ?1 AND stage_id = ?2 AND revision = 1",
+                &vals![id, stage.id],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "DELETE FROM staged_release_revision_chunks
+                  WHERE registry_id = ?1 AND stage_id = ?2 AND revision = 1",
+                &vals![id, stage.id],
+            )
+            .await
+            .unwrap();
+        let error = db.staged_release(id, &stage.id).await.unwrap_err();
+        assert!(error.to_string().contains("missing document chunks"));
+    }
 }
 
 /// Bounds one persisted UTF-8 page below every supported provider's row cap.
@@ -423,7 +476,7 @@ mod tests {
 /// See <https://developers.cloudflare.com/durable-objects/platform/limits/>.
 const STAGED_DOCUMENT_CHUNK_BYTES: usize = 256 * 1024;
 
-const STAGED_SELECT: &str = "SELECT stage.registry_id, revision.revision_json,
+const STAGED_SELECT: &str = "SELECT stage.registry_id,
     stage.state, stage.publication_id, stage.released_version, stage.created_at, stage.updated_at,
     revision.document_chunks, revision.document_bytes, revision.document_sha256, stage.stage_id, revision.revision
   FROM staged_releases stage JOIN staged_release_revisions revision
@@ -433,77 +486,74 @@ const STAGED_SELECT: &str = "SELECT stage.registry_id, revision.revision_json,
 impl Database {
     /// Reconstructs an exact revision from bounded ordered provider pages.
     async fn staged_record(&self, row: &Row) -> Result<StagedReleaseRecord> {
-        let mut json: String = row.get(1)?;
-        let count = usize::try_from(row.get::<i64>(7)?)?;
-        let byte_size = usize::try_from(row.get::<i64>(8)?)?;
+        let count = usize::try_from(row.get::<i64>(6)?)?;
+        let byte_size = usize::try_from(row.get::<i64>(7)?)?;
         let registry_id: i64 = row.get(0)?;
-        let stage_id: String = row.get(10)?;
-        let number: i64 = row.get(11)?;
-        if count == 0 {
-            anyhow::ensure!(
-                json.len() <= STAGED_DOCUMENT_CHUNK_BYTES,
-                "inline stage document exceeds provider limit"
-            );
-        } else {
-            let max = aos_registry_surface::staging::wire::MAX_DECODED_REVISION_BYTES;
-            anyhow::ensure!(
-                json.is_empty() && byte_size > 0 && byte_size <= max,
-                "invalid staged document length"
-            );
-            anyhow::ensure!(
-                count <= max / (STAGED_DOCUMENT_CHUNK_BYTES - 3) + 1,
-                "invalid staged document chunk count"
-            );
-            json = String::with_capacity(byte_size);
-            let mut ordinal = 0_usize;
-            while ordinal < count {
-                let chunks = self
-                    .backend
-                    .query(
-                        "SELECT ordinal, payload FROM staged_release_revision_chunks
+        let stage_id: String = row.get(9)?;
+        let number: i64 = row.get(10)?;
+        let max = aos_registry_surface::staging::wire::MAX_DECODED_REVISION_BYTES;
+        anyhow::ensure!(
+            byte_size > 0 && byte_size <= max,
+            "invalid staged document length"
+        );
+        anyhow::ensure!(
+            count > 0 && count <= max / (STAGED_DOCUMENT_CHUNK_BYTES - 3) + 1,
+            "invalid staged document chunk count"
+        );
+        let mut json = String::with_capacity(byte_size);
+        let mut ordinal = 0_usize;
+        while ordinal < count {
+            let chunks = self
+                .backend
+                .query(
+                    "SELECT ordinal, payload FROM staged_release_revision_chunks
                       WHERE registry_id = ?1 AND stage_id = ?2 AND revision = ?3 AND ordinal >= ?4
                       ORDER BY ordinal LIMIT 4",
-                        &vals![registry_id, stage_id, number, i64::try_from(ordinal)?],
-                    )
-                    .await?;
+                    &vals![registry_id, stage_id, number, i64::try_from(ordinal)?],
+                )
+                .await?;
+            anyhow::ensure!(
+                !chunks.is_empty(),
+                "staged revision is missing document chunks"
+            );
+            for chunk in chunks {
                 anyhow::ensure!(
-                    !chunks.is_empty(),
-                    "staged revision is missing document chunks"
+                    usize::try_from(chunk.get::<i64>(0)?)? == ordinal && ordinal < count,
+                    "staged revision chunks are not contiguous"
                 );
-                for chunk in chunks {
-                    anyhow::ensure!(
-                        usize::try_from(chunk.get::<i64>(0)?)? == ordinal && ordinal < count,
-                        "staged revision chunks are not contiguous"
-                    );
-                    let payload: String = chunk.get(1)?;
-                    anyhow::ensure!(
-                        !payload.is_empty() && payload.len() <= STAGED_DOCUMENT_CHUNK_BYTES,
-                        "invalid staged revision chunk size"
-                    );
-                    anyhow::ensure!(
-                        json.len()
-                            .checked_add(payload.len())
-                            .is_some_and(|size| size <= byte_size),
-                        "staged revision document exceeds declared length"
-                    );
-                    json.push_str(&payload);
-                    ordinal += 1;
-                }
+                let payload: String = chunk.get(1)?;
+                anyhow::ensure!(
+                    !payload.is_empty() && payload.len() <= STAGED_DOCUMENT_CHUNK_BYTES,
+                    "invalid staged revision chunk size"
+                );
+                anyhow::ensure!(
+                    json.len()
+                        .checked_add(payload.len())
+                        .is_some_and(|size| size <= byte_size),
+                    "staged revision document exceeds declared length"
+                );
+                json.push_str(&payload);
+                ordinal += 1;
             }
-            let extra = self.backend.query_opt(
-                "SELECT ordinal FROM staged_release_revision_chunks WHERE registry_id = ?1 AND stage_id = ?2 AND revision = ?3 AND ordinal >= ?4 LIMIT 1",
-                &vals![registry_id, stage_id, number, i64::try_from(count)?],
-            ).await?;
-            anyhow::ensure!(
-                extra.is_none() && json.len() == byte_size,
-                "staged revision document length does not match"
-            );
-            let digest: String = row.get(9)?;
-            anyhow::ensure!(
-                hex::encode(Sha256::digest(json.as_bytes())) == digest,
-                "staged revision document digest does not match"
-            );
         }
+        let extra = self
+            .backend
+            .query_opt(
+                "SELECT ordinal FROM staged_release_revision_chunks
+                  WHERE registry_id = ?1 AND stage_id = ?2 AND revision = ?3
+                    AND ordinal >= ?4 LIMIT 1",
+                &vals![registry_id, stage_id, number, i64::try_from(count)?],
+            )
+            .await?;
+        anyhow::ensure!(
+            extra.is_none() && json.len() == byte_size,
+            "staged revision document length does not match"
+        );
+        let digest: String = row.get(8)?;
+        anyhow::ensure!(
+            hex::encode(Sha256::digest(json.as_bytes())) == digest,
+            "staged revision document digest does not match"
+        );
         let revision: StageRevision =
             serde_json::from_str(&json).context("invalid persisted stage revision")?;
         anyhow::ensure!(
@@ -513,11 +563,11 @@ impl Database {
         Ok(StagedReleaseRecord {
             registry_id,
             revision,
-            state: row.get(2)?,
-            publication_id: row.get(3)?,
-            released_version: row.get(4)?,
-            created_at: row.get(5)?,
-            updated_at: row.get(6)?,
+            state: row.get(1)?,
+            publication_id: row.get(2)?,
+            released_version: row.get(3)?,
+            created_at: row.get(4)?,
+            updated_at: row.get(5)?,
         })
     }
 
@@ -692,31 +742,6 @@ impl Database {
                 ..Default::default()
             })
         }).collect()
-    }
-
-    /// Returns the stage associated with an ordinary publication.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for storage failure or a corrupt persisted revision.
-    pub async fn staged_release_for_publication(
-        &self,
-        publication_id: &str,
-    ) -> Result<Option<StagedReleaseRecord>> {
-        let row = self.backend.query_opt(
-            "SELECT stage.registry_id, revision.revision_json,
-                    CASE WHEN revision.revision = stage.current_revision THEN stage.state ELSE 'superseded' END,
-                    revision.publication_id, stage.released_version, stage.created_at, stage.updated_at,
-                    revision.document_chunks, revision.document_bytes, revision.document_sha256, stage.stage_id, revision.revision
-               FROM staged_releases stage JOIN staged_release_revisions revision
-                 ON revision.registry_id = stage.registry_id AND revision.stage_id = stage.stage_id
-              WHERE revision.publication_id = ?1",
-            &vals![publication_id],
-        ).await?;
-        match row {
-            Some(row) => Ok(Some(self.staged_record(&row).await?)),
-            None => Ok(None),
-        }
     }
 
     /// Reads a publication's draft lifecycle without loading its inventory.
@@ -907,8 +932,8 @@ impl Database {
             offset = end;
         }
         writes.push(CheckedStatement::exact(
-            "INSERT INTO staged_release_revisions (registry_id, stage_id, revision, revision_json, retire_after, publication_id, document_chunks, document_bytes, document_sha256)
-             VALUES (?1, ?2, ?3, '', NULL, ?4, ?5, ?6, ?7)",
+            "INSERT INTO staged_release_revisions (registry_id, stage_id, revision, retire_after, publication_id, document_chunks, document_bytes, document_sha256)
+             VALUES (?1, ?2, ?3, NULL, ?4, ?5, ?6, ?7)",
             vals![registry_id, revision.id, number, publication_id, i64::try_from(chunks.len())?, i64::try_from(json.len())?, hex::encode(Sha256::digest(json.as_bytes()))], 1,
         ));
         for (ordinal, payload) in chunks.into_iter().enumerate() {
