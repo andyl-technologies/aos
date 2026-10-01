@@ -373,8 +373,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   under the existing exclusion, retains its actual descriptor before repair,
   dispatches fixed present-key create-new and descriptor-bound range probes,
   and refuses an eligible successor with a stale whole CAPABILITIES preimage
-  before staging. Its eight actual startup cases await native execution on
-  the assembled source. Full fresh/Pending retention remains incomplete.
+  before staging. The assembled native library builds, and a focused native
+  process passes all eight startup cases and all 13 collector lease cases.
+  Cancellation separately checks the actual independently opened coordination
+  descriptor remains kernel-locked after the waiter is aborted. The probe gate
+  requires all eight exact startup selectors. These scoped results do not
+  qualify the full task; fresh/Pending retention remains incomplete.
   The verify-on-get, ranged-get and file-CAS gates now require the appropriate
   exact held-content selectors and reject missing tests. Complete effect routing
   remains pending.
