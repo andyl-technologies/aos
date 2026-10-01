@@ -69,6 +69,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 mod direct_upload;
+mod mirror_acceptance;
+
+pub use mirror_acceptance::{
+    activate_hybrid_mirror, HybridMirrorAcceptanceConfig, HybridMirrorTrustConfig,
+};
 
 /// Secret-free managed R2 configuration for the hybrid direct upload broker.
 pub use direct_upload::{
@@ -289,6 +294,8 @@ pub struct HybridDeployConfig {
     pub direct_upload_clock: Option<HybridDirectUploadClockConfig>,
     /// Stable independently installed reviewer and acceptance registry binding.
     pub direct_upload_trust: Option<HybridDirectUploadTrustConfig>,
+    /// Separate reviewer role and KV binding for measured mirror and pack purposes.
+    pub mirror_trust: Option<HybridMirrorTrustConfig>,
     /// Separate bounded queue bindings installed before qualification.
     pub direct_upload_queues: Option<HybridDirectUploadQueueConfig>,
     /// Optional checked acceptance for matching the intended deployment bindings.
@@ -462,6 +469,21 @@ pub fn render_hybrid_wrangler_toml(cfg: &HybridDeployConfig) -> Result<String> {
         !cfg.direct_upload_conformance || cfg.direct_upload.is_some(),
         "hosted SDK conformance requires managed R2 profile coordinates"
     );
+    if let Some(trust) = &cfg.mirror_trust {
+        trust.validate()?;
+        anyhow::ensure!(
+            cfg.direct_upload.is_some() && cfg.direct_upload_trust.is_some(),
+            "mirror trust requires managed R2 and independently installed direct trust"
+        );
+        direct_variables.push_str(&format!(
+            "HUB_MIRROR_QUALIFICATION_PUBLIC_KEY = {}\n",
+            toml_string(&trust.public_key),
+        ));
+        direct_bindings.push_str(&format!(
+            "\n[[kv_namespaces]]\nbinding = \"HUB_MIRROR_ACCEPTANCE\"\nid = {}\n",
+            toml_string(&trust.namespace_id),
+        ));
+    }
     if let Some(acceptance) = &cfg.direct_upload_acceptance {
         acceptance.validate(cfg)?;
     }
@@ -2002,6 +2024,7 @@ mod tests {
             serve_assets: true,
             direct_upload: None,
             direct_upload_clock: None,
+            mirror_trust: None,
             direct_upload_trust: None,
             direct_upload_queues: None,
             direct_upload_acceptance: None,

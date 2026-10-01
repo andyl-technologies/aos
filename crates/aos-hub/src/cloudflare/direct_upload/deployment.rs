@@ -119,6 +119,17 @@ impl ProtectedSecrets {
                 "hybrid Worker control keys must have separate material"
             );
         }
+        if cfg.mirror_trust.is_some() {
+            // Native deliberately uses this independently supplied guard role
+            // for both purpose-separated lookup protocols. Never alias the
+            // storage-work producer key or bypass the existing separation check.
+            if let Some((_, guard)) = entries
+                .iter()
+                .find(|(name, _)| *name == "HUB_DIRECT_UPLOAD_GUARD_KEY")
+            {
+                entries.push(("HUB_MIRROR_GUARD_KEY", guard.clone()));
+            }
+        }
         Ok(Self { entries })
     }
 
@@ -135,6 +146,9 @@ impl ProtectedSecrets {
                 "HUB_DIRECT_UPLOAD_R2_ACCESS_KEY_ID",
                 "HUB_DIRECT_UPLOAD_R2_SECRET_ACCESS_KEY",
             ]);
+        }
+        if cfg.mirror_trust.is_some() {
+            required.push("HUB_MIRROR_GUARD_KEY");
         }
         if cfg.direct_upload_conformance || cfg.direct_upload_qualification.is_some() {
             required.push("HUB_DIRECT_UPLOAD_CONFORMANCE_KEY");

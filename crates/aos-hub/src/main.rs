@@ -318,6 +318,8 @@ enum WorkerCommand {
     InstallHybrid(HybridDeployArgs),
     /// Publish independent acceptance for the exact unchanged deployed Worker.
     ActivateHybridDirectUpload(ActivateHybridDirectArgs),
+    /// Publish reviewed mirror and optional pack acceptance without redeploying.
+    ActivateHybridMirror(ActivateHybridMirrorArgs),
     /// Capture current protected direct upload bindings for independent review.
     InspectHybridDirectUpload(InspectHybridDirectArgs),
     /// Provision provider resources, deploy the Worker, and set its secrets.
@@ -387,6 +389,12 @@ struct HybridConfigArgs {
     /// Select the purpose-specific Cloudflare KV acceptance namespace ID.
     #[arg(long, requires = "direct_upload_qualification_public_key_file")]
     direct_upload_acceptance_namespace_id: Option<String>,
+    /// Read the independently installed mirror reviewer public key as hex text.
+    #[arg(long, requires = "mirror_acceptance_namespace_id")]
+    mirror_qualification_public_key_file: Option<PathBuf>,
+    /// Select the mirror and pack acceptance KV namespace ID.
+    #[arg(long, requires = "mirror_qualification_public_key_file")]
+    mirror_acceptance_namespace_id: Option<String>,
     /// Select the dedicated bulk verification queue name.
     #[arg(long, requires_all = ["direct_upload_metadata_queue", "direct_upload_maximum_parallel_objects"])]
     direct_upload_bulk_queue: Option<String>,
@@ -439,6 +447,18 @@ impl HybridConfigArgs {
             (None, None) => None,
             _ => anyhow::bail!(
                 "direct reviewer key and acceptance namespace must be selected together"
+            ),
+        };
+        let mirror_trust = match (
+            &self.mirror_qualification_public_key_file,
+            &self.mirror_acceptance_namespace_id,
+        ) {
+            (Some(path), Some(namespace)) => Some(
+                cloudflare::HybridMirrorTrustConfig::from_public_key_file(path, namespace.clone())?,
+            ),
+            (None, None) => None,
+            _ => anyhow::bail!(
+                "mirror reviewer key and acceptance namespace must be selected together"
             ),
         };
         let queues = match (
@@ -523,6 +543,7 @@ impl HybridConfigArgs {
                 .map(cloudflare::HybridDirectUploadClockConfig::from_file)
                 .transpose()?,
             direct_upload_trust: trust,
+            mirror_trust,
             direct_upload_queues: queues,
             direct_upload_acceptance: self
                 .direct_upload_acceptance_file
@@ -583,6 +604,21 @@ struct ActivateHybridDirectArgs {
     /// Authenticate current protected Worker bindings with the existing guard key.
     #[arg(long)]
     direct_upload_guard_key_file: PathBuf,
+}
+
+#[derive(Args)]
+struct ActivateHybridMirrorArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Authenticate the unchanged deployment with the existing Native-matched guard role.
+    #[arg(long)]
+    direct_upload_guard_key_file: PathBuf,
+    /// Read independently reviewed and signed hosted mirror evidence from JSON.
+    #[arg(long)]
+    mirror_acceptance_file: PathBuf,
+    /// Read separately signed pack evidence linked to this exact mirror artifact.
+    #[arg(long)]
+    mirror_pack_acceptance_file: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -1977,6 +2013,23 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         );
         return Ok(());
     }
+    if let WorkerCommand::ActivateHybridMirror(args) = &command {
+        let cfg = args.config.to_config()?;
+        let acceptance = cloudflare::HybridMirrorAcceptanceConfig::from_files(
+            &args.mirror_acceptance_file,
+            args.mirror_pack_acceptance_file.as_deref(),
+        )?;
+        let assets = cloudflare::Assets::from_env()?;
+        cloudflare::activate_hybrid_mirror(
+            &assets,
+            &cfg,
+            &args.direct_upload_guard_key_file,
+            &acceptance,
+        )
+        .await?;
+        println!("reviewed mirror purposes published for the unchanged Worker; runtime qualification remains independently required");
+        return Ok(());
+    }
     if let WorkerCommand::InspectHybridDirectUpload(args) = &command {
         let config = args.config.to_config()?;
         let selectors = args
@@ -2051,6 +2104,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         | WorkerCommand::DeployHybrid(_)
         | WorkerCommand::InstallHybrid(_)
         | WorkerCommand::ActivateHybridDirectUpload(_)
+        | WorkerCommand::ActivateHybridMirror(_)
         | WorkerCommand::InspectHybridDirectUpload(_)
         | WorkerCommand::RenderHybridConfig(_) => Provider::Cloudflare,
     };
@@ -2072,6 +2126,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         | WorkerCommand::DeployHybrid(_)
         | WorkerCommand::InstallHybrid(_)
         | WorkerCommand::ActivateHybridDirectUpload(_)
+        | WorkerCommand::ActivateHybridMirror(_)
         | WorkerCommand::InspectHybridDirectUpload(_)
         | WorkerCommand::RenderHybridConfig(_) => {}
         WorkerCommand::Provision(args) => {
@@ -2491,6 +2546,62 @@ mod production_vm_coverage {
     use clap::{Command as ClapCommand, CommandFactory as _, Parser as _};
 
     use super::{Cli, Command, WorkerCommand};
+
+    fn mirror_activation_arguments() -> Vec<&'static str> {
+        vec![
+            "aos-hub",
+            "worker",
+            "activate-hybrid-mirror",
+            "--name",
+            "storage-executor",
+            "--bucket",
+            "registry-private",
+            "--deployment-id",
+            "deployment-1",
+            "--external-url",
+            "https://hub.example.test",
+            "--native-origin-url",
+            "https://native.example.test",
+            "--direct-upload-guard-key-file",
+            "guard.key",
+            "--mirror-acceptance-file",
+            "reviewed-mirror.json",
+            "--mirror-qualification-public-key-file",
+            "reviewer.pub",
+            "--mirror-acceptance-namespace-id",
+            "mirror-review-registry",
+        ]
+    }
+
+    #[test]
+    fn mirror_activation_selects_reviewed_files_and_optional_pack_purpose() {
+        let mut arguments = mirror_activation_arguments();
+        arguments.extend(["--mirror-pack-acceptance-file", "reviewed-pack.json"]);
+
+        let parsed = Cli::try_parse_from(arguments).unwrap();
+        let Command::Worker {
+            command: WorkerCommand::ActivateHybridMirror(args),
+        } = parsed.command
+        else {
+            panic!("expected explicit mirror activation");
+        };
+        assert_eq!(
+            args.mirror_acceptance_file,
+            Path::new("reviewed-mirror.json")
+        );
+        assert_eq!(
+            args.mirror_pack_acceptance_file.as_deref(),
+            Some(Path::new("reviewed-pack.json"))
+        );
+        assert_eq!(args.direct_upload_guard_key_file, Path::new("guard.key"));
+    }
+
+    #[test]
+    fn mirror_trust_selection_requires_both_public_key_and_namespace() {
+        let mut arguments = mirror_activation_arguments();
+        arguments.truncate(arguments.len() - 2);
+        assert!(Cli::try_parse_from(arguments).is_err());
+    }
 
     fn parsed_container_capabilities(arguments: &[&str]) -> [bool; 5] {
         match Cli::try_parse_from(arguments).unwrap().command {

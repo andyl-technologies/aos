@@ -3,6 +3,72 @@
 use super::*;
 use crate::cloudflare::direct_upload::tests::config;
 
+fn mirror_config() -> HybridDeployConfig {
+    let mut cfg = config();
+    cfg.mirror_trust = Some(crate::cloudflare::HybridMirrorTrustConfig {
+        public_key: hex::encode(
+            ed25519_dalek::SigningKey::from_bytes(&[73; 32])
+                .verifying_key()
+                .as_bytes(),
+        ),
+        namespace_id: "mirror-review-registry".into(),
+    });
+    cfg
+}
+
+#[cfg(unix)]
+#[test]
+fn mirror_reuses_only_the_native_matched_guard_role_after_separation_checks() {
+    let cfg = mirror_config();
+    let directory = private_directory();
+    let producer = "p".repeat(64);
+    let guard = "g".repeat(64);
+    let mut files = HybridDeploySecretFiles {
+        storage_work_key_file: Some(secret(directory.path(), "producer", &producer)),
+        direct_upload_guard_key_file: Some(secret(directory.path(), "guard", &guard)),
+        ..HybridDeploySecretFiles::default()
+    };
+
+    let protected = ProtectedSecrets::read(&files, &cfg).unwrap();
+    let selected = |name| {
+        protected
+            .entries
+            .iter()
+            .find(|(key, _)| *key == name)
+            .unwrap()
+            .1
+            .as_str()
+    };
+    assert_eq!(selected("HUB_MIRROR_GUARD_KEY"), guard);
+    assert_eq!(selected("HUB_DIRECT_UPLOAD_GUARD_KEY"), guard);
+    assert_ne!(selected("HUB_STORAGE_WORK_KEY"), guard);
+
+    files.direct_upload_guard_key_file = files.storage_work_key_file.clone();
+    assert!(ProtectedSecrets::read(&files, &cfg).is_err());
+}
+
+#[test]
+fn mirror_update_requires_the_existing_guard_binding_without_reading_its_value() {
+    let cfg = mirror_config();
+    let protected = ProtectedSecrets::read(&HybridDeploySecretFiles::default(), &cfg).unwrap();
+    let mut existing: Vec<String> = [
+        "HUB_HYBRID_INGRESS_KEY",
+        "HUB_STORAGE_WORK_KEY",
+        "HUB_DIRECT_UPLOAD_GUARD_KEY",
+        "HUB_DIRECT_UPLOAD_JOURNAL_KEY",
+        "HUB_DIRECT_UPLOAD_R2_ACCESS_KEY_ID",
+        "HUB_DIRECT_UPLOAD_R2_SECRET_ACCESS_KEY",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect();
+
+    assert!(protected.require_bindings(&cfg, &existing).is_err());
+    existing.push("HUB_MIRROR_GUARD_KEY".into());
+    protected.require_bindings(&cfg, &existing).unwrap();
+    assert!(protected.entries.is_empty());
+}
+
 #[cfg(unix)]
 fn private_directory() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;

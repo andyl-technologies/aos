@@ -208,7 +208,7 @@ fn read_config_file<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     read_config_file_with_limit(path, 16 * 1024)
 }
 
-fn read_config_file_with_limit<T: serde::de::DeserializeOwned>(
+pub(in crate::cloudflare) fn read_config_file_with_limit<T: serde::de::DeserializeOwned>(
     path: &Path,
     maximum_bytes: usize,
 ) -> Result<T> {
@@ -252,7 +252,7 @@ fn read_config_bytes_with_limit(path: &Path, maximum_bytes: usize) -> Result<Vec
 pub(super) const DIRECT_UPLOAD_BINDING: &str = "\n[[durable_objects.bindings]]\nname = \"HYBRID_DIRECT_UPLOAD\"\nclass_name = \"HybridDirectUpload\"\n\n[[migrations]]\ntag = \"hybrid-direct-upload-v1\"\nnew_sqlite_classes = [\"HybridDirectUpload\"]\n";
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::cloudflare::{render_hybrid_wrangler_toml, HybridDeployConfig};
 
@@ -287,7 +287,7 @@ mod tests {
         }
     }
 
-    pub(super) fn config() -> HybridDeployConfig {
+    pub(in crate::cloudflare) fn config() -> HybridDeployConfig {
         HybridDeployConfig {
             name: "aos-hybrid".into(),
             bucket: "aos-hybrid-surfaces".into(),
@@ -298,6 +298,7 @@ mod tests {
             serve_assets: false,
             direct_upload: Some(profile()),
             direct_upload_clock: None,
+            mirror_trust: None,
             direct_upload_trust: Some(HybridDirectUploadTrustConfig {
                 public_key: aos_hub_core::direct_upload::direct_worker_qualification_fixture().1,
                 namespace_id: "operator-namespace".into(),
