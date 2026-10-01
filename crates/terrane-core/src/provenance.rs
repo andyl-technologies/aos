@@ -10,14 +10,27 @@
 //! ```
 
 mod attributes;
+mod disclosure;
 mod history;
+mod root_context;
 mod selector;
+mod side_attributes;
 mod signing;
 mod snapshot;
 mod trust;
 
+pub use disclosure::{
+    DisclosureAuthority, DisclosureCandidate, DisclosureSigning, VerifiedDisclosureBatch,
+    VerifiedDisclosureBoundary, disclosure_target_binding, sign_disclosure,
+};
 pub use history::{EntryLocation, VerifiedHistory, same_content, source_commit_references};
+pub use root_context::{
+    AffectedRoot, OriginalBootstrapPolicy, RootChangePlan, RootSide, VerifiedRootScope,
+    derive_fresh_roots, derive_root_changes, verify_root_context,
+    verify_root_context_with_bootstrap,
+};
 pub use selector::{Preset, Selector, SelectorError};
+pub use side_attributes::SideAttributeBinding;
 pub use signing::{
     Diagnostic, Rejected, VerifiedCommit, sign, sign_authored, verify, verify_diagnostic,
     verify_history,

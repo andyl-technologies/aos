@@ -36,6 +36,20 @@ pub struct VerifiedHistory {
     roots: BTreeMap<Digest, BTreeSet<Digest>>,
     min_chunk_size: u64,
     usage: BTreeMap<Digest, tree_format::TreeUse>,
+    pub(super) side_attributes: BTreeMap<
+        super::side_attributes::SideAttributeKey,
+        super::side_attributes::BoundSideAttribute,
+    >,
+    pub(super) disclosure_boundaries:
+        BTreeMap<EntryLocation, super::disclosure::VerifiedDisclosureBoundary>,
+    pub(super) disclosure_parents: BTreeSet<(Digest, Digest)>,
+    pub(super) disclosure_verified_views: BTreeSet<Digest>,
+    pub(super) root_scopes: BTreeMap<Digest, super::root_context::VerifiedRootScope>,
+    pub(super) provisional_scopes: BTreeSet<Digest>,
+    pub(super) bootstrap_policies: BTreeMap<
+        (alloc::string::String, alloc::string::String, u64),
+        super::root_context::CheckedBootstrap,
+    >,
 }
 
 impl VerifiedHistory {
@@ -52,6 +66,13 @@ impl VerifiedHistory {
             roots: BTreeMap::new(),
             usage: BTreeMap::new(),
             min_chunk_size,
+            side_attributes: BTreeMap::new(),
+            disclosure_boundaries: BTreeMap::new(),
+            disclosure_parents: BTreeSet::new(),
+            disclosure_verified_views: BTreeSet::new(),
+            root_scopes: BTreeMap::new(),
+            provisional_scopes: BTreeSet::new(),
+            bootstrap_policies: BTreeMap::new(),
         }
     }
 
@@ -282,6 +303,28 @@ impl VerifiedHistory {
         }
     }
 
+    pub(super) fn root_items(
+        &self,
+        root: Digest,
+    ) -> Result<Vec<tree_format::LeafItem<'_>>, Rejected> {
+        self.roots.get(&root).ok_or(Rejected)?;
+        let usage = *self.usage.get(&root).ok_or(Rejected)?;
+        let mut pending = vec![(root, true)];
+        let mut items = Vec::new();
+        while let Some((identity, is_root)) = pending.pop() {
+            let bytes = self.nodes.get(&identity).ok_or(Rejected)?;
+            let node = tree_format::decode_node_for(bytes, is_root, self.min_chunk_size, usage)
+                .map_err(|_| Rejected)?;
+            match node.items {
+                NodeItems::Leaf(leaf) => items.extend(leaf),
+                NodeItems::Internal(children) => {
+                    pending.extend(children.iter().rev().map(|child| (child.child, false)));
+                }
+            }
+        }
+        Ok(items)
+    }
+
     pub(super) fn root_properties(
         &self,
         root: Digest,
@@ -371,10 +414,12 @@ impl VerifiedHistory {
         }
     }
 
-    fn dependencies(
+    pub(super) fn dependencies(
         &self,
         location: &EntryLocation,
     ) -> Result<Option<Vec<EntryLocation>>, Rejected> {
+        self.require_disclosure_validation(location.commit)?;
+        self.require_root_context_validation(location.commit)?;
         let record = self.commits.get(&location.commit).ok_or(Rejected)?.commit();
         let entry = self.entry(location)?;
         let receipt = record
@@ -389,6 +434,9 @@ impl VerifiedHistory {
             // disclosure-aware verifier must install an authenticated boundary
             // before this entry can resolve through its attested introduction.
             if receipt.disclosure_proof.is_some() {
+                if self.disclosure_boundaries.contains_key(location) {
+                    return Ok(None);
+                }
                 return Err(Rejected);
             }
             match &receipt.origin {
@@ -431,7 +479,11 @@ impl VerifiedHistory {
                 }
                 EntryOrigin::Source(source) => {
                     let crate::refs::EntrySource { commit, root, path } = source;
-                    if *commit == location.commit {
+                    if *commit == location.commit
+                        || self
+                            .disclosure_parents
+                            .contains(&(location.commit, *commit))
+                    {
                         return Err(Rejected);
                     }
                     let source = EntryLocation {
@@ -453,11 +505,131 @@ impl VerifiedHistory {
         Ok(Some(parents))
     }
 
+    pub(super) fn require_disclosure_validation(&self, view: Digest) -> Result<(), Rejected> {
+        let record = self.commits.get(&view).ok_or(Rejected)?.commit();
+        if record
+            .profile_pair
+            .entry_receipts
+            .iter()
+            .flatten()
+            .any(|receipt| receipt.disclosure_proof.is_some())
+            && !self.disclosure_verified_views.contains(&view)
+        {
+            return Err(Rejected);
+        }
+        Ok(())
+    }
+
+    pub(super) fn append_evidence(&mut self, other: &Self) -> Result<(), Rejected> {
+        if self.min_chunk_size != other.min_chunk_size {
+            return Err(Rejected);
+        }
+        let mut candidate = self.clone();
+        for commit in other.commits.values() {
+            candidate.insert_commit(commit.clone())?;
+        }
+        for (identity, bytes) in &other.nodes {
+            if candidate
+                .nodes
+                .get(identity)
+                .is_some_and(|previous| previous != bytes)
+            {
+                return Err(Rejected);
+            }
+            candidate.nodes.insert(*identity, bytes.clone());
+        }
+        for (root, children) in &other.roots {
+            if candidate
+                .roots
+                .get(root)
+                .is_some_and(|previous| previous != children)
+                || candidate
+                    .usage
+                    .get(root)
+                    .is_some_and(|usage| other.usage.get(root) != Some(usage))
+            {
+                return Err(Rejected);
+            }
+            candidate.roots.insert(*root, children.clone());
+            candidate
+                .usage
+                .insert(*root, *other.usage.get(root).ok_or(Rejected)?);
+        }
+        for (location, boundary) in &other.disclosure_boundaries {
+            if candidate
+                .disclosure_boundaries
+                .get(location)
+                .is_some_and(|previous| previous != boundary)
+            {
+                return Err(Rejected);
+            }
+            candidate
+                .disclosure_boundaries
+                .insert(location.clone(), boundary.clone());
+        }
+        candidate
+            .disclosure_parents
+            .extend(other.disclosure_parents.iter().copied());
+        candidate
+            .disclosure_verified_views
+            .extend(other.disclosure_verified_views.iter().copied());
+        for (identity, scope) in &other.root_scopes {
+            let scope = match candidate.root_scopes.get(identity) {
+                Some(previous) => previous.merge_checked(scope)?,
+                None => scope.clone(),
+            };
+            candidate.root_scopes.insert(*identity, scope);
+        }
+        for (key, baseline) in &other.bootstrap_policies {
+            if candidate
+                .bootstrap_policies
+                .get(key)
+                .is_some_and(|previous| previous != baseline)
+            {
+                return Err(Rejected);
+            }
+            candidate
+                .bootstrap_policies
+                .insert(key.clone(), baseline.clone());
+        }
+        *self = candidate;
+        Ok(())
+    }
+
+    pub(super) fn require_root_context_validation(&self, view: Digest) -> Result<(), Rejected> {
+        let record = self.commits.get(&view).ok_or(Rejected)?.commit();
+        if record.profile_pair.commit_context.is_some()
+            && !self.root_scopes.contains_key(&view)
+            && !self.provisional_scopes.contains(&view)
+        {
+            return Err(Rejected);
+        }
+        Ok(())
+    }
+
+    /// Checks that a witness view exposes no provisional disclosure or root scope.
+    ///
+    /// # Errors
+    /// Returns [`Rejected`] for absent, provisional or incompletely checked views.
+    pub(crate) fn require_verified_context(&self, view: Digest) -> Result<(), Rejected> {
+        if self.provisional_scopes.contains(&view) {
+            return Err(Rejected);
+        }
+        self.require_disclosure_validation(view)?;
+        self.require_root_context_validation(view)
+    }
+
     fn unchanged_parents(&self, location: &EntryLocation) -> Result<Vec<EntryLocation>, Rejected> {
         let commit = self.commits.get(&location.commit).ok_or(Rejected)?.commit();
         let entry = self.entry(location)?;
         let mut result = Vec::new();
         for parent in &commit.parents {
+            if self
+                .disclosure_parents
+                .contains(&(location.commit, *parent))
+            {
+                continue;
+            }
             let parent_commit = self.commits.get(parent).ok_or(Rejected)?.commit();
             // A missing witness is not evidence that the key was absent in a
             // parent. Fresh introduction receipts must not hide that uncertainty.
@@ -485,6 +657,30 @@ impl VerifiedHistory {
             }
         }
         Ok(result)
+    }
+
+    pub(super) fn public_ancestor(&self, ancestor: Digest, view: Digest) -> Result<bool, Rejected> {
+        let mut pending = vec![view];
+        let mut seen = BTreeSet::new();
+        let mut found = false;
+        while let Some(current) = pending.pop() {
+            if !seen.insert(current) {
+                continue;
+            }
+            found |= current == ancestor;
+            let record = self.commits.get(&current).ok_or(Rejected)?;
+            self.require_disclosure_validation(current)?;
+            self.require_root_context_validation(current)?;
+            pending.extend(
+                record
+                    .commit()
+                    .parents
+                    .iter()
+                    .copied()
+                    .filter(|parent| !self.disclosure_parents.contains(&(current, *parent))),
+            );
+        }
+        Ok(found)
     }
 
     /// Resolves the actual introducing signed commit through receipts and parents.
@@ -587,13 +783,12 @@ impl VerifiedHistory {
         &self,
         location: &EntryLocation,
         introducing: Digest,
-    ) -> Vec<Digest> {
-        let Ok(entry) = self.entry(location) else {
-            return Vec::new();
-        };
-        let Some(view) = self.commits.get(&location.commit) else {
-            return Vec::new();
-        };
+    ) -> Result<Vec<Digest>, Rejected> {
+        // Unknown ancestry is not evidence of no acceptance, especially under
+        // negation. Checked disclosure cuts remain the only omitted parents.
+        self.public_ancestor(location.commit, location.commit)?;
+        let entry = self.entry(location)?;
+        let view = self.commits.get(&location.commit).ok_or(Rejected)?;
         let mut accepted = BTreeSet::new();
 
         // Receipts preserve carried-entry evidence when grafts or transforms
@@ -602,16 +797,15 @@ impl VerifiedHistory {
         let mut pending = vec![location.clone()];
         let mut seen = BTreeSet::new();
         while let Some(current) = pending.pop() {
-            if !seen.insert(current.clone()) || self.introducing_commit(&current) != Ok(introducing)
-            {
+            if !seen.insert(current.clone()) || self.introducing_commit(&current)? != introducing {
                 continue;
             }
             if current.commit != introducing
-                && self.graph.is_ancestor(current.commit, location.commit) == Ok(true)
+                && self.public_ancestor(current.commit, location.commit)?
             {
                 accepted.insert(current.commit);
             }
-            if let Ok(Some(dependencies)) = self.dependencies(&current) {
+            if let Some(dependencies) = self.dependencies(&current)? {
                 pending.extend(dependencies);
             }
         }
@@ -619,9 +813,7 @@ impl VerifiedHistory {
         // A merge can also retain an entry through another unchanged input
         // besides its selected source receipt. Check those real ancestor views.
         for (identity, commit) in &self.commits {
-            if *identity == introducing
-                || self.graph.is_ancestor(*identity, location.commit) != Ok(true)
-            {
+            if *identity == introducing || !self.public_ancestor(*identity, location.commit)? {
                 continue;
             }
             let root = if location.root == view.commit().tree {
@@ -634,14 +826,17 @@ impl VerifiedHistory {
                 root,
                 path: location.path.clone(),
             };
+            if !self.root_presence(*identity, root)? {
+                continue;
+            }
             if let Ok(carried) = self.entry(&candidate)
                 && same_content(&entry, &carried)
-                && self.introducing_commit(&candidate) == Ok(introducing)
+                && self.introducing_commit(&candidate)? == introducing
             {
                 accepted.insert(*identity);
             }
         }
-        accepted.into_iter().collect()
+        Ok(accepted.into_iter().collect())
     }
 
     /// Returns reachable signed records that actually carried the selected entry.
@@ -650,13 +845,14 @@ impl VerifiedHistory {
     /// is intended for later repository protocol and CLI audit operations.
     ///
     /// # Errors
-    /// Returns [`Rejected`] if introducing provenance cannot be resolved.
+    /// Returns [`Rejected`] if introduction or complete public carrying history
+    /// cannot be resolved from verified commit and canonical tree evidence.
     pub fn provenance_walk(
         &self,
         location: &EntryLocation,
     ) -> Result<Vec<&VerifiedCommit>, Rejected> {
         let introducing = self.introducing_commit(location)?;
-        let mut identities = self.acceptance_commits(location, introducing);
+        let mut identities = self.acceptance_commits(location, introducing)?;
         if !identities.contains(&location.commit) {
             identities.insert(0, location.commit);
         }

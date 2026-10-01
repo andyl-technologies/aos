@@ -28,6 +28,9 @@ in {
     ${runTest "prov_selector_presets_distinguish_fold_acceptance_from_introduction"}
     ${runTest "prov_entry_preserve_metadata_and_sources_without_parent_ancestry"}
     ${runTest "prov_selector_presets_missing_evidence_stays_absent_under_negation"}
+    ${runTest "selector::prov_selector_presets_missing_acceptance_ancestry_stays_absent_under_negation"}
+    ${runTest "selector::prov_selector_presets_inherited_root_acceptance_remains_required_for_any_view"}
+    ${runTest "selector::prov_selector_presets_attribute_names_follow_registered_vocabulary"}
     ${runTest "prov_entry_preserve_rejects_unverified_tree_and_invalid_ancestors"}
     ${runTest "prov_fold_reintroduction_records_verified_original_introduction"}
     ${runTest "prov_selector_presets_root_policy_cannot_be_widened_by_view"}

@@ -120,6 +120,27 @@ fn signing_key(text: &str) -> Result<[u8; 32], SelectorError> {
 }
 
 impl Selector {
+    /// Identifies acceptance dependencies within each node's principal context.
+    ///
+    /// Children precede parents in the validated arena. An attribute selector
+    /// switches principal context, so its ancestry dependency belongs to its
+    /// own child subtree rather than the enclosing content or attribute.
+    pub(super) fn acceptance_dependencies(&self) -> Vec<bool> {
+        let mut required = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let acceptance = match node {
+                Node::AcceptedBy(_) | Node::Preset(Preset::SignedBaseline) => true,
+                Node::All(children) | Node::Any(children) => {
+                    children.iter().any(|child| required[*child])
+                }
+                Node::Not(child) => required[*child],
+                _ => false,
+            };
+            required.push(acceptance);
+        }
+        required
+    }
+
     /// Parses a root trust property as a selector AST or registered preset text.
     ///
     /// # Errors
@@ -143,7 +164,8 @@ impl Selector {
     ///
     /// # Errors
     /// Returns [`SelectorError`] for malformed/noncanonical CBOR, unknown
-    /// atoms or presets, invalid arguments, empty combinators, or trailing bytes.
+    /// atoms, attributes or presets, invalid arguments, empty combinators, or
+    /// trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, SelectorError> {
         let mut decoder = Decoder::new(bytes);
         let mut nodes = Vec::new();
@@ -187,7 +209,7 @@ impl Selector {
                 }
                 "attr-by" => {
                     let name = text(&mut decoder)?;
-                    if name.is_empty() || name.len() > 255 {
+                    if !crate::properties::registered_attribute(&name) {
                         return Err(SelectorError);
                     }
                     pending.push(Pending::Attribute(name));

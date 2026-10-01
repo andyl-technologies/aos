@@ -3,6 +3,10 @@
 use crate::auth::{self, IssuerKey, Request, RequestRoot, Token, Verb, VerifiedToken};
 use crate::identity::Digest;
 use crate::refs::Commit;
+use alloc::{
+    string::{String, ToString},
+    vec::Vec,
+};
 use core::fmt;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
 
@@ -57,6 +61,7 @@ pub struct VerifiedCommit {
     identity: Digest,
     token: VerifiedToken,
     public_key: [u8; 32],
+    original_epochs: Vec<(String, u64)>,
 }
 
 impl VerifiedCommit {
@@ -78,6 +83,35 @@ impl VerifiedCommit {
     /// Returns the terminal Ed25519 public key authenticated by the token.
     pub const fn signing_public_key(&self) -> [u8; 32] {
         self.public_key
+    }
+
+    pub(super) fn authorize_original_roots(
+        &self,
+        verb: Verb,
+        roots: &[RequestRoot<'_>],
+    ) -> Result<(), Rejected> {
+        let context = self
+            .commit
+            .profile_pair
+            .commit_context
+            .as_ref()
+            .ok_or(Rejected)?;
+        let epochs: Vec<_> = self
+            .original_epochs
+            .iter()
+            .map(|(name, epoch)| (name.as_str(), *epoch))
+            .collect();
+        self.token
+            .authorize(&Request {
+                reference: context.reference().as_bytes(),
+                verb,
+                roots,
+                now: self.commit.timestamp,
+                surface: context.surface(),
+                locality: context.locality(),
+                epochs: &epochs,
+            })
+            .map_err(|_| Rejected)
     }
 }
 
@@ -271,5 +305,10 @@ pub fn verify_diagnostic(
         identity: commit.identity().map_err(|_| Diagnostic::Encoding)?,
         token: authenticated,
         public_key,
+        original_epochs: request
+            .epochs
+            .iter()
+            .map(|(name, epoch)| ((*name).to_string(), *epoch))
+            .collect(),
     })
 }

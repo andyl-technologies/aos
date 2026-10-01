@@ -3,6 +3,12 @@
 //! Selector traversal uses explicit work stacks. Missing provenance never
 //! becomes true through negation. Memos bind the disclosure domain, signed
 //! view, verified receipt context, configuration, and effective root selectors.
+//!
+//! ```text
+//! legacy context = [1, view, domain, selector, baseline-or-null, min-chunk-size]
+//! side context = [2, view, domain, selector, baseline-or-null, min-chunk-size,
+//!                 canonical selected-evidence byte string]
+//! ```
 
 use super::selector::Node;
 use super::{EntryLocation, Preset, Rejected, Selector, VerifiedHistory};
@@ -31,6 +37,7 @@ pub struct TrustContext {
     root: Digest,
     selector: Selector,
     baseline: Option<String>,
+    domain: String,
     canonical: Vec<u8>,
     memo: RefCell<BTreeMap<Vec<u8>, bool>>,
 }
@@ -54,7 +61,8 @@ fn nullable_text(decoder: &mut Decoder<'_>) -> Result<Option<String>, Rejected> 
 /// Validates serialized trust configuration without granting runtime authority.
 ///
 /// The canonical tuple is `[1, view, domain, selector, baseline-or-null,
-/// min-chunk-size]`. Only [`TrustContext::new`] creates an evaluator, after
+/// min-chunk-size]`. A version-2 tuple appends canonical selected side evidence
+/// as a byte string. Only [`TrustContext::new`] creates an evaluator, after
 /// checking that its view is present in a verified history.
 ///
 /// # Errors
@@ -62,7 +70,9 @@ fn nullable_text(decoder: &mut Decoder<'_>) -> Result<Option<String>, Rejected> 
 /// versions, invalid digest width, invalid selectors, or trailing bytes.
 pub fn validate_canonical_context(bytes: &[u8]) -> Result<(), Rejected> {
     let mut decoder = Decoder::new(bytes);
-    if decoder.array(6).map_err(|_| Rejected)? != 6 || decoder.uint().map_err(|_| Rejected)? != 1 {
+    let count = decoder.array(7).map_err(|_| Rejected)?;
+    let version = decoder.uint().map_err(|_| Rejected)?;
+    if !matches!((version, count), (1, 6) | (2, 7)) {
         return Err(Rejected);
     }
     if decoder.bytes(32).map_err(|_| Rejected)?.len() != 32 {
@@ -77,6 +87,24 @@ pub fn validate_canonical_context(bytes: &[u8]) -> Result<(), Rejected> {
     Selector::decode(selector).map_err(|_| Rejected)?;
     nullable_text(&mut decoder)?;
     decoder.uint().map_err(|_| Rejected)?;
+    if version == 2 {
+        let evidence = decoder
+            .bytes(decoder.remaining().len())
+            .map_err(|_| Rejected)?;
+        let mut evidence_decoder = Decoder::new(evidence);
+        if evidence_decoder
+            .array(evidence.len())
+            .map_err(|_| Rejected)?
+            == 0
+        {
+            return Err(Rejected);
+        }
+        let mut evidence_decoder = Decoder::new(evidence);
+        evidence_decoder
+            .skip_value(evidence.len())
+            .map_err(|_| Rejected)?;
+        evidence_decoder.finish().map_err(|_| Rejected)?;
+    }
     decoder.finish().map_err(|_| Rejected)
 }
 
@@ -90,7 +118,8 @@ impl TrustContext {
     /// The disclosure domain is supplied by the trusted repository guard.
     ///
     /// # Errors
-    /// Returns [`Rejected`] if the view is absent from the verified history.
+    /// Returns [`Rejected`] if the view is absent or its disclosure batch has
+    /// not completed all certificate, entry and attribute validation.
     pub fn new(
         history: &VerifiedHistory,
         view: Digest,
@@ -107,7 +136,8 @@ impl TrustContext {
     /// policy. Configuration and memo state remain local to this evaluator.
     ///
     /// # Errors
-    /// Returns [`Rejected`] if the view is absent from the verified history.
+    /// Returns [`Rejected`] if the view is absent or its disclosure batch has
+    /// not completed all certificate, entry and attribute validation.
     pub fn from_shared(
         history: Rc<VerifiedHistory>,
         view: Digest,
@@ -115,10 +145,13 @@ impl TrustContext {
         domain: &str,
         baseline: Option<&str>,
     ) -> Result<Self, Rejected> {
+        history.require_verified_context(view)?;
         let root = history.commit(&view).ok_or(Rejected)?.commit().tree;
         let mut canonical = Vec::new();
-        cbor::write_array(&mut canonical, 6);
-        cbor::write_uint(&mut canonical, 1);
+        let side_context = history.side_context(view, domain);
+        let has_side_evidence = !side_context.is_empty();
+        cbor::write_array(&mut canonical, if has_side_evidence { 7 } else { 6 });
+        cbor::write_uint(&mut canonical, if has_side_evidence { 2 } else { 1 });
         cbor::write_bytes(&mut canonical, &view);
         cbor::write_text(&mut canonical, domain);
         cbor::write_bytes(&mut canonical, selector.encode());
@@ -128,6 +161,9 @@ impl TrustContext {
             canonical.push(0xf6);
         }
         cbor::write_uint(&mut canonical, history.min_chunk_size());
+        if has_side_evidence {
+            cbor::write_bytes(&mut canonical, &side_context);
+        }
 
         Ok(Self {
             history,
@@ -135,6 +171,7 @@ impl TrustContext {
             root,
             selector,
             baseline: baseline.map(ToString::to_string),
+            domain: domain.to_string(),
             canonical,
             memo: RefCell::new(BTreeMap::new()),
         })
@@ -276,33 +313,55 @@ impl TrustContext {
             selectors.push((root_selector.clone(), baseline.clone()));
         }
         selectors.push((self.selector.clone(), baseline));
+        let mut content_acceptance = false;
+        let mut attribute_acceptance = BTreeMap::<&str, bool>::new();
+        for (selector, _) in &selectors {
+            let dependencies = selector.acceptance_dependencies();
+            content_acceptance |= *dependencies.get(selector.root).ok_or(Rejected)?;
+            for node in &selector.nodes {
+                if let Node::AttributeBy(name, child) = node {
+                    let required = *dependencies.get(*child).ok_or(Rejected)?;
+                    attribute_acceptance
+                        .entry(name.as_str())
+                        .and_modify(|previous| *previous |= required)
+                        .or_insert(required);
+                }
+            }
+        }
+
         // Entries with identical verified receipt contexts share evaluations;
         // root/path alone would turn the memo into a cache per individual file.
-        let acceptance = self.history.acceptance_commits(location, introducing);
+        // Unused ancestry is not required evidence for introduction-only atoms.
+        // Effective root constraints participate in the same dependency check.
+        let acceptance = if content_acceptance {
+            self.history.acceptance_commits(location, introducing)?
+        } else {
+            Vec::new()
+        };
         cbor::write_array(&mut key, acceptance.len());
         for commit in &acceptance {
             cbor::write_bytes(&mut key, commit);
         }
         let mut producers = BTreeMap::new();
-        for (selector, _) in &selectors {
-            for node in &selector.nodes {
-                if let Node::AttributeBy(name, _) = node {
-                    let producer = self.history.attribute_producer(location, name)?;
-                    let acceptance = self
-                        .history
-                        .attribute_acceptance_commits(location, name, producer);
-                    producers.insert(name, (producer, acceptance));
-                }
-            }
+        for (name, required) in &attribute_acceptance {
+            let context =
+                self.history
+                    .attribute_context(location, name, &self.domain, *required)?;
+            producers.insert(name, context);
         }
         cbor::write_array(&mut key, producers.len());
-        for (name, (producer, acceptance)) in producers {
-            cbor::write_array(&mut key, 3);
+        for (name, (producer, acceptance, side)) in producers {
+            cbor::write_array(&mut key, 4);
             cbor::write_text(&mut key, name);
             cbor::write_bytes(&mut key, &producer);
             cbor::write_array(&mut key, acceptance.len());
             for commit in acceptance {
                 cbor::write_bytes(&mut key, &commit);
+            }
+            if let Some(side) = side {
+                side.encode_context(&mut key);
+            } else {
+                key.push(0xf6);
             }
         }
         if let Some(result) = self.memo.borrow().get(&key) {
@@ -320,6 +379,7 @@ impl TrustContext {
                             introducing,
                             baseline.as_deref(),
                             &acceptance,
+                            &attribute_acceptance,
                         )?,
                 )
             })?;
@@ -334,6 +394,7 @@ impl TrustContext {
         introducing: Digest,
         baseline: Option<&str>,
         acceptance: &[Digest],
+        attribute_acceptance: &BTreeMap<&str, bool>,
     ) -> Result<bool, Rejected> {
         let mut values = BTreeMap::<(usize, Digest, Option<usize>), bool>::new();
         let mut attributes = BTreeMap::<usize, (Digest, Vec<Digest>)>::new();
@@ -361,10 +422,10 @@ impl TrustContext {
                         .collect()
                 }
                 Node::AttributeBy(name, child) => {
-                    let producer = self.history.attribute_producer(location, name)?;
-                    let carried = self
-                        .history
-                        .attribute_acceptance_commits(location, name, producer);
+                    let required = *attribute_acceptance.get(name.as_str()).ok_or(Rejected)?;
+                    let (producer, carried, _) =
+                        self.history
+                            .attribute_context(location, name, &self.domain, required)?;
                     attributes.insert(index, (producer, carried));
                     vec![(*child, producer, Some(index))]
                 }

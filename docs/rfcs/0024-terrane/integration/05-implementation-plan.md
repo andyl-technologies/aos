@@ -206,8 +206,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `checks.terrane.gates.ref-names`.
 - [ ] **T-DRV-1** Derived attribute records and classification (`hash.*`,
   `class.magic`), stored per object. Narrowed to trunk scope: index trees,
-  derivations, and memos are T-DRV-2 on B-derive. — satisfies DRV-1 to
-  DRV-11; `checks.terrane.gates.derived-attr-record`.
+  derivations, and memos are T-DRV-2 on B-derive. The nine reviewed pure paths
+  now implement stream hashes, bounded classification, canonical records and
+  producer evidence requiring complete carrying-view and producer contexts.
+  They match the task candidate without dependency or vendor changes. All
+  375 combined trunk core tests, strict Clippy/rustdoc and mandatory formatting
+  pass. Native storage, attribute-gate and backfill qualification remain pending.
+  — satisfies DRV-1 to DRV-11; `checks.terrane.gates.derived-attr-record`.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
@@ -476,10 +481,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   exclusion and queued/running cancellation assertions. The exact mandatory
   Rust-check and all-format sequence now passes on the trunk; native execution
   of these fixtures still requires the complete Guard/reference source graph.
-  The actual current trunk aggregate stops in `bundle-verify` compilation,
+  The previous trunk aggregate stopped in `bundle-verify` compilation,
   before test execution, with 30 diagnostics. Missing Guard, domain and
   protected installation APIs include the collector fixture's namespace and
   registration types; remaining inference diagnostics are retained separately.
+  After native domain and backend-fixture adoption and the pure provenance/
+  derived closure, the actual current aggregate stops in package compilation
+  with 27 missing Guard/consumer and resulting inference diagnostics; its
+  dependent role-selection gate fails. No native gate or task merge is qualified.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.
@@ -677,16 +686,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   core. Current-ACL commit guarding and durable disclosure certificate
   verification/publication are joint with T-REF-2 and T-DOM-1; merge admission
   with T-ALG-2; wire and command error translation with their runtime tasks.
-  The pure task is reopened for PROV-13: unavailable public ancestry can
-  become empty acceptance evidence under negation. The reviewed task correction
-  propagates content and attribute acceptance errors; its coupled context and
-  derived-data source closure still requires trunk adoption and qualification.
+  The reopened pure PROV-13 correction now propagates content and attribute
+  acceptance errors only for predicates requiring that ancestry.
+  Introduction-only Any, issuer and eligible Strict selectors keep independent
+  source evidence;
+  inherited root constraints and nested attribute contexts retain their own
+  acceptance requirements. The complete reviewed pure context/disclosure and
+  derived-data source closure is adopted. All 375 trunk core tests, strict
+  all-target Clippy, strict rustdoc and mandatory repository formatting pass.
+  Actual hermetic signature and selector gates pass all 12 and 21 exact cases,
+  including missing ancestry, introduction-only and inherited-root regressions.
   Reviewed annotated-tag signing and verification now bind the exact REF-20
   preimage, terminal key, expected tag/commit and source Tag/Admin scope.
-  All 303 trunk core tests, strict all-target Clippy, strict rustdoc and core
-  formatting pass. The expanded hermetic signature gate passes its 12 exact
-  selectors, including four snapshot cases. This does not qualify native tag
-  publication, current ACL checks or the pending acceptance correction.
+  Earlier snapshot-only qualification passed all 303 trunk core tests and its
+  12-case hermetic signature gate, including four snapshot cases. Neither pure
+  qualification establishes native tag
+  publication or current ACL checks. Complete native disclosure/publication and
+  collection qualification remain incomplete; the current trunk aggregate fails
+  during native package compilation before runtime tests.
   — satisfies PROV-1 to PROV-25;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`.

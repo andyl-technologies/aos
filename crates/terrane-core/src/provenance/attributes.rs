@@ -13,11 +13,13 @@ use alloc::{
 };
 
 impl VerifiedHistory {
-    fn attribute_dependencies(
+    pub(super) fn attribute_dependencies(
         &self,
         location: &EntryLocation,
         name: &str,
     ) -> Result<Option<Vec<EntryLocation>>, Rejected> {
+        self.require_disclosure_validation(location.commit)?;
+        self.require_root_context_validation(location.commit)?;
         let entry = self.entry(location)?;
         let value = entry
             .attrs
@@ -39,7 +41,11 @@ impl VerifiedHistory {
         match origin {
             Some(EntryOrigin::Current) => Ok(None),
             Some(EntryOrigin::Source(source)) => {
-                if source.commit == location.commit {
+                if source.commit == location.commit
+                    || self
+                        .disclosure_parents
+                        .contains(&(location.commit, source.commit))
+                {
                     return Err(Rejected);
                 }
                 let source = EntryLocation {
@@ -61,6 +67,13 @@ impl VerifiedHistory {
                 Ok(Some(vec![source]))
             }
             None => {
+                if self
+                    .disclosure_parents
+                    .iter()
+                    .any(|(child, _)| *child == location.commit)
+                {
+                    return Err(Rejected);
+                }
                 let mut parents = Vec::new();
                 for parent in &record.parents {
                     let parent_record = self.commits.get(parent).ok_or(Rejected)?.commit();
@@ -144,40 +157,36 @@ impl VerifiedHistory {
         location: &EntryLocation,
         name: &str,
         producer: Digest,
-    ) -> Vec<Digest> {
+    ) -> Result<Vec<Digest>, Rejected> {
+        // Missing public ancestry cannot become a negative attribute-acceptance
+        // result. The producer's content history stays independent.
+        self.public_ancestor(location.commit, location.commit)?;
         let mut accepted = BTreeSet::new();
         let mut seen = BTreeSet::new();
         let mut pending = vec![location.clone()];
         while let Some(current) = pending.pop() {
-            if !seen.insert(current.clone())
-                || self.attribute_producer(&current, name) != Ok(producer)
+            if !seen.insert(current.clone()) || self.attribute_producer(&current, name)? != producer
             {
                 continue;
             }
             if current.commit != producer
-                && self.graph.is_ancestor(current.commit, location.commit) == Ok(true)
+                && self.public_ancestor(current.commit, location.commit)?
             {
                 accepted.insert(current.commit);
             }
-            if let Ok(Some(dependencies)) = self.attribute_dependencies(&current, name) {
+            if let Some(dependencies) = self.attribute_dependencies(&current, name)? {
                 pending.extend(dependencies);
             }
         }
-        let Ok(entry) = self.entry(location) else {
-            return Vec::new();
-        };
-        let Some(view) = self.commits.get(&location.commit) else {
-            return Vec::new();
-        };
+        let entry = self.entry(location)?;
+        let view = self.commits.get(&location.commit).ok_or(Rejected)?;
         let value = entry
             .attrs
             .iter()
             .find(|attribute| attribute.name == name)
             .map(|attribute| attribute.value);
         for (identity, commit) in &self.commits {
-            if *identity == producer
-                || self.graph.is_ancestor(*identity, location.commit) != Ok(true)
-            {
+            if *identity == producer || !self.public_ancestor(*identity, location.commit)? {
                 continue;
             }
             let root = if location.root == view.commit().tree {
@@ -190,6 +199,9 @@ impl VerifiedHistory {
                 root,
                 path: location.path.clone(),
             };
+            if !self.root_presence(*identity, root)? {
+                continue;
+            }
             if let Ok(previous) = self.entry(&candidate)
                 && same_content(&entry, &previous)
                 && previous
@@ -198,11 +210,11 @@ impl VerifiedHistory {
                     .find(|attribute| attribute.name == name)
                     .map(|attribute| attribute.value)
                     == value
-                && self.attribute_producer(&candidate, name) == Ok(producer)
+                && self.attribute_producer(&candidate, name)? == producer
             {
                 accepted.insert(*identity);
             }
         }
-        accepted.into_iter().collect()
+        Ok(accepted.into_iter().collect())
     }
 }

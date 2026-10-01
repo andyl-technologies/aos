@@ -9,6 +9,10 @@ use alloc::{string::ToString, vec, vec::Vec};
 use ed25519_dalek::{Signature, Signer, SigningKey};
 
 mod context;
+mod disclosure;
+mod root_context;
+mod selector;
+mod side_attributes;
 mod snapshot;
 
 fn issuer_keys() -> Vec<IssuerKey> {
@@ -84,6 +88,30 @@ fn with_request<T>(action: impl FnOnce(&Request<'_>) -> T) -> T {
         locality: &locality,
         epochs: &[("refs/heads/main", 4)],
     })
+}
+
+fn fixture_bootstrap() -> OriginalBootstrapPolicy<'static> {
+    // This retained fixture configuration is independent of the signed tree.
+    OriginalBootstrapPolicy {
+        authority: "test-original-physical-authority",
+        reference: "refs/heads/main",
+        writer_epoch: 4,
+        acl: &[],
+    }
+}
+
+fn verify_fixture_scope(
+    history: &mut VerifiedHistory,
+    view: crate::identity::Digest,
+    defaults: crate::properties::Defaults<'_>,
+) -> Result<VerifiedRootScope, Rejected> {
+    verify_root_context_with_bootstrap(
+        history,
+        view,
+        defaults,
+        fixture_bootstrap().authority,
+        fixture_bootstrap(),
+    )
 }
 
 #[test]
@@ -539,9 +567,11 @@ fn prov_fold_reintroduction_records_verified_original_introduction() {
             Selector::preset(Preset::Strict),
             "private",
             Some("baseline"),
-        )
-        .unwrap();
-        assert_eq!(context.accepts(root, b"file"), accepted);
+        );
+        assert_eq!(context.is_ok(), accepted);
+        if accepted {
+            assert!(context.unwrap().accepts(root, b"file"));
+        }
     }
 }
 
@@ -1198,11 +1228,13 @@ fn prov_external_sources_preserve_producers_without_granting_acceptance() {
     assert!(
         !history
             .acceptance_commits(&location, introducing)
+            .unwrap()
             .contains(&accepting)
     );
     assert!(
         !history
             .attribute_acceptance_commits(&location, "hash.sha256", introducing)
+            .unwrap()
             .contains(&accepting)
     );
     for inner in [Selector::preset(Preset::SignedBaseline), {
