@@ -16,9 +16,9 @@ mod native_clock;
 mod native_effect;
 
 #[cfg(feature = "std")]
-pub(crate) use native_effect::publication as native_publication_effects;
-#[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
+#[cfg(feature = "std")]
+pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(all(feature = "std", test))]
 pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
 #[cfg(feature = "std")]
