@@ -48,6 +48,29 @@ pub(crate) struct NativeAcquireClockGuardV1 {
 }
 
 impl NativeAcquireClockGuardV1 {
+    /// Borrows the original sample and cutoff before a native request is signed.
+    ///
+    /// This projection does not recapture time or establish currentness. The
+    /// owner must still recheck this same guard before every protected effect.
+    pub(crate) const fn original_sample_and_deadline(&self) -> (RawPairedClockSample, u64) {
+        (self.initial, self.deadline)
+    }
+
+    /// Projects a staged expiry through the original conservative cutoff engine.
+    ///
+    /// This read-only projection does not sample time or establish currentness.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an invalid cutoff or an extension of the original authorization.
+    pub(crate) fn original_stage_deadline(&self, expiry: i64) -> Result<u64, ProviderLedgerError> {
+        let deadline = conservative_deadline(self.initial, expiry)?;
+        if deadline > self.deadline || expiry > self.expires_seconds {
+            return Err(ProviderLedgerError::Equivocation);
+        }
+        Ok(deadline)
+    }
+
     /// Reconstitutes an original anchor after the owner joins the protected row.
     ///
     /// # Errors

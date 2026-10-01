@@ -125,20 +125,31 @@ pub(super) fn enforce_acquire_limits(
     ledger: &ProviderLedgerV1<'_>,
     holder_id: [u8; 16],
 ) -> Result<(), ProviderLedgerError> {
-    let limits = ledger.configuration.limits();
-    if ledger
-        .recovered
+    enforce_acquire_limits_at(&ledger.configuration, &ledger.recovered, holder_id)
+}
+
+/// Applies the same acquisition policy to the actual protected owner cut.
+///
+/// # Errors
+///
+/// Rejects exhausted retained identities or active acquisitions for the holder.
+pub(crate) fn enforce_acquire_limits_at(
+    configuration: &crate::state::ProtectedProviderConfigurationV1,
+    recovered: &crate::model::RecoveredProviderLedgerV1,
+    holder_id: [u8; 16],
+) -> Result<(), ProviderLedgerError> {
+    let limits = configuration.limits();
+    if recovered
         .attempts
         .len()
-        .saturating_add(ledger.recovered.acquisitions.len())
-        .saturating_add(ledger.recovered.releases.len())
+        .saturating_add(recovered.acquisitions.len())
+        .saturating_add(recovered.releases.len())
         .checked_add(2)
         .is_none_or(|count| count > limits.maximum_retained_identities())
     {
         return Err(ProviderLedgerError::LimitExceeded("retained identities"));
     }
-    let active = ledger
-        .recovered
+    let active = recovered
         .acquisitions
         .values()
         .filter(|record| {

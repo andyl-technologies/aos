@@ -55,9 +55,11 @@ mod validation;
 pub(crate) use completion::complete_acquire;
 pub(crate) use completion::complete_retained_native;
 pub(crate) use native_admission::require_original_packet_profile;
+pub(crate) use native_admission::CurrentSelection;
 pub(crate) use native_admission::select_current_resource_at;
 pub(crate) use reservation::reserve_acquire;
 use validation::enforce_acquire_limits;
+pub(crate) use validation::enforce_acquire_limits_at;
 pub(crate) use validation::normalized_intent;
 pub(crate) use validation::{
     derive_acquire_effect_id, derive_backend_plan_id, derive_lease_id,

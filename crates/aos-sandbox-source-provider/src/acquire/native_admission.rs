@@ -28,6 +28,20 @@ pub(crate) struct CurrentSelection {
 }
 
 impl CurrentSelection {
+    /// Borrows the already-selected tuple without selecting again or authorizing an effect.
+    pub(crate) fn original_selected_tuple(
+        &self,
+    ) -> (&SourceResourceV1, Option<&ZfsHeldSnapshotProofV1>) {
+        (&self.resource, self.snapshot.as_ref())
+    }
+
+    /// Borrows the exact publication projection retained at original pairing.
+    pub(crate) fn original_publication_projection(
+        &self,
+    ) -> (&CurrentCatalogPublicationProjectionV1, ObjectDigest) {
+        (&self.projection, self.publication_digest)
+    }
+
     pub(crate) fn require_native_claims(
         &self,
         journal: &aos_sandbox::ProtectedJournalAuthority<'_>,

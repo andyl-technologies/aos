@@ -17,6 +17,19 @@ use super::super::{
     SourceProjectAdmissionTransition, authority_preflight_digest, controller_source_genesis,
     source_tree_genesis,
 };
+use aos_sandbox_core::ObjectDigest;
+use aos_sandbox_source_provider_ledger::ledger::{
+    native_completion::{OriginalSourceProvenanceV5, propose_original_source_applying_v5},
+    native_held_completion::{
+        SourceNativeHeldCompletionRecordV1, derive_original_source_continuations_v5,
+    },
+    source_capacity::derive_source_capacity_owner_data_v1,
+};
+use aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2;
+use super::super::native_held::{
+    NativeHeldCapacityPurposeV3, NativeHeldCapacityRequestV3, OriginalSourceCapacityRecordV5,
+    OriginalSourceGeometryDataV5, derive_original_source_geometry_v5,
+};
 
 /// Retains one exact attempted transaction and complete candidate before errors.
 ///
@@ -62,6 +75,7 @@ pub struct OriginalSourceProtectedReadbackV5 {
     rows: State,
     transaction: JournalTransaction,
     validated: bool,
+    original_native_signing_attempted: std::cell::Cell<bool>,
 }
 
 /// Binds prospective archive metadata to one held append without proving commit.
@@ -199,6 +213,220 @@ impl Journal {
 }
 
 impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
+    /// Derives initial Source5 DATA from the actual before cut and exact quartet.
+    ///
+    /// This measures the sole reducer's complete continuation envelope before
+    /// constructing a floor. Returning DATA does not admit it: preparation still
+    /// checks the full floor union, physical headroom and exact transaction CAS.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale custody, an invalid original quartet, incomplete geometry,
+    /// changed bindings or insufficient actual opened headroom.
+    pub fn derive_initial_original_floor_v5(
+        &self,
+        quartet: &JournalTransaction,
+        provenance: &OriginalSourceProvenanceV5,
+    ) -> Result<OriginalSourceCapacityRecordV5, JournalError> {
+        self.require_current()?;
+        let journal = &self.authority.journal;
+        if quartet.records().len() != 4
+            || quartet.records().iter().any(|record| {
+                record.namespace() != RecordNamespace::SourceProviderAuthority
+                    || record.value().is_none()
+            })
+            || journal.transaction_ids.contains(quartet.id())
+        {
+            return Err(invalid("original Source initial quartet shape"));
+        }
+        let owner_rows = || journal.state.iter()
+            .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
+            .map(|((_, key), value)| (key.as_slice(), value.as_slice()));
+        let proposal = propose_original_source_applying_v5(
+            owner_rows(),
+            quartet.records().iter().map(|record| (record.key(), record.value())),
+            provenance,
+            provenance.claims().configuration,
+        ).map_err(|_| invalid("original Source initial owner proposal"))?;
+        let comparison = proposal.admission_comparison()
+            .map_err(|_| invalid("original Source initial comparison"))?;
+        let mut after = owner_rows()
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for mutation in proposal.mutations() {
+            after.insert(mutation.key().to_vec(), mutation.after().to_vec());
+        }
+        let after_rows = || after.iter().map(|(key, value)| (key.as_slice(), value.as_slice()));
+        let continuation = derive_original_source_continuations_v5(
+            after_rows(), Some(&comparison), provenance, provenance.claims().configuration,
+        ).map_err(|_| invalid("original Source initial continuations"))?;
+        let budgets = OriginalSourceGeometryDataV5::measure_initial_envelopes(
+            &continuation, journal.limits,
+        )?;
+
+        // Reuse the existing dispatch-binding derivation, not another owner-ID hash.
+        // These temporary ordinary bindings are DATA only; the actual admission
+        // associates this original with Source5 through the complete union.
+        let bindings = derive_source_capacity_owner_data_v1(after_rows(), &[])
+            .map_err(|_| invalid("original Source initial binding derivation"))?;
+        let binding = bindings.ordinary_bindings().iter()
+            .find(|binding| binding.acquisition() == proposal.data().acquisition_id)
+            .ok_or(invalid("original Source initial dispatch binding"))?
+            .fields();
+        let request = NativeHeldCapacityRequestV3 {
+            purpose: NativeHeldCapacityPurposeV3::Provider,
+            owner_id: binding.owner_id,
+            owner_digest: binding.owner_digest,
+            operation_id: binding.operation_id,
+            artifact_digest: binding.artifact_digest,
+            checkpoint_digest: binding.checkpoint_digest,
+            chain_head_digest: binding.chain_head_digest,
+            future_transactions: 20,
+            terminal_records: budgets.terminal_records,
+            terminal_bytes: budgets.terminal_bytes,
+            poison_records: budgets.poison_records,
+            poison_bytes: budgets.poison_bytes,
+        };
+        let floor = OriginalSourceCapacityRecordV5::new(
+            request, *quartet.id(), budgets, provenance.clone(),
+        )?;
+        derive_original_source_geometry_v5(journal, &floor, &continuation, Some(&proposal))?;
+        self.require_current()?;
+        Ok(floor)
+    }
+
+    /// Derives the exact successor floor DATA from this actual owner's next carrier.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale custody, noncanonical floors or incomplete/foreign owner
+    /// continuations. The subsequent full transaction still needs CAS/preflight.
+    pub fn derive_original_floor_transfer_v5(
+        &self,
+        owner_transaction: &JournalTransaction,
+        acquisition: ObjectDigest,
+    ) -> Result<(OriginalSourceCapacityRecordV5, OriginalSourceCapacityRecordV5), JournalError> {
+        self.require_current()?;
+        let journal = &self.authority.journal;
+        let origin = journal.source_original_replay.origins().iter()
+            .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
+            .ok_or(invalid("original Source transfer origin missing"))?;
+        let mut selected = None;
+        for family in super::super::capacity_reservation::family::canonical_reservations(&journal.state)? {
+            if let super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(floor)
+                = family
+                && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition
+            {
+                if selected.replace(floor).is_some() {
+                    return Err(invalid("original Source transfer floor ambiguous"));
+                }
+            }
+        }
+        let floor = selected.ok_or(invalid("original Source transfer floor missing"))?;
+        let mut owners = journal.state.iter()
+            .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
+            .map(|((_, key), value)| (key.clone(), value.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for record in owner_transaction.records() {
+            if record.namespace() != RecordNamespace::SourceProviderAuthority {
+                return Err(invalid("original Source transfer foreign namespace"));
+            }
+            let value = record.value().ok_or(invalid("original Source transfer deletion"))?;
+            owners.insert(record.key().to_vec(), value.to_vec());
+        }
+        let continuation = derive_original_source_continuations_v5(
+            owners.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+            Some(origin.admission_comparison()),
+            floor.original_provenance(),
+            floor.original_provenance().claims().configuration,
+        ).map_err(|_| invalid("original Source transfer continuation"))?;
+        let geometry = OriginalSourceGeometryDataV5::measure_remaining(
+            &floor, &continuation, journal.limits,
+        )?;
+        let successor = OriginalSourceCapacityRecordV5::new(
+            geometry.remaining_request().ok_or(invalid("original Source transfer retired"))?,
+            floor.admission_transaction_id(),
+            floor.origin_budgets(),
+            floor.original_provenance().clone(),
+        )?;
+        self.require_current()?;
+        Ok((floor, successor))
+    }
+
+    /// Borrows the original admission only from this writer's current Applying readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects historical/caller-created cuts, changed rows, foreign acquisition
+    /// or an advanced native carrier. This does not lend mutable Journal authority.
+    pub fn original_signing_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.validate_readback(readback)?;
+        let origin = self.authority.journal.source_original_replay.origins().iter()
+            .find(|origin| {
+                origin.applying_transaction() == &readback.transaction
+                    && origin.admission_comparison().original().acquisition_id == acquisition
+            })
+            .ok_or(invalid("original Source signing needs actual Applying readback"))?;
+        if readback.rows.contains_key(&(
+            RecordNamespace::SourceProviderAuthority,
+            aos_sandbox_source_provider_ledger::ledger::native_completion::
+                native_completion_key_v2(acquisition),
+        )) {
+            return Err(invalid("original Source signing carrier already present"));
+        }
+        Ok(origin)
+    }
+
+    /// Claims only the original native signing purpose on this opaque readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a noncurrent Applying readback or a repeated signing attempt.
+    pub fn claim_original_native_signing_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+    ) -> Result<(), JournalError> {
+        self.original_signing_basis_v5(readback, acquisition)?;
+        if readback.original_native_signing_attempted.replace(true) {
+            return Err(invalid("original Source native signing already attempted"));
+        }
+        Ok(())
+    }
+
+    /// Requires this same writer's exact Requested readback before challenge issue.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale or foreign physical cuts, changed signed request or any
+    /// prefix other than initial held Requested.
+    pub fn require_original_requested_readback_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        signed: &SignedStorageNativeAcquireRequestV2,
+    ) -> Result<(), JournalError> {
+        self.validate_readback(readback)?;
+        let acquisition = signed.request().claims().provider_acquisition().1;
+        let key = aos_sandbox_source_provider_ledger::ledger::native_completion::
+            native_completion_key_v2(acquisition);
+        let bytes = readback.rows.get(&(RecordNamespace::SourceProviderAuthority, key.clone()))
+            .ok_or(invalid("original Source Requested readback missing"))?;
+        let record = SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
+            .map_err(|_| invalid("original Source Requested readback codec"))?;
+        if record.original().state != aos_sandbox_source_provider_ledger::ledger::
+                native_completion::NativeAcquireCompletionStateV2::Requested
+            || record.suffix().phase() != 0
+            || record.original().canonical_request.as_ref() != Some(signed)
+        {
+            return Err(invalid("original Source Requested readback changed"));
+        }
+        Ok(())
+    }
+
     /// Returns the exact limits opened by this held Journal.
     pub fn configured_limits(&self) -> super::super::JournalLimits {
         self.authority.journal.limits
@@ -408,6 +636,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 rows: self.authority.journal.state.clone(),
                 transaction: prepared.owners.clone(),
                 validated: false,
+                original_native_signing_attempted: std::cell::Cell::new(false),
             });
 
             self.authority.journal.complete_source_original_replay_v5(self.challenges)?;

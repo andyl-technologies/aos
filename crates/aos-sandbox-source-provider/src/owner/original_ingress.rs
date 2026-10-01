@@ -28,6 +28,7 @@ use crate::{
 pub(super) struct OriginalIngressV1 {
     pending: Option<RetainedOriginalPairV1>,
     rejected_packet: Option<Vec<u8>>,
+    producer_failure: Option<super::original_journal::producer::OriginalProducerErrorV5>,
     closed: bool,
 }
 
@@ -36,6 +37,8 @@ struct RetainedOriginalPairV1 {
     cut: OriginalIngressCutV1,
     acquire_packet: Option<Vec<u8>>,
     acquire: Option<CurrentProviderRequestV1>,
+    selection: Option<crate::acquire::CurrentSelection>,
+    clock: Option<crate::native_completion::NativeAcquireClockGuardV1>,
 }
 
 struct OriginalIngressCutV1 {
@@ -50,6 +53,68 @@ pub(super) enum ReceivedOriginalIngressV1 {
 }
 
 impl OriginalIngressV1 {
+    pub(super) fn retain_producer_failure_v5(
+        &mut self,
+        cause: super::original_journal::producer::OriginalProducerErrorV5,
+    ) {
+        if self.producer_failure.is_none() {
+            self.producer_failure = Some(cause);
+        }
+        self.close_if_retained();
+    }
+
+    pub(super) fn producer_failure_v5(
+        &self,
+    ) -> Option<&super::original_journal::producer::OriginalProducerErrorV5> {
+        self.producer_failure.as_ref()
+    }
+
+    pub(super) fn producer_closed_v5(&self) -> bool {
+        self.closed
+    }
+
+    /// Borrows the selected owner retained by the sole original pairing engine.
+    pub(super) fn borrowed_selection_v5(
+        &self,
+    ) -> Result<&crate::acquire::CurrentSelection, ProviderLedgerError> {
+        self.borrowed_pair_v5()?;
+        self.pending.as_ref().and_then(|pair| pair.selection.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)
+    }
+
+    /// Captures one original clock only while the genuine fresh pair is resident.
+    pub(super) fn retain_original_clock_v5(&mut self) -> Result<(), ProviderLedgerError> {
+        self.borrowed_pair_v5()?;
+        let pending = self.pending.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let acquire = pending.acquire.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+        let VerifiedProviderRequestV1::Acquire(verified) = acquire.verified() else {
+            return Err(ProviderLedgerError::Equivocation);
+        };
+        let signed = SignedSourceProviderRequestV1::from_canonical_bytes(
+            verified.attempt().canonical_signed_request(),
+        ).map_err(|_| ProviderLedgerError::Equivocation)?;
+        if pending.clock.is_none() {
+            pending.clock = Some(
+                crate::native_completion::NativeAcquireClockGuardV1::before_challenge(
+                    &signed,
+                    verified.attempt().attempt_digest(),
+                    verified.ingress_projection().verified_at_seconds(),
+                    verified.ingress_projection().current_valid_until_seconds(),
+                )?,
+            );
+        }
+        pending.clock.as_ref().ok_or(ProviderLedgerError::Unavailable)?
+            .require_original(&signed, verified.attempt().attempt_digest())
+    }
+
+    pub(super) fn borrowed_clock_v5(
+        &self,
+    ) -> Result<&crate::native_completion::NativeAcquireClockGuardV1, ProviderLedgerError> {
+        self.borrowed_pair_v5()?;
+        self.pending.as_ref().and_then(|pair| pair.clock.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)
+    }
+
     /// Borrows the already authenticated full pair without moving its custody.
     pub(super) fn borrowed_pair_v5(
         &self,
@@ -262,6 +327,8 @@ impl FixedProviderOwnerV1 {
                             cut,
                             acquire_packet: None,
                             acquire: None,
+                            selection: None,
+                            clock: None,
                         });
                     }
                     if !original_idle {
@@ -274,7 +341,7 @@ impl FixedProviderOwnerV1 {
                 CurrentProviderOriginalCarrierPacketV1::Source(packet) => {
                     if let Some(pending) = pair.pending.as_mut() {
                         pending.acquire_packet = Some(packet);
-                        let current = authenticate_original_pair(
+                        authenticate_original_pair(
                             &journal,
                             configuration,
                             recovered,
@@ -283,7 +350,6 @@ impl FixedProviderOwnerV1 {
                             publication,
                             rows.ok_or(ProviderLedgerError::Unavailable)?,
                         )?;
-                        pending.acquire = Some(current);
                         ReceivedOriginalIngressV1::Progress(
                             FixedProviderIngressProgressV1::OriginalPairRetained,
                         )
@@ -368,10 +434,10 @@ fn authenticate_original_pair(
     configuration: &ProtectedProviderConfigurationV1,
     recovered: &RecoveredProviderLedgerV1,
     session: &mut CurrentProviderIngressSessionV1,
-    pending: &RetainedOriginalPairV1,
+    pending: &mut RetainedOriginalPairV1,
     publication: &[u8],
     rows: &[u8],
-) -> Result<CurrentProviderRequestV1, ProviderLedgerError> {
+) -> Result<(), ProviderLedgerError> {
     let signed = SignedSourceProviderRequestV1::from_canonical_bytes(
         pending
             .acquire_packet
@@ -385,7 +451,9 @@ fn authenticate_original_pair(
     let expectation =
         crate::transaction::request_sequence_expectation_at(journal, recovered, &signed)?;
     let current = session.verify_current_request(&signed, expectation, &[])?;
-    let VerifiedProviderRequestV1::Acquire(verified) = current.verified() else {
+    pending.acquire = Some(current);
+    let VerifiedProviderRequestV1::Acquire(verified) = pending.acquire.as_ref()
+        .ok_or(ProviderLedgerError::Unavailable)?.verified() else {
         return Err(ProviderLedgerError::Equivocation);
     };
     require_original_pair_scope(
@@ -424,7 +492,7 @@ fn authenticate_original_pair(
     }
 
     let normalized = crate::acquire::normalized_intent(verified)?;
-    let selected = crate::acquire::select_current_resource_at(
+    pending.selection = Some(crate::acquire::select_current_resource_at(
         journal,
         &recovered.catalog,
         session,
@@ -432,8 +500,8 @@ fn authenticate_original_pair(
         verified.ingress_projection().resource_namespace_digest(),
         publication,
         rows,
-    )?;
-    selected.require_native_claims(
+    )?);
+    pending.selection.as_ref().ok_or(ProviderLedgerError::Unavailable)?.require_native_claims(
         journal,
         verified
             .request()
@@ -453,7 +521,7 @@ fn authenticate_original_pair(
     )?;
     pending.cut.require_current(journal, &after)?;
     session.revalidate_root_prepared_carrier_v1(&pending.root)?;
-    Ok(current)
+    Ok(())
 }
 
 fn require_original_pair_scope(
@@ -616,6 +684,7 @@ mod tests {
         let mut ingress = OriginalIngressV1 {
             pending: None,
             rejected_packet: Some(original.clone()),
+            producer_failure: None,
             closed: false,
         };
         ingress.close_if_retained();
