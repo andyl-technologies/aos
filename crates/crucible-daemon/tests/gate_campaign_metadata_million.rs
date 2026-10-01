@@ -68,6 +68,38 @@ fn measurement_elapsed_since(started: Timespec) -> Result<Duration, Box<dyn Erro
         .ok_or("monotonic clock moved backwards")?)
 }
 
+/// Reports completed work and the next phase without feeding host time into state.
+struct CorpusProgress {
+    last_report: Timespec,
+}
+
+impl CorpusProgress {
+    fn report(
+        &mut self,
+        completed_requests: usize,
+        phase: &str,
+        setup_elapsed: Duration,
+        planner_elapsed: Duration,
+        force: bool,
+    ) -> Result<(), Box<dyn Error>> {
+        if !force && measurement_elapsed_since(self.last_report)? < Duration::from_secs(30) {
+            return Ok(());
+        }
+
+        // Count only terminal Issue successors. Entering another phase does
+        // not claim that its request, or any pending admissions, completed.
+        println!(
+            "campaign_million_progress admissions={} requests={} setup_ns={} planner_ns={} phase={phase}",
+            completed_requests * REQUEST_SIZE,
+            completed_requests,
+            setup_elapsed.as_nanos(),
+            planner_elapsed.as_nanos(),
+        );
+        self.last_report = clock_gettime(ClockId::Monotonic);
+        Ok(())
+    }
+}
+
 const fn ancestry_for_admissions(admissions: usize) -> usize {
     // create + fund + resume, then discover + submit per finite request,
     // then one canonical ordered Issue successor per finite request.
@@ -336,12 +368,29 @@ fn run_corpus(
         profiler.report(0, "initialization");
     }
     let emit_plan_ids = std::env::var_os("CRUCIBLE_CAMPAIGN_MILLION_DIAGNOSTIC_REQUESTS").is_some();
+    let mut progress = CorpusProgress {
+        last_report: clock_gettime(ClockId::Monotonic),
+    };
     for request_index in 0..admissions / REQUEST_SIZE {
+        progress.report(
+            request_index,
+            "publish-request",
+            setup_elapsed,
+            planner_elapsed,
+            request_index == 0,
+        )?;
         let setup_started = clock_gettime(ClockId::Monotonic);
         let request = publish_request(&repository, &lineage, request_index)?;
         if let Some(profiler) = &profiler {
             profiler.report(request_index + 1, "publish-request");
         }
+        progress.report(
+            request_index,
+            "discover",
+            setup_elapsed,
+            planner_elapsed,
+            request_index == 0,
+        )?;
         let discovered = repository.discover_operator_choice_opportunity(
             CAMPAIGN,
             parent,
@@ -351,6 +400,13 @@ fn run_corpus(
         if let Some(profiler) = &profiler {
             profiler.report(request_index + 1, "discover");
         }
+        progress.report(
+            request_index,
+            "submit-request",
+            setup_elapsed,
+            planner_elapsed,
+            request_index == 0,
+        )?;
         repository.submit_operator_branch_request(CAMPAIGN, discovered.new_snapshot, &request)?;
         ancestry_depth += 2;
         setup_elapsed += measurement_elapsed_since(setup_started)?;
@@ -358,6 +414,13 @@ fn run_corpus(
             profiler.report(request_index + 1, "setup");
         }
 
+        progress.report(
+            request_index,
+            "planner",
+            setup_elapsed,
+            planner_elapsed,
+            request_index == 0,
+        )?;
         let step_started = clock_gettime(ClockId::Monotonic);
         let outcome = planner.step(CAMPAIGN)?;
         let CampaignPlannerStepOutcome::Advanced {
@@ -388,27 +451,39 @@ fn run_corpus(
         if let Some(profiler) = &profiler {
             profiler.report(request_index + 1, "planner");
         }
-        if (request_index + 1) % 1_024 == 0 {
-            println!(
-                "campaign_million_progress admissions={} requests={} setup_ns={} planner_ns={}",
-                (request_index + 1) * REQUEST_SIZE,
-                request_index + 1,
-                setup_elapsed.as_nanos(),
-                planner_elapsed.as_nanos(),
-            );
-        }
+        progress.report(
+            request_index + 1,
+            "between-requests",
+            setup_elapsed,
+            planner_elapsed,
+            (request_index + 1) % 1_024 == 0,
+        )?;
     }
     assert_eq!(ancestry_depth, ancestry_for_admissions(admissions));
     let projection = repository.budget_projection(CAMPAIGN)?;
     assert_eq!(projection.spent_proposals, admissions as u64);
     assert_eq!(projection.spent_attempts, admissions as u64);
 
+    progress.report(
+        admissions / REQUEST_SIZE,
+        "hot-queue",
+        setup_elapsed,
+        planner_elapsed,
+        true,
+    )?;
     let hot_started = clock_gettime(ClockId::Monotonic);
     let (hot_claimable, hot_pages) = scan_queue(&repository, parent)?;
     let hot_elapsed = measurement_elapsed_since(hot_started)?;
     drop(planner);
     drop(repository);
 
+    progress.report(
+        admissions / REQUEST_SIZE,
+        "inventory",
+        setup_elapsed,
+        planner_elapsed,
+        true,
+    )?;
     let mut index_bytes = 0_u64;
     let physical = maintenance.physical();
     assert_eq!(physical.len(), 1);
@@ -435,6 +510,13 @@ fn run_corpus(
         Arc::new(DirectoryRefBackend::new(root.join("refs"))),
         PlannerAuthorityKey::from_bytes([0x91; 32])?,
         debugger_authority,
+    )?;
+    progress.report(
+        admissions / REQUEST_SIZE,
+        "cold-queue",
+        setup_elapsed,
+        planner_elapsed,
+        true,
     )?;
     let cold_started = clock_gettime(ClockId::Monotonic);
     assert_eq!(cold.head(CAMPAIGN)?.snapshot_id(), parent);
