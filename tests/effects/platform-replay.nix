@@ -27,10 +27,11 @@ let
   kmod = artifact "kmod" (source (repo + "/pkgs/system/_kmod-abilities"));
   tunables = artifact "tunables" (source (repo + "/pkgs/tools/_aos-kernel-tunable-provider"));
   lower = artifact "configuration-lower" (source (repo + "/pkgs/boot/_aos-configuration-lower"));
+  locales = artifact "glibc-locales" (source (repo + "/pkgs/data/_glibc-locales"));
   policy =
     (artifact "policy" (source (repo + "/pkgs/system/_aos-host-policy")))
     // {
-      moduleDeps = [kmod tunables lower (artifact "service-management" (source (repo + "/pkgs/system/_service-management")))];
+      moduleDeps = [kmod tunables lower locales (artifact "service-management" (source (repo + "/pkgs/system/_service-management")))];
       runtimeDeps = map (name: artifact name null) ["ca-certificates" "coreutils" "bash"];
     };
   serviceSource = source (repo + "/pkgs/system/_service-management");
@@ -104,9 +105,11 @@ in
   assert builtins.length runtime.config.aos.activation.graph.order >= 5;
   assert (builtins.head additions.packages).passthru.nativeManagedPaths
   == [
+    "locale.conf"
     "pki/tls/certs/ca-bundle.crt"
     "profile"
     "profile.d/10-apm-path.sh"
+    "profile.d/20-locale.sh"
     "security/limits.d/aos-hardening.conf"
     "ssl/certs/ca-bundle.crt"
     "ssl/certs/ca-certificates.crt"

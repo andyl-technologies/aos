@@ -57,7 +57,8 @@
             jobScripts.start = "@environment";
           };
           baselinePaths = ["runtime-config/materialized.conf"];
-          storePaths = [(toString tree) (toString pkgs.bash)];
+          # The selected systemd defaults also materialize the native CA bundle.
+          storePaths = [(toString tree) (toString pkgs.bash) (toString pkgs.ca-certificates)];
         };
       }
     ];
