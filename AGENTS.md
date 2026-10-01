@@ -145,18 +145,17 @@ correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 ## The `aos-dev` development entry point
 
 Use the in-repository Bash CLI for build targets, checks, formatting, cache
-maintenance, and release preparation. The dev shell puts `aos-dev` in PATH
-without building the Rust CLIs. Run `aos-dev help` for commands, flags, and
-completion. Outside the shell, use `bash ./tools/dev/aos-dev`; the entry point
-has no host-specific shebang.
+maintenance, and release preparation. Assume `aos-dev` is in PATH through
+direnv or `nix develop`; the dev shell exposes it without building the Rust
+CLIs. Run `aos-dev help` for commands, flags, and completion.
 
 ```sh
-bash ./tools/dev/aos-dev list packages crucible
-bash ./tools/dev/aos-dev build package crucible --no-out-link
-bash ./tools/dev/aos-dev build image server:qcow2
-bash ./tools/dev/aos-dev all checks
-bash ./tools/dev/aos-dev cache init
-bash ./tools/dev/aos-dev cache rust status
+aos-dev list packages crucible
+aos-dev build package crucible --no-out-link
+aos-dev build image server:qcow2
+aos-dev all checks
+aos-dev cache init
+aos-dev cache rust status
 ```
 
 Run `aos-dev run aos <arguments>`, `aos-dev run apm <arguments>`, or

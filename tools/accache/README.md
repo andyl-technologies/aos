@@ -7,10 +7,10 @@ socket, daemon lifecycle, or shared in-memory compiler configuration.
 ## Development use
 
 ```sh
-bash ./tools/dev/aos-dev cache init
-bash ./tools/dev/aos-dev build package aos --no-out-link
-bash ./tools/dev/aos-dev --no-rust-incremental build package aos --no-out-link
-bash ./tools/dev/aos-dev --release build package aos --no-out-link
+aos-dev cache init
+aos-dev build package aos --no-out-link
+aos-dev --no-rust-incremental build package aos --no-out-link
+aos-dev --release build package aos --no-out-link
 ```
 
 Accache is enabled by default in development mode. `--no-accache` disables it;
@@ -387,7 +387,7 @@ effective environment; treat cache storage with the same care as build inputs.
 ## Validation
 
 ```sh
-bash ./tools/dev/aos-dev --release build check build.accache --no-out-link
+aos-dev --release build check build.accache --no-out-link
 ```
 
 `checks.build.accache` builds the compiler wrapper and a pinned, test-only

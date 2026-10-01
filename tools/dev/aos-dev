@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# Run with `bash ./tools/dev/aos-dev`; the repository cannot assume a host Bash path.
+# Loaded by the dev-shell launcher using AOS-built Bash.
 set -euo pipefail
 
 aos_dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
