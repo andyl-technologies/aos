@@ -39,6 +39,10 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
+  suiteDeclaration = builtins.concatStringsSep " " (
+    builtins.filter builtins.isString (builtins.split "[[:space:]]+" cruciblePackageNix)
+  );
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
@@ -152,10 +156,14 @@
         needle = "standalone_release=false";
       }
     ]
-    ++ failuresFor "pkgs/tools/crucible/crucible.nix" cruciblePackageNix [
+    ++ failuresFor "pkgs/tools/crucible/crucible.nix" suiteDeclaration [
       {
         label = "suite carries the separate controller and matched QEMU/plugin runtime deps";
-        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux];";
+        needle = "runtimeDeps = [controller debugGateway qemu-crucible crucible-qemu-plugin qemu-crucible-source linux-crucible crucible-fixtures gdb openssh coreutils grep sed util-linux]";
+      }
+      {
+        label = "cross Linux suite retains its target wrapper shell";
+        needle = "++ lib.optionals (stdenv.isCross && stdenv.hostPlatform.isLinux) [bash]";
       }
       {
         label = "suite wrapper configures QEMU at runtime";

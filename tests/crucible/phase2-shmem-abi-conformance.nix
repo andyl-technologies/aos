@@ -81,8 +81,8 @@
         needle = "const _: () = assert!(REGION_HEADER_REGION_SIZE_OFFSET == 48);";
       }
       {
-        label = "region header icount shift Rust static assertion";
-        needle = "const _: () = assert!(REGION_HEADER_ICOUNT_SHIFT_OFFSET == 56);";
+        label = "region header tick scale Rust static assertion";
+        needle = "const _: () = assert!(REGION_HEADER_TICKS_PER_NS_OFFSET == 56);";
       }
       {
         label = "region header pause flag Rust static assertion";
@@ -282,19 +282,19 @@
       }
       {
         label = "node slot device completion Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET == 48);";
+        needle = "const _: () = assert!(NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET == 48);";
       }
       {
-        label = "node slot preemption icount Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET == 56);";
+        label = "node slot preemption tick Rust static assertion";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_AT_TICK_OFFSET == 56);";
       }
       {
         label = "node slot preemption deadline Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET == 64);";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET == 64);";
       }
       {
         label = "node slot preemption ceiling Rust static assertion";
-        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET == 72);";
+        needle = "const _: () = assert!(NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET == 72);";
       }
       {
         label = "node slot published preemption sequence Rust static assertion";
@@ -619,8 +619,8 @@
         needle = "offsetof(crucible_shmem_region_header, region_size) == CRUCIBLE_SHMEM_REGION_HEADER_REGION_SIZE_OFFSET";
       }
       {
-        label = "region header icount shift offset static assert";
-        needle = "offsetof(crucible_shmem_region_header, icount_shift) == CRUCIBLE_SHMEM_REGION_HEADER_ICOUNT_SHIFT_OFFSET";
+        label = "region header tick scale offset static assert";
+        needle = "offsetof(crucible_shmem_region_header, ticks_per_ns) == CRUCIBLE_SHMEM_REGION_HEADER_TICKS_PER_NS_OFFSET";
       }
       {
         label = "region header pause flag offset static assert";
@@ -684,19 +684,19 @@
       }
       {
         label = "node slot device completion offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, device_completion_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_ICOUNT_OFFSET";
+        needle = "offsetof(crucible_shmem_node_slot, device_completion_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_DEVICE_COMPLETION_DEADLINE_TICK_OFFSET";
       }
       {
-        label = "node slot preemption icount offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, preemption_at_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_ICOUNT_OFFSET";
+        label = "node slot preemption tick offset static assert";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_at_tick) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_AT_TICK_OFFSET";
       }
       {
         label = "node slot preemption deadline offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, preemption_deadline_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_ICOUNT_OFFSET";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_deadline_tick) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_DEADLINE_TICK_OFFSET";
       }
       {
         label = "node slot preemption ceiling offset static assert";
-        needle = "offsetof(crucible_shmem_node_slot, preemption_ceiling_icount) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CEILING_ICOUNT_OFFSET";
+        needle = "offsetof(crucible_shmem_node_slot, preemption_ceiling_tick) == CRUCIBLE_SHMEM_NODE_SLOT_PREEMPTION_CEILING_TICK_OFFSET";
       }
       {
         label = "node slot published preemption sequence offset static assert";

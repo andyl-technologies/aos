@@ -42,6 +42,19 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
+  # Shell continuation indentation does not alter the exact Cargo arguments.
+  normalizeCargoFormatting = source:
+    builtins.concatStringsSep " " (
+      builtins.filter builtins.isString (
+        builtins.split "[[:space:]]+" (
+          builtins.replaceStrings ["\\\n"] [" "] source
+        )
+      )
+    );
+
+  normalizeCargoRequirement = requirement:
+    requirement // {needle = normalizeCargoFormatting requirement.needle;};
+
   failures =
     failuresFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
       {
@@ -75,7 +88,7 @@
         needle = "cruciblePackageAbiConformance = import ./phase7-crucible-package-abi-conformance.nix";
       }
     ]
-    ++ failuresFor "tests/crucible/phase2-abi-conformance.nix" abiConformanceCheck [
+    ++ failuresFor "tests/crucible/phase2-abi-conformance.nix" (normalizeCargoFormatting abiConformanceCheck) (map normalizeCargoRequirement [
       {
         label = "AOS mkDerivation check";
         needle = "pkgs.mkDerivation";
@@ -136,7 +149,7 @@
         label = "RPC mismatch result marker";
         needle = "rpc_exact_version_rejection=true";
       }
-    ]
+    ])
     ++ failuresFor "crates/crucible-shmem/tests/gate_abi_conformance.rs" shmemGateTest [
       {
         label = "shmem generated header and golden vector aggregate";
