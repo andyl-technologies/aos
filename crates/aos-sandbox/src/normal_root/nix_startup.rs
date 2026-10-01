@@ -4,6 +4,9 @@
 //! the Nix owner consumes its own closed table. Immutable profiles are image
 //! comparisons, not transferable authority. Actual original PID1, process,
 //! invocation, cgroup, confinement and delivered descriptors remain retained.
+//! The PID1 file authenticates its original launch image, not a later manager
+//! executable after reexec. Current unique-PID1 service observations remain
+//! bookended within the trusted boot/system-manager administration boundary.
 //!
 //! ```text
 //! AOS_NIX_STARTUP_2: closed role + identities + immutable image/policy pins
@@ -11,8 +14,10 @@
 //! ```
 
 mod floor_origin;
+mod owner_public;
 
 pub use floor_origin::{ControllerNixSessionFloorOriginV2, NixOwnerSessionFloorStartupV2};
+pub use owner_public::NixOwnerPublicSessionFloorOriginV2;
 
 use std::fs::File;
 use std::num::NonZeroU32;
@@ -333,6 +338,15 @@ macro_rules! startup_methods {
             pub(crate) fn require_floor_helper(&self, process: &PidFd) -> Result<(), Error> {
                 self.retained.require_floor_helper(process)
             }
+
+            /// Observes the Nix-only current service population policy twice.
+            ///
+            /// # Errors
+            ///
+            /// Rejects original startup or either full barrier-flight mismatch.
+            pub(crate) fn require_physical_service_barrier(&self) -> Result<(), Error> {
+                self.retained.require_physical_service_barrier()
+            }
         }
     };
 }
@@ -403,7 +417,9 @@ impl RetainedNixStartup {
         {
             file.revalidate().map_err(|_| Error::Image)?;
         }
-        self.pid1.require_executed(1).map_err(|_| Error::Image)?;
+        // The genuine inherited file measures PID1 at launch. Reopening proc1
+        // is neither available to the confined Controller nor reexec custody.
+        self.pid1.revalidate().map_err(|_| Error::Image)?;
         self.executable.require_executed(std::process::id()).map_err(|_| Error::Image)?;
         images::require_actual_mappings(&self.runtime, &[&self.profile.executable.path, &self.profile.loader.path])?;
         self.policy.revalidate(&self.profile.canonical_policy.path).map_err(|_| Error::Confinement)?;
@@ -443,6 +459,33 @@ impl RetainedNixStartup {
         let observed = observe_delivery(self.role, self.profile_file.path(), self.root_profile.as_ref().map(|file| file.path()), self.method46_image)?;
         service::require_same(&self.observed, &observed)?;
         require_unit(&self.fragment, self.profile_file.path(), self.role, self.profile.unit_sha256)
+    }
+
+    fn require_physical_service_barrier(&self) -> Result<(), Error> {
+        self.recheck()?;
+        // Both full flights independently match the retained original unit,
+        // invocation and delivery, not merely each other's returned DATA.
+        for _ in 0..2 {
+            let (properties, unit) =
+                service::read_nix_barrier_properties(self.role.unit(), std::process::id())?;
+            let observed = service::immutable_observation(decode_delivery(
+                &properties,
+                &unit,
+                self.role,
+                self.profile_file.path(),
+                self.root_profile.as_ref().map(|file| file.path()),
+                self.method46_image,
+            )?)?;
+            service::require_same(&self.observed, &observed)?;
+            require_unit(
+                &self.fragment,
+                self.profile_file.path(),
+                self.role,
+                self.profile.unit_sha256,
+            )?;
+            self.recheck()?;
+        }
+        Ok(())
     }
 
     fn require_floor_helper(&self, process: &PidFd) -> Result<(), Error> {

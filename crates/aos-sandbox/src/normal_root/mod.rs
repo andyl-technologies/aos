@@ -50,7 +50,8 @@ pub(crate) use git_evidence_credential::{
     RootGitEvidenceCredentialCustodyV1, RootGitEvidenceCredentialErrorV1,
 };
 pub use nix_startup::{
-    ControllerNixSessionFloorOriginV2, NixOwnerSessionFloorStartupV2,
+    ControllerNixSessionFloorOriginV2, NixOwnerPublicSessionFloorOriginV2,
+    NixOwnerSessionFloorStartupV2,
     ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1,
     ProductionNixOwnerStartupCaptureV1, ProductionNixOwnerStartupV1,
 };

@@ -132,34 +132,14 @@ impl ControllerNixStartRecipeSelectorV2 {
             PinnedSystemdCredential::load_nix_mount_plan_public_key()?,
             PinnedSystemdCredential::load_nix_mount_plan_revocation_scope()?,
         ];
-        let pins = NixFixedDomainPinsDataV2::decode(credentials[1].bytes())
-            .map_err(|error| match error {
-                NixFixedDomainPinsDecodeErrorV2::Encoding(source) => {
-                    NixStartAdmissionErrorV2::Encoding(source)
-                }
-                NixFixedDomainPinsDecodeErrorV2::Invalid => NixStartAdmissionErrorV2::Invalid,
-            })?;
+        let pins = decode_public_domain_pins(&credentials)?;
         if pins.node != node
             || pins.identities[..2] != [controller_uid, controller_gid]
         {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         let startup = Arc::new(capture.admit_selected(pins.identities)?);
-        let issuer = array::<32>(credentials[0].bytes())?;
-        let manifest = BrokerSessionManifestV1::decode(credentials[2].bytes())
-            .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        if manifest.protocol() != BrokerSessionProtocolV1::Nix
-            || manifest.audience() != BrokerSessionManifestAudienceV1::NodeController
-            || manifest.node_id() != *node.as_bytes()
-            || manifest.domain_id() != *pins.domain.as_bytes()
-            || manifest.route_id() != *pins.endpoint.as_bytes()
-            || manifest.key_pins().iter().any(|pin| pin.public_key() == &issuer)
-            || manifest.key_pins().iter().any(|pin| pin.is_revoked() || pin.superseded_by_key_generation().is_some())
-            || [5, 7, 10].into_iter().any(|index| credentials[index].bytes() == issuer)
-        {
-            return Err(NixStartAdmissionErrorV2::Invalid);
-        }
-        let recipes = decode_catalog(credentials[3].bytes(), issuer)?;
+        let recipes = decode_public_catalog(&credentials, &pins, node)?;
         let owner = Self {
             startup,
             pins,
@@ -206,60 +186,28 @@ impl ControllerNixStartRecipeSelectorV2 {
 
     fn assignment_policy(&self) -> Result<CurrentRuntimeScopePolicy, NixStartAdmissionErrorV2> {
         self.recheck()?;
-        let policy_bytes = self.credentials[4].bytes();
-        let policy = decode_trust_policy(policy_bytes, DecodeLimits::default())
-            .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        aos_sandbox_core::validate_required_features(policy.required_features())
-            .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        let [authority] = policy.allowed_keys() else {
-            return Err(NixStartAdmissionErrorV2::Invalid);
-        };
-        if policy.purpose() != SignaturePurpose::OwnershipLease
-            || authority.usage() != KeyUsage::OwnershipLease
-        {
-            return Err(NixStartAdmissionErrorV2::Invalid);
-        }
-        let descriptor = descriptor_for_bytes(
-            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned()).map_err(|_| NixStartAdmissionErrorV2::Invalid)?,
-            policy_bytes,
-        );
-        let anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
-            policy_bytes.to_vec(), descriptor, policy.trust_scope(), authority.clone(),
-            array::<32>(self.credentials[5].bytes())?, DecodeLimits::default(),
-        ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        Ok(CurrentRuntimeScopePolicy {
-            node: self.pins.node,
-            clock_provenance: *b"aos-cli-clock-v1",
-            maximum_validity_seconds: 10,
-            runtime_limits: RuntimeAuthorityLimits::default(),
-            ownership_verifier: OwnershipAuthorityVerifier::new(anchor, authority.clone()),
-            broker_anchor: self.plan_anchor(6)?,
-            mount_broker_anchor: self.plan_anchor(9)?,
-        })
+        assignment_policy_from_publics(&self.credentials, &self.pins)
     }
 
-    fn plan_anchor(&self, index: usize) -> Result<BrokerPlanTrustAnchor, NixStartAdmissionErrorV2> {
-        let bytes = self.credentials[index].bytes();
-        let public = array::<32>(self.credentials[index + 1].bytes())?;
-        let scope = array::<16>(self.credentials[index + 2].bytes())?;
-        let policy = decode_trust_policy(bytes, DecodeLimits::default())
-            .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        aos_sandbox_core::validate_required_features(policy.required_features())
-            .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
-        let fingerprint = ObjectDigest::from_bytes(Sha256::digest(public).into());
-        let mut matches = policy.allowed_keys().iter().filter(|key| {
-            key.usage() == KeyUsage::BrokerAuthorization && key.public_key_sha256() == fingerprint
-        });
-        let signer = matches.next().cloned().ok_or(NixStartAdmissionErrorV2::Invalid)?;
-        if policy.purpose() != SignaturePurpose::BrokerAuthorization || matches.next().is_some() || scope == [0; 16] {
+    /// Compares DATA from the independently retained fixed owner public set.
+    ///
+    /// This constructs no selector, startup, Session, currentness or floor.
+    ///
+    /// # Errors
+    /// Preserves encoding/catalog failures and rejects mismatched node/profile,
+    /// endpoint/issuer/session pins or ownership/plan policy validation failures.
+    pub(crate) fn validate_owner_floor_publics(
+        credentials: &[PinnedSystemdCredential; 12],
+        node: NodeId,
+        identities: [u32; 4],
+    ) -> Result<NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2> {
+        let pins = decode_public_domain_pins(credentials)?;
+        if pins.node != node || pins.identities != identities {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
-        BrokerPlanTrustAnchor::from_trusted_configuration(
-            bytes.to_vec(),
-            descriptor_for_bytes(MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned()).map_err(|_| NixStartAdmissionErrorV2::Invalid)?, bytes),
-            policy.trust_scope(), signer, public, RevocationScopeId::from_bytes(scope),
-            DecodeLimits::default(),
-        ).map_err(|_| NixStartAdmissionErrorV2::Invalid)
+        decode_public_catalog(credentials, &pins, node)?;
+        assignment_policy_from_publics(credentials, &pins)?;
+        Ok(pins)
     }
 
     pub(super) fn prepare_vacant(
@@ -443,6 +391,122 @@ impl ControllerNixStartRecipeSelectorV2 {
         }
         Ok(())
     }
+}
+
+fn decode_public_domain_pins(
+    credentials: &[PinnedSystemdCredential; 12],
+) -> Result<NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2> {
+    NixFixedDomainPinsDataV2::decode(credentials[1].bytes())
+        .map_err(|error| match error {
+            NixFixedDomainPinsDecodeErrorV2::Encoding(source) => {
+                NixStartAdmissionErrorV2::Encoding(source)
+            }
+            NixFixedDomainPinsDecodeErrorV2::Invalid => NixStartAdmissionErrorV2::Invalid,
+        })
+}
+
+fn decode_public_catalog(
+    credentials: &[PinnedSystemdCredential; 12],
+    pins: &NixFixedDomainPinsDataV2,
+    node: NodeId,
+) -> Result<Vec<VerifiedNixRecipeArtifactV2>, NixStartAdmissionErrorV2> {
+    let issuer = array::<32>(credentials[0].bytes())?;
+    let manifest = BrokerSessionManifestV1::decode(credentials[2].bytes())
+        .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
+    if manifest.protocol() != BrokerSessionProtocolV1::Nix
+        || manifest.audience() != BrokerSessionManifestAudienceV1::NodeController
+        || manifest.node_id() != *node.as_bytes()
+        || manifest.domain_id() != *pins.domain.as_bytes()
+        || manifest.route_id() != *pins.endpoint.as_bytes()
+        || manifest.key_pins().iter().any(|pin| pin.public_key() == &issuer)
+        || manifest.key_pins().iter().any(|pin| {
+            pin.is_revoked() || pin.superseded_by_key_generation().is_some()
+        })
+        || [5, 7, 10].into_iter().any(|index| credentials[index].bytes() == issuer)
+    {
+        return Err(NixStartAdmissionErrorV2::Invalid);
+    }
+    decode_catalog(credentials[3].bytes(), issuer)
+}
+
+fn assignment_policy_from_publics(
+    credentials: &[PinnedSystemdCredential; 12],
+    pins: &NixFixedDomainPinsDataV2,
+) -> Result<CurrentRuntimeScopePolicy, NixStartAdmissionErrorV2> {
+    let policy_bytes = credentials[4].bytes();
+    let policy = decode_trust_policy(policy_bytes, DecodeLimits::default())
+        .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
+    aos_sandbox_core::validate_required_features(policy.required_features())
+        .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
+    let [authority] = policy.allowed_keys() else {
+        return Err(NixStartAdmissionErrorV2::Invalid);
+    };
+    if policy.purpose() != SignaturePurpose::OwnershipLease
+        || authority.usage() != KeyUsage::OwnershipLease
+    {
+        return Err(NixStartAdmissionErrorV2::Invalid);
+    }
+    let descriptor = descriptor_for_bytes(
+        MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+            .map_err(|_| NixStartAdmissionErrorV2::Invalid)?,
+        policy_bytes,
+    );
+    let anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+        policy_bytes.to_vec(),
+        descriptor,
+        policy.trust_scope(),
+        authority.clone(),
+        array::<32>(credentials[5].bytes())?,
+        DecodeLimits::default(),
+    ).map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
+
+    Ok(CurrentRuntimeScopePolicy {
+        node: pins.node,
+        clock_provenance: *b"aos-cli-clock-v1",
+        maximum_validity_seconds: 10,
+        runtime_limits: RuntimeAuthorityLimits::default(),
+        ownership_verifier: OwnershipAuthorityVerifier::new(anchor, authority.clone()),
+        broker_anchor: plan_anchor_from_publics(credentials, 6)?,
+        mount_broker_anchor: plan_anchor_from_publics(credentials, 9)?,
+    })
+}
+
+fn plan_anchor_from_publics(
+    credentials: &[PinnedSystemdCredential; 12],
+    index: usize,
+) -> Result<BrokerPlanTrustAnchor, NixStartAdmissionErrorV2> {
+    let bytes = credentials[index].bytes();
+    let public = array::<32>(credentials[index + 1].bytes())?;
+    let scope = array::<16>(credentials[index + 2].bytes())?;
+    let policy = decode_trust_policy(bytes, DecodeLimits::default())
+        .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
+    aos_sandbox_core::validate_required_features(policy.required_features())
+        .map_err(|_| NixStartAdmissionErrorV2::Invalid)?;
+    let fingerprint = ObjectDigest::from_bytes(Sha256::digest(public).into());
+    let mut matches = policy.allowed_keys().iter().filter(|key| {
+        key.usage() == KeyUsage::BrokerAuthorization
+            && key.public_key_sha256() == fingerprint
+    });
+    let signer = matches.next().cloned().ok_or(NixStartAdmissionErrorV2::Invalid)?;
+    if policy.purpose() != SignaturePurpose::BrokerAuthorization
+        || matches.next().is_some()
+        || scope == [0; 16]
+    {
+        return Err(NixStartAdmissionErrorV2::Invalid);
+    }
+    BrokerPlanTrustAnchor::from_trusted_configuration(
+        bytes.to_vec(),
+        descriptor_for_bytes(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+                .map_err(|_| NixStartAdmissionErrorV2::Invalid)?,
+            bytes,
+        ),
+        policy.trust_scope(),
+        signer,
+        public,
+        RevocationScopeId::from_bytes(scope),
+        DecodeLimits::default(),
+    ).map_err(|_| NixStartAdmissionErrorV2::Invalid)
 }
 
 fn require_desired_assignment(
