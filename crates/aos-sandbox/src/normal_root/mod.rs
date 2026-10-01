@@ -46,6 +46,7 @@ pub use client::{
 };
 pub(crate) use controller_peer::OriginalControllerPolicyPeerV1;
 pub use nix_startup::{
+    ControllerNixSessionFloorOriginV2, NixOwnerSessionFloorStartupV2,
     ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1,
     ProductionNixOwnerStartupCaptureV1, ProductionNixOwnerStartupV1,
 };

@@ -49,7 +49,7 @@ mod nix_environment;
 #[cfg(target_os = "linux")]
 pub use nix_environment::{
     ControllerNixStartRecipeSelectorV2, CurrentRetainedNixStartV2, NixStartAdmissionErrorV2,
-    NixStartContinuationErrorV2,
+    NixStartContinuationErrorV2, NixFixedDomainPinsDataV2, NixFixedDomainPinsDecodeErrorV2,
 };
 #[cfg(target_os = "linux")]
 pub(crate) use nix_environment::{CheckedStartAuthorityV2, NixStartAdmissionCarrierV2};
