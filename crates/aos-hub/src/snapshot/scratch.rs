@@ -199,6 +199,41 @@ pub enum ScratchVerificationError {
 
 type ScratchResult<T> = Result<T, ScratchVerificationError>;
 
+// Projections are provisional private output. Callers may publish only after
+// full replay, stream EOF, relational/provenance checks and resource closure.
+pub(crate) trait ScratchProjection: Send {
+    fn schema(
+        &mut self,
+        schema: &aos_hub_core::snapshot::SnapshotSchemaManifest,
+    ) -> anyhow::Result<()>;
+    fn row(
+        &mut self,
+        table: &str,
+        sequence: u64,
+        row: &aos_hub_core::value::Row,
+    ) -> anyhow::Result<()>;
+}
+
+pub(crate) async fn verify_with_projection<M, P>(
+    inputs: ScratchVerificationInputs<M, P>,
+    limits: ScratchVerificationLimits,
+    cancellation: ScratchCancellation,
+    projection: Box<dyn ScratchProjection>,
+) -> ScratchResult<VerifiedRetainedSqliteCapture>
+where
+    M: Read + Send + 'static,
+    P: Read + Send + 'static,
+{
+    verify_inner_with_projection(
+        inputs,
+        limits,
+        cancellation,
+        Default::default(),
+        Some(projection),
+    )
+    .await
+}
+
 /// Verifies complete capture records and retained SQL constraints in private memory.
 ///
 /// An owned blocking worker consumes provisional rows, then destroys its database
@@ -228,6 +263,20 @@ async fn verify_inner<M, P>(
     limits: ScratchVerificationLimits,
     cancellation: ScratchCancellation,
     controls: budget::TestControls,
+) -> ScratchResult<VerifiedRetainedSqliteCapture>
+where
+    M: Read + Send + 'static,
+    P: Read + Send + 'static,
+{
+    verify_inner_with_projection(inputs, limits, cancellation, controls, None).await
+}
+
+async fn verify_inner_with_projection<M, P>(
+    inputs: ScratchVerificationInputs<M, P>,
+    limits: ScratchVerificationLimits,
+    cancellation: ScratchCancellation,
+    controls: budget::TestControls,
+    projection: Option<Box<dyn ScratchProjection>>,
 ) -> ScratchResult<VerifiedRetainedSqliteCapture>
 where
     M: Read + Send + 'static,
@@ -283,6 +332,7 @@ where
             ],
             limits,
             budget,
+            projection,
         )
     })
     .await

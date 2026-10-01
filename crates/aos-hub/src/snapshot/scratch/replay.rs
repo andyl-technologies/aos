@@ -31,8 +31,10 @@ pub(super) fn verify<M: Read, P: Read>(
     catalogues: [CompiledSqliteSnapshotCatalogue; 6],
     limits: ScratchVerificationLimits,
     budget: WorkBudget,
+    projection: Option<Box<dyn super::ScratchProjection>>,
 ) -> ScratchResult<VerifiedRetainedSqliteCapture> {
     let scratch = RefCell::new(None::<MemoryReplay>);
+    let projection = RefCell::new(projection);
     let failure = Cell::new(None::<Failure>);
     let mut candidates = Some(catalogues);
     let records = verify_database_capture_with_schema(
@@ -45,6 +47,13 @@ pub(super) fn verify<M: Read, P: Read>(
         limits.streams,
         |manifest| {
             let result = (|| -> ScratchResult<()> {
+                if let Some(observer) = projection
+                    .try_borrow_mut()
+                    .map_err(|_| Failure::Schema)?
+                    .as_mut()
+                {
+                    observer.schema(manifest).map_err(|_| Failure::Schema)?;
+                }
                 let catalogue = candidates
                     .take()
                     .and_then(|values| {
@@ -69,7 +78,19 @@ pub(super) fn verify<M: Read, P: Read>(
             let result = (|| -> ScratchResult<()> {
                 let mut slot = scratch.try_borrow_mut().map_err(|_| Failure::RetainedRow)?;
                 let current = slot.as_mut().ok_or(Failure::Schema)?;
-                row.with_private_row(|row| current.insert(name, sequence, row))
+                row.with_private_row(|row| {
+                    current.insert(name, sequence, row)?;
+                    if let Some(observer) = projection
+                        .try_borrow_mut()
+                        .map_err(|_| Failure::RetainedRow)?
+                        .as_mut()
+                    {
+                        observer
+                            .row(name, sequence, row)
+                            .map_err(|_| Failure::RetainedRow)?;
+                    }
+                    Ok(())
+                })
             })();
             result.map_err(|error| {
                 failure.set(Some(error));

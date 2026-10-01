@@ -128,9 +128,9 @@ pub struct SnapshotBudget {
     cancelled: Arc<AtomicBool>,
     notified: Arc<tokio::sync::Notify>,
     deadline: Instant,
-    streams: StreamLimits,
+    pub(super) streams: StreamLimits,
     scratch: SnapshotScratchLimits,
-    scratch_cancellation: ScratchCancellation,
+    pub(super) scratch_cancellation: ScratchCancellation,
     #[cfg(test)]
     scratch_read_gate: Option<Arc<ScratchReadGate>>,
 }
@@ -190,7 +190,7 @@ impl SnapshotBudget {
         Ok(self)
     }
 
-    fn scratch_limits(&self) -> Result<ScratchVerificationLimits, SnapshotError> {
+    pub(super) fn scratch_limits(&self) -> Result<ScratchVerificationLimits, SnapshotError> {
         self.check()?;
         let remaining = self.deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
@@ -213,7 +213,7 @@ impl SnapshotBudget {
         self.notified.notify_one();
     }
 
-    fn check(&self) -> Result<(), SnapshotError> {
+    pub(super) fn check(&self) -> Result<(), SnapshotError> {
         if self.cancelled.load(Ordering::Acquire) || Instant::now() >= self.deadline {
             Err(SnapshotError::Cancelled)
         } else {
@@ -221,7 +221,7 @@ impl SnapshotBudget {
         }
     }
 
-    async fn stopped(&self) {
+    pub(super) async fn stopped(&self) {
         if self.check().is_err() {
             return;
         }
@@ -235,7 +235,7 @@ impl SnapshotBudget {
 // Dropping an awaiting operation requests cancellation for any owned blocking
 // verifier that cannot be aborted immediately. Blocking Read liveness remains
 // caller/kernel-owned; this does not promise forced cancellation of one syscall.
-struct CancelOnDrop(SnapshotBudget);
+pub(super) struct CancelOnDrop(pub(super) SnapshotBudget);
 
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
@@ -243,9 +243,9 @@ impl Drop for CancelOnDrop {
     }
 }
 
-struct BudgetIo<T> {
-    inner: T,
-    budget: SnapshotBudget,
+pub(super) struct BudgetIo<T> {
+    pub(super) inner: T,
+    pub(super) budget: SnapshotBudget,
 }
 
 // Test-only observation pauses an actual scratch reader after schema creation.
@@ -331,9 +331,15 @@ pub struct SnapshotReport {
     pub source_engine: Option<&'static str>,
     /// Separately required contracts before any stronger recovery acceptance.
     pub pending_recovery_requirements: [&'static str; 5],
+    /// Optional incomplete object-requirements counts, never provider evidence.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub object_requirements: Option<aos_hub_core::snapshot::inventory::ObjectRequirementsCounts>,
 }
 
-fn report(operation: &'static str, verified: &VerifiedRetainedSqliteCapture) -> SnapshotReport {
+pub(super) fn report(
+    operation: &'static str,
+    verified: &VerifiedRetainedSqliteCapture,
+) -> SnapshotReport {
     let counts = verified.records().counts();
     SnapshotReport {
         schema_version: "aos.hub.offline-database-capture-report/v2",
@@ -349,6 +355,7 @@ fn report(operation: &'static str, verified: &VerifiedRetainedSqliteCapture) -> 
         source_audit_scope: "authenticated_exporter_declaration",
         source_engine: (verified.records().declared_source_audit().source_engine() == "postgresql")
             .then_some("postgresql"),
+        object_requirements: None,
         pending_recovery_requirements: [
             "application_and_object_closure",
             "original_sealing_key_custody",
@@ -367,6 +374,18 @@ async fn verify_directory(
     exclusions: Vec<aos_hub_core::snapshot::archive::root::ExcludedArchiveKey>,
     budget: SnapshotBudget,
 ) -> Result<VerifiedRetainedSqliteCapture, SnapshotError> {
+    verify_directory_projecting(directory, root, trust, wrapping, exclusions, budget, None).await
+}
+
+pub(super) async fn verify_directory_projecting(
+    directory: Directory,
+    root: Vec<u8>,
+    trust: aos_hub_core::snapshot::archive::root::ArchiveSignerTrust,
+    wrapping: aos_hub_core::snapshot::archive::root::ArchiveWrappingKeys,
+    exclusions: Vec<aos_hub_core::snapshot::archive::root::ExcludedArchiveKey>,
+    budget: SnapshotBudget,
+    projection: Option<Box<dyn super::scratch::ScratchProjection>>,
+) -> Result<VerifiedRetainedSqliteCapture, SnapshotError> {
     let limits = budget.scratch_limits()?;
     let metadata = BudgetIo {
         inner: directory
@@ -380,18 +399,24 @@ async fn verify_directory(
             .map_err(|_| SnapshotError::Verification)?,
         budget: budget.clone(),
     };
-    let worker = verify_capture_in_scratch(
-        ScratchVerificationInputs {
-            root,
-            trust,
-            wrapping,
-            exclusions,
-            metadata,
-            private,
-        },
-        limits,
-        budget.scratch_cancellation.clone(),
-    );
+    let inputs = ScratchVerificationInputs {
+        root,
+        trust,
+        wrapping,
+        exclusions,
+        metadata,
+        private,
+    };
+    let cancellation = budget.scratch_cancellation.clone();
+    let worker = async move {
+        match projection {
+            Some(projection) => {
+                super::scratch::verify_with_projection(inputs, limits, cancellation, projection)
+                    .await
+            }
+            None => verify_capture_in_scratch(inputs, limits, cancellation).await,
+        }
+    };
     tokio::pin!(worker);
     let result = tokio::select! {
         result = &mut worker => result,

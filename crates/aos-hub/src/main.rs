@@ -2794,6 +2794,16 @@ mod production_vm_coverage {
                 operation: "workflow::capture_postgres",
                 fixture: "async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals()",
             },
+            "snapshot derive-object-requirements" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::DeriveObjectRequirements",
+                operation: "inventory::derive_object_requirements",
+                fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
+            },
+            "snapshot verify-object-requirements" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::VerifyObjectRequirements",
+                operation: "inventory::verify_object_requirements",
+                fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
+            },
             "snapshot verify-capture" => NativeCommandQualification::OfflineSnapshotCustody {
                 dispatch_arm: "SnapshotCommand::VerifyCapture",
                 operation: "workflow::verify",
@@ -2825,6 +2835,12 @@ mod production_vm_coverage {
         let snapshot_qualification =
             fs::read_to_string(repository.join("crates/aos-hub/src/snapshot/tests.rs"))
                 .expect("offline snapshot custody qualification must be readable");
+        let snapshot_qualification = format!(
+            "{}\n{}",
+            snapshot_qualification,
+            fs::read_to_string(repository.join("crates/aos-hub/src/snapshot/inventory/tests.rs"))
+                .expect("object requirements qualification must be readable")
+        );
         let missing = leaves
             .into_iter()
             .filter(|leaf| match command_qualification(leaf) {

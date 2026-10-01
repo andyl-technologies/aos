@@ -27,6 +27,7 @@ use crate::db::{snapshot_schema_identity, MIGRATIONS, SCHEMA_IDENTITY};
 use crate::value::{Row, Value};
 
 pub mod archive;
+pub mod inventory;
 
 mod capture;
 mod direct;

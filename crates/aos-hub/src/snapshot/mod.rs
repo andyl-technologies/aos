@@ -6,6 +6,8 @@
 
 pub mod capture;
 pub mod scratch;
+#[cfg(target_os = "linux")]
+pub mod inventory;
 
 mod credentials;
 #[cfg(target_os = "linux")]

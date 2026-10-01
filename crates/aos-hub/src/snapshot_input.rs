@@ -50,6 +50,40 @@ enum SnapshotCommand {
         #[command(flatten)]
         custody: CustodyArgs,
     },
+    /// Derive encrypted, incomplete object requirements from a verified capture.
+    DeriveObjectRequirements {
+        /// Read this existing private source capture directory.
+        #[arg(long)]
+        archive: PathBuf,
+        /// Publish this new private requirements directory.
+        #[arg(long)]
+        output: PathBuf,
+        /// Use this dedicated archive signer identity.
+        #[arg(long)]
+        signer_id: String,
+        /// Read an existing private raw 32-byte archive signing seed.
+        #[arg(long)]
+        signing_seed_file: PathBuf,
+        /// Bound projected dependency rows (maximum ten million).
+        #[arg(long, default_value_t = 1_000_000)]
+        max_projected_rows: u64,
+        #[command(flatten)]
+        custody: CustodyArgs,
+    },
+    /// Compare encrypted requirements with their exact capture and private replay.
+    VerifyObjectRequirements {
+        /// Read the exact existing private source capture directory.
+        #[arg(long)]
+        archive: PathBuf,
+        /// Read this existing private requirements directory.
+        #[arg(long)]
+        requirements: PathBuf,
+        /// Bound projected dependency rows (maximum ten million).
+        #[arg(long, default_value_t = 1_000_000)]
+        max_projected_rows: u64,
+        #[command(flatten)]
+        custody: CustodyArgs,
+    },
     /// Verify records and retained SQL constraints without importing or activating.
     VerifyCapture {
         /// Read this existing private archive directory.
@@ -158,7 +192,9 @@ pub(crate) async fn run(arguments: &SnapshotArgs) -> Result<()> {
     let custody = match &arguments.command {
         SnapshotCommand::CaptureSqlite { custody, .. }
         | SnapshotCommand::CapturePostgres { custody, .. }
-        | SnapshotCommand::VerifyCapture { custody, .. } => custody,
+        | SnapshotCommand::VerifyCapture { custody, .. }
+        | SnapshotCommand::DeriveObjectRequirements { custody, .. }
+        | SnapshotCommand::VerifyObjectRequirements { custody, .. } => custody,
     };
     let budget = custody.budget()?;
     let signal_budget = budget.clone();
@@ -226,6 +262,52 @@ pub(crate) async fn run(arguments: &SnapshotArgs) -> Result<()> {
                 );
                 anyhow::bail!("PostgreSQL capture requires a build with the postgres feature")
             }
+        }
+        SnapshotCommand::DeriveObjectRequirements {
+            archive,
+            output,
+            signer_id,
+            signing_seed_file,
+            max_projected_rows,
+            custody,
+        } => {
+            aos_hub::snapshot::inventory::derive_object_requirements(
+                archive,
+                output,
+                &CaptureCredentials {
+                    signer_id: signer_id.clone(),
+                    signing_seed_file: signing_seed_file.clone(),
+                    wrapping: custody.wrapping(),
+                    signer_trust_file: custody.signer_trust_file.clone(),
+                    exclusion_files: custody.exclude_key_file.clone(),
+                },
+                aos_hub_core::snapshot::inventory::ObjectRequirementsLimits {
+                    max_rows: *max_projected_rows,
+                },
+                budget,
+            )
+            .await
+        }
+        SnapshotCommand::VerifyObjectRequirements {
+            archive,
+            requirements,
+            max_projected_rows,
+            custody,
+        } => {
+            aos_hub::snapshot::inventory::verify_object_requirements(
+                archive,
+                requirements,
+                &VerifyCredentials {
+                    wrapping: custody.wrapping(),
+                    signer_trust_file: custody.signer_trust_file.clone(),
+                    exclusion_files: custody.exclude_key_file.clone(),
+                },
+                aos_hub_core::snapshot::inventory::ObjectRequirementsLimits {
+                    max_rows: *max_projected_rows,
+                },
+                budget,
+            )
+            .await
         }
         SnapshotCommand::VerifyCapture { archive, custody } => {
             workflow::verify(

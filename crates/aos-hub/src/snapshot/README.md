@@ -220,3 +220,69 @@ key. A future complete portability artifact must explicitly separate these key
 and authorization dependencies, close the referenced object inventory, perform
 storage-local transfer and reconcile current remote journals before any inert
 import or fenced activation. This command performs none of those later steps.
+
+## Authenticated object requirements
+
+`derive-object-requirements` projects a verified generation-eight SQLite or
+PostgreSQL capture into a separate encrypted requirements artifact.
+`verify-object-requirements` requires that artifact and the exact original
+capture. Both commands independently replay the retained SQL constraints and
+binding lifetime/Direct completion provenance checks. Historical generation-three
+through eight capture verification stays unchanged; requirements derivation
+admits only the exact generation-eight schema and column coverage contract.
+
+```text
+aos-hub snapshot derive-object-requirements \
+  --archive /private/archives/capture-1 --output /private/archives/requirements-1 \
+  --signer-id offline-export --signing-seed-file /private/keys/export.seed \
+  --signer-trust-file /private/keys/trust.json \
+  --metadata-wrapping-id metadata-wrap --metadata-wrapping-key-file /private/keys/metadata.key \
+  --private-wrapping-id private-wrap --private-wrapping-key-file /private/keys/private.key
+
+aos-hub snapshot verify-object-requirements \
+  --archive /private/archives/capture-1 --requirements /private/archives/requirements-1 \
+  --signer-trust-file /private/keys/trust.json \
+  --metadata-wrapping-id metadata-wrap --metadata-wrapping-key-file /private/keys/metadata.key \
+  --private-wrapping-id private-wrap --private-wrapping-key-file /private/keys/private.key
+```
+
+The literal coverage contract accounts for every column in all 279 current
+tables. Selected rows retain ordered scalar references, SQL IDs, paths, hashes,
+sizes, states, versions and authority coordinates in the private stream. Fixed
+families distinguish catalogue copies, cache/store roots, OCI, registry and image
+roots, authority dependencies, retained mutations, operations and opaque
+application dependencies. These are source references to investigate, not a
+resolved physical object inventory. Secret-classified cells are excluded.
+Private structured originals contribute domain-, table-, column- and type-bound
+SHA-256 digests; their plaintext is not duplicated into requirements. Those
+digests explicitly require later typed application/graph resolution. Original
+provider secret-version references remain source references; they do not admit
+target credentials, validation or provider work.
+
+The inner format is `aos.hub.object-requirements/v1`. Both encrypted streams bind
+the SHA-256 of the exact source `archive.json` bytes, source schema/classifier and
+literal coverage commitments. The private stream carries source ordinals,
+families and canonical projected cells. Verification regenerates every expected
+record during private replay and compares canonical bytes; it refuses another
+capture, changed references, incomplete/trailing records or changed coverage.
+Framing signatures use the explicit archive signer, never a runtime qualification
+or provider evidence signer. The signed outer root remains `framing_only`.
+
+Projection retains one row at a time, with a one-MiB encoded-record bound applied
+before cloning selected values. `--max-projected-rows` defaults to one million
+and admits 1–10,000,000; total retained source rows are capped at ten million.
+Existing stream, scratch database/value/work and operation limits also apply.
+Provisional rows enter only private encrypted staging. Full replay and a second
+independent exact-source readback must finish before the existing no-replace
+publication protocol runs. Cancellation and post-publication durability outcomes
+follow the capture rules above. Reports contain counts and the scope
+`retained_sql_and_incomplete_object_requirements`, without source values or paths.
+
+The artifact explicitly leaves signed graph closure, physical content and
+incarnations, external journal continuity, credential/key custody, old-writer
+fencing and target import/activation pending. Neither command contacts storage,
+loads provider material or source sealing keys, copies object bodies, imports
+SQL or activates a target. A complete portability workflow still needs Worker
+HubDb logical capture, typed signed store/Git/cache/OCI/image graph closure,
+guarded storage-local transfer, inert target rebinding and explicit fencing and
+readback. No whole-Hub completeness receipt is produced by this slice.

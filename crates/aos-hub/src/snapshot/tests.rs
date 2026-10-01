@@ -882,3 +882,6 @@ async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals(
         .unwrap();
     pool.close().await;
 }
+
+#[path = "inventory/tests.rs"]
+mod object_requirements;
