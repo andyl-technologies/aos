@@ -134,6 +134,8 @@ in
     #          before every PID 1 spawn, including privileged prestart tasks.
     #   0017-nspawn — Retain the payload cgroup and sealed original
     #          credential/inode join for the fixed Guest owner bootstrap.
+    #   0020 — Bound the fixed Controller plaintext publisher-policy handoff
+    #          and deliver its credential mount with strict ownership and labels.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -154,6 +156,7 @@ in
       ./patches/0018-launch-image-fuse-worker-role.patch
       ./patches/0017-nspawn-guest-cgroup-custody.patch
       ./patches/0019-fixed-fuse-worker-private-transport.patch
+      ./patches/0020-bounded-controller-publisher-policy-credential.patch
     ];
 
     buildDeps = [
