@@ -23,14 +23,19 @@ pub use collector::{
 };
 pub use comparison::{
     HeldRuntimeDeploymentAppendComparisonV1, HeldRuntimeDeploymentMainComparisonV1,
+    HeldRuntimeDeploymentPairComparisonV1,
     RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
 };
+pub use crate::journal::RuntimeDeploymentNativeTransactionDataV1;
 
 pub(crate) use genesis::VerifiedDeploymentGenesisV1;
 pub(crate) use genesis::{
     DIRECTORY as MAIN_DIRECTORY_V1, GENESIS_KEY, MAIN_NAME, NAMESPACE,
     genesis_native_transaction_v1,
 };
+// Names the existing private role for the original Journal observer; no second
+// literal or new role is introduced, and genesis.rs visibility stays unchanged.
+pub(crate) const SIDECAR_NAME: &str = genesis::SIDECAR_NAME;
 pub(crate) use preparation::{
     MAIN_LIMITS, require_native_step_binding_v1,
     require_current_deployment_rows_v1, require_deployment_main_v1,

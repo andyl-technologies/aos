@@ -262,3 +262,187 @@ fn unrun_private_comparison_latch_never_resets_after_a_failed_operation() {
     assert!(!usable);
     assert!(require_usable(usable).is_err());
 }
+
+fn original_native_fixture_transactions(fixture: &Fixture) -> Vec<JournalTransaction> {
+    let mut transactions = vec![JournalTransaction::new(
+        super::super::genesis::genesis_native_transaction_v1(&fixture.exact).unwrap(),
+        vec![JournalRecord::put(NAMESPACE, GENESIS_KEY.to_vec(), fixture.exact.clone())],
+    ).unwrap()];
+    transactions.extend(fixture.canonical_steps().iter().map(transaction));
+    transactions
+}
+
+fn inert_sidecar_limits() -> JournalLimits {
+    // Fixed comparison-test DATA, not a derived store or provisioned owner.
+    JournalLimits {
+        maximum_journal_bytes: MAIN_LIMITS.maximum_journal_bytes,
+        maximum_record_bytes: 1078,
+        maximum_key_bytes: 11,
+        maximum_records_per_transaction: 3,
+        maximum_transaction_bytes: 1415,
+        maximum_transactions: 643,
+        maximum_materialized_bytes: 1567,
+        maximum_materialized_records: 3,
+    }
+}
+
+#[test]
+fn unrun_retained_native_prefix_reconstructs_only_one_exact_original_map() {
+    use super::super::preparation::deployment_native_prefix_rows_v1;
+
+    let fixture = Fixture::new();
+    let transactions = original_native_fixture_transactions(&fixture);
+    let history = crate::journal::observed_native_fixture_v1(&transactions, MAIN_LIMITS).unwrap();
+
+    for (index, native) in history.transactions().iter().enumerate() {
+        let prefix = deployment_native_prefix_rows_v1(
+            history.transactions(), native.next_sequence(),
+        ).unwrap();
+
+        assert_eq!(prefix.len(), index + 1);
+        assert_eq!(prefix[GENESIS_KEY], fixture.exact.as_slice());
+        let record = &native.transaction().records()[0];
+        assert_eq!(prefix[record.key()], record.value().unwrap());
+        assert_eq!(native.begin_sequence(), 1 + index as u64 * 3);
+        assert_eq!(native.commit_sequence(), 3 + index as u64 * 3);
+        assert_eq!(native.next_sequence(), 4 + index as u64 * 3);
+        assert!(std::ptr::eq(prefix[record.key()], record.value().unwrap()));
+    }
+}
+
+#[test]
+fn unrun_retained_phase_validates_at_actual_old_prefix_not_current_map() {
+    use super::super::preparation::deployment_native_prefix_rows_v1;
+
+    let fixture = Fixture::new();
+    let transactions = original_native_fixture_transactions(&fixture);
+    let history = crate::journal::observed_native_fixture_v1(&transactions, MAIN_LIMITS).unwrap();
+    let latest = history.transactions().last().unwrap().next_sequence();
+    let current = deployment_native_prefix_rows_v1(history.transactions(), latest).unwrap();
+
+    for native in &history.transactions()[1..] {
+        let original = deployment_native_prefix_rows_v1(
+            history.transactions(), native.begin_sequence(),
+        ).unwrap();
+        let actual = deployment_native_prefix_rows_v1(
+            history.transactions(), native.next_sequence(),
+        ).unwrap();
+        let (next, target) = validated_append_rows_v1(
+            native.begin_sequence(), &original, native.transaction(), &fixture.exact,
+            &fixture.genesis, fixture.signer.verifying_key(), fixture_scope(&fixture),
+        ).unwrap();
+
+        assert_eq!(next, native.next_sequence());
+        assert_eq!(target, actual);
+        assert!(validated_append_rows_v1(
+            latest, &current, native.transaction(), &fixture.exact, &fixture.genesis,
+            fixture.signer.verifying_key(), fixture_scope(&fixture),
+        ).is_err());
+    }
+}
+
+#[test]
+fn unrun_native_prefix_rejects_absent_and_midframe_cuts() {
+    use super::super::preparation::deployment_native_prefix_rows_v1;
+
+    let fixture = Fixture::new();
+    let transactions = original_native_fixture_transactions(&fixture);
+    let history = crate::journal::observed_native_fixture_v1(&transactions, MAIN_LIMITS).unwrap();
+    let latest = history.transactions().last().unwrap().next_sequence();
+
+    for sequence in [0, 1, 2, 3, 5, latest + 1, latest + 3, u64::MAX] {
+        assert_eq!(
+            deployment_native_prefix_rows_v1(history.transactions(), sequence),
+            Err(NvCustodyErrorV1::Provisioning),
+            "sequence {sequence}",
+        );
+    }
+}
+
+#[test]
+fn unrun_sidecar_same_parser_accepts_two_then_three_records_and_preserves_deletes() {
+    let prepare = JournalTransaction::new([81; 16], vec![
+        JournalRecord::put(NAMESPACE, b"intent".to_vec(), vec![1]),
+        JournalRecord::put(NAMESPACE, b"transaction".to_vec(), vec![2]),
+    ]).unwrap();
+    let finalize = JournalTransaction::new([82; 16], vec![
+        JournalRecord::put(NAMESPACE, b"checkpoint".to_vec(), vec![3]),
+        JournalRecord::delete(NAMESPACE, b"intent".to_vec()),
+        JournalRecord::delete(NAMESPACE, b"transaction".to_vec()),
+    ]).unwrap();
+    let history = crate::journal::observed_native_fixture_v1(
+        &[prepare.clone(), finalize.clone()], inert_sidecar_limits(),
+    ).unwrap();
+
+    assert_eq!(history.transactions().len(), 2);
+    assert_eq!(history.transactions()[0].transaction(), &prepare);
+    assert_eq!(history.transactions()[1].transaction(), &finalize);
+    assert_eq!(history.transactions()[0].next_sequence(), 5);
+    assert_eq!(history.transactions()[1].begin_sequence(), 5);
+    assert_eq!(history.transactions()[1].next_sequence(), 10);
+    assert!(history.transactions()[1].transaction().records()[1].value().is_none());
+    // This deliberately lacks canonical init/intent bytes; it is native DATA
+    // only and cannot construct the genuine pair or future typed Host store.
+}
+
+#[test]
+fn unrun_sidecar_native_capture_refuses_foreign_namespace_and_compaction_uuid() {
+    let mut compaction = [0; 16];
+    compaction[..8].copy_from_slice(&1_u64.to_le_bytes());
+    compaction[8..].copy_from_slice(b"compact1");
+    let cases = [
+        JournalTransaction::new([83; 16], vec![JournalRecord::put(
+            RecordNamespace::BrokerSessionTraffic, b"checkpoint".to_vec(), vec![1],
+        )]).unwrap(),
+        JournalTransaction::new(compaction, vec![JournalRecord::put(
+            NAMESPACE, b"checkpoint".to_vec(), vec![1],
+        )]).unwrap(),
+    ];
+
+    for transaction in cases {
+        assert!(matches!(
+            crate::journal::observed_native_fixture_v1(&[transaction], inert_sidecar_limits()),
+            Err(JournalError::ProtectedBoundary),
+        ));
+    }
+}
+
+#[test]
+fn unrun_sidecar_resource_limits_refuse_large_allocation_claims_before_parser() {
+    let mut limits = inert_sidecar_limits();
+    assert!(crate::journal::require_sidecar_capture_limits_for_test(limits).is_ok());
+    limits.maximum_records_per_transaction = usize::MAX;
+    assert!(crate::journal::require_sidecar_capture_limits_for_test(limits).is_err());
+    limits = inert_sidecar_limits();
+    limits.maximum_record_bytes = usize::MAX;
+    assert!(crate::journal::require_sidecar_capture_limits_for_test(limits).is_err());
+    limits = inert_sidecar_limits();
+    limits.maximum_journal_bytes = MAIN_LIMITS.maximum_journal_bytes + 1;
+    assert!(crate::journal::require_sidecar_capture_limits_for_test(limits).is_err());
+}
+
+#[test]
+fn unrun_capture_refuses_oversized_physical_extent_before_retaining_transactions() {
+    let transaction = JournalTransaction::new([84; 16], vec![JournalRecord::put(
+        NAMESPACE, b"checkpoint".to_vec(),
+        vec![1; usize::try_from(MAIN_LIMITS.maximum_journal_bytes).unwrap()],
+    )]).unwrap();
+
+    assert!(matches!(
+        crate::journal::observed_native_fixture_v1(&[transaction], inert_sidecar_limits()),
+        Err(JournalError::JournalTooLarge),
+    ));
+}
+
+#[test]
+fn unrun_original_compaction_selection_adds_only_the_fixed_host_sidecar() {
+    use std::path::Path;
+    use crate::journal::deployment_original_compaction_selected_for_test as selected;
+    use crate::runtime_deployment::{MAIN_DIRECTORY_V1, MAIN_NAME, SIDECAR_NAME};
+
+    assert!(selected(Path::new(MAIN_DIRECTORY_V1), MAIN_NAME));
+    assert!(selected(Path::new(MAIN_DIRECTORY_V1), SIDECAR_NAME));
+    assert!(!selected(Path::new(MAIN_DIRECTORY_V1), "other.journal"));
+    assert!(!selected(Path::new("/different"), SIDECAR_NAME));
+    assert!(!selected(Path::new("/different"), "session-floor.journal"));
+}
