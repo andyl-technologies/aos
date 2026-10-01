@@ -797,6 +797,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   directory import, authorized reads and registered SDK checkout. Actual
   factory tests pass genuine legacy refusal, protected bootstrap and reopening
   with a damaged mutable capability cache; non-Send `std,wasm` passes 116 tests.
+  Documented `Chunk`, `Object`, `Ref` and `Root` SDK names now reuse the
+  canonical core representations. Strict core Clippy, core/native rustdoc,
+  `formats-no-std`, and both mandatory formatting commands pass for this facade.
   Pure core view, endpoint, exposure
   and schema vocabulary is integrated as an SDK prerequisite. View parsing
   rejects an explicit empty subtree and normalizes the grammar's optional

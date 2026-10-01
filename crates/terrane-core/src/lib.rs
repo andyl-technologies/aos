@@ -23,6 +23,7 @@ pub mod derived;
 pub mod gc;
 pub mod identity;
 pub mod manifest;
+pub mod model;
 pub mod pack_format;
 pub mod properties;
 pub mod provenance;

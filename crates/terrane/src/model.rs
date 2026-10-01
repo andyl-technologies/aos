@@ -4,6 +4,9 @@
 //! algebra results through these shared types. The definitions remain in
 //! `terrane-core`. Repository I/O and authorization use this crate's verbs.
 
+/// Exposes canonical chunk, object, ref-record, and tree-root SDK models.
+pub use terrane_core::model::{Chunk, Object, Ref, Root};
+
 /// Exposes canonical algebra result types and their pure representations.
 pub use terrane_core::algebra;
 
