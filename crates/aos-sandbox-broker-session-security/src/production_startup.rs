@@ -109,6 +109,12 @@ impl Pid1LaunchImageV1 {
         }
     }
 
+    /// Borrows the same original launch image without another observation.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Currentness` when a retained destination has no original file,
+    /// before image measurement. Legacy images always return their original.
     pub(crate) fn file(&self) -> Result<&File, crate::BrokerSessionSecurityError> {
         match &self.file {
             LaunchImageFile::Legacy(file) => Ok(file.as_ref()),
