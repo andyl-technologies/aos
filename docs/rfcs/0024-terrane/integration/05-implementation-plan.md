@@ -323,8 +323,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   retains successful current requests and complete consumed control receipts;
   the joint closed-consumer candidate refuses a consumed registration replaced
   after Guard-installation staging and preserves the selected slot through
-  independent reopen. Ordinary branch staging races and complete effect routing
-  remain unqualified. Ordered ancestry and record-parent batching preserve all
+  independent reopen. A genuine ordinary branch dispatch also preserves its
+  exact chained predecessor and whole old head; intervening pack/index Raw
+  preparation slots are verified separately, and the rejected target stays
+  absent. Complete ref qualification remains red: the broader 33-case run
+  passes 28 cases and exposes five failures. Retargeting existing faults to
+  the retained primitives qualifies both consumed-registration checks and
+  the directory-failure/abandoned-candidate outcomes in a focused follow-up;
+  cancellation arrival and multiwriter duration still require correction under
+  their unchanged bounds. Complete effect routing remains pending.
+  Ordered ancestry and record-parent batching preserve all
   metadata observations, duplicate reads, exact payload reads and initial/final
   fences. The CAS gate
   now requires their actual cardinality, error-priority and ancestry regressions;
