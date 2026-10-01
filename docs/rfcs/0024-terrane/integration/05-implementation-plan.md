@@ -162,7 +162,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   satisfies TREE-19 to TREE-24;
   `checks.terrane.gates.tree-boundaries`,
   `checks.terrane.gates.tree-history-independence`.
-- [ ] **T-ALG-1** `graft`, `split`, `flatten`, `overlay`, `diff`. — satisfies
+- [ ] **T-ALG-1** `graft`, `split`, `flatten`, `overlay`, `diff`. The 17-path
+  reviewed algebra source is adopted without changing manifests, lockfiles,
+  identities or shared native interfaces. All 435 combined core tests, strict
+  all-target Clippy, strict rustdoc and mandatory repository formatting pass.
+  Actual hermetic graft and diff gates pass their 25 and five exact cases,
+  including large-target sharing and independent overlay point-update parity.
+  The full trunk aggregate still fails native compilation before task-branch
+  merge qualification. — satisfies
   ALG-1 to ALG-14; `checks.terrane.gates.algebra-graft`,
   `checks.terrane.gates.algebra-diff`.
 - [ ] **T-ALG-2** Three-cursor `merge` with conflict values and the
@@ -172,7 +179,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   when the overlay-upper importer exists. Narrowed to trunk scope: `filter`, `map`, set
   operations, and the remaining recipe kinds are T-ALG-3 on B-derive.
   D-79's checked cold-fork lineage and genuine zero-TreeNode-I/O qualification
-  remain joint with ref publication and source-preserving collection. —
+  remain joint with ref publication and source-preserving collection. Actual
+  hermetic merge and acyclic gates pass 27 and seven exact cases. Decoded recipe
+  evidence cannot execute trust-sensitive policies without freshly verified
+  signed views; fold replay retains resolved source ownership. The four pure
+  gates cover all 60 algebra tests. `algebra-fork` remains registered and fails
+  explicitly as pending; pure commit-binding tests do not qualify native cold
+  forks. Complete native fork, fold and publication checks remain incomplete. —
   satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [x] **T-PROP-1** Property resolution, types, boundary properties,
@@ -491,9 +504,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Guard paths now retain actual current requests, complete protected controls,
   original bootstrap associations and the injected clock through publication.
   They match the frozen reference source while preserving the trunk collection
-  hook and shared interfaces. Mandatory repository formatting passes. The latest
-  native build and actual aggregate's `bundle-verify` compilation both stop on
-  29 missing algebra/ref-advance API diagnostics, before runtime tests. Native
+  hook and shared interfaces. Mandatory repository formatting passes. That
+  native build and actual aggregate's `bundle-verify` compilation both stopped on
+  29 missing algebra/ref-advance API diagnostics, before runtime tests. After
+  reviewed algebra adoption, the current native build and actual aggregate's
+  package compilation stop on the same 21 ref-advance and resulting inference
+  diagnostics; runtime qualification still cannot start. Native
   admission still explicitly refuses disclosure certificates until their complete
   authenticated publication path exists. No native gate or task merge is qualified.
   Qualification exposed
@@ -723,8 +739,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Their complete source matches the reference candidate; no manifest, lockfile,
   Guard or publication interface changed. Mandatory repository formatting passes.
   The subsequent reviewed Guard source adoption resolves those missing symbols.
-  The current native production build stops on 29 missing algebra/ref-advance
-  API diagnostics before runtime qualification. Actual
+  After reviewed algebra adoption, the current native production build stops on
+  21 missing ref-advance and resulting inference diagnostics before runtime
+  qualification. Actual
   current-authority disclosure, deletion and domain gates remain incomplete.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
