@@ -17,6 +17,15 @@
 
 use std::path::Path;
 
+#[cfg(target_os = "linux")]
+mod provisioning;
+
+#[cfg(target_os = "linux")]
+pub use provisioning::{
+    RootGitEvidenceProvisioningAttemptV1, RootGitEvidenceProvisioningErrorV1,
+    RootGitEvidenceProvisioningOutcomeV1, RootGitEvidenceProvisioningRecoveryV1,
+};
+
 use aos_sandbox_core::ObjectDigest;
 use sha2::{Digest as _, Sha256};
 
@@ -235,6 +244,8 @@ struct DecodedGitEvidenceV1 {
 fn read_exact_evidence_record(
     journal: &mut Journal,
 ) -> Result<Vec<u8>, GitProtectedEvidenceErrorV1> {
+    #[cfg(target_os = "linux")]
+    journal.require_fixed_git_evidence_namespace_v1()?;
     let authority = journal.claim_protected_authority(RecordNamespace::RuntimeAuthority)?;
     let records = authority
         .records()?

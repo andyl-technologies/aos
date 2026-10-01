@@ -195,8 +195,16 @@ allow aos_sandbox_policy_authority_t sysctl_kernel_t:file { getattr open read };
 allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:dir { add_name getattr open read remove_name search write };
 allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:file { append create getattr ioctl lock open read rename setattr unlink write };
 type_transition aos_sandbox_policy_authority_t aos_sandbox_policy_authority_state_t:file aos_sandbox_policy_authority_state_t;
-allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_credential_t:dir { getattr open search };
+allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_credential_t:dir { getattr open read search };
 allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_credential_t:file { getattr open read };
+# PID 1 labels this fixed unit's credential directory before creating copies.
+# This is credential delivery only: Root state remains denied to PID 1, and
+# the reader still verifies read-only backing and original named identity.
+allow init_t aos_sandbox_policy_authority_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_sandbox_policy_authority_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_policy_authority_credential_t:file aos_sandbox_policy_authority_credential_t;
+allow aos_sandbox_policy_authority_t aos_sandbox_view_parent_t:dir { getattr open search };
+allow aos_sandbox_policy_authority_t tmpfs_t:filesystem getattr;
 allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_runtime_t:dir { add_name getattr open read remove_name search write };
 allow aos_sandbox_policy_authority_t aos_sandbox_policy_authority_runtime_t:sock_file { create getattr open read setattr unlink write };
 type_transition aos_sandbox_policy_authority_t aos_sandbox_policy_authority_runtime_t:sock_file aos_sandbox_policy_authority_runtime_t;

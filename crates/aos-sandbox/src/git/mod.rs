@@ -100,6 +100,11 @@ pub use physical_effect::{
     ProtectedGitSmartInvocationV1,
 };
 pub use protected_evidence::{GitProtectedEvidenceErrorV1, GitProtectedEvidenceOwnerV1};
+#[cfg(target_os = "linux")]
+pub use protected_evidence::{
+    RootGitEvidenceProvisioningAttemptV1, RootGitEvidenceProvisioningErrorV1,
+    RootGitEvidenceProvisioningOutcomeV1, RootGitEvidenceProvisioningRecoveryV1,
+};
 pub use protected_owner::GitProtectedJournalOwnerV1;
 pub use protocol::{
     GitExchangePlanV1, GitProtocolV2CapabilitiesDigestV1, GitProtocolV2CapabilityV1,

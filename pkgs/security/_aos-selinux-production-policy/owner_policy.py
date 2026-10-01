@@ -1,8 +1,8 @@
 """Expected effective matrix for existing normal owners and private TPM helpers.
 
 This is data for the existing SETools checker, not a second checker or an
-installed-policy/currentness producer. Missing preparation and credential
-label delivery are deliberately not papered over with init-domain grants.
+installed-policy/currentness producer. PID 1's one explicit Root credential
+delivery exception grants no Root state access or preparation authority.
 """
 
 import view_policy
@@ -27,6 +27,14 @@ ROOT_CUSTODY_CUTS = (
     ("file", "ioctl"),
     ("process", "ptrace"),
     ("process", "transition"),
+)
+
+ROOT_CREDENTIAL_PID1_FILE_DELIVERY = (
+    "create", "getattr", "open", "read", "setattr", "unlink", "write",
+)
+ROOT_CREDENTIAL_PID1_DIR_DELIVERY = (
+    "add_name", "create", "getattr", "mounton", "open", "read", "relabelto",
+    "remove_name", "search", "setattr", "write",
 )
 
 
@@ -94,9 +102,19 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             if other == domain:
                 continue
             for object_type in (state, credential):
-                negative.extend(accesses(other, object_type, "file", file_mutate))
-                negative.extend(accesses(other, object_type, "dir", dir_mutate))
-                negative.extend(accesses(other, object_type, "file", ("open", "read")))
+                if role == "policy_authority" and other == "init_t" and object_type == credential:
+                    negative.extend(accesses(other, object_type, "file", tuple(
+                        permission for permission in (*file_mutate, "open", "read")
+                        if permission not in ROOT_CREDENTIAL_PID1_FILE_DELIVERY
+                    )))
+                    negative.extend(accesses(other, object_type, "dir", tuple(
+                        permission for permission in dir_mutate
+                        if permission not in ROOT_CREDENTIAL_PID1_DIR_DELIVERY
+                    )))
+                else:
+                    negative.extend(accesses(other, object_type, "file", file_mutate))
+                    negative.extend(accesses(other, object_type, "dir", dir_mutate))
+                    negative.extend(accesses(other, object_type, "file", ("open", "read")))
         for permission in ("start", "stop", "reload", "enable", "disable"):
             negative.append(Access(domain, "*", "service", permission))
         for permission in ("start", "stop", "reload", "reboot", "halt"):
@@ -110,6 +128,15 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         negative.append(Access(domain, "aos_method46_tpm_device_t", "chr_file", "open"))
 
     root = "aos_sandbox_policy_authority_t"
+    root_credential = "aos_sandbox_policy_authority_credential_t"
+    positive.extend(accesses("init_t", root_credential, "file", ROOT_CREDENTIAL_PID1_FILE_DELIVERY))
+    positive.extend(accesses("init_t", root_credential, "dir", ROOT_CREDENTIAL_PID1_DIR_DELIVERY))
+    transitions.append(Transition("init_t", root_credential, "file", root_credential))
+    positive.extend(accesses(root, root_credential, "dir", ("getattr", "open", "read", "search")))
+    negative.extend(accesses(root, root_credential, "file", file_mutate))
+    negative.extend(accesses(root, root_credential, "dir", dir_mutate))
+    positive.extend(accesses(root, "aos_sandbox_view_parent_t", "dir", ("getattr", "open", "search")))
+    positive.append(Access(root, "tmpfs_t", "filesystem", "getattr"))
     positive.extend(accesses(root, "init_exec_t", "file", ("getattr", "read")))
     positive.extend(accesses(root, root, "lnk_file", ("getattr", "read")))
     profile = "aos_sandbox_policy_authority_profile_t"

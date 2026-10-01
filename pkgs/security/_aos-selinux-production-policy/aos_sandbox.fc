@@ -29,6 +29,8 @@
 /run/current-system -l system_u:object_r:var_run_t
 /run/etc -d system_u:object_r:var_run_t
 /var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t
+/var/lib/aos/sandbox/source-evidence -d system_u:object_r:aos_sandbox_policy_authority_state_t
+/var/lib/aos/sandbox/source-evidence/git-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
 /var/lib/aos/sandbox/source-domains(/.*)? system_u:object_r:aos_sandbox_source_journal_t
 /var/lib/aos/sandbox/cache-residency-journals(/.*)? system_u:object_r:aos_sandbox_cache_journal_t
 /var/lib/aos/sandbox/cache-residency-objects(/.*)? system_u:object_r:aos_sandbox_cache_object_t
@@ -39,6 +41,7 @@
 /run/aos/sandbox-cache-signerd\.sock -s system_u:object_r:aos_sandbox_cache_signer_socket_t
 /run/credentials/aos-sandbox-source-signerd\.service(/.*)? system_u:object_r:aos_sandbox_source_signer_credential_t
 /run/credentials/aos-sandbox-cache-signerd\.service(/.*)? system_u:object_r:aos_sandbox_cache_signer_credential_t
+/run/credentials/aos-sandbox-policy-authorityd\.service(/.*)? system_u:object_r:aos_sandbox_policy_authority_credential_t
 /sysroot -d system_u:object_r:root_t
 
 /var/lib/aos/sandbox-network -d system_u:object_r:aos_sandbox_network_root_t
