@@ -42,6 +42,7 @@ use sha2::{Digest as _, Sha256};
 use crate::authorization::StorageAuthorityV1;
 use crate::root_policy::PortableRootAttributesV1;
 use crate::state::MAXIMUM_WORKSPACE_PUBLICATION_INTENT_RECORD_BYTES;
+use crate::worker_wire::{DecodeErrors, Decoder as WorkerDecoder};
 use crate::workspace_pin::{
     WorkspaceDatasetObservationV1, WorkspacePinActionV1, WorkspacePinAttemptPhaseV1,
     WorkspacePinAttemptV1, WorkspacePinObservationV1, WorkspaceRootPinProofV1,
@@ -71,6 +72,13 @@ pub(crate) const MAXIMUM_PIN_WORKER_PACKET_BYTES: usize = 4096;
 const MAXIMUM_FRAME_CONTENT_BYTES: usize = MAXIMUM_PIN_WORKER_PACKET_BYTES - FRAME_HEADER_BYTES;
 const RESULT_MAGIC: &[u8; 8] = b"AOSZPRES";
 const MAXIMUM_RESULT_STRING_BYTES: usize = 4096;
+
+const PIN_DECODE_ERRORS: DecodeErrors = DecodeErrors {
+    overflow: "workspace pin request length overflow",
+    truncated: "workspace pin request is truncated",
+    field: "workspace pin fixed field is invalid",
+    trailing: "workspace pin request has trailing bytes",
+};
 
 /// Carries the authenticated records needed for independent worker admission.
 ///
@@ -1263,30 +1271,18 @@ fn append_record(destination: &mut Vec<u8>, length: u32, record: &[u8]) {
 }
 
 struct Decoder<'a> {
-    bytes: &'a [u8],
-    offset: usize,
+    cursor: WorkerDecoder<'a>,
 }
 
 impl<'a> Decoder<'a> {
     const fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes, offset: 0 }
+        Self {
+            cursor: WorkerDecoder::new(bytes, &PIN_DECODE_ERRORS),
+        }
     }
 
     fn take(&mut self, length: usize) -> Result<&'a [u8], ZfsWorkerError> {
-        let end = self
-            .offset
-            .checked_add(length)
-            .ok_or(ZfsWorkerError::Protocol(
-                "workspace pin request length overflow",
-            ))?;
-        let value = self
-            .bytes
-            .get(self.offset..end)
-            .ok_or(ZfsWorkerError::Protocol(
-                "workspace pin request is truncated",
-            ))?;
-        self.offset = end;
-        Ok(value)
+        self.cursor.take(length)
     }
 
     fn u16(&mut self) -> Result<u16, ZfsWorkerError> {
@@ -1364,13 +1360,7 @@ impl<'a> Decoder<'a> {
     }
 
     fn finish(self) -> Result<(), ZfsWorkerError> {
-        if self.offset == self.bytes.len() {
-            Ok(())
-        } else {
-            Err(ZfsWorkerError::Protocol(
-                "workspace pin request has trailing bytes",
-            ))
-        }
+        self.cursor.finish()
     }
 }
 
