@@ -224,7 +224,17 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   producer evidence requiring complete carrying-view and producer contexts.
   They match the task candidate without dependency or vendor changes. All
   375 combined trunk core tests, strict Clippy/rustdoc and mandatory formatting
-  pass. Native storage, attribute-gate and backfill qualification remain pending.
+  pass. All eleven native derived-data paths are now reviewed and integrated,
+  including verified manifest-order plaintext reads, exact signed record
+  retention, authoritative catalog reopening, and durable quarantine.
+  The native fixture binds actual stored plaintext and reopens produced signed
+  attributes; recomputation alone leaves producer provenance untrusted.
+  The attribute gate requires complete producer-context tests and unavailable
+  evidence retention checks. Its current native compilation fails on the
+  missing repository prerequisite (42 shared import/inference diagnostics);
+  no native derived tests have executed on the trunk. Both mandatory formatting
+  commands pass. Native gate and joint T-JOB-1 backfill qualification remain
+  pending.
   — satisfies DRV-1 to DRV-11; `checks.terrane.gates.derived-attr-record`.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
