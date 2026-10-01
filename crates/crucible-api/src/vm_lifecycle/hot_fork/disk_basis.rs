@@ -263,7 +263,10 @@ fn hash_owned_file(
     reader
         .seek(SeekFrom::Start(0))
         .map_err(|error| hot_fork_boundary_error(format!("seek {purpose}: {error}",)))?;
-    let mut buffer = [0_u8; 1024 * 1024];
+    // Hashing runs on scheduler threads whose stacks also hold lifecycle state.
+    // Keep the large streaming buffer on the heap without weakening full-file
+    // authentication at any admission boundary.
+    let mut buffer = vec![0_u8; 1024 * 1024];
     let mut hasher = blake3::Hasher::new();
     loop {
         let count = reader
