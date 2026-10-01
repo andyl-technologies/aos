@@ -204,6 +204,21 @@ pub struct TokioLocalFs;
 impl LocalFs for TokioLocalFs {
     type Lock = TokioFileLock;
 
+    async fn initialize_publication(
+        &self,
+        request: super::NativePublicationInitialization,
+    ) -> Result<super::NativePublicationInitializationOutcome, super::StoreFailure> {
+        #[cfg(unix)]
+        {
+            request.execute_tokio().await
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = request;
+            Err(super::StoreFailure::new(super::StoreErrorKind::Unsupported))
+        }
+    }
+
     fn retain_native_exclusion(
         &self,
         held: &Self::Lock,

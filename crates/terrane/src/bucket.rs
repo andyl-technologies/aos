@@ -48,8 +48,9 @@ mod manifest_tests;
 mod container_tests;
 
 use crate::store::{
-    Capabilities, CapabilityReport, Clock, ContentValidator, Durability, LocalFs, RangeCapability,
-    RefCapability, StoreErrorKind, StoreFailure,
+    Capabilities, CapabilityReport, Clock, ContentValidator, Durability, LocalFs,
+    NativePublicationInitializationOutcome, RangeCapability, RefCapability, StoreErrorKind,
+    StoreFailure,
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -174,45 +175,47 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
 
         bucket.preflight_publication_namespace().await?;
 
-        let freshly_created = match bucket
+        let initialization = match bucket
             .inner
             .fs
             .symlink_metadata(&bucket.inner.config.root)
             .await
         {
-            Ok(_) => false,
+            Ok(_) => NativePublicationInitializationOutcome::Existing,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                match bucket
+                let protected = bucket
                     .inner
-                    .fs
-                    .create_dir_new(&bucket.inner.config.root)
-                    .await
-                {
-                    Ok(()) => {
-                        let parent = bucket
-                            .inner
-                            .config
-                            .root
-                            .parent()
-                            .ok_or_else(files::malformed)?;
-                        bucket
-                            .inner
-                            .fs
-                            .sync_directory(parent)
-                            .await
-                            .map_err(files::io_failure)?;
-                        true
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
-                    Err(error) => return Err(files::io_failure(error)),
-                }
+                    .config
+                    .publication_control
+                    .as_ref()
+                    .ok_or_else(files::malformed)?;
+                let (owner, control) =
+                    publication::configured_location(&bucket.inner.config.root, protected)?;
+                let timestamp = bucket
+                    .inner
+                    .clock
+                    .now()
+                    .duration_since(std::time::SystemTime::UNIX_EPOCH)
+                    .map_err(|_| files::malformed())?
+                    .as_secs();
+                let request = crate::store::native_initialization_request(
+                    &bucket.inner.config.root,
+                    &control,
+                    owner,
+                    bucket.profile(),
+                    timestamp,
+                )?;
+
+                // Unsupported bindings refuse before the first root mutation;
+                // an actual creator returns its owned physical staging receipt.
+                bucket.inner.fs.initialize_publication(request).await?
             }
             Err(error) => return Err(files::io_failure(error)),
         };
-        bucket.check_directory(&bucket.inner.config.root).await?;
-        bucket.open_publication(freshly_created).await?;
+        bucket.open_publication(initialization).await?;
         {
             let _guard = bucket.existing_exclusive().await?;
+            bucket.check_directory(&bucket.inner.config.root).await?;
             bucket.catalog().await?;
         }
         Ok(bucket)

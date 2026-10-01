@@ -3,6 +3,10 @@
 //! This module is a logical descendant of the private native executor. Public
 //! record bytes alone do not provide authority to construct a submitted effect.
 
+pub(crate) use super::initialization::{
+    fresh as initialization, pending as pending_initialization,
+};
+
 // The collector descendant consumes only its separately checked lease carrier;
 // it reuses the retained executor without granting arbitrary effect construction.
 /// Executes fixed collector lease publication under genuinely retained inputs.

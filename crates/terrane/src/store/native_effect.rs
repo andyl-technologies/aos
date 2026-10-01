@@ -22,6 +22,10 @@ mod range;
 #[path = "native_effect/directory_retention.rs"]
 mod directory_retention;
 
+/// Owns fixed initialization requests and genuine retained creator receipts.
+#[path = "native_effect/initialization.rs"]
+pub(super) mod initialization;
+
 // The descendant can construct effects only from genuine sealed producer and
 // held-backend inputs; ordinary callers cannot initialize the private mechanics.
 #[path = "../bucket/publication/effects.rs"]

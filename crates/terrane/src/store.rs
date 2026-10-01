@@ -20,6 +20,12 @@ pub(crate) mod protected_read;
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
 #[cfg(feature = "std")]
+pub(crate) use native_effect::initialization::request_for_open as native_initialization_request;
+#[cfg(feature = "std")]
+pub use native_effect::initialization::{
+    NativePendingRoot, NativePublicationInitialization, NativePublicationInitializationOutcome,
+};
+#[cfg(feature = "std")]
 pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(all(feature = "std", test))]
 pub(crate) use native_effect::{EffectFault, EffectFaultProbe};
@@ -732,6 +738,26 @@ impl<H: WasmHost> Clock for WasmBindings<H> {
 #[cfg_attr(feature = "send", async_trait::async_trait)]
 #[cfg_attr(not(feature = "send"), async_trait::async_trait(?Send))]
 pub trait LocalFs {
+    /// Runs the private fresh-root creator with owned native retention.
+    ///
+    /// The binding submits one fixed program before the first root mutation.
+    /// Its worker retains actual opened directory descriptors independently of
+    /// acquired exclusions through durable Pending and complete genesis staging.
+    /// Cancellation of the asynchronous waiter must not release those inputs
+    /// while physical work remains. An existing root grants no freshness.
+    /// The default refuses before creating any directory or coordination inode.
+    ///
+    /// # Errors
+    /// Returns `Unsupported` when retained native initialization is unavailable,
+    /// and preserves unsafe or replaced physical input, incomplete staging and
+    /// genuine I/O, durability or worker failures.
+    async fn initialize_publication(
+        &self,
+        _request: NativePublicationInitialization,
+    ) -> Result<NativePublicationInitializationOutcome, StoreFailure> {
+        Err(StoreFailure::new(StoreErrorKind::Unsupported))
+    }
+
     /// Obtains cryptographically secure bytes from the platform entropy source.
     ///
     /// # Errors
