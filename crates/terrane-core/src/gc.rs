@@ -14,5 +14,6 @@
 mod lease;
 
 pub mod publication;
+pub mod retirement;
 
 pub use lease::{GcError, GcLease};
