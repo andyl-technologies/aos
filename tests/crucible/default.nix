@@ -2887,6 +2887,15 @@ in rec {
     };
     qemuFullUpstreamTestSuite = assert pkgs.qemu-crucible-full-test-suite.passthru.qemuBuildIdentity == pkgs.qemu-crucible.passthru.qemuBuildIdentity;
       pkgs.qemu-crucible-full-test-suite;
+    qemuIo108Diagnostic = pkgs.callPackage ../../pkgs/emulation/qemu.nix {
+      pname = "qemu-crucible";
+      enablePlugins = true;
+      applyCruciblePatch = true;
+      testOnlyNonDistributable = true;
+      fullUpstreamTestSuiteOnly = true;
+      focusedUpstreamTest = "io-qcow2-108";
+      qemuTestRunner = pkgs.qemu;
+    };
     qemuConfiguredTestInventory = import ./phase7-qemu-configured-test-inventory.nix {
       inherit pkgs;
     };
