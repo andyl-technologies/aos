@@ -3,7 +3,7 @@
 //! The adapter stores only canonical controller facts. No type in this module
 //! opens a broker, performs a mount, publishes a route, or activates a service.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use aos_sandbox_core::{ObjectDigest, ProjectId, ResourceId, Revision, SandboxId};
 
@@ -567,6 +567,91 @@ pub(crate) fn claim_hierarchy_protected_journal_v1(
 pub struct HierarchyProtectedJournalOwnerV1<'journal> {
     journal: HierarchyProtectedJournalV1<'journal>,
     validator: HierarchyProtectedReplayValidatorV1,
+}
+
+/// Retains complete local Tree structure beside its original Source writer.
+///
+/// The Tree and lineage heads are structural DATA, not authenticated current
+/// ancestry. In particular, local replay supplies no Controller receipt,
+/// independent rollback floor, deletion permit, or physical drain evidence.
+#[must_use = "local Tree inventory must retain its original journal borrow"]
+#[allow(dead_code, reason = "structural DATA awaits its separate consumer")]
+pub(crate) struct RetainedTreeInventoryDataV1<'journal> {
+    journal: &'journal Journal,
+    sequence: u64,
+    heads: BTreeMap<ProjectId, super::tree_lineage::ClosedTreeLineageHeadV1>,
+}
+
+#[allow(dead_code, reason = "structural DATA awaits its separate consumer")]
+impl RetainedTreeInventoryDataV1<'_> {
+    /// Returns the original shared-journal watermark, without granting authority.
+    pub(crate) const fn journal_sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Borrows every local Tree and its exact Tree and lineage envelope heads.
+    ///
+    /// Trees remain in canonical project order. Their existing record and
+    /// tombstone iterators preserve the complete logical subtree structure.
+    ///
+    /// # Errors
+    ///
+    /// Rejects unhealthy or replaced named journal/lock custody or a changed
+    /// watermark. This does not re-resolve the original directory path.
+    pub(crate) fn trees(
+        &self,
+    ) -> Result<
+        impl ExactSizeIterator<Item = (&SandboxTreeV1, ObjectDigest, ObjectDigest)>,
+        HierarchyProtectedJournalErrorV1,
+    > {
+        self.recheck()?;
+        Ok(self
+            .heads
+            .values()
+            .map(|head| (&head.tree, head.tree_head, head.lineage_head)))
+    }
+
+    /// Rechecks the original named writer and unchanged logical watermark.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for lost named custody, poison, or a changed sequence.
+    pub(crate) fn recheck(&self) -> Result<(), HierarchyProtectedJournalErrorV1> {
+        self.journal.validate_held_protected_names()?;
+        if self.journal.snapshot_sequence() != self.sequence {
+            return Err(HierarchyProtectedJournalErrorV1::StaleAuthority);
+        }
+        Ok(())
+    }
+}
+
+/// Reads complete local Tree/lineage DATA while borrowing the original owner.
+///
+/// This deliberately uses the existing structural lineage replay, not the
+/// public ancestry owner whose materialized-Tree admission remains closed.
+/// No Tree is omitted when current ancestry authentication is unavailable;
+/// instead, the entire result remains explicitly nonauthorizing local DATA.
+///
+/// # Errors
+///
+/// Rejects lost named custody, invalid complete lineage replay, or a changed
+/// journal watermark. Controller receipt/floor authentication remains absent.
+#[allow(dead_code, reason = "structural DATA awaits its separate consumer")]
+pub(crate) fn retained_tree_inventory_data_v1(
+    source: &mut ProtectedSourceDomainJournalOwnerV1,
+) -> Result<RetainedTreeInventoryDataV1<'_>, HierarchyProtectedJournalErrorV1> {
+    let journal = source.journal();
+    journal.validate_held_protected_names()?;
+    let sequence = journal.snapshot_sequence();
+    let heads = super::tree_lineage::replay_closed_tree_lineage_v1(journal)?;
+
+    let inventory = RetainedTreeInventoryDataV1 {
+        journal,
+        sequence,
+        heads,
+    };
+    inventory.recheck()?;
+    Ok(inventory)
 }
 
 /// Borrows one opaque evidence value at the exact owner snapshot which minted
@@ -1246,4 +1331,59 @@ pub(crate) fn hierarchy_reducer_envelope_v1(
         payload,
         validator,
     )
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod inventory_data_tests {
+    use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
+
+    use super::*;
+    use crate::journal::JournalError;
+    use crate::lifecycle::protected_journal_join::PROTECTED_SOURCE_DOMAIN_JOURNAL;
+
+    #[test]
+    fn structural_inventory_data_retains_the_original_empty_source_writer() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .unwrap();
+        let uid = std::fs::metadata(directory.path()).unwrap().uid();
+        let journal = Journal::open_protected_at_uid(
+            directory.path(),
+            PROTECTED_SOURCE_DOMAIN_JOURNAL,
+            Default::default(),
+            uid,
+        )
+        .unwrap()
+        .0;
+        let sequence = journal.snapshot_sequence();
+        let mut source = ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal);
+
+        let inventory = retained_tree_inventory_data_v1(&mut source).unwrap();
+
+        assert_eq!(inventory.journal_sequence(), sequence);
+        assert_eq!(inventory.trees().unwrap().len(), 0);
+        std::fs::rename(
+            directory.path().join(PROTECTED_SOURCE_DOMAIN_JOURNAL),
+            directory.path().join("retained-source.journal"),
+        )
+        .unwrap();
+        assert!(inventory.recheck().is_err());
+        assert!(inventory.trees().is_err());
+    }
+
+    #[test]
+    fn structural_inventory_data_rejects_an_unprotected_journal() {
+        let directory = tempfile::tempdir().unwrap();
+        let journal = Journal::open(directory.path().join("ordinary.journal"), Default::default())
+            .unwrap()
+            .0;
+        let mut source = ProtectedSourceDomainJournalOwnerV1::from_test_journal(journal);
+
+        let result = retained_tree_inventory_data_v1(&mut source);
+
+        assert!(matches!(
+            result,
+            Err(HierarchyProtectedJournalErrorV1::Journal(JournalError::ProtectedBoundary))
+        ));
+    }
 }
