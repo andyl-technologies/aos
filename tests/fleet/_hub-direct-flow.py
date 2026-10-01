@@ -786,6 +786,7 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     })
     publication = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
         authority, process, identity, acceptance)
+    issuer_lifecycle = run_direct_issuer_lifecycle(native, worker, tools, shared_controls, authority)
     failures = run_direct_dependency_outages(client, native, worker, database_machine, tools, process)
     return {"publication": publication, "queueRestart": queue_restart, "nativePrebody": prebody,
-            "dependencyFailures": failures}
+            "issuerLifecycle": issuer_lifecycle, "dependencyFailures": failures}
