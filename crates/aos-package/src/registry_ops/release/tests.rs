@@ -159,8 +159,12 @@ fn container_release_attachment_rejects_unsigned_mismatch_and_release_identity()
     assert!(format!("{error:#}").contains("requires package 'aos' and image 'aos'"));
 }
 
-#[test]
-fn container_release_attachment_retries_exact_signed_head_before_tag() {
+#[tokio::test]
+async fn container_release_attachment_uses_the_shared_signed_finalizer() {
+    use crate::registry::release::{
+        KeyPathRegistryObjectSigner, PreparedRegistryRelease, RegistryCommitIdentity,
+    };
+
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path().join("repo");
     git(
@@ -181,10 +185,18 @@ fn container_release_attachment_retries_exact_signed_head_before_tag() {
         "[registry]\nname = \"aos-core\"\n",
     )
     .unwrap();
+    let signing = write_test_signing_key(tmp.path(), "aos-core");
+    fs::write(
+        repo.join("keys.toml"),
+        format!(
+            "schema = 1\n[[keys]]\nid = \"authority\"\nkey = \"{}\"\n",
+            signing.trusted_key,
+        ),
+    )
+    .unwrap();
     git(&repo, &["add", "."]).unwrap();
     git(&repo, &["commit", "-m", "init"]).unwrap();
-
-    let signing = write_test_signing_key(tmp.path(), "aos-core");
+    let base_commit = git(&repo, &["rev-parse", "HEAD"]).unwrap();
     let (release, _) = container_release_inputs("1.0.0");
     let attachment = ContainerReleaseAttachment {
         canonical_bytes: to_canonical_json(&release).unwrap(),
@@ -196,13 +208,41 @@ fn container_release_attachment_retries_exact_signed_head_before_tag() {
     let printer = Printer::new(0, true, false);
 
     attach_container_release(&repo, "aos-core", &options, &printer).unwrap();
-    let committed_head = git(&repo, &["rev-parse", "HEAD"]).unwrap();
+    assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), base_commit);
     assert!(
         existing_release_tag_commit(&repo, &options.version)
             .unwrap()
             .is_none()
     );
 
+    let prepared = PreparedRegistryRelease::from_authored_tree(
+        &repo,
+        "aos-core",
+        "1.0.0",
+        &format!("sha256:{}", "0".repeat(64)),
+        &base_commit,
+        None,
+    )
+    .unwrap();
+    let identity = RegistryCommitIdentity {
+        name: "AOS Registry".to_string(),
+        email: "registry@example.com".to_string(),
+        unix_seconds: 1_770_000_000,
+        offset_minutes: 0,
+    };
+    let mut signer =
+        KeyPathRegistryObjectSigner::new(&repo, "aos-core", &signing.private_key, "authority")
+            .unwrap();
+    let finalized = prepared.finalize(&identity, &mut signer).await.unwrap();
+    let committed_head = finalized.commit;
+    assert_ne!(committed_head, base_commit);
+    assert!(finalized.full_pack.is_some());
+    assert_eq!(
+        existing_release_tag_commit(&repo, &options.version).unwrap(),
+        Some(committed_head.clone())
+    );
+
+    options.resume = true;
     attach_container_release(&repo, "aos-core", &options, &printer).unwrap();
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), committed_head);
     ensure_release_worktree_clean(&repo).unwrap();
@@ -215,7 +255,7 @@ fn container_release_attachment_retries_exact_signed_head_before_tag() {
         .push(b' ');
     let error = attach_container_release(&repo, "aos-core", &options, &printer)
         .expect_err("same-release conflicting retry");
-    assert!(format!("{error:#}").contains("different bytes for release 1.0.0"));
+    assert!(format!("{error:#}").contains("contains different"));
     assert_eq!(git(&repo, &["rev-parse", "HEAD"]).unwrap(), committed_head);
     ensure_release_worktree_clean(&repo).unwrap();
 }

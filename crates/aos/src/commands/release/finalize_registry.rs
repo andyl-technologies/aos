@@ -37,8 +37,8 @@ use aos_release::signing::{
 
 use crate::cli::{ReleaseFinalizeRegistryArgs, ReleasePrepareRegistryArgs};
 
-use super::capture;
 use super::signer::ExternalSigner;
+use super::{capture, container_binding};
 
 /// Authors every planned entry once and emits its exact review transaction.
 pub(super) async fn prepare(
@@ -52,7 +52,9 @@ pub(super) async fn prepare(
         args.container_release.as_deref(),
         args.container_signature_input.as_deref(),
     )?;
-    validate_container_plan_binding(container_release.as_ref(), &plan)?;
+    if let Some(attachment) = &container_release {
+        container_binding::validate(&attachment.release, &plan)?;
+    }
     if container_release.is_none() && args.container_repository.is_some() {
         bail!("container repository requires a signed container release and complete layout");
     }
@@ -173,7 +175,9 @@ pub(super) async fn finalize(
         args.container_release.as_deref(),
         args.container_signature_input.as_deref(),
     )?;
-    validate_container_plan_binding(container_release.as_ref(), &plan)?;
+    if let Some(attachment) = &container_release {
+        container_binding::validate(&attachment.release, &plan)?;
+    }
     validate_prepared_container(&args.prepared_registry, container_release.as_ref())?;
 
     let finalized = if let Some(finalized) =
@@ -295,45 +299,6 @@ fn require_new_path(path: &Path, description: &str) -> Result<()> {
         }
         Ok(_) => bail!("{description} already exists: {}", path.display()),
     }
-}
-
-fn validate_container_plan_binding(
-    attachment: Option<&ContainerReleaseAttachment>,
-    plan: &ReleasePlan,
-) -> Result<()> {
-    let Some(attachment) = attachment else {
-        return Ok(());
-    };
-    let package = plan
-        .packages
-        .iter()
-        .find(|package| package.name == attachment.release.identity.package)
-        .and_then(|package| package.publication.as_ref())
-        .context("container sidecar package is not publishable in the release plan")?;
-    if package.version != attachment.release.identity.package_version {
-        bail!("container sidecar package version differs from the release plan");
-    }
-
-    let attribute = &attachment.release.nix.definition.attribute;
-    let system_variant = attribute
-        .strip_prefix("systems.")
-        .and_then(|rest| rest.strip_suffix(".build.containers.aos"));
-    match system_variant {
-        Some(system_variant)
-            if plan
-                .images
-                .iter()
-                .any(|image| image.system_variant == system_variant) => {}
-        Some(system_variant) => bail!(
-            "container sidecar system variant '{system_variant}' is absent from the release plan"
-        ),
-        None if attribute == "containerImages.aos" && plan.images.len() == 1 => {}
-        None if attribute == "containerImages.aos" => bail!(
-            "legacy container definition attributes require exactly one planned system variant"
-        ),
-        None => bail!("container sidecar has an unsupported Nix definition attribute"),
-    }
-    Ok(())
 }
 
 fn validate_transaction_binding(

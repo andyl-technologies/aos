@@ -42,7 +42,6 @@ impl LocalStageStore {
         revision: u64,
         destinations: &[String],
         auth: &AuthOptions,
-        _no_skip: bool,
     ) -> Result<StageRecord> {
         crate::dry_run::refuse_mutation("upload candidate bytes")?;
         self.require_targets(id, revision, destinations)?;
@@ -170,24 +169,25 @@ impl LocalStageStore {
             self.write_record(&record)?;
         }
 
-        let surface = self.materialize_revision(&candidate)?;
-        let printer = Printer::new(0, false, false);
+        // Prepare local bytes before any destination effects. Hub publication
+        // uses admitted server bytes, so Hub-only releases need no local copy.
+        let surface = if static_targets.is_empty() {
+            None
+        } else {
+            Some(self.materialize_revision(&candidate)?)
+        };
         let mut hubs_released = true;
         for target in hubs {
-            let remote = hub::publish(
-                &candidate,
-                &surface,
-                &target.origin,
-                auth.token.as_deref(),
-                &printer,
-            )
-            .await?;
+            let remote = hub::publish(&candidate, &target.origin, auth.token.as_deref()).await?;
             if remote.revision != candidate {
                 bail!("Hub returned a different frozen candidate identity");
             }
             hubs_released &= remote.state == StageState::Released;
         }
         for (_, backend) in &static_targets {
+            let surface = surface
+                .as_deref()
+                .context("static publication surface is missing")?;
             for pointer in &pointers {
                 let observed = check_pointer_predecessor(backend.as_ref(), pointer).await?;
                 if observed

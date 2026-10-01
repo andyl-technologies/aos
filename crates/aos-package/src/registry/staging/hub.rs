@@ -150,10 +150,8 @@ pub async fn upload(
 /// rejected pointer preconditions, or failed Hub publication.
 pub async fn publish(
     revision: &StageRevision,
-    _surface_root: &Path,
     origin: &str,
     token: Option<&str>,
-    _printer: &Printer,
 ) -> Result<StageRecord> {
     revision.validate()?;
     let stage = HubStageClient::connect(origin, &revision.registry, token)

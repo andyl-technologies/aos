@@ -58,7 +58,7 @@ pub(crate) async fn validate_candidate(
             .context("release patch is absent")?,
     );
     let candidate_packs_path = format!("{release_directory}/objects/info/packs");
-    let frozen_pointers: BTreeMap<_, _> = revision
+    let prepared: BTreeMap<_, _> = revision
         .publication
         .iter()
         .map(|pointer| (pointer.path.as_str(), pointer.bytes.as_slice()))
@@ -68,7 +68,6 @@ pub(crate) async fn validate_candidate(
         .iter()
         .map(|object| (object.path.as_str(), object))
         .collect();
-    let mut prepared = BTreeMap::new();
     for pointer in &revision.publication {
         ensure!(
             !pointer.path.starts_with("channels/"),
@@ -116,10 +115,7 @@ pub(crate) async fn validate_candidate(
             let pack_path = pack_index::companion_pack_path(&pointer.path)
                 .context("invalid staged pack index path")?;
             ensure!(
-                revision
-                    .inventory
-                    .iter()
-                    .any(|object| object.path == pack_path),
+                inventory.contains_key(pack_path.as_str()),
                 "staged pack index has no verified companion pack"
             );
             let pack = surface
@@ -131,7 +127,7 @@ pub(crate) async fn validate_candidate(
                 .context("staged companion pack is unavailable")?;
             pack_index::validate_against_pack(&pointer.path, &pointer.bytes, &pack)?;
         } else if let Some(bundle_name) = bundle_name {
-            validate_git_bundle(bundle_name, &pointer.bytes, &frozen_pointers)?;
+            validate_git_bundle(bundle_name, &pointer.bytes, &prepared)?;
         } else if pointer.path == "HEAD" {
             ensure!(
                 current.as_deref() == Some(pointer.bytes.as_slice()),
@@ -163,8 +159,7 @@ pub(crate) async fn validate_candidate(
                         .context("malformed root pack listing")?;
                     let key = format!("objects/pack/{name}");
                     ensure!(
-                        keymap::is_git_pack_path(&key)
-                            && revision.inventory.iter().any(|object| object.path == key),
+                        keymap::is_git_pack_path(&key) && inventory.contains_key(key.as_str()),
                         "root pack listing introduces an unverified pack"
                     );
                 }
@@ -201,7 +196,6 @@ pub(crate) async fn validate_candidate(
                 pointer.path
             );
         }
-        prepared.insert(pointer.path.as_str(), pointer.bytes.as_slice());
     }
 
     let proposed_refs = prepared
@@ -334,7 +328,7 @@ pub(crate) async fn validate_candidate(
         );
         let key = format!("{release_directory}/objects/pack/{name}");
         ensure!(
-            revision.inventory.iter().any(|object| object.path == key),
+            inventory.contains_key(key.as_str()),
             "staged release pack is absent from its verified inventory"
         );
         found_pack = true;

@@ -29,6 +29,7 @@ mod capture;
 mod channel;
 mod compose_surface;
 mod config;
+mod container_binding;
 mod contract;
 mod finalize;
 mod finalize_cache;

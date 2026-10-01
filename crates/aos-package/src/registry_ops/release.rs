@@ -19,7 +19,7 @@ use crate::registry_ops::config::{
     resolve_effective_release_cache_url, resolve_registry_name, resolve_upload_urls,
     warn_on_cache_gc,
 };
-use crate::registry_ops::git::{commit_registry_paths, git, git_try};
+use crate::registry_ops::git::{git, git_try};
 use crate::registry_ops::publish::{
     publish_to_registry_directory, validate_release_publish_metadata,
     validate_release_publish_signing_identity,
@@ -29,7 +29,7 @@ use crate::registry_ops::signing::{
     resolve_signing_key_source,
 };
 use crate::registry_ops::store_paths::{introspect_store_path, validate_store_path_release_policy};
-use crate::registry_ops::tags::{release_commit, sign_tag};
+use crate::registry_ops::tags::release_commit;
 use crate::registry_ops::trust::derive_trust_key;
 use crate::security::{key_fingerprint, parse_signing_key};
 use anyhow::{Context, Result, bail};
@@ -328,9 +328,7 @@ pub async fn release(
                 }
                 stages.publish(id, revision, &destinations, &auth).await?
             } else {
-                stages
-                    .upload(id, revision, &destinations, &auth, no_skip)
-                    .await?
+                stages.upload(id, revision, &destinations, &auth).await?
             };
             print_stage_record(&record, printer)?;
             return Ok(());
@@ -579,7 +577,6 @@ async fn stage_registry_release(
             captured.revision.revision,
             &options.upload_urls,
             &options.upload_auth,
-            options.no_skip,
         )
         .await?;
     print_stage_record(&record, printer)
@@ -960,7 +957,7 @@ async fn prepare_release_registry_tree(
     let effective_options = composed_cache_options(dir, options)?;
     let options = &effective_options;
     validate_release_options(options)?;
-    attach_container_release_with_commit(dir, registry_name, options, false, printer)?;
+    attach_container_release(dir, registry_name, options, printer)?;
 
     let already_signed = existing_release_tag_commit(dir, &options.version)?.is_some();
     if !already_signed && let Some(publish) = &options.store_publish {
@@ -1045,7 +1042,7 @@ async fn prepare_release_registry_tree(
 
     let artifacts = if release_tag_exists {
         let head = git(dir, &["rev-parse", "HEAD"])?;
-        ensure_release_tag(dir, options, &head, printer)?;
+        ensure_resumed_release_tag(dir, options, &head, printer)?;
         crate::registry::release::RegistryReleaseLifecycle::complete_signed_release(
             dir,
             &options.version,
@@ -1545,21 +1542,10 @@ fn print_release_plan(
     }
 }
 
-#[cfg(test)]
 fn attach_container_release(
     dir: &Path,
     registry_name: &str,
     options: &ReleaseTreeOptions,
-    printer: &Printer,
-) -> Result<()> {
-    attach_container_release_with_commit(dir, registry_name, options, true, printer)
-}
-
-fn attach_container_release_with_commit(
-    dir: &Path,
-    registry_name: &str,
-    options: &ReleaseTreeOptions,
-    commit: bool,
     printer: &Printer,
 ) -> Result<()> {
     let Some(attachment) = &options.container_release else {
@@ -1685,14 +1671,6 @@ fn attach_container_release_with_commit(
         .with_context(|| format!("creating container release directory {}", parent.display()))?;
     fs::write(&path, &attachment.canonical_bytes)
         .with_context(|| format!("staging canonical container release {}", path.display()))?;
-    if commit {
-        commit_registry_paths(
-            dir,
-            &format!("registry: attach container release {}", options.version),
-            &[path],
-            Some(&options.signing_key),
-        )?;
-    }
     printer.success(&format!(
         "Attached canonical container sidecar for release {}.",
         options.version
@@ -1714,9 +1692,8 @@ fn ensure_release_worktree_clean(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create the signed release tag at `head`, or accept an existing tag that
-/// already points at `head` when resuming.
-fn ensure_release_tag(
+/// Requires the exact existing release tag at HEAD before resuming artifacts.
+fn ensure_resumed_release_tag(
     dir: &Path,
     options: &ReleaseTreeOptions,
     head: &str,
@@ -1744,16 +1721,10 @@ fn ensure_release_tag(
         );
     }
 
-    sign_tag(
-        dir,
-        &options.version.to_string(),
-        head,
-        Some("AOS registry release"),
-        &options.signing_key,
-        false,
-    )?;
-    printer.success(&format!("Created signed tag '{}'.", options.version));
-    Ok(())
+    bail!(
+        "release tag {} disappeared before its artifacts resumed",
+        options.version
+    )
 }
 
 /// Return the commit an existing release tag points at, or `None` when no
@@ -1784,8 +1755,8 @@ fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<
 /// publish commit and a cache upload have already landed.
 ///
 /// It is deliberately *not* sufficient on its own: the authoritative collision
-/// check still happens in [`ensure_release_tag`] under the release lock, since
-/// a concurrent producer working from a different clone can create the same
+/// check still happens in the shared prepared finalizer under the release lock.
+/// A concurrent producer working from a different clone can create the same
 /// tag after this check passes. That residual race resolves when the losing
 /// producer pushes to the shared origin. Passing `resume` skips the preflight,
 /// since resuming an interrupted release legitimately reuses an existing tag.

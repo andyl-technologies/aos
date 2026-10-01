@@ -1191,7 +1191,7 @@ pub struct ReleaseChannelAdvanceArgs {
     pub journal: PathBuf,
 
     /// Destination surface publication receipt
-    #[arg(long, alias = "production-receipt")]
+    #[arg(long)]
     pub publication_receipt: PathBuf,
 
     /// Channel receipt of an earlier ring of this destination; repeatable
@@ -1249,7 +1249,7 @@ pub struct ReleaseChannelCompleteArgs {
     pub journal: PathBuf,
 
     /// Destination surface publication receipt
-    #[arg(long, alias = "production-receipt")]
+    #[arg(long)]
     pub publication_receipt: PathBuf,
 
     /// Signed channel receipt; repeat for every planned ring
