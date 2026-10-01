@@ -710,6 +710,408 @@ impl core::fmt::Debug for ProtectedBrokerSessionJournalV1 {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BrokerMainOpenPhaseV1 {
+    Fresh,
+    Checking,
+    Ready,
+    Failed,
+}
+
+enum BrokerMainOpenFailureV1 {
+    Endpoint(BrokerSessionSecurityError),
+    Floor(tpm_floor::FloorErrorV1),
+}
+
+impl BrokerMainOpenFailureV1 {
+    fn projection(&self) -> BrokerSessionSecurityError {
+        match self {
+            // These errors contain only static labels, not owning descriptors
+            // or provider errors. The actual Required native cause stays on
+            // the resident floor, rather than being cloned into this result.
+            Self::Endpoint(error) => error.clone(),
+            Self::Floor(_) => BrokerSessionSecurityError::Currentness,
+        }
+    }
+}
+
+impl From<BrokerSessionSecurityError> for BrokerMainOpenFailureV1 {
+    fn from(error: BrokerSessionSecurityError) -> Self {
+        Self::Endpoint(error)
+    }
+}
+
+/// Stages actual endpoint, configured floor and returned main without a shell
+/// that can manufacture endpoint custody or bypass its admission.
+struct BrokerMainOpenV1 {
+    authority: Option<ProtectedBrokerSessionJournalV1>,
+    floor: Option<tpm_floor::runtime::BrokerFloorV1>,
+    endpoint: Option<ProtectedEndpointV1>,
+    directory: PathBuf,
+    name: String,
+    limits: JournalLimits,
+    phase: BrokerMainOpenPhaseV1,
+    first_failure: Option<BrokerMainOpenFailureV1>,
+}
+
+// One native open recipe serves the original consuming boundary and the
+// Required progress slots. The literal arms change storage, not replay policy.
+macro_rules! broker_main_open_step {
+    (Legacy, directory $place:ident, $directory:ident) => { &$directory };
+    (Retained, directory $place:ident, $directory:ident) => { &$place.owner.directory };
+    (Legacy, name $place:ident, $name:ident) => { $name };
+    (Retained, name $place:ident, $name:ident) => { &$place.owner.name };
+    (Legacy, limits $place:ident, $limits:ident) => { $limits };
+    (Retained, limits $place:ident, $limits:ident) => { $place.owner.limits };
+    (Legacy, owner $place:ident, $owner:ident) => { $owner };
+    (Retained, owner $place:ident, $owner:ident) => { $place.owner.owner };
+    (Legacy, requires_existing $place:ident, $floor:ident) => { $floor.requires_existing() };
+    (Retained, requires_existing $place:ident, $floor:ident) => {
+        $place.floor.as_ref().ok_or(BrokerSessionSecurityError::Currentness)?.requires_existing()
+    };
+    (Legacy, stage $place:ident, $opened:ident, $journal:ident) => {
+        let ($journal, _) = $opened.map_err(|_| BrokerSessionSecurityError::Currentness)?;
+    };
+    (Retained, stage $place:ident, $opened:ident, $journal:ident) => {
+        let ($journal, _) = $place.retain_native_result($opened)?;
+        $place.owner.journal = Some($journal);
+    };
+    (Legacy, endpoint $place:ident, $endpoint:ident) => { $endpoint.revalidate()?; };
+    (Retained, endpoint $place:ident, $endpoint:ident) => { $place.owner.endpoint.revalidate()?; };
+    (Legacy, construct $place:ident, $endpoint:ident, $directory:ident, $name:ident,
+        $limits:ident, $owner:ident, $journal:ident) => {
+        let mut $place = Self {
+            floor: tpm_floor::runtime::BrokerFloorV1::unavailable(),
+            journal: Some($journal),
+            directory: $directory,
+            name: $name.to_owned(),
+            limits: $limits,
+            owner: $owner,
+            endpoint: $endpoint,
+        };
+    };
+    (Retained, construct $place:ident, $endpoint:ident, $directory:ident, $name:ident,
+        $limits:ident, $owner:ident, $journal:ident) => {};
+    (Legacy, finish $place:ident, $floor:ident) => {
+        $place.validate_schema_only()?;
+        $place.floor = $floor;
+        $place.attach_floor()?;
+        $place.validate_all()?;
+        Ok($place)
+    };
+    (Retained, finish $place:ident, $floor:ident) => {
+        $place.owner.validate_schema_only()?;
+        $place.attach()
+    };
+}
+
+macro_rules! broker_main_open_recipe {
+    ($mode:ident, $place:ident, $protocol:ident, $endpoint:ident, $directory:ident,
+        $name:ident, $limits:ident, $floor:ident, $owner:ident) => {{
+        let existing = match std::fs::symlink_metadata(
+            broker_main_open_step!($mode, directory $place, $directory).join(
+                broker_main_open_step!($mode, name $place, $name),
+            ),
+        ) {
+            Ok(_) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(_) => return Err(BrokerSessionSecurityError::Currentness),
+        };
+        let opened = if broker_main_open_step!($mode, requires_existing $place, $floor)
+            || $protocol == BrokerSessionProtocolV1::Storage && existing
+        {
+            broker_main_open_step!($mode, owner $place, $owner).open_existing(
+                broker_main_open_step!($mode, directory $place, $directory),
+                broker_main_open_step!($mode, name $place, $name),
+                broker_main_open_step!($mode, limits $place, $limits),
+            )
+        } else {
+            broker_main_open_step!($mode, owner $place, $owner).open(
+                broker_main_open_step!($mode, directory $place, $directory),
+                broker_main_open_step!($mode, name $place, $name),
+                broker_main_open_step!($mode, limits $place, $limits),
+            )
+        };
+        broker_main_open_step!($mode, stage $place, opened, journal);
+        broker_main_open_step!($mode, endpoint $place, $endpoint);
+        broker_main_open_step!($mode, construct $place, $endpoint, $directory, $name,
+            $limits, $owner, journal);
+        broker_main_open_step!($mode, finish $place, $floor)
+    }};
+}
+
+impl BrokerMainOpenV1 {
+    fn prepare(
+        endpoint: ProtectedEndpointV1,
+        directory: &Path,
+        name: &str,
+        limits: JournalLimits,
+    ) -> Self {
+        Self {
+            authority: None,
+            floor: None,
+            endpoint: Some(endpoint),
+            directory: directory.to_path_buf(),
+            name: name.to_owned(),
+            limits,
+            phase: BrokerMainOpenPhaseV1::Fresh,
+            first_failure: None,
+        }
+    }
+
+    fn open(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        if self.phase != BrokerMainOpenPhaseV1::Fresh {
+            self.phase = BrokerMainOpenPhaseV1::Failed;
+            return Err(self.first_failure.as_ref().map_or(
+                BrokerSessionSecurityError::Currentness,
+                BrokerMainOpenFailureV1::projection,
+            ));
+        }
+        // An abandoned or caught-unwind admission stays Checking and cannot
+        // start again. Returned owners remain in these same original slots.
+        self.phase = BrokerMainOpenPhaseV1::Checking;
+        let result = self.open_inner();
+        match result {
+            Ok(()) => {
+                self.phase = BrokerMainOpenPhaseV1::Ready;
+                Ok(())
+            }
+            Err(cause) => {
+                let projected = cause.projection();
+                self.first_failure = Some(cause);
+                self.phase = BrokerMainOpenPhaseV1::Failed;
+                Err(projected)
+            }
+        }
+    }
+
+    fn open_inner(&mut self) -> Result<(), BrokerMainOpenFailureV1> {
+        let endpoint = self.endpoint
+            .as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        endpoint.revalidate()?;
+        let protocol = endpoint.protected_protocol_and_node().0;
+        if protocol == BrokerSessionProtocolV1::Storage && self.name != PROTECTED_SESSION_JOURNAL {
+            return Err(BrokerSessionSecurityError::Currentness.into());
+        }
+        let floor = tpm_floor::runtime::BrokerFloorV1::configure(
+            &self.directory,
+            protocol,
+            endpoint.role(),
+            endpoint.launch_image(),
+        )
+        .map_err(BrokerMainOpenFailureV1::Floor)?;
+        self.floor = Some(floor);
+        if !self.floor.as_ref().is_some_and(
+            tpm_floor::runtime::BrokerFloorV1::has_resident_required_attempt,
+        ) {
+            return Err(BrokerSessionSecurityError::Currentness.into());
+        }
+        let owner = JournalOwnerV1::capture(endpoint.role());
+
+        // All names were prepared before effects. The moves below perform no
+        // validation between the returned floor and its whole-owner slot.
+        match (self.endpoint.take(), self.floor.take()) {
+            (Some(endpoint), Some(floor)) => {
+                self.authority = Some(ProtectedBrokerSessionJournalV1 {
+                    floor,
+                    journal: None,
+                    directory: std::mem::take(&mut self.directory),
+                    name: std::mem::take(&mut self.name),
+                    limits: self.limits,
+                    owner,
+                    endpoint,
+                });
+            }
+            (endpoint, floor) => {
+                self.endpoint = endpoint;
+                self.floor = floor;
+                return Err(BrokerSessionSecurityError::Currentness.into());
+            }
+        }
+        let authority = self.authority
+            .as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let mut operation = BrokerFloorOperationV1::begin(authority);
+        let result = operation.open_main(protocol);
+        operation.finish(result)?;
+        authority.validate_all()?;
+        Ok(())
+    }
+
+    fn into_owner(
+        mut self,
+    ) -> Result<ProtectedBrokerSessionJournalV1, BrokerSessionSecurityError> {
+        if self.phase != BrokerMainOpenPhaseV1::Ready {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+        self.authority.take().ok_or(BrokerSessionSecurityError::Currentness)
+    }
+}
+
+/// Owns the moved floor and a separate borrow of the whole original Journal.
+/// Its Drop restores only the same fenced Required floor. Ordinary unwind
+/// retains the original local-disposal inverse. Forgetting leaves the owner
+/// unavailable, never ready.
+struct BrokerFloorOperationV1<'operation> {
+    floor: Option<tpm_floor::runtime::BrokerFloorV1>,
+    owner: &'operation mut ProtectedBrokerSessionJournalV1,
+    complete: bool,
+}
+
+impl<'operation> BrokerFloorOperationV1<'operation> {
+    fn begin(owner: &'operation mut ProtectedBrokerSessionJournalV1) -> Self {
+        let floor = std::mem::replace(
+            &mut owner.floor,
+            tpm_floor::runtime::BrokerFloorV1::unavailable(),
+        );
+        Self {
+            floor: Some(floor),
+            owner,
+            complete: false,
+        }
+    }
+
+    fn open_main(
+        &mut self,
+        protocol: BrokerSessionProtocolV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        broker_main_open_recipe!(Retained, self, protocol, endpoint, directory,
+            name, limits, floor, owner)
+    }
+
+    fn reopen(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.floor
+            .as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .suspend_for_reopen();
+        drop(self.owner.journal.take());
+        // Healthy reopen preserves the explicit sidecar-before-main release
+        // and original opener selection; failure cannot enable another reopen.
+        let floor = self.floor
+            .as_ref()
+            .ok_or(BrokerSessionSecurityError::Currentness)?;
+        let opened = if floor.requires_existing()
+            || self.owner.endpoint.protected_protocol_and_node().0 == BrokerSessionProtocolV1::Storage
+        {
+            self.owner.owner.open_existing(
+                &self.owner.directory,
+                &self.owner.name,
+                self.owner.limits,
+            )
+        } else {
+            self.owner.owner.open(
+                &self.owner.directory,
+                &self.owner.name,
+                self.owner.limits,
+            )
+        };
+        let (journal, _) = self.retain_native_result(opened)?;
+        self.owner.journal = Some(journal);
+        self.owner.validate_schema_only()?;
+        self.attach()?;
+        self.owner.endpoint.revalidate()
+    }
+
+    fn retain_native_result<T>(
+        &mut self,
+        result: Result<T, aos_sandbox::JournalError>,
+    ) -> Result<T, BrokerSessionSecurityError> {
+        if !self.floor.as_ref().is_some_and(
+            tpm_floor::runtime::BrokerFloorV1::has_resident_required_attempt,
+        ) {
+            // Legacy redacts and disposes the provider error immediately at
+            // the original native-return boundary, without debt retention.
+            return result.map_err(|_| BrokerSessionSecurityError::Currentness);
+        }
+        match result {
+            Ok(value) => Ok(value),
+            Err(cause) => {
+                if let Some(floor) = &mut self.floor {
+                    floor.record_native_failure(cause);
+                }
+                Err(BrokerSessionSecurityError::Currentness)
+            }
+        }
+    }
+
+    fn attach(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.floor
+            .as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .attach(self.owner)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    fn check(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.floor
+            .as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .check(self.owner)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    fn commit(
+        &mut self,
+        transaction: &JournalTransaction,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.floor
+            .as_mut()
+            .ok_or(BrokerSessionSecurityError::Currentness)?
+            .commit(self.owner, transaction)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
+    fn finish<T, E>(mut self, result: Result<T, E>) -> Result<T, E> {
+        if result.is_err() {
+            if let Some(floor) = &mut self.floor {
+                floor.fence_required();
+            }
+        }
+        if let Some(floor) = self.floor.take() {
+            self.owner.floor = floor;
+        }
+        self.complete = true;
+        result
+    }
+}
+
+impl Drop for BrokerFloorOperationV1<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            if let Some(mut floor) = self.floor.take() {
+                if floor.has_resident_required_attempt() {
+                    floor.fence_required();
+                    self.owner.floor = floor;
+                }
+                // Ordinary unwind drops the moved local and leaves the old
+                // Unavailable sentinel, exactly as the consuming db2 boundary.
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod main_open_projection_tests {
+    use super::*;
+
+    #[test]
+    fn static_endpoint_labels_and_floor_projection_preserve_old_errors() {
+        for error in [
+            BrokerSessionSecurityError::Currentness,
+            BrokerSessionSecurityError::ExecutionChanged,
+            BrokerSessionSecurityError::Manifest { field: "protocol" },
+        ] {
+            let failure = BrokerMainOpenFailureV1::Endpoint(error.clone());
+            assert_eq!(failure.projection(), error);
+        }
+
+        let failure = BrokerMainOpenFailureV1::Floor(tpm_floor::FloorErrorV1::Provisioning);
+        assert_eq!(failure.projection(), BrokerSessionSecurityError::Currentness);
+        assert!(matches!(failure, BrokerMainOpenFailureV1::Floor(tpm_floor::FloorErrorV1::Provisioning)));
+    }
+}
+
 /// Selects one fixed all-method broker-session endpoint role.
 ///
 /// Each variant maps to a compile-time endpoint directory. It cannot select a
@@ -3154,90 +3556,34 @@ impl ProtectedBrokerSessionJournalV1 {
         )
         .map_err(|_| BrokerSessionSecurityError::Currentness)?;
         let owner = JournalOwnerV1::capture(endpoint.role());
-        let existing = match std::fs::symlink_metadata(directory.join(name)) {
-            Ok(_) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(_) => return Err(BrokerSessionSecurityError::Currentness),
-        };
-        let (journal, _) = if floor.requires_existing()
-            || protocol == BrokerSessionProtocolV1::Storage && existing
-        {
-            owner.open_existing(&directory, name, limits)
-        } else {
-            owner.open(&directory, name, limits)
-        }
-        .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-        endpoint.revalidate()?;
-        let mut authority = Self {
-            floor: tpm_floor::runtime::BrokerFloorV1::unavailable(),
-            journal: Some(journal),
-            directory,
-            name: name.to_owned(),
-            limits,
-            owner,
-            endpoint,
-        };
-        authority.validate_schema_only()?;
-        authority.floor = floor;
-        authority.attach_floor()?;
-        authority.validate_all()?;
-        Ok(authority)
+        broker_main_open_recipe!(Legacy, authority, protocol, endpoint, directory,
+            name, limits, floor, owner)
     }
 
     fn reopen_storage(&mut self) -> Result<(), BrokerSessionSecurityError> {
-        self.endpoint.revalidate()?;
-        let mut floor = std::mem::replace(
-            &mut self.floor,
-            tpm_floor::runtime::BrokerFloorV1::unavailable(),
-        );
-        floor.suspend_for_reopen();
-        drop(self.journal.take());
-        let result = (|| {
-            // Only the scoped Storage owner changes replay policy. Unrelated
-            // Host/Mount/Network recovery keeps its existing native opener.
-            let (journal, _) = if floor.requires_existing()
-                || self.endpoint.protected_protocol_and_node().0 == BrokerSessionProtocolV1::Storage
-            {
-                self.owner
-                    .open_existing(&self.directory, &self.name, self.limits)
-            } else {
-                self.owner.open(&self.directory, &self.name, self.limits)
-            }
+        // This refusal precedes even endpoint revalidation, sidecar suspension
+        // and main.take. A failed Required owner keeps all original custody.
+        self.floor.require_reopen_allowed()
             .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            self.journal = Some(journal);
-            self.validate_schema_only()?;
-            floor
-                .attach(self)
-                .map_err(|_| BrokerSessionSecurityError::Currentness)?;
-            self.endpoint.revalidate()
-        })();
-        self.floor = floor;
-        result?;
+        // The first endpoint read still precedes extraction on Legacy. Only
+        // Required pre-arms its actual resident attempt across this same read.
+        self.floor.revalidate_endpoint_for_reopen(&mut self.endpoint)?;
+        let mut operation = BrokerFloorOperationV1::begin(self);
+        let result = operation.reopen();
+        operation.finish(result)?;
         self.validate_all()
     }
 
     fn attach_floor(&mut self) -> Result<(), BrokerSessionSecurityError> {
-        let mut floor = std::mem::replace(
-            &mut self.floor,
-            tpm_floor::runtime::BrokerFloorV1::unavailable(),
-        );
-        let result = floor
-            .attach(self)
-            .map_err(|_| BrokerSessionSecurityError::Currentness);
-        self.floor = floor;
-        result
+        let mut operation = BrokerFloorOperationV1::begin(self);
+        let result = operation.attach();
+        operation.finish(result)
     }
 
     fn require_floor_current(&mut self) -> Result<(), BrokerSessionSecurityError> {
-        let mut floor = std::mem::replace(
-            &mut self.floor,
-            tpm_floor::runtime::BrokerFloorV1::unavailable(),
-        );
-        let result = floor
-            .check(self)
-            .map_err(|_| BrokerSessionSecurityError::Currentness);
-        self.floor = floor;
-        result
+        let mut operation = BrokerFloorOperationV1::begin(self);
+        let result = operation.check();
+        operation.finish(result)
     }
 
     fn require_floor_method(
@@ -3255,15 +3601,9 @@ impl ProtectedBrokerSessionJournalV1 {
         &mut self,
         transaction: &JournalTransaction,
     ) -> Result<(), BrokerSessionSecurityError> {
-        let mut floor = std::mem::replace(
-            &mut self.floor,
-            tpm_floor::runtime::BrokerFloorV1::unavailable(),
-        );
-        let result = floor
-            .commit(self, transaction)
-            .map_err(|_| BrokerSessionSecurityError::Currentness);
-        self.floor = floor;
-        result
+        let mut operation = BrokerFloorOperationV1::begin(self);
+        let result = operation.commit(transaction);
+        operation.finish(result)
     }
 
     fn journal_mut(&mut self) -> Result<&mut Journal, BrokerSessionSecurityError> {

@@ -27,6 +27,32 @@ pub(crate) struct BrokerPhysicalOpenV1<'open> {
 }
 
 impl<'open> BrokerPhysicalOpenV1<'open> {
+    // Keep the purpose matcher below this already restricted physical seam;
+    // neither this preamble nor matching DATA creates a measured helper phase.
+    /// Checks the existing owner policy and fixed child-role sanity.
+    ///
+    /// # Errors
+    /// Preserves owner enforcement and invalid child PID failures. It does not
+    /// measure a helper, inspect its context or create a measured phase.
+    pub(crate) fn require_helper_preamble(
+        profile: FloorProfileV1,
+        pid: u32,
+    ) -> Result<(), FloorErrorV1> {
+        super::confinement::require_helper_preamble(profile.endpoint(), pid)
+    }
+
+    /// Applies the original bounded Broker matcher to observed context DATA.
+    ///
+    /// # Errors
+    /// Rejects excess bytes or a context other than this fixed helper role.
+    /// Actual process/image/cgroup custody remains the physical owner's duty.
+    pub(crate) fn require_helper_context(
+        profile: FloorProfileV1,
+        bytes: &[u8],
+    ) -> Result<(), FloorErrorV1> {
+        super::confinement::require_observed_helper_context(profile.endpoint(), bytes)
+    }
+
     /// Moves the original inputs without allocation, validation or effects.
     pub(crate) fn into_parts(
         self,
@@ -70,6 +96,29 @@ impl PhysicalTpmNvIoV1 {
         Ok(Self {
             owner: RetainedPhysicalTpmOwnerV1::open(binding)?,
         })
+    }
+
+    pub(in crate::recovery::journal::tpm_floor) fn retain(
+        profile: FloorProfileV1,
+        salt_name: [u8; 34],
+        auth: &[u8; 32],
+        locks: [ProtectedJournalLockCustodyV1; 2],
+        launch_image: &Pid1LaunchImageV1,
+    ) -> Self {
+        let binding = BrokerPhysicalOpenV1 {
+            profile,
+            salt_name,
+            auth,
+            locks,
+            launch_image,
+        };
+        Self {
+            owner: RetainedPhysicalTpmOwnerV1::retain_broker(binding),
+        }
+    }
+
+    pub(in crate::recovery::journal::tpm_floor) fn admit(&mut self) -> Result<(), FloorErrorV1> {
+        self.owner.admit_broker()
     }
 }
 

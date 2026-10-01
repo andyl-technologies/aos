@@ -82,9 +82,15 @@ impl<Io: AuthenticatedTpmNvIoV1> TpmNvExtendFloorBackendV1<Io> {
     }
 
     pub(super) fn open(profile: FloorProfileV1, io: Io) -> Result<Self, FloorErrorV1> {
-        let mut backend = Self { profile, io };
+        let mut backend = Self::retain(profile, io);
         backend.read()?;
         Ok(backend)
+    }
+
+    // The genuine production attempt parks this exact sealed IO before its
+    // first authenticated read. This does not admit a profile or create IO.
+    pub(super) fn retain(profile: FloorProfileV1, io: Io) -> Self {
+        Self { profile, io }
     }
 
     pub(super) fn read(&mut self) -> Result<[u8; 32], FloorErrorV1> {

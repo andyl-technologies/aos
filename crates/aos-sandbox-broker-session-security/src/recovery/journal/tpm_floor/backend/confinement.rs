@@ -45,14 +45,29 @@ pub(crate) fn require_owner(
 }
 
 pub(crate) fn require_helper(endpoint: FloorEndpointV1, pid: u32) -> Result<(), FloorErrorV1> {
-    require_owner(endpoint)?;
-    if pid == 0 || pid == std::process::id() {
-        return Err(FloorErrorV1::Provisioning);
-    }
+    require_helper_preamble(endpoint, pid)?;
     require_context(
         &format!("/proc/{pid}/attr/current"),
         helper_context(endpoint),
     )
+}
+
+pub(super) fn require_helper_preamble(endpoint: FloorEndpointV1, pid: u32) -> Result<(), FloorErrorV1> {
+    require_owner(endpoint)?;
+    if pid == 0 || pid == std::process::id() {
+        return Err(FloorErrorV1::Provisioning);
+    }
+    Ok(())
+}
+
+pub(super) fn require_observed_helper_context(
+    endpoint: FloorEndpointV1,
+    bytes: &[u8],
+) -> Result<(), FloorErrorV1> {
+    if bytes.len() > 256 || !context_matches(bytes, helper_context(endpoint).as_bytes()) {
+        return Err(FloorErrorV1::Provisioning);
+    }
+    Ok(())
 }
 
 fn require_context(path: &str, expected: &str) -> Result<(), FloorErrorV1> {
@@ -124,5 +139,22 @@ mod tests {
             owner_context(FloorEndpointV1::ControllerStorageClient),
             owner_context(FloorEndpointV1::StorageBroker)
         );
+    }
+
+    #[test]
+    fn retained_helper_context_uses_the_same_exact_matcher_and_bound() {
+        for endpoint in [FloorEndpointV1::ControllerStorageClient, FloorEndpointV1::StorageBroker] {
+            let expected = helper_context(endpoint).as_bytes();
+            for observed in [expected.to_vec(), [expected, b"\n"].concat(), [expected, b"\0"].concat()] {
+                assert!(require_observed_helper_context(endpoint, &observed).is_ok());
+            }
+            for observed in [Vec::new(), vec![b'x'; 257], [expected, b"\0\n"].concat()] {
+                assert_eq!(
+                    require_observed_helper_context(endpoint, &observed),
+                    Err(FloorErrorV1::Provisioning),
+                );
+            }
+            assert!(require_observed_helper_context(endpoint, owner_context(endpoint).as_bytes()).is_err());
+        }
     }
 }
