@@ -884,15 +884,15 @@ impl QemuNodeSet {
         Ok(before.process_generation())
     }
 
-    /// Prepares one installed paused node as a retained hot-fork template.
+    /// Pauses one installed source exactly and prepares its retained template.
     ///
     /// The node remains installed in this authoritative set. Callers can thus
     /// prepare a complete world before moving any process authority.
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError`] when the node is absent, permanently failed, or
-    /// cannot establish the complete retained-template transaction.
+    /// Returns [`BackendError`] when the node is absent, permanently failed,
+    /// cannot establish the exact pause, or cannot prepare the transaction.
     #[cfg(target_os = "linux")]
     pub fn prepare_retained_hot_fork_template(
         &mut self,
@@ -904,6 +904,12 @@ impl QemuNodeSet {
         maximum_ring_image_bytes: usize,
     ) -> Result<QemuNodeSetPreparedHotForkTemplate, BackendError> {
         let source_process = self.process_identity(node)?;
+        self.node_mut(node)?
+            .pause_for_hot_fork_template()
+            .map_err(|error| BackendError::Rejected {
+                message: format!("pause retained hot-fork source at exact boundary: {error}"),
+            })?;
+
         let prepared = self
             .node_mut(node)?
             .prepare_retained_hot_fork_template(block_snapshot_bindings, maximum_ring_image_bytes)
@@ -2679,6 +2685,56 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
+    fn recovered_source_reprepares_without_waiting_for_a_stopped_plugin() {
+        let mut nodes = QemuNodeSet::new();
+        let node = NodeId {
+            name: String::from("node-a"),
+        };
+        nodes.insert(
+            node.clone(),
+            crate::node::tests::node_set_hot_fork_source(false).expect("scripted QEMU source"),
+        );
+        let configuration = ContentHash::from_bytes(b"reusable-source");
+        let resources = QemuLaunchResourceRequirements::from_vm_shape(128, 1, true);
+
+        let first = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                configuration,
+                EventLog::new(),
+                resources,
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare running source");
+        assert!(
+            nodes
+                .abort_retained_hot_fork_template(&node, Some(first.template_generation()))
+                .expect("roll back first template")
+        );
+
+        let second = nodes
+            .prepare_retained_hot_fork_template(
+                &node,
+                configuration,
+                EventLog::new(),
+                resources,
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("reprepare the same stopped source");
+        nodes
+            .validate_retained_hot_fork_template(&second)
+            .expect("reprepared token remains current");
+        assert!(
+            nodes
+                .abort_retained_hot_fork_template(&node, Some(second.template_generation()))
+                .expect("roll back second template")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
     fn prepared_source_loan_rejects_a_changed_process_incarnation() {
         let mut nodes = QemuNodeSet::new();
         let node = NodeId {
@@ -2771,6 +2827,70 @@ mod tests {
             nodes
                 .abort_retained_hot_fork_template(&first, Some(first_token.template_generation()),)
                 .expect("rollback first source")
+        );
+        for node in [&first, &second] {
+            let source = nodes.nodes.get(node).expect("source remains installed");
+            assert!(source.hot_fork_private_ring_stage().is_none());
+            assert!(source.hot_fork_child_diagnostic_stage().is_none());
+            assert!(source.hot_fork_child_qmp_stage().is_none());
+            assert!(source.hot_fork_child_console_stage().is_none());
+            assert!(source.hot_fork_plugin_endpoint_stage().is_none());
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn second_source_failure_preserves_both_owners_through_rollback() {
+        let mut nodes = QemuNodeSet::new();
+        let first = NodeId {
+            name: String::from("node-a"),
+        };
+        let second = NodeId {
+            name: String::from("node-b"),
+        };
+        nodes.insert(
+            first.clone(),
+            crate::node::tests::node_set_hot_fork_source(false)
+                .expect("first scripted QEMU source"),
+        );
+        nodes.insert(
+            second.clone(),
+            crate::node::tests::node_set_hot_fork_source(true)
+                .expect("second scripted QEMU source"),
+        );
+        let configuration = ContentHash::from_bytes(b"partial-two-node-source-world");
+        let resources = QemuLaunchResourceRequirements::from_vm_shape(128, 1, true);
+
+        let first_token = nodes
+            .prepare_retained_hot_fork_template(
+                &first,
+                configuration,
+                EventLog::new(),
+                resources,
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect("prepare first source");
+        nodes
+            .prepare_retained_hot_fork_template(
+                &second,
+                configuration,
+                EventLog::new(),
+                resources,
+                &[],
+                64 * 1024 * 1024,
+            )
+            .expect_err("second source descriptor installation must fail");
+
+        assert!(
+            nodes
+                .abort_retained_hot_fork_template(&second, None)
+                .expect("roll back partially prepared second source")
+        );
+        assert!(
+            nodes
+                .abort_retained_hot_fork_template(&first, Some(first_token.template_generation()))
+                .expect("roll back prepared first source")
         );
         for node in [&first, &second] {
             let source = nodes.nodes.get(node).expect("source remains installed");

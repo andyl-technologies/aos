@@ -517,6 +517,21 @@ impl QemuNodePendingQuantum {
 
 /// QMP machine-control channel for snapshot and quit commands.
 pub(crate) trait QemuQmpMachineControlChannel: Send {
+    /// Reports whether QEMU is already stopped for template preparation.
+    ///
+    /// A paused runstate is only a scheduling fact. The native template
+    /// command still authenticates the exact VMStop and flush receipt.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU's runstate cannot be read.
+    fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
+        Err(QemuNodeChannelError::new(
+            "query hot-fork source runstate",
+            "QMP runstate query is unavailable",
+        ))
+    }
+
     /// Stops guest execution for a checkpoint transaction.
     ///
     /// # Errors

@@ -313,6 +313,33 @@ impl QemuNode {
         self.pause_at_exact_checkpoint_boundary_after_validation()
     }
 
+    /// Establishes or preserves the stopped boundary for retained-template work.
+    ///
+    /// A recovered template remains stopped. Re-requesting a plugin pause from
+    /// that state would wait for a callback QEMU cannot dispatch; the template
+    /// command itself rechecks the native stop and flush receipt before use.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeError`] when QMP runstate inspection or a fresh exact
+    /// pause fails.
+    pub(crate) fn pause_for_hot_fork_template(&mut self) -> Result<(), QemuNodeError> {
+        self.validate_exact_pause_boundary()?;
+
+        let already_paused = self
+            .channels
+            .qmp_machine_control
+            .is_paused_for_hot_fork_template()
+            .map_err(|source| {
+                QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+            })?;
+        if already_paused {
+            return Ok(());
+        }
+
+        self.pause_at_exact_checkpoint_boundary_after_validation()
+    }
+
     /// Prevalidates terminal snapshot identity and boundary prerequisites.
     ///
     /// This read-only check lets a multi-node lifecycle transaction reject all

@@ -220,6 +220,16 @@ where
         self.client
     }
 
+    /// Reports whether QEMU is already paused before retained-template work.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QemuNodeChannelError`] when QEMU's runstate cannot be read.
+    pub(crate) fn is_paused_for_hot_fork_template(&mut self) -> Result<bool, QemuNodeChannelError> {
+        let state = self.client.query_status()?;
+        Ok(!state.running && state.status == crate::QmpRunStateKind::Paused)
+    }
+
     /// Stops guest execution for an exact checkpoint transaction.
     ///
     /// # Errors
