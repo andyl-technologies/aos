@@ -456,6 +456,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   collector observation body before qualification, so these source adoptions
   do not claim native gates or a task merge. Complete native graph integration
   and the full trunk gate set remain pending.
+  Eight reviewed lower-backend paths now connect layout admission, existing-only
+  exclusion, retained holders, selected refs/logs, catalog and content operations
+  to that engine. All eight match the frozen bucket and reference graphs and
+  pass scoped AOS source formatting. They preserve per-read physical namespace
+  checks, detached-index exclusion and represented permanent-burn completeness;
+  the older collector snapshot lacks those later backend corrections. The actual
+  trunk native build now reports 27 diagnostics, down from the lease adoption's
+  64, with real Guard types and consumers still absent. This source integration
+  does not qualify the full task; backend test closure and Guard/reference
+  integration precede current runtime gates.
   Qualification exposed
   an overwrite fixture still targeting the previous rename primitive and three
   fixtures retaining their own namespace receipts while waiting to reacquire.

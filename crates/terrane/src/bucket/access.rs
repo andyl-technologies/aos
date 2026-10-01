@@ -41,10 +41,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ) -> Result<(), StoreFailure> {
         if capabilities.layout_version != self.inner.access.version()
             || capabilities.profile != self.profile()
-            || capabilities.publication_protocol.is_some()
+            || (capabilities.publication_protocol.is_some()
+                && (capabilities.publication_protocol != Some(1)
+                    || self.inner.access.read_only()
+                    || self.inner.config.publication_control.is_none()))
         {
-            // Registered state requires the selected-chain resolver, including
-            // for already-open handles. Legacy caches and probes cannot select it.
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         Ok(())
@@ -57,7 +58,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     pub(super) async fn ensure_layout(&self) -> Result<BucketCapabilities, StoreFailure> {
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let bytes = self
-            .read_optional(&key)
+            .logical_optional(&key)
             .await?
             .ok_or_else(files::layout_corrupt)?;
         let capabilities =
@@ -86,7 +87,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let guard = if self.inner.access.read_only() {
             None
         } else {
-            Some(self.exclusive().await?)
+            Some(self.existing_exclusive().await?)
         };
         self.ensure_layout().await?;
         Ok(guard)

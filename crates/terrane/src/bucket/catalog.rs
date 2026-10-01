@@ -22,6 +22,8 @@ pub(super) struct Catalog {
     pub inventory: Option<Vec<PackInventoryEntry>>,
     /// Complete active physical retirement incarnations, or legacy unknown.
     pub exclusions: Option<Vec<PackExclusion>>,
+    /// Complete permanently unavailable pack IDs, or legacy unknown.
+    pub burns: Option<Vec<[u8; 16]>>,
 }
 
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
@@ -35,25 +37,84 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     pub(super) async fn catalog(&self) -> Result<Catalog, StoreFailure> {
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let capability_bytes = self
-            .read_optional(&key)
+            .logical_optional(&key)
             .await?
             .ok_or_else(files::layout_corrupt)?;
         let capabilities =
             BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt())?;
         self.validate_layout(&capabilities)?;
+        let manifest = if let Some(generation) = capabilities.generation {
+            let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
+            let bytes = self
+                .logical_optional(&key)
+                .await?
+                .ok_or_else(files::layout_corrupt)?;
+            Some(GenerationManifest::decode(&bytes).map_err(|_| files::layout_corrupt())?)
+        } else {
+            None
+        };
+        self.verify_catalog(capability_bytes, capabilities, manifest)
+            .await
+    }
+
+    /// Verifies direct artifacts named by one actual complete held selection.
+    ///
+    /// CAPABILITIES and MANIFEST come from the same freshly resolved chain.
+    /// Every listed shard and filter retains its independent exact read and
+    /// hash/size check; the caller revalidates the full observation before use.
+    ///
+    /// # Errors
+    /// Rejects mismatched holders, incomplete or malformed selected values,
+    /// incompatible profiles and unavailable or corrupt direct artifacts.
+    pub(super) async fn catalog_observed(
+        &self,
+        observed: &super::publication::SelectedObservation<'_>,
+    ) -> Result<Catalog, StoreFailure> {
+        if observed.identity().root() != self.root() {
+            return Err(files::layout_corrupt());
+        }
+        let capability_key = registered("CAPABILITIES")?;
+        self.check_payload_namespace(&capability_key).await?;
+        let capability_bytes = observed
+            .logical()
+            .get("CAPABILITIES")
+            .and_then(Option::as_ref)
+            .ok_or_else(files::layout_corrupt)?
+            .clone();
+        let capabilities =
+            BucketCapabilities::decode(&capability_bytes).map_err(|_| files::layout_corrupt())?;
+        self.validate_layout(&capabilities)?;
+        let manifest = if let Some(generation) = capabilities.generation {
+            let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
+            self.check_payload_namespace(&key).await?;
+            let bytes = observed
+                .logical()
+                .get(key.as_str())
+                .and_then(Option::as_deref)
+                .ok_or_else(files::layout_corrupt)?;
+            Some(GenerationManifest::decode(bytes).map_err(|_| files::layout_corrupt())?)
+        } else {
+            None
+        };
+        self.verify_catalog(capability_bytes, capabilities, manifest)
+            .await
+    }
+
+    async fn verify_catalog(
+        &self,
+        capability_bytes: Vec<u8>,
+        capabilities: BucketCapabilities,
+        manifest: Option<GenerationManifest>,
+    ) -> Result<Catalog, StoreFailure> {
         let mut shards = Vec::new();
         let mut inventory = None;
         let mut exclusions = None;
-        if let Some(generation) = capabilities.generation {
-            let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
-            let bytes = self
-                .read_optional(&key)
-                .await?
-                .ok_or_else(files::layout_corrupt)?;
-            let manifest =
-                GenerationManifest::decode(&bytes).map_err(|_| files::layout_corrupt())?;
+        let mut burns = None;
+        if let Some(manifest) = manifest {
+            let generation = capabilities.generation.ok_or_else(files::layout_corrupt)?;
             inventory = manifest.inventory.clone();
             exclusions = manifest.exclusions.clone();
+            burns = manifest.burns.clone();
             if manifest.generation != generation {
                 return Err(files::layout_corrupt());
             }
@@ -92,6 +153,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             shards,
             inventory,
             exclusions,
+            burns,
         })
     }
 
@@ -119,26 +181,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .verify(&identity, &bytes)
             .map_err(|_| files::layout_corrupt())?;
         Ok(bytes)
-    }
-
-    /// Publishes known-empty retirement authority only after atomic fresh-root creation.
-    ///
-    /// # Errors
-    /// Rejects an already selected generation and failed durable publication.
-    pub(super) async fn initialize_fresh_catalog(
-        &self,
-        mut catalog: Catalog,
-    ) -> Result<(), StoreFailure> {
-        if catalog.capabilities.generation.is_some() {
-            return Err(files::layout_corrupt());
-        }
-        catalog.inventory = Some(Vec::new());
-        catalog.exclusions = Some(Vec::new());
-        let generation = self.next_generation(&catalog).await?;
-        let empty =
-            MergedShard::rebuild(0, generation, &[], &BTreeSet::new(), None, &BTreeSet::new())
-                .map_err(|_| files::layout_corrupt())?;
-        self.publish_shards(catalog, generation, &[empty]).await
     }
 
     /// Installs an immutable artifact or verifies identical existing bytes.
@@ -200,8 +242,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Rejects inconsistent pack, shard, or inventory records and propagates
     /// publication failures. The caller retains stable exclusion throughout.
-    pub(super) async fn publish_pack_catalog(
+    pub(super) async fn publish_pack_catalog<const WRITABLE: bool>(
         &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        observed: &super::publication::SelectedObservation<'_>,
         mut catalog: Catalog,
         new: PackIndexSnapshot,
         inventory: PackInventoryEntry,
@@ -271,7 +315,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             );
         }
         self.add_inventory(&mut catalog, inventory)?;
-        self.publish_shards(catalog, generation, &shards).await
+        self.publish_shards_held(held, observed, catalog, generation, &shards)
+            .await
     }
 
     /// Adds a uniquely named container without replacing a different binding.
@@ -292,6 +337,107 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 Ok(())
             }
         }
+    }
+
+    /// Publishes canonical catalog changes through the actual retained namespace.
+    ///
+    /// Immutable shard and manifest bytes become durable before the sole commit
+    /// slot; complete portable acknowledgment precedes all materialized caches.
+    ///
+    /// # Errors
+    /// Rejects mismatched holders, stale whole capability preimages, malformed
+    /// catalog bindings, unavailable native retention and failed durable effects.
+    pub(super) async fn publish_shards_held<const WRITABLE: bool>(
+        &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        observed: &super::publication::SelectedObservation<'_>,
+        mut catalog: Catalog,
+        generation: u64,
+        shards: &[MergedShard],
+    ) -> Result<(), StoreFailure> {
+        if !std::ptr::eq(self, held.bucket())
+            || observed
+                .logical()
+                .get("CAPABILITIES")
+                .and_then(Option::as_ref)
+                != Some(&catalog.capability_bytes)
+        {
+            return Err(files::layout_corrupt());
+        }
+        let mut entries = Vec::new();
+        let mut changes = Vec::new();
+        for shard in shards {
+            let bytes = shard.encode();
+            let hash = TERRANE_V1
+                .calculate(IdentityKind::Index, &bytes)
+                .map_err(|_| files::layout_corrupt())?
+                .terrane_v1_digest()
+                .map_err(|_| files::layout_corrupt())?;
+            entries.push(GenerationShard {
+                shard: u64::from(shard.shard()),
+                index_hash: hash,
+                index_size: bytes.len() as u64,
+                filter: None,
+            });
+            changes.push(terrane_core::gc::publication::LogicalChange {
+                key: registered(&format!("objects/index/{generation}/{}.idx", shard.shard()))?
+                    .as_str()
+                    .into(),
+                expected: None,
+                new: Some(bytes),
+            });
+        }
+        let timestamp = self
+            .inner
+            .clock
+            .now()
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| files::malformed())?
+            .as_secs();
+        let manifest = GenerationManifest {
+            generation,
+            shards: entries,
+            written_at: timestamp,
+            cycle: 0,
+            inventory: catalog.inventory.clone(),
+            exclusions: catalog.exclusions.clone(),
+            burns: catalog.burns.clone(),
+        };
+        let manifest_bytes = manifest.encode().map_err(|_| files::malformed())?;
+        changes.push(terrane_core::gc::publication::LogicalChange {
+            key: registered(&format!("objects/index/{generation}/MANIFEST"))?
+                .as_str()
+                .into(),
+            expected: None,
+            new: Some(manifest_bytes),
+        });
+        catalog.capabilities.generation = Some(generation);
+        changes.push(terrane_core::gc::publication::LogicalChange {
+            key: "CAPABILITIES".into(),
+            expected: Some(catalog.capability_bytes),
+            new: Some(
+                catalog
+                    .capabilities
+                    .encode()
+                    .map_err(|_| files::malformed())?,
+            ),
+        });
+        held.publish_backend_raw(observed, changes).await?;
+
+        // Retain the existing independent artifact identity verification at its
+        // exact registered key after native durable installation and selection.
+        for entry in &manifest.shards {
+            self.verified_artifact(
+                generation,
+                entry.shard,
+                "idx",
+                IdentityKind::Index,
+                entry.index_hash,
+                entry.index_size,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     /// Publishes verified shards, then the final manifest, then the selected pointer.
@@ -349,6 +495,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             cycle: 0,
             inventory: catalog.inventory.clone(),
             exclusions: catalog.exclusions.clone(),
+            burns: catalog.burns.clone(),
         };
         let bytes = manifest.encode().map_err(|_| files::malformed())?;
         let key = registered(&format!("objects/index/{generation}/MANIFEST"))?;
@@ -359,12 +506,38 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .encode()
             .map_err(|_| files::malformed())?;
         let key = registered("CAPABILITIES")?;
-        if !self
-            .replace_conditionally(&key, Some(&catalog.capability_bytes), &bytes)
-            .await?
+        let selected = self.selected_publication_locked().await?;
+        if selected
+            .logical
+            .get("CAPABILITIES")
+            .and_then(Option::as_ref)
+            != Some(&catalog.capability_bytes)
         {
             return Err(files::layout_corrupt());
         }
+        let mut changes = vec![terrane_core::gc::publication::LogicalChange {
+            key: key.as_str().into(),
+            expected: Some(catalog.capability_bytes),
+            new: Some(bytes),
+        }];
+        let manifest_key = format!("objects/index/{generation}/MANIFEST");
+        let manifest_bytes = self
+            .read_optional(&registered(&manifest_key)?)
+            .await?
+            .ok_or_else(files::layout_corrupt)?;
+        changes.push(terrane_core::gc::publication::LogicalChange {
+            key: manifest_key,
+            expected: None,
+            new: Some(manifest_bytes),
+        });
+        for shard in shards {
+            changes.push(terrane_core::gc::publication::LogicalChange {
+                key: format!("objects/index/{generation}/{}.idx", shard.shard()),
+                expected: None,
+                new: Some(shard.encode()),
+            });
+        }
+        self.publish_raw_locked(&selected, changes).await?;
         Ok(())
     }
 
@@ -385,11 +558,23 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let _guard = self.read_exclusion().await?;
         let catalog = self.catalog().await?;
         let identities = self.catalog_identities(&catalog, kind)?;
+        let identities = if kind == IdentityKind::Index {
+            // Detached aliases must name an eligible physical pack even when
+            // copied burns have no old inventory/hash witness left to match.
+            self.verified_catalog_identities(&catalog, identities)
+                .await?
+        } else {
+            identities
+        };
         self.ensure_layout().await?;
         Ok(identities)
     }
 
-    fn catalog_identities(
+    /// Enumerates candidate identities from one verified catalog's selected rows.
+    ///
+    /// # Errors
+    /// Rejects unknown index-retirement completeness and malformed identities.
+    pub(super) fn catalog_identities(
         &self,
         catalog: &Catalog,
         kind: IdentityKind,
@@ -456,11 +641,31 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ) -> Result<Vec<Identity>, StoreFailure> {
         let catalog = self.catalog().await?;
         let identities = self.catalog_identities(&catalog, kind)?;
-        for identity in &identities {
-            self.verified_body(&catalog, identity).await?;
-        }
+        let identities = self
+            .verified_catalog_identities(&catalog, identities)
+            .await?;
         self.ensure_layout().await?;
         Ok(identities)
+    }
+
+    /// Filters candidates through full body verification and physical association.
+    ///
+    /// # Errors
+    /// Preserves absent bodies, corruption, and unavailable reads. Only a fully
+    /// verified detached index naming a physically excluded pack is omitted.
+    pub(super) async fn verified_catalog_identities(
+        &self,
+        catalog: &Catalog,
+        identities: Vec<Identity>,
+    ) -> Result<Vec<Identity>, StoreFailure> {
+        let mut eligible = Vec::with_capacity(identities.len());
+        for identity in identities {
+            match self.verified_body_outcome(catalog, &identity).await? {
+                super::content::VerifiedBody::Bytes(_) => eligible.push(identity),
+                super::content::VerifiedBody::ExcludedDetachedIndex => {}
+            }
+        }
+        Ok(eligible)
     }
 }
 

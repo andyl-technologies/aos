@@ -1,5 +1,6 @@
 //! Provides stable exclusion and durable conditional filesystem installation.
 
+use super::publication::receipts::RecordRead;
 use super::{BucketBinding, FileBucket};
 use crate::store::{
     Clock, ContentValidator, CorruptSubject, InvalidReason, LocalFs, StoreErrorKind, StoreFailure,
@@ -49,6 +50,35 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(())
     }
 
+    /// Checks physical cache nodes without using their bytes as selected values.
+    ///
+    /// # Errors
+    /// Rejects symlinked ancestors and nonregular present payload nodes while
+    /// preserving exact absence and unavailable metadata as distinct outcomes.
+    pub(super) async fn check_payload_namespace(
+        &self,
+        key: &BucketKey,
+    ) -> Result<(), StoreFailure> {
+        let mut path = self.inner.config.root.clone();
+        self.check_directory(&path).await?;
+        let relative = Path::new(key.as_str()).parent().ok_or_else(malformed)?;
+        for part in relative.components() {
+            path.push(part);
+            match self.inner.fs.symlink_metadata(&path).await {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => return Err(layout_corrupt()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) => return Err(io_failure(error)),
+            }
+        }
+        match self.inner.fs.symlink_metadata(&self.path(key)).await {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => Ok(()),
+            Ok(_) => Err(layout_corrupt()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_failure(error)),
+        }
+    }
+
     async fn parents(&self, key: &BucketKey) -> Result<PathBuf, StoreFailure> {
         let mut path = self.inner.config.root.clone();
         self.check_directory(&path).await?;
@@ -88,12 +118,29 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
         }
         let locks = self.inner.config.root.join(".terrane-locks");
-        self.inner
-            .fs
-            .create_dir_all(&locks)
-            .await
-            .map_err(io_failure)?;
+        match self.inner.fs.create_dir_new(&locks).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(io_failure(error)),
+        }
         self.check_directory(&locks).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let operator = self
+                .publication_operator_uid()
+                .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))?;
+            let metadata = self
+                .inner
+                .fs
+                .symlink_metadata(&locks)
+                .await
+                .map_err(io_failure)?;
+            if metadata.uid() != operator || metadata.mode() & 0o022 != 0 {
+                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+            }
+        }
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| malformed())?;
         let path = self.inner.config.root.join(key.lock_name());
         match self.inner.fs.symlink_metadata(&path).await {
@@ -123,36 +170,126 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(guard)
     }
 
+    /// Holds an already registered namespace without creating or syncing nodes.
+    ///
+    /// # Errors
+    /// Refuses missing existing-only locking, unsafe configured ownership or
+    /// coordination directories, and changed protected namespace admission.
+    pub(super) async fn existing_exclusive(&self) -> Result<F::Lock, StoreFailure> {
+        if self.inner.access.read_only() {
+            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
+        }
+        self.preflight_publication_namespace().await?;
+        let locks = self.inner.config.root.join(".terrane-locks");
+        self.check_directory(&locks).await?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+
+            let operator = self
+                .publication_operator_uid()
+                .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))?;
+            let metadata = self
+                .inner
+                .fs
+                .symlink_metadata(&locks)
+                .await
+                .map_err(io_failure)?;
+            if metadata.uid() != operator || metadata.mode() & 0o022 != 0 {
+                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+            }
+        }
+        let key = BucketKey::parse("CAPABILITIES").map_err(|_| malformed())?;
+        let guard = self
+            .inner
+            .fs
+            .lock_existing_exclusive(&self.inner.config.root.join(key.lock_name()))
+            .await
+            .map_err(io_failure)?;
+        self.preflight_publication_namespace().await?;
+        Ok(guard)
+    }
+
+    /// Returns exact registered bytes without retaining read data beyond the call.
+    ///
+    /// # Errors
+    /// Preserves all parent, leaf, incarnation and binding read failures.
+    pub(super) async fn read_optional(
+        &self,
+        key: &BucketKey,
+    ) -> Result<Option<Vec<u8>>, StoreFailure> {
+        Ok(self.read_optional_observed(key).await?.into_bytes())
+    }
+
     /// Reads a registered regular file while rejecting symlinked layout nodes.
     ///
     /// # Errors
     /// Returns corruption for incompatible nodes and propagates read failures;
     /// a missing registered key returns `None`.
-    pub(super) async fn read_optional(
+    pub(super) async fn read_optional_observed(
         &self,
         key: &BucketKey,
-    ) -> Result<Option<Vec<u8>>, StoreFailure> {
+    ) -> Result<RecordRead, StoreFailure> {
         let path = self.path(key);
         let mut parent = self.inner.config.root.clone();
         let relative = Path::new(key.as_str()).parent().ok_or_else(malformed)?;
+        let mut parents = Vec::new();
         for part in relative.components() {
             parent.push(part);
-            match self.inner.fs.symlink_metadata(&parent).await {
+            parents.push(parent.clone());
+        }
+        let observations = self
+            .inner
+            .fs
+            .symlink_metadata_batch(&parents)
+            .await
+            .map_err(io_failure)?;
+        if observations.len() != parents.len() {
+            return Err(layout_corrupt());
+        }
+        for observation in observations {
+            match observation {
                 Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
                 Ok(_) => return Err(layout_corrupt()),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(RecordRead::observed(path, None, None));
+                }
                 Err(error) => return Err(io_failure(error)),
             }
         }
-        match self.inner.fs.symlink_metadata(&path).await {
-            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+        let before = match self.inner.fs.symlink_metadata(&path).await {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => metadata,
             Ok(_) => return Err(layout_corrupt()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RecordRead::observed(path, None, None));
+            }
             Err(error) => return Err(io_failure(error)),
-        }
-        match self.inner.fs.read(&path).await {
-            Ok(bytes) => Ok(Some(bytes)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        };
+        match self.inner.fs.read_nofollow(&path).await {
+            Ok(bytes) => {
+                let after = self
+                    .inner
+                    .fs
+                    .symlink_metadata(&path)
+                    .await
+                    .map_err(io_failure)?;
+                if !after.is_file() || after.file_type().is_symlink() {
+                    return Err(layout_corrupt());
+                }
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if (before.dev(), before.ino()) != (after.dev(), after.ino()) {
+                        return Err(layout_corrupt());
+                    }
+                }
+                #[cfg(not(unix))]
+                let _ = before;
+                Ok(RecordRead::observed(path, Some(bytes), Some(after)))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(RecordRead::observed(path, None, None))
+            }
             Err(error) => Err(io_failure(error)),
         }
     }

@@ -42,6 +42,63 @@ pub(super) fn inventory_entry(
     })
 }
 
+/// Retains a canonical admitted container pair at its fixed registered names.
+///
+/// This data grants no selected membership, actor or physical retirement authority.
+pub(crate) struct ContainerArtifacts {
+    id: PackId,
+    pack: Vec<u8>,
+    index: Vec<u8>,
+    inventory: PackInventoryEntry,
+}
+
+impl ContainerArtifacts {
+    /// Returns the canonical header's container identifier.
+    pub(crate) fn id(&self) -> PackId {
+        self.id
+    }
+
+    /// Borrows the exact validated sealed pack bytes.
+    pub(crate) fn pack(&self) -> &[u8] {
+        &self.pack
+    }
+
+    /// Borrows the exact validated detached index bytes.
+    pub(crate) fn index(&self) -> &[u8] {
+        &self.index
+    }
+
+    /// Borrows the exact immutable artifact binding for later inventory selection.
+    pub(crate) fn inventory(&self) -> &PackInventoryEntry {
+        &self.inventory
+    }
+}
+
+/// Checks the exact sealed pair after its caller completes body admission.
+///
+/// # Errors
+/// Rejects invalid pack headers, mismatched IDs or detached indexes and invalid
+/// registered identity-profile bindings; this creates no selected membership.
+pub(super) fn admitted_artifacts(
+    id: PackId,
+    pack: &[u8],
+    index: &[u8],
+) -> Result<ContainerArtifacts, StoreFailure> {
+    let reader = PackReader::open(pack).map_err(|_| files::layout_corrupt())?;
+    if reader.header().id() != id {
+        return Err(files::layout_corrupt());
+    }
+    reader
+        .check_index_object(index)
+        .map_err(|_| files::layout_corrupt())?;
+    Ok(ContainerArtifacts {
+        id,
+        pack: pack.to_vec(),
+        index: index.to_vec(),
+        inventory: inventory_entry(id, pack, index)?,
+    })
+}
+
 impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator + BucketBinding>
     FileBucket<F, C, V>
 {
@@ -138,8 +195,10 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// # Errors
     /// Rejects invalid bodies, metadata, dictionary dependencies, or immutable
     /// artifact collisions, and propagates unavailable durable I/O.
-    pub(super) async fn import_pack(
+    pub(super) async fn import_pack<const WRITABLE: bool>(
         &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        observed: &super::publication::SelectedObservation<'_>,
         mut catalog: Catalog,
         bytes: &[u8],
         identity: Identity,
@@ -204,12 +263,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
 
         let id = reader.header().id();
         let index = reader.index_object();
-        let entry = inventory_entry(id, bytes, &index)?;
-        self.immutable(&registered(&id.pack_key())?, bytes).await?;
-        self.immutable(&registered(&id.index_key())?, &index)
+        let artifacts = admitted_artifacts(id, bytes, &index)?;
+        crate::store::native_publication_effects::stage_container(held.fs(), observed, &artifacts)
             .await?;
-        self.verified_container(&entry).await?;
-        self.add_inventory(&mut catalog, entry)?;
+        self.verified_container(artifacts.inventory()).await?;
+        self.add_inventory(&mut catalog, artifacts.inventory().clone())?;
 
         let generation = self.next_generation(&catalog).await?;
         let mut shards = Vec::new();
@@ -225,7 +283,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                     .map_err(|_| files::layout_corrupt())?;
             shards.insert(0, empty);
         }
-        self.publish_shards(catalog, generation, &shards).await?;
+        self.publish_shards_held(held, observed, catalog, generation, &shards)
+            .await?;
         Ok(identity)
     }
 }

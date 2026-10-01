@@ -15,6 +15,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use terrane_core::codec::{Codec, parse_envelope};
 use terrane_core::identity::{Identity, IdentityKind, TERRANE_V1};
 
+/// Distinguishes verified bytes from a canonical detached index's excluded pack.
+pub(super) enum VerifiedBody {
+    /// Contains bytes that passed the complete body verification.
+    Bytes(Vec<u8>),
+    /// Identifies an otherwise verified detached index naming an excluded pack.
+    ExcludedDetachedIndex,
+}
+
 pub(super) fn corrupt(identity: &Identity) -> StoreFailure {
     StoreFailure::new(StoreErrorKind::Corrupt(CorruptSubject::Identity(
         identity.clone(),
@@ -194,8 +202,27 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         catalog: &Catalog,
         identity: &Identity,
     ) -> Result<Vec<u8>, StoreFailure> {
+        match self.verified_body_outcome(catalog, identity).await? {
+            VerifiedBody::Bytes(bytes) => Ok(bytes),
+            VerifiedBody::ExcludedDetachedIndex => {
+                Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())))
+            }
+        }
+    }
+
+    /// Verifies a body while retaining explicit canonical detached-index exclusion.
+    ///
+    /// # Errors
+    /// Preserves absence for missing or excluded content, unknown index policy,
+    /// corruption, and unavailable reads. Only a fully verified detached index
+    /// naming an excluded pack returns the distinct exclusion outcome.
+    pub(super) async fn verified_body_outcome(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+    ) -> Result<VerifiedBody, StoreFailure> {
         if identity == &empty_chunk()? {
-            return Ok(vec![0]);
+            return Ok(VerifiedBody::Bytes(vec![0]));
         }
         if self.is_excluded(catalog, identity)? {
             return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
@@ -206,7 +233,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(StoreFailure::new(StoreErrorKind::Unsupported));
         }
         if let Some(bytes) = self.container(catalog, identity).await? {
-            return Ok(bytes);
+            return Ok(VerifiedBody::Bytes(bytes));
         }
         if identity.kind() == IdentityKind::Pack {
             return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
@@ -225,7 +252,14 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             TERRANE_V1
                 .verify(identity, &encoded)
                 .map_err(|_| corrupt(identity))?;
-            return Ok(encoded);
+            if identity.kind() == IdentityKind::Index
+                && self
+                    .detached_index_excluded(catalog, &encoded)
+                    .map_err(|_| corrupt(identity))?
+            {
+                return Ok(VerifiedBody::ExcludedDetachedIndex);
+            }
+            return Ok(VerifiedBody::Bytes(encoded));
         }
 
         // Resolve dictionary chains iteratively so hostile envelopes cannot
@@ -275,7 +309,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .map_err(|_| corrupt(identity))?;
             dictionary = Some(verified.plaintext().to_vec());
         }
-        Ok(encoded)
+        Ok(VerifiedBody::Bytes(encoded))
     }
 
     /// Resolves a verified dictionary chain without recursive decoder calls.
@@ -391,10 +425,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ///
     /// # Errors
     /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
-    pub(super) async fn put_locked(
+    pub(super) async fn put_locked<const WRITABLE: bool>(
         &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
         upload: ContentUpload<'_>,
     ) -> Result<Identity, StoreFailure> {
+        if !std::ptr::eq(self, held.bucket()) {
+            return Err(files::layout_corrupt());
+        }
+        let observed = held.observe_publication().await?;
         self.write_layout_locked().await?;
         let catalog = self.catalog().await?;
         let mut dictionaries = BTreeMap::new();
@@ -449,9 +488,19 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Err(StoreFailure::new(StoreErrorKind::Absent(identity)));
         }
         if let ContentUpload::Meta(meta) = upload
+            && meta.kind() == IdentityKind::Index
+            && self
+                .detached_index_excluded(&catalog, meta.bytes())
+                .map_err(|_| invalid("STORE-33"))?
+        {
+            return Err(StoreFailure::new(StoreErrorKind::Absent(identity)));
+        }
+        if let ContentUpload::Meta(meta) = upload
             && meta.kind() == IdentityKind::Pack
         {
-            return self.import_pack(catalog, meta.bytes(), identity).await;
+            return self
+                .import_pack(held, &observed, catalog, meta.bytes(), identity)
+                .await;
         }
         if self.is_quarantined(&catalog, &identity)? {
             return Err(corrupt(&identity));
@@ -493,9 +542,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             }
         };
         let sealed = writer.seal().map_err(|_| invalid("STORE-33"))?;
-        self.immutable(&registered(&id.pack_key())?, sealed.bytes())
-            .await?;
-        self.immutable(&registered(&id.index_key())?, sealed.index_object())
+        let artifacts =
+            super::containers::admitted_artifacts(id, sealed.bytes(), sealed.index_object())?;
+        crate::store::native_publication_effects::stage_container(held.fs(), &observed, &artifacts)
             .await?;
         let generation = catalog
             .capabilities
@@ -505,10 +554,15 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .ok_or_else(files::layout_corrupt)?;
         let index = PackIndexSnapshot::decode(sealed.index_object(), generation)
             .map_err(|_| files::layout_corrupt())?;
-        let inventory =
-            super::containers::inventory_entry(id, sealed.bytes(), sealed.index_object())?;
-        self.verified_container(&inventory).await?;
-        self.publish_pack_catalog(catalog, index, inventory).await?;
+        self.verified_container(artifacts.inventory()).await?;
+        self.publish_pack_catalog(
+            held,
+            &observed,
+            catalog,
+            index,
+            artifacts.inventory().clone(),
+        )
+        .await?;
         Ok(identity)
     }
 
@@ -522,7 +576,41 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         range: Option<ByteRange>,
     ) -> Result<Vec<u8>, StoreFailure> {
         let catalog = self.catalog().await?;
-        let bytes = self.verified_body(&catalog, identity).await?;
+        self.get_catalog_body(&catalog, identity, range).await
+    }
+
+    /// Verifies a body against one fresh held catalog and revalidates before return.
+    ///
+    /// No selected observation survives this individual read. Direct artifacts,
+    /// body/dictionary verification and range validation retain their original
+    /// order, followed by a complete physical and selected-state recheck.
+    ///
+    /// # Errors
+    /// Preserves content, range and unavailable-read failures and rejects changed
+    /// selected state, leaf incarnations or ancestry before successful disclosure.
+    pub(super) async fn get_held<const WRITABLE: bool>(
+        &self,
+        held: &super::held::HeldBucket<'_, F, C, V, WRITABLE>,
+        identity: &Identity,
+        range: Option<ByteRange>,
+    ) -> Result<Vec<u8>, StoreFailure> {
+        if !std::ptr::eq(self, held.bucket()) {
+            return Err(files::layout_corrupt());
+        }
+        let observed = held.observe_for_read().await?;
+        let catalog = self.catalog_observed(&observed).await?;
+        let bytes = self.get_catalog_body(&catalog, identity, range).await?;
+        observed.revalidate().await?;
+        Ok(bytes)
+    }
+
+    async fn get_catalog_body(
+        &self,
+        catalog: &Catalog,
+        identity: &Identity,
+        range: Option<ByteRange>,
+    ) -> Result<Vec<u8>, StoreFailure> {
+        let bytes = self.verified_body(catalog, identity).await?;
         let Some(range) = range else {
             return Ok(bytes);
         };
@@ -583,8 +671,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     ContentStore for FileBucket<F, C, V>
 {
     async fn put(&self, upload: ContentUpload<'_>) -> Result<Identity, StoreFailure> {
-        let _guard = self.exclusive().await?;
-        self.put_locked(upload).await
+        let holder = super::held::SingleHeld::acquire(self).await?;
+        holder.destination().put(upload).await
     }
 
     async fn get(

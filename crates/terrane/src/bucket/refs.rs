@@ -5,7 +5,7 @@ use crate::store::{
     Clock, ContentValidator, CorruptSubject, LocalFs, RefCasOutcome, RefLogAppendOutcome, RefStore,
     RefWatch, StoreErrorKind, StoreFailure,
 };
-use terrane_core::bucket::{BucketCapabilities, BucketKey, Mutability};
+use terrane_core::bucket::{BucketCapabilities, BucketKey};
 use terrane_core::refs::{RefClass, RefLogRecord, RefName, RefRecord};
 
 fn ref_key(name: &str, version: u64) -> Result<BucketKey, StoreFailure> {
@@ -58,7 +58,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         let _guard = self.read_exclusion().await?;
         let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
         let bytes = self
-            .read_optional(&key)
+            .logical_optional(&key)
             .await?
             .ok_or_else(files::layout_corrupt)?;
         let capabilities =
@@ -70,52 +70,11 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .ok_or_else(|| StoreFailure::new(StoreErrorKind::Unsupported))
     }
 
-    // Registration precedes the head installation while retaining the same
-    // exclusion guard, so any possibly applied ref has durable inventory reachability.
-    async fn register_ref_name(
-        &self,
-        name: &str,
-        already_exists: bool,
-    ) -> Result<(), StoreFailure> {
-        let key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
-        let bytes = self
-            .read_optional(&key)
-            .await?
-            .ok_or_else(files::layout_corrupt)?;
-        let mut capabilities =
-            BucketCapabilities::decode(&bytes).map_err(|_| files::layout_corrupt())?;
-        self.validate_layout(&capabilities)?;
-        let Some(names) = capabilities.ref_names.as_mut() else {
-            return if already_exists {
-                Ok(())
-            } else {
-                Err(StoreFailure::new(StoreErrorKind::Unsupported))
-            };
-        };
-        match names.binary_search_by(|existing| existing.as_bytes().cmp(name.as_bytes())) {
-            Ok(_) => Ok(()),
-            Err(_) if already_exists => Err(files::layout_corrupt()),
-            Err(position) => {
-                names.insert(position, name.into());
-                let replacement = capabilities.encode().map_err(|_| files::layout_corrupt())?;
-                if !self
-                    .replace_conditionally(&key, Some(&bytes), &replacement)
-                    .await?
-                {
-                    return Err(StoreFailure::new(StoreErrorKind::Unavailable {
-                        retry_after: None,
-                    }));
-                }
-                Ok(())
-            }
-        }
-    }
-
     async fn read_ref(&self, key: &BucketKey) -> Result<Option<RefRecord>, StoreFailure> {
         self.ensure_layout().await?;
         let public_name = key.as_str().strip_suffix(":record").unwrap_or(key.as_str());
         let record = self
-            .read_optional(key)
+            .logical_optional(key)
             .await?
             .map(|bytes| RefRecord::decode(&bytes).map_err(|_| corrupt(key.as_str())))
             .transpose()?;
@@ -125,7 +84,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             // cannot produce a spurious missing-name report.
             let cap_key = BucketKey::parse("CAPABILITIES").map_err(|_| files::malformed())?;
             let bytes = self
-                .read_optional(&cap_key)
+                .logical_optional(&cap_key)
                 .await?
                 .ok_or_else(files::layout_corrupt)?;
             let capabilities =
@@ -143,42 +102,62 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         Ok(record)
     }
 
-    async fn read_log(
+    async fn read_log_observed(
         &self,
         name: &str,
         selected: &RefRecord,
-    ) -> Result<RefLogRecord, StoreFailure> {
+    ) -> Result<(RefLogRecord, super::publication::receipts::RecordRead), StoreFailure> {
         let key = log_key(name, selected, self.inner.access.version())?;
-        let bytes = self
-            .read_optional(&key)
-            .await?
-            .ok_or_else(|| corrupt(name))?;
-        let log = RefLogRecord::decode(&bytes).map_err(|_| corrupt(name))?;
+        let read = self.read_optional_observed(&key).await?;
+        let bytes = read.bytes().ok_or_else(|| corrupt(name))?;
+        let log = RefLogRecord::decode(bytes).map_err(|_| corrupt(name))?;
         if &log.record != selected {
             return Err(corrupt(name));
         }
-        Ok(log)
+        Ok((log, read))
     }
 
     // Each selected record identifies its exact predecessor. Legacy numbered
     // records are traversed only after a selected legacy endpoint is reached.
-    async fn committed_logs(
+    /// Returns the complete exact committed history for a selected endpoint.
+    ///
+    /// # Errors
+    /// Rejects invalid names, missing or malformed logs, incompatible whole
+    /// predecessors and successors, and unavailable exact reads.
+    pub(in crate::bucket) async fn committed_logs(
+        &self,
+        name: &str,
+        selected: RefRecord,
+    ) -> Result<Vec<RefLogRecord>, StoreFailure> {
+        self.committed_logs_observed(name, selected, &mut Vec::new())
+            .await
+    }
+
+    /// Retains every exact history read while validating the complete chain.
+    ///
+    /// Duplicate present reads remain in operation order; the resulting data
+    /// grants no selected or checked publication authority.
+    ///
+    /// # Errors
+    /// Rejects invalid names, missing or malformed logs, incompatible whole
+    /// predecessors and successors, and unavailable exact reads.
+    pub(in crate::bucket) async fn committed_logs_observed(
         &self,
         name: &str,
         mut selected: RefRecord,
+        reads: &mut Vec<super::publication::receipts::RecordRead>,
     ) -> Result<Vec<RefLogRecord>, StoreFailure> {
         let mut records = Vec::new();
         loop {
-            let log = self.read_log(name, &selected).await?;
+            let (log, read) = self.read_log_observed(name, &selected).await?;
+            reads.push(read);
             let previous = if selected.candidate_id.is_some() {
                 log.selected_previous().map_err(|_| corrupt(name))?.cloned()
             } else if selected.seq > 1 {
                 let key = BucketKey::reflog(name, selected.seq - 1).map_err(|_| corrupt(name))?;
-                let bytes = self
-                    .read_optional(&key)
-                    .await?
-                    .ok_or_else(|| corrupt(name))?;
-                let previous = RefLogRecord::decode(&bytes)
+                let read = self.read_optional_observed(&key).await?;
+                let bytes = read.bytes().ok_or_else(|| corrupt(name))?;
+                let previous = RefLogRecord::decode(bytes)
                     .map_err(|_| corrupt(name))?
                     .record;
                 RefRecord::validate_successor(Some(&previous), &selected)
@@ -186,6 +165,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
                 if previous.candidate_id.is_some() || log.previous_commit != Some(previous.commit) {
                     return Err(corrupt(name));
                 }
+                reads.push(read);
                 Some(previous)
             } else {
                 RefRecord::validate_successor(None, &selected).map_err(|_| corrupt(name))?;
@@ -220,88 +200,6 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         self.read_ref(&key).await
     }
 
-    /// Runs the ordinary ref_cas path while its caller retains stable exclusion.
-    ///
-    /// # Errors
-    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
-    pub(super) async fn ref_cas_locked(
-        &self,
-        name: &str,
-        expect: Option<&RefRecord>,
-        new: &RefRecord,
-    ) -> Result<RefCasOutcome, StoreFailure> {
-        self.write_layout_locked().await?;
-        let key = ref_key(name, self.inner.access.version())?;
-        let current = self.read_ref(&key).await?;
-        if current.as_ref() != expect
-            || (key.mutability() == Mutability::CreateOnce && current.is_some())
-        {
-            return Ok(RefCasOutcome::Conflict(current.map(Box::new)));
-        }
-        RefRecord::validate_successor(current.as_ref(), new).map_err(|_| files::malformed())?;
-        if branch(name)? {
-            if new.candidate_id.is_none() {
-                return Err(files::malformed());
-            }
-            let proposal_key = log_key(name, new, self.inner.access.version())?;
-            let proposal_bytes = self
-                .read_optional(&proposal_key)
-                .await?
-                .ok_or_else(files::malformed)?;
-            let proposal = RefLogRecord::decode(&proposal_bytes).map_err(|_| corrupt(name))?;
-            proposal
-                .validate_candidate(expect, new)
-                .map_err(|_| files::malformed())?;
-        }
-        let bytes = new.encode().map_err(|_| files::malformed())?;
-        self.register_ref_name(name, current.is_some()).await?;
-        if !self.install(&key, &bytes, current.is_some()).await? {
-            return Ok(RefCasOutcome::Conflict(
-                self.read_ref(&key).await?.map(Box::new),
-            ));
-        }
-        Ok(RefCasOutcome::Applied)
-    }
-
-    /// Runs the ordinary ref_log_append path while its caller retains stable exclusion.
-    ///
-    /// # Errors
-    /// Returns the same validation, conflict, corruption, or binding failures as the ordinary operation.
-    pub(super) async fn ref_log_append_locked(
-        &self,
-        name: &str,
-        seq: u64,
-        record: &RefLogRecord,
-    ) -> Result<RefLogAppendOutcome, StoreFailure> {
-        self.write_layout_locked().await?;
-        let key = log_key(name, &record.record, self.inner.access.version())?;
-        if record.record.seq != seq {
-            return Err(files::malformed());
-        }
-        let bytes = record.encode().map_err(|_| files::malformed())?;
-        if let Some(existing) = self.read_optional(&key).await? {
-            if record.record.candidate_id.is_none() && existing != bytes {
-                return Err(corrupt(name));
-            }
-            return Ok(RefLogAppendOutcome::Exists);
-        }
-        if record.record.candidate_id.is_none() {
-            // BKT-3 reserves new numbered slots for externally fenced migration.
-            // This backend cannot establish whole legacy namespace completeness.
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
-        let previous = record.selected_previous().map_err(|_| files::malformed())?;
-        record
-            .validate_candidate(previous, &record.record)
-            .map_err(|_| files::malformed())?;
-
-        if self.install(&key, &bytes, false).await? {
-            Ok(RefLogAppendOutcome::Appended)
-        } else {
-            Ok(RefLogAppendOutcome::Exists)
-        }
-    }
-
     /// Runs the ordinary ref_log_read path while its caller retains stable exclusion.
     ///
     /// # Errors
@@ -315,8 +213,27 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if !branch(name)? {
             return Err(files::malformed());
         }
-        let Some(current) = self.read_ref(&key).await? else {
+        let current = if let Some(current) = self.read_ref(&key).await? {
+            current
+        } else if self.inner.access.read_only() {
             return Ok(Vec::new());
+        } else {
+            let selected = self.selected_publication_locked().await?;
+            match selected
+                .state
+                .branches
+                .iter()
+                .find(|row| row.name == name)
+                .map(|row| &row.selection)
+            {
+                Some(terrane_core::gc::publication::CommittedSelection::Selected(record)) => {
+                    record.as_ref().clone()
+                }
+                Some(terrane_core::gc::publication::CommittedSelection::Unknown) => {
+                    return Err(StoreFailure::new(StoreErrorKind::Unsupported));
+                }
+                _ => return Ok(Vec::new()),
+            }
         };
         let from_seq = from_seq.max(1);
         if from_seq > current.seq {
@@ -339,6 +256,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     type Watch = FileRefWatch<F, C, V>;
 
     async fn ref_get(&self, name: &str) -> Result<Option<RefRecord>, StoreFailure> {
+        let _guard = self.read_exclusion().await?;
         self.ref_get_locked(name).await
     }
 
@@ -349,8 +267,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         new: &RefRecord,
     ) -> Result<RefCasOutcome, StoreFailure> {
         ref_key(name, self.inner.access.version())?;
-        let _guard = self.exclusive().await?;
-        self.ref_cas_locked(name, expect, new).await
+        let holder = super::held::SingleHeld::acquire(self).await?;
+        holder.destination().ref_cas(name, expect, new).await
     }
 
     async fn ref_log_append(
@@ -365,8 +283,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         }
         record.encode().map_err(|_| files::malformed())?;
 
-        let _guard = self.exclusive().await?;
-        self.ref_log_append_locked(name, seq, record).await
+        let holder = super::held::SingleHeld::acquire(self).await?;
+        holder.destination().ref_log_append(name, seq, record).await
     }
 
     async fn ref_log_read(
@@ -418,13 +336,8 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             return Ok(None);
         };
         loop {
-            let head = self.bucket.ref_get(&self.name).await?;
-            if head.is_some_and(|record| record.seq >= seq) {
-                let records = self.bucket.ref_log_read(&self.name, seq).await?;
-                let record = records
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| corrupt(&self.name))?;
+            let records = self.bucket.ref_log_read(&self.name, seq).await?;
+            if let Some(record) = records.into_iter().next() {
                 self.next = seq.checked_add(1);
                 return Ok(Some(record));
             }

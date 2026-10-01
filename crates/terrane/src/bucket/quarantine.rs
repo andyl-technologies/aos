@@ -40,17 +40,23 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
             .map(|record| record.state()))
     }
 
-    /// Recognizes active physical retirement and legacy exact retirement evidence.
+    /// Recognizes active retirement, permanent burns and legacy exact evidence.
     pub(super) fn physically_excluded(&self, catalog: &Catalog, pack: &[u8; 16]) -> bool {
         catalog.exclusions.as_ref().is_some_and(|entries| {
             entries
                 .binary_search_by_key(pack, |entry| entry.pack_id)
                 .is_ok()
         }) || catalog
-            .shards
-            .iter()
-            .flat_map(|shard| shard.entries())
-            .any(|entry| entry.state() == RecordState::Tombstone && entry.pack().as_bytes() == pack)
+            .burns
+            .as_ref()
+            .is_some_and(|burns| burns.binary_search(pack).is_ok())
+            || catalog
+                .shards
+                .iter()
+                .flat_map(|shard| shard.entries())
+                .any(|entry| {
+                    entry.state() == RecordState::Tombstone && entry.pack().as_bytes() == pack
+                })
     }
 
     /// Tests whether an exact active incarnation preserves physical retirement evidence.
@@ -62,25 +68,32 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         })
     }
 
-    /// Requires complete retirement authority and identities for every retired index.
+    /// Requires represented complete exclusion and permanent-burn sets.
+    ///
+    /// Missing old inventory or artifacts does not make a represented set
+    /// unknown. Detached-index aliases independently name their physical pack.
     pub(super) fn index_retirement_known(&self, catalog: &Catalog) -> bool {
-        let inventoried = |pack: &[u8; 16]| {
-            catalog
-                .inventory
-                .as_ref()
-                .is_some_and(|entries| entries.iter().any(|entry| &entry.pack_id == pack))
-        };
-        catalog.exclusions.as_ref().is_some_and(|exclusions| {
-            exclusions
-                .iter()
-                .all(|exclusion| inventoried(&exclusion.pack_id))
-                && catalog
-                    .shards
-                    .iter()
-                    .flat_map(|shard| shard.entries())
-                    .filter(|entry| entry.state() == RecordState::Tombstone)
-                    .all(|entry| inventoried(entry.pack().as_bytes()))
-        })
+        catalog.exclusions.is_some() && catalog.burns.is_some()
+    }
+
+    /// Tests a canonical detached index's embedded physical pack association.
+    ///
+    /// Generic Index payloads retain their separate validation rules. A TRPK
+    /// alias cannot escape an exclusion or burn by using another live carrier
+    /// or by dropping the old container inventory and artifacts.
+    ///
+    /// # Errors
+    /// Rejects malformed detached-index headers, ordering, coverage or records.
+    pub(super) fn detached_index_excluded(
+        &self,
+        catalog: &Catalog,
+        bytes: &[u8],
+    ) -> Result<bool, crate::pack::PackError> {
+        if !bytes.starts_with(b"TRPK") {
+            return Ok(false);
+        }
+        let (header, _) = terrane_core::pack_format::decode_detached_index(bytes)?;
+        Ok(self.physically_excluded(catalog, header.id()))
     }
 
     /// Tests selected GC retirement or identity quarantine before serving content.
@@ -135,7 +148,9 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
     /// Returns `Absent` for an identity without a published body record, `Invalid`
     /// for another profile, or a specified failure if durable publication fails.
     pub async fn exclude(&self, identity: &Identity) -> Result<(), StoreFailure> {
-        let _guard = self.exclusive().await?;
+        let holder = super::held::SingleHeld::acquire(self).await?;
+        let held = holder.destination();
+        let observed = held.observe_publication().await?;
         self.write_layout_locked().await?;
         let catalog = self.catalog().await?;
         if self.is_quarantined(&catalog, identity)? {
@@ -186,6 +201,7 @@ impl<F: LocalFs + BucketBinding, C: Clock + BucketBinding, V: ContentValidator +
         if !found {
             return Err(StoreFailure::new(StoreErrorKind::Absent(identity.clone())));
         }
-        self.publish_shards(catalog, generation, &shards).await
+        self.publish_shards_held(&held, &observed, catalog, generation, &shards)
+            .await
     }
 }
