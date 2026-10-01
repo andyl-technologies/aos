@@ -57,10 +57,10 @@ new dependencies must be added to the AOS package graph rather than imported
 from nixpkgs.
 
 Load the development shell through direnv or `nix develop --accept-flake-config`.
-It puts `aos-dev` in PATH without first building the Rust CLIs:
+It puts `aos-dev` and the ordinary packaged `aos` CLI in PATH:
 
 ```sh
-aos-dev run aos --help
+aos --help
 aos-dev run apm --help
 aos-dev run apr --help
 aos-dev cache init
