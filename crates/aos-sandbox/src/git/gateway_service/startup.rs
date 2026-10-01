@@ -3,7 +3,8 @@
 //! Selectors in argv are immutable-unit DATA, never authority. The same pidfd,
 //! cgroup anchor, executable, fragment and invocation survive every readback.
 //! The sole existing Systemd, immutable-image, SELinux and credential engines
-//! do the physical work. A missing node-network envelope closes TCP ingress.
+//! do the physical work. A retained procfs reader supplies advisory node-memory
+//! admission, not a reservation or a hard all-node network-memory bound.
 
 use std::fs::File;
 use std::io::Read as _;
@@ -33,6 +34,11 @@ use crate::systemd_property_data;
 
 use super::GitGatewayServiceErrorV1 as Error;
 
+mod node_memory;
+
+use node_memory::RetainedNodeMemoryObservationV1;
+
+const RESIDENCY_PROFILE: &str = "service-memcg-observed-node-memory-v1";
 const UNIT: &str = "aos-sandbox-git-gateway.service";
 const USER: &str = "aos-git-gateway";
 const CONTEXT: &str = "system_u:system_r:aos_sandbox_git_gateway_t";
@@ -71,10 +77,11 @@ const SERVICE_PROPERTIES: &[&str] = &[
 const UNIT_PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
 
 struct SelectionV1 {
-    arguments: [String; 5],
+    arguments: [String; 7],
     endpoint: SocketAddr,
     uid: u32,
     gid: u32,
+    minimum_observed_node_available_bytes: u64,
 }
 
 impl SelectionV1 {
@@ -87,17 +94,20 @@ impl SelectionV1 {
                 .filter(|value| !value.is_empty() && value.len() <= 1024 && value.is_ascii())
                 .ok_or(Error::Configuration)
         };
-        let selected = [next()?, next()?, next()?, next()?, next()?];
+        let selected = [next()?, next()?, next()?, next()?, next()?, next()?, next()?];
         if arguments.next().is_some() {
             return Err(Error::Configuration);
         }
         Self::decode(selected)
     }
 
-    fn decode(arguments: [String; 5]) -> Result<Self, Error> {
+    fn decode(arguments: [String; 7]) -> Result<Self, Error> {
         let endpoint = arguments[1].parse::<SocketAddr>().map_err(|_| Error::Configuration)?;
         let uid = arguments[2].parse::<u32>().map_err(|_| Error::Configuration)?;
         let gid = arguments[3].parse::<u32>().map_err(|_| Error::Configuration)?;
+        let minimum_observed_node_available_bytes = arguments[6]
+            .parse::<u64>()
+            .map_err(|_| Error::Configuration)?;
         if endpoint.port() < 1024 || uid == 0 || gid == 0
             || !arguments[0].starts_with("/nix/store/")
             || !arguments[0].ends_with("/bin/aos-sandbox-git-gateway")
@@ -105,6 +115,9 @@ impl SelectionV1 {
             || arguments[2] != uid.to_string() || arguments[3] != gid.to_string()
             || !arguments[4].starts_with("/nix/store/")
             || !arguments[4].ends_with("/policy.33")
+            || arguments[5] != RESIDENCY_PROFILE
+            || arguments[6] != minimum_observed_node_available_bytes.to_string()
+            || minimum_observed_node_available_bytes < MEMORY_MAX_BYTES
         {
             return Err(Error::Configuration);
         }
@@ -113,6 +126,7 @@ impl SelectionV1 {
             endpoint,
             uid,
             gid,
+            minimum_observed_node_available_bytes,
         })
     }
 
@@ -132,6 +146,7 @@ pub(super) struct GatewayStartupV1 {
     _root: CgroupV2Root,
     cgroup: RetainedCgroupAnchor,
     executable: RetainedImmutableFileV1,
+    node_memory: RetainedNodeMemoryObservationV1,
 }
 
 impl GatewayStartupV1 {
@@ -168,6 +183,7 @@ impl GatewayStartupV1 {
         ).map_err(|_| Error::Image)?;
         executable.require_executed(pid.get()).map_err(|_| Error::Image)?;
         require_kernel_envelope(&selection, &process, &cgroup)?;
+        let node_memory = RetainedNodeMemoryObservationV1::capture()?;
 
         Ok(Self {
             selection,
@@ -175,6 +191,7 @@ impl GatewayStartupV1 {
             _root: root,
             cgroup,
             executable,
+            node_memory,
         })
     }
 
@@ -214,16 +231,12 @@ pub(super) struct GatewayAdmissionV1 {
 impl GatewayAdmissionV1 {
     pub(super) async fn bind_listener(&self) -> Result<GatewayListenerV1, Error> {
         let mut failure = self.failure.lock().await;
-        if let Some(cause) = *failure {
-            return Err(cause);
-        }
-        *failure = Some(Error::Interrupted);
+        begin_gate(&mut failure)?;
 
-        // This explicit functional denial is before credentials, socket(),
-        // bind(), listen() and accept(). No Boolean or unsigned record replaces
-        // the absent selected node/network owner.
+        // Genuine service controls and the original advisory reader are joined
+        // before socket(), bind(), listen() or acceptance. The observation does
+        // not hold node capacity across this bookend and the next effect.
         let result = async {
-            require_node_network_envelope()?;
             self.recheck_original().await?;
             let listener = GatewayListenerV1::bind(self.startup.selection.endpoint)?;
             self.recheck_original().await?;
@@ -235,22 +248,19 @@ impl GatewayAdmissionV1 {
 
     pub(super) async fn recheck(&self) -> Result<(), Error> {
         let mut failure = self.failure.lock().await;
-        if let Some(cause) = *failure {
-            return Err(cause);
-        }
         // Cancellation/unwind while any fallible observation is in flight
         // leaves admission latched. The mutex serializes both fixed drivers.
-        *failure = Some(Error::Interrupted);
-        let result = async {
-            require_node_network_envelope()?;
-            self.recheck_original().await
-        }.await;
+        begin_gate(&mut failure)?;
+        let result = self.recheck_original().await;
         finish_gate(&mut failure, result)
     }
 
     async fn recheck_original(&self) -> Result<(), Error> {
         let retained = &self.startup;
         require_kernel_envelope(&retained.selection, &retained.process, &retained.cgroup)?;
+        retained.node_memory.require_current(
+            retained.selection.minimum_observed_node_available_bytes,
+        )?;
         require_subject(CONTEXT).map_err(|_| Error::Mac)?;
         retained.executable.revalidate().map_err(|_| Error::Image)?;
         retained.executable.require_executed(std::process::id()).map_err(|_| Error::Image)?;
@@ -268,8 +278,20 @@ impl GatewayAdmissionV1 {
         retained.executable.revalidate().map_err(|_| Error::Image)?;
         retained.executable.require_executed(std::process::id()).map_err(|_| Error::Image)?;
         require_subject(CONTEXT).map_err(|_| Error::Mac)?;
-        require_kernel_envelope(&retained.selection, &retained.process, &retained.cgroup)
+        require_kernel_envelope(&retained.selection, &retained.process, &retained.cgroup)?;
+        retained.node_memory.require_current(
+            retained.selection.minimum_observed_node_available_bytes,
+        )
     }
+}
+
+// Both serialized callers reject the first failure before reading any sample.
+fn begin_gate(failure: &mut Option<Error>) -> Result<(), Error> {
+    if let Some(cause) = *failure {
+        return Err(cause);
+    }
+    *failure = Some(Error::Interrupted);
+    Ok(())
 }
 
 // Called only by an armed original gate after its closed-entry check. It
@@ -285,11 +307,6 @@ fn finish_gate<T>(failure: &mut Option<Error>, result: Result<T, Error>) -> Resu
             Err(cause)
         }
     }
-}
-
-/// The real selected node-network envelope is a separate functional dependency.
-pub(super) fn require_node_network_envelope() -> Result<(), Error> {
-    Err(Error::NodeNetworkEnvelopeMissing)
 }
 
 #[derive(Eq, PartialEq)]
@@ -450,7 +467,7 @@ fn exact_address_families(value: &OwnedValue) -> bool {
     found == [true; 3]
 }
 
-fn exact_command(value: &OwnedValue, arguments: &[String; 5], pid: u32) -> bool {
+fn exact_command(value: &OwnedValue, arguments: &[String; 7], pid: u32) -> bool {
     let Some(command) = systemd_property_data::single_exec_start(value) else {
         return false;
     };
@@ -780,6 +797,7 @@ mod tests {
             "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-aos-sandboxd-1/bin/aos-sandbox-git-gateway".into(),
             endpoint.into(), "980".into(), "980".into(),
             "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-aos-selinux-kernel-policy-readback-1/policy.33".into(),
+            RESIDENCY_PROFILE.into(), MEMORY_MAX_BYTES.to_string(),
         ])
     }
 
@@ -829,14 +847,80 @@ mod tests {
     #[test]
     fn armed_readback_records_its_result_without_constructing_an_owner() {
         let mut failed = Some(Error::Interrupted);
-        let result: Result<(), Error> = Err(Error::NodeNetworkEnvelopeMissing);
+        let result: Result<(), Error> = Err(Error::NodeMemoryPressure);
 
         assert_eq!(finish_gate(&mut failed, result), result);
-        assert_eq!(failed, Some(Error::NodeNetworkEnvelopeMissing));
+        assert_eq!(failed, Some(Error::NodeMemoryPressure));
 
         // Only an already-armed original caller reaches this success branch.
         let mut successful = Some(Error::Interrupted);
         assert_eq!(finish_gate(&mut successful, Ok(())), Ok(()));
         assert_eq!(successful, None);
+    }
+
+    #[test]
+    fn observed_node_profile_requires_canonical_explicit_minimum() {
+        let original = selection("127.0.0.1:8443").unwrap().arguments;
+        for (index, replacement) in [
+            (5, ""),
+            (5, "hard-isolated-residency"),
+            (5, "all-kernel-network-memory"),
+            (6, ""),
+            (6, "0"),
+            (6, "1073741823"),
+            (6, "01073741824"),
+            (6, "+1073741824"),
+            (6, "18446744073709551616"),
+        ] {
+            let mut changed = original.clone();
+            changed[index] = replacement.into();
+
+            assert!(SelectionV1::decode(changed).is_err(), "{replacement}");
+        }
+
+        let selected = SelectionV1::decode(original).unwrap();
+        assert_eq!(
+            selected.minimum_observed_node_available_bytes,
+            MEMORY_MAX_BYTES,
+        );
+    }
+
+    #[test]
+    fn original_pid1_command_binds_profile_and_threshold() {
+        let original = selection("127.0.0.1:8443").unwrap();
+        let data = service_data(&original, 7);
+
+        for index in [5, 6] {
+            let mut changed = original.arguments.clone();
+            changed[index] = if index == 5 {
+                "foreign-profile".into()
+            } else {
+                (MEMORY_MAX_BYTES + 1).to_string()
+            };
+            let start = SERVICE_PROPERTIES
+                .iter()
+                .position(|name| *name == "ExecStart")
+                .unwrap();
+
+            assert!(!exact_command(&data[start], &changed, 7));
+        }
+    }
+
+    #[test]
+    fn failed_or_interrupted_gate_cannot_read_a_favorable_sample() {
+        for cause in [
+            Error::NodeMemoryObservation,
+            Error::NodeMemoryPressure,
+            Error::Interrupted,
+        ] {
+            let mut first_failure = Some(cause);
+
+            assert_eq!(begin_gate(&mut first_failure), Err(cause));
+            assert_eq!(first_failure, Some(cause));
+        }
+
+        let mut open = None;
+        assert_eq!(begin_gate(&mut open), Ok(()));
+        assert_eq!(open, Some(Error::Interrupted));
     }
 }

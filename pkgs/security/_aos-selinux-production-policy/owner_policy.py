@@ -152,6 +152,10 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     ))
     for target in (GATEWAY_CREDENTIAL, "cgroup_t", "sysctl_kernel_t", "systemd_unit_t", "usr_t", "security_t"):
         positive.extend(accesses(GATEWAY, target, "file", file_read))
+    # Type-wide global-proc DATA reads, not fixed-path authorization. The
+    # startup owner selects and retains only the genuine meminfo producer.
+    positive.extend(accesses(GATEWAY, "proc_t", "file", file_read))
+    negative.extend(accesses(GATEWAY, "proc_t", "file", file_mutate))
     positive.extend(accesses(
         GATEWAY, GATEWAY, "tcp_socket",
         ("accept", "bind", "create", "getattr", "getopt", "listen", "read", "setopt", "shutdown", "write"),
