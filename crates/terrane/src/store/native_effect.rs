@@ -619,6 +619,19 @@ impl NativeFsEffect {
         }
     }
 
+    /// Borrows the sealed create-once source for exact test boundary selection.
+    ///
+    /// Existing fault wrappers inspect the already staged slot and its fixed
+    /// transaction to distinguish branch publication from preparation. This
+    /// accessor supplies no constructor or replacement for the fixed operation.
+    #[cfg(test)]
+    pub(crate) fn rename_noreplace_source(&self) -> Option<&std::path::Path> {
+        match &self.plan {
+            Plan::RenameNoReplace { from, .. } => Some(from),
+            _ => None,
+        }
+    }
+
     /// Attaches closed test failure strategies to this already sealed effect.
     #[cfg(test)]
     pub(crate) fn inject_test_faults(mut self, faults: Vec<EffectFault>) -> Self {
