@@ -15,6 +15,8 @@ mod durable_payload;
 mod fork_history;
 mod format;
 mod history;
+#[cfg(target_os = "linux")]
+pub(crate) mod http_owner;
 mod journal;
 mod lease_recovery;
 mod model;
