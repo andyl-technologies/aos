@@ -25,7 +25,9 @@ use aos_sandbox_protocol::runtime_deployment::DeploymentGenesisV1;
 use ed25519_dalek::{Signature, VerifyingKey};
 use sha2::{Digest as _, Sha256};
 
-use crate::journal::{Journal, JournalLimits, JournalTransaction};
+use crate::journal::{
+    Journal, JournalLimits, JournalTransaction, RuntimeDeploymentNativeTransactionDataV1,
+};
 use crate::tpm_nv_custody::{
     NvCustodyEndpointV1, NvCustodyErrorV1, canonical_purpose_main_head_v1,
 };
@@ -524,6 +526,84 @@ pub(super) fn compared_prospective_deployment_head_v1<'data>(
 fn array<const N: usize>(bytes: &[u8], offset: usize) -> Result<[u8; N], NvCustodyErrorV1> {
     bytes.get(offset..offset.checked_add(N).ok_or(NvCustodyErrorV1::Encoding)?)
         .and_then(|bytes| bytes.try_into().ok()).ok_or(NvCustodyErrorV1::Encoding)
+}
+
+/// Reconstructs one actual native prefix, never all full-map prefixes.
+pub(super) fn deployment_native_prefix_rows_v1(
+    history: &[RuntimeDeploymentNativeTransactionDataV1],
+    sequence: u64,
+) -> Result<BTreeMap<&[u8], &[u8]>, NvCustodyErrorV1> {
+    require_deployment_row_bound_v1(history.len())?;
+    if sequence < INITIAL_SEQUENCE {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    let mut records = BTreeMap::new();
+    let mut next_sequence = 1;
+    for native in history {
+        if native.begin_sequence() >= sequence {
+            break;
+        }
+        if native.begin_sequence() != next_sequence
+            || native.next_sequence() > sequence
+            || native.transaction().records().len() != 1
+        {
+            return Err(NvCustodyErrorV1::Provisioning);
+        }
+        let record = &native.transaction().records()[0];
+        let value = record.value().ok_or(NvCustodyErrorV1::Encoding)?;
+        if record.namespace() != NAMESPACE
+            || records.insert(record.key(), value).is_some()
+        {
+            return Err(NvCustodyErrorV1::Provisioning);
+        }
+        next_sequence = native.next_sequence();
+    }
+    if next_sequence != sequence {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    Ok(records)
+}
+
+/// Compares one actual original prefix through the sole schema and HEAD engines.
+pub(super) fn compared_deployment_native_prefix_v1(
+    owner: &VerifiedDeploymentGenesisV1<'_>,
+    history: &[RuntimeDeploymentNativeTransactionDataV1],
+    sequence: u64,
+) -> Result<(u64, [u8; 32]), NvCustodyErrorV1> {
+    owner.recheck()?;
+    let records = deployment_native_prefix_rows_v1(history, sequence)?;
+    require_current_deployment_rows_v1(owner, sequence, &records)?;
+    let head = canonical_purpose_main_head_v1(
+        NvCustodyEndpointV1::RuntimeDeployment, owner.scope(), sequence, &records,
+    )?;
+    owner.recheck()?;
+    Ok((sequence, head))
+}
+
+/// Compares a past exact phase at its actual original preimage, never reappends.
+pub(super) fn compared_retained_deployment_transition_v1(
+    owner: &VerifiedDeploymentGenesisV1<'_>,
+    history: &[RuntimeDeploymentNativeTransactionDataV1],
+    transaction: &JournalTransaction,
+) -> Result<((u64, [u8; 32]), (u64, [u8; 32])), NvCustodyErrorV1> {
+    owner.recheck()?;
+    let native = history.iter()
+        .find(|native| native.transaction() == transaction)
+        .ok_or(NvCustodyErrorV1::Provisioning)?;
+    let before = compared_deployment_native_prefix_v1(
+        owner, history, native.begin_sequence(),
+    )?;
+    let records = deployment_native_prefix_rows_v1(history, before.0)?;
+    // This is the actual historical preimage, not the current writer map.
+    // Reuse the original pure append checks, without acquiring an append token.
+    let expected = compared_prospective_deployment_head_v1(owner, before.0, &records, transaction)?;
+    drop(records);
+    let after = compared_deployment_native_prefix_v1(owner, history, native.next_sequence())?;
+    if after != expected {
+        return Err(NvCustodyErrorV1::Provisioning);
+    }
+    owner.recheck()?;
+    Ok((before, after))
 }
 
 #[cfg(test)]
