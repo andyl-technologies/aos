@@ -158,11 +158,11 @@
     }
 
     echo "==> Maintainer: publish sysroot package and image artifacts"
-    $APR create image-reg
+    create_publish_registry image-reg
     REG_DIR="$REG_STORAGE/image-reg"
     DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-    $APR publish "$SERVER_STORE" \
+    publish_vm_package "$SERVER_STORE" \
       --name server \
       --version 2026.03 \
       --description "Server sysroot for image workflow tests" \
