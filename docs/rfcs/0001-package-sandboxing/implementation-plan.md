@@ -130,7 +130,7 @@ invent a field.
       `ExposeMeta { target, units, images, requires, config, provides, uses }`,
       plus `ExposeArtifactMeta` and the signed `PermissionsMeta` surface.
       The TOML (tag-signed, visible pre-fetch) carries `target`/`requires`/the
-      `[permissions]` manifest so `apm info --permissions` and the host policy
+      `[permissions]` manifest so `apm show --permissions` and the host policy
       check work **without** fetching the closure; the rendered unit files ride
       the closure as `pkg.expose` (P1).
 - [x] **`requires` field + resolver semantics (D18).** `requires: Vec<String>`
@@ -271,7 +271,7 @@ approach against the two proving packages before anything builds on it.
       (<grants>)` / `unconfined`, derived by fixed rules, never authored.
       Root-equivalent grants force `unconfined` (`CAP_SYS_ADMIN`,
       `privileged-users`, rw `host-paths` into system locations). Surface in
-      `apm info <pkg> --permissions` for registry/install metadata published
+      `apm show <pkg> --permissions` for registry/install metadata published
       with `apr publish --expose-manifest`, and in `aos describe <pkg>` from
       local expose passthru metadata.
 - [x] **★ The Decision 17 validation spike (the gate).** Materialize

@@ -15,6 +15,7 @@
     url = cfg.url;
     channel = cfg.channel;
     trustKeys = cfg.trustKeys;
+    rootOwnerSigners = cfg.rootOwnerSigners;
     required = true;
     priority = 100;
     caches = [];
@@ -88,6 +89,12 @@ in {
       type = lib.types.listOf lib.types.str;
       default = [];
       description = "Out-of-band APM trust lines baked into both artifact forms.";
+    };
+
+    rootOwnerSigners = lib.mkOption {
+      type = lib.types.listOf lib.types.nonEmptyStr;
+      default = [];
+      description = "Provenance key IDs authorized for shared-root ownership in disk and OCI artifacts.";
     };
 
     warning = lib.mkOption {
