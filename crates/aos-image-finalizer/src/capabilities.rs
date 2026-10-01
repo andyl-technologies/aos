@@ -14,7 +14,7 @@ use aos_release::qualification::capabilities::{
     CapabilityFile, ImageCapabilities, StageCapabilities,
 };
 
-use crate::input::digest_regular_file;
+use crate::input::digest_image_tree_file;
 
 /// Captures actual kernel, module and firmware availability in final trees.
 ///
@@ -165,7 +165,7 @@ fn walk(
                 .to_owned();
             let record = CapabilityFile {
                 path: BundlePath::parse(&name)?,
-                sha256: digest_regular_file(&path)?.1,
+                sha256: digest_image_tree_file(&path)?.1,
             };
             if result.len() >= 1_000_000 || result.insert(name, record).is_some() {
                 bail!("oversized or duplicate capability inventory");
@@ -319,6 +319,25 @@ mod tests {
             capabilities.stages["runtime"].firmware["network-alias.bin"].sha256,
             Sha256Digest::of_bytes("firmware bytes")
         );
+        Ok(())
+    }
+
+    #[test]
+    fn captures_hardlinked_firmware_aliases() -> Result<()> {
+        let temporary = fixture()?;
+        let firmware = temporary.path().join("runtime/usr/lib/firmware");
+        fs::hard_link(
+            firmware.join("network.bin"),
+            firmware.join("network-hardlink.bin"),
+        )?;
+
+        let capabilities = collect(temporary.path())?;
+
+        assert_eq!(
+            capabilities.stages["runtime"].firmware["network-hardlink.bin"].sha256,
+            Sha256Digest::of_bytes("firmware bytes")
+        );
+        assert!(crate::input::digest_regular_file(&firmware.join("network.bin")).is_err());
         Ok(())
     }
 
