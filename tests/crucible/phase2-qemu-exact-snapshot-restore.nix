@@ -195,10 +195,12 @@ in
           pkgs.qemu-crucible
           pkgs.rust
           pkgs.sed
+          pkgs.sqlite
           checkpointDeltaFlight
           exactRestoreReachability
         ]
         ++ dependencies;
+      runtimeDeps = [pkgs.sqlite];
       GUEST_KERNEL = "${busySmpGuest}/smp-idle-guest.elf";
       GUEST_KERNEL_IS_FILE = "1";
       DISKLESS_INITRD = "";
