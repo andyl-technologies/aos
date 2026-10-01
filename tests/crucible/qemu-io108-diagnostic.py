@@ -120,6 +120,25 @@ def retain_report(path, output):
     return {"present": True, "bytes": size, "sha256": hashlib.sha256(data).hexdigest()}
 
 
+def retain_iotest_output(source, output):
+    """Keep bounded raw output even when Meson terminates a stuck script."""
+    reports = {}
+    scratch = source / "build/scratch/qcow2-file-108"
+    for name in ["108.out.bad", "108.full"]:
+        path = scratch / name
+        if not path.is_file():
+            reports[name] = {"present": False}
+            continue
+        size = path.stat().st_size
+        with path.open("rb") as stream:
+            stream.seek(max(0, size - STDOUT_LIMIT))
+            data = stream.read(STDOUT_LIMIT)
+        (output / (name + ".tail")).write_bytes(data)
+        reports[name] = {"present": True, "observed_bytes": size,
+                         "retained_bytes": len(data)}
+    return reports
+
+
 def run(source, output):
     output.mkdir(parents=True, exist_ok=True)
     trace_fifo = output / "commands.fifo"
@@ -189,6 +208,7 @@ def run(source, output):
         "elapsed_seconds": time.monotonic() - started,
         "trace": trace.save(output / "commands.tail"),
         "stdout": stdout.save(output / "stdout.tail"), "reports": reports,
+        "iotest_output": retain_iotest_output(source, output),
         "instrumentation": {"path": str(script),
                             "before_sha256": hashlib.sha256(original).hexdigest(),
                             "after_sha256": hashlib.sha256(modified).hexdigest(),
