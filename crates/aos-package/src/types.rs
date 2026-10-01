@@ -479,12 +479,9 @@ pub struct PackageMeta {
     /// Authenticated native package deployment envelope directory.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<NativeArtifactMeta>,
-    /// Owned native ability versions projected from the authenticated deployment document.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub ability_exports: std::collections::BTreeMap<
-        String,
-        aos_registry_surface::native_dependencies::AbilityExport,
-    >,
+    /// Host operating system release compatibility requirement.
+    #[serde(rename = "osVersion", default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
     /// Exact and ranged native module dependencies projected from that same document.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub module_dependencies: Vec<aos_registry_surface::native_dependencies::ModuleDependency>,
@@ -555,10 +552,10 @@ pub fn validate_supported_package_meta_with(
     supported_features: &[&str],
 ) -> Result<()> {
     aos_registry_surface::native_dependencies::check_resolution_metadata(
-        &meta.ability_exports,
+        meta.os_version.as_deref(),
         &meta.module_dependencies,
     )?;
-    if (!meta.ability_exports.is_empty() || !meta.module_dependencies.is_empty())
+    if (meta.os_version.is_some() || !meta.module_dependencies.is_empty())
         && meta.deployment.is_none()
     {
         bail!("native resolution catalog lacks an authenticated deployment document");
@@ -2592,7 +2589,7 @@ last_update = "2026-02-13T10:30:00Z"
     fn attestation_package_meta(requires_features: Vec<&str>) -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
-            ability_exports: Default::default(),
+            os_version: None,
             module_dependencies: Vec::new(),
             name: "verity-app".into(),
             version: "1.0.0".into(),
@@ -3133,7 +3130,7 @@ pin = "v2026.02"
     fn sample_package_meta() -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
-            ability_exports: Default::default(),
+            os_version: None,
             module_dependencies: Vec::new(),
             name: "firewall".to_string(),
             version: "1.4.0".to_string(),

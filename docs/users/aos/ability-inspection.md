@@ -42,14 +42,29 @@ effects; it provides no evidence that those effects ran.
 
 ## Browse declarations and desired effects
 
-Versioned native references distinguish each ability's contract version from its
-owner's package version. Text and HTML also show which owner requires a module,
-the required ability version ranges, and any separate package-version range.
-Owner and ability links stay within the same reference. Omitted version metadata
-is valid for unversioned modules; displayed requirements do not select or verify
-a compatible dependency.
-Reference comparison includes ability contract version/owner changes and module
-requirement changes, even when option and operation schemas stay identical.
+Native references identify the package or OS release that owns each interface.
+Package interfaces use their owner's package version; OS/base interfaces use the
+OS release version. Text and HTML also show requesting owners, dependency
+packages, package version ranges, and OS release requirements. Owner and ability
+links stay within the same reference. Displayed requirements describe declared
+compatibility; they do not select a dependency or prove runtime behavior.
+Reference comparison includes release ownership and module requirement changes,
+even when option and operation schemas stay identical.
+
+Check a release's public interface compatibility with the generated references:
+
+```sh
+aos ability check-compat before-options.json after-options.json --owner service-interface
+aos ability check-compat before-options.json after-options.json --os
+```
+
+Select one package owner with `--owner` or OS/base interfaces with `--os`.
+The report lists structural changes, whether the owner major release increased,
+and any reviewed exceptions. Incompatible changes produce a report and a nonzero
+exit status. `--json` emits JSON; `--exceptions FILE` reads a JSON array of exact
+`id` and explanatory `reason` pairs. See the
+[release compatibility guide](runtime-abilities.md#version-and-compose-interfaces-across-packages)
+for the policy and the limits of structural checking.
 
 The same reader accepts generated `aos.module.documentation` and
 `aos.package.transaction` documents:

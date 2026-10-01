@@ -91,8 +91,17 @@ fn main() -> Result<()> {
         catalog.0.insert(package.package.name.clone(), package);
     }
     let mut module_envelopes = BTreeMap::new();
+    let mut package_envelopes = BTreeMap::new();
     for publication in fixture.publications {
         let envelope = Envelope::decode(&std::fs::read(&publication.envelope)?)?;
+        package_envelopes.insert(
+            envelope.package.path.clone(),
+            publication
+                .envelope
+                .parent()
+                .context("publication envelope has no root")?
+                .to_path_buf(),
+        );
         if envelope.module.is_some() {
             module_envelopes.insert(
                 envelope.package.name.clone(),
@@ -148,6 +157,9 @@ fn main() -> Result<()> {
     );
     let built = Deployment::decode(&serde_json::to_vec(&fixture.document)?, &resolved)?;
     let evaluation = Evaluation {
+        os_release: None,
+        os_requirements: Vec::new(),
+        module_requirements: Vec::new(),
         nix_store: nix_store.clone(),
         library: fixture.library,
         configuration: vec![fixture.configuration],
@@ -209,12 +221,25 @@ fn main() -> Result<()> {
             std::time::Duration::from_secs(60),
         )?;
         let descriptor = EvaluationInput {
+            os_release: None,
+            package_envelopes: package_envelopes
+                .iter()
+                .filter(|(path, _)| {
+                    evaluation
+                        .packages
+                        .artifacts
+                        .iter()
+                        .any(|artifact| &artifact.path == *path)
+                })
+                .map(|(path, root)| (path.clone(), root.clone()))
+                .collect(),
             schema: "aos.package.evaluation-input".into(),
             library: evaluation.library.clone(),
             library_nar_hash,
             scope: evaluation.scope.clone(),
             packages: evaluation.packages.clone(),
             module_envelopes: module_envelopes.clone(),
+            resolution_lock: None,
             configuration: evaluation.configuration.clone(),
             runtime_configuration: Vec::new(),
             supplemental_inputs: Vec::new(),

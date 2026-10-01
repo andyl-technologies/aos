@@ -573,6 +573,14 @@ fn validate_runtime(command: &Commands, runtime: Option<&OsStr>) -> Result<()> {
 /// Maps an `anyhow::Error` to an appropriate exit code while printing a
 /// user-facing message.
 fn handle_error(printer: &Printer, err: anyhow::Error) -> i32 {
+    // The compatibility report already contains the failure diagnostics. Keep
+    // JSON stdout as one checked report instead of appending a second object.
+    if err
+        .downcast_ref::<commands::ability::CompatibilityFailure>()
+        .is_some()
+    {
+        return 1;
+    }
     // Walk the error chain looking for a typed AosError so we can pick the
     // right exit code.
     if let Some(aos_err) = err.downcast_ref::<AosError>() {

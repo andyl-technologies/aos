@@ -184,9 +184,9 @@ pub struct PlatformEntry {
     /// Native package deployment envelope retained by this release.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deployment: Option<NativeArtifactMeta>,
-    /// Declaration-derived owned ability exports, bound to the exact deployment document.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub ability_exports: BTreeMap<String, crate::native_dependencies::AbilityExport>,
+    /// Host operating system release compatibility requirement.
+    #[serde(rename = "osVersion", default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
     /// Declaration-derived exact or ranged module dependency requests.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub module_dependencies: Vec<crate::native_dependencies::ModuleDependency>,
@@ -1508,10 +1508,10 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     for version in &toml.versions {
         for (platform, entry) in &version.platforms {
             crate::native_dependencies::check_resolution_metadata(
-                &entry.ability_exports,
+                entry.os_version.as_deref(),
                 &entry.module_dependencies,
             )?;
-            if (!entry.ability_exports.is_empty() || !entry.module_dependencies.is_empty())
+            if (entry.os_version.is_some() || !entry.module_dependencies.is_empty())
                 && entry.deployment.is_none()
             {
                 bail!("native resolution catalog lacks its authenticated deployment document");

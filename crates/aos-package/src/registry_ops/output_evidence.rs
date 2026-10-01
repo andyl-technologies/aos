@@ -275,7 +275,7 @@ store_path = "/nix/store/22222222222222222222222222222222-example-tools"
             &deployment,
             None,
             None,
-            &std::collections::BTreeMap::new(),
+            None,
             &[],
         )
         .unwrap();

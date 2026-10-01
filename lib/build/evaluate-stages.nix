@@ -38,6 +38,8 @@
   );
   initrdPackageModules = recordsFor initrdPackages;
   # Image activation seeds the same profile later changed by package management.
+  osRelease = {inherit (selectionEvaluation.config.aos.system) name version;};
+  compatibility = import ../packages/release-compatibility.nix {inherit lib;};
   hostScope = ["profile" "system"];
   initrdScope = [systemName "initrd"];
   buildStage = stage: packages: scope: let
@@ -66,6 +68,7 @@
   hostConfigurationSources = hostStage.configuration;
   initrdConfigurationSources = initrdStage.configuration;
   hostStageSpecialArgs = stageSpecialArgsFor {
+    inherit osRelease;
     packages = hostPackages;
     scope = hostScope;
     configuration = hostConfigurationSources;
@@ -73,6 +76,7 @@
     runtimeConfiguration = runtimeModules;
   };
   initrdStageSpecialArgs = stageSpecialArgsFor {
+    inherit osRelease;
     packages = initrdPackages;
     scope = initrdScope;
     configuration = initrdConfigurationSources;
@@ -94,10 +98,12 @@
           hostPackageModules = finalPackageModules;
         };
     };
-  hostAbilityEvaluation = evaluate hostScope finalPackageModules hostConfigurationSources hostStageSpecialArgs;
+  hostAbilityEvaluation = assert compatibility.checkOsRequirements (compatibility.osRequirements hostPackages) osRelease; evaluate hostScope finalPackageModules hostConfigurationSources hostStageSpecialArgs;
   # Initrd admits its native scope directly. Importing the complete image
   # module list here would also import host-only effects and package selectors.
   initrdAbilityEvaluation = lib.evalPackageModules {
+    inherit osRelease;
+    enforceOsRequirements = true;
     packages = initrdPackages;
     packageModules = initrdPackageModules;
     scope = initrdScope;

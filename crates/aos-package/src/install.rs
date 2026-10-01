@@ -1933,7 +1933,7 @@ mod tests {
             source_drv: String::new(),
             source_nar_hash: String::new(),
             named_outputs: std::collections::BTreeMap::new(),
-            ability_exports: Default::default(),
+            os_version: None,
             module_dependencies: Vec::new(),
             closure_size: 1,
             sysroot: false,

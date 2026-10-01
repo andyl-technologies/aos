@@ -17,6 +17,7 @@
   configuration ? [],
   runtimeConfiguration ? [],
   evaluationInput ? null,
+  osRelease ? null,
   runtimeRoots ? [],
   contracts ? [],
   pname ? "aos-oci-deployment-artifact",
@@ -35,7 +36,7 @@
     then evaluationInput
     else
       lib.build.evaluationInput {
-        inherit lib pkgs packages scope configuration runtimeConfiguration;
+        inherit lib pkgs packages scope configuration runtimeConfiguration osRelease;
         system = lib.platform.system;
       };
   nativeEvaluation =
@@ -45,7 +46,8 @@
     then evaluated
     else
       lib.evalPackageModules {
-        inherit packages scope;
+        inherit packages scope osRelease;
+        enforceOsRequirements = true;
         operatorModules = operatorModules ++ configuration;
         runtimeModules = runtimeConfiguration;
         evaluationInput = preparedInput;
@@ -60,7 +62,7 @@
     then null
     else
       import ../deployment-bundle.nix {
-        inherit lib pkgs packages scope configuration runtimeConfiguration;
+        inherit lib pkgs packages scope configuration runtimeConfiguration osRelease;
         evaluationInput = preparedInput;
         inherit (evaluatedTransaction) graph system inputs retire;
       };

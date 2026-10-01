@@ -256,7 +256,12 @@ mkDerivation {
 
 The interface dependency is illustrative: select the package defining your
 actual domain contract. Module dependencies are separate from build and runtime
-library dependencies. A payload-only package does not need a module.
+library dependencies. Exact dependencies retain this syntax. To permit compatible
+interface package releases, use
+`moduleDeps = [ { package = service-interface; packageVersion = "^7.0"; } ];`.
+An optional recipe `osVersion = "^1.0";` checks the selected host OS release;
+dependency resolution never selects or upgrades the OS. A payload-only package
+does not need a module.
 
 The module owns ordinary option declarations and configuration. It may expose
 ability operations, select handlers, or configure effects through a domain

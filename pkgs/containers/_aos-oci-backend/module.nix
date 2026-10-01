@@ -39,6 +39,12 @@
         configuration = args.configuration or [];
         runtimeConfiguration = args.runtimeConfiguration or [];
         evaluationInput = args.evaluationInput or null;
+        osRelease =
+          args.osRelease or (
+            if config.aos ? system
+            then {inherit (config.aos.system) name version;}
+            else null
+          );
         operatorModules = args.operatorModules or [];
         scope = args.scope;
         runtimeRoots = args.packageRoots;

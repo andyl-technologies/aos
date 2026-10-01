@@ -47,8 +47,8 @@ pub struct NativeComparison {
     pub options: ReferenceChanges,
     /// Compares operation input/results, handler selection, and configured instances.
     pub operations: ReferenceChanges,
-    /// Compares independent ability versions and their declaring owners by stable name.
-    pub ability_contracts: ReferenceChanges,
+    /// Compares OS version requirements by requesting owner.
+    pub os_requirements: ReferenceChanges,
     /// Compares dependency requirements by exact requesting-owner and package pairs.
     pub module_requirements: ReferenceChanges,
     /// Reports whether any compared declaration semantics changed.
@@ -60,9 +60,8 @@ impl RuntimeDocument {
     ///
     /// The comparison covers option types, read-only and extension policy,
     /// operation input/result types, handler availability, and configured instance
-    /// names, independently versioned ability contracts, and requester-qualified
-    /// dependency requirements. It does not compare executable contents or
-    /// observed runtime state.
+    /// names, package requirements, and OS version requirements. It does not compare
+    /// executable contents or observed runtime state.
     ///
     /// # Errors
     /// Returns an error unless both references describe the same package and
@@ -110,10 +109,12 @@ impl RuntimeDocument {
                     operations.iter().map(move |(name, operation)| {
                         let mut instances = operation.configured_effects.clone();
                         instances.sort();
+                        let mut input_defaults = operation.input_defaults.clone();
+                        input_defaults.sort();
                         (
                             vec![ability.clone(), name.clone()],
                             json!({
-                                "input":operation.input_type,"result":operation.result_type,
+                                "input":operation.input_type,"inputDefaults":input_defaults,"result":operation.result_type,
                                 "handled":operation.handler_available,"instances":instances
                             }),
                         )
@@ -123,18 +124,6 @@ impl RuntimeDocument {
         };
         let options = changes(options(earlier), options(later));
         let operations = changes(operations(earlier), operations(later));
-        let contracts = |reference: &super::ModuleReference| {
-            reference
-                .ability_contracts
-                .iter()
-                .map(|(name, contract)| {
-                    (
-                        vec![name.clone()],
-                        json!({"version":contract.version,"owner":contract.owner}),
-                    )
-                })
-                .collect()
-        };
         let requirements = |reference: &super::ModuleReference| {
             reference
                 .module_requirements
@@ -142,18 +131,29 @@ impl RuntimeDocument {
                 .map(|requirement| {
                     let path = vec![requirement.owner.clone(), requirement.package.clone()];
                     let constraints = json!({
-                        "abilities": requirement.abilities,
                         "packageVersion": requirement.package_version
                     });
                     (path, constraints)
                 })
                 .collect()
         };
-        let ability_contracts = changes(contracts(earlier), contracts(later));
+        let os_requirements = |reference: &super::ModuleReference| {
+            reference
+                .os_requirements
+                .iter()
+                .map(|requirement| {
+                    (
+                        vec![requirement.owner.clone()],
+                        json!({"osVersion":requirement.os_version}),
+                    )
+                })
+                .collect()
+        };
+        let os_requirements = changes(os_requirements(earlier), os_requirements(later));
         let module_requirements = changes(requirements(earlier), requirements(later));
         let semantic_changed = !options.is_empty()
             || !operations.is_empty()
-            || !ability_contracts.is_empty()
+            || !os_requirements.is_empty()
             || !module_requirements.is_empty();
         Ok(NativeComparison {
             schema: "aos.module.documentation.comparison".into(),
@@ -163,7 +163,7 @@ impl RuntimeDocument {
             platform: earlier.system.clone(),
             options,
             operations,
-            ability_contracts,
+            os_requirements,
             module_requirements,
             semantic_changed,
         })
@@ -221,30 +221,30 @@ mod tests {
         assert_eq!(comparison.to_version, "2");
     }
     #[test]
-    fn ability_version_or_dependency_range_changes_cannot_report_no_semantic_change() {
+    fn package_and_os_range_changes_report_semantic_changes() {
         let mut value = reference("1", "Description", false).value().clone();
-        value["abilityContracts"] = json!({"service":{"version":"1.2.3","owner":"interface"}});
         value["moduleRequirements"] = json!([{"owner":"example","package":"interface",
-            "abilities":{"service":"^1.2"},"packageVersion":"^7"}]);
+            "packageVersion":"^7"}]);
+        value["osRequirements"] = json!([{"owner":"example","osVersion":"^1"}]);
         let decode = |value: &Value| {
             RuntimeDocument::from_json(&serde_json::to_vec(value).unwrap()).unwrap()
         };
         let before = decode(&value);
-        value["abilityContracts"]["service"]["version"] = json!("2.0.0");
+        value["osRequirements"][0]["osVersion"] = json!("^2");
         let comparison = before.compare(&decode(&value)).unwrap();
         assert!(comparison.semantic_changed);
-        assert_eq!(comparison.ability_contracts.changed, vec![vec!["service"]]);
+        assert_eq!(comparison.os_requirements.changed, vec![vec!["example"]]);
         assert!(comparison.options.is_empty());
         assert!(comparison.operations.is_empty());
 
-        value["abilityContracts"]["service"]["version"] = json!("1.2.3");
-        value["moduleRequirements"][0]["abilities"]["service"] = json!("^2.0");
+        value["osRequirements"][0]["osVersion"] = json!("^1");
+        value["moduleRequirements"][0]["packageVersion"] = json!("^8");
         let comparison = before.compare(&decode(&value)).unwrap();
         assert!(comparison.semantic_changed);
         assert_eq!(
             comparison.module_requirements.changed,
             vec![vec!["example", "interface"]]
         );
-        assert!(comparison.ability_contracts.is_empty());
+        assert!(comparison.os_requirements.is_empty());
     }
 }

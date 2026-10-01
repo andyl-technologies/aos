@@ -7,6 +7,7 @@
   retire ? [],
   scope,
   system,
+  osRelease ? null,
   inputs ? [],
   withProfileRecords ? false,
   configuration ? [],
@@ -14,6 +15,8 @@
   runtimeConfiguration ? [],
 }: let
   modules = lib.packageModules;
+  compatibility = import ../../../lib/packages/release-compatibility.nix {inherit lib;};
+  moduleDependencies = import ../../../lib/packages/module-dependencies.nix;
   resolved = {
     inherit system;
     artifacts = modules.payloads packages;
@@ -33,7 +36,8 @@
         key = discard package;
         inherit package;
       })
-      ((record.package.moduleDeps or []) ++ (record.package.runtimeDeps or []));
+      (map moduleDependencies.seed (record.package.moduleDeps or [])
+        ++ (record.package.runtimeDeps or []));
   };
   artifacts = lib.packageArtifacts;
   packageForArtifact = artifact: let
@@ -106,14 +110,15 @@
     else builtins.substring 0 (builtins.stringLength (builtins.elemAt match 0)) file;
   configurationRoots = map storeRoot (configuration ++ runtimeConfiguration);
   moduleEnvelopeRoots = builtins.attrValues evaluationFile.nativeModuleEnvelopes;
+  packageEnvelopeRoots = builtins.attrValues evaluationFile.nativePackageEnvelopes;
   supplementalRoots = evaluationFile.nativeEvaluationInputs.supplementalInputs;
-  retainedInputs = lib.uniqueBy builtins.toString (inputs ++ profileRoots ++ moduleEnvelopeRoots ++ supplementalRoots ++ configurationRoots ++ [(storeRoot evaluationFile)]);
+  retainedInputs = lib.uniqueBy builtins.toString (inputs ++ profileRoots ++ moduleEnvelopeRoots ++ packageEnvelopeRoots ++ supplementalRoots ++ configurationRoots ++ [(storeRoot evaluationFile)]);
   evaluationFile =
     if evaluationInput != null
     then evaluationInput
     else
       lib.build.evaluationInput {
-        inherit lib pkgs packages scope system configuration runtimeConfiguration;
+        inherit lib pkgs packages scope system configuration runtimeConfiguration osRelease;
       };
   profileTemplate = buildPackages.writeTextFile {
     name = "aos-image-installed-template";
@@ -223,19 +228,21 @@
     nativeEvaluationDescriptor = evaluationFile;
   };
 in
-  (pkgs.runCommand "aos-${lib.concatStringsSep "-" scope}-deployment" {
-      passthru = metadata;
-    } ''
-      mkdir -p "$out"
-      ln -s ${transactionFile}/transaction.json "$out/transaction.json"
-      ln -s ${packagesFile}/packages.json "$out/packages.json"
-      ln -s ${receipt} "$out/admission.json"
-      ln -s ${admissionDigest}/admission-sha256 "$out/admission-sha256"
-      ln -s ${sourceLibrary} "$out/module-library"
-      ln -s ${closureInfo}/registration "$out/registration"
-      ${lib.optionalString withProfileRecords ''
-        ln -s ${installed}/installed.json "$out/installed.json"
-      ''}
-      ln -s ${evaluationFile} "$out/evaluation.json"
-    '')
-  // metadata
+  assert compatibility.checkSeeds packages;
+  assert compatibility.checkOsRequirements (compatibility.osRequirements packages) osRelease;
+    (pkgs.runCommand "aos-${lib.concatStringsSep "-" scope}-deployment" {
+        passthru = metadata;
+      } ''
+        mkdir -p "$out"
+        ln -s ${transactionFile}/transaction.json "$out/transaction.json"
+        ln -s ${packagesFile}/packages.json "$out/packages.json"
+        ln -s ${receipt} "$out/admission.json"
+        ln -s ${admissionDigest}/admission-sha256 "$out/admission-sha256"
+        ln -s ${sourceLibrary} "$out/module-library"
+        ln -s ${closureInfo}/registration "$out/registration"
+        ${lib.optionalString withProfileRecords ''
+          ln -s ${installed}/installed.json "$out/installed.json"
+        ''}
+        ln -s ${evaluationFile} "$out/evaluation.json"
+      '')
+    // metadata

@@ -1,9 +1,8 @@
 //! Exercises dependency decisions without substituting publication authority.
 
 use super::*;
-use crate::deployment::model::AbilityExport;
 
-fn envelope(name: &str, version: &str, hash: char, export: Option<(&str, &str)>) -> Envelope {
+fn envelope(name: &str, version: &str, hash: char) -> Envelope {
     let path = format!(
         "/nix/store/{}-{name}-{version}",
         hash.to_string().repeat(32)
@@ -24,27 +23,16 @@ fn envelope(name: &str, version: &str, hash: char, export: Option<(&str, &str)>)
             source: format!("/nix/store/{}-{name}-module", hash.to_string().repeat(32)),
             entrypoint: "module.nix".into(),
         }),
-        ability_exports: export
-            .into_iter()
-            .map(|(name, version)| {
-                (
-                    name.into(),
-                    AbilityExport {
-                        version: version.into(),
-                    },
-                )
-            })
-            .collect(),
+        os_version: None,
         module_dependencies: Vec::new(),
         runtime_dependencies: BTreeMap::new(),
     }
 }
 
-fn ranged(seed: &Envelope, ability: &str, range: &str) -> ModuleDependency {
+fn ranged(seed: &Envelope, range: &str) -> ModuleDependency {
     ModuleDependency::Ranged {
         package: seed.module.clone().unwrap(),
-        abilities: BTreeMap::from([(ability.into(), range.into())]),
-        package_version: None,
+        package_version: range.into(),
     }
 }
 
@@ -64,13 +52,13 @@ fn bind_requesters(solution: &mut Solution) {
 }
 
 #[test]
-fn ability_compatibility_is_independent_of_package_version() {
-    let provider = envelope("provider", "19.4.0", 'b', Some(("storage", "1.3.0")));
-    let incompatible = envelope("provider", "1.3.0", 'c', Some(("storage", "2.0.0")));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+fn compatible_package_versions_are_selected() {
+    let provider = envelope("provider", "19.4.0", 'b');
+    let incompatible = envelope("provider", "1.3.0", 'c');
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&provider, "storage", "^1.2"));
+        .push(ranged(&provider, "^19.4"));
 
     let mut solved = solve(&[consumer], &[incompatible, provider.clone()], None, false).unwrap();
     bind_requesters(&mut solved);
@@ -90,20 +78,20 @@ fn ability_compatibility_is_independent_of_package_version() {
 
 #[test]
 fn transitive_conflict_backtracks_to_an_older_compatible_release() {
-    let schema = envelope("schema", "2.0.0", 'b', None);
-    let incompatible_schema = envelope("schema", "3.0.0", 'c', None);
-    let mut older = envelope("engine", "8.0.0", 'd', Some(("engine", "1.2.0")));
+    let schema = envelope("schema", "2.0.0", 'b');
+    let incompatible_schema = envelope("schema", "3.0.0", 'c');
+    let mut older = envelope("engine", "8.0.0", 'd');
     older
         .module_dependencies
         .push(ModuleDependency::Exact(schema.module.clone().unwrap()));
-    let mut newer = envelope("engine", "9.0.0", 'f', Some(("engine", "1.4.0")));
+    let mut newer = envelope("engine", "9.0.0", 'f');
     newer.module_dependencies.push(ModuleDependency::Exact(
         incompatible_schema.module.clone().unwrap(),
     ));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&older, "engine", "^1.2"));
+        .push(ranged(&older, ">=1, <20"));
 
     let solved = solve(
         &[consumer, schema.clone()],
@@ -127,12 +115,12 @@ fn transitive_conflict_backtracks_to_an_older_compatible_release() {
 
 #[test]
 fn valid_lock_is_preferred_until_explicit_upgrade() {
-    let older = envelope("engine", "8.0.0", 'b', Some(("engine", "1.2.0")));
-    let newer = envelope("engine", "9.0.0", 'c', Some(("engine", "1.4.0")));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+    let older = envelope("engine", "8.0.0", 'b');
+    let newer = envelope("engine", "9.0.0", 'c');
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&older, "engine", "^1.2"));
+        .push(ranged(&older, ">=1, <20"));
     let previous = solve(&[consumer.clone()], &[older.clone()], None, false)
         .unwrap()
         .lock
@@ -169,10 +157,10 @@ fn valid_lock_is_preferred_until_explicit_upgrade() {
 
 #[test]
 fn exact_edges_do_not_become_semver_ranges_or_other_providers() {
-    let provider = envelope("engine", "calver-p7", 'b', Some(("engine", "1.2.0")));
+    let provider = envelope("engine", "calver-p7", 'b');
     let mut rebuild = provider.clone();
     rebuild.module.as_mut().unwrap().source = format!("/nix/store/{}-other-source", "c".repeat(32));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
         .push(ModuleDependency::Exact(provider.module.clone().unwrap()));
@@ -187,43 +175,39 @@ fn exact_edges_do_not_become_semver_ranges_or_other_providers() {
 }
 
 #[test]
-fn unrelated_ability_provider_and_duplicate_owner_are_rejected() {
-    let provider = envelope("engine", "8.0.0", 'b', Some(("engine", "1.2.0")));
-    let unrelated = envelope("other-engine", "8.0.0", 'c', Some(("engine", "1.2.0")));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+fn unrelated_packages_cannot_satisfy_a_requirement() {
+    let provider = envelope("engine", "8.0.0", 'b');
+    let unrelated = envelope("other-engine", "8.0.0", 'c');
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&provider, "engine", "^1"));
+        .push(ranged(&provider, ">=1, <20"));
 
     assert!(solve(&[consumer], &[unrelated.clone()], None, false).is_err());
-    assert!(
-        solve(&[provider, unrelated], &[], None, false)
-            .unwrap_err()
-            .to_string()
-            .contains("multiple selected owners")
-    );
 }
 
 #[test]
 fn locked_replay_rejects_changed_requirements_and_source_choices() {
-    let provider = envelope("engine", "8.0.0", 'b', Some(("engine", "1.2.0")));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+    let provider = envelope("engine", "8.0.0", 'b');
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&provider, "engine", "^1"));
+        .push(ranged(&provider, ">=1, <20"));
     let mut solved = solve(&[consumer], &[provider], None, false).unwrap();
     bind_requesters(&mut solved);
     let lock = solved.lock.unwrap();
     lock.validate(&solved.envelopes).unwrap();
 
     let mut altered = solved.envelopes.clone();
-    if let ModuleDependency::Ranged { abilities, .. } = &mut altered
+    if let ModuleDependency::Ranged {
+        package_version, ..
+    } = &mut altered
         .iter_mut()
         .find(|package| package.package.name == "consumer")
         .unwrap()
         .module_dependencies[0]
     {
-        abilities.insert("engine".into(), "^2".into());
+        *package_version = "^2".into();
     }
     assert!(lock.validate(&altered).is_err());
     let mut forged = lock;
@@ -233,12 +217,12 @@ fn locked_replay_rejects_changed_requirements_and_source_choices() {
 
 #[test]
 fn moduleless_requesters_have_authenticatable_companion_bindings() {
-    let provider = envelope("engine", "8.0.0", 'b', Some(("engine", "1.2.0")));
-    let mut aggregate = envelope("aggregate", "1.0.0", 'a', None);
+    let provider = envelope("engine", "8.0.0", 'b');
+    let mut aggregate = envelope("aggregate", "1.0.0", 'a');
     aggregate.module = None;
     aggregate
         .module_dependencies
-        .push(ranged(&provider, "engine", "^1"));
+        .push(ranged(&provider, ">=1, <20"));
     let mut solved = solve(&[aggregate.clone()], &[provider], None, false).unwrap();
     bind_requesters(&mut solved);
     let lock = solved.lock.unwrap();
@@ -267,6 +251,7 @@ fn solve(
             })
             .as_ref(),
         &CancellationToken::default(),
+        None,
     )
 }
 
@@ -274,7 +259,7 @@ fn solve(
 fn cancellation_is_not_reported_as_dependency_conflict() {
     let cancellation = CancellationToken::default();
     cancellation.cancel();
-    let error = super::solve(&[], &[], None, &[], None, &cancellation).unwrap_err();
+    let error = super::solve(&[], &[], None, &[], None, &cancellation, None).unwrap_err();
     assert!(error.to_string().contains("module solver cancelled"));
 }
 
@@ -299,12 +284,12 @@ fn elapsed_search_budget_is_terminal() {
 
 #[test]
 fn retained_exact_only_source_is_preferred_when_a_range_is_introduced() {
-    let older = envelope("engine", "8.0.0", 'b', Some(("engine", "1.2.0")));
-    let newer = envelope("engine", "9.0.0", 'c', Some(("engine", "1.4.0")));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+    let older = envelope("engine", "8.0.0", 'b');
+    let newer = envelope("engine", "9.0.0", 'c');
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&older, "engine", "^1"));
+        .push(ranged(&older, ">=1, <20"));
 
     let solved = super::solve(
         &[consumer],
@@ -313,6 +298,7 @@ fn retained_exact_only_source_is_preferred_when_a_range_is_introduced() {
         &[older.module.clone().unwrap()],
         None,
         &CancellationToken::default(),
+        None,
     )
     .unwrap();
 
@@ -321,24 +307,24 @@ fn retained_exact_only_source_is_preferred_when_a_range_is_introduced() {
 
 #[test]
 fn scoped_upgrade_protects_shared_dependencies_and_their_transitive_choices() {
-    let older_driver = envelope("driver", "1.0.0", 'b', Some(("driver", "1.0.0")));
-    let newer_driver = envelope("driver", "2.0.0", 'c', Some(("driver", "1.1.0")));
-    let mut older_engine = envelope("engine", "8.0.0", 'd', Some(("engine", "1.2.0")));
+    let older_driver = envelope("driver", "1.0.0", 'b');
+    let newer_driver = envelope("driver", "2.0.0", 'c');
+    let mut older_engine = envelope("engine", "8.0.0", 'd');
     older_engine
         .module_dependencies
-        .push(ranged(&older_driver, "driver", "^1"));
-    let mut newer_engine = envelope("engine", "9.0.0", 'f', Some(("engine", "1.4.0")));
+        .push(ranged(&older_driver, ">=1, <20"));
+    let mut newer_engine = envelope("engine", "9.0.0", 'f');
     newer_engine
         .module_dependencies
-        .push(ranged(&older_driver, "driver", "^1"));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+        .push(ranged(&older_driver, ">=1, <20"));
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&older_engine, "engine", "^1"));
-    let mut protected = envelope("protected", "1.0.0", 'g', None);
+        .push(ranged(&older_engine, ">=1, <20"));
+    let mut protected = envelope("protected", "1.0.0", 'g');
     protected
         .module_dependencies
-        .push(ranged(&older_engine, "engine", "^1"));
+        .push(ranged(&older_engine, ">=1, <20"));
     let roots = [consumer, protected];
     let previous = solve(
         &roots,
@@ -363,6 +349,7 @@ fn scoped_upgrade_protects_shared_dependencies_and_their_transitive_choices() {
         &[],
         Some(&BTreeSet::from(["consumer".into()])),
         &CancellationToken::default(),
+        None,
     )
     .unwrap();
     let all = super::solve(
@@ -372,6 +359,7 @@ fn scoped_upgrade_protects_shared_dependencies_and_their_transitive_choices() {
         &[],
         Some(&BTreeSet::from(["consumer".into(), "protected".into()])),
         &CancellationToken::default(),
+        None,
     )
     .unwrap();
 
@@ -383,17 +371,17 @@ fn scoped_upgrade_protects_shared_dependencies_and_their_transitive_choices() {
 
 #[test]
 fn upgrade_refreshes_dependencies_added_by_a_new_candidate_release() {
-    let older_driver = envelope("driver", "1.0.0", 'b', Some(("driver", "1.0.0")));
-    let newer_driver = envelope("driver", "2.0.0", 'c', Some(("driver", "1.1.0")));
-    let older_engine = envelope("engine", "8.0.0", 'd', Some(("engine", "1.2.0")));
-    let mut newer_engine = envelope("engine", "9.0.0", 'f', Some(("engine", "1.4.0")));
+    let older_driver = envelope("driver", "1.0.0", 'b');
+    let newer_driver = envelope("driver", "2.0.0", 'c');
+    let older_engine = envelope("engine", "8.0.0", 'd');
+    let mut newer_engine = envelope("engine", "9.0.0", 'f');
     newer_engine
         .module_dependencies
-        .push(ranged(&older_driver, "driver", "^1"));
-    let mut consumer = envelope("consumer", "1.0.0", 'a', None);
+        .push(ranged(&older_driver, ">=1, <20"));
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
     consumer
         .module_dependencies
-        .push(ranged(&older_engine, "engine", "^1"));
+        .push(ranged(&older_engine, ">=1, <20"));
     let previous = solve(&[consumer.clone()], &[older_engine.clone()], None, false)
         .unwrap()
         .lock
@@ -411,6 +399,7 @@ fn upgrade_refreshes_dependencies_added_by_a_new_candidate_release() {
         &[older_driver.module.unwrap()],
         Some(&BTreeSet::from(["consumer".into()])),
         &CancellationToken::default(),
+        None,
     )
     .unwrap();
 
@@ -438,4 +427,60 @@ fn depth_exhaustion_remains_a_terminal_error() {
     .unwrap_err();
 
     assert!(error.downcast_ref::<SearchStopped>().is_some());
+}
+
+#[test]
+fn os_compatibility_filters_candidates_without_changing_the_host_release() {
+    let release = aos_doc_model::runtime::OsRelease {
+        name: "aos".into(),
+        version: "1.4.0".into(),
+    };
+    let mut older = envelope("engine", "8.0.0", 'b');
+    older.os_version = Some("^1.0".into());
+    let mut newer = envelope("engine", "9.0.0", 'c');
+    newer.os_version = Some("^2.0".into());
+    let mut consumer = envelope("consumer", "1.0.0", 'a');
+    consumer
+        .module_dependencies
+        .push(ranged(&older, ">=8, <10"));
+
+    let solution = super::solve(
+        &[consumer],
+        &[older.clone(), newer],
+        None,
+        &[],
+        None,
+        &CancellationToken::default(),
+        Some(&release),
+    )
+    .unwrap();
+
+    assert!(solution.envelopes.contains(&older));
+    assert_eq!(release.version, "1.4.0");
+}
+
+#[test]
+fn os_constraints_on_moduleless_roots_require_a_compatible_host_release() {
+    let mut aggregate = envelope("aggregate", "1.0.0", 'a');
+    aggregate.module = None;
+    aggregate.os_version = Some("^1.0".into());
+    let release = aos_doc_model::runtime::OsRelease {
+        name: "aos".into(),
+        version: "2.0.0".into(),
+    };
+
+    for host in [None, Some(&release)] {
+        assert!(
+            super::solve(
+                &[aggregate.clone()],
+                &[],
+                None,
+                &[],
+                None,
+                &CancellationToken::default(),
+                host,
+            )
+            .is_err()
+        );
+    }
 }

@@ -129,7 +129,9 @@
     # to reject unauthorized package writes. The flag is also exposed through
     # `_optionDecls` for publication and documentation. Defaults `false`.
     extensible ? false,
-  }: {
+  } @ args: {
+    # Presence is metadata; inspecting the lazy value could execute a default.
+    _hasDefault = args ? default;
     _type = "option";
     inherit
       type
@@ -860,7 +862,7 @@
       validatedPackageModules = builtins.map (record: let
         keys =
           if builtins.isAttrs record
-          then builtins.attrNames (builtins.removeAttrs record ["abilityExports" "moduleRequirements"])
+          then builtins.attrNames (builtins.removeAttrs record ["osVersion" "moduleRequirements"])
           else [];
         configRoot = record.configRoot or null;
         artifacts = record.artifacts or null;
@@ -1589,6 +1591,7 @@
               // {
                 type = mergedType;
                 default = mergedDefault;
+                _hasDefault = (earlier.option._hasDefault or false) || (later.option._hasDefault or false);
                 apply =
                   if later.option.apply != null
                   then later.option.apply
@@ -2036,6 +2039,7 @@
         in {
           path = decl.path;
           pathStr = key;
+          hasDefault = option._hasDefault or false;
           typeSig = option.type.description;
           type =
             builtins.addErrorContext

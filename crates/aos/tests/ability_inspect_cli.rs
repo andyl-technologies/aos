@@ -214,12 +214,13 @@ fn journal_inspection_is_checked_and_read_only() {
 }
 
 #[test]
-fn native_ability_versions_and_module_requirements_render_without_a_solver() {
+fn native_package_and_os_requirements_render_without_a_solver() {
     let directory = tempfile::tempdir().unwrap();
     let mut document = reference("Versioned interface consumer");
-    document["abilityContracts"] = json!({"service":{"version":"1.2.3","owner":"interfaces"}});
+    document["osRelease"] = json!({"name":"aos","version":"1.0.0"});
+    document["osRequirements"] = json!([{"owner":"sample","osVersion":"^1"}]);
     document["moduleRequirements"] = json!([{"owner":"sample","package":"interfaces",
-        "abilities":{"service":"^1.2"},"packageVersion":"<8.0"}]);
+        "packageVersion":"<8.0"}]);
     std::fs::write(
         directory.path().join("options.json"),
         serde_json::to_vec(&document).unwrap(),
@@ -233,10 +234,10 @@ fn native_ability_versions_and_module_requirements_render_without_a_solver() {
         String::from_utf8_lossy(&text.stderr)
     );
     let text = String::from_utf8(text.stdout).unwrap();
-    assert!(text.contains("service: 1.2.3 (declared by interfaces)"));
+    assert!(text.contains("OS release: aos 1.0.0"));
     assert!(text.contains("sample requires interfaces"));
     assert!(text.contains("Package version requirement: <8.0"));
-    assert!(text.contains("Ability service version requirement: ^1.2"));
+    assert!(text.contains("sample requires OS version: ^1"));
 
     let html = run(
         directory.path(),
@@ -248,7 +249,7 @@ fn native_ability_versions_and_module_requirements_render_without_a_solver() {
         String::from_utf8_lossy(&html.stderr)
     );
     let html = String::from_utf8(html.stdout).unwrap();
-    assert!(html.contains("Ability contract version: <code>1.2.3</code>"));
+    assert!(html.contains("OS release: aos <code>1.0.0</code>"));
     assert!(html.contains("&lt;8.0"));
     assert!(html.contains("not a dependency resolution result"));
 
@@ -262,8 +263,8 @@ fn native_ability_versions_and_module_requirements_render_without_a_solver() {
         document
     );
     let mut changed = document.clone();
-    changed["abilityContracts"]["service"]["version"] = json!("2.0.0");
-    changed["moduleRequirements"][0]["abilities"]["service"] = json!("^2.0");
+    changed["osRequirements"][0]["osVersion"] = json!("^2");
+    changed["moduleRequirements"][0]["packageVersion"] = json!("^8");
     std::fs::write(
         directory.path().join("changed.json"),
         serde_json::to_vec(&changed).unwrap(),
@@ -276,10 +277,7 @@ fn native_ability_versions_and_module_requirements_render_without_a_solver() {
     assert!(comparison.status.success());
     let comparison: Value = serde_json::from_slice(&comparison.stdout).unwrap();
     assert_eq!(comparison["semanticChanged"], true);
-    assert_eq!(
-        comparison["abilityContracts"]["changed"],
-        json!([["service"]])
-    );
+    assert_eq!(comparison["osRequirements"]["changed"], json!([["sample"]]));
     assert_eq!(
         comparison["moduleRequirements"]["changed"],
         json!([["sample", "interfaces"]])

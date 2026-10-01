@@ -136,6 +136,12 @@ pub(crate) fn evaluate(
         parameters.authorized_input,
     ]);
     let evaluator = Evaluation {
+        os_release: descriptor.os_release.clone(),
+        os_requirements: crate::native_deployment::retained_os_requirements(
+            &descriptor.package_envelopes,
+            descriptor.os_release.as_ref(),
+            &nix_store,
+        )?,
         nix_store: nix_store.clone(),
         library: descriptor.library,
         scope: descriptor.scope,
@@ -176,6 +182,8 @@ fn projection_source_roots(descriptor: &EvaluationInput) -> Result<Vec<String>> 
         .chain(descriptor.configuration.iter())
         .chain(descriptor.runtime_configuration.iter())
         .chain(descriptor.supplemental_inputs.iter())
+        .chain(descriptor.module_envelopes.values())
+        .chain(descriptor.package_envelopes.values())
         .map(|path| retained_root(path))
         .chain(
             descriptor
@@ -257,6 +265,11 @@ mod tests {
         let source = "/nix/store/00000000000000000000000000000000-source";
         let proof = "/nix/store/11111111111111111111111111111111-proof";
         let descriptor = EvaluationInput {
+            os_release: None,
+            package_envelopes: std::collections::BTreeMap::from([(
+                "/nix/store/22222222222222222222222222222222-payload".into(),
+                PathBuf::from(source),
+            )]),
             schema: "aos.package.evaluation-input".into(),
             library: PathBuf::from(source).join("default.nix"),
             library_nar_hash: Sha256Digest::of_bytes(b"library"),

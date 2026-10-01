@@ -15,11 +15,12 @@
 }: let
   buildBundle = import ../../pkgs/containers/_aos-oci-backend/deployment-bundle.nix;
   system = pkgs.stdenv.hostPlatform.system;
+  osRelease = {inherit (config.aos.system) name version;};
   bootstrapInputs =
     [config.system.build.bootArtifactContract]
     ++ lib.optional ((config.system.build.bootMetadataBinding or null) != null) config.system.build.bootMetadataBinding;
   hostBundle = buildBundle {
-    inherit lib pkgs system;
+    inherit lib pkgs system osRelease;
     packages = hostPackages;
     withProfileRecords = true;
     inherit evaluationInput;
@@ -34,7 +35,7 @@
     then throw "the initrd deployment requires its completed native module evaluation"
     else
       buildBundle {
-        inherit lib pkgs system;
+        inherit lib pkgs system osRelease;
         packages = initrdPackages;
         evaluationInput = initrdEvaluationInput;
         configuration = initrdConfigurationSources;

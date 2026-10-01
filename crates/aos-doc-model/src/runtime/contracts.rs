@@ -1,15 +1,17 @@
-//! Source-generated ability versions and module dependency requirements.
+//! Source-generated package and OS compatibility requirements.
 //!
-//! These declarations describe interfaces independently of package versions.
-//! Reading them neither selects a compatible provider nor authenticates a release.
+//! Ability interfaces use their owning package version, or the OS release version
+//! for base-provided interfaces. Reading these declarations does not select a
+//! compatible provider or authenticate a release.
 //!
 //! ```json
-//! {"abilityContracts":{"service":{"version":"1.2.3","owner":"service-interface"}},
-//!  "moduleRequirements":[{"owner":"web-server","package":"service-interface",
-//!    "abilities":{"service":"^1.2"},"packageVersion":"^7"}]}
+//! {"moduleRequirements":[{"owner":"web-server","package":"service-interface",
+//!    "packageVersion":"^7"}],
+//!  "osRequirements":[{"owner":"web-server","osVersion":"^1"}],
+//!  "osRelease":{"name":"aos","version":"1.0.0"}}
 //! ```
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -17,17 +19,7 @@ use serde::{Deserialize, Serialize};
 use super::{ModuleReference, invalid};
 use crate::Result;
 
-/// Identifies the declared version and owning package of one stable ability name.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AbilityContract {
-    /// Records the ability interface's semantic version, independently of its package.
-    pub version: String,
-    /// Names the package declaring this interface version.
-    pub owner: String,
-}
-
-/// Describes a ranged module dependency declared by one requesting owner.
+/// Describes a package version requirement declared by one requesting owner.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModuleRequirement {
@@ -35,31 +27,49 @@ pub struct ModuleRequirement {
     pub owner: String,
     /// Names the dependency package supplying the required interfaces.
     pub package: String,
-    /// Preserves required semantic version ranges under stable ability names.
-    pub abilities: BTreeMap<String, String>,
-    /// Optionally constrains the dependency's package version independently.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub package_version: Option<String>,
+    /// Constrains the dependency package version with a semantic version range.
+    pub package_version: String,
+}
+
+/// Describes an OS version requirement for base-provided interfaces.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OsRequirement {
+    /// Names the module owner requesting the base interfaces.
+    pub owner: String,
+    /// Constrains the OS release version with a semantic version range.
+    pub os_version: String,
+}
+
+/// Identifies the OS release supplying base interfaces in an evaluated scope.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct OsRelease {
+    /// Names the operating system release family.
+    pub name: String,
+    /// Records the OS release's semantic version.
+    pub version: String,
 }
 
 pub(super) fn validate(reference: &ModuleReference) -> Result<()> {
-    if reference.ability_contracts.len() > 1024 || reference.module_requirements.len() > 16_384 {
+    if reference.module_requirements.len() > 16_384 || reference.os_requirements.len() > 16_384 {
         return Err(invalid(
             "native resolution declarations exceed their bounds",
         ));
     }
-    for (name, contract) in &reference.ability_contracts {
-        require_ability_name(name)?;
-        require_name(&contract.owner, "ability owner")?;
-        if contract.version.len() > 128 {
-            return Err(invalid("ability version exceeds its bound"));
+
+    if let Some(release) = &reference.os_release {
+        require_name(&release.name, "OS release name")?;
+        if release.version.len() > 128 {
+            return Err(invalid("OS release version exceeds its bound"));
         }
-        let version = semver::Version::parse(&contract.version)
-            .map_err(|error| invalid(format!("invalid ability version for {name}: {error}")))?;
-        if version.to_string() != contract.version {
-            return Err(invalid("ability version must be strict SemVer"));
+        let version = semver::Version::parse(&release.version)
+            .map_err(|error| invalid(format!("invalid OS release version: {error}")))?;
+        if version.to_string() != release.version {
+            return Err(invalid("OS release version must be strict SemVer"));
         }
     }
+
     let mut dependencies = BTreeSet::new();
     for requirement in &reference.module_requirements {
         if !dependencies.insert((&requirement.owner, &requirement.package)) {
@@ -67,20 +77,16 @@ pub(super) fn validate(reference: &ModuleReference) -> Result<()> {
         }
         require_name(&requirement.owner, "requesting owner")?;
         require_name(&requirement.package, "dependency package")?;
-        if (requirement.abilities.is_empty() && requirement.package_version.is_none())
-            || requirement.abilities.len() > 1024
-        {
-            return Err(invalid(
-                "ranged module dependency must request bounded ability or package versions",
-            ));
+        validate_range(&requirement.package_version)?;
+    }
+
+    let mut requesters = BTreeSet::new();
+    for requirement in &reference.os_requirements {
+        if !requesters.insert(&requirement.owner) {
+            return Err(invalid("duplicate owner/OS requirement declaration"));
         }
-        for (name, range) in &requirement.abilities {
-            require_ability_name(name)?;
-            validate_range(range)?;
-        }
-        if let Some(range) = &requirement.package_version {
-            validate_range(range)?;
-        }
+        require_name(&requirement.owner, "requesting owner")?;
+        validate_range(&requirement.os_version)?;
     }
     Ok(())
 }
@@ -94,39 +100,28 @@ fn require_name(value: &str, label: &str) -> Result<()> {
 
 fn validate_range(range: &str) -> Result<()> {
     if range.is_empty() || range.len() > 4096 {
-        return Err(invalid("module version range must be nonempty and bounded"));
+        return Err(invalid("version range must be nonempty and bounded"));
     }
     let requirement = semver::VersionReq::parse(range)
-        .map_err(|error| invalid(format!("invalid module version range: {error}")))?;
+        .map_err(|error| invalid(format!("invalid version range: {error}")))?;
     if requirement.comparators.len() > 32 {
-        return Err(invalid("module version range exceeds its comparator bound"));
-    }
-    Ok(())
-}
-
-fn require_ability_name(name: &str) -> Result<()> {
-    require_name(name, "ability name")?;
-    if !name
-        .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
-    {
-        return Err(invalid("invalid stable ability name"));
+        return Err(invalid("version range exceeds its comparator bound"));
     }
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use crate::runtime::RuntimeDocument;
     use serde_json::json;
 
     fn reference() -> serde_json::Value {
         json!({"schema":"aos.module.documentation","scope":["host","main"],
             "system":"x86_64-linux","packages":[],"options":[],"abilities":{},
-            "abilityContracts":{"service":{"version":"1.2.3","owner":"interfaces"}},
             "moduleRequirements":[{"owner":"web-server","package":"interfaces",
-                "abilities":{"service":"^1.2"},"packageVersion":">=7.0, <8.0"}]})
+                "packageVersion":">=7.0, <8.0"}],
+            "osRequirements":[{"owner":"web-server","osVersion":"^1"}],
+            "osRelease":{"name":"aos","version":"1.0.0"}})
     }
 
     fn decode(value: &serde_json::Value) -> crate::Result<RuntimeDocument> {
@@ -134,42 +129,59 @@ mod tests {
     }
 
     #[test]
-    fn native_metadata_preserves_independent_version_and_requirement_strings() {
+    fn metadata_preserves_package_and_os_requirement_strings() {
         let value = reference();
         let document = decode(&value).unwrap();
         let reference = document.reference().unwrap();
-        assert_eq!(reference.ability_contracts["service"].version, "1.2.3");
         assert_eq!(
-            reference.module_requirements[0].package_version.as_deref(),
-            Some(">=7.0, <8.0")
+            reference.module_requirements[0].package_version,
+            ">=7.0, <8.0"
         );
+        assert_eq!(reference.os_requirements[0].os_version, "^1");
+        assert_eq!(reference.os_release.as_ref().unwrap().version, "1.0.0");
         assert_eq!(document.value(), &value);
         let schema: serde_json::Value =
             serde_json::from_slice(&super::super::module_documentation_json_schema().unwrap())
                 .unwrap();
-        assert!(schema["properties"]["abilityContracts"].is_object());
         assert!(schema["properties"]["moduleRequirements"].is_object());
+        assert!(schema["properties"]["osRequirements"].is_object());
+        assert!(schema["properties"].get("abilityContracts").is_none());
     }
 
     #[test]
-    fn absent_and_empty_metadata_keep_unversioned_native_references_valid() {
+    fn absent_optional_metadata_keeps_native_references_valid() {
         let mut value = reference();
-        value.as_object_mut().unwrap().remove("abilityContracts");
-        value.as_object_mut().unwrap().remove("moduleRequirements");
+        for field in ["moduleRequirements", "osRequirements", "osRelease"] {
+            value.as_object_mut().unwrap().remove(field);
+        }
         let document = decode(&value).unwrap();
-        assert!(document.reference().unwrap().ability_contracts.is_empty());
-        assert!(document.reference().unwrap().module_requirements.is_empty());
-
-        value["abilityContracts"] = json!({});
-        value["moduleRequirements"] = json!([]);
-        assert!(decode(&value).is_ok());
+        let reference = document.reference().unwrap();
+        assert!(reference.module_requirements.is_empty());
+        assert!(reference.os_requirements.is_empty());
+        assert!(reference.os_release.is_none());
     }
 
     #[test]
-    fn malformed_versions_requirements_and_requesting_owners_are_rejected() {
+    fn removed_ability_versions_and_missing_package_ranges_are_rejected() {
+        let mut value = reference();
+        value["abilityContracts"] = json!({});
+        assert!(decode(&value).is_err());
+        let mut value = reference();
+        value["moduleRequirements"][0]["abilities"] = json!({"service":"^1"});
+        assert!(decode(&value).is_err());
+        let mut value = reference();
+        value["moduleRequirements"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("packageVersion");
+        assert!(decode(&value).is_err());
+    }
+
+    #[test]
+    fn invalid_ranges_owners_and_os_versions_are_rejected() {
         for version in ["1.2", "01.2.3", "not-a-version"] {
             let mut value = reference();
-            value["abilityContracts"]["service"]["version"] = json!(version);
+            value["osRelease"]["version"] = json!(version);
             assert!(decode(&value).is_err());
         }
         for field in ["owner", "package"] {
@@ -179,46 +191,57 @@ mod tests {
         }
         for range in ["", "not-a-range", "^1 || ^2"] {
             let mut value = reference();
-            value["moduleRequirements"][0]["abilities"]["service"] = json!(range);
+            value["moduleRequirements"][0]["packageVersion"] = json!(range);
+            assert!(decode(&value).is_err());
+            let mut value = reference();
+            value["osRequirements"][0]["osVersion"] = json!(range);
             assert!(decode(&value).is_err());
         }
-        let mut value = reference();
-        value["moduleRequirements"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("owner");
-        assert!(decode(&value).is_err());
     }
-    #[test]
-    fn semantic_version_fields_obey_shared_text_and_comparator_bounds() {
-        let mut value = reference();
-        value["abilityContracts"]["service"]["version"] =
-            json!(format!("1.2.3+{}", "a".repeat(122)));
-        assert!(decode(&value).is_ok());
-        value["abilityContracts"]["service"]["version"] =
-            json!(format!("1.2.3+{}", "a".repeat(123)));
-        assert!(decode(&value).is_err());
 
+    #[test]
+    fn ranges_obey_shared_text_and_comparator_bounds() {
         let mut value = reference();
-        value["moduleRequirements"][0]["abilities"]["service"] =
-            json!(vec![">=1.0.0"; 32].join(", "));
+        value["moduleRequirements"][0]["packageVersion"] = json!(vec![">=1.0.0"; 32].join(", "));
         assert!(decode(&value).is_ok());
-        value["moduleRequirements"][0]["abilities"]["service"] =
-            json!(vec![">=1.0.0"; 33].join(", "));
+        value["moduleRequirements"][0]["packageVersion"] = json!(vec![">=1.0.0"; 33].join(", "));
         assert!(decode(&value).is_err());
-        value["moduleRequirements"][0]["abilities"]["service"] = json!(" ".repeat(4097));
+        value["moduleRequirements"][0]["packageVersion"] = json!(" ".repeat(4097));
         assert!(decode(&value).is_err());
     }
 
     #[test]
-    fn package_only_module_requirement_is_valid_and_unconstrained_dependency_is_not() {
+    fn duplicate_package_and_os_requirements_are_rejected() {
+        for field in ["moduleRequirements", "osRequirements"] {
+            let mut value = reference();
+            let duplicate = value[field][0].clone();
+            value[field].as_array_mut().unwrap().push(duplicate);
+            assert!(decode(&value).is_err());
+        }
+    }
+    #[test]
+    fn input_default_paths_are_preserved_and_bounded() {
         let mut value = reference();
-        value["moduleRequirements"][0]["abilities"] = json!({});
-        assert!(decode(&value).is_ok());
-        value["moduleRequirements"][0]
-            .as_object_mut()
-            .unwrap()
-            .remove("packageVersion");
-        assert!(decode(&value).is_err());
+        value["abilities"] = json!({"echo":{"run":{
+            "input":{},"result":{},
+            "inputType":{"kind":"submodule","fields":{"message":{"kind":"string"}},"open":false},
+            "resultType":{"kind":"submodule","fields":{},"open":false},
+            "inputDefaults":[["message"]], "handlerAvailable":false, "configuredEffects":[],
+            "sources":{"input":[],"result":[],"handler":[],"effects":[]}
+        }}});
+        let document = decode(&value).unwrap();
+        assert_eq!(
+            document.reference().unwrap().abilities["echo"]["run"].input_defaults,
+            vec![vec!["message".to_owned()]]
+        );
+        for paths in [
+            json!([[]]),
+            json!([[""]]),
+            json!([["message"], ["message"]]),
+            json!([["a".repeat(257)]]),
+        ] {
+            value["abilities"]["echo"]["run"]["inputDefaults"] = paths;
+            assert!(decode(&value).is_err());
+        }
     }
 }

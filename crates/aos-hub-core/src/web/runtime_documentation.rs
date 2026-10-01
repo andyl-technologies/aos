@@ -5,10 +5,10 @@
 
 use aos_doc_model::runtime::RuntimeDocument;
 use axum::body::Bytes;
-use axum::http::{header, StatusCode};
+use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 
-use super::console_render::{page_with_session, SessionIndicator, StateLine};
+use super::console_render::{SessionIndicator, StateLine, page_with_session};
 
 /// Limits documents so URL-encoded forms, including `document=`, fit the request ceiling.
 pub const VIEWER_DOCUMENT_BYTES: usize = (crate::connect::CONNECT_REQUEST_BODY_LIMIT_BYTES - 9) / 3;
@@ -158,9 +158,10 @@ mod tests {
                 "description":"Nested <settings>","visibility":"public","readOnly":false,"extensible":true,
                 "type":{"kind":"submodule","fields":{"enabled":{"kind":"bool"}},"open":false}
             }], "abilities":{},
-            "abilityContracts":{"service":{"version":"1.2.3","owner":"service-interface"}},
+            "osRelease":{"name":"aos","version":"1.0.0"},
+            "osRequirements":[{"owner":"example","osVersion":"^1.2"}],
             "moduleRequirements":[{"owner":"example","package":"service-interface",
-                "abilities":{"service":"^1.2"},"packageVersion":"^7"}]
+                "packageVersion":"^7"}]
         });
         let json = serde_json::to_string(&document).unwrap();
         let response = inspect(
@@ -193,7 +194,8 @@ mod tests {
         assert!(html.contains("Base module declarations."));
         assert!(html.contains("Nested &lt;settings&gt;"));
         assert!(html.contains("enabled"));
-        assert!(html.contains("Ability contract version: <code>1.2.3</code>"));
+        assert!(html.contains("OS release: aos <code>1.0.0</code>"));
+        assert!(html.contains("OS requirements"));
         assert!(html.contains("Module requirements"));
         assert!(html.contains("^1.2"));
         assert!(html.contains("^7"));

@@ -48,6 +48,46 @@ impl RuntimeRequirement {
     }
 }
 
+/// Reads the selected host release for runtime compatibility evaluation.
+///
+/// Portable scopes may lack an AOS identity; constrained packages fail closed
+/// later when no release is available.
+///
+/// # Errors
+/// Returns an error for an invalid root override, unreadable identity, malformed
+/// release entries, or paths that cannot be resolved inside the selected root.
+pub(crate) fn os_release() -> Result<Option<aos_doc_model::runtime::OsRelease>> {
+    os_release_in(&selected_root()?, env::var_os("AOS_ROOT").is_some())
+}
+
+fn os_release_in(
+    root: &Path,
+    allow_installed_identity: bool,
+) -> Result<Option<aos_doc_model::runtime::OsRelease>> {
+    let identities = ["/aos-toplevel/os-release", "/etc/os-release"];
+    for logical in identities
+        .into_iter()
+        .take(if allow_installed_identity { 2 } else { 1 })
+    {
+        let identity = rooted_path(root, Path::new(logical))?;
+        if !identity.is_file() {
+            continue;
+        }
+        let values = parse_os_release(&identity)?;
+        if values.get("ID").map(String::as_str) != Some("aos") {
+            return Ok(None);
+        }
+        let Some(version) = values.get("VERSION_ID") else {
+            return Ok(None);
+        };
+        return Ok(Some(aos_doc_model::runtime::OsRelease {
+            name: values.get("NAME").cloned().unwrap_or_else(|| "aos".into()),
+            version: version.clone(),
+        }));
+    }
+    Ok(None)
+}
+
 /// Resolves the command's AOS root without silently accepting bad overrides.
 fn selected_root() -> Result<PathBuf> {
     let Some(value) = env::var_os("AOS_ROOT") else {
@@ -198,7 +238,7 @@ mod tests {
 
     use tempfile::tempdir;
 
-    use super::validate_aos_root;
+    use super::{os_release_in, validate_aos_root};
 
     #[test]
     fn accepts_an_identified_offline_aos_root() {
@@ -285,5 +325,42 @@ mod tests {
         .unwrap();
 
         validate_aos_root(root.path(), false).unwrap();
+    }
+    #[test]
+    fn current_release_prefers_immutable_target_identity() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("aos-toplevel")).unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        fs::write(
+            root.path().join("aos-toplevel/os-release"),
+            "ID=aos\nNAME=Current OS\nVERSION_ID=2.0.0\n",
+        )
+        .unwrap();
+        fs::write(
+            root.path().join("etc/os-release"),
+            "ID=aos\nNAME=Stale OS\nVERSION_ID=1.0.0\n",
+        )
+        .unwrap();
+
+        let release = os_release_in(root.path(), false).unwrap().unwrap();
+
+        assert_eq!(release.name, "Current OS");
+        assert_eq!(release.version, "2.0.0");
+    }
+
+    #[test]
+    fn installed_release_fallback_requires_an_explicit_offline_target() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        fs::write(
+            root.path().join("etc/os-release"),
+            "ID=aos\nNAME=Offline OS\nVERSION_ID=1.0.0\n",
+        )
+        .unwrap();
+
+        assert_eq!(os_release_in(root.path(), false).unwrap(), None);
+        let release = os_release_in(root.path(), true).unwrap().unwrap();
+        assert_eq!(release.name, "Offline OS");
+        assert_eq!(release.version, "1.0.0");
     }
 }

@@ -19,6 +19,7 @@
   definitionAttribute,
 }: let
   buildPackages = pkgs.buildPackages;
+  hostOsRelease = {inherit (systemIdentity) name version;};
   releaseIdentity =
     systemIdentity.release
     or {
@@ -207,11 +208,14 @@
     else
       lib.build.evaluationInput {
         inherit lib pkgs configuration runtimeConfiguration;
+        osRelease = hostOsRelease;
         packages = container.packageRoots;
         scope = ["container" container.name];
         system = lib.platform.system;
       };
   evaluatedDeployment = lib.evalPackageModules {
+    osRelease = hostOsRelease;
+    enforceOsRequirements = true;
     scope = ["container" container.name];
     packages = container.packageRoots;
     operatorModules = operatorModules ++ configuration;
@@ -222,6 +226,7 @@
   deploymentArtifact = oci.mkDeploymentArtifact {
     pname = "aos-container-${container.name}-deployment";
     inherit pkgs;
+    osRelease = hostOsRelease;
     evaluated = evaluatedDeployment;
     evaluationInput = preparedInput;
     inherit configuration runtimeConfiguration;

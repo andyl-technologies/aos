@@ -350,6 +350,12 @@ pub fn rederive(record: &GenerationEvidence) -> Result<String> {
         )?;
     }
     let evaluation = crate::deployment::evaluation::Evaluation {
+        os_release: descriptor.os_release.clone(),
+        os_requirements: crate::native_deployment::retained_os_requirements(
+            &descriptor.package_envelopes,
+            descriptor.os_release.as_ref(),
+            &executable,
+        )?,
         module_requirements: descriptor
             .resolution_lock
             .as_ref()
@@ -712,6 +718,8 @@ mod tests {
             evaluation_input: PathBuf::from(&descriptor),
             evaluation_sha256: Sha256Digest::of_bytes(b"descriptor bytes"),
             evaluation: EvaluationInput {
+                os_release: None,
+                package_envelopes: Default::default(),
                 schema: "aos.package.evaluation-input".into(),
                 library: PathBuf::from(format!("{library}/default.nix")),
                 library_nar_hash: library_hash,

@@ -216,17 +216,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   artifactLib = import ../lib/packages/artifacts.nix {};
   nativeArtifactsFor = package: let
     deploymentLib = import ../lib {system = stdenv.hostPlatform.system;};
-    contracts = import ../lib/packages/ability-contracts.nix {lib = deploymentLib;};
+    compatibility = import ../lib/packages/release-compatibility.nix {lib = deploymentLib;};
     packageName = artifactLib.nameFor package;
-    declarationContracts =
-      if !(package ? module) && (package.moduleDeps or []) == []
-      then {}
-      else contracts.forPackages [package];
-    deployment = assert contracts.checkSeeds [package] declarationContracts;
-      (artifactLib.envelope package)
-      // {
-        abilityExports = contracts.owned package declarationContracts;
-      };
+    deployment = assert compatibility.checkSeeds [package]; artifactLib.envelope package;
     documentation =
       (deploymentLib.evalPackageModules {
         scope = ["package" packageName];

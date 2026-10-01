@@ -100,17 +100,25 @@
     source = "${package.module}";
     entrypoint = "module.nix";
   };
-  envelope = package: {
-    schema = "aos.package.deployment";
-    system = package.targetSystem or package.system;
-    package = metadata (reference package);
-    module =
-      if package ? module
-      then moduleReference package
-      else null;
-    runtimeDependencies = builtins.mapAttrs (_: metadata) (keyed (package.runtimeDeps or []));
-    moduleDependencies = moduleDependencies.references moduleReference (package.moduleDeps or []);
-  };
+  envelope = package:
+    {
+      schema = "aos.package.deployment";
+      system = package.targetSystem or package.system;
+      package = metadata (reference package);
+      module =
+        if package ? module
+        then moduleReference package
+        else null;
+      runtimeDependencies = builtins.mapAttrs (_: metadata) (keyed (package.runtimeDeps or []));
+      moduleDependencies = moduleDependencies.references moduleReference (package.moduleDeps or []);
+    }
+    // (
+      if (package.osVersion or null) == null
+      then {}
+      else
+        builtins.deepSeq ((import ./semver.nix).parseRequirement package.osVersion)
+        {inherit (package) osVersion;}
+    );
   valid = reference:
     builtins.isAttrs reference
     && builtins.attrNames reference == ["mainProgram" "name" "outputs" "path" "version"]

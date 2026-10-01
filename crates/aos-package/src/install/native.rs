@@ -13,7 +13,7 @@ use anyhow::{Context, Result, ensure};
 use aos_ability_runtime::journal::JournalLimits;
 
 use crate::config::ApmConfig;
-use crate::deployment::evaluation::{Evaluation, resolve_packages};
+use crate::deployment::evaluation::Evaluation;
 use crate::deployment::model::Deployment;
 use crate::deployment::retention::ArtifactAdmission;
 use crate::deployment::retention::NixStore;
@@ -128,7 +128,8 @@ async fn discover_modules(
                     &meta.platform,
                 )?
             };
-            envelope.verify_catalog_resolution(&meta.ability_exports, &meta.module_dependencies)?;
+            envelope
+                .verify_catalog_resolution(meta.os_version.as_deref(), &meta.module_dependencies)?;
             let requester_key = (
                 meta.name.clone(),
                 meta.version.clone(),
@@ -156,7 +157,7 @@ async fn discover_modules(
                 if dependency.is_ranged() {
                     let mut catalog_source = source.clone();
                     catalog_source.version = meta.version.clone();
-                    if !dependency.accepts(&catalog_source, &meta.version, &meta.ability_exports)? {
+                    if !dependency.accepts(&catalog_source, &meta.version)? {
                         continue;
                     }
                 }
@@ -184,14 +185,12 @@ async fn discover_modules(
                         &meta.platform,
                     )?
                 };
-                candidate
-                    .verify_catalog_resolution(&meta.ability_exports, &meta.module_dependencies)?;
+                candidate.verify_catalog_resolution(
+                    meta.os_version.as_deref(),
+                    &meta.module_dependencies,
+                )?;
                 let compatible = match &candidate.module {
-                    Some(module) => dependency.accepts(
-                        module,
-                        &candidate.package.version,
-                        &candidate.ability_exports,
-                    )?,
+                    Some(module) => dependency.accepts(module, &candidate.package.version)?,
                     None => false,
                 };
                 if compatible {
@@ -440,7 +439,8 @@ fn cached_envelope(
         "native envelope document differs from authenticated metadata"
     );
     let envelope = crate::deployment::model::Envelope::decode(document)?;
-    envelope.verify_catalog_resolution(&package.ability_exports, &package.module_dependencies)?;
+    envelope
+        .verify_catalog_resolution(package.os_version.as_deref(), &package.module_dependencies)?;
     ensure!(
         envelope.package.name == package.name
             && envelope.package.version == package.version
@@ -494,7 +494,7 @@ fn resolve_scope_packages(
     payloads: Vec<crate::deployment::model::Artifact>,
     resolver: &mut impl crate::deployment::evaluation::PackageResolver,
 ) -> Result<crate::deployment::model::ResolvedPackages> {
-    let resolved = resolve_packages(system, modules, resolver)?;
+    let resolved = crate::deployment::evaluation::resolve_packages(system, modules, resolver)?;
     select_scope_payloads(resolved, payloads)
 }
 
@@ -552,9 +552,30 @@ pub(crate) fn recover(profile: &Profile) -> Result<()> {
         executable.clone(),
         &profile.path.join("deployment/registry-admissions"),
     )?;
-    let store = NixStore::open(executable, profile.path.join("deployment/roots"), admission)?;
+    let store = NixStore::open(
+        executable.clone(),
+        profile.path.join("deployment/roots"),
+        admission,
+    )?;
     let mut consumer = ProfileDeployment::open(profile, store, JournalLimits::default())?;
     let cancellation = crate::cancellation::AbilityCancellationGuard::install()?;
+    if let Some((descriptor_path, pending)) = consumer.recovery_evaluation()? {
+        // Recovery can execute a different desired generation than the committed
+        // profile. Check its exact staged descriptor against one current snapshot.
+        let current_os_release = crate::environment::os_release()?;
+        let (_, descriptor) = crate::native_deployment::read_retained_evaluation_in(
+            &descriptor_path,
+            &pending,
+            &executable,
+            cancellation.token(),
+        )?;
+        crate::native_deployment::validate_target_os(
+            &descriptor,
+            current_os_release,
+            &executable,
+            cancellation.token(),
+        )?;
+    }
     crate::native_deployment::configure_profile_observer(
         &mut consumer,
         profile,
@@ -623,6 +644,9 @@ fn prepare_with_inputs(
         executable.clone(),
         &profile.path.join("deployment/registry-admissions"),
     )?;
+    // A mutation snapshots the currently selected target once. Historical
+    // descriptors remain unchanged for replay; their release is not a new solve's host.
+    let current_os_release = crate::environment::os_release()?;
     let mut retained_modules = BTreeSet::new();
     let mut retained_context = None;
     let mut evaluation_inputs = match profile.current_generation()? {
@@ -644,6 +668,7 @@ fn prepare_with_inputs(
             );
             retained_context = Some((descriptor.clone(), committed.deployment));
             let inputs = EvaluationInputs {
+                os_release: descriptor.os_release,
                 library: descriptor.library,
                 configuration: descriptor.configuration,
                 runtime_configuration: descriptor.runtime_configuration,
@@ -664,6 +689,7 @@ fn prepare_with_inputs(
             let (root, _) = crate::deployment::nix::store_root_and_suffix(&library)?;
             admission.trust_runtime_input(root.to_str().context("module library is not UTF-8")?)?;
             EvaluationInputs {
+                os_release: current_os_release.clone(),
                 library,
                 configuration: Vec::new(),
                 runtime_configuration: Vec::new(),
@@ -671,6 +697,7 @@ fn prepare_with_inputs(
             }
         }
     };
+    evaluation_inputs.os_release = current_os_release;
     if let Some(runtime) = runtime {
         admission.trust_runtime_input(
             runtime
@@ -753,6 +780,7 @@ fn prepare_with_inputs(
         !closures.is_empty() || refresh_names.is_some(),
         refresh_names,
         solver_cancellation.token(),
+        evaluation_inputs.os_release.as_ref(),
     )?;
     let packages = select_scope_payloads(packages, payloads)?;
     let additional = packages
@@ -779,8 +807,10 @@ fn prepare_with_inputs(
         .chain(runtime.map(|snapshot| snapshot.store_path.clone()))
         .collect();
     let module_envelopes = resolver.module_envelopes(&packages)?;
+    let package_envelopes = resolver.package_envelopes(&packages)?;
     let chosen_companions = module_envelopes
         .values()
+        .chain(package_envelopes.values())
         .chain(
             resolution_lock
                 .iter()
@@ -808,6 +838,8 @@ fn prepare_with_inputs(
         Some(&executable),
     )?;
     let descriptor = EvaluationInput {
+        os_release: evaluation_inputs.os_release.clone(),
+        package_envelopes,
         schema: "aos.package.evaluation-input".into(),
         library: evaluation_inputs.library.clone(),
         library_nar_hash,
@@ -850,6 +882,12 @@ fn prepare_with_inputs(
             .context("evaluation descriptor is not UTF-8")?,
     )?;
     let evaluation = Evaluation {
+        os_release: descriptor.os_release.clone(),
+        os_requirements: crate::native_deployment::os_requirements(
+            &descriptor,
+            &executable,
+            cancellation.token(),
+        )?,
         module_requirements: descriptor
             .resolution_lock
             .as_ref()
@@ -1126,8 +1164,22 @@ pub(crate) fn rollback_locked(
     printer: &aos_core::output::Printer,
 ) -> Result<Generation> {
     let desired = probe_rollback(profile, target)?;
-    let evaluation = EvaluationInputs::read(&target.path.join("evaluation.json"))?;
     let executable = packaged_path("AOS_NIX_STORE")?;
+    let (_, descriptor) = crate::native_deployment::read_retained_evaluation_in(
+        &target.path.join("evaluation.json"),
+        &desired,
+        &executable,
+        &Default::default(),
+    )?;
+    // Applying retained choices requires compatibility with today's target;
+    // replay and the descriptor published by rollback keep their original release.
+    crate::native_deployment::validate_target_os(
+        &descriptor,
+        crate::environment::os_release()?,
+        &executable,
+        &Default::default(),
+    )?;
+    let evaluation = EvaluationInputs::read(&target.path.join("evaluation.json"))?;
     let mut admission = RegistryAdmission::new(
         executable.clone(),
         &profile.path.join("deployment/registry-admissions"),
@@ -1217,7 +1269,7 @@ mod tests {
                 entrypoint: "module.nix".into(),
             }),
             runtime_dependencies: BTreeMap::new(),
-            ability_exports: BTreeMap::new(),
+            os_version: None,
             module_dependencies: Vec::new(),
         }
     }
@@ -1286,13 +1338,7 @@ mod tests {
 
     #[test]
     fn interface_upgrade_changes_modules_without_selecting_provider_payloads() {
-        let mut provider = package("provider", 'b');
-        provider.ability_exports.insert(
-            "storage".into(),
-            crate::deployment::model::AbilityExport {
-                version: "1.1.0".into(),
-            },
-        );
+        let provider = package("provider", 'b');
         let mut newer = provider.clone();
         newer.package.version = "2.0.0".into();
         newer.package.path = format!("/nix/store/{}-provider-2", "c".repeat(32));
@@ -1303,14 +1349,12 @@ mod tests {
         let source = newer.module.as_mut().unwrap();
         source.version = "2.0.0".into();
         source.source = format!("/nix/store/{}-provider-2-module", "d".repeat(32));
-        newer.ability_exports.get_mut("storage").unwrap().version = "1.2.0".into();
         let mut application = package("application", 'a');
         application
             .module_dependencies
             .push(ModuleDependency::Ranged {
                 package: provider.module.clone().unwrap(),
-                abilities: BTreeMap::from([("storage".into(), "^1.0".into())]),
-                package_version: None,
+                package_version: ">=1, <3".into(),
             });
         let cancellation = aos_ability_runtime::adapter::CancellationToken::default();
         let refreshed = BTreeSet::from(["application".to_owned()]);
@@ -1321,6 +1365,7 @@ mod tests {
             &[],
             Some(&refreshed),
             &cancellation,
+            None,
         )
         .unwrap();
         assert_eq!(

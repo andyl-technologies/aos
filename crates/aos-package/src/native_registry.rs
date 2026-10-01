@@ -377,7 +377,8 @@ impl<'a> NativeRegistry<'a> {
             &self.admission.executable,
             &aos_ability_runtime::adapter::CancellationToken::default(),
         )?;
-        envelope.verify_catalog_resolution(&meta.ability_exports, &meta.module_dependencies)?;
+        envelope
+            .verify_catalog_resolution(meta.os_version.as_deref(), &meta.module_dependencies)?;
         let priority = self
             .registries
             .registries()
@@ -469,6 +470,7 @@ impl<'a> NativeRegistry<'a> {
         allow_resolution: bool,
         refresh_names: Option<&BTreeSet<String>>,
         cancellation: &aos_ability_runtime::adapter::CancellationToken,
+        os_release: Option<&aos_doc_model::runtime::OsRelease>,
     ) -> Result<(
         crate::deployment::model::ResolvedPackages,
         Option<solver::ResolutionLock>,
@@ -505,6 +507,7 @@ impl<'a> NativeRegistry<'a> {
                 &self.retained_module_sources,
                 refresh_names,
                 cancellation,
+                os_release,
             )?;
             if let Some(lock) = &mut solution.lock {
                 for edge in &lock.edges {
@@ -542,7 +545,9 @@ impl<'a> NativeRegistry<'a> {
                 .or_insert_with(|| envelope.clone());
         }
         let selected = selected.into_values().collect::<Vec<_>>();
-        solver::check_exports(selected.iter())?;
+        for envelope in &selected {
+            solver::check_os_requirement(envelope, os_release)?;
+        }
         let mut lock = self.resolution_lock.clone();
         if let Some(value) = &mut lock {
             value.edges.retain(|edge| {
@@ -597,6 +602,30 @@ impl<'a> NativeRegistry<'a> {
             .collect()
     }
 
+    pub(crate) fn package_envelopes(
+        &self,
+        packages: &crate::deployment::model::ResolvedPackages,
+    ) -> Result<BTreeMap<String, PathBuf>> {
+        packages
+            .artifacts
+            .iter()
+            .map(|artifact| {
+                let envelope = self
+                    .envelopes
+                    .values()
+                    .find(|envelope| {
+                        envelope.package.canonical_catalog() == artifact.canonical_catalog()
+                    })
+                    .context("selected payload lacks its authenticated envelope")?;
+                let root = self
+                    .module_envelopes
+                    .get(&envelope_key(envelope))
+                    .context("selected payload lacks its retained envelope")?;
+                Ok((artifact.canonical_catalog().path, root.clone()))
+            })
+            .collect()
+    }
+
     pub(crate) fn module_envelopes(
         &self,
         packages: &crate::deployment::model::ResolvedPackages,
@@ -642,8 +671,12 @@ impl<'a> NativeRegistry<'a> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        if let Some(lock) = &descriptor.resolution_lock {
-            for (artifact, path) in &lock.requesters {
+        {
+            let requesters = descriptor
+                .resolution_lock
+                .iter()
+                .flat_map(|lock| lock.requesters.iter());
+            for (artifact, path) in descriptor.package_envelopes.iter().chain(requesters) {
                 let root = path.to_str().context("requester envelope is not UTF-8")?;
                 ensure!(
                     desired.inputs().iter().any(|input| input == root),
@@ -660,6 +693,7 @@ impl<'a> NativeRegistry<'a> {
                     envelope.package.canonical_catalog().path == *artifact,
                     "lock requester identity changed"
                 );
+                solver::check_os_requirement(&envelope, descriptor.os_release.as_ref())?;
                 self.module_envelopes
                     .insert(envelope_key(&envelope), path.clone());
                 self.retained_inputs.insert(path.clone());
@@ -892,7 +926,7 @@ pub(crate) fn same_package_context(left: &Envelope, right: &Envelope) -> bool {
         && left.module == right.module
         && left.runtime_dependencies == right.runtime_dependencies
         && left.module_dependencies == right.module_dependencies
-        && left.ability_exports == right.ability_exports
+        && left.os_version == right.os_version
 }
 
 fn envelope_key(envelope: &Envelope) -> (String, String, String) {
@@ -983,7 +1017,7 @@ mod authority_tests {
             },
             module,
             runtime_dependencies: BTreeMap::new(),
-            ability_exports: BTreeMap::new(),
+            os_version: None,
             module_dependencies: Vec::new(),
         }
     }

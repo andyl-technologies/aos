@@ -6,9 +6,7 @@ use std::path::PathBuf;
 use aos_contract::Sha256Digest;
 
 use super::*;
-use crate::deployment::model::{
-    AbilityExport, Artifact, ModuleDependency, ModuleSource, ResolvedPackages,
-};
+use crate::deployment::model::{Artifact, ModuleDependency, ModuleSource, ResolvedPackages};
 use crate::native_deployment::{LockedEdge, ResolutionLock};
 
 fn envelope(name: &str, version: &str, hash: char) -> Envelope {
@@ -29,7 +27,7 @@ fn envelope(name: &str, version: &str, hash: char) -> Envelope {
             source: format!("/nix/store/{}-{name}-module", hash.to_string().repeat(32)),
             entrypoint: "module.nix".into(),
         }),
-        ability_exports: BTreeMap::new(),
+        os_version: None,
         runtime_dependencies: BTreeMap::new(),
         module_dependencies: Vec::new(),
     }
@@ -44,19 +42,12 @@ fn companion(envelope: &Envelope) -> PathBuf {
 }
 
 fn fixture(ranged: bool, moduleless: bool) -> (EvaluationInput, BTreeMap<PathBuf, Envelope>) {
-    let mut provider = envelope("provider", "19.4.0", 'b');
-    provider.ability_exports.insert(
-        "storage".into(),
-        AbilityExport {
-            version: "1.4.0".into(),
-        },
-    );
+    let provider = envelope("provider", "19.4.0", 'b');
     let source = provider.module.clone().unwrap();
     let dependency = if ranged {
         ModuleDependency::Ranged {
             package: source.clone(),
-            abilities: BTreeMap::from([("storage".into(), "^1".into())]),
-            package_version: Some("^19".into()),
+            package_version: "^19".into(),
         }
     } else {
         ModuleDependency::Exact(source.clone())
@@ -80,6 +71,8 @@ fn fixture(ranged: bool, moduleless: bool) -> (EvaluationInput, BTreeMap<PathBuf
         )]),
     });
     let descriptor = EvaluationInput {
+        os_release: None,
+        package_envelopes: BTreeMap::from([(consumer.package.path.clone(), companion(&consumer))]),
         schema: "aos.package.evaluation-input".into(),
         library: PathBuf::from(format!("/nix/store/{}-library/default.nix", "f".repeat(32))),
         library_nar_hash: Sha256Digest::of_bytes(b"library"),
@@ -119,6 +112,7 @@ fn check(descriptor: &EvaluationInput, companions: &BTreeMap<PathBuf, Envelope>)
             .context("fixture companion is absent")?;
         Ok(serde_json::to_vec(envelope)?)
     })
+    .map(|_| ())
 }
 
 #[test]
@@ -134,8 +128,11 @@ fn rejects_edited_original_requirement_and_selected_source() {
     let (descriptor, companions) = fixture(true, false);
     let mut requirement = descriptor.clone();
     let edge = &mut requirement.resolution_lock.as_mut().unwrap().edges[0];
-    if let ModuleDependency::Ranged { abilities, .. } = &mut edge.requirement {
-        abilities.insert("storage".into(), "^2".into());
+    if let ModuleDependency::Ranged {
+        package_version, ..
+    } = &mut edge.requirement
+    {
+        *package_version = "^2".into();
     }
     assert!(check(&requirement, &companions).is_err());
 
@@ -147,41 +144,48 @@ fn rejects_edited_original_requirement_and_selected_source() {
 }
 
 #[test]
-fn rejects_incompatible_or_changed_ability_exports() {
-    let (mut descriptor, mut companions) = fixture(true, false);
-    let provider_path = descriptor.module_envelopes["provider"].clone();
-    let provider = companions.get_mut(&provider_path).unwrap();
-    provider.ability_exports.get_mut("storage").unwrap().version = "2.0.0".into();
-    assert!(check(&descriptor, &companions).is_err());
+fn rejects_moduleless_os_requirements_without_a_matching_retained_release() {
+    for ranged in [false, true] {
+        let (mut descriptor, mut companions) = fixture(ranged, true);
+        let consumer = companions
+            .get_mut(&descriptor.package_envelopes[&descriptor.packages.artifacts[0].path])
+            .unwrap();
+        consumer.os_version = Some("^2".into());
+        assert!(check(&descriptor, &companions).is_err());
 
-    // Even when the copied catalog agrees with the changed export, the
-    // original requester's independent ability range still rejects it.
-    descriptor.packages.modules = companions
-        .values()
-        .filter_map(Envelope::module_record)
-        .collect();
-    assert!(check(&descriptor, &companions).is_err());
+        descriptor.os_release = Some(aos_doc_model::runtime::OsRelease {
+            name: "aos".into(),
+            version: "1.0.0".into(),
+        });
+        assert!(check(&descriptor, &companions).is_err());
+
+        descriptor.os_release.as_mut().unwrap().version = "2.1.0".into();
+        check(&descriptor, &companions).unwrap();
+        let projected = validate_with(&descriptor, |path| {
+            Ok(serde_json::to_vec(&companions[path.parent().unwrap()])?)
+        })
+        .unwrap();
+        assert_eq!(
+            projected,
+            vec![aos_doc_model::runtime::OsRequirement {
+                owner: "consumer".into(),
+                os_version: "^2".into(),
+            }]
+        );
+    }
 }
 
 #[test]
-fn rejects_duplicate_ability_owners_even_for_exact_only_closures() {
+fn rejects_changed_module_os_requirements_even_with_a_compatible_host() {
     let (mut descriptor, mut companions) = fixture(false, false);
-    let consumer_path = descriptor.module_envelopes["consumer"].clone();
     companions
-        .get_mut(&consumer_path)
+        .get_mut(&descriptor.module_envelopes["provider"])
         .unwrap()
-        .ability_exports
-        .insert(
-            "storage".into(),
-            AbilityExport {
-                version: "1.4.0".into(),
-            },
-        );
-    descriptor.packages.modules = companions
-        .values()
-        .filter_map(Envelope::module_record)
-        .collect();
-
+        .os_version = Some("^2".into());
+    descriptor.os_release = Some(aos_doc_model::runtime::OsRelease {
+        name: "aos".into(),
+        version: "2.0.0".into(),
+    });
     assert!(check(&descriptor, &companions).is_err());
 }
 
@@ -267,4 +271,88 @@ fn rejects_exact_dependency_source_drift_and_missing_modules() {
         .retain(|module| module.name != "provider");
     missing.module_envelopes.remove("provider");
     assert!(check(&missing, &companions).is_err());
+}
+
+#[test]
+fn retains_canonical_envelopes_for_named_payload_outputs() {
+    let (mut descriptor, mut companions) = fixture(false, true);
+    let canonical_path = descriptor.packages.artifacts[0].path.clone();
+    let companion_path = descriptor.package_envelopes[&canonical_path].clone();
+    let selected_path = format!("/nix/store/{}-consumer-tools", "g".repeat(32));
+
+    let envelope = companions.get_mut(&companion_path).unwrap();
+    envelope
+        .package
+        .outputs
+        .insert("tools".into(), selected_path.clone());
+    let payload = &mut descriptor.packages.artifacts[0];
+    payload.outputs = envelope.package.outputs.clone();
+    payload.path = selected_path;
+
+    let decoded = EvaluationInput::decode(&serde_json::to_vec(&descriptor).unwrap()).unwrap();
+    assert_eq!(decoded.package_envelopes[&canonical_path], companion_path);
+    check(&decoded, &companions).unwrap();
+}
+
+#[test]
+fn rejects_payloads_without_retained_envelope_catalogs() {
+    let (mut descriptor, _) = fixture(false, true);
+    descriptor.package_envelopes.clear();
+
+    assert!(EvaluationInput::decode(&serde_json::to_vec(&descriptor).unwrap()).is_err());
+    assert!(validate_with(&descriptor, |_| panic!("unexpected envelope read")).is_err());
+}
+
+#[test]
+fn checks_current_target_without_changing_historical_replay() {
+    for moduleless in [false, true] {
+        let (mut descriptor, mut companions) = fixture(false, moduleless);
+        let root = descriptor.package_envelopes[&descriptor.packages.artifacts[0].path].clone();
+        companions.get_mut(&root).unwrap().os_version = Some("^1".into());
+        descriptor.packages.modules = companions
+            .values()
+            .filter_map(Envelope::module_record)
+            .collect();
+        descriptor.os_release = Some(aos_doc_model::runtime::OsRelease {
+            name: "Original OS".into(),
+            version: "1.2.0".into(),
+        });
+        let original = descriptor.clone();
+        let read = |path: &Path| -> Result<Vec<u8>> {
+            Ok(serde_json::to_vec(&companions[path.parent().unwrap()])?)
+        };
+
+        check(&descriptor, &companions).unwrap();
+        let current = Some(aos_doc_model::runtime::OsRelease {
+            name: "Updated OS".into(),
+            version: "2.0.0".into(),
+        });
+        assert!(validate_with_release(&descriptor, current, read).is_err());
+        assert!(validate_with_release(&descriptor, None, read).is_err());
+        assert_eq!(descriptor, original);
+        check(&descriptor, &companions).unwrap();
+    }
+}
+
+#[test]
+fn accepts_a_compatible_current_target_without_replacing_retained_identity() {
+    let (mut descriptor, mut companions) = fixture(false, true);
+    let root = descriptor.package_envelopes[&descriptor.packages.artifacts[0].path].clone();
+    companions.get_mut(&root).unwrap().os_version = Some(">=1, <3".into());
+    descriptor.os_release = Some(aos_doc_model::runtime::OsRelease {
+        name: "Original OS".into(),
+        version: "1.0.0".into(),
+    });
+    let original = descriptor.clone();
+
+    let current = Some(aos_doc_model::runtime::OsRelease {
+        name: "Updated OS".into(),
+        version: "2.0.0".into(),
+    });
+    validate_with_release(&descriptor, current, |path| {
+        Ok(serde_json::to_vec(&companions[path.parent().unwrap()])?)
+    })
+    .unwrap();
+
+    assert_eq!(descriptor, original);
 }

@@ -285,10 +285,10 @@ pub(crate) fn record_native_artifacts(
     deployment: &crate::types::NativeArtifactMeta,
     documentation: Option<&crate::types::NativeArtifactMeta>,
     qualification: Option<&crate::types::NativeArtifactMeta>,
-    exports: &std::collections::BTreeMap<String, crate::deployment::model::AbilityExport>,
+    os_version: Option<&str>,
     dependencies: &[crate::deployment::model::ModuleDependency],
 ) -> Result<String> {
-    aos_registry_surface::native_dependencies::check_resolution_metadata(exports, dependencies)?;
+    aos_registry_surface::native_dependencies::check_resolution_metadata(os_version, dependencies)?;
     deployment.validate()?;
     if let Some(documentation) = documentation {
         documentation.validate()?;
@@ -319,10 +319,10 @@ pub(crate) fn record_native_artifacts(
         .and_then(toml::Value::as_table_mut)
         .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
     entry.insert("deployment".into(), toml::Value::try_from(deployment)?);
-    if exports.is_empty() {
-        entry.remove("ability_exports");
+    if let Some(requirement) = os_version {
+        entry.insert("osVersion".into(), toml::Value::String(requirement.into()));
     } else {
-        entry.insert("ability_exports".into(), toml::Value::try_from(exports)?);
+        entry.remove("osVersion");
     }
     if dependencies.is_empty() {
         entry.remove("module_dependencies");

@@ -261,29 +261,14 @@ needs no module; it still publishes a native deployment envelope.
 
 ## Version and compose interfaces across packages
 
-The package that releases an ability declares its contract version in its module:
-
-```nix
-{ lib, ... }: {
-  aos.abilities.service = {
-    version = "1.4.0";
-    operations.ensure = {
-      # The input/result modules from the interface example above.
-    };
-  };
-}
-```
-
-This version describes the public contract, independently of the package release
-and an effect's automatic revision. Keep compatible additions within the same
-major version; breaking input, result, or behavioral changes require a new major
-version. SemVer is the author's compatibility promise, not a proof that arbitrary
-Nix modules are interchangeable. Modules can still extend shared option trees.
-Exactly one package declares the version for each versioned ability in a scope;
-other packages consume or extend it without repeating that declaration.
+Interfaces follow the release of their owner. An interface shipped by a package
+uses that package's version; interfaces supplied by the OS/base modules use the
+OS release version. Ability declarations contain their operations and schemas,
+without an independent ability version. An effect's automatic revision remains
+separate from release compatibility.
 
 A consumer can retain an exact dependency, `moduleDeps = [ service-interface ];`,
-or explicitly permit compatible releases:
+or explicitly permit compatible package releases:
 
 ```nix
 { mkDerivation, service-interface, ... }:
@@ -294,22 +279,35 @@ mkDerivation {
   moduleDeps = [
     {
       package = service-interface;
-      abilities.service = "^1.2";
-      packageVersion = ">=7.0.0, <9.0.0"; # Optional, independent constraint.
+      packageVersion = "^7.0";
     }
   ];
+  osVersion = "^1.0"; # Optional requirement on the selected host OS release.
   # Ordinary source, dependencies, and build phases go here.
 }
 ```
 
-`package` supplies the exact build-time seed. Nix checks that seed against every
-range. APM may select another authenticated release of the same package whose
-exported ability versions satisfy the ranges. For example, package `7.3.0`
-exporting `service` version `1.4.0` satisfies these requirements; package `8.0.0`
-exporting `service` version `2.0.0` does not. A package-only range is also possible
-by omitting `abilities`. Declare each dependency package once; combine constraints
-within that declaration. Existing unversioned interfaces remain usable through
-exact dependencies and cannot satisfy an ability-version requirement.
+`package` supplies the exact build-time seed. Nix checks the seed's package
+version against `packageVersion`. APM may select another authenticated release
+of the same package that satisfies the range. Package `7.3.0` satisfies `^7.0`;
+package `8.0.0` does not. Declare each dependency package once. Exact dependencies
+continue to pin the selected source without a compatibility range.
+
+`osVersion` constrains the OS release already selected for the host, retained as
+`osRelease = { name = "aos"; version = "1.2.0"; }` in activation inputs. The host OS
+is a fixed input: dependency resolution checks it and never solves for or upgrades
+it. A mismatch requires a compatible package choice or a separately managed OS
+upgrade. Omitting the requirement imposes no explicit OS release range.
+
+Keep compatible interface additions within the owner's release major version;
+breaking input, result, or behavioral changes normally require a new major
+package or OS release. SemVer is the author's compatibility promise, not a proof
+that arbitrary Nix modules are interchangeable. Modules can still extend shared
+option trees.
+
+Range matching and the structural release check require strict SemVer release
+numbers. Packages with other upstream version schemes can still use exact
+dependencies; AOS does not guess a SemVer interpretation.
 
 Ranges use Rust SemVer syntax: caret, tilde, comparisons, wildcards, and
 comma-separated intersections. Prereleases require an explicit prerelease
@@ -328,16 +326,17 @@ aosPkgs.callPackage ./web-server.nix {
 
 The external package must expose AOS's native `module` and deployment companions.
 Flakes acquire build inputs; they are not runtime header lookups. Publication
-retains the module source, original dependencies, generated ability exports, and
-documentation in authenticated package artifacts. Installation uses the configured
+retains the module source, original dependencies, generated interface release
+metadata, and documentation in authenticated package artifacts. Installation uses the configured
 registries, which may publish packages from different Git repositories. A
 dependency does not add registry URLs, signing keys, or trust settings. Package
 names remain scope-wide identities; aliases for local registries do not namespace
 them.
 
-Resolution selects **one version and declaring owner per ability per scope**, and
-one exact package identity per package name. It solves transitive ranges together,
-including constraints introduced by candidate packages. Conflicting consumers
+Resolution selects **one exact package identity per package name per scope**.
+Package-owned interfaces follow that selection; OS-owned interfaces follow the
+fixed host OS release. The resolver solves transitive ranges together, including
+constraints introduced by candidate packages. Conflicting consumers
 fail with dependency diagnostics before activation. The bounded solver reports
 search exhaustion separately from incompatible requirements. Ordinary installation
 prefers compatible retained choices; an explicit upgrade permits new selections,
@@ -349,15 +348,54 @@ does not create a new generation.
 The resulting resolution lock records original requirements, exact selected
 module sources, and the requesters' deployment companions. Reconfiguration,
 boot, and rollback replay these choices without consulting newer registry
-contents. Build-time images lock their selected seeds using the same format.
+contents. New package mutations snapshot the currently selected target OS release;
+an old user profile does not keep admitting packages against an obsolete host
+version. Pending transaction recovery and rollback check retained package
+requirements against that current target before applying effects. Historical
+source replay preserves its original OS identity. Build-time images lock their
+selected seeds using the same format.
 Handler selection remains ordinary module configuration; resolving a compatible
 interface does not discover or select an unrelated service manager, nor rewrite
 compiled runtime dependencies or literal store paths embedded in modules.
 
-`abilityContracts` and `moduleRequirements` in generated reference documentation
-come from these same declarations. `aos docs` and the Hub expose contract versions,
-requesting packages, dependencies, and links to their owners. There is no second
-manually maintained ability catalog.
+Generated reference documentation uses these same declarations to show interface
+release owners and links to requesting packages. `moduleRequirements` records
+`owner`, `package`, and `packageVersion`; `osRequirements` records `owner` and
+`osVersion`. `aos docs` and the Hub expose this metadata without a
+second manually maintained ability catalog.
+
+A structural compatibility check compares the generated public input/result
+schemas from the previous and current release, together with their package or OS
+release owner. Removed operations or fields, newly required inputs, and type
+changes are breaking changes or require review. Optional inputs and new
+operations are compatible additions. Opaque constraints require human review;
+the check does not prove runtime behavior. A breaking change requires a major
+release bump or a documented exception explaining the exact change and why it
+is permitted. This is a focused release check, not another schema catalog.
+
+Compare the generated native references for two releases:
+
+```sh
+aos ability check-compat before-options.json after-options.json --owner service-interface
+aos ability check-compat before-options.json after-options.json --os
+```
+
+Use `--owner` for interfaces owned by the named package or `--os` for OS/base
+interfaces. The check reports structural changes and accepts an owner major
+release increase. An incompatible report is still printed before the command
+exits unsuccessfully. `--json` emits the report as JSON.
+
+For a reviewed exception, pass `--exceptions exceptions.json`. The file is a JSON
+array naming the exact diagnostic ID and the reason it is permitted:
+
+```json
+[
+  {
+    "id": "COPY_THE_REPORTED_DIAGNOSTIC_ID",
+    "reason": "Explain why this exact release change is permitted."
+  }
+]
+```
 
 ## Bind runtime dependencies
 

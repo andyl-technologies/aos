@@ -33,7 +33,7 @@ mod validation;
 /// # Errors
 /// Returns an error for invalid immutable paths or descriptors, unavailable
 /// artifacts, a changed library NAR, failed temporary retention, cancellation,
-/// changed envelope declarations or locked choices, conflicting ability owners,
+/// changed envelope declarations or locked choices, incompatible OS releases,
 /// or an invalid graph or evaluation exceeding `timeout_ms`.
 pub fn evaluate_input(
     input: &Path,
@@ -49,7 +49,7 @@ pub fn evaluate_input(
 
     let descriptor = EvaluationInput::read_in(input, nix_store, cancellation)?;
     retained.retain(source_roots(&descriptor)?, cancellation)?;
-    validation::validate(&descriptor, nix_store, cancellation)?;
+    let os_requirements = validation::validate(&descriptor, nix_store, cancellation)?;
     let library_root = root_string(&descriptor.library)?;
     let (actual, _) = dump_store_path_identity_in(&library_root, Some(nix_store))?;
     ensure!(
@@ -63,6 +63,8 @@ pub fn evaluate_input(
         .chain(descriptor.runtime_configuration)
         .collect();
     let evaluation = Evaluation {
+        os_release: descriptor.os_release.clone(),
+        os_requirements,
         module_requirements: descriptor
             .resolution_lock
             .as_ref()
@@ -76,6 +78,7 @@ pub fn evaluate_input(
             .supplemental_inputs
             .into_iter()
             .chain(descriptor.module_envelopes.into_values())
+            .chain(descriptor.package_envelopes.into_values())
             .chain(
                 descriptor
                     .resolution_lock
@@ -102,6 +105,7 @@ fn source_roots(descriptor: &EvaluationInput) -> Result<BTreeSet<String>> {
         .chain(descriptor.runtime_configuration.iter().cloned())
         .chain(descriptor.supplemental_inputs.iter().cloned())
         .chain(descriptor.module_envelopes.values().cloned())
+        .chain(descriptor.package_envelopes.values().cloned())
         .chain(
             descriptor
                 .resolution_lock
@@ -123,4 +127,69 @@ fn source_roots(descriptor: &EvaluationInput) -> Result<BTreeSet<String>> {
                 .map(|artifact| PathBuf::from(&artifact.path)),
         );
     source_paths.map(|path| root_string(&path)).collect()
+}
+
+/// Validates immutable envelope requirements before projecting configuration.
+///
+/// # Errors
+/// Returns an error for changed retained envelopes, unsatisfied dependencies or
+/// host constraints, missing sources, or cancellation.
+pub(crate) fn os_requirements(
+    descriptor: &EvaluationInput,
+    nix_store: &Path,
+    cancellation: &CancellationToken,
+) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+    validation::validate(descriptor, nix_store, cancellation)
+}
+
+/// Projects host constraints from retained payload envelope companions.
+///
+/// # Errors
+/// Returns an error for inaccessible or malformed envelope companions, changed
+/// payload identities, or constraints incompatible with the retained host.
+pub(crate) fn retained_os_requirements(
+    envelopes: &std::collections::BTreeMap<String, PathBuf>,
+    release: Option<&aos_doc_model::runtime::OsRelease>,
+    nix_store: &Path,
+) -> Result<Vec<aos_doc_model::runtime::OsRequirement>> {
+    let mut requirements = Vec::new();
+    for (artifact, root) in envelopes {
+        let bytes = super::read_regular_store_document_in(
+            &root.join("deployment.json"),
+            nix_store,
+            &CancellationToken::default(),
+        )?;
+        let envelope = crate::deployment::model::Envelope::decode(&bytes)?;
+        ensure!(
+            envelope.package.canonical_catalog().path == *artifact,
+            "retained OS requirement envelope has a changed payload identity"
+        );
+        crate::native_registry::solver::check_os_requirement(&envelope, release)?;
+        if envelope.module.is_none() {
+            if let Some(os_version) = envelope.os_version {
+                requirements.push(aos_doc_model::runtime::OsRequirement {
+                    owner: envelope.package.name,
+                    os_version,
+                });
+            }
+        }
+    }
+    Ok(requirements)
+}
+
+/// Checks retained package choices against a mutation's current target snapshot.
+///
+/// The original descriptor and its historical release remain unchanged.
+///
+/// # Errors
+/// Returns an error for changed retained envelopes, unavailable sources,
+/// dependency mismatches, incompatible current host requirements, or cancellation.
+pub(crate) fn validate_target_os(
+    descriptor: &EvaluationInput,
+    release: Option<aos_doc_model::runtime::OsRelease>,
+    nix_store: &Path,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    validation::validate_for_release(descriptor, release, nix_store, cancellation)?;
+    Ok(())
 }

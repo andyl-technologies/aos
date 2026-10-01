@@ -47,12 +47,11 @@ options have a dedicated table with owner links, types, descriptions,
 read-only policy, and extensibility; hidden plumbing is omitted. The package
 detail page embeds the same native reference.
 
-Versioned interfaces show an ability contract version and its declaring owner,
-separately from that owner's package version. Module requirements link each
-requesting owner to its dependency package and preserve ability ranges and any
-independent package-version range. They are generated dependency declarations,
-not a compatibility resolution result or evidence of live execution. Packages
-without this metadata remain valid unversioned references.
+Interfaces show their package or OS release owner and use that owner's release
+version. Module requirements link each requesting owner to its dependency package
+and preserve package version ranges and OS release requirements. These generated
+declarations describe compatibility requirements; they are not a resolution
+result or evidence of live execution. Exact module dependencies remain valid.
 
 Hub verifies the signed documentation directory and exact `options.json` bytes
 before rendering a detail page. A package without a native documentation

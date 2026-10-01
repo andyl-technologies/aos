@@ -2703,7 +2703,7 @@ mod tests {
     fn catalog_meta(root_hash: &str, measurement: &str) -> PackageMeta {
         PackageMeta {
             named_outputs: Default::default(),
-            ability_exports: Default::default(),
+            os_version: None,
             module_dependencies: Vec::new(),
             name: "web".into(),
             version: "1.0".into(),

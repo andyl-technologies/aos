@@ -15,7 +15,10 @@ use aos_doc_model::artifact_consumption::{
 use aos_doc_model::runtime::RuntimeDocument;
 use std::collections::BTreeSet;
 mod browser;
+mod check_compat;
 mod evaluate;
+
+pub(crate) use check_compat::CompatibilityFailure;
 
 /// Runs native inspection or pure source replay without invoking handlers.
 ///
@@ -26,6 +29,7 @@ mod evaluate;
 pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
     match command {
         AbilityCommand::Evaluate(args) => evaluate::run(args),
+        AbilityCommand::CheckCompat(args) => check_compat::run(args, printer),
         AbilityCommand::Journal(args) => {
             let inspection = aos_ability_runtime::activation::inspect(
                 &args.journal,

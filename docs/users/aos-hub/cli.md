@@ -353,7 +353,7 @@ versions and requester-qualified module requirements. These requirements are
 source declarations, not a solver result. `option` lists typed native declarations,
 with optional owner, prefix, portable type JSON, and extensibility filters. Comparisons cover option
 types and mutability/extension policy, operation inputs/results, handler
-availability, configured instances, ability contract versions/owners, and module
+availability, configured instances, interface release versions/owners, and module
 requirements. They exclude prose and do not report live runtime state.
 
 

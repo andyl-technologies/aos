@@ -13,9 +13,12 @@ Its recipe continues to build ordinary payload outputs. Packages with no module
 remain valid payload-only members of an installation scope.
 
 Exact dependencies pin their source; explicitly compatible dependencies specify
-ability SemVer ranges and an exact build-time seed. Contract release versions are
-module-owned declarations, independent of package versions and effect revisions.
-A scope selects one version and declaring owner per ability. The resolver records
+a package SemVer range and an exact build-time seed. Package interfaces use their
+owning package's release version, and OS/base interfaces use the OS release
+version. Ability declarations have no independent release version. An optional
+recipe `osVersion` requirement checks the selected host OS, a fixed input that the
+dependency resolver never selects or upgrades. Effect revisions remain separate.
+A scope selects one exact identity per package name. The resolver records
 exact choices and original requirements for offline replay. See
 [resolution and binding](04-resolution-and-binding.md) for scoped upgrades,
 registry discovery, and lock semantics.

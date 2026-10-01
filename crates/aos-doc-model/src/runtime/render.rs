@@ -5,9 +5,7 @@ use std::fmt::Write as _;
 
 use aos_ability_plan::module_graph::Handler;
 
-use super::{
-    AbilityContract, DefinitionSource, ModuleReference, ModuleRequirement, NativeOption, Source,
-};
+use super::{DefinitionSource, ModuleReference, ModuleRequirement, NativeOption, Source};
 use crate::OptionType;
 
 pub(super) fn type_label(option: &OptionType) -> String {
@@ -53,15 +51,8 @@ pub(super) fn plain(source: &Source) -> String {
             for package in &reference.packages {
                 let _ = writeln!(output, "  {} {}", package.name, package.version);
             }
-            if !reference.ability_contracts.is_empty() {
-                output.push_str("\nAbility contract versions (independent of package versions)\n");
-                for (name, contract) in &reference.ability_contracts {
-                    let _ = writeln!(
-                        output,
-                        "  {name}: {} (declared by {})",
-                        contract.version, contract.owner
-                    );
-                }
+            if let Some(release) = &reference.os_release {
+                let _ = writeln!(output, "\nOS release: {} {}", release.name, release.version);
             }
             if !reference.module_requirements.is_empty() {
                 output.push_str(
@@ -70,15 +61,19 @@ pub(super) fn plain(source: &Source) -> String {
                 for requirement in &reference.module_requirements {
                     let _ = writeln!(
                         output,
-                        "  {} requires {}",
-                        requirement.owner, requirement.package
+                        "  {} requires {}\n    Package version requirement: {}",
+                        requirement.owner, requirement.package, requirement.package_version
                     );
-                    if let Some(range) = &requirement.package_version {
-                        let _ = writeln!(output, "    Package version requirement: {range}");
-                    }
-                    for (name, range) in &requirement.abilities {
-                        let _ = writeln!(output, "    Ability {name} version requirement: {range}");
-                    }
+                }
+            }
+            if !reference.os_requirements.is_empty() {
+                output.push_str("\nOS requirements (base-provided interfaces)\n");
+                for requirement in &reference.os_requirements {
+                    let _ = writeln!(
+                        output,
+                        "  {} requires OS version: {}",
+                        requirement.owner, requirement.os_version
+                    );
                 }
             }
             for (ability, operations) in &reference.abilities {
@@ -228,8 +223,8 @@ fn owner_relations(reference: &ModuleReference) -> BTreeMap<&str, BTreeSet<(&str
     {
         owners.entry(&option.owner).or_default();
     }
-    for contract in reference.ability_contracts.values() {
-        owners.entry(&contract.owner).or_default();
+    for requirement in &reference.os_requirements {
+        owners.entry(&requirement.owner).or_default();
     }
     for requirement in &reference.module_requirements {
         owners.entry(&requirement.owner).or_default();
@@ -338,13 +333,6 @@ pub(super) fn html(source: &Source) -> String {
                     .or_default()
                     .push(option);
             }
-            let mut contracts_by_owner = BTreeMap::<&str, Vec<(&str, &AbilityContract)>>::new();
-            for (name, contract) in &reference.ability_contracts {
-                contracts_by_owner
-                    .entry(&contract.owner)
-                    .or_default()
-                    .push((name, contract));
-            }
             let mut requirements_by_owner = BTreeMap::<&str, Vec<&ModuleRequirement>>::new();
             let mut requesters_by_package = BTreeMap::<&str, Vec<&ModuleRequirement>>::new();
             for requirement in &reference.module_requirements {
@@ -381,15 +369,6 @@ pub(super) fn html(source: &Source) -> String {
                         escape(&option.path.join("."))
                     );
                 }
-                for (name, contract) in contracts_by_owner.get(owner).into_iter().flatten() {
-                    let _ = write!(
-                        html,
-                        "<li>Declares ability <a href=\"#{}\">{}</a> contract version <code>{}</code></li>",
-                        scoped_anchor(namespace, "runtime-ability", name),
-                        escape(name),
-                        escape(&contract.version)
-                    );
-                }
                 for requirement in requirements_by_owner.get(owner).into_iter().flatten() {
                     let _ = write!(
                         html,
@@ -417,72 +396,49 @@ pub(super) fn html(source: &Source) -> String {
                 }
                 html.push_str("</details>");
             }
+            if let Some(release) = &reference.os_release {
+                let _ = write!(
+                    html,
+                    "<p>OS release: {} <code>{}</code></p>",
+                    escape(&release.name),
+                    escape(&release.version)
+                );
+            }
             if !reference.module_requirements.is_empty() {
-                html.push_str("<h3>Module requirements</h3><p>Declared constraints; not a dependency resolution result. Ability contract and package version requirements are independent.</p><table><thead><tr><th>Requester</th><th>Dependency package</th><th>Required ability versions</th><th>Required package version</th></tr></thead><tbody>");
+                html.push_str("<h3>Module requirements</h3><p>Declared constraints; not a dependency resolution result.</p><table><thead><tr><th>Requester</th><th>Dependency package</th><th>Required package version</th></tr></thead><tbody>");
                 for requirement in &reference.module_requirements {
                     let _ = write!(
                         html,
-                        "<tr><td><a href=\"#{}\">{}</a></td><td><a href=\"#{}\">{}</a></td><td>",
+                        "<tr><td><a href=\"#{}\">{}</a></td><td><a href=\"#{}\">{}</a></td><td><code>{}</code></td></tr>",
                         scoped_anchor(namespace, "runtime-owner", &requirement.owner),
                         escape(&requirement.owner),
                         scoped_anchor(namespace, "runtime-owner", &requirement.package),
-                        escape(&requirement.package)
-                    );
-                    if requirement.abilities.is_empty() {
-                        html.push_str("Unconstrained");
-                    }
-                    for (name, range) in &requirement.abilities {
-                        let _ = write!(
-                            html,
-                            "<p><a href=\"#{}\">{}</a>: <code>{}</code></p>",
-                            scoped_anchor(namespace, "runtime-ability", name),
-                            escape(name),
-                            escape(range)
-                        );
-                    }
-                    let _ = write!(
-                        html,
-                        "</td><td>{}</td></tr>",
-                        requirement
-                            .package_version
-                            .as_deref()
-                            .map(escape)
-                            .unwrap_or_else(|| "Unconstrained".into())
+                        escape(&requirement.package),
+                        escape(&requirement.package_version)
                     );
                 }
                 html.push_str("</tbody></table>");
             }
-            let ability_names: BTreeSet<_> = reference
-                .abilities
-                .keys()
-                .chain(reference.ability_contracts.keys())
-                .chain(
-                    reference
-                        .module_requirements
-                        .iter()
-                        .flat_map(|requirement| requirement.abilities.keys()),
-                )
-                .collect();
-            for ability in ability_names {
+            if !reference.os_requirements.is_empty() {
+                html.push_str("<h3>OS requirements</h3><p>Base-provided interfaces use the OS release version.</p><table><thead><tr><th>Requester</th><th>Required OS version</th></tr></thead><tbody>");
+                for requirement in &reference.os_requirements {
+                    let _ = write!(
+                        html,
+                        "<tr><td><a href=\"#{}\">{}</a></td><td><code>{}</code></td></tr>",
+                        scoped_anchor(namespace, "runtime-owner", &requirement.owner),
+                        escape(&requirement.owner),
+                        escape(&requirement.os_version)
+                    );
+                }
+                html.push_str("</tbody></table>");
+            }
+            for ability in reference.abilities.keys() {
                 let _ = write!(
                     html,
                     "<section id=\"{}\"><h3>Ability {}</h3>",
                     scoped_anchor(namespace, "runtime-ability", ability),
                     escape(ability)
                 );
-                if let Some(contract) = reference.ability_contracts.get(ability) {
-                    let _ = write!(
-                        html,
-                        "<p>Ability contract version: <code>{}</code>. Declared by <a href=\"#{}\">{}</a>. This version is independent of the declaring package version.</p>",
-                        escape(&contract.version),
-                        scoped_anchor(namespace, "runtime-owner", &contract.owner),
-                        escape(&contract.owner)
-                    );
-                } else {
-                    html.push_str(
-                        "<p>No ability contract version is declared in this reference.</p>",
-                    );
-                }
                 for (name, operation) in reference.abilities.get(ability).into_iter().flatten() {
                     let anchor = operation_anchor(namespace, ability, name);
                     let name = format!("{ability}.{name}");
@@ -755,32 +711,31 @@ mod tests {
     }
 
     #[test]
-    fn independent_contract_versions_and_requester_requirements_link_the_same_reference() {
+    fn package_and_os_requirements_link_the_same_reference() {
         let mut value = reference("web-server").value().clone();
-        value["packages"] = json!([{"name":"web-server","version":"42"},
-            {"name":"interface-package","version":"7.4.0"}]);
-        value["abilityContracts"] =
-            json!({"network":{"version":"1.2.3","owner":"interface-package"}});
-        value["moduleRequirements"] = json!([{"owner":"web-server","package":"interface-package",
-            "abilities":{"network":"^1.2","service":"<2.0"},"packageVersion":"^7"}]);
+        value["packages"] = json!([{"name":"interface-package","version":"7.4.0"}]);
+        value["moduleRequirements"] =
+            json!([{"owner":"web-server","package":"interface-package","packageVersion":"<8"}]);
+        value["osRequirements"] = json!([{"owner":"web-server","osVersion":"^1"}]);
+        value["osRelease"] = json!({"name":"aos","version":"1.0.0"});
         let document = document(value);
         let plain = document.render_plain();
         for text in [
-            "network: 1.2.3 (declared by interface-package)",
             "web-server requires interface-package",
-            "Package version requirement: ^7",
-            "Ability network version requirement: ^1.2",
+            "Package version requirement: <8",
+            "web-server requires OS version: ^1",
+            "OS release: aos 1.0.0",
         ] {
             assert!(plain.contains(text), "missing {text}");
         }
         let html = document.render_html();
         for text in [
-            "Ability contract version: <code>1.2.3</code>",
             "Package version: 7.4.0",
             "Declared constraints; not a dependency resolution result",
             "Required by",
-            "&lt;2.0",
-            "No ability contract version is declared in this reference",
+            "&lt;8",
+            "OS requirements",
+            "OS release: aos",
         ] {
             assert!(html.contains(text), "missing {text}");
         }
