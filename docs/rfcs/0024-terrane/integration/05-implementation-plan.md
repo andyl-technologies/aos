@@ -371,6 +371,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   their opaque bytes. Private factories, local copied-retirement effects and
   provider qualification remain pending. Decoded records grant no physical
   collection authority.
+  The separate pure collector prerequisite preserves the version-one root,
+  mark, state and local journal models. Its complete source review checks
+  traversal-context ordering, cutoff dominance, reconstructed mark hints and
+  immutable operation associations against GC-3 to GC-7, GC-28 to GC-30
+  and the registered CDDL. All 16 local-v1 fixtures match the normative hex
+  byte for byte. The candidate reports 299 core tests, strict Clippy and
+  rustdoc, a no-default-feature core build and mandatory formatting passing;
+  the canonical gate requires its 27 exact selectors. Complete trunk source
+  integration and Nix qualification remain pending. No decoded checkpoint,
+  elapsed bound or physical intent grants native collection authority.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,

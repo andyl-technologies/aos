@@ -1,4 +1,34 @@
 {sourceGate, ...}: let
+  collectorTests = [
+    "gc::journal::tests::canonical_journals_preserve_exact_owner_and_reject_reincarnation"
+    "gc::journal::tests::recovery_progress_preserves_immutable_authorization_across_new_epoch"
+    "gc::journal::tests::authorization_rejects_association_wait_and_witness_changes"
+    "gc::journal::tests::field_combinations_and_noncanonical_encodings_fail_closed"
+    "gc::journal::tests::operation_truncation_and_cancellation_preserve_exact_intent"
+    "gc::journal::tests::new_intent_lease_does_not_rewrite_existing_exclusion_epoch"
+    "gc::journal::golden_tests::gc_local_v1_golden_journals_preserve_registered_bytes_and_field_bounds"
+    "gc::journal::golden_tests::gc_local_v1_golden_operations_preserve_authorization_and_distinct_epochs"
+    "gc::records::tests::gc_checkpoint_roots_roundtrip_every_closed_reason_and_optional_cutoff"
+    "gc::records::tests::gc_checkpoint_mark_reconstructs_registered_hint_and_requires_exact_lookup"
+    "gc::records::tests::gc_checkpoint_state_preserves_frontier_flags_and_broader_commit_contexts"
+    "gc::records::tests::gc_checkpoint_decoders_reject_every_truncated_prefix"
+    "gc::records::tests::gc_checkpoint_wire_rejects_incomplete_arrays_and_invalid_frontier_flags"
+    "gc::records::context_tests::gc_context_legacy_empty_state_keeps_exact_bytes"
+    "gc::records::context_tests::gc_context_checkpoint_same_identity_stays_distinct_and_cutoff_is_not_unique_key"
+    "gc::records::context_tests::gc_context_cutoff_dominance_never_crosses_occurrences_or_legacy_context"
+    "gc::records::context_tests::gc_context_absolute_paths_and_graft_occurrences_are_canonical"
+    "gc::records::context_tests::gc_context_wire_rejects_explicit_null_wrong_tuple_and_noncanonical_path"
+    "gc::windows::tests::gc_windows_compare_strict_grace_and_inclusive_deletion_without_overflow"
+    "gc::windows::tests::gc_retains_uses_log_commit_and_lease_times_for_their_registered_modes"
+    "gc::windows::tests::gc_tombstone_matches_bucket_codec_and_independent_registered_map"
+    "gc::windows::tests::gc_checkpoint_integrity_digest_uses_raw_blake3_without_content_domain"
+    "gc::mark::tests::gc_mark_reachability_revisits_shared_commits_under_broader_retention"
+    "gc::mark::tests::gc_mark_checkpoint_filter_never_hides_exact_sorted_hashes"
+    "gc::retention::tests::gc_roots_retention_resolves_root_values_and_ref_override"
+    "gc::retention::tests::gc_retention_count_zero_and_overrides_have_distinct_selection"
+    "gc::retention::tests::gc_retention_rejects_duplicate_properties_and_raises_default_to_window_minimum"
+  ];
+
   retirementTests = [
     "gc::retirement::tests::authorization::permanent_authorizations_match_independent_disjoint_v2_bytes"
     "gc::retirement::tests::authorization::sweep_requires_initial_remote_artifacts_witness_and_full_checked_waits"
@@ -40,6 +70,7 @@ in {
     ${runTests "cbor::tests"}
     ${runTests "gc::lease::tests"}
     ${runTests "tree_format::tests::golden_leaf_round_trips_byte_exactly -- --exact"}
+    ${builtins.concatStringsSep "\n" (map (test: runTests "${test} -- --exact") collectorTests)}
     ${builtins.concatStringsSep "\n" (map (test: runTests "${test} -- --exact") retirementTests)}
 
     # Bound only the actual test process, after compilation. A malformed count
