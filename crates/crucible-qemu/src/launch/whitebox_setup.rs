@@ -13,9 +13,9 @@ use crucible_protocol::{
 use thiserror::Error;
 
 use super::{
-    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_VMSTATE_FILE_NAME,
-    QemuLaunchCommand, ROOT_DRIVE_ID, ROOT_OVERLAY_NODE_NAME, VMSTATE_DRIVE_ID,
-    validate_overlay_file_name,
+    CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_ROOT_OVERLAY_FILE_NAME,
+    DEFAULT_VMSTATE_FILE_NAME, QemuLaunchCommand, ROOT_DRIVE_ID, ROOT_OVERLAY_NODE_NAME,
+    VMSTATE_DRIVE_ID, validate_overlay_file_name,
 };
 
 const UNASSIGNED_X86_IO_REGION: &str = "io";
@@ -316,7 +316,7 @@ fn is_root_overlay_drive(value: &str) -> bool {
         && *node_name == format!("node-name={ROOT_OVERLAY_NODE_NAME}")
         && overlay
             .strip_prefix("file=")
-            .is_some_and(|path| validate_overlay_file_name(path).is_ok())
+            .is_some_and(is_root_overlay_path)
         && matches!(
             *backing_driver,
             "backing.driver=qcow2" | "backing.driver=raw"
@@ -330,6 +330,22 @@ fn is_root_overlay_drive(value: &str) -> bool {
         && *cache == "cache=none"
         && *aio == "aio=threads"
         && *discard == "discard=unmap"
+}
+
+fn is_root_overlay_path(path: &str) -> bool {
+    let Some(absolute) = path.strip_prefix('/') else {
+        return validate_overlay_file_name(path).is_ok() && !matches!(path, "." | "..");
+    };
+
+    // Guarded production launches name the generation's overlay absolutely.
+    // Keep its canonical basename and refuse lexical aliases before probing.
+    absolute.rsplit('/').next() == Some(DEFAULT_ROOT_OVERLAY_FILE_NAME)
+        && !path
+            .chars()
+            .any(|character| character == '\\' || character == ',' || character.is_control())
+        && absolute
+            .split('/')
+            .all(|component| !component.is_empty() && !matches!(component, "." | ".."))
 }
 
 fn validate_x86_whitebox_probe_output(
@@ -539,6 +555,80 @@ mod tests {
                 probe_storage_argument("-drive", &root)
                     .unwrap_or_else(|error| panic!("root drive should validate: {error}")),
                 format!("{root},readonly=on")
+            );
+        }
+    }
+
+    #[test]
+    fn setup_probe_preserves_the_builders_absolute_generation_overlay_read_only() {
+        use crate::{QemuLaunchArtifact, QemuRootImageFormat, QemuVmLaunchConfig};
+
+        let kernel = "/nix/store/00000000000000000000000000000000-kernel/bzImage";
+        let backing = "/nix/store/00000000000000000000000000000000-root/root.img";
+        let overlay = std::path::Path::new("/run/crucible/node-0/generation-1")
+            .join(DEFAULT_ROOT_OVERLAY_FILE_NAME);
+
+        for format in [QemuRootImageFormat::Qcow2, QemuRootImageFormat::Raw] {
+            let vm = QemuVmLaunchConfig::new(
+                "node-0",
+                QemuLaunchArtifact::new(
+                    crucible::ContentHash::from_canonical_material("kernel", kernel),
+                    kernel,
+                ),
+                QemuLaunchArtifact::new(
+                    crucible::ContentHash::from_canonical_material("root-image", backing),
+                    backing,
+                ),
+            )
+            .with_root_image_format(format)
+            .with_root_overlay_absolute_path(overlay.clone());
+            vm.validate().expect("production absolute overlay config");
+
+            let probe = x86_whitebox_probe_args_from(&vm.qemu_args())
+                .expect("probe accepts the production builder's absolute path");
+            let expected = format!(
+                "id={ROOT_DRIVE_ID},node-name={ROOT_OVERLAY_NODE_NAME},file={},backing.driver={},backing.file.driver=file,backing.file.filename={backing},if=none,format=qcow2,cache=none,aio=threads,discard=unmap,readonly=on",
+                overlay.display(),
+                format.qemu_driver(),
+            );
+
+            assert!(
+                probe
+                    .windows(2)
+                    .any(|pair| pair[0] == "-drive" && pair[1] == expected)
+            );
+        }
+    }
+
+    #[test]
+    fn setup_probe_rejects_noncanonical_root_overlay_paths() {
+        for path in [
+            "/run/node-0/foreign-overlay.qcow2",
+            "/run/node-0/subdir/../crucible-root-overlay.qcow2",
+            "/run/./node-0/crucible-root-overlay.qcow2",
+            "/run//node-0/crucible-root-overlay.qcow2",
+            "//run/node-0/crucible-root-overlay.qcow2",
+            "/run/node-0/crucible-root-overlay.qcow2/",
+            "/run/node-0\\alias/crucible-root-overlay.qcow2",
+            "/run/node-0,unknown=on/crucible-root-overlay.qcow2",
+            "/run/node-0\nalias/crucible-root-overlay.qcow2",
+            "/run/node-0\0alias/crucible-root-overlay.qcow2",
+            "run/node-0/crucible-root-overlay.qcow2",
+            ".",
+            "..",
+        ] {
+            let drive = format!(
+                "id={ROOT_DRIVE_ID},node-name={ROOT_OVERLAY_NODE_NAME},file={path},backing.driver=qcow2,backing.file.driver=file,backing.file.filename=/nix/store/00000000000000000000000000000000-root/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap"
+            );
+
+            assert!(
+                matches!(
+                    probe_storage_argument("-drive", &drive),
+                    Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument {
+                        option: "-drive"
+                    })
+                ),
+                "probe accepted noncanonical overlay path {path:?}"
             );
         }
     }
