@@ -321,8 +321,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   rechecks other consumed inputs and the unchanged clock, and refuses unreadable
   owner-masked creation before protected handoff. The actual guard producer
   retains successful current requests and complete consumed control receipts;
-  complete routing and refusal when registration changes during staging remain
-  unqualified. Ordered ancestry and record-parent batching preserve all metadata
+  the joint closed-consumer candidate refuses a consumed registration replaced
+  after Guard-installation staging and preserves the selected slot through
+  independent reopen. Ordinary branch staging races and complete effect routing
+  remain unqualified. Ordered ancestry and record-parent batching preserve all metadata
   observations,
   duplicate reads, exact payload reads and initial/final fences. The CAS gate
   now requires their actual cardinality, error-priority and ancestry regressions;
