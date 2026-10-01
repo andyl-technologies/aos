@@ -129,7 +129,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/libexif/libexif/releases/download/v${version}/libexif-${version}.tar.xz"];
       hash = "sha256-SgVe1ldeYcpGwxcr48dTzBbJvs0Pmexx1Y3Q5HFHbAw=";

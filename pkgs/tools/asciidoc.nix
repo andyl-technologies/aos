@@ -93,7 +93,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://files.pythonhosted.org/packages/1d/e7/315a82f2d256e9270977aa3c15e8fe281fd7c40b8e2a0b97e0cb61ca8fa0/asciidoc-${version}.tar.gz"];
       hash = "10yvvmh5wi20pf0xw1c1sj41x63r4w5cl0hdcvmwgcw1b4l3rwfr";

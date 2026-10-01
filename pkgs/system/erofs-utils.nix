@@ -90,7 +90,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     # kernel.org publishes git snapshots of the upstream tree; no
     # release tarballs ship with a pre-generated `configure`, so the

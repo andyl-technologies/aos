@@ -111,7 +111,9 @@ in
       };
     };
 
-    inherit version;
+    # Ruby permits API changes in minor releases; patch releases preserve API.
+    # https://www.ruby-lang.org/en/news/2013/12/21/ruby-version-policy-changes-with-2-1-0/
+    version = "~${version}";
 
     src = fetchurl {
       urls = ["https://cache.ruby-lang.org/pub/ruby/4.0/ruby-${version}.tar.xz"];

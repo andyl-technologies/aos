@@ -133,7 +133,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/libunwind/libunwind/releases/download/v${version}/libunwind-${version}.tar.gz"];
       hash = "02xr36mhmrkpzwhnn4ngi841lsijgwsz2c9jflpdhn3zwq8djc5y";

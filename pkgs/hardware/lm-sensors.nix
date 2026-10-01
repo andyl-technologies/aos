@@ -75,7 +75,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep the exact release until a broader upstream compatibility policy is verified.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/hramrach/lm-sensors/archive/refs/tags/${tag}.tar.gz"];

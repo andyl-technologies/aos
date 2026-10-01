@@ -113,7 +113,9 @@ in
       };
     };
 
-    inherit version;
+    # GnuPG does not guarantee unchanged command-line options.
+    # https://gnupg.org/software/gpgme/index.html
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

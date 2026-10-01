@@ -127,7 +127,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://download.gnome.org/sources/gdk-pixbuf/2.44/gdk-pixbuf-${version}.tar.xz"];
       hash = "0g5saar4zk8kcl6336kzkr336fcclikb9d6l3kl146ln2aam57wi";

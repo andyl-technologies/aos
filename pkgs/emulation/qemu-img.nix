@@ -90,7 +90,11 @@ in
       };
     };
 
-    inherit version;
+    # Inherit the QEMU family policy without prefixing its normalized version twice.
+    version =
+      if (qemu.versionRequirement or null) == null
+      then version
+      else qemu.versionRequirement;
     src = null;
 
     # qemu is only the source of the already-built utility. The scrub phase

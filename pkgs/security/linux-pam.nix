@@ -118,7 +118,10 @@ in
       };
     };
 
-    inherit version;
+    # Pin configuration and PAM module semantics independently of the core ABI.
+    # Upstream patch releases can change pam_unix behavior.
+    # https://raw.githubusercontent.com/linux-pam/linux-pam/master/NEWS
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

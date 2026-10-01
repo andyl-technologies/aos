@@ -132,7 +132,9 @@ in
       };
     };
 
-    inherit version;
+    # Exchanging JSON types requires matching versions and ABI configuration.
+    # https://json.nlohmann.me/features/namespace/
+    version = "=${version}";
 
     src = upstream.components.main.sources.source;
     update = upstream.update;

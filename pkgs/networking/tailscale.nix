@@ -93,7 +93,10 @@ in
       };
     };
 
-    inherit version src;
+    inherit src;
+    # A major-only range also admits odd-minor unstable releases.
+    # https://tailscale.com/docs/reference/tailscale-client-versions
+    version = "=${version}";
 
     module = ./_tailscale;
     moduleDeps = [aos-runtime-checks service-management];

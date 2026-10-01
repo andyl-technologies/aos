@@ -138,7 +138,8 @@ in
       };
     };
 
-    version = "16.2.0";
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=16.2.0";
 
     # No fetchurl source — we use builtins.fetchTarball inline
     src = null;

@@ -103,7 +103,9 @@ in
       };
     };
 
-    inherit version;
+    # Upstream removes package features within major 2, including 2.16 plans.
+    # https://github.com/GNOME/libxml2/blob/master/NEWS
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

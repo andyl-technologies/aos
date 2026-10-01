@@ -88,7 +88,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://www.x.org/releases/individual/doc/xorg-sgml-doctools-${version}.tar.xz"];
       hash = "0vvdnl1x82mr2phcq9z6dg94mas56zdmbm6lmkaqjkkbf3058p8a";

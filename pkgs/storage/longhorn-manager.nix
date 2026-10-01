@@ -79,7 +79,9 @@ in
       };
     };
 
-    inherit version;
+    # Pin the coordinated Longhorn release; supported upgrades cannot skip minors.
+    # https://longhorn.io/docs/1.12.1/deploy/upgrade/
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

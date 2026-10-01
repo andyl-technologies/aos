@@ -108,7 +108,10 @@ in
       };
     };
 
-    inherit version src;
+    # Any upstream release may introduce breaking type-checking changes.
+    # https://github.com/facebook/pyrefly#version-policy
+    version = "=${version}";
+    inherit src;
 
     cargoDeps = fetchCargoVendor {
       inherit src;

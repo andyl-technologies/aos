@@ -1260,7 +1260,9 @@ in
       };
     };
 
-    inherit version src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
+    inherit src;
 
     bazel = buildBazel;
     jdk = buildJdk;

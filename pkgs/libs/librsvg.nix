@@ -124,7 +124,10 @@ in
         ];
       };
     };
-    inherit (sources) version src;
+    inherit (sources) src;
+    # Micro versions >=90 are beta releases, outside the stable release streams.
+    # https://gnome.pages.gitlab.gnome.org/librsvg/devel-docs/supported_versions.html
+    version = "=${sources.version}";
     passthru.evidenceSources = [sources.src sources.cargoDeps];
 
     buildDeps = [

@@ -81,7 +81,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/dloebl/cgif/archive/refs/tags/v${version}.tar.gz"];
       hash = "sha256-3MdzHpdO5323XfJsmayk2V8Ryi0mfYcNQrzh4NHh518=";

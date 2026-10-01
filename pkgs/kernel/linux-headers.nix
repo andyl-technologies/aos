@@ -98,7 +98,9 @@ in
       };
     };
 
-    inherit (linuxSource) version src;
+    inherit (linuxSource) src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${linuxSource.version}";
     update = linuxSource.updateFor "linux-headers";
 
     buildDeps = [gnumake];

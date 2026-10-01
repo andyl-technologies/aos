@@ -127,7 +127,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://storage.googleapis.com/aom-releases/libaom-${version}.tar.gz"];
       hash = "15mgh5824aa6c9dwmrqzm3qm0qmha87054dnn5dwi2q7rj7c627a";

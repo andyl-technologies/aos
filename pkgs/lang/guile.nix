@@ -76,7 +76,9 @@ in
       };
     };
 
-    inherit version;
+    # Guile preserves API/ABI within its major.minor effective-version series.
+    # https://www.gnu.org/s/guile/manual/guile.html#Parallel-Installations
+    version = "~${version}";
 
     src = fetchurl {
       urls = ["https://ftp.gnu.org/gnu/guile/guile-${version}.tar.xz"];

@@ -107,7 +107,9 @@ in
       };
     };
 
-    inherit version;
+    # BoringSSL does not promise a stable API or ABI.
+    # https://boringssl.googlesource.com/boringssl/+/HEAD/PORTING.md
+    version = "=${version}";
     cacheCCompilers = true;
 
     src = fetchurl {

@@ -119,7 +119,9 @@ in
         ];
       };
     };
-    inherit version src;
+    inherit src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     passthru.evidenceSources = [src fallbackFontFixture fallbackFontLicense];
 
     buildDeps = [buildPackages.meson buildPackages.ninja buildPackages.python3 buildPackages.pkg-config buildPackages.gobject-introspection buildPackages.gtk-doc];

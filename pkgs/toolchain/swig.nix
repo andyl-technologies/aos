@@ -89,7 +89,7 @@ in
       };
     };
 
-    inherit version;
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/swig/swig/archive/refs/tags/v${version}.tar.gz"];
       hash = "sha256-3SGaDIlHr+Y7gYiSMEOQQnwu5/bt+ho3hT1O/YkZgr4=";

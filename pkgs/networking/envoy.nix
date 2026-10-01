@@ -1152,7 +1152,10 @@ in
       };
     };
 
-    inherit version src;
+    inherit src;
+    # Deprecated configuration can become fatal without a major release.
+    # https://www.envoyproxy.io/docs/envoy/latest/faq/configuration/deprecation
+    version = "=${version}";
 
     bazel = buildBazel;
     jdk = buildJdk;

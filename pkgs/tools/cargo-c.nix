@@ -151,7 +151,9 @@ in
         ];
       };
     };
-    inherit (sources) version src cargoDeps;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${sources.version}";
+    inherit (sources) src cargoDeps;
     passthru.evidenceSources = [sources.archive sources.lockfile sources.cargoDeps];
     buildDeps = [buildPackages.pkg-config buildPackages.cmake];
     runtimeDeps = [openssl curl libgit2 libssh2 zlib];

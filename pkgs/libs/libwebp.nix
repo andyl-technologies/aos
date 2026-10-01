@@ -118,7 +118,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-${version}.tar.gz"];
       hash = "0r25ikisj6chsgn4fwxszx629kv476l2lk1dk08zsa86pw4p1az4";

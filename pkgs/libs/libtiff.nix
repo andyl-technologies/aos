@@ -124,7 +124,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://download.osgeo.org/libtiff/tiff-${version}.tar.xz"];
       hash = "126v5mkgn5k490z56ix2m0xpg27542djgim53jdp351hz72g15j9";

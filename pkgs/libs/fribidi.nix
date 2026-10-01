@@ -64,7 +64,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/fribidi/fribidi/releases/download/v${version}/fribidi-${version}.tar.xz"];
       hash = "0p50krd2mn244y5fqw5li9623qq9lf40wbxyj6g4fh2x4ddxw70v";

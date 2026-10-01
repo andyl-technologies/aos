@@ -80,7 +80,9 @@ in
       };
     };
 
-    inherit version src cargoDeps;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
+    inherit src cargoDeps;
 
     buildDeps = [pkg-config];
     runtimeDeps = [pcre2];

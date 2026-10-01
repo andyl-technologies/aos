@@ -91,7 +91,7 @@ in
         ];
       };
     };
-    inherit version;
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://download.gnome.org/sources/vala/0.56/vala-${version}.tar.xz"];
       hash = "1mdrvxx0j2sv7g1swqp1v3mznns5c3pwk5v77m01prhdrjzwpmss";

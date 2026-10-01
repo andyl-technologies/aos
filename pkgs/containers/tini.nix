@@ -67,7 +67,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/krallin/tini/archive/refs/tags/v${version}.tar.gz"];

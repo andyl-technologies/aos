@@ -92,7 +92,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/vim/vim/archive/refs/tags/v${version}.tar.gz"];

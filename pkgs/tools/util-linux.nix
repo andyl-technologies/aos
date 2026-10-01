@@ -135,7 +135,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     # Mounting filesystems does not require the optional Python bindings.
     # Keep those bindings available without retaining Python in boot images.
     outputs = ["out" "python"];

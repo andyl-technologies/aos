@@ -28,7 +28,11 @@ in
       role = "public-package";
     };
     pname = "zfstools-db";
-    version = zfstools.version;
+    # This companion inherits the snapshot tools' release policy.
+    version =
+      if zfstools.versionRequirement == null
+      then zfstools.version
+      else zfstools.versionRequirement;
     qualification.packageProbe = lib.qualification.commandProbe {
       primary = {
         input = "A request for the database-enabled snapshot command's usage.";

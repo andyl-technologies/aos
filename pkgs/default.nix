@@ -325,23 +325,25 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     package = callPackage (./base + "/${name}.nix") {
       mkDerivation = attrs: attrs;
     };
+    release = packageVersions.normalize package.version;
     bootstrap = stdenv.${name};
     version = (builtins.parseDrvName bootstrap.name).version;
     annotated =
       (withDistributionMeta package.meta bootstrap)
       // {
         inherit version;
+        inherit (release) versionRequirement;
         pname = name;
         catalogName = name;
       };
   in
-    assert version == package.version;
+    assert version == release.version;
       if !(package ? qualification)
       then annotated
       else
         withQualification {
           packageName = name;
-          inherit version;
+          version = package.version;
           packageProbe = package.qualification.packageProbe;
         }
         annotated;
@@ -391,6 +393,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     packageProbe,
     platformSupport ? null,
   }: package: let
+    release = packageVersions.normalize version;
     normalized = lib.qualification.normalizePackageProbe packageProbe;
     # Giving a selected derivation output its own public package coordinate
     # creates one logical payload, rather than borrowing its parent's siblings.
@@ -411,7 +414,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       payload
       // {
         catalogName = packageName;
-        inherit version;
+        inherit (release) version versionRequirement;
         qualification.packageProbe = normalized;
       };
     result =
@@ -421,7 +424,14 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         platformSupport = lib.packagePlatform.normalize "package '${packageName}' platformSupport" platformSupport;
       };
   in
-    builtins.deepSeq normalized (withNativeArtifacts result);
+    # A qualified alias may start from a package that already has companions.
+    # Regenerate them with this alias's release policy and identity.
+    builtins.deepSeq normalized (withNativeArtifacts (builtins.removeAttrs result [
+      "deployment"
+      "documentation"
+      "deploymentArtifact"
+      "documentationArtifact"
+    ]));
 
   # Use stdenv's mkDerivation (includes cc-wrapper and tools in PATH),
   # wrapped to inject nuke-references into every package's buildDeps so
@@ -2311,7 +2321,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             target = [];
             role = "public-package";
           };
-          version = "2.39.0";
+          # Public module compatibility stays at this release pending review.
+          version = "=2.39.0";
           packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
@@ -2450,7 +2461,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             ];
             role = "public-package";
           };
-          version = "2.41.0";
+          # No broader interface guarantee is assumed for the tool suite.
+          version = "=2.41.0";
           packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];
@@ -2781,7 +2793,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             target = [];
             role = "public-package";
           };
-          version = "2.39.0";
+          # The selected libc output inherits its owning package policy.
+          version = self.glibc.versionRequirement;
           packageProbe = lib.qualification.commandProbe {
             "primary" = {
               "artifacts" = [];

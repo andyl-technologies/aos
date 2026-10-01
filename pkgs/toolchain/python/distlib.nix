@@ -65,7 +65,7 @@ in
       };
     };
 
-    inherit version;
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

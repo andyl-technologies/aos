@@ -77,7 +77,9 @@ in
       };
     };
 
-    inherit version;
+    # GNU has introduced incompatible CLI changes within the 4.x series.
+    # https://lists.gnu.org/archive/html/info-gnu/2015-12/msg00014.html
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/findutils/findutils-${version}.tar.xz"];

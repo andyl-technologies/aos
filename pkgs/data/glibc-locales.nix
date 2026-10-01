@@ -98,7 +98,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep the exact release until a broader upstream compatibility policy is verified.
+    version = "=${version}";
 
     # localedef is a build-time generator; the emitted unarchived locale tree
     # is data consumed by the target libc.

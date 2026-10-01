@@ -89,7 +89,9 @@ in
       };
     };
 
-    inherit version;
+    # Configuration directives can be removed within the 1.x series.
+    # https://nginx.org/en/CHANGES
+    version = "=${version}";
 
     src = fetchurl {
       urls = [

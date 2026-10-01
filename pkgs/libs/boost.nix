@@ -126,7 +126,8 @@ in
       };
     };
 
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     # Split outputs: `out` (default) carries only the shared libraries
     # (~5 MiB); `dev` carries the headers and CMake package files (~90 MiB).

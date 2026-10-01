@@ -241,7 +241,7 @@ in
       };
     };
 
-    version = icedteaVersion;
+    version = "=${icedteaVersion}";
 
       src = icedteaSrc;
 

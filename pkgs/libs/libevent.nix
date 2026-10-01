@@ -102,7 +102,9 @@ in
       };
     };
 
-    inherit version;
+    # Upstream preserves binary compatibility within each stable release series.
+    # https://github.com/libevent/libevent/blob/master/whatsnew-2.1.txt
+    version = "~${version}";
 
     src = fetchurl {
       urls = [

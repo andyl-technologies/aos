@@ -120,7 +120,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://download.videolan.org/pub/videolan/dav1d/${version}/dav1d-${version}.tar.xz"];
       hash = "1id52hairrw4axf8725jld3ncfy1r8jsp4ck8m28vf4yqsvicrk8";

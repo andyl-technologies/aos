@@ -86,7 +86,9 @@ in
         ];
       };
     };
-    inherit version src;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
+    inherit src;
     buildDeps = [buildPackages.gnumake buildPackages.libxslt buildPackages.docbook-xml buildPackages.docbook-xsl];
     runtimeDeps = [];
 

@@ -98,7 +98,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://releases.pagure.org/xmlto/xmlto-${version}.tar.bz2"];
       hash = "08ag445xn2hisk28bxdfmva8ig49czc7lpgqqhk0817ry3ldh030";

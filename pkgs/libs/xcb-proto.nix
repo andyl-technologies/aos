@@ -100,7 +100,8 @@ in
         ];
       };
     };
-    inherit version;
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://www.x.org/releases/individual/proto/xcb-proto-${version}.tar.xz"];
       hash = "130lc8jx43s83496nc8jn47zixjcp4abgsz69pvrjiqg279aq6rc";
