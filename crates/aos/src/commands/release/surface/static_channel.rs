@@ -34,8 +34,9 @@
 
 use anyhow::{Context as _, Result, bail};
 use aos_cache::backend::{ConditionalOutcome, Expectation, MUTABLE_CACHE_CONTROL, ObjectVersion};
-use aos_package::registry::channel::partition_path;
-use aos_package::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
+use aos_registry_surface::channel::{
+    PartitionTag, next_generation, parse_partition_target, partition_path, partition_range,
+};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::plan::SurfaceKind;
@@ -131,14 +132,15 @@ impl StaticSurface {
             .context("static channel advance requires the release tag object")?;
         self.verify_identity_before_mutation().await?;
 
+        let buckets = partition_range(request.first_partition, request.last_partition)?;
         let record = self.commit_generation(request).await?;
         let tag = self
             .sign_partition_tag(request, tag_object, &record)
             .await?;
         let source = temporary_file(&tag)?;
         let tag_sha256 = Sha256Digest::of_bytes(&tag).hex();
-        for bucket in request.first_partition..=request.last_partition {
-            let path = partition_path(channel, u8::try_from(bucket)?);
+        for bucket in &buckets {
+            let path = partition_path(channel, *bucket);
             self.backend
                 .put_static_file(
                     &path,
@@ -152,15 +154,10 @@ impl StaticSurface {
                 .with_context(|| format!("uploading channel partition {path}"))?;
         }
 
-        let mut objects = (request.first_partition..=request.last_partition)
-            .map(|bucket| {
-                Ok(object_for(
-                    &partition_path(channel, u8::try_from(bucket)?),
-                    &tag,
-                    true,
-                ))
-            })
-            .collect::<Result<Vec<_>>>()?;
+        let mut objects = buckets
+            .iter()
+            .map(|bucket| object_for(&partition_path(channel, *bucket), &tag, true))
+            .collect::<Vec<_>>();
         objects.push(object_for(
             &generation_path(channel),
             &canonical::to_vec(&record)?,
@@ -220,10 +217,7 @@ impl StaticSurface {
         let record = ChannelGeneration {
             schema_version: CHANNEL_GENERATION.to_owned(),
             channel: channel.to_owned(),
-            generation: request
-                .prior_generation
-                .checked_add(1)
-                .context("channel generation overflowed")?,
+            generation: next_generation(request.prior_generation)?,
             prior_generation: request.prior_generation,
             first_partition: request.first_partition,
             last_partition: request.last_partition,
@@ -269,7 +263,8 @@ impl StaticSurface {
         let committed = humantime::parse_rfc3339(&record.committed_at)?
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs();
-        let payload = partition_tag_payload(request, tag_object, committed);
+        let partition = partition_tag_payload(request, tag_object, committed)?;
+        let payload = partition.payload();
 
         let nonce = fresh_nonce();
         let signing = SigningRequest {
@@ -294,22 +289,24 @@ impl StaticSurface {
             context: SigningContext::Git {
                 object_kind: "tag".to_owned(),
             },
-            payload_digest: Sha256Digest::of_bytes(&payload),
+            payload_digest: Sha256Digest::of_bytes(payload),
             approval_policy_digest: request.plan.restricted_operator_policy_digest,
         };
-        let (_, armored) = signers
-            .signer
-            .sign_sshsig(
-                &signing,
-                &payload,
-                &key.trust_line,
-                "git",
-                &key.verification_identity,
-            )
-            .await?;
-        let mut signed = payload;
-        signed.extend_from_slice(armored.as_bytes());
-        Ok(signed)
+        partition
+            .sign_with_async(|payload| async move {
+                let (_, armored) = signers
+                    .signer
+                    .sign_sshsig(
+                        &signing,
+                        &payload,
+                        &key.trust_line,
+                        "git",
+                        &key.verification_identity,
+                    )
+                    .await?;
+                Ok(armored)
+            })
+            .await
     }
 
     /// Reads every partition of a range and checks its tag chain target.
@@ -320,8 +317,8 @@ impl StaticSurface {
         let tag_object = expected
             .release_tag_object
             .context("static channel read-back requires the release tag object")?;
-        for bucket in expected.first_partition..=expected.last_partition {
-            let path = partition_path(expected.channel, u8::try_from(bucket)?);
+        for bucket in partition_range(expected.first_partition, expected.last_partition)? {
+            let path = partition_path(expected.channel, bucket);
             let bytes = readback::fetch_small(
                 &self.public,
                 &self.readback,
@@ -342,17 +339,22 @@ fn partition_tag_payload(
     request: &ChannelAdvance<'_>,
     tag_object: &str,
     committed: u64,
-) -> Vec<u8> {
+) -> Result<PartitionTag> {
     let channel = &request.destination.channel;
-    format!(
-        "object {tag_object}\ntype tag\ntag {channel}\ntagger {TAGGER} {committed} +0000\n\nAOS channel {channel} ring {} partitions {}..={}\nAOS-Release: {}\nAOS-Destination: {}\n",
+    let message = format!(
+        "AOS channel {channel} ring {} partitions {}..={}\nAOS-Release: {}\nAOS-Destination: {}",
         request.ring,
         request.first_partition,
         request.last_partition,
         request.plan.release_id,
         request.destination.name,
+    );
+    PartitionTag::new(
+        channel,
+        tag_object,
+        &format!("{TAGGER} {committed} +0000"),
+        &message,
     )
-    .into_bytes()
 }
 
 /// Checks a served partition's name binding and release-tag target.
@@ -360,12 +362,7 @@ fn partition_tag_payload(
 /// The signature was verified against the registry trust line when the tag
 /// was signed; clients verify it again through the full tag chain.
 fn verify_partition(bytes: &[u8], channel: &str, tag_object: &str) -> Result<()> {
-    let text = std::str::from_utf8(bytes).context("channel partition is not UTF-8")?;
-    let tag = parse_tag_object(text)?;
-    verify_name_binding(&tag, channel)?;
-    if tag.target_type != TagTarget::Tag || tag.object != tag_object {
-        bail!("channel partition does not target the release tag object");
-    }
+    parse_partition_target(bytes, channel, Some(tag_object))?;
     Ok(())
 }
 

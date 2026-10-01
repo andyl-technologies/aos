@@ -21,11 +21,14 @@
 //!   (persisted sync state).
 
 pub mod channel;
+pub mod container_stage;
 pub mod dumb_http;
 pub mod fetch;
 pub mod git;
+pub mod hub_stage;
 pub mod keys;
 pub mod membership;
+pub mod hub_publication;
 pub mod nixcache;
 pub mod objectstore;
 pub mod pack;
@@ -35,11 +38,14 @@ pub mod release;
 pub(crate) mod repo;
 pub mod sb_certs;
 pub mod state;
+pub mod staging;
 pub mod static_upload;
+mod static_stage;
 pub mod store;
 pub mod support;
 pub(crate) mod thinpack;
 pub mod tuf;
+pub mod transport;
 mod verified_cache;
 pub mod verify;
 pub mod webgen;

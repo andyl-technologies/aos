@@ -107,7 +107,7 @@ grep -Fq -- '-A systems.server.build.image.qcow2 --no-out-link --dry-run' "$AOS_
 grep -Fq -- '-A containerImages.aos.platforms.x86_64-linux.ociLayout --no-out-link --dry-run' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '-A systems.server.build.toplevel --no-out-link --dry-run' "$AOS_DEV_TEST_LOG"
 bash "$root/aos-dev" release plan --dry-run
-grep -Fxq -- 'release plan --dry-run' "$AOS_DEV_TEST_RELEASE_LOG"
+grep -Fxq -- 'maintain release plan --dry-run' "$AOS_DEV_TEST_RELEASE_LOG"
 grep -Fq -- '-A pkgs.aos --no-out-link' "$AOS_DEV_TEST_LOG"
 if grep -Fq -- 'sharedBuildCache' "$AOS_DEV_TEST_LOG"; then
   echo 'release workflow enabled shared cache' >&2

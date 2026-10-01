@@ -36,6 +36,9 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
   configuration, packages, security, upgrades, operations, and recovery.
 - [AOS Hub documentation](docs/users/aos-hub/) covers its trust model, web,
   API, CLI, native, and Cloudflare deployments.
+- [Registry release stages](docs/registry/release-stages.md) explains unpublished
+  candidate uploads and revision checks. Registry maintainers use `apr release`;
+  AOS qualification and destination orchestration use `aos maintain release`.
 - [Registry operator documentation](docs/users/registry/) covers hosting,
   signing, publishing, staged rollouts, and incident response.
 - [Crucible documentation](docs/users/crucible/) covers deterministic

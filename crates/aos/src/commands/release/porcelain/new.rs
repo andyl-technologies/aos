@@ -1,4 +1,4 @@
-//! `aos release new`: derive the plan request and freeze the plan.
+//! `aos maintain release new`: derive the plan request and freeze the plan.
 //!
 //! The request (`aos.release.plan-request/v1`) comes from the maintainer
 //! configuration plus live state behind [`LiveState`]:

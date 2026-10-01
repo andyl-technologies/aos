@@ -60,7 +60,7 @@ pub(super) struct Driver<'a> {
     /// Open release.
     pub(super) session: &'a Session,
     /// Nix environment for steps that evaluate Nix.
-    pub(super) nix: &'a NixRunner,
+    pub(super) nix: Option<&'a NixRunner>,
     /// Output sink shared with the leaves.
     pub(super) printer: &'a Printer,
 }
@@ -104,6 +104,12 @@ impl Driver<'_> {
         }
     }
 
+    /// Resolves Nix only for source realization and assembly steps.
+    fn nix(&self) -> Result<&NixRunner> {
+        self.nix
+            .context("this release step requires a Nix environment")
+    }
+
     fn build(&self) -> Result<()> {
         let work = &self.session.work;
         build::run(
@@ -112,7 +118,7 @@ impl Driver<'_> {
                 output: work.build(),
                 started_at: now(),
             },
-            self.nix,
+            self.nix()?,
             self.printer,
         )
     }
@@ -141,7 +147,7 @@ impl Driver<'_> {
                 signer_timeout_seconds: IMAGE_SIGNER_TIMEOUT_SECONDS,
                 work: output,
             },
-            self.nix,
+            self.nix()?,
             self.printer,
         )
         .await
@@ -177,11 +183,16 @@ impl Driver<'_> {
         let config = &self.session.config;
         let work = &self.session.work;
         let provenance = keys::single(config, SignerRole::Provenance)?;
+        let registry = keys::single(config, SignerRole::Registry)?;
         let (container_release, container_signature_input) = self.container_inputs();
         finalize_registry::prepare(
             &ReleasePrepareRegistryArgs {
                 plan: work.plan(),
                 build_report: work.build_report(),
+                container_layout: container_release
+                    .as_ref()
+                    .map(|_| work.container().join("layout")),
+                container_repository: None,
                 container_release,
                 container_signature_input,
                 source_registry: work.source_registry(),
@@ -190,6 +201,8 @@ impl Driver<'_> {
                 signer_executable: config.signer.executable.clone(),
                 provenance_key: keys::spec(&provenance),
                 provenance_verification_identity: provenance.verification_identity,
+                registry_key: keys::spec(&registry),
+                registry_verification_identity: registry.verification_identity,
                 signer_timeout_seconds: config.signer.timeout_seconds,
             },
             self.printer,
@@ -317,7 +330,7 @@ impl Driver<'_> {
                 completed_at: now(),
                 output: work.assembled(),
             },
-            self.nix,
+            self.nix()?,
             self.printer,
         )
     }
@@ -479,19 +492,7 @@ impl Driver<'_> {
 
     /// Returns the receipt of the staging publication the journal recorded.
     pub(super) fn staging_receipt(&self, observation: &Observation) -> Result<PathBuf> {
-        let (_, journal) = observation.require_journal()?;
-        let plan = &self.session.plan;
-        let name = journal
-            .entries
-            .iter()
-            .filter(|entry| entry.new_state == ReleaseState::Published)
-            .filter_map(|entry| entry.destination.as_deref())
-            .find(|name| {
-                plan.destination(name)
-                    .is_ok_and(|destination| destination.surface == SurfaceRole::Staging)
-            })
-            .context("no staging destination is published yet")?;
-        Ok(self.session.work.publication_receipt(name))
+        staging_receipt(self.session, observation)
     }
 
     /// Reads the destination channel's current generation from its surface.
@@ -526,70 +527,15 @@ impl Driver<'_> {
         destination: &PlannedDestination,
         observation: &Observation,
     ) -> Result<()> {
-        let session = self.session;
-        let config = &session.config;
-        let work = &session.work;
-        let name = destination.name.as_str();
-        let (journal, replayed) = observation.require_journal()?;
-        let production = destination.surface == SurfaceRole::Production;
-        // The first publication on a surface carries its composed TUF
-        // metadata; a surface already holding the release is only verified.
-        let surface = if replayed
-            .summary
-            .surface_holds_publication(destination.surface)
-        {
-            None
-        } else {
-            let overlay = work.surface_overlay(name);
-            if !overlay.is_dir() {
-                bail!(
-                    "{} has no composed surface overlay at {}",
-                    name,
-                    work.relative(&overlay)
-                );
-            }
-            Some(overlay)
-        };
-        // A composed overlay is admitted only against the independent TUF
-        // root trust; the TUF steps that composed it already required [tuf].
-        let (trusted_root_keys, trusted_root_threshold) = match (&surface, &config.tuf) {
-            (None, _) => (Vec::new(), 1),
-            (Some(_), Some(tuf)) => (tuf.trusted_root_keys.clone(), tuf.trusted_root_threshold),
-            (Some(_), None) => bail!("publishing a composed surface requires the [tuf] section"),
-        };
-        let args = ReleasePublishArgs {
-            to: name.to_owned(),
-            bundle: work.bundle(),
-            journal: journal.clone(),
-            surface,
-            trusted_root_keys,
-            trusted_root_threshold,
-            trusted_keys: keys::trusted(config)?,
-            receipt_keys: keys::receipt(config, destination.surface)?,
-            predecessor_receipt: production
-                .then(|| self.staging_receipt(observation))
-                .transpose()?,
-            predecessor_receipt_keys: if production {
-                keys::receipt(config, SurfaceRole::Staging)?
-            } else {
-                Vec::new()
-            },
-            evidence: if production {
-                vec![work.phase(name, Phase::Staging).join("signed")]
-            } else {
-                Vec::new()
-            },
-            qualification_keys: if production {
-                keys::role_specs(config, SignerRole::Qualification)?
-            } else {
-                Vec::new()
-            },
-            fitness: ReleaseFitnessInputArgs::default(),
-            token: None,
-            config: Some(session.config_path.clone()),
-            output: work.published(name),
-        };
-        super::super::publish::run(&args, self.printer).await
+        publish_destination(
+            self.session,
+            destination,
+            observation,
+            false,
+            None,
+            self.printer,
+        )
+        .await
     }
 
     async fn advance_ring(
@@ -698,4 +644,120 @@ fn unix_seconds() -> Result<i64> {
         .duration_since(SystemTime::UNIX_EPOCH)
         .context("system clock is before the Unix epoch")?;
     Ok(i64::try_from(elapsed.as_secs())?)
+}
+
+/// Uploads or publishes one destination without constructing a Nix environment.
+pub(super) async fn publish_destination(
+    session: &Session,
+    destination: &PlannedDestination,
+    observation: &Observation,
+    stage_only: bool,
+    stage_revision: Option<u64>,
+    printer: &Printer,
+) -> Result<()> {
+    let args = publication_args(
+        session,
+        destination,
+        observation,
+        stage_only,
+        stage_revision,
+    )?;
+    super::super::publish::run(&args, printer).await
+}
+
+/// Constructs the same verified leaf inputs for staging and explicit publication.
+pub(super) fn publication_args(
+    session: &Session,
+    destination: &PlannedDestination,
+    observation: &Observation,
+    stage_only: bool,
+    stage_revision: Option<u64>,
+) -> Result<ReleasePublishArgs> {
+    let config = &session.config;
+    let work = &session.work;
+    let name = destination.name.as_str();
+    let (journal, replayed) = observation.require_journal()?;
+    let production = destination.surface == SurfaceRole::Production;
+    // The first publication on a surface carries its composed TUF
+    // metadata; a surface already holding the release is only verified.
+    let surface = if replayed
+        .summary
+        .surface_holds_publication(destination.surface)
+    {
+        None
+    } else {
+        let overlay = work.surface_overlay(name);
+        if !overlay.is_dir() {
+            bail!(
+                "{} has no composed surface overlay at {}",
+                name,
+                work.relative(&overlay)
+            );
+        }
+        Some(overlay)
+    };
+    // A composed overlay is admitted only against the independent TUF
+    // root trust; the TUF steps that composed it already required [tuf].
+    let (trusted_root_keys, trusted_root_threshold) = match (&surface, &config.tuf) {
+        (None, _) => (Vec::new(), 1),
+        (Some(_), Some(tuf)) => (tuf.trusted_root_keys.clone(), tuf.trusted_root_threshold),
+        (Some(_), None) => bail!("publishing a composed surface requires the [tuf] section"),
+    };
+    Ok(ReleasePublishArgs {
+        stage_revision,
+        stage_only,
+        staged_upload: (!stage_only && work.staged_upload_record(name).is_file())
+            .then(|| work.staged_upload(name)),
+        to: name.to_owned(),
+        bundle: work.bundle(),
+        journal: journal.clone(),
+        surface,
+        trusted_root_keys,
+        trusted_root_threshold,
+        trusted_keys: keys::trusted(config)?,
+        receipt_keys: keys::receipt(config, destination.surface)?,
+        predecessor_receipt: production
+            .then(|| staging_receipt(session, observation))
+            .transpose()?,
+        predecessor_receipt_keys: if production {
+            keys::receipt(config, SurfaceRole::Staging)?
+        } else {
+            Vec::new()
+        },
+        evidence: if production {
+            vec![work.phase(name, Phase::Staging).join("signed")]
+        } else {
+            Vec::new()
+        },
+        qualification_keys: if production {
+            keys::role_specs(config, SignerRole::Qualification)?
+        } else {
+            Vec::new()
+        },
+        fitness: ReleaseFitnessInputArgs::default(),
+        token: None,
+        config: Some(session.config_path.clone()),
+        output: if stage_only {
+            work.staged_upload(name)
+        } else {
+            work.published(name)
+        },
+    })
+}
+
+/// Returns the verified journal's staging publication receipt.
+fn staging_receipt(session: &Session, observation: &Observation) -> Result<PathBuf> {
+    let (_, journal) = observation.require_journal()?;
+    let plan = &session.plan;
+    let name = journal
+        .entries
+        .iter()
+        .filter(|entry| entry.new_state == ReleaseState::Published)
+        .filter_map(|entry| entry.destination.as_deref())
+        .find(|name| {
+            plan.destination(name)
+                .is_ok_and(|destination| destination.surface == SurfaceRole::Staging)
+        })
+        .context("no staging destination is published yet")?;
+    Ok(session.work.publication_receipt(name))
 }

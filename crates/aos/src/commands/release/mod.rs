@@ -2,10 +2,10 @@
 //!
 //! Effectful filesystem, Nix, signer, Git, Hub, and static-origin adapters
 //! live below this module; the `aos-release` crate remains the sole semantic
-//! contract. The [`porcelain`](self) (`aos release new / advance / status /
+//! contract. The [`porcelain`](self) (`aos maintain release new / advance / publish / status /
 //! explain / review / fitness`) drives a release from the maintainer
 //! configuration and a work directory by calling the leaf commands' `run`
-//! functions in process. `aos release step ...` exposes each operation as a
+//! functions in process. `aos maintain release step ...` exposes each operation as a
 //! leaf command:
 //!
 //! - planning and build: [`plan`](self) freezes a plan, `build`, `assemble`,
@@ -29,6 +29,7 @@ mod capture;
 mod channel;
 mod compose_surface;
 mod config;
+mod container_binding;
 mod contract;
 mod finalize;
 mod finalize_cache;
@@ -74,7 +75,8 @@ pub fn requires_nix(command: &ReleaseCommand) -> bool {
         // `new` exports the contract and plans; `advance` builds, finalizes
         // images, and assembles through Nix.
         ReleaseCommand::New(_) | ReleaseCommand::Advance(_) => true,
-        ReleaseCommand::Status(_)
+        ReleaseCommand::Publish(_)
+        | ReleaseCommand::Status(_)
         | ReleaseCommand::Explain(_)
         | ReleaseCommand::Review(_)
         | ReleaseCommand::Fitness { .. } => false,

@@ -18,7 +18,7 @@
 //! `/nix/store` is re-rooted onto the requested store dir so the published
 //! narinfos describe the paths consumers will actually install.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 #[cfg(unix)]
 use std::ffi::CString;
 use std::fs::File;
@@ -94,7 +94,7 @@ pub struct StaticCacheReport {
 pub struct StaticCacheGcReport {
     /// Number of narinfo/NAR pairs selected by the age policy.
     pub candidates: usize,
-    /// Number of files deleted (two per pair when both files exist).
+    /// Number of files deleted, counting a shared NAR only once.
     pub deleted_files: usize,
     /// Bytes deleted from the staging directory.
     pub deleted_bytes: u64,
@@ -927,6 +927,26 @@ pub fn gc_static_cache(
     max_age_days: u64,
     dry_run: bool,
 ) -> Result<StaticCacheGcReport> {
+    gc_static_cache_retaining_paths(output_dir, max_age_days, dry_run, &BTreeSet::new())
+}
+
+/// Collects aged cache pairs while preserving exact candidate inventory paths.
+///
+/// A protected narinfo or NAR preserves its whole pair. NAR bytes referenced by
+/// another protected or recent narinfo remain available even when an older
+/// narinfo is removed. Malformed metadata prevents NAR deletion because its
+/// reachability cannot be established safely.
+///
+/// # Errors
+///
+/// Returns an error when the cache cannot be scanned or an eligible file cannot
+/// be inspected or removed. Retention must be supplied under the stage lock.
+pub fn gc_static_cache_retaining_paths(
+    output_dir: &Path,
+    max_age_days: u64,
+    dry_run: bool,
+    retained_paths: &BTreeSet<String>,
+) -> Result<StaticCacheGcReport> {
     if !output_dir.exists() {
         return Ok(StaticCacheGcReport::default());
     }
@@ -937,16 +957,56 @@ pub fn gc_static_cache(
         ))
         .unwrap_or(SystemTime::UNIX_EPOCH);
     let mut report = StaticCacheGcReport::default();
+    let cache_root = std::fs::canonicalize(output_dir)?;
+    let mut candidates = Vec::new();
+    let mut referenced_nars = BTreeMap::<PathBuf, usize>::new();
+    let mut uncertain_references = false;
 
     for (hash, narinfo_path) in list_narinfo_files(output_dir)? {
+        if !std::fs::symlink_metadata(&narinfo_path)?.is_file() {
+            uncertain_references = true;
+            continue;
+        }
         let text = std::fs::read_to_string(&narinfo_path)
             .with_context(|| format!("reading {}", narinfo_path.display()))?;
         let parsed = match aos_core::nar::info::parse(&text) {
             Ok(parsed) => parsed,
-            Err(_) => continue,
+            Err(_) => {
+                uncertain_references = true;
+                continue;
+            }
         };
-        let nar_path = output_dir.join(parsed.url.trim_start_matches('/'));
-        if !nar_path.is_file() {
+        let relative_nar = Path::new(&parsed.url);
+        if !parsed.url.starts_with("nar/")
+            || parsed.url.contains('\\')
+            || parsed
+                .url
+                .split('/')
+                .any(|part| part.is_empty() || matches!(part, "." | ".."))
+            || relative_nar.components().count() != 2
+            || relative_nar
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+        {
+            uncertain_references = true;
+            continue;
+        }
+        let nar_path = output_dir.join(relative_nar);
+        if !nar_path.exists() {
+            continue;
+        }
+        if !std::fs::symlink_metadata(&nar_path)?.is_file()
+            || !std::fs::symlink_metadata(output_dir.join("nar"))?.is_dir()
+            || !std::fs::canonicalize(&nar_path)?.starts_with(&cache_root)
+        {
+            uncertain_references = true;
+            continue;
+        }
+        *referenced_nars.entry(nar_path.clone()).or_default() += 1;
+
+        if retained_paths.contains(&format!("{hash}.narinfo"))
+            || retained_paths.contains(&parsed.url)
+        {
             continue;
         }
         if !older_than(&narinfo_path, cutoff)? || !older_than(&nar_path, cutoff)? {
@@ -954,21 +1014,39 @@ pub fn gc_static_cache(
         }
 
         report.candidates += 1;
-        report.hashes.push(hash);
+        report.hashes.push(hash.clone());
         let narinfo_bytes = std::fs::metadata(&narinfo_path)
             .with_context(|| format!("stat {}", narinfo_path.display()))?
             .len();
         let nar_bytes = std::fs::metadata(&nar_path)
             .with_context(|| format!("stat {}", nar_path.display()))?
             .len();
-        if !dry_run {
-            std::fs::remove_file(&narinfo_path)
-                .with_context(|| format!("removing {}", narinfo_path.display()))?;
-            std::fs::remove_file(&nar_path)
-                .with_context(|| format!("removing {}", nar_path.display()))?;
-            report.deleted_files += 2;
-            report.deleted_bytes += narinfo_bytes + nar_bytes;
+        candidates.push((narinfo_path, nar_path, narinfo_bytes, nar_bytes));
+    }
+
+    if dry_run {
+        return Ok(report);
+    }
+
+    let mut removable_nars = BTreeMap::new();
+    for (narinfo_path, nar_path, narinfo_bytes, nar_bytes) in candidates {
+        std::fs::remove_file(&narinfo_path)
+            .with_context(|| format!("removing {}", narinfo_path.display()))?;
+        report.deleted_files += 1;
+        report.deleted_bytes += narinfo_bytes;
+        if let Some(references) = referenced_nars.get_mut(&nar_path) {
+            *references -= 1;
+            if *references == 0 && !uncertain_references {
+                removable_nars.insert(nar_path, nar_bytes);
+            }
         }
+    }
+
+    for (nar_path, nar_bytes) in removable_nars {
+        std::fs::remove_file(&nar_path)
+            .with_context(|| format!("removing {}", nar_path.display()))?;
+        report.deleted_files += 1;
+        report.deleted_bytes += nar_bytes;
     }
 
     Ok(report)
@@ -2182,6 +2260,99 @@ name = "test"
         assert_eq!(report.candidates, 0);
         assert!(source.path().join("abc123.narinfo").exists());
         assert!(source.path().join(&nar_url).exists());
+    }
+
+    fn old_shared_cache_pair(directory: &Path, hash: &str) -> String {
+        let store_path = format!("/nix/store/{hash}-package");
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(b"shared-nar")));
+        let url = "nar/shared.nar.zst";
+        let text = render_static_narinfo(
+            &StaticNarInfoInput {
+                store_path: &store_path,
+                nar_hash: &file_hash,
+                nar_size: 10,
+                references: &[],
+                deriver: None,
+                signatures: &[],
+                file_hash: &file_hash,
+                file_size: 10,
+                compression: NarCompression::Zstd,
+            },
+            "/nix/store",
+            None,
+        )
+        .unwrap();
+        let generated_url = nar_url(&store_path, &file_hash, NarCompression::Zstd).unwrap();
+        std::fs::create_dir_all(directory.join("nar")).unwrap();
+        let narinfo = directory.join(format!("{hash}.narinfo"));
+        std::fs::write(&narinfo, text.replace(&generated_url, url)).unwrap();
+        std::fs::write(directory.join(url), b"shared-nar").unwrap();
+        let old = SystemTime::now() - Duration::from_secs(2 * 24 * 60 * 60);
+        for path in [narinfo, directory.join(url)] {
+            std::fs::File::options()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(old))
+                .unwrap();
+        }
+        url.into()
+    }
+
+    #[test]
+    fn gc_keeps_stage_inventory_pairs_and_shared_nars() {
+        let source = TempDir::new().unwrap();
+        let nar = old_shared_cache_pair(source.path(), "abc123");
+        old_shared_cache_pair(source.path(), "def456");
+        let retained = BTreeSet::from(["abc123.narinfo".to_string()]);
+
+        let report = gc_static_cache_retaining_paths(source.path(), 1, false, &retained).unwrap();
+
+        assert_eq!(report.hashes, vec!["def456"]);
+        assert_eq!(report.deleted_files, 1);
+        assert!(source.path().join("abc123.narinfo").exists());
+        assert!(source.path().join(nar).exists());
+    }
+
+    #[test]
+    fn gc_deletes_shared_nar_once_after_all_old_references_are_removed() {
+        let source = TempDir::new().unwrap();
+        let nar = old_shared_cache_pair(source.path(), "abc123");
+        old_shared_cache_pair(source.path(), "def456");
+
+        let preview = gc_static_cache(source.path(), 1, true).unwrap();
+        assert_eq!(preview.candidates, 2);
+        assert_eq!(preview.deleted_files, 0);
+        let removed = gc_static_cache(source.path(), 1, false).unwrap();
+
+        assert_eq!(removed.deleted_files, 3);
+        assert!(!source.path().join(nar).exists());
+    }
+
+    #[test]
+    fn gc_keeps_nars_referenced_by_recent_or_unreadable_metadata() {
+        let source = TempDir::new().unwrap();
+        let nar = old_shared_cache_pair(source.path(), "abc123");
+        old_shared_cache_pair(source.path(), "def456");
+        std::fs::File::options()
+            .write(true)
+            .open(source.path().join("def456.narinfo"))
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(SystemTime::now()))
+            .unwrap();
+
+        let report = gc_static_cache(source.path(), 1, false).unwrap();
+        assert_eq!(report.deleted_files, 1);
+        assert!(source.path().join(&nar).exists());
+        old_shared_cache_pair(source.path(), "def456");
+        std::fs::write(
+            source.path().join("unreadable.narinfo"),
+            b"invalid metadata",
+        )
+        .unwrap();
+        let report = gc_static_cache(source.path(), 1, false).unwrap();
+        assert_eq!(report.deleted_files, 1);
+        assert!(source.path().join(nar).exists());
     }
 
     #[cfg(unix)]

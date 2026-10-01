@@ -27,7 +27,7 @@
   quote = value: "'" + builtins.replaceStrings ["'"] ["'\\''"] value + "'";
   registryPath = "${registry}/scenarios.json";
   executor = pkgs.writeShellScriptBin name ''
-    exec ${pkgs.aos}/bin/aos release step qualification execute \
+    exec ${pkgs.aos}/bin/aos maintain release step qualification execute \
       --scenarios ${registryPath} \
       --identity ${quote identity} \
       --work-root ${quote workRoot} \

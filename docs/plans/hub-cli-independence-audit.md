@@ -192,7 +192,7 @@ and rejection of an external credential realm. Final combined results are in
 
 ### 5. Keep authoritative release mutations on Hub
 
-`apr channel` authors signed Git rollout state, while `aos release channel`
+`apr channel` authors signed Git rollout state, while `aos maintain release step channel`
 verifies deployment identity and signed receipts before performing a
 production compare-and-swap through Hub
 (`crates/aos/src/commands/release/channel.rs:90`). The latter dependency is
@@ -201,7 +201,7 @@ required for the command's authority and audit guarantees.
 Keep the command families distinct in help and documentation:
 
 - use `apr channel` to create signed portable registry state; and
-- use `aos release channel` to advance the managed production authority and
+- use `aos maintain release step channel` to advance the managed production authority and
   retain release evidence.
 
 ## Completion record

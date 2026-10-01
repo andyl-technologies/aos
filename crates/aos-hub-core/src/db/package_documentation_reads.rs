@@ -156,6 +156,8 @@ mod tests {
         }];
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
+            public_catalog_commit: Some("c".repeat(64)),
+            public_catalog_release: Some("1.0.0".into()),
             name: "Release docs".into(),
             description: None,
             readme: None,
