@@ -168,8 +168,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   all-target Clippy, strict rustdoc and mandatory repository formatting pass.
   Actual hermetic graft and diff gates pass their 25 and five exact cases,
   including large-target sharing and independent overlay point-update parity.
-  The full trunk aggregate still fails native compilation before task-branch
-  merge qualification. — satisfies
+  Native repository prerequisites are now integrated. The full trunk aggregate
+  remains red on the backend retirement compatibility assertion in
+  `index-generation-manifest`; task-branch merge qualification remains pending.
+  — satisfies
   ALG-1 to ALG-14; `checks.terrane.gates.algebra-graft`,
   `checks.terrane.gates.algebra-diff`.
 - [ ] **T-ALG-2** Three-cursor `merge` with conflict values and the
@@ -230,14 +232,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The native fixture binds actual stored plaintext and reopens produced signed
   attributes; recomputation alone leaves producer provenance untrusted.
   The attribute gate requires complete producer-context tests and unavailable
-  evidence retention checks. Its current native compilation fails on the
-  missing repository prerequisite (42 shared import/inference diagnostics);
-  no native derived tests have executed on the trunk. Both mandatory formatting
-  commands, the native library build, and strict native rustdoc pass. The native
-  build still reports 61 shared unused/dead-code warnings; strict Clippy remains
-  unqualified. The aggregate also fails on the missing repository prerequisite.
-  Native gate and joint T-JOB-1 backfill qualification remain
-  pending.
+  evidence retention checks. After reviewed SDK integration, the actual
+  `derived-attr-record` gate passes all 21 core and 22 native tests, including
+  its exact required producer-context and unavailable-evidence selectors.
+  Both mandatory formatting commands, the native library build, and strict
+  native rustdoc pass. Strict native Clippy remains red on 20 production and
+  two test diagnostics for unused integration paths; warnings are not hidden.
+  The aggregate fails the backend retirement compatibility assertion in
+  `index-generation-manifest`. Object-reachability collection under DRV-3 and
+  joint T-JOB-1 backfill under DRV-11 remain incomplete; a passing attribute
+  gate does not qualify those operations.
   — satisfies DRV-1 to DRV-11; `checks.terrane.gates.derived-attr-record`.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
@@ -570,15 +574,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   to the ordering gate as an individual exact selector. Shared manifests,
   lockfiles, Guard, backend and selected-effect interfaces remain unchanged.
   The actual native production build and strict rustdoc now pass. Mandatory
-  repository formatting passes. Native Nextest and all four reference gates
-  stop before execution on three missing repository API imports and 39
-  resulting fixture type-inference diagnostics. The full current-gate aggregate
-  has the same native compilation failure. Strict all-target Clippy also reports
-  unused integration paths and remains red; warnings are not suppressed.
+  repository formatting passes. Reviewed SDK and native derived prerequisites
+  are now integrated. All four actual reference gates pass on that combined
+  snapshot: 17 ordering, five epoch-fencing, three watch and 12 commit-order
+  exact selectors. Full native Nextest executes 359 tests: 352 pass and seven
+  fail, with no skipped tests or timeouts. Six failures are shared backend
+  compatibility/import cases; the cancellation waiter still exceeds its
+  unchanged 30-second bound under concurrency despite passing in isolation.
+  The absent-history fixture now drops its retained adapter before reacquiring
+  exclusion; its exact unchanged history assertions pass in 0.557 seconds.
+  The full current-gate aggregate fails the retirement compatibility assertion
+  in `index-generation-manifest`. Strict all-target Clippy remains red on 20
+  production and two test diagnostics; warnings are not suppressed.
   `prov-commit-verify` and `prov-disclosure-boundary` remain registered and fail
-  explicitly as pending. SDK retention and native derived dependencies still
-  require integration; no native task, certificate publication or milestone
-  exit gate is qualified by this source adoption.
+  explicitly as pending. Durable certificates, original foreign authority,
+  and complete publication qualification remain incomplete; these focused
+  passes do not qualify the task or milestone exit.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -756,8 +767,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   12-case hermetic signature gate, including four snapshot cases. Neither pure
   qualification establishes native tag
   publication or current ACL checks. Complete native disclosure/publication and
-  collection qualification remain incomplete; the current trunk aggregate fails
-  during native package compilation before runtime tests.
+  collection qualification remain incomplete; the current trunk aggregate
+  executes native tests and fails the retirement compatibility assertion in
+  `index-generation-manifest`.
   — satisfies PROV-1 to PROV-25;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`.
@@ -771,26 +783,33 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Guard or publication interface changed. Mandatory repository formatting passes.
   The subsequent reviewed Guard source adoption resolves those missing symbols.
   After reviewed ref-advance adoption, the native production build and strict
-  rustdoc pass. Current native Nextest and aggregate qualification stop on
-  missing repository APIs and resulting fixture inference diagnostics. Actual
+  rustdoc pass. Reviewed SDK prerequisites now allow native tests to execute;
+  full Nextest passes 352 of 359 tests and the aggregate fails the backend
+  retirement compatibility assertion in `index-generation-manifest`. Actual
   current-authority disclosure, deletion and domain gates remain incomplete.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
 - [ ] **T-CRATE-1** SDK types and verbs (`Tree`, `View`, `Store`,
   `Repository`, `fork`, `commit`, `merge`, `diff`, `realize`) and the `sdk`
-  surface (checkout to a directory). Native repository and protected retention
-  source still need integration on the trunk. Pure core view, endpoint, exposure
+  surface (checkout to a directory). All 21 reviewed native repository and
+  surface paths are integrated, including protected local retention, canonical
+  directory import, authorized reads and registered SDK checkout. Actual
+  factory tests pass genuine legacy refusal, protected bootstrap and reopening
+  with a damaged mutable capability cache; non-Send `std,wasm` passes 116 tests.
+  Pure core view, endpoint, exposure
   and schema vocabulary is integrated as an SDK prerequisite. View parsing
   rejects an explicit empty subtree and normalizes the grammar's optional
   trailing directory separator. All 439 core tests, strict core Clippy and
   rustdoc, `formats-no-std`, and both mandatory formatting commands pass.
   This does not qualify runtime surfaces or complete the exposure configuration.
-  The mandatory ext4 workflow is
-  registered; a separate candidate's audit passes, but directory KeepConflict
-  publication still exceeds the unchanged writer deadline. Complete workflow
-  and package qualification remain
-  pending; native I/O batching preserves every required observation and fence.
+  The integrated binary still has only its T0 configuration/role launcher;
+  local command frontend implementation remains pending. No Terrane ext4
+  workflow artifact is present in the current tracked gate or workflow sources;
+  the earlier claim of registration does not establish qualification. A scoped
+  descendant-only policy diff correction is under review. Complete feature
+  matrix, workflow and package qualification remain pending; native I/O
+  batching preserves every required observation and fence.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.
 
