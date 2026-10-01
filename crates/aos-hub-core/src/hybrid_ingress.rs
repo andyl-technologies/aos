@@ -837,8 +837,8 @@ pub fn decode_hybrid_ingress_observation(
     compact: &str,
 ) -> Result<HybridIngressAssertion, HybridIngressError> {
     let (_, bytes, _) = decode_compact_frame(compact, 16 * 1024)?;
-    let request: HybridIngressAssertion = serde_json::from_slice(&bytes)
-        .map_err(|_| HybridIngressError::Malformed)?;
+    let request: HybridIngressAssertion =
+        serde_json::from_slice(&bytes).map_err(|_| HybridIngressError::Malformed)?;
     validate_assertion(&request)?;
     validate_intrinsic_lifetime(&request)?;
     Ok(request)
@@ -846,7 +846,8 @@ pub fn decode_hybrid_ingress_observation(
 
 fn validate_intrinsic_lifetime(request: &HybridIngressAssertion) -> Result<(), HybridIngressError> {
     if request.expires_at < request.issued_at
-        || request.expires_at.saturating_sub(request.issued_at) > MAX_LIFETIME_SECONDS {
+        || request.expires_at.saturating_sub(request.issued_at) > MAX_LIFETIME_SECONDS
+    {
         return Err(HybridIngressError::InvalidTime);
     }
     Ok(())

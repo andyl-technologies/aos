@@ -95,30 +95,53 @@ impl DurableObject for HybridObjectGuard {
         let _permit = acquire_gate(Arc::clone(&self.gate)).await;
         let path = request.url()?.path().to_owned();
         if key.starts_with(crate::mirror_import::inventory::CACHE_PREFIX) {
-            if matches!(path.as_str(), crate::mirror_import::membership::PHYSICAL_PATH
-                | crate::mirror_import::membership::CANDIDATE_PHYSICAL_PATH) {
-                return crate::mirror_import::membership::physical_fetch(self, &key, &mut request).await;
+            if matches!(
+                path.as_str(),
+                crate::mirror_import::membership::PHYSICAL_PATH
+                    | crate::mirror_import::membership::CANDIDATE_PHYSICAL_PATH
+            ) {
+                return crate::mirror_import::membership::physical_fetch(self, &key, &mut request)
+                    .await;
             }
             if path == crate::mirror_import::inventory::PHYSICAL_PATH {
-                return crate::mirror_import::inventory::physical_fetch(self, &key, &mut request).await;
+                return crate::mirror_import::inventory::physical_fetch(self, &key, &mut request)
+                    .await;
             }
             return Response::error("semantic cache keys admit no provider operations", 403);
         }
-        if matches!(path.as_str(), "/mirror-final-guard-batch" | "/mirror-candidate-final-guard-batch") {
+        if matches!(
+            path.as_str(),
+            "/mirror-final-guard-batch" | "/mirror-candidate-final-guard-batch"
+        ) {
             return crate::mirror_import::guard_proof::batch::physical_fetch(
-                self, &key, &mut request, path == "/mirror-candidate-final-guard-batch",
-            ).await;
+                self,
+                &key,
+                &mut request,
+                path == "/mirror-candidate-final-guard-batch",
+            )
+            .await;
         }
-        if matches!(path.as_str(), "/mirror-final-guard" | "/mirror-candidate-final-guard") {
+        if matches!(
+            path.as_str(),
+            "/mirror-final-guard" | "/mirror-candidate-final-guard"
+        ) {
             return crate::mirror_import::guard_proof::physical_fetch(
                 self,
                 &key,
                 &mut request,
                 path == "/mirror-candidate-final-guard",
-            ).await;
+            )
+            .await;
         }
-        if matches!(path.as_str(), "/mirror-transfer" | "/mirror-source" | "/mirror-stage-ack"
-            | "/mirror-candidate-transfer" | "/mirror-candidate-source" | "/mirror-candidate-stage-ack") {
+        if matches!(
+            path.as_str(),
+            "/mirror-transfer"
+                | "/mirror-source"
+                | "/mirror-stage-ack"
+                | "/mirror-candidate-transfer"
+                | "/mirror-candidate-source"
+                | "/mirror-candidate-stage-ack"
+        ) {
             return crate::mirror_import::runtime::fetch(self, &key, &mut request).await;
         }
         #[cfg(feature = "do-e2e")]
@@ -145,7 +168,8 @@ impl DurableObject for HybridObjectGuard {
             .await
             .map_err(storage_error)?;
         crate::mirror_import::runtime::deny_other_owner(&self.state.storage())
-            .await.map_err(storage_error)?;
+            .await
+            .map_err(storage_error)?;
         let bucket = self
             .env
             .bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
@@ -247,7 +271,13 @@ impl DurableObject for HybridObjectGuard {
 
     async fn alarm(&self) -> worker::Result<Response> {
         let _permit = acquire_gate(Arc::clone(&self.gate)).await;
-        if self.state.storage().get::<bool>(crate::mirror_import::membership::MARKER).await? == Some(true) {
+        if self
+            .state
+            .storage()
+            .get::<bool>(crate::mirror_import::membership::MARKER)
+            .await?
+            == Some(true)
+        {
             return crate::mirror_import::membership::expire(self).await;
         }
         crate::mirror_import::inventory::expire(self).await
@@ -269,7 +299,10 @@ impl HybridObjectGuard {
         self.state.storage().get("pending-mutation").await
     }
 
-    pub(crate) async fn begin_mutation(&self, mutation: &Mutation) -> worker::Result<Option<MutationOutcome>> {
+    pub(crate) async fn begin_mutation(
+        &self,
+        mutation: &Mutation,
+    ) -> worker::Result<Option<MutationOutcome>> {
         let receipt = self
             .state
             .storage()

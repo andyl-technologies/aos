@@ -206,11 +206,11 @@ mod tree_projection;
 // Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
 // is unit-tested on the native target too — see [`placeholder`].
 mod hybrid_front;
+mod mirror_import;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod pitr;
 pub mod placeholder;
 mod private_namespace;
-mod mirror_import;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;

@@ -238,7 +238,8 @@ impl Database {
         token_id: &str,
         now: i64,
     ) -> Result<Option<OciUploadRecord>> {
-        let upload = self.backend
+        let upload = self
+            .backend
             .query_opt(
                 &format!(
                     "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
@@ -271,7 +272,8 @@ impl Database {
         owner: &str,
         now: i64,
     ) -> Result<Option<OciUploadRecord>> {
-        let upload = self.backend
+        let upload = self
+            .backend
             .query_opt(
                 &format!(
                     "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
@@ -297,7 +299,8 @@ impl Database {
         writer_id: &str,
         idempotency_key: &str,
     ) -> Result<Option<OciUploadRecord>> {
-        let upload = self.backend
+        let upload = self
+            .backend
             .query_opt(
                 &format!(
                     "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
@@ -850,7 +853,12 @@ impl Database {
         now: i64,
     ) -> Result<OciUploadedObjectEvidence> {
         let statements = Self::record_oci_uploaded_object_statements(
-            registry_id, placement_id, digest, byte_size, observed_etag, now,
+            registry_id,
+            placement_id,
+            digest,
+            byte_size,
+            observed_etag,
+            now,
             portable_relational_id(Uuid::new_v4()),
         )?;
         if let Err(error) = self.backend.checked_batch(&statements).await {
@@ -1651,10 +1659,12 @@ fn release_upload_statements(
     let horizon = if independently_settled_direct {
         String::new()
     } else {
-        format!("AND upload.expires_at {expiry_operator} ?5
+        format!(
+            "AND upload.expires_at {expiry_operator} ?5
             AND NOT EXISTS (SELECT 1 FROM direct_upload_sessions session
               WHERE session.oci_upload_id = upload.id
-                AND session.state NOT IN ('committed', 'aborted'))")
+                AND session.state NOT IN ('committed', 'aborted'))"
+        )
     };
     let eligible = format!(
         "upload.id = ?1 {ownership} AND {eligible_states}
