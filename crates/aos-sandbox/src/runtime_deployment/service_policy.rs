@@ -8,7 +8,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use aos_sandbox_linux::cgroup::{CgroupV2Root, RetainedCgroupAnchor};
+use aos_sandbox_linux::cgroup::{CgroupPopulationMonitor, CgroupV2Root, RetainedCgroupAnchor};
 use aos_sandbox_linux::pidfd::PidFd;
 use aos_systemd::{OwnedValue, SystemdClient, Value};
 use rustix::fs::{Mode, OFlags, open};
@@ -145,6 +145,14 @@ impl RetainedDeploymentServicePolicyV1 {
 
     pub(super) const fn invocation_id(&self) -> [u8; 16] {
         self.observation.invocation
+    }
+
+    // Only a held physical-invocation claim requests this original monitor.
+    // The existing kernel reader owns identity, bounds and population parsing.
+    pub(super) fn retain_host_invocation_population(
+        &self,
+    ) -> aos_sandbox_linux::Result<CgroupPopulationMonitor> {
+        self.cgroup.population_monitor()
     }
 }
 

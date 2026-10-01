@@ -32,6 +32,7 @@ use super::preparation::{
     require_current_deployment_rows_v1, require_deployment_main_v1,
 };
 use super::{ProductionRuntimeDeploymentStartupV1, RuntimeDeploymentStartupErrorV1};
+use super::{HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1};
 
 /// Reports rejection of a genuine deployment comparison or original lock loan.
 #[derive(Debug, thiserror::Error)]
@@ -125,6 +126,27 @@ impl<'startup> RuntimeDeploymentComparisonOriginsV1<'startup> {
     /// Rejects startup, policy, image, service or fixed credential drift.
     pub fn recheck(&self) -> Result<(), RuntimeDeploymentComparisonErrorV1> {
         self.genesis.recheck().map_err(Into::into)
+    }
+
+    /// Claims the original publisher's one physical invocation before any attempt.
+    ///
+    /// All Origins admitted from the same actual startup share the one-shot.
+    /// Failure, unwind or lease drop permanently prevents another claim in
+    /// that invocation. Comparison-only APIs remain non-authorizing DATA.
+    /// This neither authenticates NV nor proves full-population retirement.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a held or terminal invocation, original startup/genesis drift,
+    /// or failure to retain and recheck the same actual cgroup population.
+    pub fn claim_host_physical_invocation<'origin>(
+        &'origin self,
+    ) -> Result<HostPhysicalInvocationLeaseV1<'origin, 'startup>, HostPhysicalInvocationErrorV1> {
+        HostPhysicalInvocationLeaseV1::claim(self)
+    }
+
+    pub(super) fn host_physical_invocation_startup(&self) -> &ProductionRuntimeDeploymentStartupV1 {
+        self.genesis.startup()
     }
 
     /// Borrows the exact admitted signed genesis as historical input DATA.
