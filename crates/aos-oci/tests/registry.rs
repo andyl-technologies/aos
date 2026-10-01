@@ -58,6 +58,116 @@ struct TestRegistry {
     task: tokio::task::JoinHandle<()>,
 }
 
+#[test]
+fn verified_release_inventory_is_closed_sorted_and_rejects_missing_layers() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    let graph = aos_oci::registry::verified_release_graph(fixture.root(), &release)
+        .expect("complete graph inventory");
+    assert_eq!(graph.len(), 18);
+    assert!(graph.windows(2).all(|pair| pair[0].digest < pair[1].digest));
+    assert!(
+        graph
+            .iter()
+            .any(|descriptor| descriptor.digest == fixture.layer_descriptor.digest)
+    );
+
+    fs::remove_file(
+        fixture
+            .root()
+            .join("blobs/sha256")
+            .join(fixture.layer_descriptor.digest.encoded()),
+    )
+    .expect("remove staged layer");
+    aos_oci::registry::verified_release_graph(fixture.root(), &release)
+        .expect_err("missing layer must prevent candidate inventory creation");
+}
+
+#[tokio::test]
+async fn signed_release_missing_layer_fails_before_any_network_request() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    fs::remove_file(
+        fixture
+            .root()
+            .join("blobs/sha256")
+            .join(fixture.layer_descriptor.digest.encoded()),
+    )
+    .expect("remove staged layer");
+    let registry = spawn_registry(None, false, false, false).await;
+    let reference = RegistryReference::parse(&format!(
+        "{}/aos@{}",
+        registry.reference.authority(),
+        release.oci.index.digest
+    ))
+    .expect("immutable reference");
+    let client = RegistryClient::new(&reference, Some(&registry.origin), None).expect("client");
+    let state = tempfile::tempdir().expect("checkpoint directory");
+    let options = PushOptions::native(fixture.root().to_path_buf(), state.path().join("uploads"));
+
+    client
+        .push_release_graph(&reference, &options, &release, &[])
+        .await
+        .expect_err("incomplete graph fails before transfer");
+    assert!(registry.state.events.lock().expect("events").is_empty());
+}
+
+#[tokio::test]
+async fn interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags() {
+    let fixture = support::fixture();
+    let release = support::add_signed_release_graph(&fixture);
+    let registry = spawn_registry(None, false, true, false).await;
+    let reference = RegistryReference::parse(&format!(
+        "{}/aos@{}",
+        registry.reference.authority(),
+        release.oci.index.digest
+    ))
+    .expect("immutable reference");
+    let client = RegistryClient::new(&reference, Some(&registry.origin), None).expect("client");
+    let state = tempfile::tempdir().expect("checkpoint directory");
+    let mut options =
+        PushOptions::native(fixture.root().to_path_buf(), state.path().join("uploads"));
+    options.chunk_bytes = 11;
+
+    client
+        .push_release_graph(&reference, &options, &release, &[])
+        .await
+        .expect_err("first PATCH retains server bytes");
+    assert!(
+        registry
+            .state
+            .uploads
+            .lock()
+            .expect("uploads")
+            .values()
+            .any(|bytes| !bytes.is_empty()),
+        "the interruption must occur after the server accepts a prefix"
+    );
+    let pushed = client
+        .push_release_graph(&reference, &options, &release, &[])
+        .await
+        .expect("resume the exact immutable graph");
+    assert_eq!(pushed.root_index_digest, release.oci.index.digest);
+    assert_eq!(pushed.object_count, 18);
+    assert!(
+        registry
+            .state
+            .events
+            .lock()
+            .expect("events")
+            .iter()
+            .any(|event| event.starts_with("upload-query:"))
+    );
+    let manifests = registry.state.manifests.lock().expect("manifest lock");
+    assert!(
+        manifests
+            .keys()
+            .all(|reference| reference.starts_with("sha256:"))
+    );
+    assert!(!manifests.contains_key(&release.identity.release));
+    assert!(!manifests.contains_key("stable"));
+}
+
 #[tokio::test]
 async fn signed_release_push_uploads_every_evidence_object_by_digest_only() {
     let fixture = support::fixture();

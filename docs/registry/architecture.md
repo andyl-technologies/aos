@@ -14,6 +14,13 @@
 > implementation lives in [`current-state.md`](./current-state.md); the migration
 > path is in [`gap-analysis.md`](../plans/registry/gap-analysis.md).
 
+Unpublished candidates follow the [release-stage contract](release-stages.md).
+Maintainer branches are authoring workspaces. Configured channel branch names
+reserve the published frontier, public `HEAD` names the default channel, and
+signed semver releases and the 256-partition schema retain their existing
+meaning. Default catalogs and channels omit drafts; a known ref, digest, cache
+URL, or CDN path may still expose candidate bytes.
+
 ---
 
 ## 1. One-paragraph mental model

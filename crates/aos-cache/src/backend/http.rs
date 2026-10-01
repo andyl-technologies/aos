@@ -619,6 +619,12 @@ impl CacheBackend for HttpBackend {
         self.multipart_v1.load(Ordering::Relaxed)
     }
 
+    fn multipart_resume_namespace(&self) -> Option<String> {
+        self.is_hub
+            .load(Ordering::Relaxed)
+            .then(|| self.base_url.clone())
+    }
+
     async fn initiate_multipart(
         &self,
         nar_path: &str,
@@ -683,6 +689,9 @@ impl CacheBackend for HttpBackend {
             .execute(req)
             .await
             .context("uploading multipart part")?;
+        if result.status == 404 {
+            return Err(super::MultipartSessionExpired.into());
+        }
         if result.status >= 400 {
             anyhow::bail!(
                 "upload multipart part {part_number}: HTTP {} for {nar_path}",
@@ -729,6 +738,9 @@ impl CacheBackend for HttpBackend {
             .execute(req)
             .await
             .context("completing multipart upload")?;
+        if result.status == 404 {
+            return Err(super::MultipartSessionExpired.into());
+        }
         if result.status >= 400 {
             anyhow::bail!(
                 "complete multipart upload: HTTP {} for {nar_path}",

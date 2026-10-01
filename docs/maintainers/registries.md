@@ -79,7 +79,7 @@ according to its disposable-data policy.
   creating, releasing, updating, rotating, resetting, auditing, and retiring
   the experimental registry.
 - [`registry-main.md`](registry-main.md) is the fail-closed production runbook.
-- [`canonical-releases.md`](canonical-releases.md) documents every `aos release`
+- [`canonical-releases.md`](canonical-releases.md) documents every `aos maintain release`
   phase and the signed evidence it produces.
 - [`trust-model.md`](trust-model.md) defines the authority chain, image-baked
   anchors, signed registry metadata, and runtime trust boundary that these
@@ -95,7 +95,7 @@ according to its disposable-data policy.
 
 Package maintenance and registry release are distinct. `aos maintain` discovers,
 gates, records, and proposes source updates. After those commits merge to the
-protected source branch, `aos release` freezes and publishes a complete registry
+protected source branch, `aos maintain release` freezes and publishes a complete registry
 release. A maintenance run must never write a hosted registry directly.
 
 ## One-machine operating model

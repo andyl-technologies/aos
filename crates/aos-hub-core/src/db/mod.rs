@@ -539,6 +539,9 @@ mod registry_delete;
 mod registry_index_build;
 mod release_browse;
 mod release_publication;
+mod staged_releases;
+#[cfg(test)]
+mod staged_retention_tests;
 pub use release_browse::*;
 mod documentation_tree;
 pub use documentation_tree::*;
@@ -552,6 +555,7 @@ pub use placement_policy::*;
 pub use publication_admission::*;
 pub use registry_index_build::*;
 pub use release_publication::*;
+pub use staged_releases::*;
 pub use signing_keys::*;
 pub use topology::*;
 pub use worker_jobs::*;
@@ -592,9 +596,11 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | --- | --- | --- |
 /// | 1 | `schema.sql` | Production baseline. |
 /// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
+/// | 3 | `staged_releases.sql` | Private release drafts, retention roots, and public catalog selections. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
+    include_str!("staged_releases.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -3035,6 +3041,10 @@ pub struct NewTopologyOperation {
 pub struct IndexSnapshot {
     /// The commit the snapshot was loaded from.
     pub commit: String,
+    /// Verified release commit selected by the default signed channel.
+    pub public_catalog_commit: Option<String>,
+    /// Exact release tag selected by the default signed channel.
+    pub public_catalog_release: Option<String>,
     /// Committed registry name.
     pub name: String,
     /// Committed registry description.
@@ -4134,6 +4144,18 @@ impl Database {
         indexed_placement_id: Option<i64>,
         image_presence: Option<(&[VerifiedRegistryImageObject], i64)>,
     ) -> Result<()> {
+        match (
+            &snapshot.public_catalog_commit,
+            &snapshot.public_catalog_release,
+        ) {
+            (None, None) => {}
+            (Some(commit), Some(tag))
+                if snapshot.releases.iter().any(|release| {
+                    release.semver == *tag && release.commit_oid == *commit
+                }) => {}
+            _ => bail!("public catalog selection is not a verified release in this snapshot"),
+        }
+
         self.assert_registry_index_mutation_source(registry_id, indexed_placement_id)
             .await?;
         let registry = self
@@ -4999,6 +5021,18 @@ impl Database {
             ]
             .to_vec(),
         ));
+        stmts.push(Statement::new(
+            "INSERT INTO registry_public_catalog_heads(registry_id, source_commit, release_tag)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(registry_id) DO UPDATE SET
+               source_commit = excluded.source_commit, release_tag = excluded.release_tag",
+            vals![
+                registry_id,
+                snapshot.public_catalog_commit,
+                snapshot.public_catalog_release
+            ]
+            .to_vec(),
+        ));
         if registry.org_id.is_some() {
             let event = crate::webhook::WebhookEvent::IndexCompleted {
                 registry: registry.slug.clone(),
@@ -5279,6 +5313,10 @@ impl Database {
             ),
             Statement::new(
                 "DELETE FROM release_artifact_snapshots WHERE registry_id = ?1",
+                vals![registry_id].to_vec(),
+            ),
+            Statement::new(
+                "DELETE FROM registry_public_catalog_heads WHERE registry_id = ?1",
                 vals![registry_id].to_vec(),
             ),
             Statement::new(
@@ -8172,6 +8210,14 @@ impl Database {
                completed_at = CASE WHEN ?3 IN ('ready','failed') THEN ?4 ELSE completed_at END,
                retired_at = CASE WHEN ?3 = 'retired' THEN ?4 ELSE retired_at END
              WHERE publication_id = ?1 AND state = ?2
+               AND (?3 <> 'writing_pointers' OR NOT EXISTS (
+                 SELECT 1 FROM staged_release_revisions revision
+                 JOIN staged_releases stage
+                   ON stage.registry_id = revision.registry_id
+                  AND stage.stage_id = revision.stage_id
+                 WHERE revision.publication_id = ?1
+                   AND (revision.revision <> stage.current_revision
+                     OR stage.state <> 'releasing')))
                AND (?3 <> 'ready' OR (EXISTS (
                  SELECT 1 FROM registry_publication_placements pp
                  WHERE pp.publication_id = ?1 AND pp.required = 1)
@@ -8209,7 +8255,9 @@ impl Database {
                     "UPDATE registry_publications
                      SET state = 'failed', completed_at = ?2
                      WHERE publication_id = ?1
-                       AND state IN ('preparing', 'writing_pointers')",
+                       AND state IN ('preparing', 'writing_pointers')
+                       AND NOT EXISTS (SELECT 1 FROM staged_releases stage
+                         WHERE stage.publication_id = ?1 AND stage.state = 'releasing')",
                     vals![publication_id, at],
                 )
                 .expecting(1),
@@ -11123,13 +11171,32 @@ impl Database {
              WHERE id = ?1 AND resource_version = ?2 AND lifecycle_state = 'active'
                AND registry_id IS NOT NULL
                AND NOT EXISTS (
+                 SELECT 1 FROM staged_release_objects staged_object
+                 JOIN staged_release_revisions staged_revision
+                   ON staged_revision.registry_id = staged_object.registry_id
+                  AND staged_revision.stage_id = staged_object.stage_id
+                  AND staged_revision.revision = staged_object.revision
+                 WHERE staged_object.registry_id = surface_objects.registry_id
+                   AND staged_object.object_key = surface_objects.object_key
+                   AND (staged_revision.retire_after IS NULL
+                     OR staged_revision.retire_after > ?3))
+               AND NOT EXISTS (
                  SELECT 1 FROM registry_image_roots root
                  WHERE root.surface_object_id = ?1)
                AND NOT EXISTS (
                  SELECT 1 FROM registry_publication_objects po
                  JOIN registry_publications pub
                    ON pub.publication_id = po.publication_id
-                 WHERE po.surface_object_id = ?1 AND pub.state <> 'retired')",
+                 WHERE po.surface_object_id = ?1 AND pub.state <> 'retired'
+                   AND (NOT EXISTS (SELECT 1 FROM staged_release_revisions revision
+                     WHERE revision.publication_id = pub.publication_id)
+                     OR EXISTS (SELECT 1 FROM staged_release_revisions revision
+                       WHERE revision.publication_id = pub.publication_id
+                         AND (revision.retire_after IS NULL OR revision.retire_after > ?3))))
+               AND NOT EXISTS (
+                 SELECT 1 FROM registry_publication_multipart_uploads upload
+                 WHERE upload.surface_object_id = ?1
+                   AND upload.state IN('active', 'completing'))",
                 &vals![id, expected_version, tombstoned_at],
             )
             .await?
@@ -14615,6 +14682,15 @@ impl Database {
                    SELECT 1 FROM image_snapshot_references reference
                    WHERE reference.digest = snapshot.digest)
                    AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.sha256 = snapshot.digest
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?2))
+                   AND NOT EXISTS (
                      SELECT 1 FROM image_snapshot_leases lease
                      WHERE lease.digest = snapshot.digest AND lease.expires_at > ?2)
                  ORDER BY digest LIMIT ?1",
@@ -14703,6 +14779,15 @@ impl Database {
                  WHERE digest = ?1 AND NOT EXISTS (
                    SELECT 1 FROM image_snapshot_references reference
                    WHERE reference.digest = image_snapshots.digest)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.sha256 = image_snapshots.digest
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?2))
                    AND NOT EXISTS (
                      SELECT 1 FROM image_snapshot_leases lease
                      WHERE lease.digest = image_snapshots.digest AND lease.expires_at > ?2)",
@@ -26495,6 +26580,8 @@ fn index_snapshot_digest(snapshot: &IndexSnapshot) -> Result<String> {
         })
         .collect::<Vec<_>>();
     let document = serde_json::json!({
+        "public_catalog_commit": snapshot.public_catalog_commit,
+        "public_catalog_release": snapshot.public_catalog_release,
         "commit": snapshot.commit,
         "name": snapshot.name,
         "description": snapshot.description,
@@ -27167,8 +27254,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            2,
-            "production baseline plus the per-train channel ledger"
+            3,
+            "production baseline, channel ledger, and private release drafts"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -27630,6 +27717,8 @@ source_nar_hash = ""
             }));
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
+            public_catalog_commit: Some("c".repeat(64)),
+            public_catalog_release: Some("1.0.0".into()),
             name: "demo".into(),
             description: None,
             readme: None,
@@ -28663,6 +28752,8 @@ source_nar_hash = ""
         let package = signed_image_package();
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
+            public_catalog_commit: Some("c".repeat(64)),
+            public_catalog_release: Some("1.0.0".into()),
             name: "AOS system".into(),
             packages: vec![package.clone()],
             releases: vec![ReleaseRow {
@@ -33424,6 +33515,8 @@ source_nar_hash = ""
             .unwrap();
         let snapshot = IndexSnapshot {
             commit: "c".repeat(64),
+            public_catalog_commit: None,
+            public_catalog_release: None,
             name: "generation guard".into(),
             description: None,
             readme: None,

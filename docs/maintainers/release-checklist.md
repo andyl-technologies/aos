@@ -19,9 +19,9 @@ Mark an item inapplicable only where this checklist explicitly permits it, and
 record the reason. Enable `set -o noclobber` in the operator shell before running
 the commands below so redirected evidence files cannot silently be replaced.
 
-`aos release advance` runs every automated step and stops at each human
+`aos maintain release advance` runs every automated step and stops at each human
 decision with one `Waiting:` instruction. Whenever an item names a journal
-state, run `aos release status` and compare the line for the named destination
+state, run `aos maintain release status` and compare the line for the named destination
 (or the global `State:` line) with the expected value. The driver keeps every
 earlier journal under the work directory; later steps write successors.
 
@@ -45,7 +45,7 @@ The destinations and what each one requires:
 | `andyl/main` | `production/stable` | `soak` | every target and cell, complete matrix | 1 per report, including each ring; completion approvals | 4, 32, 128, 256 partitions; 7-day soak; complete-phase report | as candidate plus key rotation |
 
 These are the current contract values. A reviewed contract revision may change
-them; record the frozen plan's values, which `aos release explain` prints.
+them; record the frozen plan's values, which `aos maintain release explain` prints.
 
 Only a destination whose profile selects `qualified` claims (today
 `production/stable`, `soak`) needs a complete-phase report and the
@@ -131,7 +131,7 @@ Complete this section before starting builds or requesting signatures.
 - [ ] **Check environment fitness.** Run:
 
   ```sh
-  aos release fitness status
+  aos maintain release fitness status
   ```
 
   **Check when:** every fitness kind required by this release's production
@@ -187,11 +187,11 @@ Complete this section before starting builds or requesting signatures.
   release to a JSON file, then from the clean source checkout run:
 
   ```sh
-  aos release new --registry andyl/testing --version 2026.9.0-dev.20260929.1 --images images.json
+  aos maintain release new --registry andyl/testing --version 2026.9.0-dev.20260929.1 --images images.json
   ```
 
   For an emergency, add `--override DIR`, or immediately run
-  `aos release advance --to production/stable --override DIR` before any
+  `aos maintain release advance --to production/stable --override DIR` before any
   other `advance`, as described in
   [plan an emergency override](canonical-releases.md#plan-an-emergency-override).
 
@@ -218,8 +218,8 @@ Complete this section before starting builds or requesting signatures.
 Run the driver for the first staging destination of this release:
 
 ```sh
-aos release advance --to staging/edge        # andyl/testing
-aos release advance --to staging/candidate   # andyl/main
+aos maintain release advance --to staging/edge        # andyl/testing
+aos maintain release advance --to staging/candidate   # andyl/main
 ```
 
 It builds, signs, closes, verifies, and publishes the release, then moves the
@@ -247,7 +247,7 @@ so only the channel moves.
   ```
 
   **Check when:** both exit zero, every planned output appears in the build
-  report with `reproducibility: "reproduced"`, and `aos release status` reports
+  report with `reproducibility: "reproduced"`, and `aos maintain release status` reports
   `State: built`. Save the Nix result path and logs.
 
 - [ ] **Finalize both Linux images and the OCI artifacts.** The driver runs
@@ -270,7 +270,7 @@ so only the channel moves.
   [prepare-registry](canonical-releases.md#prepare-and-finalize-the-isolated-registry).
   Review `registry/transaction.json` and the retained tree in
   `registry/prepared/` together, then run
-  `aos release advance --to staging/candidate --accept-transaction`.
+  `aos maintain release advance --to staging/candidate --accept-transaction`.
 
   **Check when:** the transaction identifies exactly the planned
   package/platform outputs, the retained diff matches it, and the driver has
@@ -284,7 +284,7 @@ so only the channel moves.
   before the driver requests signatures.
 
   **Check when:** required build observations passed, every advisory has a
-  disposition with no unresolved release blocker, and `aos release status`
+  disposition with no unresolved release blocker, and `aos maintain release status`
   reports `State: finalized`.
 
 - [ ] **Verify the bundle independently.** Run
@@ -302,7 +302,7 @@ so only the channel moves.
   channel's single ring.
 
   **Check when:** `publish/staging-<channel>/published/receipt.json` exists and
-  `aos release status` reports the staging destination `complete`. This checks
+  `aos maintain release status` reports the staging destination `complete`. This checks
   delivery; functional testing comes next. Repeat for `staging/stable` when
   planned.
 
@@ -319,7 +319,7 @@ report and completion approvals.
 ### 4a. `andyl/testing`: `production/edge` (`smoke`)
 
 - [ ] **Confirm the change scope.** Run
-  `aos release explain --to production/edge`.
+  `aos maintain release explain --to production/edge`.
 
   **Check when:** the change scope names the expected predecessor and its
   image, container, and package decisions match the source changes. An
@@ -327,7 +327,7 @@ report and completion approvals.
   selects every target.
 
 - [ ] **Run the functional tests.** Run
-  `aos release advance --to production/edge`. The driver runs
+  `aos maintain release advance --to production/edge`. The driver runs
   [qualify-run](canonical-releases.md#run-the-native-qualification-matrix)
   for the staging phase and signs the report with the qualification authority.
 
@@ -354,14 +354,14 @@ report and completion approvals.
 
   **Check when:** `publish/production-edge/published/receipt.json` and
   `channels/production-edge/ring-1/channel-receipt.json` exist, and
-  `aos release status` reports `production/edge` `complete`. Then complete the
+  `aos maintain release status` reports `production/edge` `complete`. Then complete the
   clean-client, profile, and warning checks in
   [the testing runbook](registry-testing.md#publish-the-first-or-a-later-edge-release).
 
 ### 4b. `andyl/main`: `production/candidate` (`functional`)
 
 - [ ] **Assign every required test.** Run
-  `aos release explain --to production/candidate`.
+  `aos maintain release explain --to production/candidate`.
 
   **Check when:** every listed case has an assigned program/environment or
   operator. `explain` shows cases as not yet evaluated: this box means the work
@@ -374,7 +374,7 @@ report and completion approvals.
   claim is made, mark this item inapplicable.
 
 - [ ] **Collect the staging report.** Run
-  `aos release advance --to production/candidate`. The driver collects the
+  `aos maintain release advance --to production/candidate`. The driver collects the
   staging-phase report against the staging surface and waits for review.
 
   **Check when:** every case has a passing result in the prepared report with
@@ -386,28 +386,28 @@ report and completion approvals.
   release-blocking assurance obligation stops the release.
 
 - [ ] **Review and sign the exact report.** The independent reviewer runs
-  `aos release review` against the prepared report, following
+  `aos maintain release review` against the prepared report, following
   [collect, review, and sign](qualification.md#collect-review-and-sign).
 
   **Check when:** the reviewer approved these exact report bytes and the
   driver's next run signs them with the qualification authority. Changing a
   report requires another review.
 
-- [ ] **Confirm fitness and publish.** Run `aos release explain --to
+- [ ] **Confirm fitness and publish.** Run `aos maintain release explain --to
   production/candidate`, then rerun `advance`.
 
   **Check when:** every required fitness attestation is fresh and
   binding-matched, the driver published the exact bundle with the public
-  release record, and `aos release status` reports `production/candidate`
+  release record, and `aos maintain release status` reports `production/candidate`
   `published`. For OCI, finish the registry runbook's release-tag publication.
 
 - [ ] **Approve rollout health.** The driver collects a fresh rollout-phase
   report for the single ring and waits for review. Review it with
-  `aos release review` within ten minutes of collection.
+  `aos maintain release review` within ten minutes of collection.
 
   **Check when:** clean clients consume the intended artifacts, no integrity or
   recovery failure is unresolved, the ring's channel receipt exists, and
-  `aos release status` reports `production/candidate` `complete`. The
+  `aos maintain release status` reports `production/candidate` `complete`. The
   `functional` profile completes with its single ring; it has no completion
   approval.
 
@@ -417,7 +417,7 @@ Publish a final version to `production/candidate` first, following the monthly
 train in RFC-0017. The same bundle then enters `production/stable`.
 
 - [ ] **Confirm the complete matrix and test assignment.** Run
-  `aos release explain --to production/stable`.
+  `aos maintain release explain --to production/stable`.
 
   **Check when:** the plan has no blocked package/platform cell, and every
   listed staging, rollout, and complete case is assigned, including the A3
@@ -435,11 +435,11 @@ train in RFC-0017. The same bundle then enters `production/stable`.
   system.
 
 - [ ] **Collect, review, and publish.** Run
-  `aos release advance --to production/stable`, review the staging report with
-  `aos release review`, and rerun `advance`.
+  `aos maintain release advance --to production/stable`, review the staging report with
+  `aos maintain release review`, and rerun `advance`.
 
   **Check when:** the report passed review, fitness including `key-rotation` is
-  fresh, and `aos release status` reports `production/stable` `published`.
+  fresh, and `aos maintain release status` reports `production/stable` `published`.
 
 - [ ] **Start workload observation.** Start the configured workload monitor on
   the exact production artifacts. Record machines/runtime, artifact digests,
@@ -453,10 +453,10 @@ train in RFC-0017. The same bundle then enters `production/stable`.
 Repeat the next two items for **each** ring, keeping separate results:
 
 - [ ] **Approve the next ring.** Run
-  `aos release advance --to production/stable --ring N` with the next ring
+  `aos maintain release advance --to production/stable --ring N` with the next ring
   number. The driver waits until the previous ring's observation time has
   elapsed, collects a fresh rollout report, and waits for review. Review it with
-  `aos release review` within ten minutes.
+  `aos maintain release review` within ten minutes.
 
   **Check when:** the reviewer approved the health of the exact next partition
   range, the driver
@@ -474,7 +474,7 @@ Repeat the next two items for **each** ring, keeping separate results:
 - [ ] **Complete workload observation.** Run the workload for the full soak.
   Review operation counts, failures, resource trends, and recovery/data checks
   with the release owner, then let the driver collect the complete-phase report
-  and review it with `aos release review`.
+  and review it with `aos maintain release review`.
 
   **Check when:** measured elapsed time meets the soak, real operation counts
   are present, no blocking failure remains, and the complete-phase report is
@@ -483,14 +483,14 @@ Repeat the next two items for **each** ring, keeping separate results:
 
 - [ ] **Approve completion.** When the driver waits for completion approvals,
   each release-evidence approver signs the completion decision with
-  `aos release review` until the plan's threshold is reached. A completion
+  `aos maintain release review` until the plan's threshold is reached. A completion
   decision cannot be rejected with `--reject`; withhold the approval and record
   the reason instead.
 
   **Check when:** every approval exists as
   `channels/production-stable/completion-<key_id>.json`, the driver ran
   [channel complete](canonical-releases.md#complete-a-rollout), and
-  `aos release status` reports `production/stable` `complete`.
+  `aos maintain release status` reports `production/stable` `complete`.
 
 ## 5. Close the release
 
@@ -509,7 +509,7 @@ Repeat the next two items for **each** ring, keeping separate results:
 - [ ] **Confirm every destination is complete.** Run:
 
   ```sh
-  aos release status
+  aos maintain release status
   ```
 
   **Check when:** every planned destination reports `complete`. Save the output
@@ -536,8 +536,8 @@ operator exercises while release mutations are paused, using an isolated
 restore/test environment. Then record the result:
 
 ```sh
-aos release fitness run hub-restore --report /srv/aos-release/restricted/hub-restore-2026-09-14.json
-aos release fitness status
+aos maintain release fitness run hub-restore --report /srv/aos-release/restricted/hub-restore-2026-09-14.json
+aos maintain release fitness status
 ```
 
 Without `--report`, `fitness run` reads the report from standard input. The
@@ -555,7 +555,7 @@ the report.
   systemctl start aos-release-restore-check.service
   systemctl show aos-release-backup.service aos-release-restore-check.service \
     -p Result -p ExecMainStatus
-  aos release fitness status
+  aos maintain release fitness status
   ```
 
   **Check when:** the backup is held independently of the maintainer machine,
@@ -611,7 +611,7 @@ the report.
 ## If a step fails or is interrupted
 
 Stop the next publication or channel change. Preserve the command, logs, work
-directory, and failed-attempt directories. Run `aos release status` and record
+directory, and failed-attempt directories. Run `aos maintain release status` and record
 the global and per-destination states. If a network operation may have
 committed, inspect the live surface and receipts before retrying; a local
 timeout does not establish that the public operation failed.

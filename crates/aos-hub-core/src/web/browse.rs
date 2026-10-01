@@ -307,9 +307,9 @@ pub(super) async fn load_visible(
     Some((registry, status))
 }
 
-/// Whether the request's session user may *manage* `registry` (holds
-/// `registry.configure` at its canonical scope), so the registry home renders
-/// the "manage this registry" link. `false` for anonymous or on any error.
+/// Whether the session user may configure or publish in `registry`, allowing
+/// the registry home to render its management link. False for anonymous users
+/// and on any authorization lookup error.
 async fn manage_link(svc: &RpcService, registry: &RegistryRecord, headers: &HeaderMap) -> bool {
     let Some(secret) = session::session_secret_from_headers(headers) else {
         return false;
@@ -327,6 +327,7 @@ async fn manage_link(svc: &RpcService, registry: &RegistryRecord, headers: &Head
         return false;
     };
     iam::allow(&grants, Permission::RegistryConfigure, &context)
+        || iam::allow(&grants, Permission::Publish, &context)
 }
 
 /// Collect strings into a sorted, de-duplicated, length-capped vector, dropping

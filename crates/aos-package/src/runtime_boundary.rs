@@ -13,8 +13,8 @@ use anyhow::{Result, bail};
 use crate::{
     ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
     CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand,
-    OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RuntimeConfigCommand,
-    SbCertsCommand, StoreCommand, TrustCommand,
+    OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand,
+    RuntimeConfigCommand, SbCertsCommand, StoreCommand, TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
@@ -316,6 +316,10 @@ fn apm_registry_is_read_only(command: &ApmRegistryCommand) -> bool {
 
 fn registry_is_read_only(command: &RegistryCommand) -> bool {
     match command {
+        RegistryCommand::Stage { command } => matches!(
+            command,
+            RegistryStageCommand::List { .. } | RegistryStageCommand::Show { .. }
+        ),
         RegistryCommand::List
         | RegistryCommand::Show { .. }
         | RegistryCommand::Packages { .. }
@@ -556,11 +560,21 @@ mod tests {
             &["verify"][..],
             &["branch", "list"][..],
             &["cache", "gc", "--dry-run"][..],
+            &["stage", "list"][..],
+            &["stage", "show", "candidate-1"][..],
         ] {
             boundary
                 .validate_registry(&registry_command(arguments), false)
                 .expect("registry query remains admitted");
         }
+
+        let error = boundary
+            .validate_registry(
+                &registry_command(&["stage", "discard", "candidate-1", "--stage-revision", "1"]),
+                false,
+            )
+            .expect_err("candidate discard is a mutation");
+        assert_eq!(error.to_string(), READ_ONLY_MUTATION_ERROR);
 
         let error = boundary
             .validate_registry(&registry_command(&["create", "example"]), false)

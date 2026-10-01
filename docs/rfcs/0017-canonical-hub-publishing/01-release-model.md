@@ -13,6 +13,11 @@ Six names answer six different questions:
 | Destination | Which surface and channel does a publication move? | `<surface>/<channel>`, for example `production/stable` |
 | Profile | What must a release prove before that destination moves? | `build`, `smoke`, `functional`, or `soak` |
 
+An unpublished **release stage** is a candidate id, revision, and artifact
+inventory. It is independent of the **staging surface**: either environment can
+hold unfinished candidates. Completing candidate uploads does not authorize a
+public release or channel promotion.
+
 These axes must not be collapsed. In particular, neither `andyl/staging` nor
 `andyl/stable` is created, and no release class stands in for a profile.
 
@@ -214,7 +219,10 @@ declares `support.trains."YYYY.M"` for that train alone, and `master` declares
 into the signed registry's `[support]` table and refuses a contract naming any
 other train, and only a release from the newest train may write `default`.
 The registry remains one linear history with section ownership enforced by
-the publisher; nothing in the registry repository branches.
+the publisher. Maintainer workspace branches may hold unpublished authoring
+commits; published channel frontier refs and signed release identities retain
+the existing registry schema. See
+[release stages](../../registry/release-stages.md).
 
 Two consequences remain open and must be settled before a second train
 branch exists. First, the client's monotonic floor is registry-wide today, so a

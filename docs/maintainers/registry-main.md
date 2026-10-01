@@ -20,7 +20,7 @@ records an explicit go-live decision. Before any operation:
 2. for each Hub surface, build one immutable Hub installer, deploy it to
    staging, validate it, and promote the exact store path to production;
 3. take a complete verified backup and recovery point;
-4. confirm with `aos release fitness status` that every fitness attestation the
+4. confirm with `aos maintain release fitness status` that every fitness attestation the
    `functional` and `soak` profiles require is fresh and binding-matched;
 5. load only main-registry role credentials and the current surface's
    credentials; and
@@ -53,7 +53,7 @@ backup and recovery inventory.
 Create the main authoring base with a dedicated `andyl` registry anchor and
 role-separated release/TUF/image authorities. Bootstrap the exact empty base
 with threshold-approved intents first in staging and then production using
-`aos release step bootstrap`. Never reuse a testing key or import a testing registry
+`aos maintain release step bootstrap`. Never reuse a testing key or import a testing registry
 history. Both bootstrap destinations must be empty for `andyl/main`.
 
 After the `andyl` organization exists in staging, create the Hub topology row
@@ -122,8 +122,8 @@ not a separate class:
 3. Write the override for the new release ID, naming the incident, a soak of at
    least one day, and rings that end at 256 partitions. Obtain the
    release-evidence threshold of signatures.
-4. Run `aos release new` with `--override DIR`, or run it and then
-   `aos release advance --to production/stable --override DIR` before any
+4. Run `aos maintain release new` with `--override DIR`, or run it and then
+   `aos maintain release advance --to production/stable --override DIR` before any
    build, as described in
    [plan an emergency override](canonical-releases.md#plan-an-emergency-override).
 

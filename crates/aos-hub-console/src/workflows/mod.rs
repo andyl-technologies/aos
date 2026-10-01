@@ -33,6 +33,8 @@ mod registry_containers;
 mod registry_metadata;
 mod registry_mirror;
 mod registry_publication;
+mod registry_stage_inventory;
+mod registry_staging;
 mod resource_access;
 mod resources;
 mod routes;
