@@ -11,7 +11,8 @@ use aos_hub_core::storage_work::StorageWorkPlan;
 
 /// Retains counters until the exchange completes or its future is dropped.
 pub(super) struct ExchangeTelemetry<'a> {
-    plan: &'a StorageWorkPlan,
+    plan_id: &'a str,
+    operation: &'a str,
     dispatcher: tracing::Dispatch,
     span: tracing::Span,
     started: Instant,
@@ -24,8 +25,14 @@ pub(super) struct ExchangeTelemetry<'a> {
 
 impl<'a> ExchangeTelemetry<'a> {
     pub(super) fn new(plan: &'a StorageWorkPlan) -> Self {
+        Self::control(&plan.plan_id, plan.operation.kind())
+    }
+
+    /// Records the same byte contract for a separate closed control exchange.
+    pub(super) fn control(plan_id: &'a str, operation: &'a str) -> Self {
         Self {
-            plan,
+            plan_id,
+            operation,
             dispatcher: tracing::dispatcher::get_default(Clone::clone),
             span: tracing::Span::current(),
             started: Instant::now(),
@@ -62,8 +69,8 @@ impl Drop for ExchangeTelemetry<'_> {
         let _subscriber = tracing::dispatcher::set_default(&self.dispatcher);
         let _span = self.span.enter();
         tracing::info!(
-            plan_id = %self.plan.plan_id,
-            operation = self.plan.operation.kind(),
+            plan_id = %self.plan_id,
+            operation = self.operation,
             exchange_attempts = self.attempts,
             offered_plan_bytes = self.offered_plan_bytes,
             observed_body_bytes = self.observed_body_bytes,

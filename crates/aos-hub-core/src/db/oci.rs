@@ -27,6 +27,8 @@ use super::{
 
 #[path = "oci_direct_repository.rs"]
 mod direct_repository;
+#[path = "oci_guarded_catalog.rs"]
+mod guarded_catalog;
 #[path = "oci_publication.rs"]
 mod publication;
 #[path = "oci_upload.rs"]
@@ -264,6 +266,13 @@ fn oci_publication_confirmation_hash_fields(
 }
 
 fn validate_catalog(input: &IndexOciRepositoryCatalog) -> Result<()> {
+    validate_catalog_with_readbacks(input, &[])
+}
+
+fn validate_catalog_with_readbacks(
+    input: &IndexOciRepositoryCatalog,
+    readbacks: &[crate::oci_projection::guard::VerifiedOciProjection],
+) -> Result<()> {
     if input.observed_at <= 0 {
         bail!("OCI catalog observation time must be positive");
     }
@@ -309,8 +318,16 @@ fn validate_catalog(input: &IndexOciRepositoryCatalog) -> Result<()> {
                 if let Some(image_config) = image_config {
                     let config = ImageConfig::from_json(image_config.config_json.as_bytes())?;
                     let config_platform = config.platform();
-                    if Sha256Digest::digest(image_config.config_json.as_bytes())
-                        != document.config.digest
+                    let exact_config_bytes =
+                        Sha256Digest::digest(image_config.config_json.as_bytes())
+                            == document.config.digest;
+                    let authenticated_projection = readbacks.iter().any(|proof| {
+                        proof.check(&document.config, crate::clock::now_unix_secs()).is_ok_and(|projection| {
+                            matches!(projection, crate::oci_projection::OciDocumentProjection::Config(observed) if observed == &config)
+                                && aos_oci_types::to_canonical_json(&config).is_ok_and(|canonical| canonical == image_config.config_json.as_bytes())
+                        })
+                    });
+                    if (!exact_config_bytes && !authenticated_projection)
                         || platform.as_ref() != Some(&config_platform)
                         || config.rootfs.diff_ids.len() != document.layers.len()
                         || image_config.layers.len() != document.layers.len()
@@ -1316,7 +1333,11 @@ pub struct OciLayerProjection {
 /// Exact runnable-image configuration projected during catalog admission.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OciImageConfigProjection {
-    /// Exact bounded configuration JSON bytes as UTF-8.
+    /// Bounded configuration metadata as UTF-8 JSON.
+    ///
+    /// Standalone admission retains original bytes. Guarded Hybrid admission
+    /// stores the canonical semantic projection after independently proving the
+    /// original digest; this serialization is never its content identity.
     pub config_json: String,
     /// Canonical AOS/Nix system selector.
     pub aos_system: String,
@@ -1421,7 +1442,14 @@ fn validate_sha_progress(state: &OciSha256State, uploaded_size: u64) -> Result<(
 fn build_oci_catalog_statements(
     input: &IndexOciRepositoryCatalog,
 ) -> Result<Vec<CheckedStatement>> {
-    validate_catalog(input)?;
+    build_oci_catalog_statements_with_readbacks(input, &[])
+}
+
+fn build_oci_catalog_statements_with_readbacks(
+    input: &IndexOciRepositoryCatalog,
+    readbacks: &[crate::oci_projection::guard::VerifiedOciProjection],
+) -> Result<Vec<CheckedStatement>> {
+    validate_catalog_with_readbacks(input, readbacks)?;
     let now = input.observed_at;
     let repository_id = portable_relational_id(Uuid::new_v4());
     let mut statements = Vec::<CheckedStatement>::new();

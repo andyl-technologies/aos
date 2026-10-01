@@ -114,6 +114,7 @@ pub mod oci;
 pub mod oci_gc_controller;
 pub mod oci_http;
 pub mod oci_inventory_controller;
+pub mod oci_projection;
 pub mod placement_read;
 pub mod placement_scan;
 pub mod ratelimit;

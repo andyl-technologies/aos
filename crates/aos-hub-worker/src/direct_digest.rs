@@ -102,6 +102,14 @@ pub(crate) async fn read_bounded_native_observed(
         cap > 0 && cap <= 512 * 1024,
         "native metadata bound invalid"
     );
+    read_bounded_native_with_limit(response, cap, consumed).await
+}
+
+async fn read_bounded_native_with_limit(
+    response: Response,
+    cap: usize,
+    consumed: &dyn Fn(u64),
+) -> Result<Vec<u8>> {
     let (_, body) = response.into_parts();
     let reader = match body {
         ResponseBody::Stream(stream) => Reader::new(stream.into())?,

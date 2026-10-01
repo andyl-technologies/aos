@@ -66,6 +66,7 @@ mod mirror_membership;
 mod result_acceptance_tests;
 #[cfg(test)]
 mod mirror_candidate;
+mod oci_projection;
 mod telemetry;
 mod tree_projection;
 
@@ -196,6 +197,12 @@ impl RemoteStorageWorkClient {
             binding_custody_cohorts: binding_cohorts::BindingCustodyCohorts::default(),
             published_bindings: RwLock::new(BTreeMap::new()),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_controlled_http(mut self, http: reqwest::Client) -> Self {
+        self.http = http;
+        self
     }
 
     /// Installs independently verified prerequisite provider/runtime profiles.
@@ -2025,6 +2032,15 @@ impl SurfaceFetch for HybridSurfaceFetch {
 
     async fn fetch_bounded(&self, path: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
         control::fetch_bounded(self, path, max_bytes).await
+    }
+
+    async fn oci_document_projection(
+        &self,
+        path: &str,
+        descriptor: &aos_oci_types::Descriptor,
+        admission: Option<&aos_hub_core::hybrid_ingress::HybridOciManifestAdmission>,
+    ) -> Result<Option<aos_hub_core::oci_projection::guard::VerifiedOciProjection>> {
+        self.read_oci_projection(path, descriptor, admission).await
     }
 
     fn storage_local_git_inspection(&self) -> bool {

@@ -360,3 +360,5 @@ async fn legacy_raw_narinfo_rpc_and_misleading_phase_never_poll_body() {
         }
     }
 }
+
+mod oci_completion;

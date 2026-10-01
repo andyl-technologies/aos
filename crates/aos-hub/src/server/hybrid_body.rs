@@ -11,7 +11,7 @@ use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use crate::db::Database;
 
 const CACHE_OBJECT_CONTROL_BYTES: usize = 64 * 1024;
-const MANIFEST_CONTROL_BYTES: usize = 64 * 1024;
+const MANIFEST_CONTROL_BYTES: usize = 2;
 const DIRECT_CONTROL_BYTES: usize = 256 * 1024;
 
 pub(super) async fn body_limit(
@@ -34,6 +34,7 @@ pub(super) async fn body_limit(
     }
 
     let path = uri.path();
+    let mut fixed_manifest_completion = false;
     let limit = if path.starts_with("/aos.hub.v1.") {
         if !aos_hub_core::connect::hybrid_control_authority_matches(
             control_url,
@@ -61,7 +62,12 @@ pub(super) async fn body_limit(
             None
         };
         match oci {
-            Some(oci) => oci_limit(method, &oci, uri.query(), phase)?,
+            Some(oci) => {
+                fixed_manifest_completion = matches!(oci, OciRequest::Manifest { .. })
+                    && *method == Method::PUT
+                    && phase == Some("complete");
+                oci_limit(method, &oci, uri.query(), phase)?
+            }
             None if phase.is_some() || matches!(*method, Method::PUT | Method::PATCH) => {
                 return Err(StatusCode::BAD_REQUEST);
             }
@@ -69,6 +75,15 @@ pub(super) async fn body_limit(
             None => super::RPC_MAX_BODY_BYTES,
         }
     };
+
+    // Completion contains one canonical empty control. Authenticate its
+    // exact commitment before polling; even a valid actor cannot send raw
+    // manifest bytes through this private metadata route.
+    if fixed_manifest_completion
+        && assertion.body_sha256 != aos_hub_core::hybrid_ingress::body_sha256(b"{}")
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
 
     // A declared oversized body can be rejected without touching the stream.
     // Undeclared/chunked bodies are bounded by the same selected cap afterward.
@@ -80,6 +95,9 @@ pub(super) async fn body_limit(
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or(StatusCode::BAD_REQUEST)?;
         if lengths.next().is_some() {
+            return Err(StatusCode::BAD_REQUEST);
+        }
+        if fixed_manifest_completion && length != MANIFEST_CONTROL_BYTES as u64 {
             return Err(StatusCode::BAD_REQUEST);
         }
         if length > limit as u64 {
@@ -182,6 +200,7 @@ fn oci_limit(
         (OciRequest::BlobUpload { .. }, &Method::PATCH, Some("complete")) if query.is_none() => {
             Ok(16 * 1024)
         }
+        (OciRequest::Manifest { .. }, &Method::PUT, Some("authorize")) if query.is_none() => Ok(0),
         (OciRequest::Manifest { .. }, &Method::PUT, Some("preflight")) if query.is_none() => {
             Ok(2048)
         }

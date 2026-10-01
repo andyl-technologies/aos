@@ -12,14 +12,23 @@ pub const HYBRID_OCI_MANIFEST_UPLOAD_QUERY: &str = "aos_hybrid_manifest_upload";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HybridOciManifestPreflight {
+    /// Original client Content-Type, checked by the shared OCI parser.
+    pub media_type: aos_oci_types::MediaType,
     /// Portable hash continuation after reading the bounded manifest body.
     pub sha256_state: crate::db::OciSha256State,
 }
+
+/// Completes a reservation without relaying original OCI bytes to Native.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridOciManifestCompletion {}
 
 /// Native's durable reservation for writing exact manifest bytes beside R2.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HybridOciManifestAdmission {
+    /// Commitment to the exact Native target, actor, reference and writer pins.
+    pub original_digest: String,
     /// Upload reservation owned by the authenticated manifest writer.
     pub upload_id: String,
     /// Frozen placement prefix within the deployment R2 bucket.

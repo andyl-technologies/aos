@@ -202,6 +202,7 @@ impl RpcService {
                         registry,
                         repository,
                         owner,
+                        authority,
                         reference.clone(),
                         headers,
                         query,
@@ -296,7 +297,7 @@ impl RpcService {
                     .await
             }
             (OciRequest::Manifest { reference, .. }, Method::PUT) => {
-                self.put_manifest(registry, repository, owner, reference, headers, body, None)
+                self.put_manifest(registry, repository, owner, reference, headers, body)
                     .await
             }
             (OciRequest::Manifest { reference, .. }, Method::DELETE) => {

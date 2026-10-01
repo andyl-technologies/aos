@@ -25,6 +25,44 @@ pub use model::*;
 pub use sha256::*;
 
 impl Database {
+    /// Returns the exact private Hybrid manifest original commitment.
+    ///
+    /// # Errors
+    /// Returns an error for database failure or a malformed retained original.
+    pub async fn hybrid_oci_manifest_original_digest(
+        &self,
+        upload_id: &str,
+        owner: &str,
+    ) -> Result<Option<String>> {
+        let row = self
+            .backend
+            .query_opt(
+                "SELECT idempotency_key FROM oci_upload_sessions WHERE id = ?1
+             AND writer_id = ?2 AND token_id = ?2",
+                &vals![upload_id, owner],
+            )
+            .await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let retained: String = row.get(0)?;
+        let Some(value) = retained.strip_prefix("manifest-hybrid-") else {
+            return Ok(None);
+        };
+        let Some((original, nonce)) = value.split_once('-') else {
+            bail!("Hybrid OCI original commitment is malformed");
+        };
+        anyhow::ensure!(
+            crate::direct_upload::valid_direct_digest(original)
+                && nonce.len() == 32
+                && nonce
+                    .bytes()
+                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
+            "Hybrid OCI original commitment is malformed"
+        );
+        Ok(Some(original.to_string()))
+    }
+
     /// Opens or idempotently returns a bounded repository upload.
     ///
     /// The session reserves one object immediately and grows its byte
@@ -272,13 +310,12 @@ impl Database {
         owner: &str,
         now: i64,
     ) -> Result<Option<OciUploadRecord>> {
-        let upload = self
-            .backend
+        let upload = self.backend
             .query_opt(
                 &format!(
                     "SELECT {OCI_UPLOAD_COLUMNS} FROM oci_upload_sessions
                      WHERE id = ?1 AND writer_id = ?2 AND token_id = ?2
-                       AND state = 'active' AND expires_at > ?3
+                       AND ((state IN('active', 'completing') AND expires_at > ?3) OR state = 'complete')
                        AND idempotency_key LIKE 'manifest-hybrid-%'"
                 ),
                 &vals![upload_id, owner, now],

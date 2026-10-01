@@ -672,6 +672,24 @@ pub trait SurfaceFetch: BackendBounds {
         Ok(Some(bytes))
     }
 
+    /// Parses bounded OCI metadata beside the exact stored document bytes.
+    ///
+    /// Hybrid implementations must authenticate an independent storage-side
+    /// readback. Standalone stores retain their ordinary exact-byte path.
+    ///
+    /// # Errors
+    /// Returns an error for changed original bytes, invalid OCI metadata or an
+    /// unavailable authenticated projection. Missing storage returns `None`.
+    async fn oci_document_projection(
+        &self,
+        path: &str,
+        descriptor: &aos_oci_types::Descriptor,
+        admission: Option<&crate::hybrid_ingress::HybridOciManifestAdmission>,
+    ) -> Result<Option<crate::oci_projection::guard::VerifiedOciProjection>> {
+        let _ = (path, descriptor, admission);
+        bail!("this surface does not provide independent OCI metadata readback")
+    }
+
     /// Enumerates one ordered page of surface-relative object paths.
     ///
     /// Returns the logical paths [`fetch`](Self::fetch) accepts (e.g.

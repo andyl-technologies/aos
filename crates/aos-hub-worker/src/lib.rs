@@ -156,6 +156,13 @@ pub(crate) mod direct_digest;
 mod direct_guard;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod direct_upload;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod oci_manifest_ingress;
+#[cfg(target_arch = "wasm32")]
+mod oci_projection;
+#[cfg(test)]
+#[path = "oci_projection/lifetime.rs"]
+mod oci_projection_lifetime;
 #[cfg(target_arch = "wasm32")]
 pub use direct_upload::HybridDirectUpload;
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]

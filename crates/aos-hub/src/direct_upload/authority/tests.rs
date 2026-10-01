@@ -12,6 +12,9 @@ use axum::{body::Bytes, http::HeaderMap, routing::post, Router};
 use super::*;
 use sha2::Digest as _;
 
+#[path = "oci_projection_tests.rs"]
+mod oci_projection_tests;
+
 #[path = "empty_tests.rs"]
 mod empty_tests;
 

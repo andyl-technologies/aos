@@ -1,10 +1,12 @@
 //! Worker-local manifest staging with Native-owned quota and graph admission.
 //!
 //! Preflight reserves the entire bounded byte identity and cleanup address in
-//! SQL before the Worker writes R2. Completion carries the original document
-//! inbound once; no manifest body is returned across the cloud boundary.
+//! SQL before the Worker writes R2. Completion carries an empty closed control;
+//! independently authenticated stored-read metadata supplies the graph. Original
+//! manifest and config bytes remain storage-local.
 
-use aos_oci_types::{ManifestReference, Sha256Digest};
+use crate::oci_projection::manifest_original_digest;
+use aos_oci_types::{ManifestReference, MediaType, Sha256Digest};
 use axum::body::{to_bytes, Body};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse as _, Response};
@@ -16,7 +18,8 @@ use crate::db::{
     OciUploadRecord, RegistryRecord, SurfacePlacementRecord, SurfaceTarget,
 };
 use crate::hybrid_ingress::{
-    HybridOciManifestAdmission, HybridOciManifestPreflight, HYBRID_OCI_MANIFEST_UPLOAD_QUERY,
+    HybridOciManifestAdmission, HybridOciManifestCompletion, HybridOciManifestPreflight,
+    HYBRID_OCI_MANIFEST_UPLOAD_QUERY,
 };
 use crate::oci::upload::{exact_upload_placement, UPLOAD_SESSION_SECONDS};
 
@@ -30,13 +33,33 @@ impl RpcService {
         registry: &RegistryRecord,
         repository: &OciRepositoryRecord,
         owner: String,
+        authority: &str,
         reference: ManifestReference,
         headers: HeaderMap,
         query: Option<&str>,
         body: Body,
         phase: &str,
     ) -> Response {
+        let authenticated = match super::authority::HybridManifestAuthority::resolve(
+            self, registry, repository, authority, &headers,
+        )
+        .await
+        {
+            Ok(authenticated) => authenticated,
+            Err(response) => return response,
+        };
         match phase {
+            "authorize" => {
+                if !matches!(private_manifest_upload(query), Ok(None)) {
+                    return manifest_invalid("manifest authorization has a private upload query");
+                }
+                // No body or SQL reservation is needed to check the original
+                // current actor before the Worker consumes its raw document.
+                if let Err(response) = authenticated.recheck(self, registry, repository).await {
+                    return response;
+                }
+                StatusCode::NO_CONTENT.into_response()
+            }
             "preflight" => {
                 if !matches!(private_manifest_upload(query), Ok(None)) {
                     return manifest_invalid("manifest preflight has a private upload query");
@@ -51,7 +74,16 @@ impl RpcService {
                     .reserve_hybrid_manifest(registry, repository, &owner, &reference, request)
                     .await
                 {
-                    Ok(admission) => axum::Json(admission).into_response(),
+                    Ok(admission) => {
+                        if let Err(response) =
+                            authenticated.recheck(self, registry, repository).await
+                        {
+                            // An admitted SQL reservation remains retained for
+                            // exact cleanup; no Worker PUT is granted here.
+                            return response;
+                        }
+                        axum::Json(admission).into_response()
+                    }
                     Err(response) => response,
                 }
             }
@@ -60,14 +92,22 @@ impl RpcService {
                     Ok(Some(upload_id)) => upload_id,
                     _ => return manifest_invalid("manifest completion reservation is invalid"),
                 };
-                self.put_manifest(
+                let completion = to_bytes(body, 128).await.ok().and_then(|bytes| {
+                    serde_json::from_slice::<HybridOciManifestCompletion>(&bytes).ok()
+                });
+                if completion.is_none() {
+                    return manifest_invalid(
+                        "manifest completion requires closed metadata, not original bytes",
+                    );
+                }
+                self.complete_hybrid_manifest(
                     registry,
                     repository,
                     owner,
                     reference,
                     headers,
-                    body,
-                    Some(&upload_id),
+                    &upload_id,
+                    authenticated,
                 )
                 .await
             }
@@ -83,6 +123,11 @@ impl RpcService {
         reference: &ManifestReference,
         request: HybridOciManifestPreflight,
     ) -> Result<HybridOciManifestAdmission, Response> {
+        if !request.media_type.is_image_manifest() && !request.media_type.is_image_index() {
+            return Err(manifest_invalid(
+                "manifest preflight media type is unsupported",
+            ));
+        }
         let size = request.sha256_state.total_bytes;
         if size == 0 || size > MAX_MANIFEST_BYTES as u64 {
             return Err(manifest_invalid("manifest size is outside the 4 MiB limit"));
@@ -123,6 +168,24 @@ impl RpcService {
             ));
         }
 
+        let authority = self
+            .db
+            .surface_write_authority(SurfaceTarget::Registry(registry.id))
+            .await
+            .map_err(|_| unavailable_response("manifest write authority is unavailable", false))?
+            .ok_or_else(|| unavailable_response("manifest write authority is absent", false))?;
+        let original_digest = manifest_original_digest(
+            registry.id,
+            repository.id,
+            owner,
+            reference,
+            request.media_type,
+            &placement,
+            &binding,
+            revision.revision,
+            &authority,
+        )
+        .map_err(|_| unavailable_response("manifest original could not be retained", false))?;
         let current = now();
         let upload = self
             .db
@@ -132,7 +195,10 @@ impl RpcService {
                 publication_id: None,
                 writer_id: owner.to_string(),
                 token_id: owner.to_string(),
-                idempotency_key: format!("manifest-hybrid-{}", Uuid::new_v4().simple()),
+                idempotency_key: format!(
+                    "manifest-hybrid-{original_digest}-{}",
+                    Uuid::new_v4().simple()
+                ),
                 expected_digest: Some(digest),
                 expected_size: Some(size),
                 maximum_size: MAX_MANIFEST_BYTES as u64,
@@ -186,6 +252,7 @@ impl RpcService {
             ));
         }
         Ok(HybridOciManifestAdmission {
+            original_digest,
             upload_id: upload.id,
             placement_prefix: placement.prefix,
             staging_object_key,
@@ -194,7 +261,7 @@ impl RpcService {
         })
     }
 
-    pub(super) async fn verified_hybrid_manifest_staging(
+    async fn load_hybrid_manifest_staging(
         &self,
         repository: &OciRepositoryRecord,
         owner: &str,
@@ -248,23 +315,193 @@ impl RpcService {
                 false,
             ));
         }
+        Ok((placement, upload, chunks))
+    }
+
+    #[cfg(test)]
+    async fn verified_hybrid_manifest_staging(
+        &self,
+        repository: &OciRepositoryRecord,
+        owner: &str,
+        upload_id: &str,
+        digest: Sha256Digest,
+        size: usize,
+    ) -> Result<
+        (
+            SurfacePlacementRecord,
+            OciUploadRecord,
+            Vec<OciUploadChunkRecord>,
+        ),
+        Response,
+    > {
+        let (placement, upload, chunks) = self
+            .load_hybrid_manifest_staging(repository, owner, upload_id, digest, size)
+            .await?;
         let fetcher = self
             .surface
             .placement_fetcher(&placement)
             .await
-            .map_err(|_| unavailable_response("manifest staging object is unavailable", false))?;
+            .map_err(|_| unavailable_response("manifest storage unavailable", false))?;
         let evidence = fetcher
             .inventory_evidence_bounded(&chunks[0].staging_object_key, size as u64)
             .await
-            .map_err(|_| unavailable_response("manifest staging verification failed", false))?
-            .ok_or_else(|| unavailable_response("manifest staging object is absent", false))?;
+            .map_err(|_| unavailable_response("manifest storage evidence unavailable", false))?
+            .ok_or_else(|| unavailable_response("manifest storage absent", false))?;
         if evidence.size != size as i64 || evidence.sha256 != *digest.as_bytes() {
-            return Err(unavailable_response(
-                "manifest staging object differs from its body",
-                false,
+            return Err(manifest_invalid(
+                "manifest staging differs from its original",
             ));
         }
         Ok((placement, upload, chunks))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_hybrid_manifest(
+        &self,
+        registry: &RegistryRecord,
+        repository: &OciRepositoryRecord,
+        owner: String,
+        reference: ManifestReference,
+        headers: HeaderMap,
+        upload_id: &str,
+        authority: super::authority::HybridManifestAuthority,
+    ) -> Response {
+        let media_type = match super::manifest_content_type(&headers) {
+            Ok(media_type) => media_type,
+            Err(message) => return manifest_invalid(message),
+        };
+        let upload = match self
+            .db
+            .hybrid_oci_manifest_upload(upload_id, &owner, now())
+            .await
+        {
+            Ok(Some(upload)) => upload,
+            _ => return manifest_invalid("manifest reservation is absent or expired"),
+        };
+        let (Some(digest), Some(size)) = (upload.expected_digest, upload.expected_size) else {
+            return manifest_invalid("manifest reservation has no exact byte identity");
+        };
+        let (placement, upload, chunks) = match self
+            .load_hybrid_manifest_staging(repository, &owner, upload_id, digest, size as usize)
+            .await
+        {
+            Ok(staged) => staged,
+            Err(response) => return response,
+        };
+        let binding = match self.db.binding(placement.binding_id).await {
+            Ok(Some(binding)) => binding,
+            _ => return unavailable_response("manifest binding is unavailable", false),
+        };
+        let current_authority = match self
+            .db
+            .surface_write_authority(SurfaceTarget::Registry(registry.id))
+            .await
+        {
+            Ok(Some(authority)) => authority,
+            _ => return unavailable_response("manifest write authority is unavailable", false),
+        };
+        let original_digest = match manifest_original_digest(
+            registry.id,
+            repository.id,
+            &owner,
+            &reference,
+            media_type,
+            &placement,
+            &binding,
+            upload.staging_binding_write_revision.unwrap_or(0),
+            &current_authority,
+        ) {
+            Ok(digest) => digest,
+            Err(_) => return unavailable_response("manifest original is invalid", false),
+        };
+        if self
+            .db
+            .hybrid_oci_manifest_original_digest(upload_id, &owner)
+            .await
+            .ok()
+            .flatten()
+            .as_deref()
+            != Some(original_digest.as_str())
+        {
+            return manifest_invalid(
+                "manifest target, actor, reference or writer differs from its original",
+            );
+        }
+        let admission = HybridOciManifestAdmission {
+            original_digest,
+            upload_id: upload.id.clone(),
+            placement_prefix: placement.prefix.clone(),
+            staging_object_key: chunks[0].staging_object_key.clone(),
+            byte_size: size,
+            sha256: digest.encoded().to_string(),
+        };
+        let descriptor = aos_oci_types::Descriptor {
+            media_type,
+            digest,
+            size,
+            urls: Vec::new(),
+            annotations: aos_oci_types::Annotations::new(),
+            data: None,
+            artifact_type: None,
+            platform: None,
+        };
+        let fetcher = match self.surface.placement_fetcher(&placement).await {
+            Ok(fetcher) => fetcher,
+            Err(_) => {
+                return unavailable_response("manifest projection reader is unavailable", false)
+            }
+        };
+        let projection_path = if upload.state == "complete" {
+            if upload.final_digest != Some(digest)
+                || upload.materialization_placement_id != Some(placement.id)
+                || upload.materialization_placement_resource_version
+                    != Some(placement.resource_version)
+                || upload.materialization_binding_id != Some(placement.binding_id)
+                || upload.materialization_binding_write_revision
+                    != upload.staging_binding_write_revision
+            {
+                return manifest_invalid(
+                    "completed manifest differs from its original materialization",
+                );
+            }
+            crate::db::oci_blob_object_key(digest)
+        } else {
+            admission.staging_object_key.clone()
+        };
+        let proof = match fetcher
+            .oci_document_projection(&projection_path, &descriptor, Some(&admission))
+            .await
+        {
+            Ok(Some(document)) => document,
+            _ => {
+                return unavailable_response(
+                    "exact stored manifest projection could not be verified",
+                    false,
+                )
+            }
+        };
+        let document = match proof.check(&descriptor, now()) {
+            Ok(document) => document.clone(),
+            Err(_) => return unavailable_response("stored manifest proof expired", false),
+        };
+        if document.validate(media_type).is_err() {
+            return manifest_invalid("stored manifest projection is invalid");
+        }
+        let root = super::document_descriptor(media_type, digest, size, &document);
+        self.finish_manifest_graph(
+            registry,
+            repository,
+            owner,
+            reference,
+            root,
+            document,
+            placement,
+            upload,
+            chunks,
+            vec![proof],
+            Some(authority),
+        )
+        .await
     }
 }
 

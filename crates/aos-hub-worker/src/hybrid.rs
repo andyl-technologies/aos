@@ -98,6 +98,9 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == STORAGE_WORK_PATH {
         return execute_storage_work(request, env).await;
     }
+    if path == aos_hub_core::oci_projection::guard::OCI_PROJECTION_PATH {
+        return crate::oci_projection::fetch(request, env).await;
+    }
     if path == aos_hub_core::hybrid_ingress::live::candidate::query::LIVE_QUERY_CANDIDATE_PATH {
         #[cfg(feature = "do-e2e")]
         return crate::mirror_live::candidate::query::fetch(request, env).await;
@@ -279,19 +282,67 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
     {
         return Response::error("private manifest upload query is unavailable", 400);
     }
-    let Some(bytes) = read_bounded_body(&mut request, MAX_HYBRID_OCI_MANIFEST_BYTES).await? else {
-        return Response::error("manifest body exceeds the 4 MiB limit", 413);
+    let authorization_request = upload_phase_request(&request, &[])?;
+    let incoming = &mut request;
+    let bytes = match crate::oci_manifest_ingress::read_authorized(
+        proxy_upload_phase(authorization_request, env, "authorize"),
+        |response| response.status_code() == 204,
+        move || read_bounded_body(incoming, MAX_HYBRID_OCI_MANIFEST_BYTES),
+    )
+    .await?
+    {
+        crate::oci_manifest_ingress::AuthorizedBody::Denied(response) => return Ok(response),
+        crate::oci_manifest_ingress::AuthorizedBody::Read(Some(bytes)) => bytes,
+        crate::oci_manifest_ingress::AuthorizedBody::Read(None) => {
+            return Response::error("manifest body exceeds the 4 MiB limit", 413);
+        }
     };
     if bytes.is_empty() {
         return Response::error("manifest body must not be empty", 400);
+    }
+    let media_type = request
+        .headers()
+        .get("content-type")?
+        .and_then(|value| aos_oci_types::MediaType::parse(&value).ok());
+    let Some(media_type) = media_type else {
+        return Response::error("manifest Content-Type is unsupported", 400);
+    };
+    let descriptor = aos_oci_types::Descriptor {
+        media_type,
+        digest: aos_oci_types::Sha256Digest::digest(&bytes),
+        size: bytes.len() as u64,
+        urls: Vec::new(),
+        annotations: aos_oci_types::Annotations::new(),
+        data: None,
+        artifact_type: None,
+        platform: None,
+    };
+    if aos_hub_core::oci_projection::OciDocumentProjection::from_stored_bytes(&descriptor, &bytes)
+        .is_err()
+        || (!media_type.is_image_manifest() && !media_type.is_image_index())
+    {
+        return Response::error("manifest semantic projection is invalid", 400);
+    }
+    let qualified = match crate::direct_upload::config::QualifiedConfig::load(env).await {
+        Ok(qualified) => qualified,
+        Err(_) => return Response::error("manifest provider qualification is unavailable", 503),
+    };
+    if qualified.managed(env).is_err() {
+        return Response::error(
+            "manifest managed provider qualification is unavailable",
+            503,
+        );
     }
     let mut sha256_state = aos_hub_core::db::OciSha256State::initial();
     sha256_state
         .update(&bytes)
         .map_err(|error| worker::Error::RustError(format!("manifest digest state: {error}")))?;
     let sha256 = crate::digest::sha256_hex(&bytes, MAX_HYBRID_OCI_MANIFEST_BYTES).await?;
-    let preflight = serde_json::to_vec(&HybridOciManifestPreflight { sha256_state })
-        .map_err(|error| worker::Error::RustError(format!("manifest preflight JSON: {error}")))?;
+    let preflight = serde_json::to_vec(&HybridOciManifestPreflight {
+        media_type,
+        sha256_state,
+    })
+    .map_err(|error| worker::Error::RustError(format!("manifest preflight JSON: {error}")))?;
     let preflight_request = upload_phase_request(&request, &preflight)?;
     let response = match proxy_with_upload_phase(preflight_request, env, Some("preflight")).await {
         Ok(response) => response,
@@ -326,6 +377,7 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
             .upload_id
             .bytes()
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || !aos_hub_core::direct_upload::valid_direct_digest(&admission.original_digest)
         || admission.byte_size != bytes.len() as u64
         || admission.sha256 != sha256
         || !valid_key
@@ -337,6 +389,12 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
     if !valid_r2_key(&object_key) {
         return Response::error("manifest placement key is invalid", 502);
     }
+    if qualified.latest_now().is_err() || qualified.managed(env).is_err() {
+        return Response::error(
+            "manifest provider qualification expired before storage dispatch",
+            503,
+        );
+    }
     if let Err(error) = crate::hybrid_object::put(env, &object_key, &bytes).await {
         worker::console_error!("hybrid_manifest_put_failed: {error:#}");
         return Response::error("manifest storage write failed", 503);
@@ -347,11 +405,11 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
         .append_pair(HYBRID_OCI_MANIFEST_UPLOAD_QUERY, &admission.upload_id);
     let completion = upload_phase_request_with_url(
         &request,
-        &bytes,
+        b"{}",
         worker::Method::Put,
         completion_url.as_str(),
     )?;
-    // Native parses the exact original OCI document, never the preflight JSON.
+    // Native independently reads closed metadata from the exact guarded stored original.
     if let Some(content_type) = request.headers().get("content-type")? {
         completion.headers().set("content-type", &content_type)?;
     } else {

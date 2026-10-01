@@ -12,8 +12,8 @@ pub mod projection;
 pub use projection::{HybridNarinfoProjection, HybridNarinfoSignature, HybridObjectProjection};
 
 pub use oci_manifest::{
-    HybridOciManifestAdmission, HybridOciManifestPreflight, HYBRID_OCI_MANIFEST_UPLOAD_QUERY,
-    MAX_HYBRID_OCI_MANIFEST_BYTES,
+    HybridOciManifestAdmission, HybridOciManifestCompletion, HybridOciManifestPreflight,
+    HYBRID_OCI_MANIFEST_UPLOAD_QUERY, MAX_HYBRID_OCI_MANIFEST_BYTES,
 };
 
 use std::collections::BTreeMap;

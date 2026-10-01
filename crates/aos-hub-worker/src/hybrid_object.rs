@@ -92,8 +92,17 @@ impl DurableObject for HybridObjectGuard {
             return Response::error("object key does not match its guard", 400);
         }
 
-        let _permit = acquire_gate(Arc::clone(&self.gate)).await;
         let path = request.url()?.path().to_owned();
+        if path == crate::oci_projection::PHYSICAL_PATH {
+            return crate::oci_projection::physical_fetch(
+                self,
+                &key,
+                &mut request,
+                Arc::clone(&self.gate),
+            )
+            .await;
+        }
+        let _permit = acquire_gate(Arc::clone(&self.gate)).await;
         if key.starts_with(crate::mirror_import::inventory::CACHE_PREFIX) {
             if matches!(
                 path.as_str(),
@@ -434,7 +443,7 @@ pub(crate) fn receipt_key(mutation: &Mutation) -> String {
     format!("mutation-receipt:{}", mutation.operation_id)
 }
 
-async fn acquire_gate(gate: Arc<Mutex<()>>) -> OwnedMutexGuard<()> {
+pub(crate) async fn acquire_gate(gate: Arc<Mutex<()>>) -> OwnedMutexGuard<()> {
     loop {
         if let Some(permit) = gate.try_lock_owned() {
             return permit;

@@ -19,6 +19,34 @@ admission; physical object presence alone never authorizes completion. An upload
 that does not converge within the bounded window returns a retryable error and
 cleans up its own staging objects.
 
+## Complete managed OCI metadata
+
+The Managed R2 path keeps the existing 4 MiB manifest/index input limit. The
+Worker hashes and parses the original client bytes before asking Native to
+reserve their exact identity and cleanup address. Its completion request is an
+empty closed control, not the original manifest. Runnable image configs use the
+same storage-side parser and independent readback.
+
+The guard holds the physical key while it checks pending mutations, reads the
+actual R2 incarnation with an ETag condition, verifies the original SHA-256 and
+size, and signs the parsed metadata under the separately installed direct guard
+role. Native pins that role's reviewed source, script and clock policy. Each
+canonical reply has a 4 MiB plus 64 KiB bound; generic storage-work limits remain
+unchanged. Canonical metadata never substitutes for the original byte digest.
+
+Native still requires repository-linked dependencies and exact placement
+presence. The final transaction rechecks the live credential/IAM grant,
+original reservation, current binding/writer and placement before updating the
+catalogue and tag. A late or lost reply leaves an unresolved logical outcome;
+retry the exact original with a current credential. A completed blob can be
+read back at its canonical key without repeating materialization or its quota
+charge, including after staging cleanup.
+
+This path requires current independently accepted Managed R2 configuration.
+It does not enable External S3 manifest staging, infer provider qualification
+from metadata fixtures, or change Native-only and Worker-only byte validation.
+Bounded signed closure and DSSE payload verification remain separate controls.
+
 ## Recover an ambiguous physical mutation
 
 The R2 object guard persists a pending operation before visible PUT, multipart
