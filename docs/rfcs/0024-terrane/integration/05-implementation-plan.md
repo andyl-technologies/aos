@@ -407,7 +407,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   candidate. Exact gates now require the six binding and seven consumer cases;
   their current hermetic builds remain pending. The narrow FsRef adapter
   forwards only to its actual underlying binding; FaultFs keeps scalar
-  interception. No deadline change or performance result is claimed.
+  interception. A separate original multiwriter selector on the assembled
+  joint candidate still returns `Expired` at the first joined result with its
+  original 30-second request window; phase diagnosis remains pending. No
+  deadline change or speedup is claimed.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
