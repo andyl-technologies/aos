@@ -69,7 +69,7 @@ class IssuerLifecycleInvariants(unittest.TestCase):
             with self.assertRaises(ValueError):
                 lifecycle.assert_direct_issuer_cold_head(before, changed)
 
-    def test_guest_cold_restart_program_pins_only_original_and_never_initializes(self):
+    def test_terminal_cold_refusal_pins_original_and_preserves_unresolved_history(self):
         programs = []
         def guest(machine, python, body, selected, timeout):
             ast.parse(textwrap.dedent(body))
@@ -78,9 +78,10 @@ class IssuerLifecycleInvariants(unittest.TestCase):
             return json.dumps({"pid": 42})
         with patch.multiple(lifecycle, direct_guest_python=guest,
                 retain_direct_flow=lambda *args: None, create=True):
-            lifecycle.cold_restart_direct_issuer(None,
+            lifecycle.observe_direct_issuer_cold_refusal(None,
                 {"python": "controlled", "authority": "/immutable/aos-hub-authority"},
-                {"pid": 41, "startTicks": "10", "executableSha256": "d" * 64})
+                {"pid": 41, "startTicks": "10", "executableSha256": "d" * 64},
+                {"reply": {"current": {"journal": {}, "installation": {}}}})
         body, selected = programs[0]
         self.assertEqual(selected["original"]["pid"], 41)
         self.assertIn("os.pidfd_open", body)
@@ -88,6 +89,11 @@ class IssuerLifecycleInvariants(unittest.TestCase):
         self.assertIn("'serve'", body)
         self.assertNotIn("'initialize'", body)
         self.assertNotIn("SIGKILL", body)
+        self.assertIn("?mode=ro", body)
+        self.assertIn("unresolved clock session requires explicit reviewed operator resolution", body)
+        self.assertIn("history() != retained_history", body)
+        self.assertNotIn("UPDATE", body)
+        self.assertNotIn("DELETE", body)
 
 
 if __name__ == "__main__":

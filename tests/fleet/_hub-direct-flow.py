@@ -789,6 +789,12 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     issuer_lifecycle = run_direct_issuer_lifecycle(native, worker, tools, shared_controls, authority)
     issuer_cutoff = run_direct_issuer_cutoff(native, worker, tools, shared_controls, controls, authority)
     failures = run_direct_dependency_outages(client, native, worker, database_machine, tools, process)
+    browser = run_direct_browser_session(client, native, worker, tools,
+        failures["scenarios"]["executor"]["restart"])
+    # Cold startup has no supported reviewed clock-session resolution. Observe
+    # its real refusal last so the live issuer supports the other scenarios.
+    cold_refusal = run_direct_issuer_terminal_refusal(native, worker, tools, shared_controls, authority)
     return {"publication": publication, "queueRestart": queue_restart, "nativePrebody": prebody,
             "issuerLifecycle": issuer_lifecycle, "issuerCutoff": issuer_cutoff,
-            "dependencyFailures": failures}
+            "dependencyFailures": failures, "browserSession": browser,
+            "terminalColdRefusal": cold_refusal}

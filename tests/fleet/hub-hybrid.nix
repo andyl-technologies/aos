@@ -546,6 +546,7 @@ in {
       + builtins.readFile ./_hub-direct-issuer-lifecycle.py
       + builtins.readFile ./_hub-direct-issuer-cutoff.py
       + builtins.readFile ./_hub-direct-failure-windows.py
+      + builtins.readFile ./_hub-direct-browser.py
       + builtins.readFile ./_hub-direct-storage-boundary.py
       + builtins.readFile ./_hub-index-parity.py
       + builtins.readFile ./_hub-runtime-parity.py
