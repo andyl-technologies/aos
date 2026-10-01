@@ -532,6 +532,7 @@ in {
       + builtins.readFile ./_hub-direct-authority.py
       + builtins.readFile ./_hub-direct-publisher.py
       + builtins.readFile ./_hub-direct-qualification.py
+      + builtins.readFile ./_hub-direct-queue-restart.py
       + builtins.readFile ./_hub-direct-runtime-observations.py
       + builtins.readFile ./_hub-direct-observations.py
       + builtins.readFile ./_hub-direct-boundary.py

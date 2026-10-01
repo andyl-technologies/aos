@@ -11,7 +11,8 @@ import shlex
 import time
 
 
-def wait_worker_transport(worker, curl, python, external_direct, timeout=180):
+def wait_worker_transport(worker, curl, python, external_direct, timeout=180,
+                          observation_label="worker"):
     """Retain each actual startup response and require the route's refusal."""
     route, expected = (
         ("credential-custody", "409") if external_direct else ("capabilities", "401")
@@ -19,7 +20,7 @@ def wait_worker_transport(worker, curl, python, external_direct, timeout=180):
     return wait_fixture_tls_response(
         worker, curl, python,
         "https://aos.andyl.org/_internal/storage/v1/" + route,
-        "POST", {expected}, "worker", timeout,
+        "POST", {expected}, observation_label, timeout,
     )
 
 

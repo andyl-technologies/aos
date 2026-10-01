@@ -699,7 +699,8 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
         "--report-file", namespace_file,
     ], namespace_file)
     process = start_direct_worker(worker, tools, worker_controls["configurationFile"], "bootstrap")
-    wait_worker_transport(worker, tools["curl"], tools["python"], True)
+    wait_worker_transport(worker, tools["curl"], tools["python"], True,
+                          observation_label="worker-bootstrap")
     runtime, _ = observe_direct_runtime_process(worker, tools, "bootstrap")
     installation_sha = retain_direct_flow("preauthority-runtime-context.json", {
         "version": 1, "artifacts": artifacts, "runner": process, "runtime": runtime,
@@ -742,7 +743,8 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
         authority["consumerBindings"], service)
     retain_direct_flow("bootstrap-runner-disposal.json", stop_direct_worker(worker, tools["python"], process))
     process = start_direct_worker(worker, tools, installed["configurationFile"], "qualified")
-    wait_worker_transport(worker, tools["curl"], tools["python"], True)
+    wait_worker_transport(worker, tools["curl"], tools["python"], True,
+                          observation_label="worker-qualified")
     hydration = hydrate_external_authority(worker, tools["python"], tools["authorityBootstrap"],
         authority["exported"], tools["workerUrl"], tools["storageWorkKeyFile"],
         credentials["operatorVersions"]["manifestFile"])
@@ -751,10 +753,15 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     identity = inspect_direct_external_deployment(worker, tools["python"], tools["hub"],
         authority["exported"], tools["workerUrl"], tools["nativeOriginUrl"], "hub-hybrid-fleet",
         "hybrid-fleet-r2", worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_GUARD_KEY"])
-    measured = observe_direct_installed_runtime(worker, tools, artifacts, process, identity)
-    expose_direct_review_inputs(worker, tools, artifacts, process)
     bulk = prepare_direct_qualification_bulk(worker, tools["python"], "/var/lib/hybrid-worker/qualification-bulk")
     metadata = prepare_direct_qualification_metadata(worker, tools["python"], "/var/lib/hybrid-worker/qualification-metadata")
+    queue_restart, process = run_direct_queue_restart(worker, tools, process, identity,
+        worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_CONFORMANCE_KEY"],
+        authority["exported"]["bootstrap"]["selector"], bulk[0])
+    # The measured installation and review captures describe the new live
+    # runner, with the same artifact/configuration and retained persistent state.
+    measured = observe_direct_installed_runtime(worker, tools, artifacts, process, identity)
+    expose_direct_review_inputs(worker, tools, artifacts, process)
     qualification = run_direct_prequalification(worker, tools["python"], tools["node"], tools["qualificationDriver"],
         tools["workerUrl"], worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_CONFORMANCE_KEY"],
         identity["identityFile"], authority["exported"]["bootstrap"]["selector"], bulk, metadata)
@@ -769,4 +776,5 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     publication = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
         authority, process, identity, acceptance)
     failures = run_direct_dependency_outages(client, native, worker, database_machine, tools, process)
-    return {"publication": publication, "dependencyFailures": failures}
+    return {"publication": publication, "queueRestart": queue_restart,
+            "dependencyFailures": failures}

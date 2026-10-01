@@ -141,7 +141,8 @@ def run_direct_dependency_outages(client, native, worker, database_machine, tool
             # new process's retained window; the prior runner has its own log.
             resumed_position["byteSize"] = 0
             assert resumed["configurationSha256"] == process["configurationSha256"], resumed
-            wait_worker_transport(worker, tools["curl"], tools["python"], True)
+            wait_worker_transport(worker, tools["curl"], tools["python"], True,
+                                  observation_label="worker-post-outage")
         results["scenarios"]["executor"]["recovery"] = assert_direct_recovered_page(client, tools, "executor-recovered")
     finally:
         _, results["nativeLogWindow"] = retain_direct_log_window(native, tools["python"],
