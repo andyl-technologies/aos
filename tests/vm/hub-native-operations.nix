@@ -87,6 +87,18 @@ in
       }
       trap cleanup EXIT
 
+      # Authority control requires an explicit paired deployment and an
+      # existing reviewed authority. Missing context fails before DB access.
+      $hub_exec authority-control-sync --help > /tmp/authority-control-help
+      grep -q -- '--authority-id' /tmp/authority-control-help
+      if $hub_exec --root /tmp/authority-control-unconfigured authority-control-sync \
+        --authority-id 00000000-0000-4000-8000-000000000021 \
+        > /tmp/authority-control-unconfigured.log 2>&1; then
+        echo "authority control accepted missing paired deployment context" >&2
+        exit 1
+      fi
+      test ! -e /tmp/authority-control-unconfigured/hub.db
+
       # Materialize host-store fixtures the way a native service manager
       # presents credentials: private regular files owned by the service uid.
       mkdir -m 0700 "$credential_dir"
@@ -1416,6 +1428,19 @@ in
         >/tmp/disposable-registry-show.json
       disposable_registry_version=$(resource_version \
         /tmp/disposable-registry-show.json)
+      retained_plan disposable-registry-purge \
+        registry container gc purge-fence plan analytics/disposable \
+        --action begin --if-version "$disposable_registry_version" \
+        --idempotency-key disposable-registry-purge-plan
+      purge_plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id \
+        /tmp/disposable-registry-purge-retained-plan.json)
+      purge_confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash \
+        /tmp/disposable-registry-purge-retained-plan.json)
+      hub_cli_into /tmp/disposable-registry-purge-apply.json \
+        registry container gc purge-fence apply \
+        --plan-id "$purge_plan_id" --confirm-hash "$purge_confirm_hash" \
+        --if-version 1 --idempotency-key disposable-registry-purge-apply \
+        --yes
       reviewed disposable-registry-delete registry delete analytics/disposable \
         --if-version "$disposable_registry_version" \
         >/tmp/disposable-registry-delete.json
@@ -1950,23 +1975,12 @@ in
 
       echo '==> Re-run native maintenance after a clean shutdown'
       $hub_exec --root "$hub_root" index operations/maintenance
-      $hub_exec --root "$hub_root" validate run operations/maintenance
-      $hub_exec --root "$hub_root" validate run operations/maintenance --depth integrity
-      $hub_exec --root "$hub_root" validate run operations/maintenance --depth deep
-      $hub_exec --root "$hub_root" validate repair operations/maintenance \
-        --external-url "$hub_url"
-      if $hub_exec --root "$hub_root" validate run missing/registry \
-        >/tmp/validate-missing.out 2>&1; then
-        echo 'validation unexpectedly accepted a missing registry' >&2
+      if $hub_exec --root "$hub_root" index missing/registry \
+        >/tmp/index-missing.out 2>&1; then
+        echo 'index unexpectedly accepted a missing registry' >&2
         exit 1
       fi
-      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/validate-missing.out
-      if $hub_exec --root "$hub_root" validate repair missing/registry \
-        >/tmp/repair-missing.out 2>&1; then
-        echo 'repair unexpectedly accepted a missing registry' >&2
-        exit 1
-      fi
-      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/repair-missing.out
+      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/index-missing.out
 
       echo 'native Hub operator lifecycle: PASS'
     '';

@@ -10,6 +10,10 @@ prost = { workspace = true }
 pbjson = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+base64 = { workspace = true }
+url = { workspace = true }
 
 [build-dependencies]
 pbjson-build = { workspace = true }

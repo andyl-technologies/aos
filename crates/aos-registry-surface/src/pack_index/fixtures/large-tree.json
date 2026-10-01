@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "gitVersion": "git version 2.55.0",
+  "path": "objects/pack/pack-60928e6b6036a344af80e9dac4eec3aeef3e56fa07a04d5cc342cbcc9fdb567b.idx",
+  "treeOid": "7695993451eb49982c90dc0d03f16cbdecc1b8f528170baa5f6e0522d5c7e610",
+  "blobOid": "6977151b0ffedd5856fc8c7cc59f0e6e985f596813fbe7a52ab421ebfeeeaf0d",
+  "treeSize": 229376,
+  "treeEntries": 4096,
+  "packSha256": "83e106c0a4a6cf7e3a598a9b145dd25486dc3fc0d26119ead50caba101360ed0",
+  "indexSha256": "cfaed66e790da64c3875266dfa460e5deba957d77d10942f308336940554c31f",
+  "packSize": 10695,
+  "indexSize": 1176,
+  "verifyPack": "6977151b0ffedd5856fc8c7cc59f0e6e985f596813fbe7a52ab421ebfeeeaf0d blob   29 39 12\n7695993451eb49982c90dc0d03f16cbdecc1b8f528170baa5f6e0522d5c7e610 tree   229376 10612 51\nnon delta: 2 objects\nlarge-tree.pack: ok\n"
+}

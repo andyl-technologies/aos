@@ -74,6 +74,31 @@ pub struct StaticFileIdentity {
 /// backend-relative `nar/...` URLs recorded in the narinfo `URL` field.
 #[async_trait]
 pub trait CacheBackend: Send + Sync {
+    /// Negotiates an authenticated direct owner before any upload body is sent.
+    ///
+    /// Generic and explicitly negotiated old standalone backends return None.
+    /// Unknown/failed Hub discovery is an error, never a body-proxy fallback.
+    ///
+    /// # Errors
+    /// Refuses discovery, local custody or operator network-policy failures.
+    #[cfg(unix)]
+    async fn direct_coordinator(
+        &self,
+        _jobs: usize,
+        _bytes_per_second: u64,
+    ) -> Result<Option<Arc<aos_remote::DirectUploadCoordinator>>> {
+        Ok(None)
+    }
+
+    /// Waits for staged direct objects to cross the server visibility barrier.
+    ///
+    /// # Errors
+    /// Returns an error for retained unknown effects, invalid replies or timeout.
+    #[cfg(unix)]
+    async fn finish_direct_uploads(&self) -> Result<()> {
+        Ok(())
+    }
+
     /// Returns the shared transfer manager owned by this backend, when exposed.
     ///
     /// Higher-level batch and multipart orchestration uses the same manager so
@@ -487,6 +512,13 @@ pub(crate) fn add_static_metadata_headers(
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub struct AuthOptions {
+    /// Explicit provider network policy and durable retry custody for Hub uploads.
+    #[cfg(unix)]
+    pub direct_upload: aos_remote::DirectUploadOptions,
+    /// Explicit Hub metadata origin for registry publication destinations.
+    pub hub_origin: Option<String>,
+    /// Explicit registry selector resolved by authenticated Hub publication APIs.
+    pub hub_registry: Option<String>,
     // HTTP
     /// AOS provisioning token. Presence marks the target as an AOS
     /// server: the backend exchanges it for a JWT and enables the AOS

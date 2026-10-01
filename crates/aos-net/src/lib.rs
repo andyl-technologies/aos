@@ -61,6 +61,7 @@
 
 pub mod auth;
 pub mod bandwidth;
+pub mod direct_upload;
 pub mod hash;
 pub mod managed;
 pub mod multipart;

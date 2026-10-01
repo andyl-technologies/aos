@@ -2588,6 +2588,18 @@ pub struct SigningConfig {
 /// override these defaults.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RegistryUploadAuthConfig {
+    /// Exact Hub metadata origin for selected registry publication destinations.
+    #[serde(default)]
+    pub hub_origin: Option<String>,
+    /// Explicit Hub registry selector; never inferred from a delivery URL.
+    #[serde(default)]
+    pub hub_registry: Option<String>,
+    /// Explicit direct-provider reachability/public-CA policy file.
+    #[serde(default)]
+    pub direct_provider_policy: Option<std::path::PathBuf>,
+    /// Optional exact owner-private direct retry journal file.
+    #[serde(default)]
+    pub direct_upload_journal: Option<std::path::PathBuf>,
     /// Default upload destinations (`file://`, `s3://`, `sftp://`,
     /// `http://`), used by `apr origin upload`, `apr cache generate`, and
     /// `apr release` when no `--upload-url` flag is given.
@@ -2633,6 +2645,14 @@ impl RegistryUploadAuthConfig {
     /// substituting the `"default"` view when none is configured.
     pub fn auth_options(&self) -> aos_cache::AuthOptions {
         aos_cache::AuthOptions {
+            #[cfg(unix)]
+            direct_upload: aos_remote::DirectUploadOptions {
+                journal: self.direct_upload_journal.clone(),
+                provider_policy: self.direct_provider_policy.clone(),
+                ..aos_remote::DirectUploadOptions::default()
+            },
+            hub_origin: self.hub_origin.clone(),
+            hub_registry: self.hub_registry.clone(),
             token: self.token.clone(),
             view: self.view.clone().unwrap_or_else(|| "default".to_string()),
             http_user: self.http_user.clone(),

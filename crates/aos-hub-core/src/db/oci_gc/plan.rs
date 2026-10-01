@@ -730,10 +730,10 @@ impl Database {
                             inventory_entry_present, state, worker_id, claim_token,
                             lease_expires_at, attempt_count, max_attempts,
                             next_attempt_at, last_error, confirmed_at,
-                            resource_version)
+                            resource_version, expected_provider_version)
                          VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
                                 ?11, 'pending', NULL, NULL, NULL, 0, 8, ?12,
-                                NULL, NULL, 1)",
+                                NULL, NULL, 1, ?13)",
                         vals![
                             action.id,
                             generation_id,
@@ -746,7 +746,8 @@ impl Database {
                             action.expected_strong_etag,
                             action.inventory_generation_id,
                             i64::from(action.inventory_entry_present),
-                            input.now
+                            input.now,
+                            action.expected_provider_version
                         ],
                     )
                     .expecting(1),
@@ -919,7 +920,8 @@ impl Database {
                 || capability_fingerprint.is_none()
                 || capability_resource_version.is_none()
                 || capability_observed_at.is_none_or(|observed| observed < oldest_allowed)
-                || (credential_purpose.is_none() && binding_kind != "local_fs")
+                || (credential_purpose.is_none()
+                    && !matches!(binding_kind.as_str(), "local_fs" | "deployment_r2"))
                 || (credential_purpose.is_some()
                     && (delete_credential_state.as_deref() != Some("valid")
                         || current_delete_credential_generation != credential_generation))
@@ -1174,7 +1176,7 @@ impl Database {
                     "SELECT digest FROM oci_blobs
                      WHERE registry_id = ?1 AND lifecycle_state = 'active'
                        AND unreferenced_since IS NULL
-                       AND (?2 IS NULL OR digest > ?2)
+                       AND (CAST(?2 AS VARCHAR) IS NULL OR digest > ?2)
                      ORDER BY digest LIMIT ?3",
                     &vals![
                         registry_id,
@@ -1269,7 +1271,7 @@ impl Database {
                     "SELECT 1 FROM oci_blobs stored_blob
                      WHERE stored_blob.registry_id = ?1 AND stored_blob.digest = ?2
                        AND stored_blob.lifecycle_state = 'active'
-                       AND (?3 IS NULL OR EXISTS (SELECT 1 FROM oci_repository_objects link
+                       AND (CAST(?3 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM oci_repository_objects link
                          WHERE link.registry_id = stored_blob.registry_id
                            AND link.repository_id = ?3
                            AND link.digest = stored_blob.digest))",
@@ -1412,15 +1414,17 @@ impl Database {
                     .query_opt(
                         "SELECT object_digest, observed_hash, byte_size, strong_etag,
                                 surface_object_id, catalog_object_resource_version,
-                                classification, deleted_at
-                         FROM oci_provider_inventory_entries
+                                inventory.classification, inventory.deleted_at, inventory.provider_version, binding.kind
+                         FROM oci_provider_inventory_entries inventory
+                         JOIN bindings binding ON binding.id = ?5
                          WHERE generation_id = ?1 AND registry_id = ?2
                            AND placement_id = ?3 AND object_key = ?4",
                         &vals![
                             placement.inventory_generation_id,
                             registry_id,
                             placement.placement_id,
-                            candidate.object_key
+                            candidate.object_key,
+                            placement.binding_id
                         ],
                     )
                     .await?;
@@ -1447,6 +1451,30 @@ impl Database {
                 } else {
                     None
                 };
+                let expected_provider_version = inventory
+                    .as_ref()
+                    .map(|row| row.get::<Option<String>>(8))
+                    .transpose()?
+                    .flatten();
+                let requires_provider_version = inventory
+                    .as_ref()
+                    .map(|row| row.get::<String>(9))
+                    .transpose()?
+                    .is_some_and(|kind| kind == "deployment_r2");
+                if requires_provider_version
+                    && !expected_provider_version
+                        .as_deref()
+                        .is_some_and(crate::storage_work::valid_provider_version)
+                {
+                    blockers.push(PlanBlocker {
+                        kind: "provider_inventory_incarnation_missing",
+                        digest: Some(Sha256Digest::parse(&candidate.digest)?),
+                        detail: format!(
+                            "placement '{}' requires a fresh R2 upload-version inventory",
+                            placement.placement_name
+                        ),
+                    });
+                }
                 actions.push(FrozenAction {
                     id: format!("ocigca-{}", Uuid::new_v4().simple()),
                     digest: candidate.digest.clone(),
@@ -1455,6 +1483,7 @@ impl Database {
                     expected_hash: candidate.digest.clone(),
                     expected_size: candidate.byte_size,
                     expected_strong_etag,
+                    expected_provider_version,
                     inventory_generation_id: placement.inventory_generation_id.clone(),
                     inventory_entry_present: inventory.is_some(),
                 });

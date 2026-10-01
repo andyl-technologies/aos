@@ -35,7 +35,7 @@ use zeroize::Zeroizing;
 type HmacSha256 = Hmac<Sha256>;
 
 /// Credentials and target coordinates for presigning one request.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PresignParams<'a> {
     /// The access key id (e.g. an AWS/R2 access key).
     pub access_key: &'a str,
@@ -62,6 +62,23 @@ pub struct PresignParams<'a> {
     /// signer is `wasm`-clean.
     pub amz_date: &'a str,
 }
+
+impl std::fmt::Debug for PresignParams<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PresignParams")
+            .field("credentials", &"[REDACTED]")
+            .field("coordinates", &"[REDACTED]")
+            .field("expires_secs", &self.expires_secs)
+            .finish_non_exhaustive()
+    }
+}
+
+mod direct;
+pub use direct::*;
+
+mod conditional_read;
+pub use conditional_read::presign_versioned_conditional_range;
 
 /// Format a Unix timestamp (seconds) as SigV4's ISO-8601 *basic* UTC
 /// `YYYYMMDDTHHMMSSZ`.
@@ -232,11 +249,48 @@ pub fn presign_delete_url(p: &PresignParams<'_>) -> Result<String> {
     presign_url("DELETE", p, &[], None)
 }
 
+/// Signs a conditional deletion of one exact immutable S3 object version.
+///
+/// The version selector and strong `If-Match` header are both covered by the
+/// signature. This does not attest provider support for these semantics.
+///
+/// # Errors
+/// Returns an error for a missing version, malformed ETag, or signing failure.
+pub fn presign_versioned_conditional_delete(
+    p: &PresignParams<'_>,
+    provider_version: &str,
+    etag: &str,
+) -> Result<String> {
+    anyhow::ensure!(
+        crate::storage_work::valid_provider_version(provider_version) && provider_version != "null",
+        "conditional delete requires a real provider version"
+    );
+    let etag = crate::surface_write::strong_if_match_etag(etag)?;
+    presign_url_with_headers(
+        "DELETE",
+        p,
+        &[("versionId", provider_version.to_owned())],
+        &[("if-match", etag)],
+    )
+}
+
+/// Signs HEAD for one actual provider version, without granting body access.
+///
+/// # Errors
+/// Returns an error for an absent/nonversioned selector or signing failure.
+pub fn presign_versioned_head(p: &PresignParams<'_>, provider_version: &str) -> Result<String> {
+    anyhow::ensure!(
+        crate::storage_work::valid_provider_version(provider_version) && provider_version != "null",
+        "versioned HEAD requires a real provider version"
+    );
+    presign_url_with_headers("HEAD", p, &[("versionId", provider_version.to_owned())], &[])
+}
+
 /// Builds a presigned S3 multipart-operation URL.
 ///
-/// `method` is restricted to `POST`, `PUT`, or `DELETE`; `query` is the exact
-/// operation query (`uploads`, `uploadId`, and optionally `partNumber`) folded
-/// into the signature.
+/// `method` is restricted to the closed multipart operations: bucket-level
+/// `GET` recovery listing, `POST` creation, `PUT` part upload, and `DELETE`
+/// abort. The operation query is folded into the signature.
 ///
 /// # Errors
 ///
@@ -248,7 +302,7 @@ pub fn presign_multipart_url(
     query: &[(&str, String)],
 ) -> Result<String> {
     anyhow::ensure!(
-        matches!(method, "POST" | "PUT" | "DELETE"),
+        matches!(method, "GET" | "POST" | "PUT" | "DELETE"),
         "invalid S3 multipart method"
     );
     let upload_id = query
@@ -260,6 +314,15 @@ pub fn presign_multipart_url(
         .find(|(key, _)| *key == "partNumber")
         .and_then(|(_, value)| value.parse::<u32>().ok());
     let valid = match method {
+        "GET" => {
+            query.len() == 3
+                && query[0].0 == "uploads"
+                && query[0].1.is_empty()
+                && query[1].0 == "prefix"
+                && !query[1].1.is_empty()
+                && query[2].0 == "max-uploads"
+                && query[2].1 == "1000"
+        }
         "POST" => {
             (query.len() == 1 && query[0].0 == "uploads" && query[0].1.is_empty())
                 || (query.len() == 1 && upload_id.is_some_and(|id| !id.is_empty()))
@@ -285,6 +348,19 @@ fn presign_url(
     extra: &[(&str, String)],
     content_length: Option<u64>,
 ) -> Result<String> {
+    let headers = content_length
+        .map(|length| ("content-length", length.to_string()))
+        .into_iter()
+        .collect::<Vec<_>>();
+    presign_url_with_headers(method, p, extra, &headers)
+}
+
+fn presign_url_with_headers(
+    method: &str,
+    p: &PresignParams<'_>,
+    extra: &[(&str, String)],
+    additional_headers: &[(&str, String)],
+) -> Result<String> {
     validate_amz_date(p.amz_date)?;
     validate_host(p.host)?;
     // `amz_date` is `YYYYMMDDTHHMMSSZ` (validated above); the credential-scope
@@ -296,11 +372,18 @@ fn presign_url(
     // Canonical query string: the X-Amz-* params, each key+value URI-encoded
     // (values encode `/`), sorted by encoded key. `X-Amz-Signature` is appended
     // *after* signing and is not part of the canonical request.
-    let signed_headers = if content_length.is_some() {
-        "content-length;host"
-    } else {
-        "host"
-    };
+    let mut headers = additional_headers.to_vec();
+    headers.push(("host", p.host.to_string()));
+    headers.sort_by(|a, b| a.0.cmp(b.0));
+    anyhow::ensure!(
+        headers.windows(2).all(|pair| pair[0].0 != pair[1].0),
+        "duplicate signing header"
+    );
+    let signed_headers = headers
+        .iter()
+        .map(|(name, _)| *name)
+        .collect::<Vec<_>>()
+        .join(";");
     let params = [
         ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
         ("X-Amz-Credential", credential.clone()),
@@ -329,10 +412,10 @@ fn presign_url(
         .join("&");
 
     let canonical_uri = uri_encode(p.path, false);
-    let canonical_headers = content_length.map_or_else(
-        || format!("host:{}\n", p.host),
-        |length| format!("content-length:{length}\nhost:{}\n", p.host),
-    );
+    let canonical_headers = headers
+        .iter()
+        .map(|(name, value)| format!("{name}:{value}\n"))
+        .collect::<String>();
     let canonical_request = format!(
         "{method}\n{canonical_uri}\n{canonical_query}\n{canonical_headers}\n{signed_headers}\nUNSIGNED-PAYLOAD"
     );
@@ -503,6 +586,66 @@ mod tests {
         assert!(part_one.contains("uploadId=upload-a"));
         assert_ne!(create, part_one);
         assert_ne!(part_one, part_two);
+    }
+
+    #[test]
+    fn multipart_recovery_listing_is_bounded_and_signed() {
+        let p = params("bucket.example", "20240101T000000Z");
+        let listing = presign_multipart_url(
+            &p,
+            "GET",
+            &[
+                ("uploads", String::new()),
+                (
+                    "prefix",
+                    "tenant/.aos/credential-probes/write/1/token".into(),
+                ),
+                ("max-uploads", "1000".into()),
+            ],
+        )
+        .unwrap();
+
+        assert!(listing.contains("uploads="));
+        assert!(listing.contains("max-uploads=1000"));
+        assert!(listing.contains("prefix=tenant%2F.aos%2Fcredential-probes"));
+        assert!(presign_multipart_url(&p, "GET", &[("uploads", String::new())]).is_err());
+        assert!(presign_multipart_url(
+            &p,
+            "GET",
+            &[
+                ("uploads", String::new()),
+                ("prefix", "tenant/probe".into()),
+                ("max-uploads", "1001".into()),
+            ],
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn versioned_delete_signs_both_incarnation_and_condition() {
+        let params = params("objects.example.invalid", "20130524T000000Z");
+        let original =
+            presign_versioned_conditional_delete(&params, "version/one+", "\"first\"").unwrap();
+        assert!(original.contains("versionId=version%2Fone%2B"));
+        assert!(original.contains("X-Amz-SignedHeaders=host%3Bif-match"));
+        let signature = |url: String| url.split("X-Amz-Signature=").nth(1).unwrap().to_owned();
+        assert_ne!(
+            signature(original.clone()),
+            signature(
+                presign_versioned_conditional_delete(&params, "version/two", "\"first\"").unwrap()
+            )
+        );
+        assert_ne!(
+            signature(original),
+            signature(
+                presign_versioned_conditional_delete(&params, "version/one+", "\"second\"")
+                    .unwrap()
+            )
+        );
+        assert!(presign_versioned_conditional_delete(&params, "null", "\"first\"").is_err());
+        assert!(
+            presign_versioned_conditional_delete(&params, "version-one", "W/\"first\"").is_err()
+        );
     }
 
     #[test]

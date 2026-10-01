@@ -34,6 +34,8 @@
     builtins.tryEval (builtins.deepSeq evaluated.config.system.build.toplevel true);
 
   server = evaluateServer {};
+  hub = server.config.system.build.containers.aos-hub;
+  bootstrap = server.config.system.build.containers.aos-hub-bootstrap;
   testing = evaluate "aos-testing-eval" [testingModule];
   aos = definitionFor {};
   testingAos = testing.config.aos.containers.definitions.aos;
@@ -169,7 +171,17 @@ in
   assert customAudit.ALLOW_TEST_ARTIFACTS == "0";
   assert customAudit.exportReferencesGraph.testArtifacts == [];
   assert !unmarkedTestRoots.success;
-  assert builtins.attrNames server.config.system.build.containers == ["aos"];
+  assert builtins.attrNames server.config.system.build.containers == ["aos" "aos-hub" "aos-hub-bootstrap"];
+  assert hub.coordination.repository == "aos-hub";
+  assert hub.definition.runtime.entrypoint == ["/usr/bin/aos-hub"];
+  assert hub.definition.runtime.environment.HUB_TOPOLOGY == "hybrid";
+  assert !hub.definition.packageManagement.enable;
+  assert bootstrap.definition.runtime.entrypoint == hub.definition.runtime.entrypoint;
+  assert bootstrap.definition.runtime.command == ["init"];
+  assert bootstrap.definition.layers == hub.definition.layers;
+  assert !(bootstrap.definition.runtime.environment ? HUB_TOPOLOGY);
+  assert !(bootstrap.definition.runtime.environment ? HUB_LISTEN);
+  assert !bootstrap.definition.packageManagement.enable;
   assert server.config.system.build.defaultContainer.coordination.definitionAttribute
   == "systems.container-eval.build.containers.aos";
   assert map builtins.toString aos.packageRoots

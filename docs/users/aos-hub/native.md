@@ -29,6 +29,20 @@ printf '%s\n' "$ROOT_PASSWORD" | \
 at the instance root. It is safe to run schema migration again after an update.
 Do not put passwords directly on the command line.
 
+For jobs without stdin, supply an owner-private credential file instead:
+
+```sh
+./result/bin/aos-hub --root ./hub-state init \
+  --root-email ops@example.com \
+  --root-password-file /run/credentials/hub-root-password
+```
+
+The file must contain UTF-8 and pass the Native credential ownership, permission,
+link and size checks. Use mode `0400` or `0600` in a directory that other users
+cannot modify. Trailing CR/LF terminators are removed; other whitespace is
+preserved. Choose exactly one password source. Native recovery also accepts
+`reset-root --email ops@example.com --password-file PATH`.
+
 Start the server:
 
 ```sh

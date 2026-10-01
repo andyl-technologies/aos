@@ -1,6 +1,9 @@
 {
   "manifest_version": "aos.hub.capabilities/v1",
-  "runtimes": ["native", "worker"],
+  "runtimes": [
+    "native",
+    "worker"
+  ],
   "http_capabilities": [
     {
       "id": "auth.device-authorize",
@@ -8,8 +11,12 @@
       "interaction": "authentication",
       "method": "POST",
       "path": "/oauth2/device_authorization",
-      "cli_families": ["login"],
-      "web_workflows": ["device-approval"]
+      "cli_families": [
+        "login"
+      ],
+      "web_workflows": [
+        "device-approval"
+      ]
     },
     {
       "id": "auth.token",
@@ -17,7 +24,10 @@
       "interaction": "authentication",
       "method": "POST",
       "path": "/oauth2/token",
-      "cli_families": ["login", "authenticated-client"],
+      "cli_families": [
+        "login",
+        "authenticated-client"
+      ],
       "web_workflows": []
     },
     {
@@ -26,7 +36,9 @@
       "interaction": "authentication",
       "method": "POST",
       "path": "/oauth2/revoke",
-      "cli_families": ["logout"],
+      "cli_families": [
+        "logout"
+      ],
       "web_workflows": []
     },
     {
@@ -36,120 +48,454 @@
       "method": "POST",
       "path": "/-/auth/session-token",
       "cli_families": [],
-      "web_workflows": ["session-bootstrap"]
+      "web_workflows": [
+        "session-bootstrap"
+      ]
     }
   ],
   "services": [
     {
+      "service": "StorageAuthorityService",
+      "audience": "operator",
+      "cli_families": [],
+      "web_workflows": [],
+      "exclusion": "Permanent physical equivalence and desired admission require current StorageManage on instance root; executor reconciliation remains pending.",
+      "methods": [
+        "PlanStorageAuthorityDecision",
+        "StorageAuthorityDecision",
+        "GetAuthority"
+      ]
+    },
+    {
       "service": "RegistryService",
       "audience": "end-user",
-      "cli_families": ["registry"],
-      "web_workflows": ["registry-inventory", "registry-overview", "registry-danger"],
-      "web_method_exceptions": [
-        {"method": "ListReleases", "reason": "Release discovery remains on the signed public catalog; management publication history uses PublishService."}
+      "cli_families": [
+        "registry"
       ],
-      "methods": ["ListRegistries", "GetRegistry", "GetRegistryMetadata", "PlanUpdateRegistryMetadata", "UpdateRegistryMetadata", "ListReleases", "PlanCreateRegistry", "CreateRegistry", "PlanUpdateRegistry", "UpdateRegistry", "PlanDeleteRegistry", "DeleteRegistry"]
+      "web_workflows": [
+        "registry-inventory",
+        "registry-overview",
+        "registry-danger"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "ListReleases",
+          "reason": "Release discovery remains on the signed public catalog; management publication history uses PublishService."
+        }
+      ],
+      "methods": [
+        "ListRegistries",
+        "GetRegistry",
+        "GetRegistryMetadata",
+        "PlanUpdateRegistryMetadata",
+        "UpdateRegistryMetadata",
+        "ListReleases",
+        "PlanCreateRegistry",
+        "CreateRegistry",
+        "PlanUpdateRegistry",
+        "UpdateRegistry",
+        "PlanDeleteRegistry",
+        "DeleteRegistry"
+      ]
     },
     {
       "service": "OrganizationService",
       "audience": "end-user",
-      "cli_families": ["org"],
-      "web_workflows": ["organization-inventory", "organization-overview", "organization-danger"],
-      "methods": ["ListOrganizations", "GetOrganization", "PlanCreateOrganization", "CreateOrganization", "PlanUpdateOrganization", "UpdateOrganization", "PlanDeleteOrganization", "DeleteOrganization"]
+      "cli_families": [
+        "org"
+      ],
+      "web_workflows": [
+        "organization-inventory",
+        "organization-overview",
+        "organization-danger"
+      ],
+      "methods": [
+        "ListOrganizations",
+        "GetOrganization",
+        "PlanCreateOrganization",
+        "CreateOrganization",
+        "PlanUpdateOrganization",
+        "UpdateOrganization",
+        "PlanDeleteOrganization",
+        "DeleteOrganization"
+      ]
     },
     {
       "service": "SigningKeyService",
       "audience": "end-user",
-      "cli_families": ["signing-key"],
-      "web_workflows": ["signing-keys"],
-      "web_method_exceptions": [
-        {"method": "GetSigningKey", "reason": "ListSigningKeys returns the complete redacted key model used by the browser editor."}
+      "cli_families": [
+        "signing-key"
       ],
-      "methods": ["ListSigningKeys", "GetSigningKey", "GetSigningKeyUsage", "PlanEnrollSigningKey", "EnrollSigningKey", "PlanRotateSigningKey", "RotateSigningKey", "PlanRetireSigningKey", "RetireSigningKey", "PlanSetSigningKeyUsage", "SetSigningKeyUsage"]
+      "web_workflows": [
+        "signing-keys"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetSigningKey",
+          "reason": "ListSigningKeys returns the complete redacted key model used by the browser editor."
+        }
+      ],
+      "methods": [
+        "ListSigningKeys",
+        "GetSigningKey",
+        "GetSigningKeyUsage",
+        "PlanEnrollSigningKey",
+        "EnrollSigningKey",
+        "PlanRotateSigningKey",
+        "RotateSigningKey",
+        "PlanRetireSigningKey",
+        "RetireSigningKey",
+        "PlanSetSigningKeyUsage",
+        "SetSigningKeyUsage"
+      ]
     },
     {
       "service": "ProjectService",
       "audience": "end-user",
-      "cli_families": ["org project"],
-      "web_workflows": ["project-inventory", "project-detail"],
-      "web_method_exceptions": [
-        {"method": "GetProject", "reason": "ListProjects returns the complete project model used by inventory and reviewed deletion."}
+      "cli_families": [
+        "org project"
       ],
-      "methods": ["ListProjects", "GetProject", "PlanCreateProject", "CreateProject", "PlanDeleteProject", "DeleteProject"]
+      "web_workflows": [
+        "project-inventory",
+        "project-detail"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetProject",
+          "reason": "ListProjects returns the complete project model used by inventory and reviewed deletion."
+        }
+      ],
+      "methods": [
+        "ListProjects",
+        "GetProject",
+        "PlanCreateProject",
+        "CreateProject",
+        "PlanDeleteProject",
+        "DeleteProject"
+      ]
     },
     {
       "service": "BindingService",
       "audience": "end-user",
-      "cli_families": ["storage-binding", "instance topology-defaults", "org topology-defaults"],
-      "web_workflows": ["bindings", "storage-binding-credentials", "storage-binding-grants", "topology-defaults"],
-      "web_method_exceptions": [
-        {"method": "GetBinding", "reason": "ListBindings returns the complete redacted binding and grant model used by the editor."},
-        {"method": "GetBindingWriteRevision", "reason": "ListBindingWriteRevisions returns the complete revision rows rendered by the editor."}
+      "cli_families": [
+        "storage-binding",
+        "instance topology-defaults",
+        "org topology-defaults"
       ],
-      "methods": ["ListBindings", "GetBinding", "PlanCreateBinding", "CreateBinding", "PlanSetBindingCredential", "SetBindingCredential", "PlanRotateBindingCredential", "RotateBindingCredential", "PlanValidateBindingCredential", "ValidateBindingCredential", "PlanGrantBindingScope", "GrantBindingScope", "PlanRevokeBindingScope", "RevokeBindingScope", "ListBindingWriteRevisions", "GetBindingWriteRevision", "PlanDeleteBinding", "DeleteBinding", "GetInstanceTopologyDefaults", "PlanSetInstanceTopologyDefaults", "SetInstanceTopologyDefaults", "GetOrganizationTopologyDefaults", "PlanSetOrganizationTopologyDefaults", "SetOrganizationTopologyDefaults"]
+      "web_workflows": [
+        "bindings",
+        "storage-binding-credentials",
+        "storage-binding-grants",
+        "topology-defaults"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetBinding",
+          "reason": "ListBindings returns the complete redacted binding and grant model used by the editor."
+        },
+        {
+          "method": "GetBindingWriteRevision",
+          "reason": "ListBindingWriteRevisions returns the complete revision rows rendered by the editor."
+        }
+      ],
+      "methods": [
+        "ListBindings",
+        "GetBinding",
+        "PlanCreateBinding",
+        "CreateBinding",
+        "PlanSetBindingCredential",
+        "SetBindingCredential",
+        "PlanRotateBindingCredential",
+        "RotateBindingCredential",
+        "PlanValidateBindingCredential",
+        "ValidateBindingCredential",
+        "PlanGrantBindingScope",
+        "GrantBindingScope",
+        "PlanRevokeBindingScope",
+        "RevokeBindingScope",
+        "ListBindingWriteRevisions",
+        "GetBindingWriteRevision",
+        "PlanDeleteBinding",
+        "DeleteBinding",
+        "GetInstanceTopologyDefaults",
+        "PlanSetInstanceTopologyDefaults",
+        "SetInstanceTopologyDefaults",
+        "GetOrganizationTopologyDefaults",
+        "PlanSetOrganizationTopologyDefaults",
+        "SetOrganizationTopologyDefaults"
+      ]
     },
     {
       "service": "DomainService",
       "audience": "end-user",
-      "cli_families": ["domain"],
-      "web_workflows": ["domains"],
-      "web_method_exceptions": [
-        {"method": "GetDomain", "reason": "ListDomains returns the complete domain intent and observation model rendered by the editor."}
+      "cli_families": [
+        "domain"
       ],
-      "methods": ["ListDomains", "GetDomain", "PlanCreateDomain", "CreateDomain", "PlanConfigureDomainDns", "ConfigureDomainDns", "PlanConfigureDomainCertificate", "ConfigureDomainCertificate", "PlanVerifyDomain", "VerifyDomain", "PlanDeleteDomain", "DeleteDomain"]
+      "web_workflows": [
+        "domains"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetDomain",
+          "reason": "ListDomains returns the complete domain intent and observation model rendered by the editor."
+        }
+      ],
+      "methods": [
+        "ListDomains",
+        "GetDomain",
+        "PlanCreateDomain",
+        "CreateDomain",
+        "PlanConfigureDomainDns",
+        "ConfigureDomainDns",
+        "PlanConfigureDomainCertificate",
+        "ConfigureDomainCertificate",
+        "PlanVerifyDomain",
+        "VerifyDomain",
+        "PlanDeleteDomain",
+        "DeleteDomain"
+      ]
     },
     {
       "service": "NetworkPolicyService",
       "audience": "end-user",
-      "cli_families": ["network-boundary"],
-      "web_workflows": ["network-policies"],
-      "web_method_exceptions": [
-        {"method": "GetNetworkPolicy", "reason": "ListNetworkPolicies returns the complete boundary model rendered by the editor."},
-        {"method": "GetNetworkPolicyRevision", "reason": "ListNetworkPolicyRevisions returns the complete immutable revision rows rendered by the editor."}
+      "cli_families": [
+        "network-boundary"
       ],
-      "methods": ["ListNetworkPolicies", "GetNetworkPolicy", "PlanCreateNetworkPolicy", "CreateNetworkPolicy", "ListNetworkPolicyRevisions", "GetNetworkPolicyRevision", "PlanReviseNetworkPolicy", "ReviseNetworkPolicy", "PlanActivateNetworkPolicyRevision", "ActivateNetworkPolicyRevision", "PlanRetireNetworkPolicyRevision", "RetireNetworkPolicyRevision", "PlanGrantNetworkPolicyScope", "GrantNetworkPolicyScope", "PlanRevokeNetworkPolicyScope", "RevokeNetworkPolicyScope", "PlanDeleteNetworkPolicy", "DeleteNetworkPolicy"]
+      "web_workflows": [
+        "network-policies"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetNetworkPolicy",
+          "reason": "ListNetworkPolicies returns the complete boundary model rendered by the editor."
+        },
+        {
+          "method": "GetNetworkPolicyRevision",
+          "reason": "ListNetworkPolicyRevisions returns the complete immutable revision rows rendered by the editor."
+        }
+      ],
+      "methods": [
+        "ListNetworkPolicies",
+        "GetNetworkPolicy",
+        "PlanCreateNetworkPolicy",
+        "CreateNetworkPolicy",
+        "ListNetworkPolicyRevisions",
+        "GetNetworkPolicyRevision",
+        "PlanReviseNetworkPolicy",
+        "ReviseNetworkPolicy",
+        "PlanActivateNetworkPolicyRevision",
+        "ActivateNetworkPolicyRevision",
+        "PlanRetireNetworkPolicyRevision",
+        "RetireNetworkPolicyRevision",
+        "PlanGrantNetworkPolicyScope",
+        "GrantNetworkPolicyScope",
+        "PlanRevokeNetworkPolicyScope",
+        "RevokeNetworkPolicyScope",
+        "PlanDeleteNetworkPolicy",
+        "DeleteNetworkPolicy"
+      ]
     },
     {
       "service": "DeliveryService",
       "audience": "end-user",
-      "cli_families": ["endpoint", "gateway", "delivery"],
-      "web_workflows": ["endpoints", "gateways", "routes"],
-      "web_method_exceptions": [
-        {"method": "GetEndpoint", "reason": "ListEndpoints returns the complete endpoint model rendered by the editor."},
-        {"method": "GetEndpointGeneration", "reason": "ListEndpointGenerations returns the complete immutable generation rows rendered by the editor."},
-        {"method": "GetGateway", "reason": "ListGateways returns the complete gateway model rendered by the editor."}
+      "cli_families": [
+        "endpoint",
+        "gateway",
+        "delivery"
       ],
-      "methods": ["PlanDeliveryDestination", "ApplyDeliveryDestination", "GetDeliveryWorkflow", "ListDeliveryWorkflows", "ResumeDeliveryDestination", "PlanActivateDeliveryDestination", "ActivateDeliveryDestination", "ListEndpoints", "GetEndpoint", "PlanCreateEndpoint", "CreateEndpoint", "ListEndpointGenerations", "GetEndpointGeneration", "PlanStageEndpointGeneration", "StageEndpointGeneration", "PlanActivateEndpointGeneration", "ActivateEndpointGeneration", "PlanGrantEndpointScope", "GrantEndpointScope", "PlanRevokeEndpointScope", "RevokeEndpointScope", "PlanDeleteEndpoint", "DeleteEndpoint", "ListGateways", "GetGateway", "PlanCreateGateway", "CreateGateway", "PlanUpdateGateway", "UpdateGateway", "PlanGrantGatewayScope", "GrantGatewayScope", "PlanRevokeGatewayScope", "RevokeGatewayScope", "PreviewGatewayRoutes", "PlanEnableGateway", "EnableGateway", "PlanDisableGateway", "DisableGateway", "PlanDeleteGateway", "DeleteGateway"]
+      "web_workflows": [
+        "endpoints",
+        "gateways",
+        "routes"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetEndpoint",
+          "reason": "ListEndpoints returns the complete endpoint model rendered by the editor."
+        },
+        {
+          "method": "GetEndpointGeneration",
+          "reason": "ListEndpointGenerations returns the complete immutable generation rows rendered by the editor."
+        },
+        {
+          "method": "GetGateway",
+          "reason": "ListGateways returns the complete gateway model rendered by the editor."
+        }
+      ],
+      "methods": [
+        "PlanDeliveryDestination",
+        "ApplyDeliveryDestination",
+        "GetDeliveryWorkflow",
+        "ListDeliveryWorkflows",
+        "ResumeDeliveryDestination",
+        "PlanActivateDeliveryDestination",
+        "ActivateDeliveryDestination",
+        "ListEndpoints",
+        "GetEndpoint",
+        "PlanCreateEndpoint",
+        "CreateEndpoint",
+        "ListEndpointGenerations",
+        "GetEndpointGeneration",
+        "PlanStageEndpointGeneration",
+        "StageEndpointGeneration",
+        "PlanActivateEndpointGeneration",
+        "ActivateEndpointGeneration",
+        "PlanGrantEndpointScope",
+        "GrantEndpointScope",
+        "PlanRevokeEndpointScope",
+        "RevokeEndpointScope",
+        "PlanDeleteEndpoint",
+        "DeleteEndpoint",
+        "ListGateways",
+        "GetGateway",
+        "PlanCreateGateway",
+        "CreateGateway",
+        "PlanUpdateGateway",
+        "UpdateGateway",
+        "PlanGrantGatewayScope",
+        "GrantGatewayScope",
+        "PlanRevokeGatewayScope",
+        "RevokeGatewayScope",
+        "PreviewGatewayRoutes",
+        "PlanEnableGateway",
+        "EnableGateway",
+        "PlanDisableGateway",
+        "DisableGateway",
+        "PlanDeleteGateway",
+        "DeleteGateway"
+      ]
     },
     {
       "service": "RouteService",
       "audience": "end-user",
-      "cli_families": ["route"],
-      "web_workflows": ["routes"],
-      "web_method_exceptions": [
-        {"method": "ListRoutes", "reason": "The Delivery page shares GetSurfaceTopology across its effective summary, route inventory, and audience editor to avoid duplicate topology expansion."},
-        {"method": "GetRoute", "reason": "GetSurfaceTopology returns the complete route generation and status model rendered by the editor."}
+      "cli_families": [
+        "route"
       ],
-      "methods": ["ListRoutes", "GetRoute", "PlanCreateRoute", "CreateRoute", "PlanUpdateRoute", "UpdateRoute", "PlanReplaceRoute", "ReplaceRoute", "PlanEnableRoute", "EnableRoute", "PlanDisableRoute", "DisableRoute", "PlanDeleteRoute", "DeleteRoute", "PlanSetRouteAdvertisement", "SetRouteAdvertisement", "ExplainRoute"]
+      "web_workflows": [
+        "routes"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "ListRoutes",
+          "reason": "The Delivery page shares GetSurfaceTopology across its effective summary, route inventory, and audience editor to avoid duplicate topology expansion."
+        },
+        {
+          "method": "GetRoute",
+          "reason": "GetSurfaceTopology returns the complete route generation and status model rendered by the editor."
+        }
+      ],
+      "methods": [
+        "ListRoutes",
+        "GetRoute",
+        "PlanCreateRoute",
+        "CreateRoute",
+        "PlanUpdateRoute",
+        "UpdateRoute",
+        "PlanReplaceRoute",
+        "ReplaceRoute",
+        "PlanEnableRoute",
+        "EnableRoute",
+        "PlanDisableRoute",
+        "DisableRoute",
+        "PlanDeleteRoute",
+        "DeleteRoute",
+        "PlanSetRouteAdvertisement",
+        "SetRouteAdvertisement",
+        "ExplainRoute"
+      ]
     },
     {
       "service": "TopologyService",
       "audience": "end-user",
-      "cli_families": ["surface", "placement", "placement-policy", "placement-equivalence"],
-      "web_workflows": ["surface-topology", "placements", "placement-policies", "placement-equivalences"],
-      "web_method_exceptions": [
-        {"method": "GetPlacement", "reason": "ListPlacements returns the complete placement specification and observation rendered by the shared topology editor."},
-        {"method": "GetPlacementPolicy", "reason": "ListPlacementPolicies returns the complete policy identity model rendered by the editor."},
-        {"method": "GetPlacementPolicyRevision", "reason": "ListPlacementPolicyRevisions returns the complete immutable revision rows rendered by the editor."}
+      "cli_families": [
+        "surface",
+        "placement",
+        "placement-policy",
+        "placement-equivalence"
       ],
-      "methods": ["GetSurfaceTopology", "ExplainSurfaceRequest", "ListPlacements", "GetPlacement", "PlanCreatePlacement", "CreatePlacement", "PlanUpdatePlacement", "UpdatePlacement", "GetWriteAuthority", "PlanPromotePlacement", "PromotePlacement", "PlanCancelPlacementPromotion", "CancelPlacementPromotion", "PlanRemoveWriteAuthority", "RemoveWriteAuthority", "PlanDrainPlacement", "DrainPlacement", "PlanCancelPlacementDrain", "CancelPlacementDrain", "PlanDeletePlacement", "DeletePlacement", "PlanScanPlacement", "ScanPlacement", "PlanReplicatePlacement", "ReplicatePlacement", "PlanRepairPlacement", "RepairPlacement", "ListObjectPresence", "ListPlacementPolicies", "GetPlacementPolicy", "ListPlacementPolicyRevisions", "GetPlacementPolicyRevision", "PlanCreatePlacementPolicy", "CreatePlacementPolicy", "PlanRevisePlacementPolicy", "RevisePlacementPolicy", "TestPlacementPolicyRevision", "ListPlacementEquivalences", "PlanConfirmPlacementEquivalence", "ConfirmPlacementEquivalence", "PlanDeletePlacementEquivalence", "DeletePlacementEquivalence"]
+      "web_workflows": [
+        "surface-topology",
+        "placements",
+        "placement-policies",
+        "placement-equivalences"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetPlacement",
+          "reason": "ListPlacements returns the complete placement specification and observation rendered by the shared topology editor."
+        },
+        {
+          "method": "GetPlacementPolicy",
+          "reason": "ListPlacementPolicies returns the complete policy identity model rendered by the editor."
+        },
+        {
+          "method": "GetPlacementPolicyRevision",
+          "reason": "ListPlacementPolicyRevisions returns the complete immutable revision rows rendered by the editor."
+        }
+      ],
+      "methods": [
+        "GetSurfaceTopology",
+        "ExplainSurfaceRequest",
+        "ListPlacements",
+        "GetPlacement",
+        "PlanCreatePlacement",
+        "CreatePlacement",
+        "PlanUpdatePlacement",
+        "UpdatePlacement",
+        "GetWriteAuthority",
+        "PlanPromotePlacement",
+        "PromotePlacement",
+        "PlanCancelPlacementPromotion",
+        "CancelPlacementPromotion",
+        "PlanRemoveWriteAuthority",
+        "RemoveWriteAuthority",
+        "PlanDrainPlacement",
+        "DrainPlacement",
+        "PlanCancelPlacementDrain",
+        "CancelPlacementDrain",
+        "PlanDeletePlacement",
+        "DeletePlacement",
+        "PlanScanPlacement",
+        "ScanPlacement",
+        "PlanReplicatePlacement",
+        "ReplicatePlacement",
+        "PlanRepairPlacement",
+        "RepairPlacement",
+        "ListObjectPresence",
+        "ListPlacementPolicies",
+        "GetPlacementPolicy",
+        "ListPlacementPolicyRevisions",
+        "GetPlacementPolicyRevision",
+        "PlanCreatePlacementPolicy",
+        "CreatePlacementPolicy",
+        "PlanRevisePlacementPolicy",
+        "RevisePlacementPolicy",
+        "TestPlacementPolicyRevision",
+        "ListPlacementEquivalences",
+        "PlanConfirmPlacementEquivalence",
+        "ConfirmPlacementEquivalence",
+        "PlanDeletePlacementEquivalence",
+        "DeletePlacementEquivalence"
+      ]
     },
     {
       "service": "RegistryMirrorService",
       "audience": "end-user",
-      "cli_families": ["registry mirror"],
-      "web_workflows": ["registry-mirror"],
-      "methods": ["GetRegistryMirror", "PlanSetRegistryMirror", "SetRegistryMirror", "PlanDeleteRegistryMirror", "DeleteRegistryMirror", "PlanSyncRegistryMirror", "SyncRegistryMirror"]
+      "cli_families": [
+        "registry mirror"
+      ],
+      "web_workflows": [
+        "registry-mirror"
+      ],
+      "methods": [
+        "GetRegistryMirror",
+        "PlanSetRegistryMirror",
+        "SetRegistryMirror",
+        "PlanDeleteRegistryMirror",
+        "DeleteRegistryMirror",
+        "PlanSyncRegistryMirror",
+        "SyncRegistryMirror"
+      ]
     },
     {
       "service": "BindingControllerService",
@@ -157,7 +503,9 @@
       "exclusion": "Authenticated storage-controller observation; never end-user porcelain.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["ReportBindingWriteRevision"]
+      "methods": [
+        "ReportBindingWriteRevision"
+      ]
     },
     {
       "service": "NetworkPolicyControllerService",
@@ -165,7 +513,10 @@
       "exclusion": "Authenticated network-boundary reconciliation and probe completion.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["CompleteNetworkPolicyRevisionProbe", "ReportNetworkPolicyRevision"]
+      "methods": [
+        "CompleteNetworkPolicyRevisionProbe",
+        "ReportNetworkPolicyRevision"
+      ]
     },
     {
       "service": "DeliveryControllerService",
@@ -173,7 +524,11 @@
       "exclusion": "Authenticated endpoint and gateway reconciliation.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["CompleteEndpointProbe", "ReportEndpoint", "ReportGateway"]
+      "methods": [
+        "CompleteEndpointProbe",
+        "ReportEndpoint",
+        "ReportGateway"
+      ]
     },
     {
       "service": "RouteControllerService",
@@ -181,7 +536,9 @@
       "exclusion": "Authenticated delivery-route probe completion.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["CompleteRouteProbe"]
+      "methods": [
+        "CompleteRouteProbe"
+      ]
     },
     {
       "service": "TopologyControllerService",
@@ -189,7 +546,9 @@
       "exclusion": "Authenticated desired/observed write-authority reconciliation.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["ReportWriteAuthority"]
+      "methods": [
+        "ReportWriteAuthority"
+      ]
     },
     {
       "service": "BinaryCacheUploadControllerService",
@@ -197,35 +556,66 @@
       "exclusion": "Authenticated cache upload observation from storage controllers.",
       "cli_families": [],
       "web_workflows": [],
-      "methods": ["ReportCacheUpload", "ReportCacheNarinfos"]
+      "methods": [
+        "ReportCacheUpload",
+        "ReportCacheNarinfos"
+      ]
     },
     {
       "service": "AuditService",
       "audience": "end-user",
-      "cli_families": ["org audit"],
-      "web_workflows": ["audit-log"],
-      "methods": ["ListAudit"]
+      "cli_families": [
+        "org audit"
+      ],
+      "web_workflows": [
+        "audit-log"
+      ],
+      "methods": [
+        "ListAudit"
+      ]
     },
     {
       "service": "InstanceService",
       "audience": "end-user",
-      "cli_families": ["instance"],
-      "web_workflows": ["instance-settings"],
-      "methods": ["GetInstanceSettings", "PlanSetInstanceSettings", "SetInstanceSettings"]
+      "cli_families": [
+        "instance"
+      ],
+      "web_workflows": [
+        "instance-settings"
+      ],
+      "methods": [
+        "GetInstanceSettings",
+        "PlanSetInstanceSettings",
+        "SetInstanceSettings"
+      ]
     },
     {
       "service": "RegistryConfigurationService",
       "audience": "end-user",
-      "cli_families": ["registry configuration"],
-      "web_workflows": ["registry-configuration"],
-      "methods": ["ListChangesets", "GetChangeset"]
+      "cli_families": [
+        "registry configuration"
+      ],
+      "web_workflows": [
+        "registry-configuration"
+      ],
+      "methods": [
+        "ListChangesets",
+        "GetChangeset"
+      ]
     },
     {
       "service": "PackageService",
       "audience": "public",
-      "cli_families": ["registry package"],
-      "web_workflows": ["public-packages"],
-      "methods": ["ListPackages", "GetPackage"],
+      "cli_families": [
+        "registry package"
+      ],
+      "web_workflows": [
+        "public-packages"
+      ],
+      "methods": [
+        "ListPackages",
+        "GetPackage"
+      ],
       "web_method_exceptions": [
         {
           "method": "ListPackages",
@@ -240,9 +630,22 @@
     {
       "service": "DocumentationService",
       "audience": "public",
-      "cli_families": ["registry docs", "package docs"],
-      "web_workflows": ["public-package-documentation"],
-      "methods": ["GetPackageDocumentation", "SearchPackageDocumentation", "ListPackageOptions", "GetPackageOption", "ComparePackageDocumentation", "GetDocumentationArtifact", "GetPackageDocumentationSchema"],
+      "cli_families": [
+        "registry docs",
+        "package docs"
+      ],
+      "web_workflows": [
+        "public-package-documentation"
+      ],
+      "methods": [
+        "GetPackageDocumentation",
+        "SearchPackageDocumentation",
+        "ListPackageOptions",
+        "GetPackageOption",
+        "ComparePackageDocumentation",
+        "GetDocumentationArtifact",
+        "GetPackageDocumentationSchema"
+      ],
       "web_method_exceptions": [
         {
           "method": "GetPackageDocumentation",
@@ -277,9 +680,16 @@
     {
       "service": "ChannelService",
       "audience": "public",
-      "cli_families": ["registry channel"],
-      "web_workflows": ["public-channels"],
-      "methods": ["ListChannels", "GetChannel"],
+      "cli_families": [
+        "registry channel"
+      ],
+      "web_workflows": [
+        "public-channels"
+      ],
+      "methods": [
+        "ListChannels",
+        "GetChannel"
+      ],
       "web_method_exceptions": [
         {
           "method": "ListChannels",
@@ -294,8 +704,12 @@
     {
       "service": "ImageService",
       "audience": "public",
-      "cli_families": ["image"],
-      "web_workflows": ["public-images"],
+      "cli_families": [
+        "image"
+      ],
+      "web_workflows": [
+        "public-images"
+      ],
       "web_method_exceptions": [
         {
           "method": "ListImages",
@@ -310,116 +724,531 @@
           "reason": "The public image catalog provides resolved immutable download URLs."
         }
       ],
-      "methods": ["ListImages", "GetImage", "ResolveImage"]
+      "methods": [
+        "ListImages",
+        "GetImage",
+        "ResolveImage"
+      ]
     },
     {
       "service": "ContainerService",
       "audience": "end-user",
-      "cli_families": ["container publish", "registry container"],
-      "web_workflows": ["registry-containers"],
-      "web_method_exceptions": [
-        {"method": "PlanCreateContainerRepository", "reason": "Repository creation remains reviewed CLI administration; Distribution push can also create a repository without a browser upload flow."},
-        {"method": "CreateContainerRepository", "reason": "Repository creation remains reviewed CLI administration; Distribution push can also create a repository without a browser upload flow."},
-        {"method": "PlanDeleteContainerRepository", "reason": "Empty-repository deletion remains a reviewed CLI-only administration action in the first console release."},
-        {"method": "DeleteContainerRepository", "reason": "Empty-repository deletion remains a reviewed CLI-only administration action in the first console release."},
-        {"method": "GetContainerTag", "reason": "ListContainerTags and ResolveContainerTag return the complete tag models used by the browser workflow."},
-        {"method": "GetContainerPlatform", "reason": "ListContainerPlatforms returns the complete platform records rendered by the browser workflow."},
-        {"method": "GetContainerLayer", "reason": "ListContainerLayers returns the complete root-specific layer records rendered by the browser workflow."},
-        {"method": "RequeueContainerGcPlacementAction", "reason": "Failed-action requeue is an explicit operator maintenance command; the browser renders exact action evidence but does not mutate provider work."},
-        {"method": "BeginContainerPublication", "reason": "Verified container publication is currently initiated by the CLI; the browser workflow does not yet admit a signed release declaration."},
-        {"method": "GetContainerPublication", "reason": "Verified container publication state is currently resumed by the CLI; the browser workflow is not yet implemented."},
-        {"method": "CommitContainerPublication", "reason": "Verified container publication is currently committed by the CLI; the browser workflow does not yet expose the confirmation step."},
-        {"method": "AbortContainerPublication", "reason": "Verified container publication is currently aborted by the CLI; the browser workflow does not yet expose publication recovery controls."}
+      "cli_families": [
+        "container publish",
+        "registry container"
       ],
-      "methods": ["ListContainerRepositories", "GetContainerRepository", "PlanCreateContainerRepository", "CreateContainerRepository", "PlanUpdateContainerRepository", "UpdateContainerRepository", "PlanDeleteContainerRepository", "DeleteContainerRepository", "ListContainerTags", "GetContainerTag", "ResolveContainerTag", "ListContainerTagHistory", "PlanSetContainerTag", "SetContainerTag", "PlanUnsetContainerTag", "UnsetContainerTag", "GetContainerManifest", "ListContainerPlatforms", "GetContainerPlatform", "ListContainerLayers", "GetContainerLayer", "ListContainerReferrers", "ListContainerPublications", "GetContainerProvenance", "GetContainerRetentionPolicy", "PlanSetContainerRetentionPolicy", "SetContainerRetentionPolicy", "PlanRunContainerGc", "RunContainerGc", "GetContainerGcRun", "ListContainerGcRuns", "ListContainerGcCandidates", "ListContainerGcBlockers", "ListContainerGcPlacementActions", "RequeueContainerGcPlacementAction", "ListContainerUntrackedInventory", "PlanRepairContainerUntrackedObject", "RepairContainerUntrackedObject", "GetContainerUntrackedRepair", "PlanContainerRegistryPurgeFence", "ApplyContainerRegistryPurgeFence", "GetContainerRegistryPurgeFence", "BeginContainerPublication", "GetContainerPublication", "CommitContainerPublication", "AbortContainerPublication"]
+      "web_workflows": [
+        "registry-containers"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "PlanCreateContainerRepository",
+          "reason": "Repository creation remains reviewed CLI administration; Distribution push can also create a repository without a browser upload flow."
+        },
+        {
+          "method": "CreateContainerRepository",
+          "reason": "Repository creation remains reviewed CLI administration; Distribution push can also create a repository without a browser upload flow."
+        },
+        {
+          "method": "PlanDeleteContainerRepository",
+          "reason": "Empty-repository deletion remains a reviewed CLI-only administration action in the first console release."
+        },
+        {
+          "method": "DeleteContainerRepository",
+          "reason": "Empty-repository deletion remains a reviewed CLI-only administration action in the first console release."
+        },
+        {
+          "method": "GetContainerTag",
+          "reason": "ListContainerTags and ResolveContainerTag return the complete tag models used by the browser workflow."
+        },
+        {
+          "method": "GetContainerPlatform",
+          "reason": "ListContainerPlatforms returns the complete platform records rendered by the browser workflow."
+        },
+        {
+          "method": "GetContainerLayer",
+          "reason": "ListContainerLayers returns the complete root-specific layer records rendered by the browser workflow."
+        },
+        {
+          "method": "RequeueContainerGcPlacementAction",
+          "reason": "Failed-action requeue is an explicit operator maintenance command; the browser renders exact action evidence but does not mutate provider work."
+        },
+        {
+          "method": "BeginContainerPublication",
+          "reason": "Verified container publication is currently initiated by the CLI; the browser workflow does not yet admit a signed release declaration."
+        },
+        {
+          "method": "GetContainerPublication",
+          "reason": "Verified container publication state is currently resumed by the CLI; the browser workflow is not yet implemented."
+        },
+        {
+          "method": "CommitContainerPublication",
+          "reason": "Verified container publication is currently committed by the CLI; the browser workflow does not yet expose the confirmation step."
+        },
+        {
+          "method": "AbortContainerPublication",
+          "reason": "Verified container publication is currently aborted by the CLI; the browser workflow does not yet expose publication recovery controls."
+        }
+      ],
+      "methods": [
+        "ListContainerRepositories",
+        "GetContainerRepository",
+        "PlanCreateContainerRepository",
+        "CreateContainerRepository",
+        "PlanUpdateContainerRepository",
+        "UpdateContainerRepository",
+        "PlanDeleteContainerRepository",
+        "DeleteContainerRepository",
+        "ListContainerTags",
+        "GetContainerTag",
+        "ResolveContainerTag",
+        "ListContainerTagHistory",
+        "PlanSetContainerTag",
+        "SetContainerTag",
+        "PlanUnsetContainerTag",
+        "UnsetContainerTag",
+        "GetContainerManifest",
+        "ListContainerPlatforms",
+        "GetContainerPlatform",
+        "ListContainerLayers",
+        "GetContainerLayer",
+        "ListContainerReferrers",
+        "ListContainerPublications",
+        "GetContainerProvenance",
+        "GetContainerRetentionPolicy",
+        "PlanSetContainerRetentionPolicy",
+        "SetContainerRetentionPolicy",
+        "PlanRunContainerGc",
+        "RunContainerGc",
+        "GetContainerGcRun",
+        "ListContainerGcRuns",
+        "ListContainerGcCandidates",
+        "ListContainerGcBlockers",
+        "ListContainerGcPlacementActions",
+        "RequeueContainerGcPlacementAction",
+        "ListContainerUntrackedInventory",
+        "PlanRepairContainerUntrackedObject",
+        "RepairContainerUntrackedObject",
+        "GetContainerUntrackedRepair",
+        "PlanContainerRegistryPurgeFence",
+        "ApplyContainerRegistryPurgeFence",
+        "GetContainerRegistryPurgeFence",
+        "BeginContainerPublication",
+        "GetContainerPublication",
+        "CommitContainerPublication",
+        "AbortContainerPublication"
+      ]
     },
     {
       "service": "PublishService",
       "audience": "end-user",
-      "cli_families": ["registry publish"],
-      "web_workflows": ["registry-publication"],
-      "web_method_exceptions": [
-        {"method": "BeginRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
-        {"method": "AppendRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
-        {"method": "SealRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone seals a completely admitted local manifest."},
-        {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."},
-        {"method": "BeginRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."},
-        {"method": "CompleteRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."},
-        {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."},
-        {"method": "BeginReleasePublication", "reason": "Canonical release admission is a maintainer CLI operation."},
-        {"method": "CommitReleasePublication", "reason": "Canonical staging commit is a maintainer CLI operation."},
-        {"method": "RecordReleaseQualification", "reason": "Signed release qualification is admitted by the maintainer CLI."},
-        {"method": "PromoteReleasePublication", "reason": "Canonical production promotion is a maintainer CLI operation."},
-        {"method": "GetReleaseReceipt", "reason": "Public receipt read-back is consumed by release verification tooling."},
-        {"method": "PublishReleaseTimestamp", "reason": "Online timestamp renewal is a restricted maintainer operation."},
-        {"method": "AdvanceReleaseChannel", "reason": "Partitioned release rollout is a restricted maintainer operation."}
+      "cli_families": [
+        "registry publish"
       ],
-      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication", "BeginReleasePublication", "CommitReleasePublication", "RecordReleaseQualification", "PromoteReleasePublication", "GetReleaseReceipt", "PublishReleaseTimestamp", "AdvanceReleaseChannel"]
+      "web_workflows": [
+        "registry-publication"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "BeginRegistryPublicationManifest",
+          "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."
+        },
+        {
+          "method": "AppendRegistryPublicationManifest",
+          "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."
+        },
+        {
+          "method": "SealRegistryPublicationManifest",
+          "reason": "The browser observes publication state; the CLI alone seals a completely admitted local manifest."
+        },
+        {
+          "method": "GetRegistryPublication",
+          "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."
+        },
+        {
+          "method": "BeginRegistryPublicationMultipartUpload",
+          "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."
+        },
+        {
+          "method": "CompleteRegistryPublicationMultipartUpload",
+          "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."
+        },
+        {
+          "method": "AbortRegistryPublicationMultipartUpload",
+          "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."
+        },
+        {
+          "method": "BeginReleasePublication",
+          "reason": "Canonical release admission is a maintainer CLI operation."
+        },
+        {
+          "method": "CommitReleasePublication",
+          "reason": "Canonical staging commit is a maintainer CLI operation."
+        },
+        {
+          "method": "RecordReleaseQualification",
+          "reason": "Signed release qualification is admitted by the maintainer CLI."
+        },
+        {
+          "method": "PromoteReleasePublication",
+          "reason": "Canonical production promotion is a maintainer CLI operation."
+        },
+        {
+          "method": "GetReleaseReceipt",
+          "reason": "Public receipt read-back is consumed by release verification tooling."
+        },
+        {
+          "method": "PublishReleaseTimestamp",
+          "reason": "Online timestamp renewal is a restricted maintainer operation."
+        },
+        {
+          "method": "AdvanceReleaseChannel",
+          "reason": "Partitioned release rollout is a restricted maintainer operation."
+        }
+      ],
+      "methods": [
+        "BeginRegistryPublication",
+        "BeginRegistryPublicationManifest",
+        "AppendRegistryPublicationManifest",
+        "SealRegistryPublicationManifest",
+        "BeginRegistryPublicationMultipartUpload",
+        "CompleteRegistryPublicationMultipartUpload",
+        "AbortRegistryPublicationMultipartUpload",
+        "ListRegistryPublications",
+        "GetRegistryPublication",
+        "CommitRegistryPublication",
+        "AbortRegistryPublication",
+        "BeginReleasePublication",
+        "CommitReleasePublication",
+        "RecordReleaseQualification",
+        "PromoteReleasePublication",
+        "GetReleaseReceipt",
+        "PublishReleaseTimestamp",
+        "AdvanceReleaseChannel"
+      ]
     },
     {
       "service": "GitService",
       "audience": "end-user",
-      "cli_families": ["registry configuration"],
-      "web_workflows": ["registry-history", "change-requests"],
-      "methods": ["GitLog", "GitDiff", "ListChangeRequests"]
+      "cli_families": [
+        "registry configuration"
+      ],
+      "web_workflows": [
+        "registry-history",
+        "change-requests"
+      ],
+      "methods": [
+        "GitLog",
+        "GitDiff",
+        "ListChangeRequests"
+      ]
     },
     {
       "service": "WebhookService",
       "audience": "end-user",
-      "cli_families": ["org webhook"],
-      "web_workflows": ["webhooks"],
-      "methods": ["ListWebhooks", "PlanCreateWebhook", "CreateWebhook", "PlanDeleteWebhook", "DeleteWebhook"]
+      "cli_families": [
+        "org webhook"
+      ],
+      "web_workflows": [
+        "webhooks"
+      ],
+      "methods": [
+        "ListWebhooks",
+        "PlanCreateWebhook",
+        "CreateWebhook",
+        "PlanDeleteWebhook",
+        "DeleteWebhook"
+      ]
     },
     {
       "service": "BinaryCacheService",
       "audience": "end-user",
-      "cli_families": ["cache", "cache root", "cache lease", "cache gc", "placement eviction"],
-      "web_workflows": ["cache-overview", "cache-objects", "cache-retention", "cache-gc", "cache-uploads", "cache-danger"],
-      "web_method_exceptions": [
-        {"method": "GetCacheGcRun", "reason": "ListCacheGcRuns returns the complete run summaries rendered by the garbage-collection workflow."},
-        {"method": "GetCacheGcDeletionJob", "reason": "ListCacheGcDeletionJobs returns the complete deletion-job state rendered by the safety workflow."},
-        {"method": "GetRetentionRoot", "reason": "ListRetentionRoots returns the complete retained-root model rendered by the retention workflow."},
-        {"method": "RegisterCacheNarinfos", "reason": "The cache push transfer protocol batches this settlement after direct NAR uploads; the browser does not upload Nix closures."}
+      "cli_families": [
+        "cache",
+        "cache root",
+        "cache lease",
+        "cache gc",
+        "placement eviction"
       ],
-      "methods": ["ListBinaryCaches", "GetBinaryCache", "PlanCreateBinaryCache", "CreateBinaryCache", "PlanUpdateBinaryCache", "UpdateBinaryCache", "PlanDeleteBinaryCache", "DeleteBinaryCache", "GetCacheGcPolicy", "PlanSetCacheGcPolicy", "SetCacheGcPolicy", "PlanRunCacheGc", "RunCacheGc", "PlanAcknowledgeCacheGcFirstSweep", "AcknowledgeCacheGcFirstSweep", "GetCacheGcPlan", "GetCacheGcRun", "SearchCache", "GetCacheObject", "ListCacheGcRuns", "GetCacheGcDeletionJob", "ListCacheGcDeletionJobs", "PlanRetryCacheGcDeletionJob", "RetryCacheGcDeletionJob", "PlanAbandonCacheGcDeletionJob", "AbandonCacheGcDeletionJob", "ListRootReasons", "GetRetentionRoot", "ListRetentionRoots", "PlanCreateManualRetentionRoot", "CreateManualRetentionRoot", "PlanRenewRetentionLease", "RenewRetentionLease", "PlanRevokeRetentionLease", "RevokeRetentionLease", "PlanDeleteManualRetentionRoot", "DeleteManualRetentionRoot", "PlanRefreshAllRetention", "RefreshAllRetention", "PlanRunPlacementEviction", "RunPlacementEviction", "CacheClosure", "CreateCacheObjectUploads", "RegisterCacheNarinfos", "BeginCacheMultipartUpload", "CompleteCacheMultipartUpload", "AbortCacheMultipartUpload"]
+      "web_workflows": [
+        "cache-overview",
+        "cache-objects",
+        "cache-retention",
+        "cache-gc",
+        "cache-uploads",
+        "cache-danger"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetCacheGcRun",
+          "reason": "ListCacheGcRuns returns the complete run summaries rendered by the garbage-collection workflow."
+        },
+        {
+          "method": "GetCacheGcDeletionJob",
+          "reason": "ListCacheGcDeletionJobs returns the complete deletion-job state rendered by the safety workflow."
+        },
+        {
+          "method": "GetRetentionRoot",
+          "reason": "ListRetentionRoots returns the complete retained-root model rendered by the retention workflow."
+        },
+        {
+          "method": "RegisterCacheNarinfos",
+          "reason": "The cache push transfer protocol batches this settlement after direct NAR uploads; the browser does not upload Nix closures."
+        }
+      ],
+      "methods": [
+        "ListBinaryCaches",
+        "GetBinaryCache",
+        "PlanCreateBinaryCache",
+        "CreateBinaryCache",
+        "PlanUpdateBinaryCache",
+        "UpdateBinaryCache",
+        "PlanDeleteBinaryCache",
+        "DeleteBinaryCache",
+        "GetCacheGcPolicy",
+        "PlanSetCacheGcPolicy",
+        "SetCacheGcPolicy",
+        "PlanRunCacheGc",
+        "RunCacheGc",
+        "PlanAcknowledgeCacheGcFirstSweep",
+        "AcknowledgeCacheGcFirstSweep",
+        "GetCacheGcPlan",
+        "GetCacheGcRun",
+        "SearchCache",
+        "GetCacheObject",
+        "ListCacheGcRuns",
+        "GetCacheGcDeletionJob",
+        "ListCacheGcDeletionJobs",
+        "PlanRetryCacheGcDeletionJob",
+        "RetryCacheGcDeletionJob",
+        "PlanAbandonCacheGcDeletionJob",
+        "AbandonCacheGcDeletionJob",
+        "ListRootReasons",
+        "GetRetentionRoot",
+        "ListRetentionRoots",
+        "PlanCreateManualRetentionRoot",
+        "CreateManualRetentionRoot",
+        "PlanRenewRetentionLease",
+        "RenewRetentionLease",
+        "PlanRevokeRetentionLease",
+        "RevokeRetentionLease",
+        "PlanDeleteManualRetentionRoot",
+        "DeleteManualRetentionRoot",
+        "PlanRefreshAllRetention",
+        "RefreshAllRetention",
+        "PlanRunPlacementEviction",
+        "RunPlacementEviction",
+        "CacheClosure",
+        "CreateCacheObjectUploads",
+        "RegisterCacheNarinfos",
+        "BeginCacheMultipartUpload",
+        "CompleteCacheMultipartUpload",
+        "AbortCacheMultipartUpload"
+      ]
     },
     {
       "service": "CacheIntegrationService",
       "audience": "end-user",
-      "cli_families": ["registry cache-stack", "cache integration", "cache retention", "cache population", "cache coverage"],
-      "web_workflows": ["cache-integrations", "registry-cache-stack", "cache-retention", "cache-population", "cache-coverage"],
-      "web_method_exceptions": [
-        {"method": "ListRegistryCacheIntegrations", "reason": "The registry browser uses GetConsumerCacheStack, while cache-owned inventory uses ListCacheRegistryIntegrations."},
-        {"method": "GetCacheRegistryIntegration", "reason": "ListCacheRegistryIntegrations returns the complete integration rows rendered by the cache workflow."},
-        {"method": "GetRetentionSubscription", "reason": "ListRetentionSubscriptions returns the complete subscription model rendered by the retention workflow."},
-        {"method": "GetPopulationTarget", "reason": "ListPopulationTargets returns the complete target model rendered by the population workflow."}
+      "cli_families": [
+        "registry cache-stack",
+        "cache integration",
+        "cache retention",
+        "cache population",
+        "cache coverage"
       ],
-      "methods": ["ListRegistryCacheIntegrations", "ListCacheRegistryIntegrations", "GetCacheRegistryIntegration", "PreviewCacheIntegration", "GetConsumerCacheStack", "ValidateConsumerCacheStack", "PlanCreateConsumerCacheChangeset", "CreateConsumerCacheChangeset", "GetRetentionSubscription", "ListRetentionSubscriptions", "PlanSetRetentionSubscription", "SetRetentionSubscription", "PlanDeleteRetentionSubscription", "DeleteRetentionSubscription", "PlanRefreshRetentionSubscription", "RefreshRetentionSubscription", "ExplainRetention", "GetPopulationTarget", "ListPopulationTargets", "PlanSetPopulationTarget", "SetPopulationTarget", "PlanDeletePopulationTarget", "DeletePopulationTarget", "PlanRunPopulation", "RunPopulation", "GetCoverage", "PlanRunCoverageValidation", "RunCoverageValidation", "PlanRunCoverageRepair", "RunCoverageRepair"]
+      "web_workflows": [
+        "cache-integrations",
+        "registry-cache-stack",
+        "cache-retention",
+        "cache-population",
+        "cache-coverage"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "ListRegistryCacheIntegrations",
+          "reason": "The registry browser uses GetConsumerCacheStack, while cache-owned inventory uses ListCacheRegistryIntegrations."
+        },
+        {
+          "method": "GetCacheRegistryIntegration",
+          "reason": "ListCacheRegistryIntegrations returns the complete integration rows rendered by the cache workflow."
+        },
+        {
+          "method": "GetRetentionSubscription",
+          "reason": "ListRetentionSubscriptions returns the complete subscription model rendered by the retention workflow."
+        },
+        {
+          "method": "GetPopulationTarget",
+          "reason": "ListPopulationTargets returns the complete target model rendered by the population workflow."
+        }
+      ],
+      "methods": [
+        "ListRegistryCacheIntegrations",
+        "ListCacheRegistryIntegrations",
+        "GetCacheRegistryIntegration",
+        "PreviewCacheIntegration",
+        "GetConsumerCacheStack",
+        "ValidateConsumerCacheStack",
+        "PlanCreateConsumerCacheChangeset",
+        "CreateConsumerCacheChangeset",
+        "GetRetentionSubscription",
+        "ListRetentionSubscriptions",
+        "PlanSetRetentionSubscription",
+        "SetRetentionSubscription",
+        "PlanDeleteRetentionSubscription",
+        "DeleteRetentionSubscription",
+        "PlanRefreshRetentionSubscription",
+        "RefreshRetentionSubscription",
+        "ExplainRetention",
+        "GetPopulationTarget",
+        "ListPopulationTargets",
+        "PlanSetPopulationTarget",
+        "SetPopulationTarget",
+        "PlanDeletePopulationTarget",
+        "DeletePopulationTarget",
+        "PlanRunPopulation",
+        "RunPopulation",
+        "GetCoverage",
+        "PlanRunCoverageValidation",
+        "RunCoverageValidation",
+        "PlanRunCoverageRepair",
+        "RunCoverageRepair"
+      ]
     },
     {
       "service": "OperationService",
       "audience": "end-user",
-      "cli_families": ["operation"],
-      "web_workflows": ["operations"],
-      "web_method_exceptions": [
-        {"method": "GetOperation", "reason": "ListOperations returns complete operation records for the selected scope."},
-        {"method": "WatchOperation", "reason": "The browser polls ListOperations so it can recover across navigation and Worker request boundaries."}
+      "cli_families": [
+        "operation"
       ],
-      "methods": ["GetOperation", "ListOperations", "WatchOperation", "CancelOperation", "RetryOperation"]
+      "web_workflows": [
+        "operations"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetOperation",
+          "reason": "ListOperations returns complete operation records for the selected scope."
+        },
+        {
+          "method": "WatchOperation",
+          "reason": "The browser polls ListOperations so it can recover across navigation and Worker request boundaries."
+        }
+      ],
+      "methods": [
+        "GetOperation",
+        "ListOperations",
+        "WatchOperation",
+        "CancelOperation",
+        "RetryOperation"
+      ]
     },
     {
       "service": "IdentityService",
       "audience": "end-user",
-      "cli_families": ["org member", "org invitation", "org service-account", "org identity-provider", "org domain", "access-token", "whoami"],
-      "web_workflows": ["identity-access", "memberships", "invitations", "service-accounts", "access-tokens", "organization-sso", "identity-provider", "organization-domains"],
-      "web_method_exceptions": [
-        {"method": "WhoAmI", "reason": "The browser session bridge returns the authenticated principal and live scoped grants before rendering the application."},
-        {"method": "GetServiceAccount", "reason": "ListServiceAccounts returns the complete service-account rows rendered by the identity workflow."},
-        {"method": "GetInvitation", "reason": "ListInvitations returns the complete invitation lifecycle rows rendered by the member workflow."},
-        {"method": "AcceptInvitation", "reason": "Invitation acceptance is a retained server-rendered credential ceremony, not an authenticated settings action."},
-        {"method": "GetOrganizationDomain", "reason": "ListOrganizationDomains returns the complete claim and verification state rendered by the SSO workflow."}
+      "cli_families": [
+        "org member",
+        "org invitation",
+        "org service-account",
+        "org identity-provider",
+        "org domain",
+        "access-token",
+        "whoami"
       ],
-      "methods": ["WhoAmI", "ListServiceAccounts", "GetServiceAccount", "PlanCreateServiceAccount", "CreateServiceAccount", "PlanUpdateServiceAccount", "UpdateServiceAccount", "PlanDeleteServiceAccount", "DeleteServiceAccount", "GetMembership", "PlanSetMembership", "SetMembership", "ListInvitations", "GetInvitation", "PlanCreateInvitation", "CreateInvitation", "PlanCancelInvitation", "CancelInvitation", "AcceptInvitation", "GetIdentityProvider", "PlanSetIdentityProvider", "SetIdentityProvider", "PlanRemoveIdentityProvider", "RemoveIdentityProvider", "ListOrganizationDomains", "GetOrganizationDomain", "PlanClaimOrganizationDomain", "ClaimOrganizationDomain", "PlanVerifyOrganizationDomain", "VerifyOrganizationDomain", "PlanReleaseOrganizationDomain", "ReleaseOrganizationDomain", "PlanIssueAccessToken", "IssueAccessToken", "PlanRetireAccessToken", "RetireAccessToken", "ListAccessTokens"]
+      "web_workflows": [
+        "identity-access",
+        "memberships",
+        "invitations",
+        "service-accounts",
+        "access-tokens",
+        "organization-sso",
+        "identity-provider",
+        "organization-domains"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "GetServiceAccount",
+          "reason": "ListServiceAccounts returns the complete service-account rows rendered by the identity workflow."
+        },
+        {
+          "method": "GetInvitation",
+          "reason": "ListInvitations returns the complete invitation lifecycle rows rendered by the member workflow."
+        },
+        {
+          "method": "AcceptInvitation",
+          "reason": "Invitation acceptance is a retained server-rendered credential ceremony, not an authenticated settings action."
+        },
+        {
+          "method": "GetOrganizationDomain",
+          "reason": "ListOrganizationDomains returns the complete claim and verification state rendered by the SSO workflow."
+        }
+      ],
+      "methods": [
+        "WhoAmI",
+        "ListServiceAccounts",
+        "GetServiceAccount",
+        "PlanCreateServiceAccount",
+        "CreateServiceAccount",
+        "PlanUpdateServiceAccount",
+        "UpdateServiceAccount",
+        "PlanDeleteServiceAccount",
+        "DeleteServiceAccount",
+        "GetMembership",
+        "PlanSetMembership",
+        "SetMembership",
+        "ListInvitations",
+        "GetInvitation",
+        "PlanCreateInvitation",
+        "CreateInvitation",
+        "PlanCancelInvitation",
+        "CancelInvitation",
+        "AcceptInvitation",
+        "GetIdentityProvider",
+        "PlanSetIdentityProvider",
+        "SetIdentityProvider",
+        "PlanRemoveIdentityProvider",
+        "RemoveIdentityProvider",
+        "ListOrganizationDomains",
+        "GetOrganizationDomain",
+        "PlanClaimOrganizationDomain",
+        "ClaimOrganizationDomain",
+        "PlanVerifyOrganizationDomain",
+        "VerifyOrganizationDomain",
+        "PlanReleaseOrganizationDomain",
+        "ReleaseOrganizationDomain",
+        "PlanIssueAccessToken",
+        "IssueAccessToken",
+        "PlanRetireAccessToken",
+        "RetireAccessToken",
+        "ListAccessTokens"
+      ]
+    },
+    {
+      "service": "DirectUploadService",
+      "audience": "end-user",
+      "cli_families": [
+        "cache",
+        "registry publish",
+        "container"
+      ],
+      "web_workflows": [
+        "registry-publication",
+        "cache-objects",
+        "registry-containers"
+      ],
+      "web_method_exceptions": [
+        {
+          "method": "Abort",
+          "reason": "Explicit direct upload abort uses CLI controls; the browser uploader preserves pending effects for resume."
+        }
+      ],
+      "methods": [
+        "GetCapabilities",
+        "BeginBatch",
+        "StatusBatch",
+        "GrantPartsBatch",
+        "ReportPartsBatch",
+        "CompleteBatch",
+        "Abort"
+      ]
     }
   ]
 }

@@ -126,6 +126,12 @@
 pub mod keymap;
 
 #[cfg(any(target_arch = "wasm32", test))]
+mod worker_jobs;
+
+#[cfg(any(target_arch = "wasm32", test))]
+mod control_receipt;
+
+#[cfg(any(target_arch = "wasm32", test))]
 mod delivery_ingress;
 
 // The method-agnostic nested-console bridge seam is compiled for the Worker
@@ -135,26 +141,83 @@ mod delivery_ingress;
 mod bridge_dispatch;
 
 #[cfg(target_arch = "wasm32")]
+mod authority_issuer_storage;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub(crate) mod binding_custody;
+#[cfg(target_arch = "wasm32")]
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod consoleports;
 #[cfg(target_arch = "wasm32")]
 pub mod coordinatorobj;
+#[cfg(target_arch = "wasm32")]
+pub(crate) mod direct_digest;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod direct_guard;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod direct_upload;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod oci_manifest_ingress;
+#[cfg(target_arch = "wasm32")]
+mod oci_projection;
+#[cfg(test)]
+#[path = "oci_projection/lifetime.rs"]
+mod oci_projection_lifetime;
+#[cfg(target_arch = "wasm32")]
+pub use direct_upload::HybridDirectUpload;
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
 mod e2e_surface;
 #[cfg(target_arch = "wasm32")]
 pub mod edgeratelimit;
+#[cfg(any(test, target_arch = "wasm32"))]
+pub mod external_object;
 #[cfg(any(target_arch = "wasm32", test))]
 mod frozen_surface_access;
 #[cfg(target_arch = "wasm32")]
 pub mod handlers;
 #[cfg(target_arch = "wasm32")]
+mod hybrid;
+
+#[cfg(target_arch = "wasm32")]
+mod mirror_live;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "mirror_live/batch.rs"]
+mod mirror_live_batch_tests;
+
+#[cfg(target_arch = "wasm32")]
+mod digest;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod documentation_projection;
+
+#[cfg(target_arch = "wasm32")]
+pub mod hybrid_authority;
+#[cfg(target_arch = "wasm32")]
+pub mod hybrid_authority_issuer;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_authority_issuer_deadline;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_authority_state;
+#[cfg(target_arch = "wasm32")]
+pub mod hybrid_binding;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_frozen_cleanup;
+#[cfg(target_arch = "wasm32")]
+pub mod hybrid_object;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod hybrid_object_state;
+#[cfg(target_arch = "wasm32")]
 pub mod indexer;
+#[cfg(any(target_arch = "wasm32", test))]
+mod tree_projection;
 // Pure (no `worker`/wasm dependency) DO-SQLite placeholder translation, so it
 // is unit-tested on the native target too — see [`placeholder`].
+mod hybrid_front;
+mod mirror_import;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod pitr;
 pub mod placeholder;
+mod private_namespace;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;
@@ -518,6 +581,19 @@ mod entry {
     const HUB_RELEASE_EVIDENCE_CONFIG: &str = "HUB_RELEASE_EVIDENCE_CONFIG";
     /// Staged request-execution cutover: `off`, `read`, or `on`.
     const HUB_REQUEST_SHARDING: &str = "HUB_REQUEST_SHARDING";
+    /// Explicit deployment topology: `worker_only` or `hybrid`.
+    const HUB_TOPOLOGY: &str = "HUB_TOPOLOGY";
+
+    fn hybrid_mode(env: &Env) -> Result<bool> {
+        match env.var(HUB_TOPOLOGY).map(|value| value.to_string()) {
+            Err(_) => Ok(false),
+            Ok(value) if value == "worker_only" => Ok(false),
+            Ok(value) if value == "hybrid" => Ok(true),
+            Ok(value) => Err(worker::Error::RustError(format!(
+                "{HUB_TOPOLOGY} must be worker_only or hybrid; got {value:?}"
+            ))),
+        }
+    }
     /// Optional fail-closed OCI Distribution pull rollout flag.
     const HUB_OCI_PULL_ENABLED: &str = "HUB_OCI_PULL_ENABLED";
     /// Optional fail-closed OCI Distribution push rollout flag.
@@ -813,7 +889,15 @@ mod entry {
             ),
             None,
         )
-        .with_container_rollout(container_rollout(env)?);
+        .with_container_rollout(container_rollout(env)?)
+        .with_deployment_id(
+            env.var(HUB_DEPLOYMENT_ID)
+                .ok()
+                .map(|value| value.to_string()),
+        )
+        .map_err(|_| {
+            worker::Error::RustError("configured deployment identity is invalid".into())
+        })?;
 
         let service = Arc::new(service);
         let egress = worker_egress(env)?;
@@ -1175,6 +1259,15 @@ mod entry {
         .with_kv(Arc::new(crate::workerkv::WorkerKv::new(
             env.kv(crate::handlers::bindings::KV_SESSIONS)?,
         )));
+        service = service
+            .with_deployment_id(
+                env.var(HUB_DEPLOYMENT_ID)
+                    .ok()
+                    .map(|value| value.to_string()),
+            )
+            .map_err(|_| {
+                worker::Error::RustError("configured deployment identity is invalid".into())
+            })?;
         if let Ok(keys) = env.var("HUB_REGISTRY_CACHE_PUBLIC_KEYS") {
             service = service
                 .with_registry_cache_public_keys(serde_json::from_str(&keys.to_string()).map_err(
@@ -1240,25 +1333,75 @@ mod entry {
         // errors land in Workers Logs (idempotent; see `crate::tracinglog`).
         crate::tracinglog::init();
 
+        // Reserved stage objects have no public origin or object-store route.
+        // This precedes every Native/service/bucket binding lookup.
+        if crate::private_namespace::contains_private_namespace(req.url()?.path()) {
+            return Response::error("not found", 404);
+        }
+
+        match env
+            .var("HUB_RUNTIME_ROLE")
+            .ok()
+            .map(|role| role.to_string())
+            .as_deref()
+        {
+            Some("authority_issuer") => {
+                return crate::hybrid_authority_issuer::fetch(req, &env).await
+            }
+            None | Some("hub_executor") => {}
+            Some(_) => return Response::error("unknown runtime role", 503),
+        }
+        if env.secret("HUB_AUTHORITY_ISSUER_SEED").is_ok()
+            || env.secret("HUB_AUTHORITY_PUBLISHER_KEY").is_ok()
+        {
+            return Response::error("ordinary executor contains issuer capability", 503);
+        }
+        if req.url()?.path() == aos_hub_core::storage_authority::lease::control::ISSUER_CONTROL_PATH
+        {
+            return crate::hybrid_authority_issuer::forward(req, &env).await;
+        }
+        let hybrid = hybrid_mode(&env)?;
+        if hybrid && req.url()?.path() == DEPLOYMENT_ID_PATH {
+            if !matches!(req.method(), Method::Get | Method::Head) {
+                return Response::error("method not allowed", 405);
+            }
+            let expected = env.var(HUB_DEPLOYMENT_ID)?.to_string();
+            let response = crate::hybrid::proxy(req, &env).await?;
+            if response.status_code() != 200
+                || response.headers().get("x-aos-deployment-id")?.as_deref()
+                    != Some(expected.as_str())
+            {
+                return Response::error("hybrid origin deployment mismatch", 503);
+            }
+            return Ok(response);
+        }
+
         // Manual jobs must have the same isolation as queue deliveries. R2
         // reads and hashing must not occupy the authoritative database turn.
         if req.method() == Method::Post && req.url()?.path() == "/_internal/job" {
-            let expected_seal = env
-                .secret(HUB_SEAL_KEY)
-                .map(|secret| secret.to_string())
-                .unwrap_or_default();
-            let supplied_seal = req.headers().get("x-hub-seal")?.unwrap_or_default();
-            if expected_seal.is_empty() || supplied_seal != expected_seal {
-                return Response::error("forbidden", 403);
-            }
+            return match crate::worker_jobs::dispatch(hybrid, || async {
+                let expected_seal = env
+                    .secret(HUB_SEAL_KEY)
+                    .map(|secret| secret.to_string())
+                    .unwrap_or_default();
+                let supplied_seal = req.headers().get("x-hub-seal")?.unwrap_or_default();
+                if expected_seal.is_empty() || supplied_seal != expected_seal {
+                    return Response::error("forbidden", 403);
+                }
 
-            let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
-                Ok(envelope) => envelope,
-                Err(error) => return Response::error(format!("job decode: {error}"), 400),
-            };
-            return match run_job_envelope(&envelope, None, &env).await {
-                Ok(()) => Response::ok("ok"),
-                Err(error) => Response::error(format!("job: {error}"), 500),
+                let envelope: aos_hub_core::jobs::JobEnvelope = match req.json().await {
+                    Ok(envelope) => envelope,
+                    Err(error) => return Response::error(format!("job decode: {error}"), 400),
+                };
+                match run_job_envelope(&envelope, None, &env).await {
+                    Ok(()) => Response::ok("ok"),
+                    Err(error) => Response::error(format!("job: {error}"), 500),
+                }
+            })
+            .await
+            {
+                Ok(response) => response,
+                Err(_) => Response::error("not found", 404),
             };
         }
 
@@ -1288,11 +1431,25 @@ mod entry {
         }
 
         #[cfg(feature = "do-e2e")]
+        if req.method() == Method::Post && req.url()?.path() == "/_e2e/external-copy-stream" {
+            return crate::external_object::copy_conformance_fetch(req).await;
+        }
+
+        #[cfg(feature = "do-e2e")]
+        if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-guard" {
+            return crate::direct_guard::conformance_fetch(req, &env).await;
+        }
+
+        #[cfg(feature = "do-e2e")]
         if req.method() == Method::Post && req.url()?.path() == "/_e2e/direct-egress" {
             return match crate::consoleports::e2e_assert_direct_egress().await {
                 Ok(()) => Response::ok("ok"),
                 Err(error) => Response::error(format!("direct egress contract: {error:#}"), 500),
             };
+        }
+
+        if hybrid {
+            return crate::hybrid::fetch(req, &env).await;
         }
 
         let browse_target = anonymous_browse_target(&req)?;
@@ -1423,6 +1580,9 @@ mod entry {
     #[worker::event(scheduled)]
     async fn scheduled(_event: ScheduledEvent, env: Env, _ctx: ScheduleContext) {
         crate::tracinglog::init();
+        if hybrid_mode(&env).unwrap_or(true) {
+            return;
+        }
         use aos_hub_core::jobs::Queue as _;
         let result = match crate::workerqueue::WorkerQueue::from_env(&env) {
             Ok(queue) => {
@@ -1451,6 +1611,9 @@ mod entry {
         _ctx: Context,
     ) -> Result<()> {
         crate::tracinglog::init();
+        if hybrid_mode(&env)? {
+            return crate::direct_upload::verification::consume(&batch, &env).await;
+        }
         #[derive(serde::Deserialize)]
         #[serde(untagged)]
         enum QueuedJobBody {
@@ -1760,6 +1923,10 @@ mod entry {
         env: &Env,
     ) -> Result<()> {
         use aos_hub_core::db::WorkerJobClaim;
+
+        crate::worker_jobs::require_worker_only(hybrid_mode(env)?).map_err(|_| {
+            worker::Error::RustError("Worker logical jobs are unavailable in Hybrid".into())
+        })?;
 
         envelope
             .validate()
@@ -2807,6 +2974,34 @@ mod entry {
                         "/_admin/recovery/bookmark" | "/_admin/recovery/restore"
                     )
                 });
+            #[cfg(feature = "do-e2e")]
+            if req.method() == Method::Post && req.url()?.path() == "/_e2e/schema-initialization" {
+                let expected = self.env.secret(HUB_SEAL_KEY)?.to_string();
+                if expected.is_empty()
+                    || req.headers().get("x-hub-seal")?.as_deref() != Some(expected.as_str())
+                {
+                    return Response::error("forbidden", 403);
+                }
+                let action = req.text().await?;
+                let backend = crate::sqldobackend::SqlDoBackend::new(self.state.storage());
+                let before = backend
+                    .e2e_schema_fingerprint()
+                    .await
+                    .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                let result = match action.as_str() {
+                    "seed-master2" => backend.e2e_seed_master_two().await,
+                    "initialize" => self.ensure_migrated().await,
+                    "inspect" => Ok(()),
+                    _ => return Response::error("unknown fixture action", 400),
+                };
+                let after = backend
+                    .e2e_schema_fingerprint()
+                    .await
+                    .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                return Response::from_json(
+                    &serde_json::json!({"accepted":result.is_ok(),"before":before,"after":after}),
+                );
+            }
             if !recovery_request {
                 if let Err(err) = self.ensure_migrated().await {
                     return Response::error(format!("hubdb migrate: {err:#}"), 500);
@@ -3382,12 +3577,19 @@ mod entry {
                 .create_session(user_id, 3_600, 0)
                 .await
                 .map_err(|error| worker::Error::RustError(format!("e2e session: {error:#}")))?;
+            let session_auth = db
+                .validate_session(&session)
+                .await
+                .map_err(|_| worker::Error::RustError("e2e session validation failed".into()))?
+                .ok_or_else(|| worker::Error::RustError("e2e session validation failed".into()))?;
             let jwt = JwtKeys::from_secret(self.env.secret(HUB_JWT_SECRET)?.to_string().as_bytes());
             let token = jwt
                 .mint(
                     &TokenAuth {
-                        token_id: "workerd-e2e".into(),
+                        token_id: format!("browser-session-{user_id}"),
                         owner: Principal::user(user_id),
+                        owner_incarnation: Some(session_auth.owner_incarnation),
+                        browser_session_id_hash: Some(session_auth.session_id_hash),
                         scope: Scope::root(),
                         permissions: vec![
                             Permission::IamAdmin,

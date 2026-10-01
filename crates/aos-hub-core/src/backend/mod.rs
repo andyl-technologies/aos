@@ -36,6 +36,8 @@
 //! helpers every driver reuses. The concrete drivers live in the deployment
 //! crates (`SqlxBackend` in the native hub, the `HubDb` bridge in the Worker).
 
+pub mod schema_lineage;
+
 use anyhow::{Context, Result};
 
 use crate::dialect::{order_params, Dialect};
@@ -58,6 +60,17 @@ impl<T: Send + Sync> BackendBounds for T {}
 pub trait BackendBounds {}
 #[cfg(target_arch = "wasm32")]
 impl<T> BackendBounds for T {}
+
+/// One instantaneous connection-pool snapshot from a native SQL backend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PoolStats {
+    /// Open connections, including idle connections.
+    pub open: u32,
+    /// Open connections currently idle.
+    pub idle: usize,
+    /// Configured maximum open connections.
+    pub maximum: u32,
+}
 
 /// One statement in a [`Backend::batch`]: source SQL and its bound parameters.
 ///
@@ -154,6 +167,24 @@ impl CheckedStatement {
 pub trait Backend: BackendBounds {
     /// The SQL dialect this backend speaks.
     fn dialect(&self) -> Dialect;
+
+    /// Reports a native connection pool snapshot when this backend has one.
+    fn pool_stats(&self) -> Option<PoolStats> {
+        None
+    }
+
+    /// Initializes an empty schema or reopens the current serving singleton.
+    ///
+    /// Implementors hold one dialect migration lock and the same connection
+    /// through read-only lineage inspection, all bookkeeping writes, and final
+    /// serving identity validation. An unsupported backend refuses before DDL.
+    ///
+    /// # Errors
+    /// Returns reset/import guidance for unsupported source lineage, or a
+    /// driver error when its lock, inspection, transaction or migration fails.
+    async fn migrate_schema(&self) -> Result<()> {
+        anyhow::bail!(schema_lineage::RESET_REQUIRED)
+    }
 
     /// Runs a non-`SELECT` statement, returning the number of rows affected.
     ///
@@ -378,6 +409,12 @@ pub fn prepare(dialect: Dialect, sql: &str, params: &[Value]) -> Result<(String,
 mod sqlx;
 #[cfg(not(target_arch = "wasm32"))]
 pub use sqlx::SqlxBackend;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod sqlite_snapshot;
+
+#[cfg(all(feature = "postgres", not(target_arch = "wasm32")))]
+pub mod postgres_snapshot;
 
 // Per-statement query timing (RFC-0004 ch.14 Phase A): a `Backend` decorator
 // that records each statement's wall-clock duration for a `Server-Timing`

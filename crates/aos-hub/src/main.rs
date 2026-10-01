@@ -20,19 +20,36 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use aos_hub_core::fetch::SurfaceProvider as _;
 use aos_hub_core::service::RouteReservationKeyring as _;
 use clap::{Args, Parser, Subcommand};
 
 use aos_hub::db::Database;
 use aos_hub::server::{router, AppState};
 
+mod database_input;
+mod indexing;
+mod logging;
+mod mirror_live_install;
+mod password_input;
+mod signing_input;
+mod snapshot_input;
+
+use password_input::read_password;
+
 #[derive(Parser)]
 #[command(name = "aos-hub", version, about = "AOS registry hub server")]
 struct Cli {
-    /// Hub state directory (holds hub.db).
-    #[arg(long, global = true)]
+    /// Hub state directory; holds hub.db when using local SQLite.
+    #[arg(long, global = true, env = "HUB_ROOT")]
     root: Option<PathBuf>,
+
+    /// Native database URL; defaults to the SQLite file under --root.
+    #[arg(long, global = true, env = "HUB_DATABASE_URL", hide_env_values = true)]
+    database_url: Option<String>,
+
+    /// Owner-private file containing the native database URL.
+    #[arg(long, global = true, env = "HUB_DATABASE_URL_FILE")]
+    database_url_file: Option<PathBuf>,
 
     /// Database target. The hard-cutover CLI admits only the native `local`
     /// database; Worker administration uses the typed Hub API.
@@ -44,10 +61,33 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Capture or verify an offline SQLite database archive.
+    Snapshot(snapshot_input::SnapshotArgs),
+    /// Reconcile reviewed physical authority metadata with the paired Worker.
+    AuthorityControlSync {
+        /// Permanent authority identity already approved through the root API.
+        #[arg(long)]
+        authority_id: String,
+        /// Actual configured Worker guard namespace identity.
+        #[arg(long, env = "HUB_EXTERNAL_GUARD_NAMESPACE_ID")]
+        guard_namespace_id: String,
+        /// Actual configured Worker storage executor identity.
+        #[arg(long, env = "HUB_EXTERNAL_STORAGE_EXECUTOR_ID")]
+        executor_identity: String,
+        /// HTTPS origin of the paired Worker.
+        #[arg(long, env = "HUB_HYBRID_WORKER_URL")]
+        worker_url: String,
+        /// Immutable paired deployment identity.
+        #[arg(long, env = "HUB_DEPLOYMENT_ID")]
+        deployment_id: String,
+        /// Owner-private file containing the existing storage control HMAC key.
+        #[arg(long, env = "HUB_STORAGE_WORK_KEY_FILE")]
+        storage_work_key_file: PathBuf,
+    },
     /// Run the hub server.
     Serve {
         /// Listen address.
-        #[arg(long, default_value = "127.0.0.1:8420")]
+        #[arg(long, env = "HUB_LISTEN", default_value = "127.0.0.1:8420")]
         listen: String,
         /// Zero-config development mode: defaults --root to ./.aos-hub.
         #[arg(long)]
@@ -56,8 +96,32 @@ enum Command {
         #[arg(long)]
         seed: bool,
         /// Externally reachable base URL for setup snippets.
-        #[arg(long)]
+        #[arg(long, env = "HUB_EXTERNAL_URL")]
         external_url: Option<String>,
+        /// Serving topology: local Native or Worker-fronted hybrid.
+        #[arg(long, env = "HUB_TOPOLOGY", default_value = "native", value_parser = ["native", "hybrid"])]
+        topology: String,
+        /// HMAC key shared with the hybrid Worker ingress.
+        #[arg(long, env = "HUB_HYBRID_INGRESS_KEY_FILE")]
+        hybrid_ingress_key_file: Option<PathBuf>,
+        /// HTTPS origin of the hybrid Worker storage executor.
+        #[arg(long, env = "HUB_HYBRID_WORKER_URL")]
+        hybrid_worker_url: Option<String>,
+        /// HTTPS origin hostname presented to the hybrid Worker's origin fetch.
+        #[arg(long, env = "HUB_HYBRID_ORIGIN_URL")]
+        hybrid_origin_url: Option<String>,
+        /// HMAC key used to authorize Native-issued storage plans.
+        #[arg(long, env = "HUB_STORAGE_WORK_KEY_FILE")]
+        storage_work_key_file: Option<PathBuf>,
+        /// Read independently signed direct provider/runtime acceptance entries.
+        #[arg(long, env = "HUB_DIRECT_UPLOAD_ACCEPTANCE_FILE")]
+        direct_upload_acceptance_file: Option<PathBuf>,
+        /// Read the separately trusted direct qualification reviewer public keys.
+        #[arg(long, env = "HUB_DIRECT_UPLOAD_REVIEW_KEYS_FILE")]
+        direct_upload_review_keys_file: Option<PathBuf>,
+        /// Read the independent physical guard challenge and reply key.
+        #[arg(long, env = "HUB_DIRECT_UPLOAD_GUARD_KEY_FILE")]
+        direct_upload_guard_key_file: Option<PathBuf>,
         /// PEM certificate chain for native TLS termination.
         #[arg(long, env = "HUB_TLS_CERTIFICATE_FILE")]
         tls_certificate_file: Option<PathBuf>,
@@ -178,22 +242,26 @@ enum Command {
         cloudflare_api_token_file: Option<PathBuf>,
     },
     /// Re-index one registry (or all) now.
-    Index {
-        /// Registry slug; omit to index everything.
-        slug: Option<String>,
-    },
+    Index(indexing::IndexArgs),
     /// Recover a native deployment by migrating its local database and
     /// optionally bootstrapping the root admin.
     Init {
         /// Bootstrap (create or update) this root admin email, if given.
-        #[arg(long)]
+        #[arg(long, env = "HUB_BOOTSTRAP_ROOT_EMAIL")]
         root_email: Option<String>,
         /// The root admin password. Prefer --root-password-stdin.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["root_password_stdin", "root_password_file"])]
         root_password: Option<String>,
         /// Read the root admin password from stdin (one line).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "root_password_file")]
         root_password_stdin: bool,
+        /// Read the root admin password from an owner-private UTF-8 file.
+        #[arg(
+            long,
+            env = "HUB_BOOTSTRAP_ROOT_PASSWORD_FILE",
+            requires = "root_email"
+        )]
+        root_password_file: Option<PathBuf>,
     },
     /// Reset (or create) a root admin's password.
     ///
@@ -204,11 +272,14 @@ enum Command {
         #[arg(long)]
         email: String,
         /// The new password. Prefer --password-stdin.
-        #[arg(long)]
+        #[arg(long, conflicts_with_all = ["password_stdin", "password_file"])]
         password: Option<String>,
         /// Read the new password from stdin (one line).
-        #[arg(long)]
+        #[arg(long, conflicts_with = "password_file")]
         password_stdin: bool,
+        /// Read the new password from an owner-private UTF-8 file.
+        #[arg(long)]
+        password_file: Option<PathBuf>,
     },
     /// Inspect the database schema.
     Schema {
@@ -240,6 +311,20 @@ enum Provider {
 
 #[derive(Subcommand)]
 enum WorkerCommand {
+    /// Render a hybrid Worker profile for a prebuilt shim.mjs artifact.
+    RenderHybridConfig(HybridConfigArgs),
+    /// Provision selected hybrid resources and update its protected Worker secrets.
+    DeployHybrid(HybridDeployArgs),
+    /// Install a hybrid Worker with explicit protected Native-matched secrets.
+    InstallHybrid(HybridDeployArgs),
+    /// Publish independent acceptance for the exact unchanged deployed Worker.
+    ActivateHybridDirectUpload(ActivateHybridDirectArgs),
+    /// Publish reviewed mirror and optional pack acceptance without redeploying.
+    ActivateHybridMirror(ActivateHybridMirrorArgs),
+    /// Publish separately reviewed live delivery acceptance without redeploying.
+    ActivateHybridMirrorLive(mirror_live_install::Args),
+    /// Capture current protected direct upload bindings for independent review.
+    InspectHybridDirectUpload(InspectHybridDirectArgs),
     /// Provision provider resources, deploy the Worker, and set its secrets.
     ///
     /// Provider-specific only: `HubDb` applies the closed schema on first use.
@@ -267,6 +352,288 @@ enum WorkerCommand {
     Logout(ProviderOpt),
     /// Show the current hosting-provider authentication.
     Whoami(ProviderOpt),
+}
+
+#[derive(Args)]
+struct HybridConfigArgs {
+    /// Cloudflare Worker name.
+    #[arg(long)]
+    name: String,
+    /// R2 bucket attached to the storage executor.
+    #[arg(long)]
+    bucket: String,
+    /// Shared Native and Worker deployment identity.
+    #[arg(long)]
+    deployment_id: String,
+    /// Public HTTPS origin served by the Worker.
+    #[arg(long)]
+    external_url: String,
+    /// Private HTTPS origin of the Native Hub.
+    #[arg(long)]
+    native_origin_url: String,
+    /// Cloudflare custom domain managed by this Worker; repeatable.
+    #[arg(long = "domain")]
+    domains: Vec<String>,
+    /// Include an assets binding for an adjacent assets directory.
+    #[arg(long)]
+    serve_assets: bool,
+    /// Read reviewed secret-free managed R2 direct upload coordinates from JSON.
+    #[arg(long)]
+    direct_upload_profile_file: Option<PathBuf>,
+    /// Read reviewed direct upload transport clock coordinates from JSON.
+    #[arg(long)]
+    direct_upload_clock_file: Option<PathBuf>,
+    /// Read independently signed Worker runtime acceptance from closed JSON.
+    #[arg(long)]
+    direct_upload_acceptance_file: Option<PathBuf>,
+    /// Read the independently trusted Ed25519 reviewer public key as hex text.
+    #[arg(long, requires = "direct_upload_acceptance_namespace_id")]
+    direct_upload_qualification_public_key_file: Option<PathBuf>,
+    /// Select the purpose-specific Cloudflare KV acceptance namespace ID.
+    #[arg(long, requires = "direct_upload_qualification_public_key_file")]
+    direct_upload_acceptance_namespace_id: Option<String>,
+    /// Read the independently installed mirror reviewer public key as hex text.
+    #[arg(long, requires = "mirror_acceptance_namespace_id")]
+    mirror_qualification_public_key_file: Option<PathBuf>,
+    /// Select the mirror and pack acceptance KV namespace ID.
+    #[arg(long, requires = "mirror_qualification_public_key_file")]
+    mirror_acceptance_namespace_id: Option<String>,
+    /// Select the dedicated bulk verification queue name.
+    #[arg(long, requires_all = ["direct_upload_metadata_queue", "direct_upload_maximum_parallel_objects"])]
+    direct_upload_bulk_queue: Option<String>,
+    /// Select the separate semantic metadata verification queue name.
+    #[arg(long, requires_all = ["direct_upload_bulk_queue", "direct_upload_maximum_parallel_objects"])]
+    direct_upload_metadata_queue: Option<String>,
+    /// Set the bounded queue concurrency ceiling to measure and accept.
+    #[arg(long, requires_all = ["direct_upload_bulk_queue", "direct_upload_metadata_queue"])]
+    direct_upload_maximum_parallel_objects: Option<u32>,
+    /// Set the global bulk queue invocation ceiling independently of isolate pools.
+    #[arg(long, requires = "direct_upload_bulk_queue")]
+    direct_upload_bulk_maximum_concurrent_invocations: Option<u32>,
+    /// Set the global metadata queue invocation ceiling independently of isolate pools.
+    #[arg(long, requires = "direct_upload_metadata_queue")]
+    direct_upload_metadata_maximum_concurrent_invocations: Option<u32>,
+    /// Set bulk batch size; default to the isolate bulk class ceiling.
+    #[arg(long, requires = "direct_upload_bulk_queue")]
+    direct_upload_bulk_maximum_batch_size: Option<u32>,
+    /// Set metadata batch size; default to the isolate aggregate object ceiling.
+    #[arg(long, requires = "direct_upload_metadata_queue")]
+    direct_upload_metadata_maximum_batch_size: Option<u32>,
+    /// Enable the separately authenticated hosted SDK measurement endpoint.
+    #[arg(long)]
+    direct_upload_conformance: bool,
+    /// Enable separately authenticated isolated qualification fixtures.
+    #[arg(long, requires_all = ["direct_upload_qualification_maximum_provider_requests", "direct_upload_qualification_maximum_object_bytes"])]
+    direct_upload_qualification: bool,
+    /// Set the fixed candidate provider request capacity before measurement.
+    #[arg(long, requires = "direct_upload_qualification")]
+    direct_upload_qualification_maximum_provider_requests: Option<u32>,
+    /// Set the fixed candidate object size bound before measurement.
+    #[arg(long, requires = "direct_upload_qualification")]
+    direct_upload_qualification_maximum_object_bytes: Option<u64>,
+}
+
+impl HybridConfigArgs {
+    fn to_config(&self) -> Result<aos_hub::cloudflare::HybridDeployConfig> {
+        use aos_hub::cloudflare;
+
+        let trust = match (
+            &self.direct_upload_qualification_public_key_file,
+            &self.direct_upload_acceptance_namespace_id,
+        ) {
+            (Some(path), Some(namespace)) => Some(
+                cloudflare::HybridDirectUploadTrustConfig::from_public_key_file(
+                    path,
+                    namespace.clone(),
+                )?,
+            ),
+            (None, None) => None,
+            _ => anyhow::bail!(
+                "direct reviewer key and acceptance namespace must be selected together"
+            ),
+        };
+        let mirror_trust = match (
+            &self.mirror_qualification_public_key_file,
+            &self.mirror_acceptance_namespace_id,
+        ) {
+            (Some(path), Some(namespace)) => Some(
+                cloudflare::HybridMirrorTrustConfig::from_public_key_file(path, namespace.clone())?,
+            ),
+            (None, None) => None,
+            _ => anyhow::bail!(
+                "mirror reviewer key and acceptance namespace must be selected together"
+            ),
+        };
+        let queues = match (
+            &self.direct_upload_bulk_queue,
+            &self.direct_upload_metadata_queue,
+            self.direct_upload_maximum_parallel_objects,
+        ) {
+            (Some(bulk), Some(metadata), Some(maximum_parallel_objects)) => {
+                let bulk_invocations = self
+                    .direct_upload_bulk_maximum_concurrent_invocations
+                    .context(
+                        "direct bulk queue requires an independently selected invocation ceiling",
+                    )?;
+                let metadata_invocations = self.direct_upload_metadata_maximum_concurrent_invocations
+                    .context("direct metadata queue requires an independently selected invocation ceiling")?;
+                let delivery_policy = |batch: u32, invocations: u32| {
+                    aos_hub_core::direct_upload::DirectQueueDeliveryPolicy {
+                        maximum_batch_size: aos_hub_core::direct_upload::WireInteger::new(
+                            u64::from(batch),
+                        ),
+                        maximum_concurrent_invocations: Some(
+                            aos_hub_core::direct_upload::WireInteger::new(u64::from(invocations)),
+                        ),
+                    }
+                };
+
+                Some(cloudflare::HybridDirectUploadQueueConfig {
+                    bulk: bulk.clone(),
+                    metadata: metadata.clone(),
+                    maximum_parallel_objects,
+                    bulk_delivery_policy: delivery_policy(
+                        self.direct_upload_bulk_maximum_batch_size
+                            .unwrap_or(maximum_parallel_objects.saturating_sub(1)),
+                        bulk_invocations,
+                    ),
+                    metadata_delivery_policy: delivery_policy(
+                        self.direct_upload_metadata_maximum_batch_size
+                            .unwrap_or(maximum_parallel_objects),
+                        metadata_invocations,
+                    ),
+                })
+            }
+            (None, None, None) => None,
+            _ => anyhow::bail!(
+                "direct bulk/metadata queues and measured concurrency must be selected together"
+            ),
+        };
+        let qualification = match (
+            self.direct_upload_qualification,
+            self.direct_upload_qualification_maximum_provider_requests,
+            self.direct_upload_qualification_maximum_object_bytes,
+        ) {
+            (true, Some(requests), Some(bytes)) => {
+                Some(cloudflare::HybridDirectUploadQualificationConfig {
+                    maximum_provider_requests: aos_hub_core::direct_upload::WireInteger::new(
+                        u64::from(requests),
+                    ),
+                    maximum_object_bytes: aos_hub_core::direct_upload::WireInteger::new(bytes),
+                })
+            }
+            (false, None, None) => None,
+            _ => anyhow::bail!(
+                "direct isolated qualification requires explicit opt-in and both candidate bounds"
+            ),
+        };
+        Ok(cloudflare::HybridDeployConfig {
+            name: self.name.clone(),
+            bucket: self.bucket.clone(),
+            deployment_id: self.deployment_id.clone(),
+            external_url: self.external_url.clone(),
+            native_origin_url: self.native_origin_url.clone(),
+            custom_domains: self.domains.clone(),
+            serve_assets: self.serve_assets,
+            direct_upload: self
+                .direct_upload_profile_file
+                .as_deref()
+                .map(cloudflare::HybridDirectUploadDeployConfig::from_file)
+                .transpose()?,
+            direct_upload_clock: self
+                .direct_upload_clock_file
+                .as_deref()
+                .map(cloudflare::HybridDirectUploadClockConfig::from_file)
+                .transpose()?,
+            direct_upload_trust: trust,
+            mirror_trust,
+            direct_upload_queues: queues,
+            direct_upload_acceptance: self
+                .direct_upload_acceptance_file
+                .as_deref()
+                .map(cloudflare::HybridDirectUploadAcceptanceConfig::from_file)
+                .transpose()?,
+            direct_upload_conformance: self.direct_upload_conformance,
+            direct_upload_qualification: qualification,
+        })
+    }
+}
+
+#[derive(Args)]
+struct HybridDeployArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Read the Native-matched ingress key from an owner-private file.
+    #[arg(long)]
+    hybrid_ingress_key_file: Option<PathBuf>,
+    /// Read the Native-matched storage work key from an owner-private file.
+    #[arg(long)]
+    storage_work_key_file: Option<PathBuf>,
+    /// Read the separate Native-matched physical guard key from a private file.
+    #[arg(long)]
+    direct_upload_guard_key_file: Option<PathBuf>,
+    /// Read the separate durable journal authentication key from a private file.
+    #[arg(long)]
+    direct_upload_journal_key_file: Option<PathBuf>,
+    /// Read the persistent scoped S3 access key ID from an owner-private file.
+    #[arg(long, requires = "direct_upload_secret_access_key_file")]
+    direct_upload_access_key_id_file: Option<PathBuf>,
+    /// Read the matching persistent scoped S3 secret key from a private file.
+    #[arg(long, requires = "direct_upload_access_key_id_file")]
+    direct_upload_secret_access_key_file: Option<PathBuf>,
+    /// Read the separate hosted measurement control key from a private file.
+    #[arg(long)]
+    direct_upload_conformance_key_file: Option<PathBuf>,
+}
+
+impl HybridDeployArgs {
+    fn secret_files(&self) -> aos_hub::cloudflare::HybridDeploySecretFiles {
+        aos_hub::cloudflare::HybridDeploySecretFiles {
+            hybrid_ingress_key_file: self.hybrid_ingress_key_file.clone(),
+            storage_work_key_file: self.storage_work_key_file.clone(),
+            direct_upload_guard_key_file: self.direct_upload_guard_key_file.clone(),
+            direct_upload_journal_key_file: self.direct_upload_journal_key_file.clone(),
+            direct_upload_access_key_id_file: self.direct_upload_access_key_id_file.clone(),
+            direct_upload_secret_access_key_file: self.direct_upload_secret_access_key_file.clone(),
+            direct_upload_conformance_key_file: self.direct_upload_conformance_key_file.clone(),
+        }
+    }
+}
+
+#[derive(Args)]
+struct ActivateHybridDirectArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Authenticate current protected Worker bindings with the existing guard key.
+    #[arg(long)]
+    direct_upload_guard_key_file: PathBuf,
+}
+
+#[derive(Args)]
+struct ActivateHybridMirrorArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Authenticate the unchanged deployment with the existing Native-matched guard role.
+    #[arg(long)]
+    direct_upload_guard_key_file: PathBuf,
+    /// Read independently reviewed and signed hosted mirror evidence from JSON.
+    #[arg(long)]
+    mirror_acceptance_file: PathBuf,
+    /// Read separately signed pack evidence linked to this exact mirror artifact.
+    #[arg(long)]
+    mirror_pack_acceptance_file: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct InspectHybridDirectArgs {
+    #[command(flatten)]
+    config: HybridConfigArgs,
+    /// Authenticate current protected Worker bindings with the existing guard key.
+    #[arg(long)]
+    direct_upload_guard_key_file: PathBuf,
+    /// Read exact independently selected external profiles to inspect from JSON.
+    #[arg(long)]
+    direct_upload_external_selectors_file: Option<PathBuf>,
 }
 
 /// The provider selector for `worker` subcommands that take no other options.
@@ -535,15 +902,67 @@ impl WorkerArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber_init();
-    let cli = Cli::parse();
+    logging::init();
+    let mut cli = Cli::parse();
+    if let Command::Snapshot(snapshot) = &cli.command {
+        snapshot_input::validate_runtime_inputs(
+            cli.root.as_deref(),
+            cli.database_url.as_deref(),
+            cli.database_url_file.as_deref(),
+            &cli.target,
+        )?;
+        return snapshot_input::run(snapshot).await;
+    }
+    if let Some(path) = cli.database_url_file.as_ref() {
+        anyhow::ensure!(
+            cli.database_url.is_none(),
+            "configure either HUB_DATABASE_URL or HUB_DATABASE_URL_FILE"
+        );
+        cli.database_url = Some(database_input::read_database_url_file(path)?);
+    }
 
     match cli.command {
+        Command::Snapshot(_) => anyhow::bail!("snapshot dispatch failed"),
+        Command::AuthorityControlSync {
+            authority_id,
+            guard_namespace_id,
+            executor_identity,
+            worker_url,
+            deployment_id,
+            storage_work_key_file,
+        } => {
+            let authority =
+                aos_hub_core::storage_authority::PhysicalStorageAuthorityId::parse(&authority_id)?;
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
+            let key = aos_hub::auth::seal::read_secret_file(&storage_work_key_file)?;
+            let client = aos_hub::storage_work::RemoteStorageWorkClient::new(
+                &worker_url,
+                deployment_id,
+                &key,
+            )?;
+            let result = client
+                .synchronize_storage_authority(
+                    &db,
+                    &authority,
+                    &guard_namespace_id,
+                    &executor_identity,
+                )
+                .await?;
+            println!("{}", serde_json::to_string(&result)?);
+        }
         Command::Serve {
             listen,
             dev,
             seed,
             external_url,
+            topology,
+            hybrid_ingress_key_file,
+            hybrid_worker_url,
+            hybrid_origin_url,
+            storage_work_key_file,
+            direct_upload_acceptance_file,
+            direct_upload_review_keys_file,
+            direct_upload_guard_key_file,
             tls_certificate_file,
             tls_private_key_file,
             deployment_id,
@@ -577,6 +996,114 @@ async fn main() -> Result<()> {
                 .local_addr()
                 .context("reading bound listen address")?;
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
+            let hybrid = topology == "hybrid";
+            let hybrid_origin_host = if hybrid {
+                let origin_url =
+                    hybrid_origin_url.context("hybrid serving requires HUB_HYBRID_ORIGIN_URL")?;
+                let origin =
+                    url::Url::parse(&origin_url).context("parsing the hybrid Native origin URL")?;
+                anyhow::ensure!(
+                    origin.scheme() == "https"
+                        && origin.path() == "/"
+                        && origin.query().is_none()
+                        && origin.fragment().is_none()
+                        && origin.username().is_empty()
+                        && origin.password().is_none(),
+                    "hybrid Native origin URL must be an HTTPS origin"
+                );
+                let public =
+                    url::Url::parse(&external_url).context("parsing the hybrid public URL")?;
+                anyhow::ensure!(
+                    origin.origin() != public.origin(),
+                    "hybrid Native origin must differ from the public Worker origin"
+                );
+                let host = origin
+                    .host_str()
+                    .context("hybrid Native origin URL has no hostname")?;
+                anyhow::ensure!(
+                    host.parse::<std::net::IpAddr>().is_err(),
+                    "hybrid Native origin must use a DNS hostname for SNI"
+                );
+                Some(host.to_owned())
+            } else {
+                None
+            };
+            let mut direct_runtime: Option<
+                Arc<dyn aos_hub::direct_upload::DirectUploadTransportFactory>,
+            > = None;
+            let hybrid_runtime = if hybrid {
+                anyhow::ensure!(
+                    cli.database_url.as_deref().is_some_and(|url| {
+                        url.starts_with("postgres://") || url.starts_with("postgresql://")
+                    }),
+                    "hybrid serving requires a PostgreSQL HUB_DATABASE_URL"
+                );
+                anyhow::ensure!(
+                    external_url.starts_with("https://"),
+                    "hybrid serving requires an HTTPS external URL"
+                );
+                anyhow::ensure!(
+                    !dev && !seed,
+                    "hybrid serving does not use local demo state"
+                );
+                anyhow::ensure!(
+                    jwt_secret_file.is_some(),
+                    "hybrid serving requires a stable HUB_JWT_SECRET_FILE"
+                );
+                anyhow::ensure!(
+                    std::env::var_os("AOS_HUB_SECRET_KEY_FILE")
+                        .is_some_and(|path| !path.is_empty()),
+                    "hybrid serving requires a stable AOS_HUB_SECRET_KEY_FILE"
+                );
+                let deployment_id = deployment_id
+                    .as_ref()
+                    .context("hybrid serving requires HUB_DEPLOYMENT_ID")?
+                    .clone();
+                let ingress_key_file = hybrid_ingress_key_file
+                    .context("hybrid serving requires HUB_HYBRID_INGRESS_KEY_FILE")?;
+                let storage_key_file = storage_work_key_file
+                    .context("hybrid serving requires HUB_STORAGE_WORK_KEY_FILE")?;
+                let worker_url =
+                    hybrid_worker_url.context("hybrid serving requires HUB_HYBRID_WORKER_URL")?;
+                let ingress_key = aos_hub_core::hybrid_ingress::HybridIngressKey::new(
+                    aos_hub::auth::seal::read_secret_file(&ingress_key_file)?,
+                )?;
+                let storage_key = aos_hub::auth::seal::read_secret_file(&storage_key_file)?;
+                let mut mirror_profiles = None;
+                let mut mirror_guard_key = None;
+                match (direct_upload_acceptance_file, direct_upload_review_keys_file, direct_upload_guard_key_file) {
+                    (Some(acceptance_file), Some(review_keys_file), Some(guard_key_file)) => {
+                        let acceptances = aos_hub::direct_upload::authority::NativeDirectUploadAcceptances::from_files_for_positive_recovery(
+                            &acceptance_file, &review_keys_file,
+                        )?;
+                        mirror_profiles = Some(acceptances.clone());
+                        let guard_key = aos_hub::auth::seal::read_secret_file(&guard_key_file)?;
+                        direct_runtime = Some(Arc::new(aos_hub::direct_upload::authority::NativeDirectUploadRuntime::new_for_positive_recovery(
+                            &worker_url, &deployment_id, &storage_key, &guard_key, acceptances,
+                        )?));
+                        mirror_guard_key = Some(guard_key);
+                    }
+                    (None, None, None) => {}
+                    _ => anyhow::bail!("direct acceptance, review keys and independent guard key files must be configured together"),
+                }
+                let work = aos_hub::storage_work::RemoteStorageWorkClient::new(
+                    &worker_url,
+                    deployment_id.clone(),
+                    &storage_key,
+                )?;
+                let work = match mirror_profiles { Some(profiles) => work.with_mirror_profiles(profiles), None => work };
+                let work = match mirror_guard_key { Some(key) => work.with_mirror_guard_key(&key)?, None => work };
+                work.check_console_ready().await?;
+                Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
+            } else {
+                anyhow::ensure!(
+                    direct_upload_acceptance_file.is_none()
+                        && direct_upload_review_keys_file.is_none()
+                        && direct_upload_guard_key_file.is_none(),
+                    "direct runtime qualification requires hybrid topology"
+                );
+                None
+            };
             let tls = match (tls_certificate_file, tls_private_key_file) {
                 (Some(certificate), Some(private_key)) => {
                     let public_url = url::Url::parse(&external_url)
@@ -585,9 +1112,12 @@ async fn main() -> Result<()> {
                         public_url.scheme() == "https",
                         "native TLS requires an https external URL"
                     );
-                    let server_name = public_url
-                        .host_str()
-                        .context("native TLS external URL has no hostname")?;
+                    let server_name = match hybrid_origin_host.as_deref() {
+                        Some(host) => host,
+                        None => public_url
+                            .host_str()
+                            .context("native TLS external URL has no hostname")?,
+                    };
                     anyhow::ensure!(
                         server_name.parse::<std::net::IpAddr>().is_err(),
                         "native TLS external URL must use a DNS hostname for SNI"
@@ -599,7 +1129,10 @@ async fn main() -> Result<()> {
                     "HUB_TLS_CERTIFICATE_FILE and HUB_TLS_PRIVATE_KEY_FILE must be configured together"
                 ),
             };
-            let db = Arc::new(Database::open(&root.join("hub.db")).await?);
+            let db = Arc::new(match cli.database_url.as_deref() {
+                Some(database_url) => Database::connect(database_url).await?,
+                None => Database::open(&root.join("hub.db")).await?,
+            });
             let storage_root = root.join("storage");
             std::fs::create_dir_all(&storage_root).with_context(|| {
                 format!(
@@ -610,11 +1143,30 @@ async fn main() -> Result<()> {
             let storage_root_text = storage_root
                 .to_str()
                 .context("native Hub storage root is not valid UTF-8")?;
-            db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
+            if hybrid {
+                db.ensure_instance_default_binding(
+                    "deployment_r2",
+                    None,
+                    Some(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT),
+                )
                 .await
-                .context("provisioning native Hub instance-default binding")?;
-            let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
-            image_snapshots.load_tracked(&db).await?;
+                .context("provisioning hybrid Hub instance-default binding")?;
+            } else if !cli.database_url.as_deref().is_some_and(|database_url| {
+                database_url.starts_with("postgres://")
+                    || database_url.starts_with("postgresql://")
+                    || database_url.starts_with("mysql://")
+            }) {
+                db.ensure_instance_default_binding("local_fs", Some(storage_root_text), None)
+                    .await
+                    .context("provisioning native Hub instance-default binding")?;
+            }
+            let image_snapshots = if hybrid {
+                None
+            } else {
+                let snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
+                snapshots.load_tracked(&db).await?;
+                Some(snapshots)
+            };
             let route_reservation_keys_path = route_reservation_keys_file
                 .context("HUB_ROUTE_RESERVATION_KEYS_FILE is required for route management")?;
             let route_reservation_keys = String::from_utf8(
@@ -647,7 +1199,11 @@ async fn main() -> Result<()> {
                 match aos_hub::seed::seed_dev_with_snapshots(
                     &db,
                     &root,
-                    Arc::clone(&image_snapshots),
+                    Arc::clone(
+                        image_snapshots
+                            .as_ref()
+                            .context("demo seed requires image snapshots")?,
+                    ),
                     &aos_hub::seed::SeedRouteConfig {
                         listen_addr,
                         external_url: &external_url,
@@ -666,6 +1222,30 @@ async fn main() -> Result<()> {
                 }
             }
             let mut app_state = AppState::new(db, external_url).await;
+            if hybrid {
+                let pool_db = Arc::clone(&app_state.db);
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Some(stats) = pool_db.pool_stats() {
+                            tracing::info!(
+                                open = stats.open,
+                                idle = stats.idle,
+                                maximum = stats.maximum,
+                                "hybrid SQL pool"
+                            );
+                        }
+                    }
+                });
+            }
+            if cli.database_url.as_deref().is_some_and(|database_url| {
+                database_url.starts_with("postgres://") || database_url.starts_with("postgresql://")
+            }) {
+                app_state.leases = Arc::new(aos_hub_core::lease::DatabasePublishLease::new(
+                    Arc::clone(&app_state.db),
+                ));
+            }
             app_state.container_rollout = aos_hub_core::container_rollout::ContainerRollout {
                 pull: oci_pull_enabled,
                 push: oci_push_enabled,
@@ -684,9 +1264,9 @@ async fn main() -> Result<()> {
                 qualification_keys_file,
             ) {
                 (Some(deployment_id), Some(key_id), Some(seed_path), Some(channel_key_id), Some(channel_seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
-                    let seed = std::fs::read_to_string(&seed_path)
+                    let seed = signing_input::read_signing_seed_file(&seed_path)
                         .with_context(|| format!("reading release receipt key at {}", seed_path.display()))?;
-                    let channel_seed = std::fs::read_to_string(&channel_seed_path)
+                    let channel_seed = signing_input::read_signing_seed_file(&channel_seed_path)
                         .with_context(|| format!("reading channel receipt key at {}", channel_seed_path.display()))?;
                     let publication_keys_source = std::fs::read_to_string(&publication_keys_path)
                         .with_context(|| format!("reading publication keys at {}", publication_keys_path.display()))?;
@@ -729,7 +1309,7 @@ async fn main() -> Result<()> {
                     trusted_proxy: app_state.trusted_proxy,
                 });
             }
-            app_state.image_snapshots = Some(image_snapshots);
+            app_state.image_snapshots = image_snapshots;
             if let Some(snapshots) = app_state.image_snapshots.clone() {
                 let snapshot_db = Arc::clone(&app_state.db);
                 tokio::spawn(async move {
@@ -770,29 +1350,36 @@ async fn main() -> Result<()> {
                 app_state.secret_versions =
                     aos_hub::coreports::load_secret_version_manifest(&path)?;
             }
-            let index_surfaces = Arc::new(
-                aos_hub::coreports::HubSurfaceProvider::new(
-                    Arc::clone(&app_state.db),
-                    app_state.http.clone(),
-                    app_state.image_snapshots.clone(),
-                )
-                .with_credentials(Arc::clone(&app_state.secret_versions))
-                .for_image_indexing(),
-            );
+            let index_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                if let Some((_, _, work)) = &hybrid_runtime {
+                    Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
+                        Arc::clone(&app_state.db),
+                        Arc::clone(work),
+                    ))
+                } else {
+                    Arc::new(
+                        aos_hub::coreports::HubSurfaceProvider::new(
+                            Arc::clone(&app_state.db),
+                            app_state.http.clone(),
+                            app_state.image_snapshots.clone(),
+                        )
+                        .with_credentials(Arc::clone(&app_state.secret_versions))
+                        .for_image_indexing(),
+                    )
+                };
             index_all(&app_state.db, index_surfaces.as_ref()).await;
-            prune_expired_invitation_secrets(&app_state.db).await;
-
             if reindex_interval > 0 {
                 let db = Arc::clone(&app_state.db);
                 let index_surfaces = Arc::clone(&index_surfaces);
+                let mirror_work = hybrid_runtime.as_ref().map(|(_, _, work)| Arc::clone(work));
                 tokio::spawn(async move {
                     let mut tick =
                         tokio::time::interval(std::time::Duration::from_secs(reindex_interval));
-                    tick.tick().await; // first tick fires immediately; we already indexed
+                    tick.tick().await;
                     loop {
                         tick.tick().await;
                         index_all(&db, index_surfaces.as_ref()).await;
-                        sync_due_mirrors(&db, now_secs()).await;
+                        sync_due_mirrors(&db, mirror_work.as_ref(), now_secs()).await;
                         prune_expired_invitation_secrets(&db).await;
                         match aos_hub::export::purge_expired_orgs(&db, now_secs()).await {
                             Ok(purged) => {
@@ -807,6 +1394,7 @@ async fn main() -> Result<()> {
                     }
                 });
             }
+            prune_expired_invitation_secrets(&app_state.db).await;
             let endpoint = std::env::var("HUB_DNS_JSON_ENDPOINT")
                 .context("HUB_DNS_JSON_ENDPOINT is required for domain verification")?;
             let tls_verifier = aos_hub_core::topology_probe::DomainTlsProbeVerifier::new();
@@ -847,12 +1435,24 @@ async fn main() -> Result<()> {
                 endpoint,
                 "native-hub",
             )?;
-            controller = controller.with_storage_credential_probe(Arc::new(
-                aos_hub::coreports::NativeStorageCredentialProbeProvider::new(
-                    app_state.http.clone(),
-                    Arc::clone(&app_state.secret_versions),
-                ),
-            ));
+            let credential_probe: Arc<
+                dyn aos_hub_core::topology_probe::StorageCredentialProbeProvider,
+            > = if let Some((_, _, work)) = &hybrid_runtime {
+                Arc::new(
+                    aos_hub::storage_work::HybridStorageCredentialProbeProvider::new(
+                        Arc::clone(work),
+                        Arc::clone(&app_state.db),
+                    ),
+                )
+            } else {
+                Arc::new(
+                    aos_hub::coreports::NativeStorageCredentialProbeProvider::new(
+                        app_state.http.clone(),
+                        Arc::clone(&app_state.secret_versions),
+                    ),
+                )
+            };
+            controller = controller.with_storage_credential_probe(credential_probe);
             let mut route_adapters =
                 aos_hub_core::topology_probe::ControllerOwnedRouteObservationProvider::new();
             let mut has_route_adapter = false;
@@ -916,24 +1516,314 @@ async fn main() -> Result<()> {
             if has_route_adapter {
                 controller = controller.with_route_observer(Arc::new(route_adapters));
             }
-            let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
-                Arc::clone(&app_state.db),
-                Arc::new(
-                    aos_hub::coreports::HubSurfaceProvider::new(
+            if !hybrid {
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&app_state.db),
+                    Arc::new(
+                        aos_hub::coreports::HubSurfaceProvider::new(
+                            Arc::clone(&app_state.db),
+                            app_state.http.clone(),
+                            app_state.image_snapshots.clone(),
+                        )
+                        .with_credentials(Arc::clone(&app_state.secret_versions)),
+                    ),
+                )
+                .with_writes(Arc::new(
+                    aos_hub::coreports::HubSurfaceWriteProvider::new(
                         Arc::clone(&app_state.db),
+                        app_state.http.clone(),
+                    )
+                    .with_credentials(Arc::clone(&app_state.secret_versions)),
+                ));
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = placement_scans.run_due(5).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "placement scan controller pass failed"
+                            );
+                        }
+                    }
+                });
+                let deletion_controller =
+                    aos_hub_core::gc_controller::CacheGcDeletionController::new(
+                        Arc::clone(&app_state.db),
+                        Arc::new(
+                            aos_hub::coreports::HubSurfaceWriteProvider::new(
+                                Arc::clone(&app_state.db),
+                                app_state.http.clone(),
+                            )
+                            .with_credentials(Arc::clone(&app_state.secret_versions)),
+                        ),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = deletion_controller.run_due(now_secs(), 100).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "physical cache deletion controller pass failed"
+                            );
+                        }
+                    }
+                });
+                let inventory_db = Arc::clone(&app_state.db);
+                let inventory_surfaces = Arc::new(
+                    aos_hub::coreports::HubSurfaceProvider::new(
+                        Arc::clone(&inventory_db),
                         app_state.http.clone(),
                         app_state.image_snapshots.clone(),
                     )
                     .with_credentials(Arc::clone(&app_state.secret_versions)),
-                ),
-            )
-            .with_writes(Arc::new(
-                aos_hub::coreports::HubSurfaceWriteProvider::new(
-                    Arc::clone(&app_state.db),
-                    app_state.http.clone(),
+                );
+                let inventory_writers = Arc::new(
+                    aos_hub::coreports::HubSurfaceWriteProvider::new(
+                        Arc::clone(&inventory_db),
+                        app_state.http.clone(),
+                    )
+                    .with_credentials(Arc::clone(&app_state.secret_versions)),
+                );
+                let oci_recovery_writers: Arc<
+                    dyn aos_hub_core::surface_write::SurfaceWriteProvider,
+                > = if let Some((_, _, work)) = &hybrid_runtime {
+                    Arc::new(aos_hub::storage_work::HybridSurfaceWrites::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ))
+                } else {
+                    inventory_writers.clone()
+                };
+                let conditional_delete_probes =
+                    aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces)
+                            as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                        Arc::clone(&inventory_writers)
+                            as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+                    );
+                if oci_gc_enabled {
+                    spawn_oci_provider_inventory(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces)
+                            as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                        "native-oci-inventory",
+                        "native-inventory",
+                    );
+                }
+                let oci_gc_controller =
+                    aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces)
+                            as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+                        Arc::clone(&inventory_writers)
+                            as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
+                            &inventory_db,
+                            oci_recovery_writers.as_ref(),
+                            now_secs(),
+                            100,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired OCI work recovery failed");
+                        }
+                        if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
+                            &inventory_db,
+                            now_secs(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
+                        }
+                        if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
+                            &inventory_db,
+                            inventory_surfaces.as_ref(),
+                            inventory_writers.as_ref(),
+                            now_secs(),
+                            aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired cache write recovery failed");
+                        }
+                        if oci_gc_enabled {
+                            if let Err(error) = oci_gc_controller
+                                .run_due("native-oci-gc", now_secs(), 100)
+                                .await
+                            {
+                                tracing::warn!(error = %format!("{error:#}"), "OCI GC deletion controller pass failed");
+                            }
+                            if let Err(error) =
+                                conditional_delete_probes.run_due(now_secs(), 10).await
+                            {
+                                tracing::warn!(error = %format!("{error:#}"), "conditional-delete capability probe failed");
+                            }
+                        }
+                        let caches = match inventory_db.list_binary_caches().await {
+                            Ok(caches) => caches,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "listing cache inventories failed");
+                                continue;
+                            }
+                        };
+                        for cache in caches
+                            .into_iter()
+                            .filter(|cache| cache.deleted_at.is_none())
+                        {
+                            if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
+                                &inventory_db,
+                                inventory_surfaces.as_ref(),
+                                &cache,
+                            )
+                            .await
+                            {
+                                tracing::warn!(cache = %cache.slug, error = %format!("{error:#}"), "cache inventory pass failed");
+                            }
+                        }
+                    }
+                });
+            }
+            if let Some((_, _, work)) = &hybrid_runtime {
+                let inventory_db = Arc::clone(&app_state.db);
+                let inventory_surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider> =
+                    Arc::new(aos_hub::storage_work::HybridSurfaceProvider::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ));
+                let inventory_writers: Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider> =
+                    Arc::new(aos_hub::storage_work::HybridSurfaceWrites::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(work),
+                    ));
+                let placement_scans = aos_hub_core::placement_scan::PlacementScanController::new(
+                    Arc::clone(&inventory_db),
+                    Arc::clone(&inventory_surfaces),
                 )
-                .with_credentials(Arc::clone(&app_state.secret_versions)),
-            ));
+                .with_writes(Arc::clone(&inventory_writers));
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = placement_scans.run_due(5).await {
+                            tracing::warn!(
+                                error = %format!("{error:#}"),
+                                "hybrid placement scan controller pass failed"
+                            );
+                        }
+                    }
+                });
+
+                if oci_gc_enabled {
+                    spawn_oci_provider_inventory(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        "hybrid-oci-inventory",
+                        "hybrid-inventory",
+                    );
+                }
+                let deletion_controller =
+                    aos_hub_core::gc_controller::CacheGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_writers),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = deletion_controller.run_due(now_secs(), 100).await {
+                            tracing::warn!(error = %format!("{error:#}"), "hybrid physical cache deletion pass failed");
+                        }
+                    }
+                });
+                let conditional_delete_probes =
+                    aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        Arc::clone(&inventory_writers),
+                    );
+                let oci_gc_controller =
+                    aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
+                        Arc::clone(&inventory_db),
+                        Arc::clone(&inventory_surfaces),
+                        Arc::clone(&inventory_writers),
+                    );
+                tokio::spawn(async move {
+                    let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
+                    loop {
+                        tick.tick().await;
+                        if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
+                            &inventory_db,
+                            inventory_writers.as_ref(),
+                            now_secs(),
+                            100,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired hybrid OCI work recovery failed");
+                        }
+                        if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
+                            &inventory_db,
+                            now_secs(),
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
+                        }
+                        if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
+                            &inventory_db,
+                            inventory_surfaces.as_ref(),
+                            inventory_writers.as_ref(),
+                            now_secs(),
+                            aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
+                        )
+                        .await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "expired hybrid cache write recovery failed");
+                        }
+                        if oci_gc_enabled {
+                            if let Err(error) = oci_gc_controller
+                                .run_due("hybrid-oci-gc", now_secs(), 100)
+                                .await
+                            {
+                                tracing::warn!(error = %format!("{error:#}"), "hybrid OCI GC deletion pass failed");
+                            }
+                        }
+                        if let Err(error) = conditional_delete_probes.run_due(now_secs(), 10).await
+                        {
+                            tracing::warn!(error = %format!("{error:#}"), "hybrid conditional-delete probe failed");
+                        }
+                        let caches = match inventory_db.list_binary_caches().await {
+                            Ok(caches) => caches,
+                            Err(error) => {
+                                tracing::warn!(error = %format!("{error:#}"), "listing hybrid cache inventories failed");
+                                continue;
+                            }
+                        };
+                        for cache in caches
+                            .into_iter()
+                            .filter(|cache| cache.deleted_at.is_none())
+                        {
+                            if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
+                                &inventory_db,
+                                inventory_surfaces.as_ref(),
+                                &cache,
+                            )
+                            .await
+                            {
+                                tracing::warn!(cache = %cache.slug, error = %format!("{error:#}"), "hybrid cache inventory pass failed");
+                            }
+                        }
+                    }
+                });
+            }
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -943,156 +1833,6 @@ async fn main() -> Result<()> {
                             error = %format!("{error:#}"),
                             "domain probe controller pass failed"
                         );
-                    }
-                    if let Err(error) = placement_scans.run_due(5).await {
-                        tracing::warn!(
-                            error = %format!("{error:#}"),
-                            "placement scan controller pass failed"
-                        );
-                    }
-                }
-            });
-            let deletion_controller = aos_hub_core::gc_controller::CacheGcDeletionController::new(
-                Arc::clone(&app_state.db),
-                Arc::new(
-                    aos_hub::coreports::HubSurfaceWriteProvider::new(
-                        Arc::clone(&app_state.db),
-                        app_state.http.clone(),
-                    )
-                    .with_credentials(Arc::clone(&app_state.secret_versions)),
-                ),
-            );
-            tokio::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(5));
-                loop {
-                    tick.tick().await;
-                    if let Err(error) = deletion_controller.run_due(now_secs(), 100).await {
-                        tracing::warn!(
-                            error = %format!("{error:#}"),
-                            "physical cache deletion controller pass failed"
-                        );
-                    }
-                }
-            });
-            let inventory_db = Arc::clone(&app_state.db);
-            let inventory_surfaces = Arc::new(
-                aos_hub::coreports::HubSurfaceProvider::new(
-                    Arc::clone(&inventory_db),
-                    app_state.http.clone(),
-                    app_state.image_snapshots.clone(),
-                )
-                .with_credentials(Arc::clone(&app_state.secret_versions)),
-            );
-            let inventory_writers = Arc::new(
-                aos_hub::coreports::HubSurfaceWriteProvider::new(
-                    Arc::clone(&inventory_db),
-                    app_state.http.clone(),
-                )
-                .with_credentials(Arc::clone(&app_state.secret_versions)),
-            );
-            let conditional_delete_probes =
-                aos_hub_core::conditional_delete_probe::ConditionalDeleteProbeController::new(
-                    Arc::clone(&inventory_db),
-                    Arc::clone(&inventory_surfaces)
-                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
-                    Arc::clone(&inventory_writers)
-                        as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
-                );
-            let oci_provider_inventory =
-                aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
-                    Arc::clone(&inventory_db),
-                    Arc::clone(&inventory_surfaces)
-                        as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
-                );
-            let oci_gc_controller = aos_hub_core::oci_gc_controller::OciGcDeletionController::new(
-                Arc::clone(&inventory_db),
-                Arc::clone(&inventory_surfaces) as Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
-                Arc::clone(&inventory_writers)
-                    as Arc<dyn aos_hub_core::surface_write::SurfaceWriteProvider>,
-            );
-            tokio::spawn(async move {
-                let mut tick = tokio::time::interval(std::time::Duration::from_secs(60));
-                let mut oci_inventory_continuation: Option<String> = None;
-                loop {
-                    tick.tick().await;
-                    if let Err(error) = aos_hub_core::oci::recover_expired_oci_work(
-                        &inventory_db,
-                        inventory_writers.as_ref(),
-                        now_secs(),
-                        100,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "expired OCI work recovery failed");
-                    }
-                    if let Err(error) = aos_hub_core::cache_scan::reap_due_cache_tombstones(
-                        &inventory_db,
-                        now_secs(),
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "cache tombstone reap failed");
-                    }
-                    if let Err(error) = aos_hub_core::cache_scan::recover_expired_cache_writes(
-                        &inventory_db,
-                        inventory_surfaces.as_ref(),
-                        inventory_writers.as_ref(),
-                        now_secs(),
-                        aos_hub_core::cache_scan::MAX_CLEANUP_ITEMS_PER_PASS,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %format!("{error:#}"), "expired cache write recovery failed");
-                    }
-                    if oci_gc_enabled {
-                        let inventory_now = now_secs();
-                        match oci_provider_inventory
-                            .run_due_bounded(
-                                "native-oci-inventory",
-                                &format!("native-inventory-{}", inventory_now / 60),
-                                inventory_now,
-                                100,
-                                oci_inventory_continuation.as_deref(),
-                                aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
-                            )
-                            .await
-                        {
-                            Ok(stats) => oci_inventory_continuation = stats.continuation,
-                            Err(error) => {
-                                tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
-                            }
-                        }
-                        if let Err(error) = oci_gc_controller
-                            .run_due("native-oci-gc", now_secs(), 100)
-                            .await
-                        {
-                            tracing::warn!(error = %format!("{error:#}"), "OCI GC deletion controller pass failed");
-                        }
-                        if let Err(error) = conditional_delete_probes.run_due(now_secs(), 10).await
-                        {
-                            tracing::warn!(error = %format!("{error:#}"), "conditional-delete capability probe failed");
-                        }
-                    }
-                    let caches = match inventory_db.list_binary_caches().await {
-                        Ok(caches) => caches,
-                        Err(error) => {
-                            tracing::warn!(error = %format!("{error:#}"), "listing cache inventories failed");
-                            continue;
-                        }
-                    };
-                    for cache in caches
-                        .into_iter()
-                        .filter(|cache| cache.deleted_at.is_none())
-                    {
-                        if let Err(error) = aos_hub_core::cache_scan::rescan_cache(
-                            &inventory_db,
-                            inventory_surfaces.as_ref(),
-                            &cache,
-                        )
-                        .await
-                        {
-                            tracing::warn!(cache = %cache.slug, error = %format!("{error:#}"), "cache inventory pass failed");
-                        }
                     }
                 }
             });
@@ -1123,83 +1863,75 @@ async fn main() -> Result<()> {
                     ingress_kind: "hub".to_owned(),
                     tls_identity: Some(aos_hub_core::db::InboundEndpointHost::Domain(server_name)),
                 };
+                let app = match hybrid_runtime {
+                    Some((deployment_id, key, work)) => {
+                        aos_hub::server::router_with_hybrid_ingress_and_direct(
+                            state,
+                            key,
+                            deployment_id,
+                            work,
+                            direct_runtime,
+                        )
+                        .await
+                    }
+                    None => aos_hub::server::router_with_transport(state, Some(transport)).await,
+                };
                 axum::serve(
                     tls_listener,
-                    aos_hub::server::router_with_transport(state, Some(transport))
-                        .await
-                        .into_make_service_with_connect_info::<aos_hub::native_tls::NativeTlsPeer>(
-                        ),
+                    app.into_make_service_with_connect_info::<aos_hub::native_tls::NativeTlsPeer>(),
                 )
                 .await?;
             } else {
+                let app = match hybrid_runtime {
+                    Some((deployment_id, key, work)) => {
+                        aos_hub::server::router_with_hybrid_ingress_and_direct(
+                            state,
+                            key,
+                            deployment_id,
+                            work,
+                            direct_runtime,
+                        )
+                        .await
+                    }
+                    None => router(state).await,
+                };
                 axum::serve(
                     listener,
-                    router(state)
-                        .await
-                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
                 )
                 .await?;
             }
         }
-        Command::Index { slug } => {
-            let db = Arc::new(open_db(&cli.root, &cli.target).await?);
-            let root = resolve_root(cli.root.clone(), false)?;
-            let image_snapshots = aos_hub::image_snapshot::ImageSnapshotStore::open(&root)?;
-            image_snapshots.load_tracked(&db).await?;
-            let surfaces = aos_hub::coreports::HubSurfaceProvider::new(
-                Arc::clone(&db),
-                aos_hub::fetch::hardened_client().await,
-                Some(image_snapshots),
+        Command::Index(arguments) => {
+            indexing::run(
+                arguments,
+                &cli.root,
+                &cli.target,
+                cli.database_url.as_deref(),
             )
-            .for_image_indexing();
-            let registries = match slug {
-                Some(slug) => vec![db
-                    .registry_by_slug(&slug)
-                    .await?
-                    .with_context(|| format!("no registry '{slug}'"))?],
-                None => db.list_registries().await?,
-            };
-            for registry in registries {
-                let placement = db
-                    .reconciled_surface_reader(aos_hub_core::db::SurfaceTarget::Registry(
-                        registry.id,
-                    ))
-                    .await?;
-                let placement_id = placement.id;
-                let fetch = surfaces.placement_fetcher(&placement).await?;
-                match aos_hub_core::indexer::index_and_record_from_placement(
-                    db.as_ref(),
-                    fetch.as_ref(),
-                    &registry,
-                    Some(placement_id),
-                )
-                .await
-                {
-                    Ok(outcome) => {
-                        println!(
-                            "{}: {} packages, {} releases, {} channels @ {}",
-                            registry.slug,
-                            outcome.packages,
-                            outcome.releases,
-                            outcome.channels,
-                            outcome.commit,
-                        );
-                    }
-                    Err(err) => println!("{}: index failed: {err:#}", registry.slug),
-                }
-            }
+            .await?;
         }
         Command::Init {
             root_email,
             root_password,
             root_password_stdin,
+            root_password_file,
         } => {
             // `open_db` opens and migrates the local database. Worker HubDb
             // bootstrap is handled by the Worker command family.
-            let db = open_db(&cli.root, &cli.target).await?;
-            println!("schema migrated ({})", cli.target);
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
+            let database = if cli.database_url.is_some() {
+                "configured native database"
+            } else {
+                "local SQLite database"
+            };
+            println!("schema migrated ({database})");
             if let Some(email) = root_email {
-                let plaintext = read_password(root_password, root_password_stdin)?;
+                let plaintext = read_password(
+                    root_password,
+                    root_password_stdin,
+                    root_password_file.as_deref(),
+                )?;
                 let (email, id) = ensure_root(&db, &email, &plaintext).await?;
                 println!("root admin '{email}' ready (user id {id})");
             }
@@ -1208,9 +1940,10 @@ async fn main() -> Result<()> {
             email,
             password,
             password_stdin,
+            password_file,
         } => {
-            let db = open_db(&cli.root, &cli.target).await?;
-            let plaintext = read_password(password, password_stdin)?;
+            let db = open_db(&cli.root, &cli.target, cli.database_url.as_deref()).await?;
+            let plaintext = read_password(password, password_stdin, password_file.as_deref())?;
             let (email, id) = ensure_root(&db, &email, &plaintext).await?;
             println!("reset root password for '{email}' (user id {id})");
         }
@@ -1259,27 +1992,6 @@ async fn ensure_root(db: &Database, email: &str, plaintext: &str) -> Result<(Str
     Ok((email, user_id))
 }
 
-/// Reads a password from `password`, or stdin when `from_stdin`, trimming a
-/// trailing newline.
-///
-/// # Errors
-///
-/// Returns an error if neither source is given, or stdin cannot be read.
-fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
-    if let Some(p) = password {
-        return Ok(p);
-    }
-    if from_stdin {
-        use std::io::Read;
-        let mut buf = String::new();
-        std::io::stdin()
-            .read_to_string(&mut buf)
-            .context("reading password from stdin")?;
-        return Ok(buf.trim_end_matches(['\n', '\r']).to_string());
-    }
-    anyhow::bail!("provide --password / --root-password or the --*-stdin form");
-}
-
 /// Dispatches the `worker` subcommands (provision/deploy/install) for the
 /// selected hosting provider.
 ///
@@ -1290,6 +2002,79 @@ fn read_password(password: Option<String>, from_stdin: bool) -> Result<String> {
 async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> Result<()> {
     use aos_hub::cloudflare;
 
+    if let WorkerCommand::RenderHybridConfig(args) = &command {
+        let config = args.to_config()?;
+        print!("{}", cloudflare::render_hybrid_wrangler_toml(&config)?);
+        return Ok(());
+    }
+    if let WorkerCommand::DeployHybrid(args) | WorkerCommand::InstallHybrid(args) = &command {
+        let config = args.config.to_config()?;
+        let mode = if matches!(&command, WorkerCommand::InstallHybrid(_)) {
+            cloudflare::DeployMode::Install
+        } else {
+            cloudflare::DeployMode::Update
+        };
+        cloudflare::deploy_hybrid(
+            &cloudflare::Assets::from_env()?,
+            &config,
+            &args.secret_files(),
+            mode,
+        )
+        .await?;
+        println!("hybrid Worker deployed; direct uploads require independent acceptance for its final version");
+        return Ok(());
+    }
+    if let WorkerCommand::ActivateHybridDirectUpload(args) = &command {
+        let config = args.config.to_config()?;
+        cloudflare::activate_hybrid_direct_upload(
+            &cloudflare::Assets::from_env()?,
+            &config,
+            &args.direct_upload_guard_key_file,
+        )
+        .await?;
+        println!(
+            "independently signed acceptance published for the current unchanged Worker version"
+        );
+        return Ok(());
+    }
+    if let WorkerCommand::ActivateHybridMirrorLive(args) = &command {
+        return args.run().await;
+    }
+    if let WorkerCommand::ActivateHybridMirror(args) = &command {
+        let cfg = args.config.to_config()?;
+        let acceptance = cloudflare::HybridMirrorAcceptanceConfig::from_files(
+            &args.mirror_acceptance_file,
+            args.mirror_pack_acceptance_file.as_deref(),
+        )?;
+        let assets = cloudflare::Assets::from_env()?;
+        cloudflare::activate_hybrid_mirror(
+            &assets,
+            &cfg,
+            &args.direct_upload_guard_key_file,
+            &acceptance,
+        )
+        .await?;
+        println!("reviewed mirror purposes published for the unchanged Worker; runtime qualification remains independently required");
+        return Ok(());
+    }
+    if let WorkerCommand::InspectHybridDirectUpload(args) = &command {
+        let config = args.config.to_config()?;
+        let selectors = args
+            .direct_upload_external_selectors_file
+            .as_deref()
+            .map(cloudflare::read_hybrid_direct_upload_selectors)
+            .transpose()?
+            .unwrap_or_default();
+        let identity = cloudflare::inspect_hybrid_direct_upload(
+            &config,
+            &args.direct_upload_guard_key_file,
+            selectors,
+        )
+        .await?;
+        println!("{}", serde_json::to_string_pretty(&identity)?);
+        return Ok(());
+    }
+
     // `bootstrap-root` is a direct seal-authenticated HTTP call to the deployed
     // Worker's `HubDb` endpoint — it needs no provider assets/auth, so handle it
     // before the provider/asset setup.
@@ -1299,7 +2084,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             .clone()
             .or_else(|| std::env::var("HUB_SEAL_KEY").ok())
             .context("no seal key: pass --seal-key or set HUB_SEAL_KEY (the deploy value)")?;
-        let plaintext = read_password(args.password.clone(), args.password_stdin)?;
+        let plaintext = read_password(args.password.clone(), args.password_stdin, None)?;
         let id =
             cloudflare::bootstrap_root_remote(&args.url, &seal, &args.email, &plaintext).await?;
         println!("root admin '{}' ready (user id {id})", args.email);
@@ -1342,7 +2127,14 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         // Handled above with an early return.
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
-        | WorkerCommand::RestoreBookmark(_) => Provider::Cloudflare,
+        | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::DeployHybrid(_)
+        | WorkerCommand::InstallHybrid(_)
+        | WorkerCommand::ActivateHybridDirectUpload(_)
+        | WorkerCommand::ActivateHybridMirror(_)
+        | WorkerCommand::ActivateHybridMirrorLive(_)
+        | WorkerCommand::InspectHybridDirectUpload(_)
+        | WorkerCommand::RenderHybridConfig(_) => Provider::Cloudflare,
     };
     // Only Cloudflare is implemented; the match documents the extension point
     // for future providers (each would resolve its own assets + auth).
@@ -1358,7 +2150,14 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
         // Handled by the early return at the top of this function.
         WorkerCommand::BootstrapRoot(_)
         | WorkerCommand::BackupBookmark(_)
-        | WorkerCommand::RestoreBookmark(_) => {}
+        | WorkerCommand::RestoreBookmark(_)
+        | WorkerCommand::DeployHybrid(_)
+        | WorkerCommand::InstallHybrid(_)
+        | WorkerCommand::ActivateHybridDirectUpload(_)
+        | WorkerCommand::ActivateHybridMirror(_)
+        | WorkerCommand::ActivateHybridMirrorLive(_)
+        | WorkerCommand::InspectHybridDirectUpload(_)
+        | WorkerCommand::RenderHybridConfig(_) => {}
         WorkerCommand::Provision(args) => {
             let cfg = provision_worker(&assets, args).await?;
             println!("provisioned: R2 {}, KV id {}", cfg.bucket, cfg.kv_id);
@@ -1372,7 +2171,7 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             let seal = deploy_worker(&assets, args, cloudflare::DeployMode::Install).await?;
             if let Some(email) = &args.root_email {
                 let plaintext =
-                    read_password(args.root_password.clone(), args.root_password_stdin)?;
+                    read_password(args.root_password.clone(), args.root_password_stdin, None)?;
                 let Some(seal) = seal else {
                     anyhow::bail!(
                         "cannot bootstrap root: this deploy preserved an existing \
@@ -1564,6 +2363,52 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
+/// Drains bounded OCI inventory continuations without delaying each page batch for a minute.
+fn spawn_oci_provider_inventory(
+    db: Arc<Database>,
+    surfaces: Arc<dyn aos_hub_core::fetch::SurfaceProvider>,
+    collector_id: &'static str,
+    idempotency_prefix: &'static str,
+) {
+    tokio::spawn(async move {
+        let controller =
+            aos_hub_core::oci_inventory_controller::OciProviderInventoryController::new(
+                db, surfaces,
+            );
+        let mut continuation: Option<String> = None;
+
+        loop {
+            let now = now_secs();
+            let delay_seconds = match controller
+                .run_due_bounded(
+                    collector_id,
+                    &format!("{idempotency_prefix}-{}", now / 60),
+                    now,
+                    100,
+                    continuation.as_deref(),
+                    aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                )
+                .await
+            {
+                Ok(stats) => {
+                    continuation = stats.continuation;
+                    if continuation.is_some() {
+                        1
+                    } else {
+                        60
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
+                    5
+                }
+            };
+
+            tokio::time::sleep(std::time::Duration::from_secs(delay_seconds)).await;
+        }
+    });
+}
+
 /// Runs one bounded invitation-credential retention pass.
 async fn prune_expired_invitation_secrets(db: &Database) {
     if let Err(error) = db.prune_expired_invitation_secrets(now_secs(), 1_000).await {
@@ -1620,7 +2465,7 @@ async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfacePro
 /// elapsed since its last attempt. Each sync verifies the upstream surface and
 /// copies it into the local binding; a verification failure is recorded and
 /// logged, never fatal to the loop.
-async fn sync_due_mirrors(db: &Database, now: i64) {
+async fn sync_due_mirrors(db: &Arc<Database>, work: Option<&Arc<aos_hub::storage_work::RemoteStorageWorkClient>>, now: i64) {
     let sources = match db.list_mirror_sources().await {
         Ok(sources) => sources,
         Err(err) => {
@@ -1647,7 +2492,11 @@ async fn sync_due_mirrors(db: &Database, now: i64) {
                 continue;
             }
         };
-        match aos_hub::mirror::sync_full_mirror(db, &registry).await {
+        let result = match work {
+            Some(work) => aos_hub::mirror::hybrid::sync_full_mirror(db, work, &registry).await,
+            None => aos_hub::mirror::sync_full_mirror(db, &registry).await,
+        };
+        match result {
             Ok(result) => tracing::info!(
                 slug = %registry.slug,
                 commit = %result.commit,
@@ -1691,13 +2540,21 @@ fn resolve_root(root: Option<PathBuf>, dev: bool) -> Result<PathBuf> {
     Ok(root)
 }
 
-/// Opens the native database for the closed `local` target.
+/// Opens the configured native database for the closed `local` target.
 ///
 /// # Errors
 ///
-/// Returns an error for an unknown target or if the local file cannot be opened.
-async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
+/// Returns an error for an unknown target, unsupported database URL, or failed
+/// connection or migration.
+async fn open_db(
+    root: &Option<PathBuf>,
+    target: &str,
+    database_url: Option<&str>,
+) -> Result<Database> {
     if target == "local" {
+        if let Some(database_url) = database_url {
+            return Database::connect(database_url).await;
+        }
         let root = resolve_root(root.clone(), false)?;
         return Database::open(&root.join("hub.db")).await;
     }
@@ -1710,41 +2567,6 @@ async fn open_db(root: &Option<PathBuf>, target: &str) -> Result<Database> {
     )
 }
 
-fn tracing_subscriber_init() {
-    // tracing is a workspace-wide dependency but the subscriber is not;
-    // a minimal logger keeps the binary self-contained.
-    struct StderrLogger;
-    impl tracing::Subscriber for StderrLogger {
-        fn enabled(&self, metadata: &tracing::Metadata<'_>) -> bool {
-            metadata.level() <= &tracing::Level::INFO
-        }
-        fn new_span(&self, _: &tracing::span::Attributes<'_>) -> tracing::span::Id {
-            tracing::span::Id::from_u64(1)
-        }
-        fn record(&self, _: &tracing::span::Id, _: &tracing::span::Record<'_>) {}
-        fn record_follows_from(&self, _: &tracing::span::Id, _: &tracing::span::Id) {}
-        fn event(&self, event: &tracing::Event<'_>) {
-            struct Visitor(String);
-            impl tracing::field::Visit for Visitor {
-                fn record_debug(
-                    &mut self,
-                    field: &tracing::field::Field,
-                    value: &dyn std::fmt::Debug,
-                ) {
-                    use std::fmt::Write as _;
-                    let _ = write!(self.0, " {}={value:?}", field.name());
-                }
-            }
-            let mut visitor = Visitor(String::new());
-            event.record(&mut visitor);
-            eprintln!("[{}]{}", event.metadata().level(), visitor.0);
-        }
-        fn enter(&self, _: &tracing::span::Id) {}
-        fn exit(&self, _: &tracing::span::Id) {}
-    }
-    let _ = tracing::subscriber::set_global_default(StderrLogger);
-}
-
 #[cfg(test)]
 mod production_vm_coverage {
     use std::fs;
@@ -1753,6 +2575,62 @@ mod production_vm_coverage {
     use clap::{Command as ClapCommand, CommandFactory as _, Parser as _};
 
     use super::{Cli, Command, WorkerCommand};
+
+    fn mirror_activation_arguments() -> Vec<&'static str> {
+        vec![
+            "aos-hub",
+            "worker",
+            "activate-hybrid-mirror",
+            "--name",
+            "storage-executor",
+            "--bucket",
+            "registry-private",
+            "--deployment-id",
+            "deployment-1",
+            "--external-url",
+            "https://hub.example.test",
+            "--native-origin-url",
+            "https://native.example.test",
+            "--direct-upload-guard-key-file",
+            "guard.key",
+            "--mirror-acceptance-file",
+            "reviewed-mirror.json",
+            "--mirror-qualification-public-key-file",
+            "reviewer.pub",
+            "--mirror-acceptance-namespace-id",
+            "mirror-review-registry",
+        ]
+    }
+
+    #[test]
+    fn mirror_activation_selects_reviewed_files_and_optional_pack_purpose() {
+        let mut arguments = mirror_activation_arguments();
+        arguments.extend(["--mirror-pack-acceptance-file", "reviewed-pack.json"]);
+
+        let parsed = Cli::try_parse_from(arguments).unwrap();
+        let Command::Worker {
+            command: WorkerCommand::ActivateHybridMirror(args),
+        } = parsed.command
+        else {
+            panic!("expected explicit mirror activation");
+        };
+        assert_eq!(
+            args.mirror_acceptance_file,
+            Path::new("reviewed-mirror.json")
+        );
+        assert_eq!(
+            args.mirror_pack_acceptance_file.as_deref(),
+            Some(Path::new("reviewed-pack.json"))
+        );
+        assert_eq!(args.direct_upload_guard_key_file, Path::new("guard.key"));
+    }
+
+    #[test]
+    fn mirror_trust_selection_requires_both_public_key_and_namespace() {
+        let mut arguments = mirror_activation_arguments();
+        arguments.truncate(arguments.len() - 2);
+        assert!(Cli::try_parse_from(arguments).is_err());
+    }
 
     fn parsed_container_capabilities(arguments: &[&str]) -> [bool; 5] {
         match Cli::try_parse_from(arguments).unwrap().command {
@@ -1895,8 +2773,48 @@ mod production_vm_coverage {
         }
     }
 
+    enum NativeCommandQualification {
+        NativeOperationsVm,
+        OfflineSnapshotCustody {
+            dispatch_arm: &'static str,
+            operation: &'static str,
+            fixture: &'static str,
+        },
+    }
+
+    fn command_qualification(leaf: &str) -> NativeCommandQualification {
+        match leaf {
+            "snapshot capture-sqlite" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::CaptureSqlite",
+                operation: "workflow::capture",
+                fixture: "async fn actual_capture_publishes_private_files_and_verifies_without_source_mutation()",
+            },
+            "snapshot capture-postgres" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::CapturePostgres",
+                operation: "workflow::capture_postgres",
+                fixture: "async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals()",
+            },
+            "snapshot derive-object-requirements" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::DeriveObjectRequirements",
+                operation: "inventory::derive_object_requirements",
+                fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
+            },
+            "snapshot verify-object-requirements" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::VerifyObjectRequirements",
+                operation: "inventory::verify_object_requirements",
+                fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
+            },
+            "snapshot verify-capture" => NativeCommandQualification::OfflineSnapshotCustody {
+                dispatch_arm: "SnapshotCommand::VerifyCapture",
+                operation: "workflow::verify",
+                fixture: "async fn actual_capture_publishes_private_files_and_verifies_without_source_mutation()",
+            },
+            _ => NativeCommandQualification::NativeOperationsVm,
+        }
+    }
+
     #[test]
-    fn every_native_command_leaf_is_owned_by_the_native_vm_test() {
+    fn every_native_command_leaf_has_executable_qualification_ownership() {
         let mut leaves = Vec::new();
         collect_native_leaves(&Cli::command(), &mut Vec::new(), &mut leaves);
         leaves.sort();
@@ -1911,14 +2829,41 @@ mod production_vm_coverage {
             .split_whitespace()
             .collect::<Vec<_>>()
             .join(" ");
+        let snapshot_dispatch =
+            fs::read_to_string(repository.join("crates/aos-hub/src/snapshot_input.rs"))
+                .expect("offline snapshot command dispatch must be readable");
+        let snapshot_qualification =
+            fs::read_to_string(repository.join("crates/aos-hub/src/snapshot/tests.rs"))
+                .expect("offline snapshot custody qualification must be readable");
+        let snapshot_qualification = format!(
+            "{}\n{}",
+            snapshot_qualification,
+            fs::read_to_string(repository.join("crates/aos-hub/src/snapshot/inventory/tests.rs"))
+                .expect("object requirements qualification must be readable")
+        );
         let missing = leaves
             .into_iter()
-            .filter(|leaf| !source.contains(leaf))
+            .filter(|leaf| match command_qualification(leaf) {
+                NativeCommandQualification::NativeOperationsVm => !source.contains(leaf),
+                NativeCommandQualification::OfflineSnapshotCustody {
+                    dispatch_arm,
+                    operation,
+                    fixture,
+                } => {
+                    // These commands run before Hub initialization. Their real
+                    // encrypted capture/readback and custody qualification has
+                    // its own executable fixture rather than a running server.
+                    !snapshot_dispatch.contains(dispatch_arm)
+                        || !snapshot_dispatch.contains(operation)
+                        || !snapshot_qualification.contains(fixture)
+                        || !snapshot_qualification.contains(operation)
+                }
+            })
             .collect::<Vec<_>>();
 
         assert!(
             missing.is_empty(),
-            "native aos-hub commands without executable VM ownership:\n{}",
+            "native aos-hub commands without executable qualification ownership:\n{}",
             missing.join("\n")
         );
     }

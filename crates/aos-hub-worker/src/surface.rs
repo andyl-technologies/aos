@@ -20,22 +20,32 @@ use std::sync::Arc;
 
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
+use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
-use worker::Bucket;
+use worker::{Bucket, Env};
 
 use aos_hub_core::db::{BindingWriteRevisionRecord, Database, SurfacePlacementRecord};
 use aos_hub_core::fetch::{
-    OriginFetch, StreamedRead, SurfaceFetch, SurfaceListPage, SurfaceListedEvidence,
+    DocumentationInspection, OriginFetch, StreamedRead, SurfaceDeliveryHead, SurfaceFetch,
+    SurfaceInventoryChunk, SurfaceInventoryHead, SurfaceListPage, SurfaceListedEvidence,
     SurfaceObjectEvidence, SurfaceProvider,
 };
+use aos_hub_core::hybrid_ingress::HybridDeliveryTarget;
 use aos_hub_core::s3surface::{Method as S3Method, S3Surface};
 use aos_hub_core::secret_version::SecretVersionResolver;
 use aos_hub_core::storage_credential::{
     DatabaseStorageCredentialResolver, StorageCredentialResolver,
 };
+use aos_hub_core::storage_work::{
+    StorageBindingPublication, StorageCredentialSelector, StorageDocumentationPage,
+    StorageGitObjectProjection, StorageObjectIdentity, StorageWorkOperation, StorageWorkOutcome,
+    StorageWorkPlan, StorageWorkResult, MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES,
+    MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES,
+};
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceWrite, SurfaceWriteProvider,
 };
+use aos_registry_surface::{object, object_bundle};
 
 use crate::consoleports::WorkerEgressClient;
 use crate::frozen_surface_access::{
@@ -44,11 +54,1292 @@ use crate::frozen_surface_access::{
 use crate::keymap;
 use crate::r2_adapter::{R2BucketAdapter, R2Contract, R2HeadObject, R2ListObject, R2ListPage};
 
+mod metadata_batch;
+
 #[derive(Clone)]
 struct WorkerR2BucketAdapter {
     /// Raw JavaScript R2 binding. Keeping reflection behind this exact value
     /// makes the production adapter executable against a JS-shape fixture.
     bucket: wasm_bindgen::JsValue,
+}
+
+/// Executes admitted external-storage work through the same S3 signing path
+/// used by Worker-only mode. The bounded metadata and probe writes are
+/// idempotent; multipart creation returns the provider upload identity to its
+/// caller for durable recovery.
+///
+/// # Errors
+///
+/// Returns an error when the published binding, selected credential, provider
+/// response, or observed object identity violates its signed plan.
+pub(crate) async fn execute_external_storage_work(
+    env: &Env,
+    plan: &StorageWorkPlan,
+    publication: &StorageBindingPublication,
+) -> Result<Option<StorageWorkResult>> {
+    if matches!(plan.operation, StorageWorkOperation::DeleteIfMatches { .. }) {
+        return crate::external_object::execute_delete_plan(env, plan, publication)
+            .await
+            .map(Some);
+    }
+    let probe = match &plan.operation {
+        StorageWorkOperation::PutProbe { path, .. }
+        | StorageWorkOperation::Head { path }
+        | StorageWorkOperation::InspectSha256 { path, .. } => {
+            aos_hub_core::storage_work::admitted_probe_path(path)
+        }
+        _ => false,
+    };
+    if probe {
+        return crate::external_object::execute_probe_plan(env, plan, publication)
+            .await
+            .map(Some);
+    }
+    crate::external_object::deny_legacy(env, &publication.snapshot)?;
+    let now = aos_hub_core::clock::now_unix_secs();
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    publication.snapshot.authorizes(plan, &deployment_id, now)?;
+    let purpose = match &plan.operation {
+        StorageWorkOperation::ListPage { .. } => "list",
+        StorageWorkOperation::Head { .. }
+        | StorageWorkOperation::InspectSha256 { .. }
+        | StorageWorkOperation::InspectMetadata { .. }
+        | StorageWorkOperation::InspectMetadataObjects { .. }
+        | StorageWorkOperation::InspectGitObject { .. }
+        | StorageWorkOperation::InspectGitObjects { .. }
+        | StorageWorkOperation::FilterGitTreeEntries { .. }
+        | StorageWorkOperation::InspectDocumentation { .. }
+        | StorageWorkOperation::InspectDocumentationContent { .. }
+        | StorageWorkOperation::InspectOciRange { .. }
+        | StorageWorkOperation::HashOciRange { .. } => "read",
+        StorageWorkOperation::PutMetadata { .. }
+        | StorageWorkOperation::PutProbe { .. }
+        | StorageWorkOperation::CreateMultipart { .. }
+        | StorageWorkOperation::CompleteMultipart { .. }
+        | StorageWorkOperation::AbortMultipart { .. } => "write",
+        StorageWorkOperation::DeleteProbe { .. } => "delete",
+        _ => return Ok(None),
+    };
+    let credential = if publication.snapshot.access_mode == "private" {
+        let selector = plan
+            .credential_references
+            .iter()
+            .find(|selector| selector.purpose == purpose)
+            .context("external storage plan has no purpose credential")?;
+        Some(publication.credential_text(selector, &deployment_id, now)?)
+    } else {
+        None
+    };
+    let surface = S3Surface::from_snapshot(
+        &publication.snapshot,
+        &deployment_id,
+        &plan.placement_prefix,
+        credential.as_ref().map(|value| value.as_str()),
+        now,
+    )?;
+
+    let egress = Arc::new(WorkerEgressClient::direct());
+    if matches!(purpose, "write" | "delete") {
+        let writer = S3Write { surface, egress };
+        let outcome = match &plan.operation {
+            StorageWorkOperation::PutMetadata {
+                path,
+                content_base64,
+                ..
+            } => {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+                writer.write(path, &bytes).await?;
+                StorageWorkOutcome::MetadataWritten
+            }
+            StorageWorkOperation::PutProbe {
+                path,
+                content_base64,
+            } => {
+                let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+                writer.write(path, &bytes).await?;
+                StorageWorkOutcome::ProbeAcknowledged
+            }
+            StorageWorkOperation::DeleteProbe { path } => {
+                writer.delete(path).await?;
+                StorageWorkOutcome::ProbeAcknowledged
+            }
+            StorageWorkOperation::CreateMultipart { path } => {
+                let upload_id = writer.create_multipart(path).await?;
+                StorageWorkOutcome::MultipartCreated { upload_id }
+            }
+            StorageWorkOperation::CompleteMultipart {
+                path,
+                upload_id,
+                parts,
+            } => {
+                writer.complete_multipart(path, upload_id, parts).await?;
+                let read_credential = if publication.snapshot.access_mode == "private" {
+                    let selector = plan
+                        .credential_references
+                        .iter()
+                        .find(|selector| selector.purpose == "read")
+                        .context("external multipart completion has no read credential")?;
+                    Some(publication.credential_text(selector, &deployment_id, now)?)
+                } else {
+                    None
+                };
+                let read_surface = S3Surface::from_snapshot(
+                    &publication.snapshot,
+                    &deployment_id,
+                    &plan.placement_prefix,
+                    read_credential.as_ref().map(|value| value.as_str()),
+                    now,
+                )?;
+                let fetcher = S3SurfaceFetch {
+                    surface: read_surface,
+                    egress: Arc::clone(&writer.egress),
+                };
+                let object = fetcher
+                    .delivery_head(path)
+                    .await?
+                    .context("completed S3 multipart object is missing")?;
+                StorageWorkOutcome::MultipartCompleted {
+                    object: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size: object.size,
+                        etag: object.strong_etag,
+                        provider_version: None,
+                    },
+                }
+            }
+            StorageWorkOperation::AbortMultipart { path, upload_id } => {
+                let outcome = writer.abort_multipart(path, upload_id).await?;
+                StorageWorkOutcome::MultipartAborted { outcome }
+            }
+            _ => anyhow::bail!("external mutation purpose differs from its operation"),
+        };
+        return Ok(Some(storage_work_result(plan, outcome, 0)));
+    }
+    let fetcher = S3SurfaceFetch {
+        surface,
+        egress: Arc::clone(&egress),
+    };
+    let (outcome, source_bytes) = match &plan.operation {
+        StorageWorkOperation::Head { path } => {
+            let url = fetcher.surface.object_url(S3Method::Head, path, now)?;
+            let response = egress
+                .send(&url, "HEAD", None, None, None, None, None)
+                .await
+                .context("external storage HEAD failed")?;
+            let outcome = if response.status_code() == 404 {
+                StorageWorkOutcome::NotFound
+            } else {
+                anyhow::ensure!(
+                    response.status_code() == 200,
+                    "external storage HEAD returned HTTP {}",
+                    response.status_code()
+                );
+                let size = response
+                    .headers()
+                    .get("content-length")?
+                    .context("external storage HEAD has no Content-Length")?
+                    .parse::<u64>()
+                    .context("external storage HEAD has an invalid Content-Length")?;
+                let etag = response
+                    .headers()
+                    .get("etag")?
+                    .context("external storage HEAD has no ETag")?;
+                let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)?;
+                StorageWorkOutcome::Head {
+                    object: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size,
+                        etag,
+                        provider_version: None,
+                    },
+                }
+            };
+            (outcome, 0)
+        }
+        StorageWorkOperation::ListPage {
+            prefix,
+            cursor,
+            limit,
+        } => {
+            let url =
+                fetcher
+                    .surface
+                    .list_url_with_prefix(prefix, cursor.as_deref(), *limit, now)?;
+            let mut response = egress
+                .send(&url, "GET", None, None, None, None, None)
+                .await
+                .context("external storage listing failed")?;
+            anyhow::ensure!(
+                response.status_code() == 200,
+                "external storage listing returned HTTP {}",
+                response.status_code()
+            );
+            let body = crate::consoleports::read_response_capped(
+                &mut response,
+                aos_hub_core::s3surface::WORKER_MAX_S3_LIST_PAGE_BYTES,
+                "external S3 ListObjectsV2",
+            )
+            .await?;
+            let xml = std::str::from_utf8(&body).context("external S3 listing is not UTF-8")?;
+            let (listed, next, truncated) =
+                aos_hub_core::s3surface::parse_list_objects_v2_evidence(xml)?;
+            anyhow::ensure!(
+                listed.len() <= *limit,
+                "external S3 listing exceeds the signed page limit"
+            );
+            let mut objects = Vec::with_capacity(listed.len());
+            for listed_object in listed {
+                let relative = fetcher
+                    .surface
+                    .relative_from_key(&listed_object.key)
+                    .context("external S3 listing escaped the placement prefix")?;
+                anyhow::ensure!(
+                    relative.starts_with(prefix),
+                    "external S3 listing escaped the signed key prefix"
+                );
+                if relative.is_empty() {
+                    continue;
+                }
+                objects.push(StorageObjectIdentity {
+                    key: plan.object_key(&relative)?,
+                    size: listed_object.size,
+                    etag: listed_object.strong_etag,
+                    provider_version: None,
+                });
+            }
+            let cursor = if truncated {
+                Some(next.context("external S3 listing has no continuation token")?)
+            } else {
+                None
+            };
+            (StorageWorkOutcome::ListPage { objects, cursor }, 0)
+        }
+        StorageWorkOperation::InspectSha256 {
+            path,
+            expected_sha256,
+            max_source_bytes,
+        } => {
+            let Some(evidence) = fetcher
+                .inventory_evidence_bounded(path, *max_source_bytes)
+                .await?
+            else {
+                return Ok(Some(storage_work_result(
+                    plan,
+                    StorageWorkOutcome::NotFound,
+                    0,
+                )));
+            };
+            let sha256 = hex::encode(evidence.sha256);
+            if let Some(expected) = expected_sha256 {
+                anyhow::ensure!(
+                    sha256.eq_ignore_ascii_case(expected),
+                    "external object SHA-256 does not match the plan"
+                );
+            }
+            let size = u64::try_from(evidence.size).context("external object size is negative")?;
+            let etag = evidence
+                .strong_etag
+                .context("external object has no strong ETag")?;
+            (
+                StorageWorkOutcome::Sha256Evidence {
+                    object: StorageObjectIdentity {
+                        key: plan.object_key(path)?,
+                        size,
+                        etag,
+                        provider_version: evidence.provider_version,
+                    },
+                    sha256,
+                },
+                size,
+            )
+        }
+        StorageWorkOperation::InspectMetadata { path } => {
+            let Some((bytes, source)) =
+                read_bounded_source(&fetcher, plan, path, MAX_METADATA_BYTES).await?
+            else {
+                return Ok(Some(storage_work_result(
+                    plan,
+                    StorageWorkOutcome::NotFound,
+                    0,
+                )));
+            };
+            let source_bytes = source.size;
+            (
+                StorageWorkOutcome::Metadata {
+                    source,
+                    content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+                source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectMetadataObjects { paths, cursor } => {
+            return Ok(Some(
+                metadata_batch::inspect(&fetcher, plan, paths, *cursor).await?,
+            ));
+        }
+        StorageWorkOperation::InspectGitObject { oid } => {
+            let (projection, source_bytes) = inspect_git_object(&fetcher, plan, oid).await?;
+            let Some(projection) = projection else {
+                return Ok(Some(storage_work_result(
+                    plan,
+                    StorageWorkOutcome::NotFound,
+                    source_bytes,
+                )));
+            };
+            (
+                StorageWorkOutcome::GitObject {
+                    source: projection.source,
+                    oid: projection.oid,
+                    object_kind: projection.object_kind,
+                    content_base64: projection.content_base64,
+                },
+                source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectGitObjects { oids } => {
+            let (outcome, source_bytes) = inspect_git_objects(&fetcher, plan, oids).await?;
+            (outcome, source_bytes)
+        }
+        StorageWorkOperation::FilterGitTreeEntries { oid, names, cursor } => {
+            crate::tree_projection::inspect(&fetcher, plan, oid, names, cursor.as_ref()).await?
+        }
+        StorageWorkOperation::InspectDocumentation {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+            cursor,
+        } => {
+            inspect_documentation(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+                *cursor,
+            )
+            .await?
+        }
+        StorageWorkOperation::InspectDocumentationContent {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        } => {
+            crate::documentation_projection::inspect_content(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            )
+            .await?
+        }
+        StorageWorkOperation::InspectOciRange { path, start, end } => {
+            inspect_oci_range(&fetcher, plan, path, *start, *end).await?
+        }
+        StorageWorkOperation::HashOciRange {
+            path,
+            start,
+            end,
+            total,
+            strong_etag,
+            expected_provider_version,
+            sha256_state,
+        } => {
+            hash_oci_range(
+                &fetcher,
+                plan,
+                path,
+                *start,
+                *end,
+                *total,
+                strong_etag,
+                expected_provider_version.as_deref(),
+                sha256_state,
+            )
+            .await?
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(storage_work_result(plan, outcome, source_bytes)))
+}
+
+/// Executes a signed, validated storage plan against the deployment R2 bucket.
+///
+/// The Worker reads object bodies locally for verification and returns only
+/// bounded identity or digest evidence to Native. This function has no SQL
+/// access and cannot select a placement outside the signed plan.
+///
+/// # Errors
+///
+/// Returns an error for an unavailable object store, a source limit, or an
+/// object identity that fails the plan's digest check.
+pub(crate) async fn execute_r2_storage_work(
+    env: &Env,
+    plan: &StorageWorkPlan,
+) -> Result<StorageWorkResult> {
+    anyhow::ensure!(
+        plan.binding_kind == "deployment_r2"
+            && plan.binding_snapshot_revision.is_none()
+            && plan.credential_references.is_empty(),
+        "deployment R2 executor requires its exact bound storage kind"
+    );
+    let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+    let fetcher = R2SurfaceFetch {
+        contract: R2Contract::new(WorkerR2BucketAdapter {
+            bucket: bucket.as_ref().clone(),
+        }),
+        bucket,
+        prefix: plan.placement_prefix.clone(),
+    };
+    let (outcome, source_bytes) = match &plan.operation {
+        StorageWorkOperation::Head { path } => {
+            let key = plan.object_key(path)?;
+            // Frozen R2 GC uses this same metadata plan. Observe through the
+            // physical-key guard so unknown writes/deletes cannot prove absence.
+            let outcome = match crate::hybrid_object::head(env, &key).await? {
+                Some(head) => StorageWorkOutcome::Head {
+                    object: storage_object_identity(key, head),
+                },
+                None => StorageWorkOutcome::NotFound,
+            };
+            (outcome, 0)
+        }
+        StorageWorkOperation::ListPage {
+            prefix,
+            cursor,
+            limit,
+        } => {
+            let key_prefix = plan.object_key(prefix)?;
+            let page = fetcher
+                .contract
+                .list(&key_prefix, cursor.as_deref(), *limit)
+                .await?;
+            anyhow::ensure!(
+                page.objects
+                    .iter()
+                    .all(|object| object.key.starts_with(&key_prefix)),
+                "R2 listing escaped the selected placement prefix"
+            );
+            let objects = page
+                .objects
+                .into_iter()
+                .map(|object| StorageObjectIdentity {
+                    key: object.key,
+                    size: object.size,
+                    etag: object.etag,
+                    provider_version: Some(object.version),
+                })
+                .collect();
+            (
+                StorageWorkOutcome::ListPage {
+                    objects,
+                    cursor: page.cursor,
+                },
+                0,
+            )
+        }
+        StorageWorkOperation::InspectSha256 {
+            path,
+            expected_sha256,
+            max_source_bytes,
+        } => {
+            let key = plan.object_key(path)?;
+            let Some(evidence) = fetcher
+                .inventory_evidence_bounded(path, *max_source_bytes)
+                .await?
+            else {
+                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
+            };
+            let sha256 = hex::encode(evidence.sha256);
+            if let Some(expected_sha256) = expected_sha256 {
+                anyhow::ensure!(
+                    sha256.eq_ignore_ascii_case(expected_sha256),
+                    "R2 object SHA-256 does not match the plan"
+                );
+            }
+            let size = u64::try_from(evidence.size).context("R2 object size is negative")?;
+            let etag = evidence
+                .strong_etag
+                .context("R2 verification returned no strong ETag")?;
+            (
+                StorageWorkOutcome::Sha256Evidence {
+                    object: StorageObjectIdentity {
+                        key,
+                        size,
+                        etag,
+                        provider_version: evidence.provider_version,
+                    },
+                    sha256,
+                },
+                size,
+            )
+        }
+        StorageWorkOperation::InspectGitObject { oid } => {
+            let (projection, source_bytes) = inspect_git_object(&fetcher, plan, oid).await?;
+            let Some(projection) = projection else {
+                return Ok(storage_work_result(
+                    plan,
+                    StorageWorkOutcome::NotFound,
+                    source_bytes,
+                ));
+            };
+            (
+                StorageWorkOutcome::GitObject {
+                    source: projection.source,
+                    oid: projection.oid,
+                    object_kind: projection.object_kind,
+                    content_base64: projection.content_base64,
+                },
+                source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectGitObjects { oids } => {
+            inspect_git_objects(&fetcher, plan, oids).await?
+        }
+        StorageWorkOperation::FilterGitTreeEntries { oid, names, cursor } => {
+            crate::tree_projection::inspect(&fetcher, plan, oid, names, cursor.as_ref()).await?
+        }
+        StorageWorkOperation::InspectMetadata { path } => {
+            let Some((bytes, source)) =
+                read_bounded_source(&fetcher, plan, path, MAX_METADATA_BYTES).await?
+            else {
+                return Ok(storage_work_result(plan, StorageWorkOutcome::NotFound, 0));
+            };
+            let source_bytes = source.size;
+            (
+                StorageWorkOutcome::Metadata {
+                    source,
+                    content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+                },
+                source_bytes,
+            )
+        }
+        StorageWorkOperation::InspectMetadataObjects { paths, cursor } => {
+            return metadata_batch::inspect(&fetcher, plan, paths, *cursor).await;
+        }
+        StorageWorkOperation::InspectDocumentationContent {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        } => {
+            crate::documentation_projection::inspect_content(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+            )
+            .await?
+        }
+        StorageWorkOperation::InspectDocumentation {
+            package_name,
+            package_version,
+            platform,
+            artifact,
+            cursor,
+        } => {
+            inspect_documentation(
+                &fetcher,
+                package_name,
+                package_version,
+                platform,
+                artifact,
+                *cursor,
+            )
+            .await?
+        }
+        StorageWorkOperation::InspectOciRange { path, start, end } => {
+            inspect_oci_range(&fetcher, plan, path, *start, *end).await?
+        }
+        StorageWorkOperation::HashOciRange {
+            path,
+            start,
+            end,
+            total,
+            strong_etag,
+            expected_provider_version,
+            sha256_state,
+        } => {
+            hash_oci_range(
+                &fetcher,
+                plan,
+                path,
+                *start,
+                *end,
+                *total,
+                strong_etag,
+                expected_provider_version.as_deref(),
+                sha256_state,
+            )
+            .await?
+        }
+        StorageWorkOperation::CopyObject {
+            source_prefix,
+            path,
+            expected_size,
+            expected_etag,
+            ..
+        } => {
+            let source_key = keymap::r2_key(source_prefix, path);
+            let destination_key = plan.object_key(path)?;
+            let source = fetcher
+                .contract
+                .head(&source_key)
+                .await?
+                .context("placement copy source disappeared")?;
+            anyhow::ensure!(
+                source.size == *expected_size && source.etag == expected_etag.as_str(),
+                "placement copy source differs from its listed identity"
+            );
+            r2_copy_stream(
+                env,
+                fetcher.bucket.as_ref(),
+                &source_key,
+                &destination_key,
+                *expected_size,
+                expected_etag,
+            )
+            .await?;
+            let after = fetcher
+                .contract
+                .head(&source_key)
+                .await?
+                .context("placement copy source disappeared after streaming")?;
+            let destination = fetcher
+                .contract
+                .head(&destination_key)
+                .await?
+                .context("placement copy destination disappeared")?;
+            anyhow::ensure!(
+                after.size == *expected_size
+                    && after.etag == expected_etag.as_str()
+                    && destination.size == *expected_size,
+                "placement copy source or destination changed during streaming"
+            );
+            (
+                StorageWorkOutcome::ObjectCopied {
+                    source: storage_object_identity(source_key, source),
+                    destination: storage_object_identity(destination_key, destination),
+                },
+                *expected_size,
+            )
+        }
+        StorageWorkOperation::ComposeOciBlob {
+            path,
+            staging_prefix,
+            chunks,
+            expected_size,
+            expected_sha256,
+        } => {
+            let object_key = plan.object_key(path)?;
+            let object = compose_oci_blob(
+                env,
+                &fetcher.contract,
+                &object_key,
+                staging_prefix,
+                chunks,
+                *expected_size,
+                expected_sha256,
+            )
+            .await?;
+            (
+                StorageWorkOutcome::OciBlobComposed {
+                    object,
+                    sha256: expected_sha256.clone(),
+                },
+                *expected_size,
+            )
+        }
+        StorageWorkOperation::DeleteOciStaging { path } => {
+            let object_key = plan.object_key(path)?;
+            crate::hybrid_object::delete_staging(env, &object_key).await?;
+            (StorageWorkOutcome::OciStagingDeleted, 0)
+        }
+        StorageWorkOperation::DeleteIfMatches {
+            path,
+            claim_id,
+            expected_etag,
+            expected_size,
+            expected_hash,
+            expected_provider_version,
+            ..
+        } => {
+            let object_key = plan.object_key(path)?;
+            let claim = crate::hybrid_object::DeleteClaim {
+                claim_id: claim_id.clone(),
+                expected_etag: expected_etag.clone(),
+                expected_size: *expected_size,
+                expected_hash: expected_hash.clone(),
+                expected_provider_version: expected_provider_version.clone(),
+            };
+            let outcome = crate::hybrid_object::delete_if_matches(env, &object_key, &claim).await?;
+            let outcome = match outcome {
+                crate::hybrid_object::DeleteOutcome::Deleted { etag } => {
+                    StorageWorkOutcome::ObjectDeleted { etag }
+                }
+                crate::hybrid_object::DeleteOutcome::NotFound => StorageWorkOutcome::NotFound,
+                crate::hybrid_object::DeleteOutcome::PreconditionFailed => {
+                    StorageWorkOutcome::DeletePreconditionFailed
+                }
+            };
+            (outcome, 0)
+        }
+        StorageWorkOperation::PutMetadata {
+            path,
+            content_base64,
+            ..
+        } => {
+            use base64::Engine as _;
+            let object_key = plan.object_key(path)?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+            crate::hybrid_object::put(env, &object_key, &bytes).await?;
+            (StorageWorkOutcome::MetadataWritten, 0)
+        }
+        StorageWorkOperation::PutProbe {
+            path,
+            content_base64,
+        } => {
+            use base64::Engine as _;
+            let object_key = plan.object_key(path)?;
+            let bytes = base64::engine::general_purpose::STANDARD.decode(content_base64)?;
+            crate::hybrid_object::put(env, &object_key, &bytes).await?;
+            (StorageWorkOutcome::ProbeAcknowledged, 0)
+        }
+        StorageWorkOperation::DeleteProbe { path } => {
+            let object_key = plan.object_key(path)?;
+            crate::hybrid_object::delete_staging(env, &object_key).await?;
+            (StorageWorkOutcome::ProbeAcknowledged, 0)
+        }
+        StorageWorkOperation::CreateMultipart { path } => {
+            let object_key = plan.object_key(path)?;
+            let upload_id = fetcher.contract.create_multipart(&object_key).await?;
+            (StorageWorkOutcome::MultipartCreated { upload_id }, 0)
+        }
+        StorageWorkOperation::CompleteMultipart {
+            path,
+            upload_id,
+            parts,
+        } => {
+            let object_key = plan.object_key(path)?;
+            crate::hybrid_object::complete(env, &object_key, upload_id, parts).await?;
+            let head = fetcher
+                .contract
+                .head(&object_key)
+                .await?
+                .context("completed multipart object is missing")?;
+            (
+                StorageWorkOutcome::MultipartCompleted {
+                    object: StorageObjectIdentity {
+                        key: object_key,
+                        size: head.size,
+                        etag: head.etag,
+                        provider_version: Some(head.version),
+                    },
+                },
+                0,
+            )
+        }
+        StorageWorkOperation::AbortMultipart { path, upload_id } => {
+            let object_key = plan.object_key(path)?;
+            let outcome = fetcher
+                .contract
+                .abort_multipart(&object_key, upload_id)
+                .await?;
+            (StorageWorkOutcome::MultipartAborted { outcome }, 0)
+        }
+        StorageWorkOperation::MirrorTransfer { .. }
+        | StorageWorkOperation::InspectMirrorLiveMetadata { .. }
+        | StorageWorkOperation::InspectMirrorLiveMetadataBatch { .. }
+        | StorageWorkOperation::MirrorTransferBatch { .. }
+        | StorageWorkOperation::InspectMirrorPack { .. }
+        | StorageWorkOperation::InspectMirrorTreeInventory { .. }
+        | StorageWorkOperation::InspectMirrorMembership { .. }
+        | StorageWorkOperation::InspectStoredGitPack { .. } => {
+            anyhow::bail!("mirror requires its exact signed control transport")
+        }
+        StorageWorkOperation::FilterStoredGitPackTree { .. } => {
+            anyhow::bail!("mirror requires its exact signed control transport")
+        }
+    };
+    Ok(storage_work_result(plan, outcome, source_bytes))
+}
+
+async fn compose_oci_blob(
+    env: &Env,
+    contract: &R2Contract<WorkerR2BucketAdapter>,
+    object_key: &str,
+    staging_prefix: &str,
+    chunks: &[aos_hub_core::storage_work::StorageOciChunkSource],
+    expected_size: u64,
+    expected_sha256: &str,
+) -> Result<StorageObjectIdentity> {
+    const PART_BYTES: usize = 8 * 1024 * 1024;
+
+    if expected_size == 0 {
+        anyhow::ensure!(
+            expected_sha256 == hex::encode(Sha256::digest(b"")),
+            "empty OCI blob digest differs from its signed plan"
+        );
+        crate::hybrid_object::put(env, object_key, &[]).await?;
+    } else {
+        let upload_id = contract.create_multipart(object_key).await?;
+        let materialized = async {
+            let mut parts = Vec::new();
+            let mut pending = Vec::new();
+            let mut hasher = Sha256::new();
+            let mut observed_size = 0_u64;
+
+            for chunk in chunks {
+                let staging_key = aos_hub_core::keymap::r2_key(staging_prefix, &chunk.path);
+                let bytes = contract
+                    .read_bounded(
+                        &staging_key,
+                        aos_hub_core::hybrid_ingress::MAX_HYBRID_OCI_CHUNK_BYTES,
+                    )
+                    .await?
+                    .context("staged OCI chunk is missing")?;
+                anyhow::ensure!(
+                    bytes.len() as u64 == chunk.size
+                        && hex::encode(Sha256::digest(&bytes)) == chunk.sha256,
+                    "staged OCI chunk differs from the SQL-frozen digest and length"
+                );
+                observed_size = observed_size
+                    .checked_add(chunk.size)
+                    .context("OCI composition size overflowed")?;
+                hasher.update(&bytes);
+                pending.extend_from_slice(&bytes);
+
+                while pending.len() >= PART_BYTES {
+                    let remaining = pending.split_off(PART_BYTES);
+                    let part_number = u32::try_from(parts.len() + 1)?;
+                    parts.push(
+                        contract
+                            .upload_part(object_key, &upload_id, part_number, &pending)
+                            .await?,
+                    );
+                    pending = remaining;
+                }
+            }
+            anyhow::ensure!(
+                observed_size == expected_size && hex::encode(hasher.finalize()) == expected_sha256,
+                "assembled OCI blob differs from the claimed digest and length"
+            );
+            if !pending.is_empty() {
+                let part_number = u32::try_from(parts.len() + 1)?;
+                parts.push(
+                    contract
+                        .upload_part(object_key, &upload_id, part_number, &pending)
+                        .await?,
+                );
+            }
+            crate::hybrid_object::complete(env, object_key, &upload_id, &parts).await
+        }
+        .await;
+        if materialized.is_err() {
+            let _ = contract.abort_multipart(object_key, &upload_id).await;
+        }
+        materialized?;
+    }
+
+    let head = contract
+        .head(object_key)
+        .await?
+        .context("materialized OCI blob is missing")?;
+    anyhow::ensure!(
+        head.size == expected_size,
+        "materialized OCI blob has the wrong length"
+    );
+    Ok(StorageObjectIdentity {
+        key: object_key.to_string(),
+        size: head.size,
+        etag: head.etag,
+        provider_version: Some(head.version),
+    })
+}
+
+async fn inspect_git_objects(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    oids: &[String],
+) -> Result<(StorageWorkOutcome, u64)> {
+    let mut shards = std::collections::BTreeMap::<&str, Vec<&str>>::new();
+    for oid in oids {
+        shards.entry(&oid[..2]).or_default().push(oid);
+    }
+    let inspections = futures_util::future::try_join_all(
+        shards
+            .into_iter()
+            .map(|(shard, oids)| inspect_git_shard(fetcher, plan, shard, oids)),
+    )
+    .await?;
+    let mut objects = Vec::with_capacity(oids.len());
+    let mut source_bytes = 0_u64;
+    let mut missing = false;
+    for (projections, observed_bytes) in inspections {
+        source_bytes = source_bytes
+            .checked_add(observed_bytes)
+            .context("Git batch source byte count overflowed")?;
+        for projection in projections {
+            match projection {
+                Some(projection) => objects.push(projection),
+                None => missing = true,
+            }
+        }
+    }
+    let outcome = if missing {
+        StorageWorkOutcome::NotFound
+    } else {
+        StorageWorkOutcome::GitObjects { objects }
+    };
+    Ok((outcome, source_bytes))
+}
+
+async fn inspect_git_object(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    oid: &str,
+) -> Result<(Option<StorageGitObjectProjection>, u64)> {
+    let oid_value = object::Oid::from_hex(oid)?;
+    let shard = &oid[..2];
+    let shard_path = object_bundle::shard_path(shard)?;
+    let bundled =
+        read_bounded_source(fetcher, plan, &shard_path, object_bundle::MAX_BUNDLE_BYTES).await?;
+    let bundle_bytes = bundled.as_ref().map_or(0, |(_, source)| source.size);
+    let selected = bundled.as_ref().and_then(|(bytes, _)| {
+        match object_bundle::decode(shard, bytes) {
+            Ok(entries) => entries.into_iter().find(|(entry, _)| *entry == oid_value),
+            Err(error) => {
+                tracing::warn!(%shard_path, error = %format!("{error:#}"), "ignoring invalid Git bundle shard");
+                None
+            }
+        }
+    }).filter(|(_, loose)| {
+        object::decode_loose_with_limit(loose, Some(oid_value),
+            object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES).is_ok()
+    });
+    let (loose, source) = match selected {
+        Some((_, loose)) => {
+            let source = bundled
+                .as_ref()
+                .map(|(_, source)| source.clone())
+                .context("selected Git bundle source disappeared")?;
+            (loose, source)
+        }
+        None => {
+            let path = oid_value.loose_path();
+            let Some((loose, source)) = read_bounded_source(
+                fetcher,
+                plan,
+                &path,
+                object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize,
+            )
+            .await?
+            else {
+                return Ok((None, bundle_bytes));
+            };
+            (loose, source)
+        }
+    };
+    let source_bytes = if source.key == plan.object_key(&shard_path)? {
+        bundle_bytes
+    } else {
+        bundle_bytes
+            .checked_add(source.size)
+            .context("Git inspection source byte count overflowed")?
+    };
+    Ok((Some(project_git_loose(oid, &loose, source)?), source_bytes))
+}
+
+async fn inspect_git_shard(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    shard: &str,
+    oids: Vec<&str>,
+) -> Result<(Vec<Option<StorageGitObjectProjection>>, u64)> {
+    let shard_path = object_bundle::shard_path(shard)?;
+    let bundled =
+        read_bounded_source(fetcher, plan, &shard_path, object_bundle::MAX_BUNDLE_BYTES).await?;
+    let bundle_bytes = bundled.as_ref().map_or(0, |(_, source)| source.size);
+    let entries = match bundled.as_ref() {
+        Some((bytes, _)) => match object_bundle::decode(shard, bytes) {
+            Ok(entries) => entries
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>(),
+            Err(error) => {
+                tracing::warn!(%shard_path, error = %format!("{error:#}"), "ignoring invalid Git bundle shard");
+                std::collections::BTreeMap::new()
+            }
+        },
+        None => std::collections::BTreeMap::new(),
+    };
+    let inspections = futures_util::future::try_join_all(oids.into_iter().map(|oid| async {
+        let oid_value = object::Oid::from_hex(oid)?;
+        if let (Some(loose), Some((_, source))) = (entries.get(&oid_value), bundled.as_ref()) {
+            return Ok::<_, anyhow::Error>((
+                Some(project_git_loose(oid, loose, source.clone())?),
+                0_u64,
+            ));
+        }
+        let path = oid_value.loose_path();
+        let Some((loose, source)) = read_bounded_source(
+            fetcher,
+            plan,
+            &path,
+            object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize,
+        )
+        .await?
+        else {
+            return Ok((None, 0));
+        };
+        let source_bytes = source.size;
+        Ok((Some(project_git_loose(oid, &loose, source)?), source_bytes))
+    }))
+    .await?;
+    let mut projections = Vec::with_capacity(inspections.len());
+    let mut source_bytes = bundle_bytes;
+    for (projection, loose_bytes) in inspections {
+        projections.push(projection);
+        source_bytes = source_bytes
+            .checked_add(loose_bytes)
+            .context("Git shard source byte count overflowed")?;
+    }
+    Ok((projections, source_bytes))
+}
+
+fn project_git_loose(
+    oid: &str,
+    loose: &[u8],
+    source: StorageObjectIdentity,
+) -> Result<StorageGitObjectProjection> {
+    let oid_value = object::Oid::from_hex(oid)?;
+    let (kind, content) = object::decode_loose(loose, Some(oid_value))?;
+    anyhow::ensure!(
+        content.len() <= MAX_GIT_INSPECTION_CONTENT_BYTES,
+        "Git object projection exceeds the semantic response limit"
+    );
+    Ok(StorageGitObjectProjection {
+        source,
+        oid: oid.to_owned(),
+        object_kind: kind.as_str().into(),
+        content_base64: base64::engine::general_purpose::STANDARD.encode(content),
+    })
+}
+
+async fn read_bounded_source(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    path: &str,
+    maximum: usize,
+) -> Result<Option<(Vec<u8>, StorageObjectIdentity)>> {
+    use futures_util::TryStreamExt as _;
+
+    let Some(read) = fetcher.fetch_stream(path, None).await? else {
+        return Ok(None);
+    };
+    anyhow::ensure!(
+        read.total <= maximum as u64,
+        "storage source exceeds its byte limit"
+    );
+    let etag = read
+        .strong_etag
+        .context("storage source has no strong R2 ETag")?;
+    let expected = read.total;
+    let mut bytes = Vec::new();
+    let mut stream = read.body.into_data_stream();
+    while let Some(chunk) = stream.try_next().await? {
+        let next = bytes
+            .len()
+            .checked_add(chunk.len())
+            .context("storage source size overflow")?;
+        anyhow::ensure!(
+            next <= maximum && next as u64 <= expected,
+            "storage source exceeded its declared size"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    anyhow::ensure!(
+        bytes.len() as u64 == expected,
+        "storage source ended before its declared size"
+    );
+    let source = StorageObjectIdentity {
+        key: plan.object_key(path)?,
+        size: expected,
+        etag,
+        provider_version: None,
+    };
+    Ok(Some((bytes, source)))
+}
+
+async fn inspect_documentation(
+    fetcher: &dyn SurfaceFetch,
+    package_name: &str,
+    package_version: &str,
+    platform: &str,
+    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    cursor: usize,
+) -> Result<(StorageWorkOutcome, u64)> {
+    let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
+    let narinfo_key = format!("{store_hash}.narinfo");
+    let narinfo_size = fetcher
+        .size(&narinfo_key)
+        .await?
+        .context("documentation narinfo disappeared before inspection")?;
+    anyhow::ensure!(
+        narinfo_size <= MAX_METADATA_BYTES as u64,
+        "documentation narinfo exceeds the metadata limit"
+    );
+    let document = aos_hub_core::indexer::fetch_package_documentation(
+        fetcher,
+        package_name,
+        package_version,
+        platform,
+        artifact,
+    )
+    .await?;
+    let source_bytes = narinfo_size
+        .checked_add(artifact.nar_size)
+        .context("documentation source byte count overflowed")?;
+    let inspection = DocumentationInspection::from_document(&document);
+    let page = StorageDocumentationPage::from_inspection(&inspection, cursor)?;
+    Ok((StorageWorkOutcome::Documentation { page }, source_bytes))
+}
+
+async fn inspect_oci_range(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    path: &str,
+    start: u64,
+    end: u64,
+) -> Result<(StorageWorkOutcome, u64)> {
+    use futures_util::TryStreamExt as _;
+
+    let Some(read) = fetcher.fetch_stream(path, Some((start, end))).await? else {
+        return Ok((StorageWorkOutcome::NotFound, 0));
+    };
+    anyhow::ensure!(
+        read.range == Some((start, end)) && end < read.total,
+        "storage provider returned a different OCI range"
+    );
+    let etag = read
+        .strong_etag
+        .context("storage OCI range has no strong ETag")?;
+    let expected = end - start + 1;
+    let mut bytes = Vec::new();
+    let mut stream = read.body.into_data_stream();
+    while let Some(chunk) = stream.try_next().await? {
+        let next = bytes
+            .len()
+            .checked_add(chunk.len())
+            .context("OCI range size overflow")?;
+        anyhow::ensure!(
+            next <= MAX_OCI_RANGE_BYTES && next as u64 <= expected,
+            "OCI range exceeded its signed length"
+        );
+        bytes.extend_from_slice(&chunk);
+    }
+    anyhow::ensure!(
+        bytes.len() as u64 == expected,
+        "OCI range ended before its signed length"
+    );
+    Ok((
+        StorageWorkOutcome::OciRange {
+            source: StorageObjectIdentity {
+                key: plan.object_key(path)?,
+                size: read.total,
+                etag,
+                provider_version: None,
+            },
+            start,
+            end,
+            content_base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+        },
+        expected,
+    ))
+}
+
+async fn hash_oci_range(
+    fetcher: &dyn SurfaceFetch,
+    plan: &StorageWorkPlan,
+    path: &str,
+    start: u64,
+    end: u64,
+    total: u64,
+    strong_etag: &str,
+    expected_provider_version: Option<&str>,
+    sha256_state: &aos_hub_core::db::OciSha256State,
+) -> Result<(StorageWorkOutcome, u64)> {
+    let requested_bytes = end - start + 1;
+    let Some(chunk) = fetcher
+        .inventory_chunk_bounded(path, start, total, requested_bytes)
+        .await?
+    else {
+        return Ok((StorageWorkOutcome::NotFound, 0));
+    };
+    anyhow::ensure!(
+        chunk.total == total
+            && chunk.range == (start, end)
+            && chunk.strong_etag == strong_etag
+            && chunk.provider_version.as_deref() == expected_provider_version
+            && chunk.bytes.len() as u64 == requested_bytes
+            && chunk.bytes.len() <= MAX_OCI_HASH_RANGE_BYTES,
+        "storage OCI inventory range changed identity or length"
+    );
+    let mut next_state = sha256_state.clone();
+    next_state.update(&chunk.bytes)?;
+    Ok((
+        StorageWorkOutcome::OciRangeHashed {
+            source: StorageObjectIdentity {
+                key: plan.object_key(path)?,
+                size: chunk.total,
+                etag: chunk.strong_etag,
+                provider_version: chunk.provider_version,
+            },
+            start,
+            end,
+            sha256_state: next_state,
+        },
+        requested_bytes,
+    ))
+}
+
+fn r2_object_version(object: &wasm_bindgen::JsValue, key: &str) -> Result<String> {
+    let version = js_sys::Reflect::get(object, &wasm_bindgen::JsValue::from_str("version"))
+        .map_err(|error| anyhow::anyhow!("R2 metadata {key}: version: {error:?}"))?
+        .as_string()
+        .context("R2 object has no string upload version")?;
+    anyhow::ensure!(
+        aos_hub_core::storage_work::valid_provider_version(&version),
+        "R2 object has an invalid upload version"
+    );
+    Ok(version)
+}
+
+fn storage_object_identity(key: String, head: R2HeadObject) -> StorageObjectIdentity {
+    StorageObjectIdentity {
+        key,
+        size: head.size,
+        etag: head.etag,
+        provider_version: Some(head.version),
+    }
+}
+
+pub(crate) fn storage_work_result(
+    plan: &StorageWorkPlan,
+    outcome: StorageWorkOutcome,
+    source_bytes: u64,
+) -> StorageWorkResult {
+    StorageWorkResult {
+        plan_id: plan.plan_id.clone(),
+        placement_id: plan.placement_id,
+        placement_resource_version: plan.placement_resource_version,
+        binding_id: plan.binding_id,
+        binding_resource_version: plan.binding_resource_version,
+        source_bytes,
+        outcome,
+    }
 }
 
 #[async_trait(?Send)]
@@ -150,9 +1441,13 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
                 .map_err(|e| anyhow::anyhow!("R2 list {key}: etag: {e:?}"))?
                 .as_string()
                 .context("R2 list object has no string etag")?;
-            let etag = aos_hub_core::surface_write::strong_if_match_etag(&etag)
-                .with_context(|| format!("R2 list {key} returned an invalid strong ETag"))?;
-            listed.push(R2ListObject { key, size, etag });
+            let version = r2_object_version(&object, &key)?;
+            listed.push(R2ListObject {
+                key,
+                size,
+                etag,
+                version,
+            });
         }
         let truncated = Reflect::get(&result, &JsValue::from_str("truncated"))
             .ok()
@@ -203,6 +1498,7 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
         Ok(Some(R2HeadObject {
             size: size as u64,
             etag,
+            version: r2_object_version(&object, key)?,
         }))
     }
 
@@ -445,6 +1741,114 @@ async fn placement_s3_delete_surface(
 /// `Ok(None)`), so this never matches a 404-equivalent.
 fn is_transient_r2(message: &str) -> bool {
     message.contains("(10001)") || message.contains("Please try again")
+}
+
+/// Streams one R2 snapshot directly into another key in the same binding.
+async fn r2_copy_stream(
+    env: &Env,
+    bucket: &wasm_bindgen::JsValue,
+    source_key: &str,
+    destination_key: &str,
+    expected_size: u64,
+    expected_etag: &str,
+) -> Result<()> {
+    if expected_size == 0 {
+        return crate::hybrid_object::put(env, destination_key, &[]).await;
+    }
+
+    // The final multipart commit is the visible mutation and is serialized
+    // through the destination key's object guard. Parts stream within R2.
+    r2_copy_multipart(
+        env,
+        bucket,
+        source_key,
+        destination_key,
+        expected_size,
+        expected_etag,
+    )
+    .await
+}
+
+/// Copies bounded R2 ranges into a multipart upload without materializing a part in WASM.
+async fn r2_copy_multipart(
+    env: &Env,
+    bucket: &wasm_bindgen::JsValue,
+    source_key: &str,
+    destination_key: &str,
+    expected_size: u64,
+    expected_etag: &str,
+) -> Result<()> {
+    use wasm_bindgen::JsValue;
+
+    const SMALL_PART_BYTES: u64 = 8 * 1024 * 1024;
+    const LARGE_PART_BYTES: u64 = 64 * 1024 * 1024;
+    const LARGE_COPY_THRESHOLD: u64 = 128 * 1024 * 1024;
+
+    let adapter = WorkerR2BucketAdapter {
+        bucket: bucket.clone(),
+    };
+    let upload_id = adapter.create_multipart(destination_key).await?;
+    let part_bytes = if expected_size <= LARGE_COPY_THRESHOLD {
+        SMALL_PART_BYTES
+    } else {
+        LARGE_PART_BYTES
+    };
+
+    let copy: Result<()> = async {
+        let mut offset = 0_u64;
+        let mut parts = Vec::new();
+        while offset < expected_size {
+            let length = (expected_size - offset).min(part_bytes);
+            let object = r2_get_range(bucket, source_key, offset, length)
+                .await?
+                .context("placement copy source range disappeared")?;
+            let etag = js_sys::Reflect::get(&object, &JsValue::from_str("etag"))
+                .ok()
+                .and_then(|value| value.as_string())
+                .context("placement copy source range has no ETag")?;
+            anyhow::ensure!(
+                aos_hub_core::surface_write::strong_if_match_etag(&etag)? == expected_etag,
+                "placement copy source changed between ranges"
+            );
+
+            let body = js_sys::Reflect::get(&object, &JsValue::from_str("body"))
+                .map_err(|error| anyhow::anyhow!("placement copy range body: {error:?}"))?;
+            anyhow::ensure!(
+                !body.is_null() && !body.is_undefined(),
+                "placement copy source range has no stream"
+            );
+            let part_number = u32::try_from(parts.len() + 1)
+                .context("placement copy exceeds R2 multipart part limit")?;
+            let upload = resume_r2_multipart(bucket, destination_key, &upload_id)?;
+            let promise = js_promise(
+                js_method(&upload, "uploadPart")?.call2(
+                    &upload,
+                    &JsValue::from(part_number),
+                    &body,
+                ),
+                destination_key,
+                "uploadPart",
+            )?;
+            let stored = wasm_bindgen_futures::JsFuture::from(promise)
+                .await
+                .map_err(|error| anyhow::anyhow!("R2 copy part {part_number}: {error:?}"))?;
+            let etag = js_sys::Reflect::get(&stored, &JsValue::from_str("etag"))
+                .ok()
+                .and_then(|value| value.as_string())
+                .context("R2 copy part returned no ETag")?;
+            parts.push(PartTag { part_number, etag });
+            offset += length;
+        }
+        crate::hybrid_object::complete(env, destination_key, &upload_id, &parts).await?;
+        Ok(())
+    }
+    .await;
+
+    if copy.is_err() {
+        // Incomplete uploads are otherwise retained by R2 for several days.
+        let _ = adapter.abort_multipart(destination_key, &upload_id).await;
+    }
+    copy
 }
 
 /// Run an R2 `get`, retrying a few times on a transient R2 internal error
@@ -695,118 +2099,264 @@ struct R2SurfaceFetch {
     prefix: String,
 }
 
-#[async_trait(?Send)]
-impl SurfaceFetch for R2SurfaceFetch {
-    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-        let key = keymap::r2_key(&self.prefix, path);
-        self.contract
-            .read_bounded(
-                &key,
-                usize::try_from(aos_hub_core::s3surface::MAX_S3_BUFFERED_OBJECT_BYTES)
-                    .context("R2 buffered-object cap exceeds usize")?,
-            )
-            .await
-    }
+/// Opens the exact R2 snapshot admitted by the Native hybrid origin.
+///
+/// # Errors
+///
+/// Returns an error if the object disappeared, changed version, or R2 failed.
+pub(crate) async fn hybrid_delivery_read(
+    bucket: Bucket,
+    target: &HybridDeliveryTarget,
+    range: Option<(u64, u64)>,
+) -> Result<StreamedRead> {
+    let fetcher = R2SurfaceFetch {
+        contract: R2Contract::new(WorkerR2BucketAdapter {
+            bucket: bucket.as_ref().clone(),
+        }),
+        bucket,
+        prefix: String::new(),
+    };
+    let read = fetcher
+        .fetch_stream(&target.object_key, range)
+        .await?
+        .context("authorized R2 delivery object disappeared")?;
+    anyhow::ensure!(
+        read.total == target.object_size
+            && read.strong_etag.as_deref() == Some(target.object_etag.as_str()),
+        "authorized R2 delivery object changed after Native admission"
+    );
+    Ok(read)
+}
 
-    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
-        anyhow::ensure!(
-            limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
-            "invalid R2 listing page limit"
-        );
-        let listing_prefix = keymap::r2_key(&self.prefix, "");
-        let page = self.contract.list(&listing_prefix, cursor, limit).await?;
-        let mut entries = Vec::with_capacity(page.objects.len());
-        for object in page.objects {
-            if let Some(rel) = keymap::relative_key(&self.prefix, &object.key) {
-                if !rel.is_empty() {
-                    entries.push((
-                        rel,
-                        SurfaceListedEvidence {
-                            size: i64::try_from(object.size)
-                                .context("R2 listed object size exceeds i64")?,
-                            strong_etag: object.etag,
-                        },
-                    ));
-                }
-            }
-        }
-        entries.sort_by(|left, right| left.0.cmp(&right.0));
-        anyhow::ensure!(
-            !entries.windows(2).any(|pair| pair[0].0 == pair[1].0),
-            "R2 listing returned a duplicate relative key"
-        );
-        let paths = entries.iter().map(|(path, _)| path.clone()).collect();
-        let evidence = entries.into_iter().collect();
-        Ok(SurfaceListPage {
-            paths,
-            evidence,
-            next_cursor: page.cursor,
-        })
-    }
+/// Confirms a bodyless HEAD against the exact Native-authorized R2 snapshot.
+///
+/// # Errors
+///
+/// Returns an error if the object disappeared, changed version, or R2 failed.
+pub(crate) async fn hybrid_delivery_head(
+    bucket: Bucket,
+    target: &HybridDeliveryTarget,
+) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    let head = contract
+        .head(&target.object_key)
+        .await?
+        .context("authorized R2 delivery object disappeared")?;
+    anyhow::ensure!(
+        head.size == target.object_size && head.etag == target.object_etag,
+        "authorized R2 delivery object changed after Native admission"
+    );
+    Ok(())
+}
 
-    async fn inventory_evidence_bounded(
-        &self,
-        path: &str,
-        maximum_bytes: u64,
-    ) -> Result<Option<SurfaceObjectEvidence>> {
-        use futures_util::TryStreamExt as _;
+async fn hybrid_s3_delivery_fetcher(
+    env: &Env,
+    target: &HybridDeliveryTarget,
+) -> Result<S3SurfaceFetch> {
+    let binding = target
+        .external_binding
+        .as_ref()
+        .context("external delivery has no binding fence")?;
+    let publication = crate::hybrid_binding::resolve_for_delivery(
+        env,
+        binding.binding_id,
+        binding.binding_resource_version,
+    )
+    .await?;
+    let deployment_id = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let now = aos_hub_core::clock::now_unix_secs();
+    let credential = if publication.snapshot.access_mode == "private" {
+        let reference = publication
+            .snapshot
+            .credentials
+            .iter()
+            .find(|reference| reference.purpose == "read")
+            .context("external delivery binding has no read credential")?;
+        Some(publication.credential_text(
+            &StorageCredentialSelector {
+                purpose: "read".into(),
+                generation: reference.generation,
+            },
+            &deployment_id,
+            now,
+        )?)
+    } else {
+        None
+    };
+    let surface = S3Surface::from_snapshot(
+        &publication.snapshot,
+        &deployment_id,
+        "",
+        credential.as_ref().map(|value| value.as_str()),
+        now,
+    )?;
+    Ok(S3SurfaceFetch {
+        surface,
+        egress: Arc::new(WorkerEgressClient::direct()),
+    })
+}
 
-        // R2 binds the body, size, and ETag to one GET object snapshot. Hashing
-        // that body is stronger and cheaper than issuing separate GETs before
-        // and after it, whose bodies would be discarded merely to read ETags.
-        let Some(read) = self.fetch_stream(path, None).await? else {
-            return Ok(None);
-        };
-        let expected_size = read.total;
-        anyhow::ensure!(
-            expected_size <= maximum_bytes,
-            "R2 object '{path}' declares {expected_size} bytes, exceeding the {maximum_bytes}-byte inventory limit"
-        );
-        let strong_etag = read.strong_etag;
-        let mut stream = read.body.into_data_stream();
-        let mut hasher = Sha256::new();
-        let mut observed_size = 0_u64;
-        while let Some(chunk) = stream.try_next().await? {
-            observed_size = observed_size
-                .checked_add(chunk.len() as u64)
-                .with_context(|| format!("R2 object '{path}' size overflowed"))?;
-            anyhow::ensure!(
-                observed_size <= expected_size && observed_size <= maximum_bytes,
-                "R2 object '{path}' exceeded its bounded inventory length while streaming"
-            );
-            hasher.update(&chunk);
-        }
-        anyhow::ensure!(
-            observed_size == expected_size,
-            "R2 object '{path}' snapshot declared {expected_size} bytes but streamed {observed_size}"
-        );
+/// Opens the exact external object snapshot admitted by the Native origin.
+///
+/// # Errors
+///
+/// Returns an error when the binding, object, size, or strong ETag changed.
+pub(crate) async fn hybrid_s3_delivery_read(
+    env: &Env,
+    target: &HybridDeliveryTarget,
+    range: Option<(u64, u64)>,
+) -> Result<StreamedRead> {
+    let fetcher = hybrid_s3_delivery_fetcher(env, target).await?;
+    let read = fetcher
+        .fetch_stream(&target.object_key, range)
+        .await?
+        .context("authorized S3 delivery object disappeared")?;
+    anyhow::ensure!(
+        read.total == target.object_size
+            && read.strong_etag.as_deref() == Some(target.object_etag.as_str()),
+        "authorized S3 delivery object changed after Native admission"
+    );
+    Ok(read)
+}
 
-        Ok(Some(SurfaceObjectEvidence {
-            sha256: hasher.finalize().into(),
-            size: i64::try_from(observed_size).context("R2 object size exceeds i64")?,
-            strong_etag,
-        }))
-    }
+/// Confirms a bodyless HEAD against the exact Native-authorized external snapshot.
+///
+/// # Errors
+///
+/// Returns an error when the binding, object, size, or strong ETag changed.
+pub(crate) async fn hybrid_s3_delivery_head(
+    env: &Env,
+    target: &HybridDeliveryTarget,
+) -> Result<()> {
+    let fetcher = hybrid_s3_delivery_fetcher(env, target).await?;
+    let head = fetcher
+        .delivery_head(&target.object_key)
+        .await?
+        .context("authorized S3 delivery object disappeared")?;
+    anyhow::ensure!(
+        head.size == target.object_size && head.strong_etag == target.object_etag,
+        "authorized S3 delivery object changed after Native admission"
+    );
+    Ok(())
+}
 
-    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
-        let key = keymap::r2_key(&self.prefix, path);
-        Ok(self.contract.head(&key).await?.map(|object| object.etag))
-    }
+/// Writes one Native-admitted cache body beside the deployment R2 bucket.
+///
+/// # Errors
+///
+/// Returns an error if R2 does not acknowledge the exact object write.
+pub(crate) async fn hybrid_r2_put(bucket: Bucket, object_key: &str, bytes: &[u8]) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.put(object_key, bytes).await
+}
 
-    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
-        let key = keymap::r2_key(&self.prefix, path);
-        self.contract
-            .head(&key)
-            .await?
-            .map(|object| i64::try_from(object.size).context("R2 object size exceeds i64"))
-            .transpose()
-    }
+/// Stages an object body before the guard makes the multipart object visible.
+pub(crate) async fn hybrid_r2_create_multipart(bucket: Bucket, object_key: &str) -> Result<String> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.create_multipart(object_key).await
+}
 
-    async fn fetch_stream(
+/// Aborts a staged body after the guarded completion fails.
+pub(crate) async fn hybrid_r2_abort_multipart(
+    bucket: Bucket,
+    object_key: &str,
+    upload_id: &str,
+) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.abort_multipart(object_key, upload_id).await?;
+    Ok(())
+}
+
+/// Reads provider identity for an object-scoped hybrid delete guard.
+pub(crate) async fn hybrid_r2_head(
+    bucket: Bucket,
+    object_key: &str,
+) -> Result<Option<crate::r2_adapter::R2HeadObject>> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.head(object_key).await
+}
+
+/// Deletes a key while its object-scoped guard holds the mutation turn.
+pub(crate) async fn hybrid_r2_delete(bucket: Bucket, object_key: &str) -> Result<()> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract.delete(object_key).await
+}
+
+/// Completes a multipart write while its object-scoped guard holds the turn.
+pub(crate) async fn hybrid_r2_complete(
+    bucket: Bucket,
+    object_key: &str,
+    upload_id: &str,
+    parts: &[PartTag],
+) -> Result<String> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract
+        .complete_multipart(object_key, upload_id, parts)
+        .await
+}
+
+/// Writes one SQL-admitted multipart part directly into deployment R2.
+///
+/// # Errors
+///
+/// Returns an error if the provider rejects the upload identity or part body.
+pub(crate) async fn hybrid_r2_upload_part(
+    bucket: Bucket,
+    object_key: &str,
+    upload_id: &str,
+    part_number: u32,
+    bytes: &[u8],
+) -> Result<String> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    Ok(contract
+        .upload_part(object_key, upload_id, part_number, bytes)
+        .await?
+        .etag)
+}
+
+/// Reads a Git pack beside R2 for semantic pack-index validation.
+///
+/// # Errors
+///
+/// Returns an error when the companion is absent, oversized, or unreadable.
+pub(crate) async fn hybrid_publication_companion_pack(
+    bucket: Bucket,
+    object_key: &str,
+) -> Result<Vec<u8>> {
+    let contract = R2Contract::new(WorkerR2BucketAdapter {
+        bucket: bucket.as_ref().clone(),
+    });
+    contract
+        .read_bounded(
+            object_key,
+            aos_registry_surface::pack_index::MAX_PUBLISHED_PACK_BYTES as usize,
+        )
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("publication companion pack is absent"))
+}
+
+impl R2SurfaceFetch {
+    async fn fetch_snapshot(
         &self,
         path: &str,
         range: Option<(u64, u64)>,
-    ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
+    ) -> Result<Option<(aos_hub_core::fetch::StreamedRead, String)>> {
         use futures_util::StreamExt as _;
 
         let key = keymap::r2_key(&self.prefix, path);
@@ -832,6 +2382,7 @@ impl SurfaceFetch for R2SurfaceFetch {
         let Some(object) = object else {
             return Ok(None);
         };
+        let provider_version = r2_object_version(&object, &key)?;
         let total_value = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("size"))
             .ok()
             .and_then(|value| value.as_f64())
@@ -854,8 +2405,9 @@ impl SurfaceFetch for R2SurfaceFetch {
         let strong_etag = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("etag"))
             .ok()
             .and_then(|value| value.as_string())
-            .map(|value| value.trim().to_string())
-            .filter(|value| aos_hub_core::surface_write::strong_if_match_etag(value).is_ok());
+            .map(|value| aos_hub_core::surface_write::strong_if_match_etag(&value))
+            .transpose()
+            .with_context(|| format!("R2 get {key} returned an invalid strong ETag"))?;
         let body_js = js_sys::Reflect::get(&object, &wasm_bindgen::JsValue::from_str("body"))
             .unwrap_or(wasm_bindgen::JsValue::UNDEFINED);
         if body_js.is_null() || body_js.is_undefined() {
@@ -863,13 +2415,16 @@ impl SurfaceFetch for R2SurfaceFetch {
             // over — serve a whole-object empty body (`range: None`) regardless of
             // what was requested, so `cache_serve` emits `Content-Length: 0`
             // rather than a positive length against an empty body.
-            return Ok(Some(aos_hub_core::fetch::StreamedRead {
-                body: axum::body::Body::empty(),
-                total,
-                range: None,
-                strong_etag,
-                snapshot_lease_id: None,
-            }));
+            return Ok(Some((
+                aos_hub_core::fetch::StreamedRead {
+                    body: axum::body::Body::empty(),
+                    total,
+                    range: None,
+                    strong_etag,
+                    snapshot_lease_id: None,
+                },
+                provider_version,
+            )));
         }
         let stream = r2_body_stream(body_js)?;
         // Bound a ranged R2 body to the exact requested length. The R2 read
@@ -919,13 +2474,200 @@ impl SurfaceFetch for R2SurfaceFetch {
         // Worker), so the *same* `StreamedRead` the native file path returns
         // flows through the shared `cache_serve` and the streaming bridge.
         let body = axum::body::Body::from_stream(send_wrapper::SendWrapper::new(trimmed));
-        Ok(Some(aos_hub_core::fetch::StreamedRead {
-            body,
-            total,
-            range: served,
+        Ok(Some((
+            aos_hub_core::fetch::StreamedRead {
+                body,
+                total,
+                range: served,
+                strong_etag,
+                snapshot_lease_id: None,
+            },
+            provider_version,
+        )))
+    }
+}
+
+#[async_trait(?Send)]
+impl SurfaceFetch for R2SurfaceFetch {
+    async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .read_bounded(
+                &key,
+                usize::try_from(aos_hub_core::s3surface::MAX_S3_BUFFERED_OBJECT_BYTES)
+                    .context("R2 buffered-object cap exceeds usize")?,
+            )
+            .await
+    }
+
+    async fn list_page(&self, cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        anyhow::ensure!(
+            limit > 0 && limit <= aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS,
+            "invalid R2 listing page limit"
+        );
+        let listing_prefix = keymap::r2_key(&self.prefix, "");
+        let page = self.contract.list(&listing_prefix, cursor, limit).await?;
+        let mut entries = Vec::with_capacity(page.objects.len());
+        for object in page.objects {
+            if let Some(rel) = keymap::relative_key(&self.prefix, &object.key) {
+                if !rel.is_empty() {
+                    entries.push((
+                        rel,
+                        SurfaceListedEvidence {
+                            size: i64::try_from(object.size)
+                                .context("R2 listed object size exceeds i64")?,
+                            strong_etag: object.etag,
+                            provider_version: Some(object.version),
+                        },
+                    ));
+                }
+            }
+        }
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        anyhow::ensure!(
+            !entries.windows(2).any(|pair| pair[0].0 == pair[1].0),
+            "R2 listing returned a duplicate relative key"
+        );
+        let paths = entries.iter().map(|(path, _)| path.clone()).collect();
+        let evidence = entries.into_iter().collect();
+        Ok(SurfaceListPage {
+            paths,
+            evidence,
+            next_cursor: page.cursor,
+        })
+    }
+
+    async fn inventory_evidence_bounded(
+        &self,
+        path: &str,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        use futures_util::TryStreamExt as _;
+
+        // R2 binds the body, size, and ETag to one GET object snapshot. Hashing
+        // that body is stronger and cheaper than issuing separate GETs before
+        // and after it, whose bodies would be discarded merely to read ETags.
+        let Some((read, provider_version)) = self.fetch_snapshot(path, None).await? else {
+            return Ok(None);
+        };
+        let expected_size = read.total;
+        anyhow::ensure!(
+            expected_size <= maximum_bytes,
+            "R2 object '{path}' declares {expected_size} bytes, exceeding the {maximum_bytes}-byte inventory limit"
+        );
+        let strong_etag = read.strong_etag;
+        let mut stream = read.body.into_data_stream();
+        let mut hasher = Sha256::new();
+        let mut observed_size = 0_u64;
+        while let Some(chunk) = stream.try_next().await? {
+            observed_size = observed_size
+                .checked_add(chunk.len() as u64)
+                .with_context(|| format!("R2 object '{path}' size overflowed"))?;
+            anyhow::ensure!(
+                observed_size <= expected_size && observed_size <= maximum_bytes,
+                "R2 object '{path}' exceeded its bounded inventory length while streaming"
+            );
+            hasher.update(&chunk);
+        }
+        anyhow::ensure!(
+            observed_size == expected_size,
+            "R2 object '{path}' snapshot declared {expected_size} bytes but streamed {observed_size}"
+        );
+
+        Ok(Some(SurfaceObjectEvidence {
+            sha256: hasher.finalize().into(),
+            size: i64::try_from(observed_size).context("R2 object size exceeds i64")?,
             strong_etag,
-            snapshot_lease_id: None,
+            provider_version: Some(provider_version),
         }))
+    }
+
+    async fn inventory_head(&self, path: &str) -> Result<Option<SurfaceInventoryHead>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .head(&key)
+            .await?
+            .map(|head| {
+                Ok(SurfaceInventoryHead {
+                    size: i64::try_from(head.size).context("R2 object size exceeds i64")?,
+                    strong_etag: Some(head.etag),
+                    provider_version: Some(head.version),
+                })
+            })
+            .transpose()
+    }
+
+    async fn inventory_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+    ) -> Result<Option<SurfaceInventoryChunk>> {
+        use futures_util::TryStreamExt as _;
+
+        anyhow::ensure!(
+            maximum_bytes > 0 && offset < expected_total,
+            "invalid R2 inventory range"
+        );
+        let length = maximum_bytes.min(expected_total - offset);
+        let end = offset + length - 1;
+        let Some((read, provider_version)) = self.fetch_snapshot(path, Some((offset, end))).await?
+        else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            read.total == expected_total && read.range == Some((offset, end)),
+            "R2 inventory range changed size or range"
+        );
+        let strong_etag = read
+            .strong_etag
+            .context("R2 inventory range has no strong ETag")?;
+        let mut bytes = Vec::new();
+        let mut stream = read.body.into_data_stream();
+        while let Some(chunk) = stream.try_next().await? {
+            anyhow::ensure!(
+                (bytes.len() as u64).saturating_add(chunk.len() as u64) <= length,
+                "R2 inventory range exceeded its bound"
+            );
+            bytes.extend_from_slice(&chunk);
+        }
+        anyhow::ensure!(
+            bytes.len() as u64 == length,
+            "R2 inventory range was truncated"
+        );
+        Ok(Some(SurfaceInventoryChunk {
+            bytes,
+            total: read.total,
+            range: (offset, end),
+            strong_etag,
+            provider_version: Some(provider_version),
+        }))
+    }
+
+    async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        Ok(self.contract.head(&key).await?.map(|object| object.etag))
+    }
+
+    async fn inventory_size(&self, path: &str) -> Result<Option<i64>> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract
+            .head(&key)
+            .await?
+            .map(|object| i64::try_from(object.size).context("R2 object size exceeds i64"))
+            .transpose()
+    }
+
+    async fn fetch_stream(
+        &self,
+        path: &str,
+        range: Option<(u64, u64)>,
+    ) -> Result<Option<StreamedRead>> {
+        Ok(self
+            .fetch_snapshot(path, range)
+            .await?
+            .map(|(read, _)| read))
     }
 
     async fn size(&self, path: &str) -> Result<Option<u64>> {
@@ -955,6 +2697,34 @@ struct S3SurfaceFetch {
 
 #[async_trait(?Send)]
 impl SurfaceFetch for S3SurfaceFetch {
+    async fn delivery_head(&self, path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+        let now = aos_hub_core::clock::now_unix_secs();
+        let url = self.surface.object_url(S3Method::Head, path, now)?;
+        let response = self
+            .egress
+            .send(&url, "HEAD", None, None, None, None, None)
+            .await
+            .map_err(|error| anyhow::anyhow!("s3 delivery HEAD: {error}"))?;
+        if response.status_code() == 404 {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            response.status_code() == 200,
+            "s3 delivery HEAD returned HTTP {}",
+            response.status_code()
+        );
+        let headers = response.headers();
+        let size = headers
+            .get("content-length")?
+            .context("s3 delivery HEAD omitted Content-Length")?
+            .parse::<u64>()?;
+        let strong_etag = headers
+            .get("etag")?
+            .context("s3 delivery HEAD omitted ETag")?;
+        aos_hub_core::surface_write::strong_if_match_etag(&strong_etag)?;
+        Ok(Some(SurfaceDeliveryHead { size, strong_etag }))
+    }
+
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
         let now = aos_hub_core::clock::now_unix_secs();
         let url = self.surface.object_url(S3Method::Get, path, now)?;
@@ -1631,6 +3401,11 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             &JsValue::from_str("etag"),
             &JsValue::from_str("fixture-etag"),
         );
+        let _ = Reflect::set(
+            &listed,
+            &JsValue::from_str("version"),
+            &JsValue::from_str("fixture-upload-version"),
+        );
         let objects = Array::new();
         objects.push(&listed);
         let _ = Reflect::set(&object, &JsValue::from_str("objects"), &objects);
@@ -1659,6 +3434,11 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
             &object,
             &JsValue::from_str("etag"),
             &JsValue::from_str("fixture-etag"),
+        );
+        let _ = Reflect::set(
+            &object,
+            &JsValue::from_str("version"),
+            &JsValue::from_str("fixture-upload-version"),
         );
         Promise::resolve(&object).into()
     }) as Box<dyn FnMut(JsValue) -> JsValue>);
@@ -1801,6 +3581,7 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
                 key: "fixture/object".into(),
                 size: 3,
                 etag: "\"fixture-etag\"".into(),
+                version: "fixture-upload-version".into(),
             }]
             && first_page.cursor.as_deref() == Some("cursor-2"),
         "R2 first list response shape did not round-trip: objects={:?}, cursor={:?}",
@@ -1814,6 +3595,7 @@ pub(crate) async fn e2e_assert_r2_js_shape() -> Result<()> {
                 key: "fixture/object".into(),
                 size: 3,
                 etag: "\"fixture-etag\"".into(),
+                version: "fixture-upload-version".into(),
             }]
             && page.cursor.as_deref() == Some("cursor-2"),
         "R2 list response shape did not round-trip"

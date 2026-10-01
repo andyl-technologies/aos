@@ -19,6 +19,7 @@
           channelReceiptKeyId = "hub-channel-v1";
           credentials = {
             jwtSecret = "hub-jwt";
+            instanceSecretKey = "hub-instance-key";
             domainProbeSignerManifest = "hub-probe-signers";
             routeReservationKeys = "hub-route-keys";
             cloudflareApiToken = "hub-cloudflare-token";
@@ -56,6 +57,8 @@
   contract = assert lib.hasInfix "127.0.0.1:18420" service.ExecStart;
   assert lib.hasInfix "--reindex-interval 15" service.ExecStart;
   assert lib.elem "jwt-secret:/run/credentials/@system/hub-jwt" service.LoadCredential;
+  assert lib.elem "instance-secret-key:/run/credentials/@system/hub-instance-key" service.LoadCredential;
+  assert lib.elem "AOS_HUB_SECRET_KEY_FILE=/run/credentials/aos-hub.service/instance-secret-key" service.Environment;
   assert lib.elem "domain-probe-signers:/run/credentials/@system/hub-probe-signers" service.LoadCredential;
   assert lib.elem "route-reservation-keys:/run/credentials/@system/hub-route-keys" service.LoadCredential;
   assert lib.elem "cloudflare-api-token:/run/credentials/@system/hub-cloudflare-token" service.LoadCredential;

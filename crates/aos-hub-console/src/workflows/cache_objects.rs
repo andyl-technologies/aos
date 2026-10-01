@@ -11,6 +11,8 @@ use leptos::task::spawn_local;
 use crate::components::{HashValue, HelpTooltip, InlineError, StatusBadge};
 use crate::transport::ApiClient;
 
+pub(crate) mod direct;
+
 /// Renders cache search and exact object/closure inspection.
 #[component]
 pub(super) fn CacheObjects(client: ApiClient, cache_id: String) -> impl IntoView {
@@ -80,6 +82,18 @@ async fn upload_cache_file(
     path: String,
     file: leptos::web_sys::File,
 ) -> Result<String, String> {
+    let target = aos_proto_types::direct_upload::DirectCapabilitiesTarget::Cache {
+        cache_id: cache_id.clone(),
+    };
+    let capabilities = client.discover_cache_upload(&target).await.map_err(|_| {
+        "Authenticated upload discovery failed; no file bytes were sent".to_string()
+    })?;
+    if let Some(capabilities) = capabilities {
+        return direct::upload(client, capabilities, path, file).await;
+    }
+    // Positive legacy policy is rechecked for each actual captured upload token;
+    // shared session refresh cannot switch this body path to a required actor.
+    let client = client.for_legacy_upload();
     let byte_size = file.size() as u64;
     let admission = client
         .call::<_, aos_proto_types::CreateCacheObjectUploadsResponse>(

@@ -39,7 +39,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
+    hash = "sha256-bFrGLJz08aNxlYogCpbDOy9Oh7uFIcLXm4lMe5Ce9no=";
   };
 in
   mkCargoPackage {

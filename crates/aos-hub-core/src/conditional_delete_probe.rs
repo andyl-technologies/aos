@@ -70,8 +70,7 @@ impl ConditionalDeleteProbeController {
                 .await?
                 .context("due conditional-delete placement disappeared")?;
             anyhow::ensure!(
-                placement.registry_id == Some(frozen.registry_id)
-                    && placement.name == frozen.placement_name
+                placement.name == frozen.placement_name
                     && placement.resource_version == frozen.placement_resource_version
                     && placement.write_spec_version == frozen.placement_write_spec_version
                     && placement.observation_version == Some(frozen.placement_observation_version)
@@ -135,20 +134,6 @@ impl ConditionalDeleteProbeController {
         let capability_fingerprint = capability_fingerprint(&binding.kind, binding_write_revision);
         let expected_resource_version = existing.map(|capability| capability.resource_version);
 
-        if binding.kind == "deployment_r2" {
-            self.record(
-                &binding,
-                binding_write_revision,
-                None,
-                None,
-                capability_fingerprint,
-                "invalid",
-                expected_resource_version,
-                now,
-            )
-            .await?;
-            return Ok(());
-        }
         if matches!(binding.kind.as_str(), "s3" | "r2") && delete_credential.is_none() {
             self.record(
                 &binding,
@@ -174,10 +159,28 @@ impl ConditionalDeleteProbeController {
             .writes
             .placement_writer_at_revision(placement, &revision)
             .await?;
-        let deleter = self
+        let deleter = match self
             .writes
             .placement_deleter(placement, binding.resource_version, generation.unwrap_or(1))
-            .await?;
+            .await
+        {
+            Ok(deleter) => deleter,
+            Err(_) if binding.kind == "deployment_r2" => {
+                self.record(
+                    &binding,
+                    binding_write_revision,
+                    None,
+                    None,
+                    capability_fingerprint,
+                    "invalid",
+                    expected_resource_version,
+                    now,
+                )
+                .await?;
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         let key = format!(
             ".aos-internal/conditional-delete-probes/{}-{}",
             binding.id, binding_write_revision
@@ -271,9 +274,24 @@ async fn probe_schedule(
     let result: Result<ProbeState> = async {
         writer.write(key, &first).await?;
         let first_evidence = exact_evidence(fetch, key, &first).await?;
+        if deleter.conditional_delete_requires_provider_version()
+            && first_evidence.provider_version.as_deref().is_none_or(|version| version == "null")
+        {
+            return Ok(ProbeState::Invalid);
+        }
+
         writer.write(key, &second).await?;
+        let second_evidence = exact_evidence(fetch, key, &second).await?;
+        let mut negative_precondition = precondition(&first_evidence);
+        if second_evidence.provider_version.is_some() {
+            // Exercise If-Match against the actual current version, rather
+            // than deleting an older version selected by versionId. The old
+            // ETag deliberately differs on this service-reserved probe key.
+            negative_precondition.expected_provider_version =
+                second_evidence.provider_version.clone();
+        }
         match deleter
-            .delete_if_matches(key, &precondition(&first_evidence))
+            .delete_if_matches(key, &negative_precondition)
             .await?
         {
             SurfaceDeleteOutcome::PreconditionFailed { .. } => {}
@@ -306,6 +324,38 @@ async fn probe_schedule(
         };
         if !exact_delete_confirmed {
             return Ok(ProbeState::Invalid);
+        }
+        if first_evidence.provider_version.is_some()
+            && first_evidence.provider_version != second_evidence.provider_version
+            && fetch.size(key).await?.is_some()
+        {
+            // Deleting the current version can expose our first probe version.
+            // Remove only that independently verified original; an unrelated
+            // replacement cannot authorize cleanup or provider qualification.
+            let exposed = exact_evidence(fetch, key, &first).await?;
+            if exposed != first_evidence {
+                return Ok(ProbeState::Invalid);
+            }
+            let first_precondition = precondition(&first_evidence);
+            let cleanup = deleter.delete_if_matches(key, &first_precondition).await?;
+            let acknowledged = match cleanup {
+                SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { etag } => {
+                    first_precondition.etag.as_deref() == Some(etag.as_str())
+                }
+                SurfaceDeleteOutcome::Deleted {
+                    etag,
+                    content_hash,
+                    size,
+                } => {
+                    etag == first_precondition.etag
+                        && content_hash == first_precondition.content_hash
+                        && size == first_precondition.size
+                }
+                _ => false,
+            };
+            if !acknowledged {
+                return Ok(ProbeState::Invalid);
+            }
         }
         if fetch.size(key).await?.is_some() {
             return Ok(ProbeState::Invalid);
@@ -368,6 +418,7 @@ async fn exact_evidence(
 
 fn precondition(evidence: &crate::fetch::SurfaceObjectEvidence) -> SurfaceDeletePrecondition {
     SurfaceDeletePrecondition {
+        expected_provider_version: evidence.provider_version.clone(),
         etag: evidence.strong_etag.clone(),
         content_hash: Some(format!("sha256:{}", hex::encode(evidence.sha256))),
         size: Some(evidence.size),
@@ -418,6 +469,7 @@ mod tests {
         ) -> Result<Option<crate::fetch::SurfaceObjectEvidence>> {
             Ok(self.objects.lock().unwrap().get(path).map(|bytes| {
                 crate::fetch::SurfaceObjectEvidence {
+                    provider_version: None,
                     sha256: Sha256::digest(bytes).into(),
                     size: bytes.len() as i64,
                     strong_etag: Some(format!("\"{}\"", hex::encode(Sha256::digest(bytes)))),
@@ -527,3 +579,6 @@ mod tests {
         assert_eq!(*persisted.lock().unwrap(), ProbeState::Invalid);
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod versioned_tests;

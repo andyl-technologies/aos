@@ -75,6 +75,8 @@
 compile_error!("the aos-hub test-support feature must never be enabled in a release build");
 
 pub mod auth;
+pub mod authority_journal;
+pub mod authority_server;
 pub mod cloudflare;
 /// Config change-set staging/revert, re-exported from
 /// [`aos_hub_core::config`] (RFC-0004 Phase 5); keeps `crate::config::…` stable.
@@ -87,6 +89,10 @@ pub use aos_hub_core::crawl;
 /// [`aos_hub_core::fetch::SurfaceProvider`]); RFC-0004 Phase 5.
 pub mod coreports;
 pub mod db;
+/// Bounded signed Native logical direct-upload transport.
+pub mod direct_upload;
+/// Independent measured direct-upload review preparation and explicit signing.
+pub mod direct_upload_review;
 pub mod egress_gateway;
 /// The tenancy/IAM domain model, re-exported from [`aos_hub_core::domain`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
@@ -104,10 +110,14 @@ pub mod mirror;
 pub mod nar_verification;
 pub mod narlist;
 pub mod native_tls;
+pub mod provider_conformance;
 pub mod ratelimit;
 pub mod seed;
 pub mod server;
 pub mod signing;
+
+pub mod snapshot;
+pub mod storage_work;
 /// The cache-stack node model, re-exported from [`aos_hub_core::stack`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::stack::…` stable.
 pub use aos_hub_core::stack;

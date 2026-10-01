@@ -67,6 +67,8 @@ const OBJECT_FETCH_CONCURRENCY: usize = 32;
 /// Maximum bundle shards hydrated concurrently before an index walk.
 const BUNDLE_FETCH_CONCURRENCY: usize = 32;
 
+type SelectedTreeEntries = BTreeMap<String, object::TreeEntry>;
+
 /// Reads loose objects through a [`SurfaceFetch`], verifying each object's
 /// content hash against the oid it was requested by.
 pub struct ObjectReader<'a> {
@@ -81,6 +83,9 @@ pub struct ObjectReader<'a> {
     // verified head parse can safely serve historical walks in this index pass.
     package_cache: Mutex<BTreeMap<Oid, PackageToml>>,
     store_entry_cache: Mutex<BTreeMap<Oid, StoreEntry>>,
+    // A verified immutable tree and exact predicate can be reused within this
+    // index pass without retaining the source tree or widening the selection.
+    tree_projection_cache: Mutex<BTreeMap<(Oid, Vec<String>), SelectedTreeEntries>>,
     // Bundle framing is cheap to validate, but inflating and hash-checking every
     // entry eagerly makes preload CPU scale with all published objects rather
     // than the objects reached by this generation. Retain canonical loose bytes
@@ -101,6 +106,7 @@ impl<'a> ObjectReader<'a> {
             cache: Mutex::new(BTreeMap::new()),
             package_cache: Mutex::new(BTreeMap::new()),
             store_entry_cache: Mutex::new(BTreeMap::new()),
+            tree_projection_cache: Mutex::new(BTreeMap::new()),
             bundled_loose: Mutex::new(BTreeMap::new()),
             attempted_bundles: Mutex::new(BTreeSet::new()),
             bundle_gates: Mutex::new(BTreeMap::new()),
@@ -118,6 +124,23 @@ impl<'a> ObjectReader<'a> {
     /// to inflate, or hashes to a different oid.
     pub async fn read(&self, oid: Oid) -> Result<(ObjectKind, Vec<u8>)> {
         if let Some(decoded) = self.cached(oid)? {
+            return Ok(decoded);
+        }
+
+        if self.fetch.storage_local_git_inspection() {
+            let decoded = self
+                .fetch
+                .inspect_git_object(oid)
+                .await?
+                .with_context(|| format!("Git object {oid} is missing from the surface"))?;
+            anyhow::ensure!(
+                object::hash_object(decoded.0, &decoded.1) == oid,
+                "storage-local Git projection does not match {oid}"
+            );
+            self.cache
+                .lock()
+                .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+                .insert(oid, decoded.clone());
             return Ok(decoded);
         }
 
@@ -155,6 +178,52 @@ impl<'a> ObjectReader<'a> {
             .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
             .insert(oid, decoded.clone());
         Ok(decoded)
+    }
+
+    /// Loads known Git objects in bounded storage-local batches.
+    ///
+    /// Local runtimes retain their existing bundle preload and read path.
+    /// Every remote projection is rehashed before it enters the object cache.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when any requested object is absent, malformed, or
+    /// changes identity across the storage boundary.
+    pub async fn preload_objects(&self, oids: &[Oid]) -> Result<()> {
+        if !self.fetch.storage_local_git_inspection() {
+            return Ok(());
+        }
+        let mut missing = Vec::new();
+        for oid in oids {
+            if self.cached(*oid)?.is_none() {
+                missing.push(*oid);
+            }
+        }
+        missing.sort_unstable();
+        missing.dedup();
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        let projections = self.fetch.inspect_git_objects(&missing).await?;
+        anyhow::ensure!(
+            projections.len() == missing.len(),
+            "storage-local Git inspection returned an incomplete batch"
+        );
+        let mut verified = Vec::with_capacity(missing.len());
+        for (oid, projection) in missing.into_iter().zip(projections) {
+            let decoded = projection.with_context(|| format!("Git object {oid} is missing"))?;
+            anyhow::ensure!(
+                object::hash_object(decoded.0, &decoded.1) == oid,
+                "storage-local Git projection does not match {oid}"
+            );
+            verified.push((oid, decoded));
+        }
+        self.cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry object cache lock is poisoned"))?
+            .extend(verified);
+        Ok(())
     }
 
     fn cached(&self, oid: Oid) -> Result<Option<(ObjectKind, Vec<u8>)>> {
@@ -247,6 +316,9 @@ impl<'a> ObjectReader<'a> {
     /// Returns an error when a shard transport fails. Missing or invalid
     /// optional bundles retain canonical loose-object fallback.
     pub(crate) async fn preload_bundles(&self) -> Result<()> {
+        if self.fetch.storage_local_git_inspection() {
+            return Ok(());
+        }
         if self.load_aggregate_bundle().await? {
             return Ok(());
         }
@@ -395,6 +467,76 @@ impl<'a> ObjectReader<'a> {
         let content = self.read_kind(oid, ObjectKind::Commit).await?;
         object::parse_commit(&content)
     }
+
+    /// Reads only exact selected fields from a verified tree.
+    ///
+    /// Hybrid never transfers the source tree through this path. Local modes
+    /// retain bundle/object memoization and apply the same bounded projector.
+    async fn read_selected_tree(&self, oid: Oid, names: &[String]) -> Result<SelectedTreeEntries> {
+        use crate::tree_projection::{self, MAX_TREE_SELECTION_NAMES};
+
+        tree_projection::validate_request(&oid.to_hex(), names, None)?;
+        let key = (oid, names.to_vec());
+        if let Some(entries) = self
+            .tree_projection_cache
+            .lock()
+            .map_err(|_| anyhow::anyhow!("registry tree projection cache lock is poisoned"))?
+            .get(&key)
+            .cloned()
+        {
+            return Ok(entries);
+        }
+        let local = if self.fetch.storage_local_tree_projection() {
+            None
+        } else {
+            let content = self.read_kind(oid, ObjectKind::Tree).await?;
+            let source = hex::encode(sha2::Sha256::digest(&content));
+            Some((content, source))
+        };
+        let mut cursor = None;
+        let mut entries = BTreeMap::new();
+        for _ in 0..MAX_TREE_SELECTION_NAMES {
+            let page = match &local {
+                Some((content, source)) => tree_projection::project_tree(
+                    &oid.to_hex(),
+                    content,
+                    names,
+                    cursor.as_ref(),
+                    source,
+                )?,
+                None => self
+                    .fetch
+                    .inspect_git_tree_entries(oid, names, cursor.as_ref())
+                    .await?
+                    .context("selected registry tree is absent")?,
+            };
+            page.validate(
+                &oid.to_hex(),
+                names,
+                cursor.as_ref(),
+                &page.source_commitment,
+            )?;
+            for entry in &page.entries {
+                anyhow::ensure!(
+                    entries
+                        .insert(entry.name.clone(), entry.tree_entry()?)
+                        .is_none(),
+                    "tree projection repeated an entry across pages"
+                );
+            }
+            cursor = page.next_cursor;
+            if cursor.is_none() {
+                self.tree_projection_cache
+                    .lock()
+                    .map_err(|_| {
+                        anyhow::anyhow!("registry tree projection cache lock is poisoned")
+                    })?
+                    .insert(key, entries.clone());
+                return Ok(entries);
+            }
+        }
+        bail!("tree projection exceeded its bounded page count")
+    }
 }
 
 /// The committed registry files loaded from one verified commit.
@@ -472,7 +614,13 @@ async fn load_registry_tree_inner(
     include_governance: bool,
 ) -> Result<LoadedTree> {
     let commit = reader.read_commit(commit_oid).await?;
-    let root_tree = object::tree_map(&reader.read_kind(commit.tree, ObjectKind::Tree).await?)?;
+    let mut names = vec!["containers", "packages", "registry.toml", store::STORE_DIR];
+    if include_governance {
+        names.extend(["closures", "keys.toml"]);
+    }
+    names.sort_unstable();
+    let names = names.into_iter().map(str::to_string).collect::<Vec<_>>();
+    let root_tree = reader.read_selected_tree(commit.tree, &names).await?;
 
     let root_toml = match root_tree.get("registry.toml") {
         Some(entry) => read_utf8_blob(&reader, entry.oid, "registry.toml").await?,
@@ -502,6 +650,8 @@ async fn load_registry_tree_inner(
             .collect::<Vec<_>>();
         let mut bucket_files = Vec::with_capacity(bucket_entries.len());
         for batch in bucket_entries.chunks(OBJECT_FETCH_CONCURRENCY) {
+            let oids = batch.iter().map(|bucket| bucket.oid).collect::<Vec<_>>();
+            reader.preload_objects(&oids).await?;
             bucket_files.extend(
                 try_join_all(batch.iter().map(|bucket| async {
                     object::tree_map(&reader.read_kind(bucket.oid, ObjectKind::Tree).await?)
@@ -520,6 +670,8 @@ async fn load_registry_tree_inner(
         );
         packages.reserve(files.len());
         for batch in files.chunks(OBJECT_FETCH_CONCURRENCY) {
+            let oids = batch.iter().map(|file| file.oid).collect::<Vec<_>>();
+            reader.preload_objects(&oids).await?;
             packages.extend(
                 try_join_all(
                     batch
@@ -538,20 +690,28 @@ async fn load_registry_tree_inner(
                 .read_kind(closures_entry.oid, ObjectKind::Tree)
                 .await?,
         )?;
-        for file in files.values().filter(|e| !e.is_tree()) {
-            let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
-            // Adjacency list: every line is "<hash> [<dep-hash>…]"; the file
-            // is named after its root hash but carries the whole closure.
-            for line in content.lines().filter(|l| !l.trim().is_empty()) {
-                if closures.len() >= MAX_CLOSURE_ENTRIES {
-                    bail!(
-                        "registry tree exceeds the {MAX_CLOSURE_ENTRIES}-entry closure \
-                         cap; aborting index"
-                    );
-                }
-                let mut parts = line.split_whitespace().map(str::to_string);
-                if let Some(head) = parts.next() {
-                    closures.entry(head).or_insert_with(|| parts.collect());
+        let closure_files = files
+            .values()
+            .filter(|entry| !entry.is_tree())
+            .collect::<Vec<_>>();
+        for batch in closure_files.chunks(OBJECT_FETCH_CONCURRENCY) {
+            let oids = batch.iter().map(|file| file.oid).collect::<Vec<_>>();
+            reader.preload_objects(&oids).await?;
+            for file in batch {
+                let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
+                // Adjacency list: every line is "<hash> [<dep-hash>…]"; the file
+                // is named after its root hash but carries the whole closure.
+                for line in content.lines().filter(|l| !l.trim().is_empty()) {
+                    if closures.len() >= MAX_CLOSURE_ENTRIES {
+                        bail!(
+                            "registry tree exceeds the {MAX_CLOSURE_ENTRIES}-entry closure \
+                             cap; aborting index"
+                        );
+                    }
+                    let mut parts = line.split_whitespace().map(str::to_string);
+                    if let Some(head) = parts.next() {
+                        closures.entry(head).or_insert_with(|| parts.collect());
+                    }
                 }
             }
         }
@@ -584,11 +744,9 @@ async fn load_container_release(
         containers_entry.is_tree(),
         "committed containers entry is not a tree"
     );
-    let containers = object::tree_map(
-        &reader
-            .read_kind(containers_entry.oid, ObjectKind::Tree)
-            .await?,
-    )?;
+    let containers = reader
+        .read_selected_tree(containers_entry.oid, &["v1".into()])
+        .await?;
     let Some(version_entry) = containers.get("v1") else {
         return Ok(None);
     };
@@ -596,11 +754,9 @@ async fn load_container_release(
         version_entry.is_tree(),
         "committed containers/v1 entry is not a tree"
     );
-    let version = object::tree_map(
-        &reader
-            .read_kind(version_entry.oid, ObjectKind::Tree)
-            .await?,
-    )?;
+    let version = reader
+        .read_selected_tree(version_entry.oid, &["index.json".into()])
+        .await?;
     let Some(index_entry) = version.get("index.json") else {
         return Ok(None);
     };
@@ -890,6 +1046,17 @@ async fn load_package_store_records(
     let required_shards = required_shards.into_iter().collect::<Vec<_>>();
     let mut shard_files = BTreeMap::new();
     for batch in required_shards.chunks(OBJECT_FETCH_CONCURRENCY) {
+        let shard_oids = batch
+            .iter()
+            .map(|name| {
+                let entry = shards
+                    .get(name)
+                    .with_context(|| format!("signed store graph has no shard '{name}'"))?;
+                anyhow::ensure!(entry.is_tree(), "signed store shard '{name}' is not a tree");
+                Ok::<_, anyhow::Error>(entry.oid)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        reader.preload_objects(&shard_oids).await?;
         let shards = &shards;
         shard_files.extend(
             try_join_all(batch.iter().cloned().map(|shard_name| async move {
@@ -913,6 +1080,26 @@ async fn load_package_store_records(
     let mut entries = BTreeMap::new();
     for batch in required.chunks(OBJECT_FETCH_CONCURRENCY) {
         let shard_files = &shard_files;
+        let record_oids = batch
+            .iter()
+            .map(|hash| {
+                let shard_name = store::shard(hash)
+                    .with_context(|| format!("invalid package store-path hash '{hash}'"))?;
+                let files = shard_files
+                    .get(shard_name)
+                    .context("loaded store shard disappeared")?;
+                let file = files
+                    .get(hash)
+                    .with_context(|| format!("signed store graph has no record for '{hash}'"))?;
+                anyhow::ensure!(
+                    !file.is_tree(),
+                    "committed store record '{}' is unexpectedly a tree",
+                    file.name
+                );
+                Ok::<_, anyhow::Error>(file.oid)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        reader.preload_objects(&record_oids).await?;
         entries.extend(
             try_join_all(batch.iter().cloned().map(|hash| async move {
                 let shard_name = store::shard(&hash)
@@ -1165,6 +1352,124 @@ mod bundle_tests {
     struct AggregateBundleFetch {
         bytes: Vec<u8>,
         reads: AtomicUsize,
+    }
+
+    struct RemoteObjectFetch {
+        content: Vec<u8>,
+        reads: AtomicUsize,
+    }
+
+    struct RemoteBatchFetch {
+        objects: BTreeMap<Oid, Vec<u8>>,
+        calls: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for RemoteBatchFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("batch Git inspection must not fetch {path} into Native")
+        }
+
+        fn storage_local_git_inspection(&self) -> bool {
+            true
+        }
+
+        async fn inspect_git_object(&self, _oid: Oid) -> Result<Option<(ObjectKind, Vec<u8>)>> {
+            panic!("known Git objects must use batch inspection")
+        }
+
+        async fn inspect_git_objects(
+            &self,
+            oids: &[Oid],
+        ) -> Result<Vec<Option<(ObjectKind, Vec<u8>)>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(oids
+                .iter()
+                .map(|oid| {
+                    self.objects
+                        .get(oid)
+                        .cloned()
+                        .map(|bytes| (ObjectKind::Blob, bytes))
+                })
+                .collect())
+        }
+
+        fn describe(&self) -> String {
+            "remote-Git-batch".into()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for RemoteObjectFetch {
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("remote Git inspection must not fetch {path} into Native")
+        }
+
+        fn storage_local_git_inspection(&self) -> bool {
+            true
+        }
+
+        async fn inspect_git_object(&self, _oid: Oid) -> Result<Option<(ObjectKind, Vec<u8>)>> {
+            self.reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some((ObjectKind::Blob, self.content.clone())))
+        }
+
+        fn describe(&self) -> String {
+            "remote-Git-inspection".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn storage_local_object_inspection_skips_bundle_preload_and_rehashes_result() {
+        let content = b"selected Git content".to_vec();
+        let oid = object::hash_object(ObjectKind::Blob, &content);
+        let fetch = RemoteObjectFetch {
+            content: content.clone(),
+            reads: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        reader.preload_bundles().await.unwrap();
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 0);
+        assert_eq!(reader.read(oid).await.unwrap(), (ObjectKind::Blob, content));
+        assert_eq!(reader.read(oid).await.unwrap().0, ObjectKind::Blob);
+        assert_eq!(fetch.reads.load(Ordering::SeqCst), 1);
+
+        let corrupted = RemoteObjectFetch {
+            content: b"wrong object".to_vec(),
+            reads: AtomicUsize::new(0),
+        };
+        assert!(ObjectReader::new(&corrupted).read(oid).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn known_git_objects_are_batched_and_rehashed_before_caching() {
+        let first = b"first".to_vec();
+        let second = b"second".to_vec();
+        let first_oid = object::hash_object(ObjectKind::Blob, &first);
+        let second_oid = object::hash_object(ObjectKind::Blob, &second);
+        let fetch = RemoteBatchFetch {
+            objects: BTreeMap::from([(first_oid, first.clone()), (second_oid, second.clone())]),
+            calls: AtomicUsize::new(0),
+        };
+        let reader = ObjectReader::new(&fetch);
+
+        reader
+            .preload_objects(&[second_oid, first_oid, first_oid])
+            .await
+            .unwrap();
+        assert_eq!(reader.read(first_oid).await.unwrap().1, first);
+        assert_eq!(reader.read(second_oid).await.unwrap().1, second);
+        assert_eq!(fetch.calls.load(Ordering::SeqCst), 1);
+
+        let corrupted = RemoteBatchFetch {
+            objects: BTreeMap::from([(first_oid, b"wrong".to_vec())]),
+            calls: AtomicUsize::new(0),
+        };
+        assert!(ObjectReader::new(&corrupted)
+            .preload_objects(&[first_oid])
+            .await
+            .is_err());
     }
 
     #[async_trait::async_trait]

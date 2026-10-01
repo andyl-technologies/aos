@@ -48,6 +48,14 @@ use sha2::{Digest as _, Sha256};
 
 use crate::registry::objectstore;
 
+#[cfg(unix)]
+mod hub;
+
+#[async_trait::async_trait]
+trait VisibilityBarrier: Send + Sync {
+    async fn finish(&self) -> Result<()>;
+}
+
 /// Maximum origin-file uploads kept in flight per destination. The
 /// `aos_net` connection pool enforces the real per-host limit; this only
 /// bounds how many requests we stage at once.
@@ -352,7 +360,27 @@ pub async fn upload_static_origin_to_all(
     // failure that excludes that mirror from both phases.
     let mut failures = Vec::new();
     let mut destinations: Vec<(&str, Box<dyn CacheBackend>)> = Vec::new();
+    let mut direct: Vec<Box<dyn VisibilityBarrier>> = Vec::new();
     for upload_url in upload_urls {
+        #[cfg(not(unix))]
+        if refuse_unsupported_selected_hub(upload_url, auth).is_err() {
+            failures.push(format!(
+                "{upload_url}: selected Hub direct upload requires Unix private-journal custody"
+            ));
+            continue;
+        }
+        #[cfg(unix)]
+        match hub::stage_if_selected(upload_url, &files, auth).await {
+            Ok(Some(publication)) => {
+                direct.push(Box::new(publication));
+                continue;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                failures.push(format!("{upload_url}: direct Hub publication staging refused; retained journals allow exact retry"));
+                continue;
+            }
+        }
         match backend::from_url(upload_url, auth).await {
             Ok(backend) => destinations.push((upload_url.as_str(), backend)),
             Err(err) => failures.push(format!("{upload_url}: {err:#}")),
@@ -360,11 +388,12 @@ pub async fn upload_static_origin_to_all(
     }
 
     let all_destinations_connected = failures.is_empty();
-    let (phase_failures, skipped_files) = upload_phase_major(
+    let (phase_failures, skipped_files) = upload_phase_major_with_barriers(
         &files,
         &destinations,
         no_skip,
         all_destinations_connected,
+        &direct,
         printer,
         &progress,
     )
@@ -387,6 +416,32 @@ pub async fn upload_static_origin_to_all(
     })
 }
 
+#[cfg(any(not(unix), test))]
+fn refuse_unsupported_selected_hub(destination: &str, auth: &AuthOptions) -> Result<()> {
+    let (origin, registry) = match (&auth.hub_origin, &auth.hub_registry) {
+        (None, None) => return Ok(()),
+        (Some(origin), Some(registry)) => (origin, registry),
+        _ => bail!("Hub registry uploads require both origin and registry selectors"),
+    };
+    let origin = url::Url::parse(origin).context("invalid selected Hub origin")?;
+    anyhow::ensure!(
+        matches!(origin.scheme(), "http" | "https")
+            && origin.username().is_empty()
+            && origin.password().is_none()
+            && origin.query().is_none()
+            && origin.fragment().is_none()
+            && matches!(origin.path(), "" | "/")
+            && !registry.is_empty(),
+        "invalid selected Hub origin or registry"
+    );
+    let destination = url::Url::parse(destination).context("invalid static destination")?;
+    anyhow::ensure!(
+        destination.origin() != origin.origin(),
+        "selected Hub direct upload is unsupported on this platform"
+    );
+    Ok(())
+}
+
 /// Upload `files` to already-connected destinations in phase-major order.
 ///
 /// Phase 1 uploads every [`StaticOriginClass::ImageDisk`] file to every
@@ -403,11 +458,33 @@ pub async fn upload_static_origin_to_all(
 /// Returns the per-destination failure messages (empty when every destination
 /// completed both phases) and the total number of skipped (already-present)
 /// uploads across all destinations.
+#[cfg(test)]
 async fn upload_phase_major(
     files: &[StaticOriginFile],
     destinations: &[(&str, Box<dyn CacheBackend>)],
     no_skip: bool,
     all_destinations_ready: bool,
+    printer: &Printer,
+    progress: &aos_core::output::TransferProgress,
+) -> (Vec<String>, usize) {
+    upload_phase_major_with_barriers(
+        files,
+        destinations,
+        no_skip,
+        all_destinations_ready,
+        &[],
+        printer,
+        progress,
+    )
+    .await
+}
+
+async fn upload_phase_major_with_barriers(
+    files: &[StaticOriginFile],
+    destinations: &[(&str, Box<dyn CacheBackend>)],
+    no_skip: bool,
+    all_destinations_ready: bool,
+    barriers: &[Box<dyn VisibilityBarrier>],
     printer: &Printer,
     progress: &aos_core::output::TransferProgress,
 ) -> (Vec<String>, usize) {
@@ -505,6 +582,18 @@ async fn upload_phase_major(
             ));
         }
         return (failures, skipped_files);
+    }
+
+    // Direct private staging has finished for every selected Hub. Final
+    // completion is withheld until every other mirror has its payload, receipt
+    // and index. Native still owns each publication's graph and watermark.
+    for barrier in barriers {
+        if barrier.finish().await.is_err() {
+            failures.push(
+                "direct Hub publication final barrier refused; original journals retained".into(),
+            );
+            return (failures, skipped_files);
+        }
     }
 
     for ((upload_url, backend), ok) in destinations.iter().zip(immutable_ok) {
@@ -1117,7 +1206,35 @@ fn image_content_disposition(relative_path: &str) -> Result<Option<String>> {
 
 #[cfg(test)]
 mod tests {
+    mod direct_barrier;
+
     use super::*;
+
+    #[test]
+    fn unsupported_selected_hub_refuses_before_fallback_but_leaves_other_origins_unchanged() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let auth = AuthOptions {
+            hub_origin: Some(origin.clone()),
+            hub_registry: Some("registry".into()),
+            ..Default::default()
+        };
+
+        assert!(refuse_unsupported_selected_hub(&format!("{origin}/registry"), &auth).is_err());
+        assert!(
+            refuse_unsupported_selected_hub("https://unrelated.example.test/static", &auth).is_ok()
+        );
+        assert!(refuse_unsupported_selected_hub(&origin, &AuthOptions::default()).is_ok());
+        let incomplete = AuthOptions {
+            hub_origin: Some(origin.clone()),
+            ..Default::default()
+        };
+        assert!(refuse_unsupported_selected_hub(&origin, &incomplete).is_err());
+        assert!(
+            matches!(listener.accept(), Err(error) if error.kind() == std::io::ErrorKind::WouldBlock)
+        );
+    }
 
     const TEST_LOOSE_OBJECT_PATH: &str =
         "objects/ab/cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";

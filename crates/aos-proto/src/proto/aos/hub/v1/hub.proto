@@ -66,6 +66,15 @@ service ProjectService {
 }
 
 // Bindings (RFC-0004 "Storage: Binding and shared buckets").
+// Root-reviewed permanent physical identity and desired admission only.
+// Every operation requires current StorageManage at the instance root.
+// This service neither confirms executor authorization nor enables provider I/O.
+service StorageAuthorityService {
+  rpc PlanStorageAuthorityDecision(PlanStorageAuthorityDecisionRequest) returns (TopologyPlanResponse);
+  rpc StorageAuthorityDecision(ApplyStorageAuthorityDecisionRequest) returns (StorageAuthorityDecisionResponse);
+  rpc GetAuthority(GetStorageAuthorityRequest) returns (StorageAuthorityProjection);
+}
+
 service BindingService {
   rpc ListBindings(ListBindingsRequest) returns (ListBindingsResponse);
   rpc GetBinding(GetBindingRequest) returns (GetBindingResponse);
@@ -1358,6 +1367,9 @@ message ContainerGcPlacementAction {
   string delete_credential_generation = 29;
   string delete_capability_fingerprint = 30;
   string delete_capability_resource_version = 31;
+  // Provider upload incarnation frozen by the reviewed inventory. Absent for
+  // legacy or non-incarnation-aware providers; new R2 dispatch requires it.
+  optional string expected_provider_version = 32;
 }
 
 message ListContainerGcCandidatesResponse {
@@ -3632,6 +3644,8 @@ message CacheGcPlacementAction {
   string store_hash = 2;
   string action = 3;
   string inventory_version = 4;
+  // Provider upload incarnation frozen by the reviewed inventory.
+  optional string expected_provider_version = 5;
 }
 message CacheGcPlan {
   string plan_id = 1;
@@ -3701,6 +3715,8 @@ message CacheGcDeletionJob {
   string last_error = 7;
   int64 next_attempt_at = 8;
   string resource_version = 9;
+  // Reviewed upload incarnation retained through retries. Legacy rows may omit it.
+  optional string expected_provider_version = 10;
 }
 message GetCacheGcDeletionJobRequest {
   string cache_id = 1;
@@ -4165,6 +4181,12 @@ message WhoAmIResponse {
   repeated string access_permissions = 6;
   // Unix seconds when this access token expires.
   int64 access_expires_at = 7;
+  // Validated authenticated Hub deployment namespace; empty on a legacy server.
+  string deployment_id = 8;
+  // Opaque immutable actor commitment matching GetCapabilities; empty on legacy.
+  string principal_id = 9;
+  // Closed bulk-transfer policy: direct_required or legacy; empty on old servers.
+  string transfer_mode = 10;
 }
 
 message ListServiceAccountsRequest {
@@ -5531,4 +5553,409 @@ message ExplainRouteResponse {
   string normalized_url = 1;
   repeated string decisions = 2;
   repeated string rejection_reasons = 3;
+}
+
+// -- Permanent physical storage authority operator contracts (RFC-0023) --
+
+// One canonical HTTPS endpoint and case-sensitive bucket. Root evidence,
+// rather than DNS resolution or matching provider metadata, approves equivalence.
+message StorageAuthorityAddress {
+  oneof host {
+    string dns_name = 1;
+    bytes ipv4 = 2;
+    bytes ipv6 = 3;
+  }
+  uint32 port = 4;
+  string bucket = 5;
+}
+
+message CreatePhysicalStorageAuthorityDecision {
+  string authority_id = 1;
+  // Actual immutable executor namespace; multiple authorities may share it.
+  string guard_namespace_id = 2;
+  string physical_resource_evidence_digest = 3;
+  string qualification_digest = 4;
+  // Required immutable scope ceiling; an explicit empty prefix covers the bucket.
+  optional string qualified_managed_prefix = 5;
+}
+
+message ApproveStorageAuthorityAliasDecision {
+  string alias_id = 1;
+  string authority_id = 2;
+  StorageAuthorityAddress address = 3;
+  string equivalence_evidence_digest = 4;
+}
+
+message AssociateStorageAuthorityBindingDecision {
+  string association_id = 1;
+  string authority_id = 2;
+  string alias_id = 3;
+  string binding_id = 4;
+  string binding_stable_id = 5;
+  string binding_resource_version = 6;
+  string binding_write_revision = 7;
+  string binding_prefix = 8;
+}
+
+message StorageAuthorityCredentialMember {
+  string association_id = 1;
+  string purpose = 2;
+  string generation = 3;
+  // Immutable reference and fingerprint only; this API never carries a secret.
+  string secret_version_ref = 4;
+  string credential_fingerprint = 5;
+}
+
+message AttestStorageAuthorityExclusivityDecision {
+  string attestation_id = 1;
+  string authority_id = 2;
+  string managed_prefix = 3;
+  string qualification_digest = 4;
+  string provider_policy_evidence_digest = 5;
+  string executor_identity = 6;
+  repeated StorageAuthorityCredentialMember credentials = 7;
+  int64 valid_until = 8;
+}
+
+enum StorageAuthorityDesiredState {
+  STORAGE_AUTHORITY_DESIRED_STATE_UNSPECIFIED = 0;
+  STORAGE_AUTHORITY_DESIRED_STATE_ADMITTED = 1;
+  STORAGE_AUTHORITY_DESIRED_STATE_BLOCKED = 2;
+  STORAGE_AUTHORITY_DESIRED_STATE_RETIRED = 3;
+}
+
+message SetStorageAuthorityAdmissionDecision {
+  string authority_id = 1;
+  // Exact canonical decimal; zero precedes the first desired generation.
+  string expected_generation = 2;
+  optional string expected_digest = 3;
+  string guard_namespace_id = 4;
+  StorageAuthorityDesiredState state = 5;
+  optional string attestation_id = 6;
+  repeated string association_ids = 7;
+}
+
+message StorageAuthorityDecision {
+  oneof input {
+    CreatePhysicalStorageAuthorityDecision create = 1;
+    ApproveStorageAuthorityAliasDecision approve_alias = 2;
+    AssociateStorageAuthorityBindingDecision associate_binding = 3;
+    AttestStorageAuthorityExclusivityDecision attest = 4;
+    SetStorageAuthorityAdmissionDecision set_admission = 5;
+  }
+}
+
+message PlanStorageAuthorityDecisionRequest {
+  StorageAuthorityDecision decision = 1;
+  string idempotency_key = 2;
+  // Creation: empty; alias/attest: immutable authority resource_version;
+  // association: exact binding version; admission: exact desired generation.
+  string expected_resource_version = 3;
+}
+
+message ApplyStorageAuthorityDecisionRequest {
+  string plan_id = 1;
+  string confirmation_hash = 2;
+  string idempotency_key = 3;
+  // Intent is loaded exclusively from the persisted immutable reviewed plan.
+  reserved 4;
+  reserved "decision";
+}
+
+message StorageAuthorityDecisionResponse {
+  string authority_id = 1;
+  string record_id = 2;
+  // Desired SQL generation only, never an executor authorization watermark.
+  optional string desired_generation = 3;
+  // Always true until a separate authenticated executor adapter is integrated.
+  bool pending_reconciliation = 4;
+}
+
+message GetStorageAuthorityRequest { string authority_id = 1; }
+
+message StorageAuthorityDesiredAdmission {
+  string desired_generation = 1;
+  string digest = 2;
+  SetStorageAuthorityAdmissionDecision decision = 3;
+}
+
+message StorageAuthorityProjection {
+  CreatePhysicalStorageAuthorityDecision authority = 1;
+  StorageAuthorityDesiredAdmission desired_admission = 2;
+  // SQL acknowledgement is not evidence of fresh executor agreement.
+  bool pending_reconciliation = 3;
+  // Digest of immutable creation facts, used by alias and attestation plans.
+  string resource_version = 4;
+}
+
+// Authenticated bounded direct staging controls. Upload bodies bypass Hub APIs.
+// Closed strings are validated by the shared direct_upload protocol; uint64
+// counters use exact ProtoJSON decimal strings. No client controls completion.
+service DirectUploadService {
+  rpc GetCapabilities(DirectGetCapabilities) returns (DirectUploadCapabilities);
+  rpc BeginBatch(DirectBeginBatch) returns (DirectUploadResponse);
+  rpc StatusBatch(DirectStatusBatch) returns (DirectUploadResponse);
+  rpc GrantPartsBatch(DirectGrantPartsBatch) returns (DirectUploadResponse);
+  rpc ReportPartsBatch(DirectReportPartsBatch) returns (DirectUploadResponse);
+  rpc CompleteBatch(DirectCompleteBatch) returns (DirectUploadResponse);
+  rpc Abort(DirectAbortBatch) returns (DirectUploadResponse);
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadTarget {
+  string kind = 1;
+  string cache_id = 2;
+  string path = 3;
+  string publication_id = 4;
+  uint64 surface_object_id = 5;
+  string upload_id = 6;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadIntent {
+  uint32 version = 1;
+  string client_operation_id = 2;
+  DirectUploadTarget target = 3;
+  string expected_sha256 = 4;
+  uint64 byte_size = 5;
+  uint64 part_size = 6;
+  string dependency_phase = 7;
+  string transfer_mode = 8;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartChecksum {
+  string algorithm = 1;
+  string value = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPart {
+  uint32 part_number = 1;
+  uint64 offset = 2;
+  uint64 byte_size = 3;
+  string sha256 = 4;
+  DirectPartChecksum checksum = 5;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectManifestPart {
+  DirectPart part = 1;
+  string etag = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPlacementRef {
+  uint64 placement_id = 1;
+  string placement_fingerprint = 2;
+  string checksum_algorithm = 3;
+  uint64 placement_resource_version = 4;
+  uint64 write_spec_version = 5;
+  uint64 binding_id = 6;
+  uint64 binding_resource_version = 7;
+  uint64 binding_write_revision = 8;
+  string profile_fingerprint = 9;
+  string private_policy_digest = 10;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectManifestCommitment {
+  DirectPlacementRef placement = 1;
+  string manifest_digest = 2;
+  uint32 part_count = 3;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectRequiredHeader {
+  string name = 1;
+  string value = 2 [debug_redact = true];
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartGrant {
+  string session_id = 1;
+  string logical_fingerprint = 2;
+  DirectPlacementRef placement = 3;
+  string grant_id = 4;
+  uint64 grant_revision = 5;
+  DirectPart part = 6;
+  string method = 7;
+  string url = 8 [debug_redact = true];
+  repeated DirectRequiredHeader required_headers = 9;
+  uint64 expires_at = 10;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectSessionRef {
+  string session_id = 1;
+  string logical_fingerprint = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartCursor {
+  DirectPlacementRef placement = 1;
+  uint32 part_number = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartStatus {
+  DirectPlacementRef placement = 1;
+  uint32 part_number = 2;
+  DirectManifestPart observed = 3;
+  optional string pending_operation_id = 4;
+  bool unknown = 5;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectSessionStatus {
+  DirectSessionRef session = 1;
+  uint64 resource_version = 2;
+  DirectUploadIntent intent = 3;
+  repeated DirectPlacementRef placements = 4;
+  string state = 5;
+  repeated DirectPartStatus parts = 6;
+  DirectPartCursor next_cursor = 7;
+  bool outstanding_grants = 8;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectBeginBatch {
+  string operation_id = 1;
+  repeated DirectUploadIntent items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectStatusQuery {
+  DirectSessionRef session = 1;
+  DirectPartCursor after = 2;
+  uint32 maximum_parts = 3;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectGrantPartRequest {
+  DirectSessionRef session = 1;
+  DirectPlacementRef placement = 2;
+  string operation_id = 3;
+  DirectPart part = 4;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectPartReport {
+  DirectSessionRef session = 1;
+  DirectPlacementRef placement = 2;
+  string operation_id = 3;
+  string grant_id = 4;
+  uint64 grant_revision = 5;
+  DirectManifestPart observed = 6;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectCompleteRequest {
+  DirectSessionRef session = 1;
+  string operation_id = 2;
+  uint64 expected_resource_version = 3;
+  repeated DirectManifestCommitment manifests = 4;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectAbortRequest {
+  DirectSessionRef session = 1;
+  string operation_id = 2;
+  uint64 expected_resource_version = 3;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectItemError {
+  string item_id = 1;
+  string code = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadResponse {
+  string operation_id = 1;
+  repeated DirectSessionStatus sessions = 2;
+  repeated DirectPartGrant grants = 3;
+  repeated DirectItemError errors = 4;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectGetCapabilities {
+  DirectCapabilitiesTarget target = 1;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectProviderProfile {
+  uint64 placement_id = 1;
+  uint64 placement_resource_version = 2;
+  uint64 write_spec_version = 3;
+  uint64 binding_id = 4;
+  uint64 binding_resource_version = 5;
+  uint64 binding_write_revision = 6;
+  string checksum_algorithm = 7;
+  string provider_origin = 8;
+  string profile_fingerprint = 9;
+  string private_policy_digest = 10;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectUploadCapabilities {
+  DirectCapabilitiesTarget target = 1;
+  uint32 version = 2;
+  string capability = 3;
+  string transfer_mode = 4;
+  uint32 maximum_control_bytes = 5;
+  uint32 maximum_batch_items = 6;
+  uint32 maximum_batch_parts = 7;
+  uint64 maximum_object_bytes = 8;
+  uint64 minimum_part_bytes = 9;
+  uint64 maximum_part_bytes = 10;
+  repeated DirectProviderProfile profiles = 11;
+  uint64 config_generation = 12;
+  uint64 valid_until = 13;
+  string deployment_id = 14;
+  string principal_id = 15;
+  optional string requested_delivery_url = 16;
+  // Required external placements reject empty objects until exact-incarnation
+  // empty-object deletion is independently qualified. Managed placements use 0.
+  uint64 minimum_object_bytes = 17;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectStatusBatch {
+  string operation_id = 1;
+  repeated DirectStatusQuery items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectGrantPartsBatch {
+  string operation_id = 1;
+  repeated DirectGrantPartRequest items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectReportPartsBatch {
+  string operation_id = 1;
+  repeated DirectPartReport items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectCompleteBatch {
+  string operation_id = 1;
+  repeated DirectCompleteRequest items = 2;
+}
+
+// Shared bounded direct_upload projection; server validates closed semantics.
+message DirectAbortBatch {
+  string operation_id = 1;
+  repeated DirectAbortRequest items = 2;
+}
+
+// Reusable logical owner; no object/provider path selector.
+message DirectCapabilitiesTarget {
+  string kind = 1;
+  string cache_id = 2;
+  string publication_id = 3;
+  string registry = 4;
+  string repository = 5;
+  string delivery_url = 6;
 }

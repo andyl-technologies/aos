@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use clap::{Subcommand, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
 pub enum ContainerFormat {
@@ -111,6 +111,8 @@ pub enum ContainerCommand {
     },
     /// Push a verified definition or local OCI artifact
     Push {
+        #[command(flatten)]
+        direct: ContainerDirectUploadArgs,
         /// Container definition name or local OCI path
         source: String,
         /// AUTHORITY/REPOSITORY[:TAG|@DIGEST]
@@ -156,6 +158,8 @@ pub enum ContainerCommand {
     },
     /// Finalize a complete graph from an indexed signed AOS release
     Publish {
+        #[command(flatten)]
+        direct: ContainerDirectUploadArgs,
         /// Container definition name
         name: String,
         /// AUTHORITY/REPOSITORY[:TAG|@DIGEST]
@@ -429,5 +433,31 @@ mod tests {
         let cli = Cli::try_parse_from(["aos", "image", "list", "--registry", "core"])
             .expect("system image command");
         assert!(matches!(cli.command, Commands::Image { .. }));
+    }
+}
+
+#[derive(Clone, Debug, Default, Args)]
+pub struct ContainerDirectUploadArgs {
+    /// Read the explicit direct-provider origin/CIDR/public-CA policy
+    #[arg(long, value_name = "FILE")]
+    pub direct_provider_policy: Option<PathBuf>,
+    /// Resume or create this owner-private direct retry journal
+    #[arg(long, value_name = "FILE")]
+    pub direct_upload_journal: Option<PathBuf>,
+    /// Select a new run while preserving prior unresolved journals
+    #[arg(long)]
+    pub new_direct_upload_run: bool,
+}
+
+impl ContainerDirectUploadArgs {
+    /// Converts explicit CLI custody/reachability into direct adapter options.
+    #[cfg(unix)]
+    pub fn options(&self) -> aos_remote::DirectUploadOptions {
+        aos_remote::DirectUploadOptions {
+            journal: self.direct_upload_journal.clone(),
+            provider_policy: self.direct_provider_policy.clone(),
+            new_run: self.new_direct_upload_run,
+            ..aos_remote::DirectUploadOptions::default()
+        }
     }
 }

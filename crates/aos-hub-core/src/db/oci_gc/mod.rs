@@ -201,6 +201,8 @@ pub struct OciGcPlacementActionRecord {
     pub expected_size: u64,
     /// Strong entity tag frozen by provider enumeration, when present.
     pub expected_strong_etag: Option<String>,
+    /// Provider upload incarnation frozen by the reviewed inventory.
+    pub expected_provider_version: Option<String>,
     /// Whether the sealed inventory contained the canonical key.
     pub inventory_entry_present: bool,
     /// Exact provider inventory generation used by the plan.

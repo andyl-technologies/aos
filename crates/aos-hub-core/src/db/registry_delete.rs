@@ -7,16 +7,16 @@
 //! in one checked transaction. Active publication work and cache-retention
 //! roots fail closed before that transaction begins.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
-use super::{sanitize_log_text, unix_now, Database, NewTopologyEvent};
+use super::{Database, NewTopologyEvent, sanitize_log_text, unix_now};
 use crate::backend::{CheckedStatement, Statement};
 
 impl Database {
     /// Deletes a quiescent registry identity and records the transition atomically.
     ///
     /// Physical provider deletion is performed before this call by reviewed
-    /// OCI GC actions. The registry must have no logical catalog identity,
+    /// OCI GC actions. The registry must have no OCI catalog identity,
     /// provider-inventory key, active work, snapshot attribution, legacy
     /// publish lease, or retained cache root.
     /// Terminal publication history and owned topology are retired with the
@@ -42,6 +42,19 @@ impl Database {
         };
         if current.resource_version != expected_version {
             return Ok(false);
+        }
+
+        let mirror = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM mirror_import_objects WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?;
+        if mirror.is_some() {
+            bail!(
+                "registry retains a mirror original; settle its exact provider effects and acknowledge the Native commit before deletion"
+            );
         }
 
         let now = unix_now();
@@ -107,15 +120,18 @@ impl Database {
         };
         let summary = format!("delete registry identity '{}'", current.slug);
 
-        let result = self
-            .backend
-            .checked_batch(&[
+        let (mut statements, charge_retirement) = self
+            .mirror_usage_retirement_statements(registry_id, current.org_id, now)
+            .await?;
+        statements.extend([
                 // Reassert quiescence while taking the registry row's write
                 // lock. Publication admission must retain the same parent row,
                 // so it cannot race new work behind this teardown fence.
                 Statement::new(
                     "UPDATE registries SET updated_at = updated_at
                      WHERE id = ?1 AND scope_key = ?2 AND resource_version = ?3
+                       AND NOT EXISTS (SELECT 1 FROM mirror_import_objects
+                         WHERE registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM registry_publications
                          WHERE registry_id = ?1
                            AND state IN ('preparing', 'writing_pointers'))
@@ -407,49 +423,54 @@ impl Database {
                 delete("registry_placement_publication_watermarks", registry_id),
                 delete("registry_index_publication_state", registry_id),
                 delete("object_placements", registry_id),
-                delete("surface_objects", registry_id),
-                delete("registry_publication_state", registry_id),
-                Statement::new(
-                    "UPDATE registry_publications SET parent_publication_id = NULL
+        ]);
+        // The empty-provider and purge fences above authorize actual logical
+        // deletion. Refund only retained charges in this same transaction.
+        statements.extend(charge_retirement);
+        statements.extend([
+            delete("surface_objects", registry_id),
+            delete("registry_publication_state", registry_id),
+            Statement::new(
+                "UPDATE registry_publications SET parent_publication_id = NULL
                      WHERE registry_id = ?1 AND parent_publication_id IS NOT NULL",
-                    vals![registry_id],
-                )
-                .unchecked(),
-                delete("registry_publications", registry_id),
-                // Index snapshots and zero-root retention refreshes otherwise
-                // restrict cascades from releases and subscriptions.
-                delete("cache_root_release_provenance", registry_id),
-                delete("release_artifact_snapshot_heads", registry_id),
-                delete("release_artifacts", registry_id),
-                delete("release_artifact_snapshots", registry_id),
-                delete("cache_retention_refresh_heads", registry_id),
-                Statement::new(
-                    "UPDATE cache_retention_refreshes
+                vals![registry_id],
+            )
+            .unchecked(),
+            delete("registry_publications", registry_id),
+            // Index snapshots and zero-root retention refreshes otherwise
+            // restrict cascades from releases and subscriptions.
+            delete("cache_root_release_provenance", registry_id),
+            delete("release_artifact_snapshot_heads", registry_id),
+            delete("release_artifacts", registry_id),
+            delete("release_artifact_snapshots", registry_id),
+            delete("cache_retention_refresh_heads", registry_id),
+            Statement::new(
+                "UPDATE cache_retention_refreshes
                      SET parent_refresh_id = NULL, expected_parent_refresh_id = NULL
                      WHERE registry_id = ?1 AND (
                        parent_refresh_id IS NOT NULL
                        OR expected_parent_refresh_id IS NOT NULL)",
-                    vals![registry_id],
-                )
-                .unchecked(),
-                delete("cache_retention_refreshes", registry_id),
-                delete("cache_retention_subscriptions", registry_id),
-                delete("surface_write_authorities", registry_id),
-                delete("surface_placements", registry_id),
-                Statement::new(
-                    "DELETE FROM registries WHERE id = ?1 AND scope_key = ?2
+                vals![registry_id],
+            )
+            .unchecked(),
+            delete("cache_retention_refreshes", registry_id),
+            delete("cache_retention_subscriptions", registry_id),
+            delete("surface_write_authorities", registry_id),
+            delete("surface_placements", registry_id),
+            Statement::new(
+                "DELETE FROM registries WHERE id = ?1 AND scope_key = ?2
                        AND resource_version = ?3",
-                    vals![registry_id, current.scope_key, expected_version],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE authorization_scopes SET retired_at = ?2
+                vals![registry_id, current.scope_key, expected_version],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE authorization_scopes SET retired_at = ?2
                       WHERE scope_key = ?1 AND kind = 'registry' AND retired_at IS NULL",
-                    vals![current.scope_key, now],
-                )
-                .expecting(1),
-            ])
-            .await;
+                vals![current.scope_key, now],
+            )
+            .expecting(1),
+        ]);
+        let result = self.backend.checked_batch(&statements).await;
         if let Err(error) = result {
             if self
                 .registry_by_id(registry_id)

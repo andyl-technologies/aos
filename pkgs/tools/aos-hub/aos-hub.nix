@@ -59,6 +59,12 @@
         pathString
         == repoRootString
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        # Authority tests load the disposable TLS pair and trust root at runtime.
+        || pathString == "${repoRootString}/tests"
+        || pathString == "${repoRootString}/tests/fixtures"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-ca.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.crt"
+        || pathString == "${repoRootString}/tests/fixtures/hub-hybrid-fleet-server.key"
         || pathString == "${repoRootString}/docs"
         || pathString == "${repoRootString}/docs/rfcs"
         || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
@@ -68,7 +74,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
+    hash = "sha256-bFrGLJz08aNxlYogCpbDOy9Oh7uFIcLXm4lMe5Ce9no=";
   };
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
@@ -96,7 +102,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub --features postgres";
+    cargoFlags = "-p aos-hub --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
     runtimeDeps = [openssl sqlite zlib];
   };
@@ -105,10 +111,10 @@ in
     pname = "aos-hub";
     inherit version src;
 
-    # Build the hub package's control-plane and fixed egress binaries.
+    # Build the control plane, fixed egress and retained authority operator tools.
     # PostgreSQL is the strongly-consistent shared nonce store for replicated
     # aos-hub-egress deployments. SQLite remains available for a singleton.
-    cargoFlags = "-p aos-hub --features postgres";
+    cargoFlags = "-p aos-hub --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
 
     inherit cargoDeps cargoArtifacts cargoEnv cargoArtifactContract;
     cargoRoot = "crates";

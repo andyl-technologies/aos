@@ -110,8 +110,8 @@ mod tests {
     use aos_hub_core::value::Value;
 
     #[test]
-    fn worker_sql_accepts_every_migration() {
-        assert_eq!(MIGRATIONS.len(), 2);
+    fn worker_sql_accepts_production_baseline_and_forward_migrations() {
+        assert_eq!(MIGRATIONS.len(), 8);
         for statement in MIGRATIONS
             .iter()
             .flat_map(|migration| split_statements(migration))

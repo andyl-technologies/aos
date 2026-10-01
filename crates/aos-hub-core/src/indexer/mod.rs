@@ -64,6 +64,7 @@ use ed25519_dalek::VerifyingKey;
 use futures_util::{future::try_join_all, stream, StreamExt as _, TryStreamExt as _};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
+use tracing::Instrument as _;
 
 use crate::db::{
     ChannelSummary, ContainerReleaseClosureMemberSnapshot, ContainerReleaseDescriptorRole,
@@ -341,6 +342,28 @@ pub async fn index_registry(
     registry: &RegistryRecord,
     indexed_placement_id: Option<i64>,
 ) -> Result<IndexOutcome> {
+    let span = tracing::info_span!(
+        "registry_index",
+        index_run = %uuid::Uuid::new_v4().simple(),
+        registry_id = registry.id,
+        placement_id = ?indexed_placement_id,
+    );
+    async {
+        let outcome = index_registry_with_leases(db, fetch, registry, indexed_placement_id).await;
+        tracing::info!(success = outcome.is_ok(), "registry index run completed");
+        outcome
+    }
+    .instrument(span)
+    .await
+}
+
+// Temporary image verification leases must be released on every terminal walk.
+async fn index_registry_with_leases(
+    db: &Database,
+    fetch: &dyn SurfaceFetch,
+    registry: &RegistryRecord,
+    indexed_placement_id: Option<i64>,
+) -> Result<IndexOutcome> {
     let mut snapshot_leases = Vec::new();
     let outcome = index_registry_inner(
         db,
@@ -571,6 +594,11 @@ async fn index_registry_inner(
             let advertised_commit = advertised_commit.as_str();
             let refs_digest = refs_digest.as_str();
             let browse_projection_gate = &browse_projection_gate;
+            let span = tracing::info_span!(
+                "registry_release",
+                release = %tag_name,
+                tag_oid = %tag_oid,
+            );
             async move {
                 let reusable = match reusable.filter(|snapshot| {
                     snapshot.release.tag_oid == tag_oid.to_hex()
@@ -614,6 +642,7 @@ async fn index_registry_inner(
                     let mut release = reusable.release;
                     release.pack_present = probe_pack_presence(fetch, tag_name).await?;
                     tracing::debug!(release = %tag_name, "reused verified release snapshot");
+                    tracing::info!(reused = true, "registry release index phase completed");
                     return Ok::<_, anyhow::Error>((
                         release,
                         reusable.artifacts,
@@ -799,6 +828,7 @@ async fn index_registry_inner(
                     tagged_at: signed.tag.tagger_when,
                     pack_present: probe_pack_presence(fetch, &tag_name).await?,
                 };
+                tracing::info!(reused = false, "registry release index phase completed");
                 Ok::<_, anyhow::Error>((
                     release,
                     artifact_snapshot,
@@ -808,6 +838,7 @@ async fn index_registry_inner(
                     image_tag_oid,
                 ))
             }
+            .instrument(span)
         }))
         .await?;
         for (release, artifacts, image, presence, leases, image_tag_oid) in verified {
@@ -1129,10 +1160,7 @@ async fn fetch_exact_oci_range(
     limit: usize,
 ) -> Result<Vec<u8>> {
     let read = fetch
-        .fetch_stream(
-            &crate::db::oci_blob_object_key(descriptor.digest),
-            Some(range),
-        )
+        .inspect_oci_range(&crate::db::oci_blob_object_key(descriptor.digest), range)
         .await?
         .context("legacy OCI layer range is absent")?;
     anyhow::ensure!(
@@ -2533,6 +2561,20 @@ pub async fn fetch_package_documentation(
     platform: &str,
     artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
 ) -> Result<aos_doc_model::PackageDocumentation> {
+    if fetch.storage_local_documentation_inspection() {
+        let document = fetch
+            .package_documentation_content(package_name, package_version, platform, artifact)
+            .await?;
+        validate_package_documentation_content(
+            &document,
+            package_name,
+            package_version,
+            platform,
+            artifact,
+        )?;
+        return Ok(document);
+    }
+
     let store_hash = aos_registry_surface::store::store_path_hash(&artifact.store_path)?;
     let narinfo_key = format!("{store_hash}.narinfo");
     let narinfo_bytes = fetch
@@ -2598,6 +2640,35 @@ pub async fn fetch_package_documentation(
     Ok(document)
 }
 
+/// Revalidates a typed documentation result against its signed artifact.
+///
+/// # Errors
+/// Returns an error for invalid canonical content, changed size or digest,
+/// foreign package selection, or inconsistent semantic schema identity.
+pub fn validate_package_documentation_content(
+    document: &aos_doc_model::PackageDocumentation,
+    package_name: &str,
+    package_version: &str,
+    platform: &str,
+    artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+) -> Result<()> {
+    let bytes = document.canonical_json()?;
+    anyhow::ensure!(
+        artifact.format == aos_doc_model::DOCUMENT_FORMAT
+            && bytes.len() as u64 == artifact.document_size
+            && hex::encode(Sha256::digest(&bytes))
+                == aos_registry_surface::store::canonical_digest_hex(&artifact.document_sha256)?
+            && document.package.name == package_name
+            && document.package.version == package_version
+            && document.package.platform == platform
+            && document.identity.semantic_schema_sha256 == artifact.semantic_schema_sha256
+            && document.identity.system_module_nar_hash == artifact.system_module_nar_hash,
+        "documentation content disagrees with the signed artifact"
+    );
+    document.verify_semantic_schema_sha256()?;
+    Ok(())
+}
+
 async fn verify_package_documentation(
     fetch: &dyn SurfaceFetch,
     packages: &[aos_registry_surface::manifest::PackageToml],
@@ -2644,16 +2715,23 @@ async fn verify_documentation_selection(
     entry: &aos_registry_surface::manifest::PlatformEntry,
     artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
 ) -> Result<IndexedPackageDocumentation> {
-    let document =
-        fetch_package_documentation(fetch, package_name, package_version, platform, artifact)
-            .await?;
+    let inspection = if fetch.storage_local_documentation_inspection() {
+        fetch
+            .inspect_package_documentation(package_name, package_version, platform, artifact)
+            .await?
+    } else {
+        let document =
+            fetch_package_documentation(fetch, package_name, package_version, platform, artifact)
+                .await?;
+        crate::fetch::DocumentationInspection::from_document(&document)
+    };
     anyhow::ensure!(
-        documentation_digest_matches(&document.identity.runtime_nar_hash, &entry.nar_hash,)?,
+        documentation_digest_matches(&inspection.identity.runtime_nar_hash, &entry.nar_hash,)?,
         "package documentation runtime identity mismatch"
     );
     if let Some(config) = &entry.config_module {
         anyhow::ensure!(
-            document
+            inspection
                 .identity
                 .config_module_nar_hash
                 .as_deref()
@@ -2664,13 +2742,13 @@ async fn verify_documentation_selection(
         );
     }
     anyhow::ensure!(
-        document.identity.system_module_nar_hash.as_deref()
+        inspection.identity.system_module_nar_hash.as_deref()
             == artifact.system_module_nar_hash.as_deref(),
         "package documentation system-module identity mismatch"
     );
     if let Some(expose) = &entry.expose_artifact {
         anyhow::ensure!(
-            document
+            inspection
                 .identity
                 .expose_artifact_nar_hash
                 .as_deref()
@@ -2685,14 +2763,14 @@ async fn verify_documentation_selection(
         package_version: package_version.to_string(),
         platform: platform.to_string(),
         artifact: artifact.clone(),
-        search: document.search_documents(),
-        options: document
+        search: inspection.search,
+        options: inspection
             .options
-            .iter()
+            .into_iter()
             .map(|option| crate::db::IndexedDocumentationOption {
-                key: option.display_path.clone(),
-                path: option.path.clone(),
-                type_signature: option.type_signature.clone(),
+                key: option.key,
+                path: option.path,
+                type_signature: option.type_signature,
             })
             .collect(),
     })
@@ -3076,6 +3154,27 @@ async fn verify_system_image_object(
 ) -> Result<crate::db::VerifiedRegistryImageObject> {
     let expected_size =
         u64::try_from(byte_size).context("signed image object size cannot be negative")?;
+
+    if fetch.storage_local_sha256() {
+        let evidence = fetch
+            .inventory_evidence_bounded(&object_key, expected_size)
+            .await?
+            .with_context(|| format!("signed image object '{object_key}' is unavailable"))?;
+        let strong_etag = evidence.strong_etag.context(format!(
+            "signed image object '{object_key}' backend does not expose a strong version"
+        ))?;
+        anyhow::ensure!(
+            evidence.size == byte_size && hex::encode(evidence.sha256) == sha256,
+            "signed image object '{object_key}' does not match its catalog identity"
+        );
+        return Ok(crate::db::VerifiedRegistryImageObject {
+            object_key,
+            sha256,
+            byte_size,
+            strong_etag,
+        });
+    }
+
     let before_etag = fetch.inventory_strong_etag(&object_key).await?;
     let read = fetch
         .fetch_stream(&object_key, None)
@@ -3297,47 +3396,50 @@ async fn resolve_channels(
         let buckets = (0u16..=255).collect::<Vec<_>>();
         let mut resolved = Vec::with_capacity(buckets.len());
         for batch in buckets.chunks(CHANNEL_FETCH_CONCURRENCY) {
-            let channel_name = channel_name.as_str();
-            let channel_trusted = channel_trusted.as_slice();
-            let image_channel_trusted = image_channel_trusted.as_slice();
-            resolved.extend(
-                try_join_all(batch.iter().copied().map(|bucket| async move {
-                    let path = format!("channels/{channel_name}/{bucket:02x}");
-                    let Some(payload) = fetch.fetch(&path).await? else {
-                        return Ok::<_, anyhow::Error>((bucket, None));
-                    };
-                    let lenient = lenient_tag(&payload, channel_name)?;
-                    let signed = if registry.require_signatures
-                        || require_publication_signatures
-                        || channel_usage
-                        || image_release_tag_oids.contains(&lenient.tag.object)
-                    {
-                        let trusted =
-                            if registry.require_signatures || require_publication_signatures {
-                                channel_trusted
-                            } else {
-                                // Image-bearing channels remain rooted in the configured
-                                // catalog anchors plus their exact typed channel usage.
-                                image_channel_trusted
-                            };
-                        verify_signed_tag(&payload, channel_name, trusted)
-                            .with_context(|| format!("signed image channel partition {path}"))?
-                    } else {
-                        lenient
-                    };
-                    if signed.tag.target_type != TagTarget::Tag {
-                        bail!("partition {path} does not target a tag object");
-                    }
-                    let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
-                        format!(
-                            "partition {path} targets unknown tag object {}",
-                            signed.tag.object
-                        )
-                    })?;
-                    Ok((bucket, Some(semver_str.clone())))
-                }))
-                .await?,
+            let paths = batch
+                .iter()
+                .map(|bucket| format!("channels/{channel_name}/{bucket:02x}"))
+                .collect::<Vec<_>>();
+            let payloads = fetch.fetch_metadata_batch(&paths).await?;
+            anyhow::ensure!(
+                payloads.len() == batch.len(),
+                "channel metadata batch returned an incomplete observation set"
             );
+
+            for ((bucket, path), payload) in batch.iter().copied().zip(paths).zip(payloads) {
+                let Some(payload) = payload else {
+                    resolved.push((bucket, None));
+                    continue;
+                };
+                let lenient = lenient_tag(&payload, channel_name)?;
+                let signed = if registry.require_signatures
+                    || require_publication_signatures
+                    || channel_usage
+                    || image_release_tag_oids.contains(&lenient.tag.object)
+                {
+                    let trusted = if registry.require_signatures || require_publication_signatures {
+                        channel_trusted.as_slice()
+                    } else {
+                        // Image-bearing channels remain rooted in the configured
+                        // catalog anchors plus their exact typed channel usage.
+                        image_channel_trusted.as_slice()
+                    };
+                    verify_signed_tag(&payload, channel_name, trusted)
+                        .with_context(|| format!("signed image channel partition {path}"))?
+                } else {
+                    lenient
+                };
+                if signed.tag.target_type != TagTarget::Tag {
+                    bail!("partition {path} does not target a tag object");
+                }
+                let semver_str = tag_to_semver.get(&signed.tag.object).with_context(|| {
+                    format!(
+                        "partition {path} targets unknown tag object {}",
+                        signed.tag.object
+                    )
+                })?;
+                resolved.push((bucket, Some(semver_str.clone())));
+            }
         }
 
         let mut partitions: Vec<Option<String>> = vec![None; 256];
@@ -3455,7 +3557,7 @@ mod tests {
 
     use super::*;
     use crate::db::Database;
-    use crate::fetch::{StreamedRead, SurfaceFetch};
+    use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence};
     use aos_oci_types::{
         to_canonical_json, Annotations, ContainerDsseSignature,
         ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
@@ -3859,6 +3961,49 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
     }
 
     struct MissingFetch;
+
+    struct IncompleteMetadataBatch;
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for IncompleteMetadataBatch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("channel reads must use the metadata batch port");
+        }
+
+        async fn fetch_metadata_batch(&self, _paths: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+            Ok(Vec::new())
+        }
+
+        fn describe(&self) -> String {
+            "incomplete-metadata-batch".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn channel_refresh_rejects_an_incomplete_metadata_batch() {
+        let db = Database::open_in_memory().await.unwrap();
+        let id = db
+            .register_registry("metadata-batch", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(id).await.unwrap().unwrap();
+
+        let error = resolve_channels(
+            &db,
+            &IncompleteMetadataBatch,
+            &registry,
+            &["stable".into()],
+            &[],
+            false,
+            &BTreeMap::new(),
+            &std::collections::BTreeSet::new(),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("incomplete observation set"));
+        assert!(db.channel_floor(id, "stable").await.unwrap().is_none());
+    }
 
     #[async_trait::async_trait]
     impl SurfaceFetch for MissingFetch {
@@ -4269,6 +4414,77 @@ tools = "/nix/store/cccccccccccccccccccccccccccccccc-compiler-tools"
         fn describe(&self) -> String {
             "malicious-image-object".into()
         }
+    }
+
+    struct StorageLocalImageFetch {
+        evidence: SurfaceObjectEvidence,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceFetch for StorageLocalImageFetch {
+        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("storage-local image verification must not fetch image bytes")
+        }
+
+        fn storage_local_sha256(&self) -> bool {
+            true
+        }
+
+        async fn inventory_evidence_bounded(
+            &self,
+            path: &str,
+            maximum_bytes: u64,
+        ) -> Result<Option<SurfaceObjectEvidence>> {
+            assert_eq!(path, "images/raw");
+            assert_eq!(maximum_bytes, 3);
+            Ok(Some(self.evidence.clone()))
+        }
+
+        fn describe(&self) -> String {
+            "storage-local-image-fixture".into()
+        }
+    }
+
+    #[tokio::test]
+    async fn signed_image_verifier_uses_storage_local_digest_evidence() {
+        let bytes = b"raw";
+        let mut leases = Vec::new();
+        let verified = verify_system_image_object(
+            &StorageLocalImageFetch {
+                evidence: SurfaceObjectEvidence {
+                    provider_version: None,
+                    sha256: Sha256::digest(bytes).into(),
+                    size: bytes.len() as i64,
+                    strong_etag: Some("\"fixture-version\"".into()),
+                },
+            },
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verified.strong_etag, "\"fixture-version\"");
+        assert!(leases.is_empty());
+
+        let corrupted = StorageLocalImageFetch {
+            evidence: SurfaceObjectEvidence {
+                provider_version: None,
+                sha256: Sha256::digest(b"other").into(),
+                size: bytes.len() as i64,
+                strong_etag: Some("\"fixture-version\"".into()),
+            },
+        };
+        assert!(verify_system_image_object(
+            &corrupted,
+            "images/raw".into(),
+            hex::encode(Sha256::digest(bytes)),
+            bytes.len() as i64,
+            &mut leases,
+        )
+        .await
+        .is_err());
     }
 
     #[tokio::test]

@@ -177,6 +177,7 @@
       lib
       pkgs
       name
+      referenceName
       primaryIndex
       repeatIndex
       evidence

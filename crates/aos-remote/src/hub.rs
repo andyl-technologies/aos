@@ -38,6 +38,17 @@ use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER,
 
 use crate::client::validate_base_url;
 
+mod direct_upload;
+
+pub use direct_upload::DirectHubControl;
+#[cfg(unix)]
+pub use direct_upload::{
+    DirectHubAuthentication, DirectProvisioningAuthentication, DirectStageFile, DirectStagePath,
+    DirectUploadCoordinator, DirectUploadOptions, PinnedLegacyBearer, PreparedDirectPublication,
+    PublicationTransferDiscovery, checkpoint_namespace, commit_direct_publication,
+    discover_publication_transport, prepare_direct_publication, publication_inventory_digest,
+};
+
 /// Default per-request timeout for hub RPC calls.
 const HUB_TIMEOUT_SECS: u64 = 30;
 /// Deadline for one bounded multipart publication part.
@@ -68,6 +79,20 @@ pub struct HubClient {
 /// CLI to exchange the generated request and response messages directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HubTopologyMethod {
+    /// Selects authenticated direct-upload capability discovery.
+    DirectUploadGetCapabilities,
+    /// Selects bounded immutable direct-session admission.
+    DirectUploadBeginBatch,
+    /// Selects bounded sparse direct-session status.
+    DirectUploadStatusBatch,
+    /// Selects bounded exact private-stage part delegation.
+    DirectUploadGrantPartsBatch,
+    /// Selects bounded original-grant part observations.
+    DirectUploadReportPartsBatch,
+    /// Selects bounded server-owned staging completion and promotion.
+    DirectUploadCompleteBatch,
+    /// Selects bounded exact direct-session abort.
+    DirectUploadAbort,
     /// Selects the coordinated delivery `PlanDeliveryDestination` operation.
     PlanDeliveryDestination,
     /// Selects the coordinated delivery `ApplyDeliveryDestination` operation.
@@ -1338,6 +1363,13 @@ impl HubTopologyMethod {
             GetContainerRegistryPurgeFence => {
                 "aos.hub.v1.ContainerService/GetContainerRegistryPurgeFence"
             }
+            DirectUploadGetCapabilities => "aos.hub.v1.DirectUploadService/GetCapabilities",
+            DirectUploadBeginBatch => "aos.hub.v1.DirectUploadService/BeginBatch",
+            DirectUploadStatusBatch => "aos.hub.v1.DirectUploadService/StatusBatch",
+            DirectUploadGrantPartsBatch => "aos.hub.v1.DirectUploadService/GrantPartsBatch",
+            DirectUploadReportPartsBatch => "aos.hub.v1.DirectUploadService/ReportPartsBatch",
+            DirectUploadCompleteBatch => "aos.hub.v1.DirectUploadService/CompleteBatch",
+            DirectUploadAbort => "aos.hub.v1.DirectUploadService/Abort",
             BeginContainerPublication => "aos.hub.v1.ContainerService/BeginContainerPublication",
             GetContainerPublication => "aos.hub.v1.ContainerService/GetContainerPublication",
             CommitContainerPublication => "aos.hub.v1.ContainerService/CommitContainerPublication",
@@ -1388,6 +1420,13 @@ macro_rules! typed_hub_rpcs {
 /// Closed typed selectors for normalized Hub Connect operations.
 pub mod hub_rpc {
     typed_hub_rpcs! {
+        DirectUploadGetCapabilities: DirectGetCapabilities => DirectUploadCapabilities;
+        DirectUploadBeginBatch: DirectBeginBatch => DirectUploadResponse;
+        DirectUploadStatusBatch: DirectStatusBatch => DirectUploadResponse;
+        DirectUploadGrantPartsBatch: DirectGrantPartsBatch => DirectUploadResponse;
+        DirectUploadReportPartsBatch: DirectReportPartsBatch => DirectUploadResponse;
+        DirectUploadCompleteBatch: DirectCompleteBatch => DirectUploadResponse;
+        DirectUploadAbort: DirectAbortBatch => DirectUploadResponse;
         PlanDeliveryDestination: PlanDeliveryDestinationRequest => TopologyPlanResponse;
         ApplyDeliveryDestination: ApplyDeliveryDestinationRequest => DeliveryWorkflowResponse;
         GetDeliveryWorkflow: GetDeliveryWorkflowRequest => DeliveryWorkflowResponse;

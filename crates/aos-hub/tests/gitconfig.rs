@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, RegistryRecord, TokenAuth};
+use aos_hub::db::{Database, RegistryRecord};
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::server::{router, AppState};
@@ -57,18 +57,15 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
     })
 }
 
-fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
-    JwtKeys::from_secret(TEST_JWT_SECRET)
-        .mint(
-            &TokenAuth {
-                token_id: "test-token".into(),
-                owner: principal,
-                scope: Scope::parse(scope),
-                permissions: perms.to_vec(),
-            },
-            900,
-        )
-        .unwrap()
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
+    )
+    .await
 }
 
 async fn rpc(
@@ -564,10 +561,12 @@ async fn git_service_log_diff_and_change_requests() {
     .await
     .unwrap();
     let token = bearer(
+        &db,
         Principal::user(user),
         &common::registry_scope(&db, "acme/cdn").await,
         &[Permission::AuditRead],
-    );
+    )
+    .await;
     let (status, value) = rpc(
         &app,
         "GitService/ListChangeRequests",

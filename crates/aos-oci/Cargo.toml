@@ -11,6 +11,10 @@ workspace = true
 
 [dependencies]
 aos-oci-types = { workspace = true }
+aos-net = { workspace = true }
+aos-remote = { workspace = true }
+aos-proto-types = { workspace = true }
+async-trait = { workspace = true }
 aos-registry-surface = { workspace = true }
 anyhow = { workspace = true }
 base64 = { workspace = true }
@@ -33,5 +37,6 @@ zeroize = { workspace = true }
 zstd = { workspace = true }
 
 [dev-dependencies]
-axum = { workspace = true }
+axum = { workspace = true, features = ["http2"] }
 ed25519-dalek = { workspace = true }
+reqwest = { workspace = true, features = ["http2"] }

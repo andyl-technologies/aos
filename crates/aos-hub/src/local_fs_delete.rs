@@ -342,6 +342,7 @@ mod tests {
         metadata: &std::fs::Metadata,
     ) -> SurfaceDeletePrecondition {
         SurfaceDeletePrecondition {
+            expected_provider_version: None,
             etag: Some(delete_etag(path, metadata)),
             content_hash: Some(format!("sha256:{}", hex::encode(Sha256::digest(bytes)))),
             size: Some(bytes.len() as i64),
@@ -474,6 +475,7 @@ mod tests {
             .unwrap();
         tokio::fs::write(&target, bytes).await.unwrap();
         let expected = SurfaceDeletePrecondition {
+            expected_provider_version: None,
             etag: Some(format!("\"snapshot-sha256-{digest}\"")),
             content_hash: Some(format!("sha256:{digest}")),
             size: Some(bytes.len() as i64),

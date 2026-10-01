@@ -197,12 +197,13 @@ impl CacheGcDeletionController {
             Err(error) => return backend_failure("unsupported_backend", &format!("{error:#}")),
         };
         let expected = SurfaceDeletePrecondition {
+            expected_provider_version: receipt.expected_provider_version.clone(),
             etag: receipt.expected_etag.clone(),
             content_hash: receipt.expected_hash.clone(),
             size: receipt.expected_size,
         };
         match deleter
-            .delete_if_matches(&receipt.object_key, &expected)
+            .delete_if_matches_claimed(&receipt.object_key, &expected, &receipt.request_id)
             .await
         {
             Ok(outcome @ SurfaceDeleteOutcome::Deleted { .. })
@@ -331,6 +332,7 @@ mod tests {
     #[test]
     fn cache_delete_distinguishes_observed_identity_from_s3_acknowledgment() {
         let expected = SurfaceDeletePrecondition {
+            expected_provider_version: None,
             etag: Some("\"etag-1\"".into()),
             content_hash: Some("sha256:object".into()),
             size: Some(12),

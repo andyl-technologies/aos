@@ -158,7 +158,8 @@ pub trait RouteObservationProvider: crate::backend::BackendBounds {
 }
 
 /// Purpose-specific evidence from a controller-owned storage credential probe.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StorageCredentialProbeEvidence {
     /// Whether the exact credential generation exercised its declared purpose.
     pub valid: bool,
@@ -172,12 +173,15 @@ pub struct StorageCredentialProbeEvidence {
 
 /// Controller-owned adapter for real, purpose-specific storage probes.
 ///
-/// Implementations own secret resolution and provider transport. Public RPC
-/// callers never supply validation results or credential material.
+/// Implementations own the configured execution boundary and provider transport.
+/// Native-only adapters resolve local material; Hybrid adapters authenticate
+/// Worker custody without receiving material. Public RPC callers never supply
+/// validation results or credential material.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait StorageCredentialProbeProvider: crate::backend::BackendBounds {
     /// Exercises one exact credential revision against its configured origin.
+    /// The operation identity and token name the original controller-owned task.
     ///
     /// # Errors
     ///
@@ -186,6 +190,7 @@ pub trait StorageCredentialProbeProvider: crate::backend::BackendBounds {
         &self,
         binding: &crate::db::BindingRecord,
         credential: &crate::db::BindingCredentialRevisionRecord,
+        operation_id: &str,
         probe_token: &str,
     ) -> Result<StorageCredentialProbeEvidence>;
 }
@@ -199,6 +204,7 @@ impl StorageCredentialProbeProvider for UnavailableStorageCredentialProbeProvide
         &self,
         _binding: &crate::db::BindingRecord,
         _credential: &crate::db::BindingCredentialRevisionRecord,
+        _operation_id: &str,
         _probe_token: &str,
     ) -> Result<StorageCredentialProbeEvidence> {
         anyhow::bail!("no controller-owned storage credential probe adapter is configured")
@@ -1203,6 +1209,12 @@ impl TopologyProbeScheduler for DatabaseTopologyProbeScheduler {
                 generation,
                 credential_head_resource_version,
             } => {
+                self.db.ensure_binding_write_state(binding_id).await?;
+                let write_state = self
+                    .db
+                    .binding_write_state(binding_id)
+                    .await?
+                    .context("storage credential probe write state absent")?;
                 let probe_token = hex::encode(Sha256::digest(
                     format!("storage-probe-token-v1\0{operation_id}\0{stable_id}").as_bytes(),
                 ));
@@ -1219,6 +1231,8 @@ impl TopologyProbeScheduler for DatabaseTopologyProbeScheduler {
                         "purpose": purpose,
                         "credentialGeneration": generation,
                         "credentialHeadResourceVersion": credential_head_resource_version,
+                        "bindingWriteStateResourceVersion": write_state.resource_version,
+                        "bindingWriteRevision": write_state.current_write_revision.unwrap_or(0),
                         "probeToken": probe_token,
                     }),
                 )
@@ -1623,7 +1637,7 @@ impl DomainProbeController {
         let (evidence, checkpoint) = if credential.head_resource_version == expected_head_version {
             let evidence = self
                 .storage_credential_probe
-                .probe(&binding, &credential, probe_token)
+                .probe(&binding, &credential, &operation.operation_id, probe_token)
                 .await?;
             anyhow::ensure!(
                 evidence.valid == evidence.error.is_none(),
@@ -1634,6 +1648,8 @@ impl DomainProbeController {
                 "purpose": purpose,
                 "credentialGeneration": generation,
                 "credentialHeadResourceVersion": expected_head_version,
+                "bindingWriteStateResourceVersion": detail.get("bindingWriteStateResourceVersion"),
+                "bindingWriteRevision": detail.get("bindingWriteRevision"),
                 "probeToken": probe_token,
                 "probeResult": if evidence.valid { "valid" } else { "invalid" },
                 "probeError": evidence.error,
@@ -1657,17 +1673,43 @@ impl DomainProbeController {
                 .await?;
             let state = if evidence.valid { "valid" } else { "invalid" };
             self.db
-                .validate_binding_credential_revision(
-                    binding.id,
-                    &purpose,
-                    generation,
+                .validate_probed_binding_credential_revision(
+                    &binding,
+                    &credential,
+                    &checkpoint,
                     state,
                     evidence.error.as_deref(),
-                    expected_head_version,
                 )
                 .await?;
-            (evidence, checkpoint)
+            let committed = self
+                .db
+                .topology_operation(&checkpoint.operation_id)
+                .await?
+                .context("validated probe checkpoint disappeared")?;
+            anyhow::ensure!(
+                committed.resource_version == checkpoint.resource_version + 1
+                    && committed.state == "running",
+                "validated probe claim changed"
+            );
+            (evidence, committed)
         } else if credential.head_resource_version == expected_head_version + 1 {
+            anyhow::ensure!(
+                detail
+                    .get("validationCommitted")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+                    && detail
+                        .get("validatedCredentialHeadResourceVersion")
+                        .and_then(serde_json::Value::as_i64)
+                        == Some(credential.head_resource_version)
+                    && self
+                        .db
+                        .current_binding_credential(binding.id, &purpose)
+                        .await?
+                        .is_some_and(|head| head.generation == generation
+                            && head.head_resource_version == credential.head_resource_version),
+                "credential head advanced without this original committed validation"
+            );
             let state = detail
                 .get("probeResult")
                 .and_then(serde_json::Value::as_str)
@@ -1714,6 +1756,7 @@ impl DomainProbeController {
             self.record_storage_write_evidence(
                 &binding,
                 &credential,
+                &checkpoint,
                 evidence.conditional_writes_supported,
             )
             .await?;
@@ -1723,6 +1766,10 @@ impl DomainProbeController {
             "purpose": purpose,
             "credentialGeneration": generation,
             "credentialHeadResourceVersion": expected_head_version,
+            "bindingWriteStateResourceVersion": detail.get("bindingWriteStateResourceVersion"),
+            "bindingWriteRevision": detail.get("bindingWriteRevision"),
+            "validationCommitted": true,
+            "validatedCredentialHeadResourceVersion": expected_head_version + 1,
             "probeToken": probe_token,
             "result": state,
             "conditionalWritesSupported": evidence.conditional_writes_supported,
@@ -1749,6 +1796,7 @@ impl DomainProbeController {
         &self,
         binding: &crate::db::BindingRecord,
         credential: &crate::db::BindingCredentialRevisionRecord,
+        claim: &TopologyOperationRecord,
         conditional_writes_supported: bool,
     ) -> Result<()> {
         let capability_fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(&(
@@ -1797,11 +1845,7 @@ impl DomainProbeController {
             .context("binding write state is missing")?;
         if write_state.current_write_revision != Some(revision.revision) {
             self.db
-                .set_current_binding_write_revision(
-                    binding.id,
-                    revision.revision,
-                    write_state.resource_version,
-                )
+                .select_probed_binding_write_revision(binding, credential, claim, revision.revision)
                 .await?;
         }
         Ok(())

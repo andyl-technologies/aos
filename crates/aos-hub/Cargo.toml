@@ -12,6 +12,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 sha2 = { workspace = true }
+md-5 = { workspace = true }
 hmac = { workspace = true }
 base64 = { workspace = true }
 aes-gcm = { workspace = true }
@@ -19,6 +20,7 @@ hex = { workspace = true }
 zeroize = { workspace = true }
 semver = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 flate2 = { workspace = true }
 futures-util = { workspace = true }
 zstd = { workspace = true }
@@ -34,6 +36,7 @@ tokio-util = { workspace = true }
 axum = { workspace = true }
 rand = { workspace = true }
 rustix = { workspace = true, features = ["process"] }
+rusqlite = { workspace = true, features = ["hooks"] }
 uuid = { workspace = true }
 tower-http = { workspace = true, features = ["catch-panic", "limit"] }
 clap = { workspace = true }
@@ -47,6 +50,7 @@ aos-core = { workspace = true }
 aos-package = { workspace = true }
 aos-hub-core = { workspace = true }
 aos-doc-model = { workspace = true }
+aos-oci-types = { workspace = true }
 aos-registry-surface = { workspace = true }
 
 [features]
@@ -66,7 +70,6 @@ test-support = []
 [dev-dependencies]
 aos-hub-core = { workspace = true, features = ["test-fixtures"] }
 aos-oci = { workspace = true }
-aos-oci-types = { workspace = true }
 aos-proto-types = { workspace = true }
 aos-cache = { workspace = true }
 aos-remote = { workspace = true }
@@ -75,9 +78,6 @@ aos-remote = { workspace = true }
 # The OIDC e2e test (`tests/oidc.rs`) still uses it to *encode* the signed
 # id_tokens its fake IdP serves, so it stays as a dev-dependency only.
 jsonwebtoken = { workspace = true }
-# Migration tests stage old-schema sqlite files with raw rusqlite, then reopen
-# them through the sqlx Database to assert the upgrade path (RFC-0004 Phase 5).
-rusqlite = { workspace = true }
 sqlx = { workspace = true, features = ["postgres", "mysql"] }
 tower = { workspace = true }
 http = { workspace = true }
@@ -91,3 +91,19 @@ path = "src/main.rs"
 [[bin]]
 name = "aos-hub-egress"
 path = "src/bin/aos-hub-egress.rs"
+
+[[bin]]
+name = "aos-hub-authority"
+path = "src/bin/aos-hub-authority.rs"
+
+[[bin]]
+name = "aos-hub-authority-bootstrap"
+path = "src/bin/aos-hub-authority-bootstrap.rs"
+
+[[bin]]
+name = "aos-hub-direct-review"
+path = "src/bin/aos-hub-direct-review.rs"
+
+[[bin]]
+name = "aos-hub-provider-conformance"
+path = "src/bin/aos-hub-provider-conformance.rs"

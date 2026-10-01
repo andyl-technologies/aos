@@ -282,6 +282,64 @@ impl reqwest::dns::Resolve for ValidatingResolver {
 /// Read access to a registry surface by relative path.
 #[async_trait]
 pub trait SurfaceFetch: Send + Sync {
+    /// Indicates that Git reads use closed storage-local projections.
+    fn storage_local_git_projection(&self) -> bool {
+        false
+    }
+
+    /// Returns verified bounded non-tree Git content beside storage.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported projections, invalid sources or limits.
+    async fn inspect_git_object(
+        &self,
+        _oid: aos_registry_surface::object::Oid,
+    ) -> Result<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>> {
+        anyhow::bail!("storage-local Git projection is unavailable")
+    }
+
+    /// Returns the complete bounded row inventory of a verified source tree.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported inventories, incomplete continuations,
+    /// changed sources or parser limits. It never returns raw tree framing.
+    async fn inspect_git_tree_inventory(
+        &self,
+        _oid: aos_registry_surface::object::Oid,
+    ) -> Result<Vec<aos_registry_surface::object::TreeEntry>> {
+        anyhow::bail!("storage-local Git tree inventory is unavailable")
+    }
+
+    /// Selects encoded representations actually supplying a verified Git OID.
+    fn git_object_source_paths(&self, oid: aos_registry_surface::object::Oid) -> Result<Vec<String>> {
+        Ok(vec![oid.loose_path()])
+    }
+
+    /// Resolves the representations of a closure OID not already materialized.
+    ///
+    /// # Errors
+    /// Returns an error for absence, changed identity or bounded query failures.
+    async fn verified_git_source_paths(&self, oid: aos_registry_surface::object::Oid) -> Result<Vec<String>> {
+        self.git_object_source_paths(oid)
+    }
+
+    /// Resolves complete closure representations with bounded storage-local batches.
+    ///
+    /// # Errors
+    /// Returns an error when any identity is absent, substituted or unsupported.
+    async fn verified_git_sources(&self, oids: &[aos_registry_surface::object::Oid]) -> Result<Vec<Vec<String>>> {
+        let mut sources = Vec::with_capacity(oids.len());
+        for oid in oids {
+            sources.push(self.verified_git_source_paths(*oid).await?);
+        }
+        Ok(sources)
+    }
+
+    /// Selects bounded discovery metadata required by those representations.
+    fn git_auxiliary_source_paths(&self) -> Result<Vec<String>> {
+        Ok(Vec::new())
+    }
+
     /// Fetch one surface path.
     ///
     /// Returns `Ok(None)` when the path definitively does not exist
@@ -687,15 +745,40 @@ impl SurfaceFetch for LocalFsFetch {
 pub struct HttpFetch {
     base: String,
     client: reqwest::Client,
+    mirror_metadata_only: bool,
 }
 
 impl HttpFetch {
+    #[cfg(test)]
+    /// Selects an isolated fixture transport while retaining metadata body limits.
+    pub(crate) fn controlled_mirror_metadata(base: String, client: reqwest::Client) -> Self {
+        Self { base, client, mirror_metadata_only: true }
+    }
+
     /// Create a fetcher for a registry base URL.
     pub async fn new(base: impl Into<String>) -> Self {
         Self {
             base: base.into().trim_end_matches('/').to_string(),
             client: hardened_client().await,
+            mirror_metadata_only: false,
         }
+    }
+
+    /// Restricts mirror trust discovery to bounded metadata and loose objects.
+    ///
+    /// Source NARs and pack representations require storage-side projection.
+    #[must_use]
+    pub(crate) fn for_mirror_metadata(mut self) -> Self {
+        self.mirror_metadata_only = true;
+        self
+    }
+
+    fn validate_mirror_metadata(&self, path: &str) -> Result<()> {
+        if self.mirror_metadata_only {
+            anyhow::ensure!(!path.starts_with("nar/") && !path.ends_with(".pack") && !path.ends_with(".idx"),
+                "hybrid mirror requires a qualified storage-side projection for NAR and Git pack bodies");
+        }
+        Ok(())
     }
 
     /// Reads a surface object as a version-bound HTTP stream.
@@ -710,6 +793,7 @@ impl HttpFetch {
     ) -> Result<Option<aos_hub_core::fetch::StreamedRead>> {
         use reqwest::header;
 
+        anyhow::ensure!(!self.mirror_metadata_only, "Native mirror discovery never opens source body streams");
         validate_http_surface_path(path)?;
         let url = format!("{}/{path}", self.base);
         let mut request = self.client.get(&url);
@@ -810,6 +894,7 @@ impl SurfaceFetch for HttpFetch {
         // steer the request to a different URL path or host. Several path
         // segments derive from a remote's own info/refs/channel data during a
         // mirror sync, so validate before interpolating.
+        self.validate_mirror_metadata(path)?;
         validate_http_surface_path(path)?;
         let url = format!("{}/{path}", self.base);
         let response = self
@@ -830,7 +915,8 @@ impl SurfaceFetch for HttpFetch {
         // Reject oversized bodies up front when the server declares a length,
         // then stream with the same cap so chunked responses (no
         // Content-Length) are bounded too.
-        let body = read_body_capped(response, MAX_FETCH_BYTES, &format!("fetching {url}")).await?;
+        let maximum = if self.mirror_metadata_only { 256 * 1024 } else { MAX_FETCH_BYTES };
+        let body = read_body_capped(response, maximum, &format!("fetching {url}")).await?;
         Ok(Some(body))
     }
 

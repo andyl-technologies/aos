@@ -11,6 +11,7 @@ main = "build/worker/shim.mjs"
 compatibility_date = "2024-09-23"
 
 [vars]
+HUB_TOPOLOGY = "worker_only"
 HUB_REQUEST_SHARDING = "on"
 HUB_OCI_PULL_ENABLED = "true"
 HUB_OCI_PUSH_ENABLED = "true"

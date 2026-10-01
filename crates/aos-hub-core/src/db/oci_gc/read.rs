@@ -141,7 +141,7 @@ impl Database {
                 .query(
                     &format!(
                         "SELECT {GC_RUN_COLUMNS} FROM oci_gc_runs
-                         WHERE registry_id = ?1 AND (?2 IS NULL OR state = ?2)
+                         WHERE registry_id = ?1 AND (CAST(?2 AS VARCHAR) IS NULL OR state = ?2)
                            AND (created_at < ?3 OR (created_at = ?3 AND id < ?4))
                          ORDER BY created_at DESC, id DESC LIMIT ?5"
                     ),
@@ -153,7 +153,7 @@ impl Database {
                 .query(
                     &format!(
                         "SELECT {GC_RUN_COLUMNS} FROM oci_gc_runs
-                         WHERE registry_id = ?1 AND (?2 IS NULL OR state = ?2)
+                         WHERE registry_id = ?1 AND (CAST(?2 AS VARCHAR) IS NULL OR state = ?2)
                          ORDER BY created_at DESC, id DESC LIMIT ?3"
                     ),
                     &vals![registry_id, state, sql_limit],
@@ -296,7 +296,7 @@ impl Database {
                            ON snapshot.run_id = action.run_id
                           AND snapshot.placement_id = action.placement_id
                          WHERE action.run_id = ?1
-                           AND (?2 IS NULL OR action.state = ?2) AND action.id > ?3
+                           AND (CAST(?2 AS VARCHAR) IS NULL OR action.state = ?2) AND action.id > ?3
                          ORDER BY action.id LIMIT ?4"
                     ),
                     &vals![generation_id, state, after, sql_limit],
@@ -311,7 +311,7 @@ impl Database {
                            ON snapshot.run_id = action.run_id
                           AND snapshot.placement_id = action.placement_id
                          WHERE action.run_id = ?1
-                           AND (?2 IS NULL OR action.state = ?2)
+                           AND (CAST(?2 AS VARCHAR) IS NULL OR action.state = ?2)
                          ORDER BY action.id LIMIT ?3"
                     ),
                     &vals![generation_id, state, sql_limit],
@@ -690,7 +690,7 @@ pub(super) const GC_ACTION_COLUMNS: &str = "action.id, action.run_id,
     snapshot.delete_capability_fingerprint,
     snapshot.delete_capability_resource_version, action.state,
     action.attempt_count, action.max_attempts, action.next_attempt_at,
-    action.last_error, action.confirmed_at, action.resource_version";
+    action.last_error, action.confirmed_at, action.resource_version, action.expected_provider_version";
 
 fn row_to_generation(row: &Row) -> Result<OciGcGenerationRecord> {
     Ok(OciGcGenerationRecord {
@@ -764,6 +764,7 @@ pub(super) fn row_to_action(row: &Row) -> Result<OciGcPlacementActionRecord> {
         expected_hash: Sha256Digest::parse(&row.get::<String>(5)?)?,
         expected_size: count(row, 6, "placement action expected byte")?,
         expected_strong_etag: row.get(7)?,
+        expected_provider_version: row.get(32)?,
         inventory_entry_present: row.get::<i64>(8)? == 1,
         inventory_generation_id: row.get(9)?,
         inventory_digest: Sha256Digest::parse(&row.get::<String>(10)?)?,

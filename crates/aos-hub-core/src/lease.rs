@@ -37,8 +37,11 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use anyhow::Result;
+
 use crate::backend::BackendBounds;
 use crate::coordinator::Coordinator;
+use crate::db::Database;
 
 /// Grace period, in seconds, after which an idle publish lease expires and
 /// another token may take it.
@@ -65,23 +68,19 @@ pub trait PublishLease: BackendBounds {
     /// Acquire or refresh the lease for `registry_id` on behalf of `token_id`,
     /// or report the conflicting holder.
     ///
-    /// Returns `Ok(())` when `token_id` already holds the lease (the deadline is
-    /// refreshed to `now + `[`LEASE_TTL_SECS`]) or no live lease exists (a new
-    /// one is taken). Returns `Err(holder)` with the conflicting token id when a
-    /// *different* token holds an unexpired lease.
+    /// Returns `Ok(None)` when `token_id` already holds the lease (the deadline
+    /// is refreshed to `now + `[`LEASE_TTL_SECS`]) or no live lease exists (a
+    /// new one is taken). Returns `Ok(Some(holder))` when a different token
+    /// holds an unexpired lease.
     ///
     /// `now` is the current unix time in seconds; the caller supplies it so the
     /// clock is testable.
     ///
     /// # Errors
     ///
-    /// The `Err` variant is the *conflict* signal carrying the current holder's
-    /// token id, not a transport failure: a durable implementation that cannot
-    /// reach its store treats that as an internal error of the surrounding write
-    /// handler, not a lease conflict, so it returns a holder string only for a
-    /// genuine live-lease collision and otherwise propagates the IO error out of
-    /// band (by acquiring optimistically — see the Worker impl).
-    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<(), String>;
+    /// Returns an error when the lease store is unavailable or rejects the
+    /// operation. A storage error never grants a publication lease.
+    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<Option<String>>;
 
     /// Release the lease for `registry_id` iff `token_id` currently holds it.
     ///
@@ -130,11 +129,11 @@ impl InMemoryLease {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl PublishLease for InMemoryLease {
-    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<(), String> {
+    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<Option<String>> {
         let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         match leases.get(&registry_id) {
             Some(lease) if lease.deadline > now && lease.holder_token_id != token_id => {
-                Err(lease.holder_token_id.clone())
+                Ok(Some(lease.holder_token_id.clone()))
             }
             _ => {
                 leases.insert(
@@ -144,7 +143,7 @@ impl PublishLease for InMemoryLease {
                         deadline: now + LEASE_TTL_SECS,
                     },
                 );
-                Ok(())
+                Ok(None)
             }
         }
     }
@@ -158,6 +157,39 @@ impl PublishLease for InMemoryLease {
             .is_some_and(|lease| lease.holder_token_id == token_id)
         {
             leases.remove(&registry_id);
+        }
+    }
+}
+
+/// A [`PublishLease`] persisted in the Hub database for Native replicas.
+///
+/// The existing `publish_leases` table serializes admission across SQL
+/// connections. Every acquisition reports database failure separately from
+/// a live holder conflict, so a disconnected replica fails closed.
+pub struct DatabasePublishLease {
+    db: Arc<Database>,
+}
+
+impl DatabasePublishLease {
+    /// Creates a shared publication lease over the Hub's SQL authority.
+    #[must_use]
+    pub fn new(db: Arc<Database>) -> Self {
+        Self { db }
+    }
+}
+
+#[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
+#[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
+impl PublishLease for DatabasePublishLease {
+    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<Option<String>> {
+        self.db
+            .acquire_publish_lease(registry_id, token_id, now)
+            .await
+    }
+
+    async fn release(&self, registry_id: i64, token_id: &str) {
+        if let Err(error) = self.db.release_publish_lease(registry_id, token_id).await {
+            tracing::warn!(error = %error, "releasing database publication lease failed");
         }
     }
 }
@@ -191,23 +223,10 @@ impl CoordinatorLease {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl PublishLease for CoordinatorLease {
-    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<(), String> {
-        match self
-            .coordinator
+    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<Option<String>> {
+        self.coordinator
             .acquire_lease(&Self::key(registry_id), token_id, LEASE_TTL_SECS, now)
             .await
-        {
-            // Acquired or refreshed by us.
-            Ok(None) => Ok(()),
-            // A different token holds a live lease — the conflict signal.
-            Ok(Some(holder)) => Err(holder),
-            // A coordinator IO error is not a lease conflict: acquire
-            // optimistically so a transient coordinator failure never blocks a
-            // legitimate publish (matching the coordinator's out-of-band
-            // error handling). The surrounding write handler surfaces real IO
-            // failures of the pointer writes themselves.
-            Err(_) => Ok(()),
-        }
     }
 
     async fn release(&self, registry_id: i64, token_id: &str) {
@@ -229,58 +248,61 @@ mod tests {
     async fn coordinator_lease_matches_lease_semantics() {
         let lease = CoordinatorLease::new(Arc::new(InMemoryCoordinator::new()));
         // First token takes it; same token refreshes; a different token conflicts.
-        assert!(lease.acquire(1, "token-a", 1000).await.is_ok());
-        assert!(lease.acquire(1, "token-a", 1010).await.is_ok());
+        assert_eq!(lease.acquire(1, "token-a", 1000).await.unwrap(), None);
+        assert_eq!(lease.acquire(1, "token-a", 1010).await.unwrap(), None);
         assert_eq!(
-            lease.acquire(1, "token-b", 1020).await,
-            Err("token-a".into())
+            lease.acquire(1, "token-b", 1020).await.unwrap(),
+            Some("token-a".into())
         );
         // A different registry is independent.
-        assert!(lease.acquire(2, "token-b", 1020).await.is_ok());
+        assert_eq!(lease.acquire(2, "token-b", 1020).await.unwrap(), None);
         // The holder's release frees it for the other token.
         lease.release(1, "token-b").await; // no-op (not holder)
         assert_eq!(
-            lease.acquire(1, "token-b", 1030).await,
-            Err("token-a".into())
+            lease.acquire(1, "token-b", 1030).await.unwrap(),
+            Some("token-a".into())
         );
         lease.release(1, "token-a").await;
-        assert!(lease.acquire(1, "token-b", 1040).await.is_ok());
+        assert_eq!(lease.acquire(1, "token-b", 1040).await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn lease_is_held_by_first_token_until_expiry() {
         let leases = InMemoryLease::new();
         // First token takes the lease.
-        assert!(leases.acquire(1, "token-a", 1000).await.is_ok());
+        assert_eq!(leases.acquire(1, "token-a", 1000).await.unwrap(), None);
         // Same token refreshes it.
-        assert!(leases.acquire(1, "token-a", 1010).await.is_ok());
+        assert_eq!(leases.acquire(1, "token-a", 1010).await.unwrap(), None);
         // A different token is blocked while the lease is live.
         assert_eq!(
-            leases.acquire(1, "token-b", 1020).await,
-            Err("token-a".into())
+            leases.acquire(1, "token-b", 1020).await.unwrap(),
+            Some("token-a".into())
         );
         // A different registry is independent.
-        assert!(leases.acquire(2, "token-b", 1020).await.is_ok());
+        assert_eq!(leases.acquire(2, "token-b", 1020).await.unwrap(), None);
         // After the last refresh's deadline passes, the other token may take it
         // (the refresh at t=1010 set the deadline to 1010 + TTL).
-        assert!(leases
-            .acquire(1, "token-b", 1010 + LEASE_TTL_SECS + 1)
-            .await
-            .is_ok());
+        assert_eq!(
+            leases
+                .acquire(1, "token-b", 1010 + LEASE_TTL_SECS + 1)
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
     async fn release_only_drops_the_holder_s_lease() {
         let leases = InMemoryLease::new();
-        assert!(leases.acquire(1, "token-a", 1000).await.is_ok());
+        assert_eq!(leases.acquire(1, "token-a", 1000).await.unwrap(), None);
         // A non-holder's release is a no-op: token-a still holds it.
         leases.release(1, "token-b").await;
         assert_eq!(
-            leases.acquire(1, "token-b", 1010).await,
-            Err("token-a".into())
+            leases.acquire(1, "token-b", 1010).await.unwrap(),
+            Some("token-a".into())
         );
         // The holder's release frees it; token-b can now take it.
         leases.release(1, "token-a").await;
-        assert!(leases.acquire(1, "token-b", 1020).await.is_ok());
+        assert_eq!(leases.acquire(1, "token-b", 1020).await.unwrap(), None);
     }
 }

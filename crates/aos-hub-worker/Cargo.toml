@@ -69,6 +69,9 @@ base64 = { workspace = true }
 rand = { workspace = true }
 uuid = { workspace = true }
 sha2 = { workspace = true }
+ruzstd = "0.8.1"
+zeroize = { workspace = true }
+md-5 = { workspace = true }
 # Semver ordering for the Cron indexer (release-tag classification + channel
 # frontier selection), matching the native indexer.
 semver = { workspace = true }
@@ -102,6 +105,8 @@ futures-util = "0.3"
 send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
+zstd = { workspace = true }
+aos-doc-model = { workspace = true }
 aos-hub = { workspace = true, features = ["test-support"] }
 aos-proto-types = { workspace = true }
 # Drives the native unit test for the pure Worker request-routing seam.

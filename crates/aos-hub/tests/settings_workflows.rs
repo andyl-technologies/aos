@@ -13,7 +13,7 @@ use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
 use aos_hub::db::{
     Database, EndpointHostInput, EndpointRevisionSpec, GatewayGrantCarryForward,
-    GatewayRevisionSpec, GrantResource, TokenAuth,
+    GatewayRevisionSpec, GrantResource,
 };
 use aos_hub::domain::{Permission, Principal, Scope};
 use aos_hub::server::{router, AppState};
@@ -57,18 +57,15 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
 }
 
 /// Mints a test bearer for one exact authorization scope.
-fn bearer(principal: Principal, scope: &str, permissions: &[Permission]) -> String {
-    JwtKeys::from_secret(TEST_JWT_SECRET)
-        .mint(
-            &TokenAuth {
-                token_id: "settings-workflow-test-token".into(),
-                owner: principal,
-                scope: Scope::parse(scope),
-                permissions: permissions.to_vec(),
-            },
-            900,
-        )
-        .unwrap()
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
+    )
+    .await
 }
 
 /// Calls a Connect-JSON route with an optional bearer token.
@@ -310,10 +307,12 @@ async fn scoped_gateway_selector_requires_current_active_grants() {
         .await
         .unwrap();
     let selector = bearer(
+        &db,
         Principal::user(selector_id),
         &consumer_scope,
         &[Permission::GatewayRead],
-    );
+    )
+    .await;
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     let (status, response) = rpc(

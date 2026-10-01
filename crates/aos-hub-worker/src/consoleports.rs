@@ -79,6 +79,7 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
         &self,
         binding: &aos_hub_core::db::BindingRecord,
         credential: &aos_hub_core::db::BindingCredentialRevisionRecord,
+        _operation_id: &str,
         probe_token: &str,
     ) -> Result<aos_hub_core::topology_probe::StorageCredentialProbeEvidence> {
         anyhow::ensure!(
@@ -93,143 +94,166 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
         verify_secret_fingerprint(&secret, &credential.credential_fingerprint)?;
         let surface = S3Surface::from_binding(binding, "", Some(secret.expose_utf8()?))?
             .context("credential probe requires an external S3-compatible binding")?;
-        let now = aos_hub_core::clock::now_unix_secs();
-        let path = format!(
-            ".aos/credential-probes/{}/{}/{}",
-            credential.purpose, credential.generation, probe_token
-        );
-        let mut statuses = serde_json::Map::new();
-        let valid = match credential.purpose.as_str() {
-            "read" | "presign" => {
-                let url = surface.object_url(S3Method::Get, &path, now)?;
-                let response = self
-                    .egress
-                    .send(&url, "GET", None, None, None, None, None)
-                    .await?;
-                let status = response.status_code();
-                statuses.insert("getStatus".into(), status.into());
-                status == 404 || (200..300).contains(&status)
-            }
-            "list" => {
-                let url = surface.list_url(None, 1, now)?;
-                let response = self
-                    .egress
-                    .send(&url, "GET", None, None, None, None, None)
-                    .await?;
-                let status = response.status_code();
-                statuses.insert("listStatus".into(), status.into());
-                (200..300).contains(&status)
-            }
-            "delete" => {
-                let url = surface.object_url(S3Method::Delete, &path, now)?;
-                let response = self
-                    .egress
-                    .send(&url, "DELETE", None, None, None, None, None)
-                    .await?;
-                let status = response.status_code();
-                statuses.insert("deleteStatus".into(), status.into());
-                (200..300).contains(&status)
-            }
-            "write" => {
-                let recovery_url = surface.list_multipart_uploads_url(&path, now)?;
-                let mut recovery = self
-                    .egress
-                    .send(&recovery_url, "GET", None, None, None, None, None)
-                    .await?;
-                let recovery_status = recovery.status_code();
-                statuses.insert("multipartRecoveryListStatus".into(), recovery_status.into());
-                anyhow::ensure!(
-                    (200..300).contains(&recovery_status),
-                    "multipart recovery listing was rejected"
-                );
-                let recovery_body = read_response_capped(
-                    &mut recovery,
-                    1024 * 1024,
-                    "credential multipart recovery listing",
-                )
-                .await?;
-                let recovery_xml = std::str::from_utf8(&recovery_body)
-                    .context("credential multipart recovery listing is not UTF-8")?;
-                let abandoned = surface.parse_exact_multipart_uploads(&path, recovery_xml)?;
-                statuses.insert("recoveredMultipartUploads".into(), abandoned.len().into());
-                for upload_id in abandoned {
-                    let abort_url = surface.multipart_url(
-                        "abort",
-                        &path,
-                        Some(&upload_id),
-                        None,
-                        aos_hub_core::clock::now_unix_secs(),
-                    )?;
-                    let abort = self
-                        .egress
-                        .send(&abort_url, "DELETE", None, None, None, None, None)
-                        .await?;
-                    anyhow::ensure!(
-                        (200..300).contains(&abort.status_code()),
-                        "multipart recovery abort was rejected"
-                    );
-                }
-                let create_url = surface.multipart_url("create", &path, None, None, now)?;
-                let mut response = self
-                    .egress
-                    .send(
-                        &create_url,
-                        "POST",
-                        Some(Vec::new()),
-                        None,
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?;
-                let create_status = response.status_code();
-                statuses.insert("multipartCreateStatus".into(), create_status.into());
-                if (200..300).contains(&create_status) {
-                    let body = read_response_capped(
-                        &mut response,
-                        1024 * 1024,
-                        "credential multipart-create probe",
-                    )
-                    .await?;
-                    let upload_id = aos_hub_core::s3surface::parse_multipart_upload_id(
-                        std::str::from_utf8(&body)
-                            .context("credential multipart-create response is not UTF-8")?,
-                    )?;
-                    let abort_url = surface.multipart_url(
-                        "abort",
-                        &path,
-                        Some(&upload_id),
-                        None,
-                        aos_hub_core::clock::now_unix_secs(),
-                    )?;
-                    let abort = self
-                        .egress
-                        .send(&abort_url, "DELETE", None, None, None, None, None)
-                        .await?;
-                    let abort_status = abort.status_code();
-                    statuses.insert("multipartAbortStatus".into(), abort_status.into());
-                    (200..300).contains(&abort_status)
-                } else {
-                    false
-                }
-            }
-            _ => anyhow::bail!("credential probe purpose is not supported"),
-        };
-        let error = (!valid).then(|| {
-            format!(
-                "{} capability probe was rejected by origin",
-                credential.purpose
-            )
-        });
-        Ok(
-            aos_hub_core::topology_probe::StorageCredentialProbeEvidence {
-                valid,
-                conditional_writes_supported: false,
-                error,
-                evidence: serde_json::Value::Object(statuses),
-            },
+        probe_storage_credential(
+            &self.egress,
+            &surface,
+            &credential.purpose,
+            credential.generation,
+            probe_token,
         )
+        .await
     }
+}
+
+/// Exercises one purpose beside storage and returns only bounded status evidence.
+pub(crate) async fn probe_storage_credential(
+    egress: &WorkerEgressClient,
+    surface: &S3Surface,
+    purpose: &str,
+    generation: i64,
+    probe_token: &str,
+) -> Result<aos_hub_core::topology_probe::StorageCredentialProbeEvidence> {
+    let now = aos_hub_core::clock::now_unix_secs();
+    let path = format!(
+        ".aos/credential-probes/{}/{}/{}",
+        purpose, generation, probe_token
+    );
+    let mut statuses = serde_json::Map::new();
+    let valid = match purpose {
+        "read" | "presign" => {
+            let url = surface.object_url(S3Method::Get, &path, now)?;
+            let response = egress
+                .send(&url, "GET", None, None, None, None, None)
+                .await?;
+            let status = response.status_code();
+            statuses.insert("getStatus".into(), status.into());
+            status == 404 || (200..300).contains(&status)
+        }
+        "list" => {
+            let url = surface.list_url(None, 1, now)?;
+            let response = egress
+                .send(&url, "GET", None, None, None, None, None)
+                .await?;
+            let status = response.status_code();
+            statuses.insert("listStatus".into(), status.into());
+            (200..300).contains(&status)
+        }
+        "delete" => {
+            let url = surface.object_url(S3Method::Delete, &path, now)?;
+            let response = egress
+                .send(&url, "DELETE", None, None, None, None, None)
+                .await?;
+            let status = response.status_code();
+            statuses.insert("deleteStatus".into(), status.into());
+            (200..300).contains(&status)
+        }
+        "write" => {
+            let recovery_url = surface
+                .list_multipart_uploads_url(&path, now)
+                .context("multipart recovery URL construction failed")?;
+            let mut recovery = egress
+                .send(&recovery_url, "GET", None, None, None, None, None)
+                .await
+                .context("multipart recovery request failed")?;
+            let recovery_status = recovery.status_code();
+            statuses.insert("multipartRecoveryListStatus".into(), recovery_status.into());
+            anyhow::ensure!(
+                (200..300).contains(&recovery_status),
+                "multipart recovery listing was rejected"
+            );
+            let recovery_body = read_response_capped(
+                &mut recovery,
+                1024 * 1024,
+                "credential multipart recovery listing",
+            )
+            .await
+            .context("multipart recovery response failed")?;
+            let recovery_xml = std::str::from_utf8(&recovery_body)
+                .context("credential multipart recovery listing is not UTF-8")?;
+            let abandoned = surface
+                .parse_exact_multipart_uploads(&path, recovery_xml)
+                .context("multipart recovery listing parse failed")?;
+            statuses.insert("recoveredMultipartUploads".into(), abandoned.len().into());
+            for upload_id in abandoned {
+                let abort_url = surface
+                    .multipart_url(
+                        "abort",
+                        &path,
+                        Some(&upload_id),
+                        None,
+                        aos_hub_core::clock::now_unix_secs(),
+                    )
+                    .context("multipart recovery abort URL construction failed")?;
+                let abort = egress
+                    .send(&abort_url, "DELETE", None, None, None, None, None)
+                    .await
+                    .context("multipart recovery abort request failed")?;
+                anyhow::ensure!(
+                    (200..300).contains(&abort.status_code()),
+                    "multipart recovery abort was rejected"
+                );
+            }
+            let create_url = surface
+                .multipart_url("create", &path, None, None, now)
+                .context("multipart create URL construction failed")?;
+            let mut response = egress
+                .send(
+                    &create_url,
+                    "POST",
+                    Some(Vec::new()),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .context("multipart create request failed")?;
+            let create_status = response.status_code();
+            statuses.insert("multipartCreateStatus".into(), create_status.into());
+            if (200..300).contains(&create_status) {
+                let body = read_response_capped(
+                    &mut response,
+                    1024 * 1024,
+                    "credential multipart-create probe",
+                )
+                .await
+                .context("multipart create response failed")?;
+                let upload_id = aos_hub_core::s3surface::parse_multipart_upload_id(
+                    std::str::from_utf8(&body)
+                        .context("credential multipart-create response is not UTF-8")?,
+                )
+                .context("multipart create response parse failed")?;
+                let abort_url = surface
+                    .multipart_url(
+                        "abort",
+                        &path,
+                        Some(&upload_id),
+                        None,
+                        aos_hub_core::clock::now_unix_secs(),
+                    )
+                    .context("multipart probe abort URL construction failed")?;
+                let abort = egress
+                    .send(&abort_url, "DELETE", None, None, None, None, None)
+                    .await
+                    .context("multipart probe abort request failed")?;
+                let abort_status = abort.status_code();
+                statuses.insert("multipartAbortStatus".into(), abort_status.into());
+                (200..300).contains(&abort_status)
+            } else {
+                false
+            }
+        }
+        _ => anyhow::bail!("credential probe purpose is not supported"),
+    };
+    let error = (!valid).then(|| format!("{} capability probe was rejected by origin", purpose));
+    Ok(
+        aos_hub_core::topology_probe::StorageCredentialProbeEvidence {
+            valid,
+            conditional_writes_supported: false,
+            error,
+            evidence: serde_json::Value::Object(statuses),
+        },
+    )
 }
 
 /// Drains one gateway response with both declared-length and streaming caps.

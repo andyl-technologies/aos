@@ -11,6 +11,11 @@ aos-proto = { workspace = true }
 # and the Cloudflare Worker speak. (The cache/build/gc/auth clients above still
 # use the connectrpc `aos-proto` types.)
 aos-proto-types = { workspace = true }
+aos-net = { workspace = true }
+async-trait = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = { workspace = true }
 anyhow = { workspace = true }
 connectrpc = { workspace = true }
 buffa = { workspace = true }

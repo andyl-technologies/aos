@@ -67,10 +67,29 @@ impl PlacementScanController {
     /// Returns an error when operation inventory, claiming, copy or scan
     /// execution, or terminal-state persistence fails.
     pub async fn run_due(&self, limit: usize) -> Result<usize> {
-        let due = self
-            .db
-            .due_surface_placement_scan_operations(clock::now_unix_secs(), limit)
-            .await?;
+        self.run_due_with_copy_support(limit, true).await
+    }
+
+    /// Claims only read-only scans when no storage-local copy writer exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a scan claim, observation, or result write fails.
+    pub async fn run_due_scans_only(&self, limit: usize) -> Result<usize> {
+        self.run_due_with_copy_support(limit, false).await
+    }
+
+    async fn run_due_with_copy_support(&self, limit: usize, include_copies: bool) -> Result<usize> {
+        let now = clock::now_unix_secs();
+        let due = if include_copies {
+            self.db
+                .due_surface_placement_scan_operations(now, limit)
+                .await?
+        } else {
+            self.db
+                .due_surface_placement_scan_only_operations(now, limit)
+                .await?
+        };
         let mut completed = 0;
         for operation in due {
             let claim_token = uuid::Uuid::new_v4().simple().to_string();
@@ -142,7 +161,7 @@ impl PlacementScanController {
         let copy_detail = match operation.operation_kind.as_str() {
             "scan_placement" => None,
             "replicate_placement" | "repair_placement" => {
-                Some(self.copy_to_placement(operation, &placement).await?)
+                Some(self.copy_to_placement(operation, claim_token, &placement).await?)
             }
             kind => bail!("unsupported physical placement operation '{kind}'"),
         };
@@ -196,6 +215,7 @@ impl PlacementScanController {
     async fn copy_to_placement(
         &self,
         operation: &TopologyOperationRecord,
+        claim_token: &str,
         destination: &SurfacePlacementRecord,
     ) -> Result<serde_json::Value> {
         let source_target = self
@@ -236,7 +256,7 @@ impl PlacementScanController {
             "destination",
         )
         .await?;
-        let writer = writes.placement_writer(destination).await?;
+        let mut writer: Option<Box<dyn SurfaceWrite>> = None;
         let mut cursor = None;
         let mut prior_path: Option<String> = None;
         let mut budget = SurfaceListingBudget::default();
@@ -269,7 +289,28 @@ impl PlacementScanController {
                         .context("placement copy reuse count overflow")?;
                     continue;
                 }
-                let size = copy_surface_object(fetch.as_ref(), writer.as_ref(), &path).await?;
+                let size = match writes
+                    .copy_placement_object_claimed(
+                        operation,
+                        claim_token,
+                        &source,
+                        destination,
+                        &path,
+                        source_evidence.get(&path),
+                    )
+                    .await?
+                {
+                    Some(size) => size,
+                    None => {
+                        if writer.is_none() {
+                            writer = Some(writes.placement_writer(destination).await?);
+                        }
+                        let writer = writer
+                            .as_deref()
+                            .context("placement copy writer was not initialized")?;
+                        copy_surface_object(fetch.as_ref(), writer, &path).await?
+                    }
+                };
                 copied_objects = copied_objects
                     .checked_add(1)
                     .context("placement copy object count overflow")?;
@@ -410,6 +451,7 @@ impl PlacementScanController {
                 page_presences.push((
                     object.resource_version,
                     PlacementScanPresence {
+                        provider_version: evidence.provider_version,
                         surface_object_id: object.id,
                         state: if valid { "present" } else { "corrupt" }.to_string(),
                         observed_hash: Some(if valid {
@@ -462,6 +504,7 @@ impl PlacementScanController {
                     (
                         object.resource_version,
                         PlacementScanPresence {
+                            provider_version: None,
                             surface_object_id: object.id,
                             state: "missing".to_string(),
                             observed_hash: None,
@@ -753,11 +796,12 @@ fn reusable_listing_presence(
 
     let listed_etag = crate::surface_write::strong_if_match_etag(&listed.strong_etag).ok()?;
     let prior_etag = crate::surface_write::strong_if_match_etag(prior.etag.as_deref()?).ok()?;
-    if listed_etag != prior_etag {
+    if listed_etag != prior_etag || listed.provider_version != prior.provider_version {
         return None;
     }
 
     Some(PlacementScanPresence {
+        provider_version: listed.provider_version.clone(),
         surface_object_id: object.id,
         state: "present".into(),
         observed_hash: object.content_hash.clone(),
@@ -888,6 +932,7 @@ mod tests {
                 evidence: [(
                     "objects/aa/bb".into(),
                     SurfaceListedEvidence {
+                        provider_version: None,
                         size: 7,
                         strong_etag: "provider-version".into(),
                     },
@@ -943,6 +988,7 @@ mod tests {
             _path: &str,
         ) -> Result<Option<crate::fetch::SurfaceObjectEvidence>> {
             Ok(Some(crate::fetch::SurfaceObjectEvidence {
+                provider_version: None,
                 sha256: Sha256::digest(b"x").into(),
                 size: 1,
                 strong_etag: None,
@@ -1022,6 +1068,7 @@ mod tests {
                             (
                                 path.clone(),
                                 SurfaceListedEvidence {
+                                    provider_version: None,
                                     size: i64::try_from(bytes.len()).unwrap(),
                                     strong_etag: hex::encode(Sha256::digest(bytes)),
                                 },
@@ -1303,10 +1350,12 @@ mod tests {
             resource_version: 1,
         };
         let listed = SurfaceListedEvidence {
+            provider_version: None,
             size: 9,
             strong_etag: "provider-version".into(),
         };
         let mut prior = ReusablePlacementEvidence {
+            provider_version: None,
             surface_object_id: object.id,
             state: "present".into(),
             observed_hash: object.content_hash.clone(),
@@ -1329,7 +1378,7 @@ mod tests {
 
         let controller =
             PlacementScanController::new(Arc::clone(&db), Arc::new(EmptySurfaceProvider));
-        assert_eq!(controller.run_due(1).await.unwrap(), 1);
+        assert_eq!(controller.run_due_scans_only(1).await.unwrap(), 1);
 
         let operation = db
             .topology_operation(&operation.operation_id)
@@ -1400,6 +1449,13 @@ mod tests {
             })
             .await
             .unwrap();
+        let read_only_due = db
+            .due_surface_placement_scan_only_operations(clock::now_unix_secs(), 10)
+            .await
+            .unwrap();
+        assert!(read_only_due
+            .iter()
+            .all(|candidate| candidate.operation_id != operation.operation_id));
         let provider = CopySurfaceProvider::default();
         provider
             .objects
@@ -1739,6 +1795,7 @@ mod tests {
             &[(
                 first.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: first.id,
                     state: "present".into(),
                     observed_hash: first.content_hash,
@@ -1789,6 +1846,7 @@ mod tests {
             &[(
                 concurrent.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: concurrent.id,
                     state: "corrupt".into(),
                     observed_hash: Some("55".repeat(32)),
@@ -1882,6 +1940,7 @@ mod tests {
                 &[(
                     object.resource_version,
                     PlacementScanPresence {
+                        provider_version: None,
                         surface_object_id: object.id,
                         state: "present".into(),
                         observed_hash: object.content_hash,
@@ -1957,6 +2016,7 @@ mod tests {
             (
                 first.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: first.id,
                     state: "present".into(),
                     observed_hash: first.content_hash,
@@ -1967,6 +2027,7 @@ mod tests {
             (
                 superseded.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: superseded.id,
                     state: "present".into(),
                     observed_hash: superseded.content_hash,
@@ -2043,6 +2104,7 @@ mod tests {
             &[(
                 object.resource_version,
                 PlacementScanPresence {
+                    provider_version: None,
                     surface_object_id: object.id,
                     state: "present".into(),
                     observed_hash: Some(digest),

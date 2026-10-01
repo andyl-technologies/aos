@@ -63,7 +63,7 @@
         else {}
       );
 
-    coordinatedContainer = variant: _: let
+    coordinatedContainer = variant: name: _: let
       # The bootstrap ladder starts on x86_64 and performs its reviewed
       # x86_64→aarch64 transition at gcc4_8_cross. Post-cross target tools run
       # through the build host's configured QEMU binfmt handler while Nix keeps
@@ -71,7 +71,7 @@
       coordinatorSystem = "x86_64-linux";
       coordinator = aosFor coordinatorSystem;
       platformBuilds = [
-        coordinator.systems.${variant}.build.defaultContainer
+        coordinator.systems.${variant}.build.containers.${name}
         (import ./. {
           system = coordinatorSystem;
           crossSystem = "aarch64-linux";
@@ -81,7 +81,10 @@
           variant
         }
         .build
-        .defaultContainer
+        .containers
+        .${
+          name
+        }
       ];
       oci = import ./lib/build/oci {
         inherit (coordinator) lib;
@@ -90,12 +93,11 @@
     in
       import ./lib/containers/multi-platform.nix {
         inherit (coordinator) lib pkgs;
-        inherit oci platformBuilds;
-        name = "aos";
+        inherit oci platformBuilds name;
       };
 
-    productionContainer = coordinatedContainer "server";
-    testingContainer = coordinatedContainer "aos-testing";
+    productionContainer = coordinatedContainer "server" "aos";
+    testingContainer = coordinatedContainer "aos-testing" "aos";
 
     # Flatten systems into flake packages:
     #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
@@ -163,6 +165,10 @@
           name: let
             container = aos.containerImages.${name};
             platform = container.platforms.${system};
+            coordinated =
+              if name == "aos"
+              then production
+              else coordinatedContainer "server" name system;
           in [
             {
               name = "container-${name}-oci";
@@ -178,7 +184,7 @@
             }
             {
               name = "container-${name}-index";
-              value = production.ociIndex;
+              value = coordinated.ociIndex;
             }
             {
               name = "container-${name}-platform-index";
@@ -186,15 +192,15 @@
             }
             {
               name = "container-${name}-evidence";
-              value = production.evidence;
+              value = coordinated.evidence;
             }
             {
               name = "container-${name}-publication-inputs";
-              value = production.publicationInputs;
+              value = coordinated.publicationInputs;
             }
             {
               name = "container-${name}-qualification";
-              value = production.check;
+              value = coordinated.check;
             }
           ]
         ) (builtins.attrNames aos.containerImages)

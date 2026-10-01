@@ -35,8 +35,11 @@
 //! `sqlite::memory:` databases are private to a single connection: a pool with
 //! more than one connection would hand out *separate* empty databases. The
 //! sqlite constructor therefore pins an in-memory pool to `max_connections(1)`
-//! (file-backed pools keep the default size). Every sqlite pool enables WAL and
-//! `foreign_keys = ON` to match the rusqlite backend the hub grew from.
+//! and disables acquisition health checks that can discard that connection
+//! when a request is cancelled. File-backed pools retain the default acquisition
+//! checks and enable WAL. Every pool enforces foreign keys.
+
+mod schema_migration;
 
 use std::time::Duration;
 
@@ -44,7 +47,7 @@ use anyhow::{Context, Result};
 
 use super::super::dialect::Dialect;
 use super::super::value::{Row, Value};
-use super::{CheckedStatement, Statement};
+use super::{CheckedStatement, PoolStats, Statement};
 // Multi-statement migration splitting is only needed by the postgres/mysql
 // drivers (sqlite runs the whole script in one call via `raw_sql`).
 #[cfg(any(feature = "postgres", feature = "mysql"))]
@@ -142,6 +145,33 @@ impl SqlxBackend {
         Ok(Self::Sqlite(pool))
     }
 
+    /// Opens an existing SQLite file without schema or journal-mode changes.
+    ///
+    /// Missing files are rejected. This read-only adapter is intended for
+    /// operator metadata readers; callers must independently validate schema
+    /// identity and must not invoke the migrating database initializer.
+    ///
+    /// # Errors
+    /// Returns an error when the existing file cannot be opened read-only.
+    pub async fn connect_sqlite_read_only(path: &str) -> Result<Self> {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        anyhow::ensure!(
+            !path.is_empty() && path != ":memory:",
+            "existing SQLite file is required"
+        );
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(false)
+            .read_only(true)
+            .foreign_keys(true);
+        let pool = SqlitePoolOptions::new()
+            .connect_with(options)
+            .await
+            .context("opening existing SQLite metadata read-only")?;
+        Ok(Self::Sqlite(pool))
+    }
+
     /// Connects to a postgres server at `url` (e.g.
     /// `postgresql://user:pass@host:port/db`).
     ///
@@ -185,6 +215,38 @@ impl super::Backend for SqlxBackend {
             #[cfg(feature = "mysql")]
             Self::Mysql(_) => Dialect::Mysql,
         }
+    }
+
+    async fn migrate_schema(&self) -> Result<()> {
+        schema_migration::migrate(self).await
+    }
+
+    fn pool_stats(&self) -> Option<PoolStats> {
+        let (open, idle, maximum) = match self {
+            Self::Sqlite(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "postgres")]
+            Self::Postgres(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+            #[cfg(feature = "mysql")]
+            Self::Mysql(pool) => (
+                pool.size(),
+                pool.num_idle(),
+                pool.options().get_max_connections(),
+            ),
+        };
+        Some(PoolStats {
+            open,
+            // Pool counters are sampled separately and may race a connection close.
+            idle: idle.min(open as usize),
+            maximum,
+        })
     }
 
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
@@ -493,27 +555,45 @@ mod postgres {
     use super::super::{prepare, with_returning_id, CheckedStatement, Statement};
     use super::SqlxBackend;
 
-    /// PostgreSQL null whose type is inferred from the statement context.
+    /// PostgreSQL null with the type advertised to the Parse message.
     ///
-    /// Binding `Option::<i64>::None` advertises INT8 even though a hub
-    /// [`Value::Null`] may target text, bytea, or another nullable column. OID
-    /// 705 is PostgreSQL's unknown pseudo-type; the server resolves it from the
-    /// target column or comparison before executing the prepared statement.
-    struct UntypedNull;
+    /// An untyped null uses OID 705 so PostgreSQL can infer its column type.
+    /// `IS NULL` gives no type context, so statements with an explicit cast
+    /// advertise that cast's type for the parameter instead.
+    struct PostgresNull {
+        oid: sqlx::postgres::types::Oid,
+    }
 
-    impl sqlx::Type<Postgres> for UntypedNull {
+    impl sqlx::Type<Postgres> for PostgresNull {
         fn type_info() -> sqlx::postgres::PgTypeInfo {
             sqlx::postgres::PgTypeInfo::with_oid(sqlx::postgres::types::Oid(705))
         }
     }
 
-    impl sqlx::Encode<'_, Postgres> for UntypedNull {
+    impl sqlx::Encode<'_, Postgres> for PostgresNull {
         fn encode_by_ref(
             &self,
             _buf: &mut sqlx::postgres::PgArgumentBuffer,
         ) -> Result<sqlx::encode::IsNull, Box<dyn std::error::Error + Send + Sync>> {
             Ok(sqlx::encode::IsNull::Yes)
         }
+
+        fn produces(&self) -> Option<sqlx::postgres::PgTypeInfo> {
+            Some(sqlx::postgres::PgTypeInfo::with_oid(self.oid))
+        }
+    }
+
+    fn null_type_oid(sql: &str, parameter_number: usize) -> sqlx::postgres::types::Oid {
+        use sqlx::postgres::types::Oid;
+
+        for (name, oid) in [("BIGINT", 20), ("VARCHAR", 1043), ("TEXT", 25)] {
+            let cast = format!("CAST(${parameter_number} AS {name})");
+            if sql.contains(&cast) {
+                return Oid(oid);
+            }
+        }
+
+        Oid(705)
     }
 
     /// Decodes PostgreSQL's base-10000 binary NUMERIC form when it is an i64.
@@ -583,10 +663,13 @@ mod postgres {
     fn bind<'q>(
         mut query: sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments>,
         params: &'q [Value],
+        sql: &str,
     ) -> sqlx::query::Query<'q, Postgres, sqlx::postgres::PgArguments> {
-        for value in params {
+        for (index, value) in params.iter().enumerate() {
             query = match value {
-                Value::Null => query.bind(UntypedNull),
+                Value::Null => query.bind(PostgresNull {
+                    oid: null_type_oid(sql, index + 1),
+                }),
                 Value::Int(n) => query.bind(*n),
                 Value::Real(f) => query.bind(*f),
                 Value::Text(s) => query.bind(s.as_str()),
@@ -641,7 +724,7 @@ mod postgres {
     /// Runs a non-`SELECT` statement, returning rows affected.
     pub(super) async fn execute(pool: &PgPool, sql: &str, params: &[Value]) -> Result<u64> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
-        let result = bind(sqlx::query(&sql), &params)
+        let result = bind(sqlx::query(&sql), &params, &sql)
             .execute(pool)
             .await
             .with_context(|| format!("executing {sql}"))?;
@@ -667,7 +750,7 @@ mod postgres {
     /// Runs a `SELECT`/`RETURNING` statement, returning all rows.
     pub(super) async fn query(pool: &PgPool, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let (sql, params) = prepare(Dialect::Postgres, sql, params)?;
-        let rows = bind(sqlx::query(&sql), &params)
+        let rows = bind(sqlx::query(&sql), &params, &sql)
             .fetch_all(pool)
             .await
             .with_context(|| format!("querying {sql}"))?;
@@ -682,7 +765,7 @@ mod postgres {
             .context("beginning postgres transaction")?;
         for stmt in stmts {
             let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
-            bind(sqlx::query(&sql), &params)
+            bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
@@ -722,7 +805,7 @@ mod postgres {
         );
         for stmt in stmts {
             let (sql, params) = prepare(Dialect::Postgres, &stmt.sql, &stmt.params)?;
-            bind(sqlx::query(&sql), &params)
+            bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
@@ -743,7 +826,7 @@ mod postgres {
                 &checked.statement.sql,
                 &checked.statement.params,
             )?;
-            let result = bind(sqlx::query(&sql), &params)
+            let result = bind(sqlx::query(&sql), &params, &sql)
                 .execute(&mut *tx)
                 .await
                 .with_context(|| format!("executing {sql}"))?;
@@ -974,6 +1057,59 @@ mod mysql {
             assert!(decode_decimal_i64("1.0").is_err());
             assert!(decode_decimal_i64("9223372036854775808").is_err());
             assert!(decode_decimal_i64("not-a-number").is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::{Row, SqlxBackend, Value};
+    use crate::backend::Backend as _;
+
+    #[tokio::test]
+    async fn cancelled_acquisition_preserves_in_memory_sqlite_rows() {
+        for path in ["", ":memory:"] {
+            let backend = SqlxBackend::connect_sqlite(path).await.unwrap();
+            backend
+                .execute(
+                    "CREATE TABLE cancellation_probe (value INTEGER NOT NULL)",
+                    &[],
+                )
+                .await
+                .unwrap();
+            backend
+                .execute("INSERT INTO cancellation_probe VALUES (73)", &[])
+                .await
+                .unwrap();
+            let pool = match &backend {
+                SqlxBackend::Sqlite(pool) => pool,
+                #[cfg(any(feature = "postgres", feature = "mysql"))]
+                _ => panic!("expected SQLite"),
+            };
+
+            for _ in 0..32 {
+                // Poll an idle acquisition once, then cancel it at any async
+                // boundary. SQLx's default health probe can drop the sole
+                // connection here, leaving the next query with an empty DB.
+                tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                    while pool.num_idle() == 0 {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+                let mut acquisition = Box::pin(pool.acquire());
+                if let std::task::Poll::Ready(connection) = futures_util::poll!(&mut acquisition) {
+                    drop(connection.unwrap());
+                }
+                drop(acquisition);
+
+                let rows = backend
+                    .query("SELECT value FROM cancellation_probe", &[])
+                    .await
+                    .unwrap();
+                assert_eq!(rows, vec![Row::new(vec![Value::Int(73)])]);
+            }
         }
     }
 }

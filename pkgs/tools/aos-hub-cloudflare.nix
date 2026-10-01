@@ -44,6 +44,10 @@ mkDerivation {
         mkdir -p "$out/bin" "$out/share/aos-hub/worker"
         cp ${aos-hub-worker-dist}/shim.mjs ${aos-hub-worker-dist}/index.wasm \
           "$out/share/aos-hub/worker/"
+        cp ${./aos-hub-direct-sdk-conformance.mjs} \
+          "$out/share/aos-hub/direct-sdk-conformance.mjs"
+        cp ${./aos-hub-direct-qualification.mjs} \
+          "$out/share/aos-hub/direct-qualification.mjs"
         # The static-asset bundle Cloudflare serves from its CDN edge (the
         # `[assets]` directory the generated wrangler.toml points at). Copied
         # writable so `wrangler deploy`'s asset manifest pass can stat it.
@@ -61,11 +65,24 @@ mkDerivation {
         exec ${aos-hub}/bin/aos-hub "\$@"
         EOF
         chmod +x "$out/bin/aos-hub"
+        ln -s ${aos-hub}/bin/aos-hub-direct-review "$out/bin/aos-hub-direct-review"
+        ln -s ${aos-hub}/bin/aos-hub-provider-conformance "$out/bin/aos-hub-provider-conformance"
+
+        cat > "$out/bin/aos-hub-direct-sdk-conformance" <<EOF
+        #!${bash}/bin/bash
+        exec ${nodejs}/bin/node "$out/share/aos-hub/direct-sdk-conformance.mjs" "\$@"
+        EOF
+        chmod +x "$out/bin/aos-hub-direct-sdk-conformance"
+        cat > "$out/bin/aos-hub-direct-qualification" <<EOF
+        #!${bash}/bin/bash
+        exec ${nodejs}/bin/node "$out/share/aos-hub/direct-qualification.mjs" "\$@"
+        EOF
+        chmod +x "$out/bin/aos-hub-direct-qualification"
       '';
     }
   ];
 
-  passthru.evidenceSources = [./aos-hub-cloudflare.nix];
+  passthru.evidenceSources = [./aos-hub-cloudflare.nix ./aos-hub-direct-sdk-conformance.mjs ./aos-hub-direct-qualification.mjs];
 
   meta = {
     description = "aos-hub packaged with wrangler + the Worker wasm dist as a Cloudflare installer";

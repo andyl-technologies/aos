@@ -75,9 +75,9 @@ pub async fn sleep(duration: std::time::Duration) {
 /// `Instant::now()` **panics** (the bare wasm target has no monotonic clock),
 /// which inside an `async` request handler aborts the future and surfaces on the
 /// Workers runtime as "a hanging Promise was canceled" — so the Worker uses a
-/// `Date.now()`-backed stopwatch instead. It backs only the cosmetic
-/// "rendered Nms" page footer (the sole [`elapsed`](Instant::elapsed) consumer),
-/// so wall-clock resolution is fine; a backwards step clamps to zero.
+/// `Date.now()`-backed stopwatch instead. It measures render timing and bounded
+/// request waits. A backwards step clamps elapsed time to zero; callers that
+/// bound retries must also enforce an attempt ceiling independent of the clock.
 #[cfg(not(target_arch = "wasm32"))]
 pub use std::time::Instant;
 

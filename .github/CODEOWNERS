@@ -1,0 +1,4 @@
+# Deployment intent and publisher tooling require review.
+/.github/CODEOWNERS @dylanplecki
+/deployment/application-project.nix @dylanplecki
+/pkgs/tools/aos-delivery/ @dylanplecki

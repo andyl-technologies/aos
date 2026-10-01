@@ -267,23 +267,23 @@ mod tests {
             .registry_authorization_scope(registry_id)
             .await
             .unwrap();
-        let token = state
-            .auth
-            .jwt_keys
-            .mint(
-                &TokenAuth {
-                    token_id: "worker-rollout".to_string(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::parse(&scope),
-                    permissions: vec![
-                        Permission::Read,
-                        Permission::Publish,
-                        Permission::RegistryConfigure,
-                    ],
-                },
-                900,
+        let (_, secret) = state
+            .db
+            .create_token(
+                Principal::user(user_id),
+                (Scope::parse(&scope)).as_str(),
+                &vec![
+                    Permission::Read,
+                    Permission::Publish,
+                    Permission::RegistryConfigure,
+                ],
+                Some("current fixture bearer"),
+                None,
             )
+            .await
             .unwrap();
+        let token_authority = state.db.validate_token(&secret).await.unwrap().unwrap();
+        let token = state.auth.jwt_keys.mint(&token_authority, 900).unwrap();
         let bearer = format!("Bearer {token}");
         let service = Arc::new(worker_rpc_service(&state));
 
@@ -573,19 +573,19 @@ mod tests {
             aos_hub::server::AppState::new(Arc::clone(&db), "http://worker.test".to_string()).await,
         );
         let svc = worker_rpc_service(&state);
-        let token = state
-            .auth
-            .jwt_keys
-            .mint(
-                &TokenAuth {
-                    token_id: "branding-test".into(),
-                    owner: Principal::user(user_id),
-                    scope: Scope::root(),
-                    permissions: vec![Permission::IamAdmin],
-                },
-                900,
+        let (_, secret) = state
+            .db
+            .create_token(
+                Principal::user(user_id),
+                (Scope::root()).as_str(),
+                &vec![Permission::IamAdmin],
+                Some("current fixture bearer"),
+                None,
             )
+            .await
             .unwrap();
+        let token_authority = state.db.validate_token(&secret).await.unwrap().unwrap();
+        let token = state.auth.jwt_keys.mint(&token_authority, 900).unwrap();
         let bearer = format!("Bearer {token}");
         let deps = aos_hub::server::console_deps_for_worker_test(&state);
         let router = console_router(deps.clone());

@@ -88,6 +88,8 @@ pub struct SurfaceListedEvidence {
     pub size: i64,
     /// Provider-issued strong entity tag for the listed representation.
     pub strong_etag: String,
+    /// Provider upload incarnation returned with the same listing entry.
+    pub provider_version: Option<String>,
 }
 
 impl SurfaceListPage {
@@ -109,6 +111,10 @@ impl SurfaceListPage {
         if self.evidence.iter().any(|(path, evidence)| {
             self.paths.binary_search(path).is_err()
                 || evidence.size < 0
+                || evidence
+                    .provider_version
+                    .as_deref()
+                    .is_some_and(|version| !crate::storage_work::valid_provider_version(version))
                 || crate::surface_write::strong_if_match_etag(&evidence.strong_etag).is_err()
         }) {
             bail!("surface listing returned invalid provider evidence");
@@ -236,6 +242,59 @@ pub struct StreamedRead {
     pub snapshot_lease_id: Option<String>,
 }
 
+/// Size and strong version observed together for one delivery object.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceDeliveryHead {
+    /// Full object size in bytes.
+    pub size: u64,
+    /// Provider-issued strong entity tag for the same metadata snapshot.
+    pub strong_etag: String,
+}
+
+/// Bounded documentation fields derived and verified beside object storage.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationInspection {
+    /// Artifact identities repeated inside the canonical documentation.
+    pub identity: aos_doc_model::DocumentationIdentity,
+    /// Deterministic search rows extracted from the verified document.
+    pub search: Vec<aos_doc_model::SearchDocument>,
+    /// Structural option paths used to build the release-wide option tree.
+    pub options: Vec<DocumentationOptionInspection>,
+}
+
+/// One compact option projection from canonical package documentation.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DocumentationOptionInspection {
+    /// Stable display path used as the option key.
+    pub key: String,
+    /// Literal and wildcard segments preserved without path reinterpretation.
+    pub path: Vec<aos_doc_model::PathSegment>,
+    /// Human-readable type used in option summaries.
+    pub type_signature: String,
+}
+
+impl DocumentationInspection {
+    /// Extracts index fields from a verified canonical document.
+    #[must_use]
+    pub fn from_document(document: &aos_doc_model::PackageDocumentation) -> Self {
+        Self {
+            identity: document.identity.clone(),
+            search: document.search_documents(),
+            options: document
+                .options
+                .iter()
+                .map(|option| DocumentationOptionInspection {
+                    key: option.display_path.clone(),
+                    path: option.path.clone(),
+                    type_signature: option.type_signature.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Placement-scoped identity evidence collected from one physical object.
 ///
 /// The SHA-256 digest and size are derived from the bytes returned by that
@@ -249,6 +308,19 @@ pub struct SurfaceObjectEvidence {
     pub size: i64,
     /// Backend-issued strong entity tag, if the backend exposes one.
     pub strong_etag: Option<String>,
+    /// Provider-issued upload incarnation of the bytes that were hashed.
+    pub provider_version: Option<String>,
+}
+
+/// Metadata from one provider observation before or after inventory hashing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceInventoryHead {
+    /// Full physical object size in bytes.
+    pub size: i64,
+    /// Backend-issued strong tag for this snapshot.
+    pub strong_etag: Option<String>,
+    /// Provider-issued upload incarnation, when exposed by the backend.
+    pub provider_version: Option<String>,
 }
 
 /// One exact ranged object chunk used by resumable provider inventory.
@@ -262,6 +334,23 @@ pub struct SurfaceInventoryChunk {
     pub range: (u64, u64),
     /// Provider-issued strong entity tag for this object snapshot.
     pub strong_etag: String,
+    /// Provider upload version from the same ranged response.
+    pub provider_version: Option<String>,
+}
+
+/// One exact inventory range hashed into a portable SHA-256 continuation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SurfaceInventoryHashChunk {
+    /// Full object size observed by the ranged response.
+    pub total: u64,
+    /// Inclusive byte range hashed by the provider adapter.
+    pub range: (u64, u64),
+    /// Provider-issued strong tag for the ranged object snapshot.
+    pub strong_etag: String,
+    /// Provider upload version from the same ranged response.
+    pub provider_version: Option<String>,
+    /// SHA-256 state after the exact range.
+    pub sha256_state: crate::db::OciSha256State,
 }
 
 /// Read access to a registry surface by relative path (the "Blobs" read port).
@@ -281,6 +370,196 @@ pub trait SurfaceFetch: BackendBounds {
     ///
     /// Returns an error for IO/transport failures other than absence.
     async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>>;
+
+    /// Fetches metadata paths in input order, including explicit absent entries.
+    ///
+    /// Local adapters retain concurrent reads. Remote adapters may combine and
+    /// paginate storage work while returning exactly one observation per path.
+    /// Callers bound the number of paths to limit local concurrency and memory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if any metadata read fails for a reason other than absence.
+    async fn fetch_metadata_batch(&self, paths: &[String]) -> Result<Vec<Option<Vec<u8>>>> {
+        futures_util::future::try_join_all(paths.iter().map(|path| self.fetch(path))).await
+    }
+
+    /// Observes one exact object version for a hybrid delivery grant.
+    ///
+    /// The provider must obtain size and strong ETag from the same HEAD. Only
+    /// storage adapters that can do so implement this method.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this adapter cannot issue grants or HEAD fails.
+    async fn delivery_head(&self, _path: &str) -> Result<Option<SurfaceDeliveryHead>> {
+        bail!("this surface does not support hybrid delivery grants")
+    }
+
+    /// Selects a fresh uncached upstream after an observed storage miss.
+    ///
+    /// Returns control metadata only. Native never opens the upstream body;
+    /// the authenticated public Worker executes the separately qualified read.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported mirror semantics or changed current pins.
+    async fn live_delivery(
+        &self,
+        _path: &str,
+    ) -> Result<Option<crate::hybrid_ingress::live::HybridLiveDeliveryTarget>> {
+        Ok(None)
+    }
+
+    /// Whether Git objects are decoded beside storage through a typed query.
+    ///
+    /// Indexers use this to skip eager bundle hydration in hybrid mode. Local
+    /// adapters retain their existing bundle preload and loose-object path.
+    fn storage_local_git_inspection(&self) -> bool {
+        false
+    }
+
+    /// Whether exact tree predicates return verified rows rather than source bodies.
+    fn storage_local_tree_projection(&self) -> bool {
+        false
+    }
+
+    /// Selects exact named entries from a verified tree in bounded ordered pages.
+    ///
+    /// Local adapters verify canonical loose bytes through the same projector.
+    /// Hybrid adapters execute the predicate beside storage and never fetch a
+    /// raw tree as a fallback. Absence is distinct from an empty matching page.
+    ///
+    /// # Errors
+    /// Returns an error for invalid predicates, changed source identity,
+    /// malformed trees, source/result limits or transport failures.
+    async fn inspect_git_tree_entries(
+        &self,
+        oid: aos_registry_surface::object::Oid,
+        names: &[String],
+        cursor: Option<&crate::tree_projection::GitTreeCursor>,
+    ) -> Result<Option<crate::tree_projection::GitTreeEntriesPage>> {
+        use aos_registry_surface::object::{self, ObjectKind};
+
+        crate::tree_projection::validate_request(&oid.to_hex(), names, cursor)?;
+        let Some(loose) = self
+            .fetch_bounded(
+                &oid.loose_path(),
+                object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES as usize,
+            )
+            .await?
+        else {
+            return Ok(None);
+        };
+        let (kind, content) = object::decode_loose_with_limit(
+            &loose,
+            Some(oid),
+            crate::tree_projection::MAX_TREE_INFLATED_BYTES,
+        )?;
+        anyhow::ensure!(
+            kind == ObjectKind::Tree,
+            "selected Git object is not a tree"
+        );
+        let source = hex::encode(Sha256::digest(&loose));
+        crate::tree_projection::project_tree(&oid.to_hex(), &content, names, cursor, &source)
+            .map(Some)
+    }
+
+    /// Whether bounded SHA-256 verification runs beside object storage.
+    ///
+    /// The image indexer uses this to avoid transferring signed image bodies
+    /// to the control-plane runtime.
+    fn storage_local_sha256(&self) -> bool {
+        false
+    }
+
+    /// Whether documentation NARs are parsed beside object storage.
+    fn storage_local_documentation_inspection(&self) -> bool {
+        false
+    }
+
+    /// Returns only verified index fields for one signed documentation artifact.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported inspection, invalid bytes, or transport
+    /// failure. The selected artifact and package identity must match the
+    /// signed release metadata supplied by the caller.
+    async fn inspect_package_documentation(
+        &self,
+        _package_name: &str,
+        _package_version: &str,
+        _platform: &str,
+        _artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<DocumentationInspection> {
+        bail!("this surface does not support storage-local documentation inspection")
+    }
+
+    /// Returns the canonical document parsed and verified beside storage.
+    ///
+    /// # Errors
+    /// Returns an error for unsupported projection, invalid source identity,
+    /// oversized content, or a document inconsistent with the signed artifact.
+    async fn package_documentation_content(
+        &self,
+        _package_name: &str,
+        _package_version: &str,
+        _platform: &str,
+        _artifact: &aos_registry_surface::manifest::DocumentationArtifactMeta,
+    ) -> Result<aos_doc_model::PackageDocumentation> {
+        bail!("this surface does not support storage-local documentation content")
+    }
+
+    /// Reads one verified Git object through a storage-local inspection port.
+    ///
+    /// Only providers returning `true` from
+    /// [`storage_local_git_inspection`](Self::storage_local_git_inspection)
+    /// may implement this path. The caller rehashes the decoded content.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for unsupported inspection, transport failure, or an
+    /// invalid Git object projection.
+    async fn inspect_git_object(
+        &self,
+        _oid: aos_registry_surface::object::Oid,
+    ) -> Result<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>> {
+        bail!("this surface does not support storage-local Git inspection")
+    }
+
+    /// Reads several verified Git objects in request order beside storage.
+    ///
+    /// Adapters without a batch protocol use their single-object inspection
+    /// path. Callers verify every returned OID before retaining it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for transport failure or an invalid projection.
+    async fn inspect_git_objects(
+        &self,
+        oids: &[aos_registry_surface::object::Oid],
+    ) -> Result<Vec<Option<(aos_registry_surface::object::ObjectKind, Vec<u8>)>>> {
+        let mut objects = Vec::with_capacity(oids.len());
+        for oid in oids {
+            objects.push(self.inspect_git_object(*oid).await?);
+        }
+        Ok(objects)
+    }
+
+    /// Reads a bounded OCI range needed to inspect legacy layer metadata.
+    ///
+    /// This separate port keeps public blob delivery on the storage Worker in
+    /// hybrid deployments. Local readers use their ordinary ranged stream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsupported or invalid range or backend failure.
+    async fn inspect_oci_range(
+        &self,
+        path: &str,
+        range: (u64, u64),
+    ) -> Result<Option<StreamedRead>> {
+        self.fetch_stream(path, Some(range)).await
+    }
 
     /// Stream one surface path, optionally just the inclusive byte `range`.
     ///
@@ -393,6 +672,24 @@ pub trait SurfaceFetch: BackendBounds {
         Ok(Some(bytes))
     }
 
+    /// Parses bounded OCI metadata beside the exact stored document bytes.
+    ///
+    /// Hybrid implementations must authenticate an independent storage-side
+    /// readback. Standalone stores retain their ordinary exact-byte path.
+    ///
+    /// # Errors
+    /// Returns an error for changed original bytes, invalid OCI metadata or an
+    /// unavailable authenticated projection. Missing storage returns `None`.
+    async fn oci_document_projection(
+        &self,
+        path: &str,
+        descriptor: &aos_oci_types::Descriptor,
+        admission: Option<&crate::hybrid_ingress::HybridOciManifestAdmission>,
+    ) -> Result<Option<crate::oci_projection::guard::VerifiedOciProjection>> {
+        let _ = (path, descriptor, admission);
+        bail!("this surface does not provide independent OCI metadata readback")
+    }
+
     /// Enumerates one ordered page of surface-relative object paths.
     ///
     /// Returns the logical paths [`fetch`](Self::fetch) accepts (e.g.
@@ -422,6 +719,24 @@ pub trait SurfaceFetch: BackendBounds {
         )
     }
 
+    /// Lists a page using a provider-side prefix when the backend supports it.
+    ///
+    /// A backend may ignore the hint and return a full-surface page. Callers
+    /// must still validate and filter every returned path. The cursor belongs
+    /// to the same prefix walk for the lifetime of one inventory generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when listing fails or the backend rejects the cursor.
+    async fn list_page_with_prefix(
+        &self,
+        _prefix: &str,
+        cursor: Option<&str>,
+        limit: usize,
+    ) -> Result<SurfaceListPage> {
+        self.list_page(cursor, limit).await
+    }
+
     /// Returns a backend-issued strong entity tag for one object, when available.
     ///
     /// Implementations must return `None` for weak tags. A backend may return
@@ -446,6 +761,24 @@ pub trait SurfaceFetch: BackendBounds {
             .await?
             .map(|read| i64::try_from(read.total).context("surface object size exceeds i64"))
             .transpose()
+    }
+
+    /// Observes inventory metadata without consuming the object body.
+    ///
+    /// Incarnation-aware backends override this fallback with a single HEAD.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for metadata transport failure or invalid size.
+    async fn inventory_head(&self, path: &str) -> Result<Option<SurfaceInventoryHead>> {
+        let Some(size) = self.inventory_size(path).await? else {
+            return Ok(None);
+        };
+        Ok(Some(SurfaceInventoryHead {
+            size,
+            strong_etag: self.inventory_strong_etag(path).await?,
+            provider_version: None,
+        }))
     }
 
     /// Streams one object and derives placement-scoped inventory evidence.
@@ -512,6 +845,7 @@ pub trait SurfaceFetch: BackendBounds {
         let size = i64::try_from(observed_size)
             .map_err(|_| anyhow::anyhow!("surface object '{path}' is too large"))?;
         Ok(Some(SurfaceObjectEvidence {
+            provider_version: None,
             sha256: hasher.finalize().into(),
             size,
             strong_etag: after_etag,
@@ -579,10 +913,57 @@ pub trait SurfaceFetch: BackendBounds {
             bail!("surface inventory chunk did not fill its requested range");
         }
         Ok(Some(SurfaceInventoryChunk {
+            provider_version: None,
             bytes,
             total: read.total,
             range: (offset, end),
             strong_etag,
+        }))
+    }
+
+    /// Hashes one bounded inventory range, returning only resumable state.
+    ///
+    /// Local adapters use their bounded range read. A remote storage adapter
+    /// overrides this method so object bytes remain beside the provider.
+    ///
+    /// # Errors
+    /// Returns an error for a malformed prior state or a failed range read.
+    async fn inventory_hash_chunk_bounded(
+        &self,
+        path: &str,
+        offset: u64,
+        expected_total: u64,
+        maximum_bytes: u64,
+        strong_etag: &str,
+        expected_provider_version: Option<&str>,
+        mut sha256_state: crate::db::OciSha256State,
+    ) -> Result<Option<SurfaceInventoryHashChunk>> {
+        sha256_state.validate()?;
+        anyhow::ensure!(
+            sha256_state.total_bytes == offset,
+            "inventory hash state differs from the requested offset"
+        );
+        let Some(chunk) = self
+            .inventory_chunk_bounded(path, offset, expected_total, maximum_bytes)
+            .await?
+        else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            chunk.strong_etag == strong_etag,
+            "inventory hash range changed its strong entity tag"
+        );
+        anyhow::ensure!(
+            chunk.provider_version.as_deref() == expected_provider_version,
+            "inventory hash range changed its provider upload version"
+        );
+        sha256_state.update(&chunk.bytes)?;
+        Ok(Some(SurfaceInventoryHashChunk {
+            total: chunk.total,
+            range: chunk.range,
+            strong_etag: chunk.strong_etag,
+            provider_version: chunk.provider_version,
+            sha256_state,
         }))
     }
 
@@ -629,6 +1010,21 @@ pub trait OriginFetch: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceProvider: BackendBounds {
+    /// Whether readers parse documentation NARs beside object storage.
+    fn storage_local_documentation_inspection(&self) -> bool {
+        false
+    }
+
+    /// Whether readers from this provider support storage-local Git inspection.
+    fn storage_local_git_inspection(&self) -> bool {
+        false
+    }
+
+    /// Whether readers from this provider verify SHA-256 beside object storage.
+    fn storage_local_sha256(&self) -> bool {
+        false
+    }
+
     /// Opens a reader rooted at one explicit physical placement.
     ///
     /// Selection remains in shared topology logic; adapters only translate the
@@ -659,6 +1055,24 @@ pub trait SurfaceProvider: BackendBounds {
     ) -> Result<Box<dyn SurfaceFetch>> {
         let _ = access;
         anyhow::bail!("this provider does not support frozen placement reads")
+    }
+
+    /// Opens a frozen reader for one exact live OCI cleanup claim.
+    ///
+    /// The default preserves in-process frozen access. Hybrid external readers
+    /// use the claim's key, token, and lease to issue a narrowly scoped metadata
+    /// grant; they must not fall back to ordinary current binding reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when frozen access is unavailable, the claim is stale,
+    /// or the runtime cannot perform claim-scoped metadata observations.
+    async fn claimed_placement_fetcher(
+        &self,
+        access: &crate::surface_write::FrozenSurfaceAccess,
+        _claim: &crate::db::OciGcPlacementActionClaim,
+    ) -> Result<Box<dyn SurfaceFetch>> {
+        self.frozen_placement_fetcher(access).await
     }
 }
 
@@ -782,6 +1196,7 @@ mod tests {
         invalid_evidence.evidence.insert(
             "outside-page".into(),
             SurfaceListedEvidence {
+                provider_version: None,
                 size: 1,
                 strong_etag: "version-1".into(),
             },

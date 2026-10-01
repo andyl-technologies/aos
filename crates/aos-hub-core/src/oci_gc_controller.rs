@@ -3,8 +3,9 @@
 //! The database claim is the deletion fence: it rechecks the active run,
 //! candidate tombstone, hard roots, topology, credential, inventory, and
 //! conditional-delete capability immediately before this controller performs
-//! provider I/O. Provider adapters receive only [`FrozenSurfaceAccess`]; this
-//! module never selects a current writer or reconstructs an address from live
+//! provider I/O. Provider adapters receive the frozen access fence; an exact
+//! absence opener can also use the live claim to issue a bounded remote grant.
+//! This module never selects a current writer or reconstructs an address from live
 //! topology. Actions that were absent from the reviewed inventory still get a
 //! live exact-address probe before absence evidence is persisted.
 
@@ -20,8 +21,7 @@ use crate::db::{
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::jobs::redacted_job_failure;
 use crate::surface_write::{
-    FrozenSurfaceAccess, SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite,
-    SurfaceWriteProvider,
+    SurfaceDeleteOutcome, SurfaceDeletePrecondition, SurfaceWrite, SurfaceWriteProvider,
 };
 
 // LocalFS may hash, quarantine, unlink, and fsync one inventory-bounded 1 GiB
@@ -159,13 +159,13 @@ impl OciGcDeletionController {
         &self,
         claim: &OciGcPlacementActionClaim,
     ) -> std::result::Result<ProviderSuccess, ProviderFailure> {
-        let access = frozen_access(claim);
+        let access = claim.frozen_access();
         access.validate().map_err(ProviderFailure::repair)?;
 
         if !claim.inventory_entry_present {
             let fetch = self
                 .surfaces
-                .frozen_placement_fetcher(&access)
+                .claimed_placement_fetcher(&access, claim)
                 .await
                 .map_err(ProviderFailure::repair)?;
             return live_absence(fetch.as_ref(), &claim.object_key).await;
@@ -180,17 +180,19 @@ impl OciGcDeletionController {
             .map_err(|error| ProviderFailure::repair(error.into()))?;
         let deleter = self
             .writes
-            .frozen_placement_deleter(&access)
+            .claimed_placement_deleter(&access, claim)
             .await
             .map_err(ProviderFailure::repair)?;
         conditional_delete(
             deleter.as_ref(),
             &claim.object_key,
             SurfaceDeletePrecondition {
+                expected_provider_version: claim.expected_provider_version.clone(),
                 etag: Some(expected_etag.clone()),
                 content_hash: Some(claim.expected_hash.to_string()),
                 size: Some(expected_size),
             },
+            &claim.action_id,
         )
         .await
     }
@@ -228,25 +230,6 @@ impl ProviderFailure {
     }
 }
 
-fn frozen_access(claim: &OciGcPlacementActionClaim) -> FrozenSurfaceAccess {
-    FrozenSurfaceAccess {
-        registry_id: claim.registry_id,
-        placement_id: claim.placement_id,
-        placement_name: claim.placement_name.clone(),
-        placement_prefix: claim.placement_prefix.clone(),
-        placement_resource_version: claim.placement_resource_version,
-        placement_write_spec_version: claim.placement_write_spec_version,
-        placement_observation_version: claim.placement_observation_version,
-        binding_id: claim.binding_id,
-        binding_resource_version: claim.binding_resource_version,
-        binding_write_revision: claim.binding_write_revision,
-        delete_credential_purpose: claim.delete_credential_purpose.clone(),
-        delete_credential_generation: claim.delete_credential_generation,
-        delete_capability_fingerprint: claim.delete_capability_fingerprint.clone(),
-        delete_capability_resource_version: claim.delete_capability_resource_version,
-    }
-}
-
 async fn live_absence(
     fetch: &dyn SurfaceFetch,
     object_key: &str,
@@ -270,9 +253,10 @@ async fn conditional_delete(
     deleter: &dyn SurfaceWrite,
     object_key: &str,
     precondition: SurfaceDeletePrecondition,
+    claim_id: &str,
 ) -> std::result::Result<ProviderSuccess, ProviderFailure> {
     let outcome = deleter
-        .delete_if_matches(object_key, &precondition)
+        .delete_if_matches_claimed(object_key, &precondition, claim_id)
         .await
         .map_err(ProviderFailure::retry)?;
     match outcome {
@@ -464,10 +448,12 @@ mod tests {
             &surface,
             "oci/object",
             SurfaceDeletePrecondition {
+                expected_provider_version: None,
                 etag: Some(etag.clone()),
                 content_hash: Some(hash),
                 size: Some(bytes.len() as i64),
             },
+            "probe-success",
         )
         .await
         .unwrap();
@@ -516,10 +502,12 @@ mod tests {
             &surface,
             "oci/object",
             SurfaceDeletePrecondition {
+                expected_provider_version: None,
                 etag: Some("\"reviewed\"".into()),
                 content_hash: None,
                 size: None,
             },
+            "probe-mismatch",
         )
         .await;
         assert!(result.is_err());
@@ -545,10 +533,12 @@ mod tests {
             &surface,
             "oci/object",
             SurfaceDeletePrecondition {
+                expected_provider_version: None,
                 etag: Some(etag),
                 content_hash: Some(hash),
                 size: Some(bytes.len() as i64),
             },
+            "probe-incomplete",
         )
         .await
         .unwrap_err();

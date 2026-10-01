@@ -5,11 +5,15 @@
 //! every referenced object must already be linked to this repository and have
 //! exact evidence on the selected writer placement.
 
+mod authority;
+mod hybrid;
+
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use aos_oci_types::{
-    Annotations, Descriptor, ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType,
-    Platform, Sha256Digest,
+    Annotations, Descriptor, ImageConfig, ImageManifest, ManifestReference, MediaType, Platform,
+    Sha256Digest,
 };
 use axum::body::{to_bytes, Body};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -29,14 +33,14 @@ use crate::db::{
     OciUploadRecord,
 };
 
-const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+const MAX_MANIFEST_BYTES: usize = crate::hybrid_ingress::MAX_HYBRID_OCI_MANIFEST_BYTES;
+const DIGEST_WAIT_BUDGET: Duration = Duration::from_secs(10);
+const DIGEST_POLL_MAX_DELAY: Duration = Duration::from_millis(100);
 
-enum ParsedDocument {
-    Manifest(ImageManifest),
-    Index(ImageIndex),
-}
+use crate::oci_projection::OciDocumentProjection as ParsedDocument;
 
 impl RpcService {
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn put_manifest(
         &self,
         registry: &crate::db::RegistryRecord,
@@ -77,6 +81,7 @@ impl RpcService {
                 false,
             );
         }
+        let root = document_descriptor(media_type, digest, bytes.len() as u64, &document);
         let placement = match self
             .effective_surface_writer(SurfaceTarget::Registry(registry.id))
             .await
@@ -84,7 +89,6 @@ impl RpcService {
             Ok(placement) => placement,
             Err(_) => return unavailable_response("registry writer is unavailable", false),
         };
-        let root = document_descriptor(media_type, digest, bytes.len() as u64, &document);
         let (upload, chunks) = match self
             .stage_manifest_bytes(
                 registry.id,
@@ -99,8 +103,40 @@ impl RpcService {
             Ok(staged) => staged,
             Err(response) => return response,
         };
+        self.finish_manifest_graph(
+            registry,
+            repository,
+            owner,
+            reference,
+            root,
+            document,
+            placement,
+            upload,
+            chunks,
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn finish_manifest_graph(
+        &self,
+        registry: &crate::db::RegistryRecord,
+        repository: &OciRepositoryRecord,
+        owner: String,
+        reference: ManifestReference,
+        root: Descriptor,
+        document: ParsedDocument,
+        placement: crate::db::SurfacePlacementRecord,
+        upload: OciUploadRecord,
+        chunks: Vec<OciUploadChunkRecord>,
+        mut proofs: Vec<crate::oci_projection::guard::VerifiedOciProjection>,
+        authority: Option<authority::HybridManifestAuthority>,
+    ) -> Response {
+        let digest = root.digest;
         let (root_digest, objects) = match self
-            .manifest_graph(repository, &placement, root.clone(), document)
+            .manifest_graph(repository, &placement, root.clone(), document, &mut proofs)
             .await
         {
             Ok(graph) => graph,
@@ -109,12 +145,48 @@ impl RpcService {
                 return response;
             }
         };
-        if let Err(response) = self
-            .complete_staged_manifest(&owner, &placement, digest, upload, &chunks)
-            .await
-        {
-            return response;
+        if let Some(authority) = &authority {
+            if let Err(response) = authority.recheck(self, registry, repository).await {
+                return response;
+            }
+        }
+        // Exact terminal recovery reads the canonical stored original and must
+        // not repeat materialization or transfer its quota a second time.
+        if upload.state != "complete" {
+            if let Err(response) = self
+                .complete_staged_manifest(&owner, &placement, digest, upload, &chunks)
+                .await
+            {
+                return response;
+            }
         };
+        if self.hybrid_delivery {
+            let Some(original) = proofs.iter().find_map(|proof| proof.admission().cloned()) else {
+                return unavailable_response("manifest has no retained root original", false);
+            };
+            let fetcher = match self.surface.placement_fetcher(&placement).await {
+                Ok(fetcher) => fetcher,
+                Err(_) => {
+                    return unavailable_response("final manifest reader is unavailable", false)
+                }
+            };
+            let final_proof = match fetcher
+                .oci_document_projection(&oci_blob_object_key(digest), &root, Some(&original))
+                .await
+            {
+                Ok(Some(proof)) => proof,
+                _ => {
+                    return unavailable_response(
+                        "canonical manifest readback is unavailable or unsettled",
+                        false,
+                    )
+                }
+            };
+            // A positive staging read cannot publish a later materialization.
+            // Replace it with the independently observed canonical incarnation.
+            proofs.retain(|proof| proof.admission().is_none());
+            proofs.push(final_proof);
+        }
         let tag = match &reference {
             ManifestReference::Tag(tag) => Some(tag.clone()),
             ManifestReference::Digest(_) => None,
@@ -132,7 +204,31 @@ impl RpcService {
         };
         let mut admitted = false;
         for attempt in 0..20 {
-            match self.db.index_oci_repository_catalog(&catalog).await {
+            let indexed = if self.hybrid_delivery {
+                {
+                    let Some(authority) = &authority else {
+                        return unavailable_response(
+                            "manifest completion has no live authority",
+                            false,
+                        );
+                    };
+                    let statements = match authority.statements(self, registry, repository).await {
+                        Ok(statements) => statements,
+                        Err(response) => return response,
+                    };
+                    self.db
+                        .index_oci_repository_catalog_guarded(
+                            &catalog,
+                            &proofs,
+                            statements,
+                            authority.expires_at(),
+                        )
+                        .await
+                }
+            } else {
+                self.db.index_oci_repository_catalog(&catalog).await
+            };
+            match indexed {
                 Ok(_) => {
                     admitted = true;
                     break;
@@ -149,6 +245,19 @@ impl RpcService {
                 DistributionErrorCode::ManifestBlobUnknown,
                 "manifest graph is incomplete or changed",
                 None,
+                false,
+            );
+        }
+        if let Some(authority) = &authority {
+            if let Err(response) = authority.recheck(self, registry, repository).await {
+                // The SQL outcome may be committed. A late reply never claims
+                // rollback; exact original completion can resolve it later.
+                return response;
+            }
+        }
+        if proofs.iter().any(|proof| now() >= proof.deadline()) {
+            return unavailable_response(
+                "manifest acknowledgement needs exact original requery",
                 false,
             );
         }
@@ -346,11 +455,25 @@ impl RpcService {
             .claim_oci_upload(&claim)
             .await
             .map_err(|_| unavailable_response("manifest digest could not be claimed", false))?;
+        let wait_started = crate::clock::Instant::now();
+        let mut poll_delay = Duration::from_millis(5);
+
+        // Remote materialization can outlast one second. Back off read-only
+        // waiters within a request budget; the attempt ceiling also bounds
+        // retries if a Worker host's wall clock moves backwards.
         for _ in 0..200 {
             if outcome != OciBlobClaimOutcome::InProgress {
                 break;
             }
-            crate::clock::sleep(std::time::Duration::from_millis(5)).await;
+            let Some(remaining) = DIGEST_WAIT_BUDGET.checked_sub(wait_started.elapsed()) else {
+                break;
+            };
+            if remaining.is_zero() {
+                break;
+            }
+
+            crate::clock::sleep(poll_delay.min(remaining)).await;
+            poll_delay = (poll_delay * 2).min(DIGEST_POLL_MAX_DELAY);
             claim.now = now();
             claim.lease_expires_at = claim.now + COMPLETION_LEASE_SECONDS;
             // Preserve the prior InProgress outcome across an ambiguous
@@ -536,6 +659,7 @@ impl RpcService {
         placement: &crate::db::SurfacePlacementRecord,
         root: Descriptor,
         document: ParsedDocument,
+        proofs: &mut Vec<crate::oci_projection::guard::VerifiedOciProjection>,
     ) -> Result<(Sha256Digest, Vec<OciCatalogObject>), Response> {
         let mut objects = BTreeMap::new();
         let root_digest;
@@ -565,7 +689,7 @@ impl RpcService {
                 }
                 let (platform, image_config) = if manifest.artifact_type.is_none() {
                     let (platform, projection) = self
-                        .read_image_config_projection(repository, placement, &manifest)
+                        .read_image_config_projection(repository, placement, &manifest, proofs)
                         .await?;
                     (Some(platform), Some(projection))
                 } else {
@@ -582,6 +706,9 @@ impl RpcService {
                         }),
                     },
                 )?;
+            }
+            ParsedDocument::Config(_) => {
+                return Err(manifest_invalid("image config is not a manifest root"))
             }
             ParsedDocument::Index(index) => {
                 root_digest = root.digest;
@@ -706,6 +833,7 @@ impl RpcService {
         repository: &OciRepositoryRecord,
         placement: &crate::db::SurfacePlacementRecord,
         manifest: &ImageManifest,
+        proofs: &mut Vec<crate::oci_projection::guard::VerifiedOciProjection>,
     ) -> Result<(Platform, OciImageConfigProjection), Response> {
         let descriptor = &manifest.config;
         if !descriptor.media_type.is_image_config() {
@@ -718,24 +846,60 @@ impl RpcService {
             .placement_fetcher(placement)
             .await
             .map_err(|_| unavailable_response("registry reader is unavailable", false))?;
-        let bytes = fetcher
-            .fetch_bounded(
-                &crate::db::oci_blob_object_key(descriptor.digest),
-                MAX_MANIFEST_BYTES,
-            )
-            .await
-            .map_err(|_| unavailable_response("image config could not be read", false))?
-            .ok_or_else(manifest_blob_unknown)?;
-        if bytes.len() as u64 != descriptor.size
-            || Sha256Digest::digest(&bytes) != descriptor.digest
-            || !self
-                .repository_object_has_placement(repository, placement, descriptor)
-                .await?
+        let (config, config_json) = if self.hybrid_delivery {
+            let projection = fetcher
+                .oci_document_projection(
+                    &crate::db::oci_blob_object_key(descriptor.digest),
+                    descriptor,
+                    None,
+                )
+                .await
+                .map_err(|_| {
+                    unavailable_response("image config projection could not be verified", false)
+                })?
+                .ok_or_else(manifest_blob_unknown)?;
+            let document = projection
+                .check(descriptor, now())
+                .map_err(|_| unavailable_response("image config readback expired", false))?
+                .clone();
+            let ParsedDocument::Config(config) = document else {
+                return Err(manifest_invalid(
+                    "image config projection has a different document kind",
+                ));
+            };
+            let canonical = aos_oci_types::to_canonical_json(&config).map_err(|_| {
+                manifest_invalid("image config projection exceeds the shared limit")
+            })?;
+            let config_json = String::from_utf8(canonical)
+                .map_err(|_| manifest_invalid("image config projection is not UTF-8"))?;
+            proofs.push(projection);
+            (config, config_json)
+        } else {
+            let bytes = fetcher
+                .fetch_bounded(
+                    &crate::db::oci_blob_object_key(descriptor.digest),
+                    MAX_MANIFEST_BYTES,
+                )
+                .await
+                .map_err(|_| unavailable_response("image config could not be read", false))?
+                .ok_or_else(manifest_blob_unknown)?;
+            if bytes.len() as u64 != descriptor.size
+                || Sha256Digest::digest(&bytes) != descriptor.digest
+            {
+                return Err(manifest_blob_unknown());
+            }
+            let config = ImageConfig::from_json(&bytes)
+                .map_err(|_| manifest_invalid("image config JSON is invalid"))?;
+            let config_json = String::from_utf8(bytes)
+                .map_err(|_| manifest_invalid("image config JSON is not UTF-8"))?;
+            (config, config_json)
+        };
+        if !self
+            .repository_object_has_placement(repository, placement, descriptor)
+            .await?
         {
             return Err(manifest_blob_unknown());
         }
-        let config = ImageConfig::from_json(&bytes)
-            .map_err(|_| manifest_invalid("image config JSON is invalid"))?;
         if config.rootfs.diff_ids.len() != manifest.layers.len() {
             return Err(manifest_invalid(
                 "image config DiffIDs do not match manifest layers",
@@ -752,8 +916,6 @@ impl RpcService {
         }
         let platform = config.platform();
         let aos_system = aos_system(&platform);
-        let config_json = String::from_utf8(bytes.to_vec())
-            .map_err(|_| manifest_invalid("image config JSON is not UTF-8"))?;
         Ok((
             platform,
             OciImageConfigProjection {
@@ -810,7 +972,7 @@ impl RpcService {
             .await
             .map_err(|_| unavailable_response("registry reader is unavailable", false))?;
         let read = fetcher
-            .fetch_stream(&oci_blob_object_key(descriptor.digest), Some(range))
+            .inspect_oci_range(&oci_blob_object_key(descriptor.digest), range)
             .await
             .map_err(|_| unavailable_response("image layer could not be read", false))?
             .ok_or_else(manifest_blob_unknown)?;
@@ -876,19 +1038,17 @@ fn manifest_content_type(headers: &HeaderMap) -> Result<MediaType, &'static str>
 }
 
 fn parse_document(media_type: MediaType, bytes: &[u8]) -> Result<ParsedDocument, &'static str> {
-    if media_type.is_image_manifest() {
-        let manifest = ImageManifest::from_json(bytes).map_err(|_| "manifest JSON is invalid")?;
-        if manifest.media_type.is_some_and(|outer| outer != media_type) {
-            return Err("manifest Content-Type conflicts with its mediaType field");
-        }
-        Ok(ParsedDocument::Manifest(manifest))
-    } else {
-        let index = ImageIndex::from_json(bytes).map_err(|_| "index JSON is invalid")?;
-        if index.media_type.is_some_and(|outer| outer != media_type) {
-            return Err("index Content-Type conflicts with its mediaType field");
-        }
-        Ok(ParsedDocument::Index(index))
-    }
+    let descriptor = Descriptor {
+        media_type,
+        digest: Sha256Digest::digest(bytes),
+        size: bytes.len() as u64,
+        urls: Vec::new(),
+        annotations: Annotations::new(),
+        data: None,
+        artifact_type: None,
+        platform: None,
+    };
+    ParsedDocument::from_stored_bytes(&descriptor, bytes).map_err(|_| "manifest JSON is invalid")
 }
 
 fn document_descriptor(
@@ -906,7 +1066,7 @@ fn document_descriptor(
         data: None,
         artifact_type: match document {
             ParsedDocument::Manifest(manifest) => manifest.artifact_type,
-            ParsedDocument::Index(_) => None,
+            ParsedDocument::Index(_) | ParsedDocument::Config(_) => None,
         },
         platform: None,
     }

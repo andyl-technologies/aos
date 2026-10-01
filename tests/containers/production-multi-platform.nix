@@ -7,6 +7,7 @@
   lib,
   pkgs,
   name,
+  referenceName,
   primaryIndex,
   repeatIndex,
   evidence,
@@ -73,11 +74,12 @@ pkgs.mkDerivation {
           || fail "production index is not the exact canonical amd64+arm64 set"
 
         jq -e \
+          --arg referenceName ${lib.escapeShellArg referenceName} \
           --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
           --slurpfile index ${primaryIndex}/image-index.json '
             .manifests == [$descriptor[0]]
             and $descriptor[0].annotations == $index[0].annotations
-            and $descriptor[0].annotations."org.opencontainers.image.ref.name" == "aos:latest"
+            and $descriptor[0].annotations."org.opencontainers.image.ref.name" == $referenceName
           ' ${primaryIndex}/layout/index.json >/dev/null \
           || fail "production root descriptor annotations diverge from the signed index"
 

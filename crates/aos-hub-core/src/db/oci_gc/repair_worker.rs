@@ -135,7 +135,7 @@ impl Database {
                        AND binding.resource_version = repair.binding_resource_version
                        AND ((repair.delete_credential_purpose IS NULL
                              AND repair.delete_credential_generation IS NULL
-                             AND binding.kind = 'local_fs')
+                             AND binding.kind IN ('local_fs', 'deployment_r2'))
                          OR (credential.validation_state = 'valid'
                            AND EXISTS (SELECT 1
                              FROM oci_untracked_repair_credential_holds hold
@@ -206,7 +206,7 @@ impl Database {
                              oci_untracked_repair_plans.binding_resource_version
                            AND ((oci_untracked_repair_plans.delete_credential_purpose IS NULL
                                  AND oci_untracked_repair_plans.delete_credential_generation IS NULL
-                                 AND binding.kind = 'local_fs')
+                                 AND binding.kind IN ('local_fs', 'deployment_r2'))
                              OR (credential.validation_state = 'valid'
                                AND EXISTS (SELECT 1
                                  FROM oci_untracked_repair_credential_holds hold

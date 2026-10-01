@@ -505,10 +505,10 @@ fn push_manifest_object_statements(
             "INSERT INTO surface_objects
                    (registry_id, cache_id, object_key, object_kind,
                     partition_key, content_hash, size, mutable_publication_id,
-                    created_at, updated_at)
+                    created_at, updated_at, accounting_origin_version)
                  SELECT ?1, NULL, ?3, ?4, ?7, ?5, ?6,
                         CASE WHEN ?4 = 'mutable_pointer' THEN ?2 ELSE NULL END,
-                        ?8, ?8
+                        ?8, ?8, 7
                    FROM registries registry
                   WHERE registry.id = ?1
                     AND EXISTS (SELECT 1 FROM registry_publications publication

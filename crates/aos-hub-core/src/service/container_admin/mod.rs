@@ -388,6 +388,7 @@ mod tests {
     #[test]
     fn gc_action_projection_exposes_the_complete_frozen_non_secret_identity() {
         let record = OciGcPlacementActionRecord {
+            expected_provider_version: Some("reviewed-upload-v1".into()),
             id: "gc-action".to_string(),
             generation_id: "gc-run".to_string(),
             registry_id: 1,
@@ -430,6 +431,10 @@ mod tests {
         assert_eq!(message.expected_hash, record.expected_hash.to_string());
         assert_eq!(message.expected_byte_size, record.expected_size);
         assert_eq!(message.expected_strong_etag, "\"strong\"");
+        assert_eq!(
+            message.expected_provider_version.as_deref(),
+            Some("reviewed-upload-v1")
+        );
         assert!(message.inventory_entry_present);
         assert_eq!(
             message.inventory_generation_id,
@@ -1009,6 +1014,7 @@ fn gc_placement_action_message(
         expected_hash: record.expected_hash.to_string(),
         expected_byte_size: record.expected_size,
         expected_strong_etag: record.expected_strong_etag.clone().unwrap_or_default(),
+        expected_provider_version: record.expected_provider_version.clone(),
         inventory_entry_present: record.inventory_entry_present,
         inventory_generation_id: record.inventory_generation_id.clone(),
         inventory_digest: record.inventory_digest.to_string(),

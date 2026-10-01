@@ -516,16 +516,38 @@ mod snapshot_insert_tests {
 }
 
 mod cache_write_admission;
+mod credential_probe;
+mod credential_registration;
+mod binding_identity;
+pub use binding_identity::{
+    validate_binding_identity_plan_confirmation, validate_binding_identity_snapshot_history,
+    BindingIdentityReservation,
+};
+pub(crate) use binding_identity::{
+    decode_binding_delete_history, validate_binding_delete_history, BindingDeleteHistory,
+    BindingDeletePlanInput,
+};
+mod direct_target;
+pub use direct_target::{validate_direct_presence_provenance, DirectPresenceProvenance};
 pub use cache_write_admission::*;
 mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
 mod direct_delivery;
+mod direct_identity;
+mod direct_upload;
+pub use direct_upload::*;
+mod session_identity;
 mod publication_delivery;
 pub use delivery_workflow::*;
 mod egress_nonce;
+mod external_copy;
 mod gc_topology;
 pub use gc_topology::*;
+mod mirror_imports;
+pub use mirror_imports::*;
+mod mirror_publication;
+pub use mirror_publication::*;
 mod oci;
 pub use oci::*;
 mod oci_admin;
@@ -535,7 +557,9 @@ pub use oci_gc::*;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
+mod publish_lease;
 mod registry_delete;
+mod registry_accounting;
 mod registry_index_build;
 mod release_browse;
 mod release_publication;
@@ -546,6 +570,8 @@ mod settings_reads;
 pub(crate) mod surface_topology;
 pub(crate) use surface_topology::*;
 mod signing_keys;
+mod storage_authority;
+pub use storage_authority::*;
 mod topology;
 mod worker_jobs;
 pub use placement_policy::*;
@@ -587,21 +613,44 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-///
-/// | Version | Script | Change |
-/// | --- | --- | --- |
-/// | 1 | `schema.sql` | Production baseline. |
-/// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
+    include_str!("002-r2-gc-incarnation.sql"),
+    include_str!("003-physical-storage-authorities.sql"),
+    include_str!("004-direct-upload-sessions.sql"),
+    include_str!("005-mirror-imports.sql"),
+    include_str!("006-mirror-import-generations.sql"),
+    include_str!("007-catalogue-lifetimes.sql"),
     include_str!("release_channel_advances.sql"),
 ];
+
+// Shared by production initialization and trusted disposable schema compilation.
+pub(crate) const SCHEMA_VERSION_DDL: &str =
+    "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)";
 
 /// Identifies the production migration lineage independently of its version.
 ///
 /// Historical development ledgers are incompatible even when their integer
 /// version happens to match a production migration.
-pub const SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
+pub const SCHEMA_IDENTITY: &str = "aos-hub/canonical-serving/8";
+
+/// Identifies genuine generation-three through generation-seven archives.
+///
+/// Historical verification preserves this identity; it grants no current
+/// serving eligibility and never selects an automatic live upgrade.
+pub const HISTORICAL_SCHEMA_IDENTITY: &str = "aos-hub/production-baseline/1";
+
+/// Returns the identity committed by a supported snapshot generation.
+///
+/// # Errors
+/// Returns an error for an unsupported generation.
+pub fn snapshot_schema_identity(generation: usize) -> Result<&'static str> {
+    match generation {
+        3..=7 => Ok(HISTORICAL_SCHEMA_IDENTITY),
+        8 => Ok(SCHEMA_IDENTITY),
+        _ => anyhow::bail!("unsupported snapshot schema generation"),
+    }
+}
 
 /// Returns every migration's individual SQL statements, in order.
 ///
@@ -1256,6 +1305,12 @@ pub struct TokenAuth {
     pub token_id: String,
     /// The principal that owns the token.
     pub owner: crate::domain::Principal,
+    /// Immutable account UUID validated against this exact token or session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_incarnation: Option<String>,
+    /// Hash of a current cookie session; absent for provisioning tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_session_id_hash: Option<String>,
     /// The immutable authorization scope the token is bound to.
     pub scope: crate::domain::Scope,
     /// The permission verbs the token grants.
@@ -1298,6 +1353,10 @@ pub struct AccessTokenMetadata {
 /// bumps `last_seen_at`.
 #[derive(Debug, Clone)]
 pub struct SessionAuth {
+    /// Original immutable user UUID retained when this session was minted.
+    pub owner_incarnation: String,
+    /// SHA-256 of the validated cookie, never the cookie secret.
+    pub session_id_hash: String,
     /// The authenticated user's id.
     pub user_id: i64,
     /// `1` when the session is sudo-capable (re-authenticated recently).
@@ -2495,6 +2554,8 @@ pub struct PlacementScanPresence {
     pub observed_size: Option<i64>,
     /// Backend-issued strong entity tag, when available.
     pub etag: Option<String>,
+    /// Provider upload incarnation of the observed physical bytes.
+    pub provider_version: Option<String>,
 }
 
 /// Maximum number of placement observations persisted in one atomic batch.
@@ -2520,6 +2581,8 @@ pub struct ReusablePlacementEvidence {
     pub observed_size: Option<i64>,
     /// Provider-issued strong version identifier.
     pub etag: Option<String>,
+    /// Upload incarnation of the previously byte-verified physical object.
+    pub provider_version: Option<String>,
 }
 
 /// Operator-confirmed equivalence between two exact surface placements.
@@ -2851,6 +2914,8 @@ pub struct TopologyPlanRecord {
     pub actor_kind: String,
     /// Actor database id, when applicable.
     pub actor_id: Option<i64>,
+    /// Original immutable principal UUID; absent only for legacy/internal plans.
+    pub actor_incarnation: Option<String>,
     /// Human-readable actor label.
     pub actor_label: String,
     /// Authorization scope.
@@ -2890,6 +2955,8 @@ pub struct NewTopologyPlan {
     pub actor_kind: String,
     /// Actor database id, when applicable.
     pub actor_id: Option<i64>,
+    /// Original immutable principal UUID; absent only for legacy/internal plans.
+    pub actor_incarnation: Option<String>,
     /// Human-readable actor label.
     pub actor_label: String,
     /// Authorization scope.
@@ -3633,188 +3700,18 @@ impl Database {
         self.backend.dialect()
     }
 
-    async fn migrate(&self) -> Result<()> {
-        self.backend
-            .execute(
-                "CREATE TABLE IF NOT EXISTS schema_version (version INTEGER NOT NULL)",
-                &[],
-            )
-            .await?;
-        let mysql = self.dialect() == Dialect::Mysql;
-        if mysql {
-            // MySQL DDL can commit before the version marker. A keyed ledger
-            // coordinates replay and concurrent starters; id 1 avoids MySQL's
-            // generated-identity behavior for zero-valued primary keys.
-            self.backend
-                .execute(
-                    "CREATE TABLE IF NOT EXISTS hub_schema_version (
-                       id INTEGER PRIMARY KEY, version INTEGER NOT NULL)",
-                    &[],
-                )
-                .await?;
-            self.backend
-                .execute(
-                    "INSERT INTO hub_schema_version(id, version)
-                     VALUES (1, 0)
-                     ON CONFLICT(id) DO NOTHING",
-                    &[],
-                )
-                .await?;
-        }
-        let marker_query = if mysql {
-            "SELECT version, id FROM hub_schema_version"
-        } else {
-            "SELECT version FROM schema_version"
-        };
-        let rows = self.backend.query(marker_query, &[]).await?;
-        anyhow::ensure!(
-            rows.len() <= 1,
-            "Hub schema version ledger has duplicate rows"
-        );
-        let current = rows
-            .first()
-            .map(|row| row.get::<i64>(0))
-            .transpose()?
-            .unwrap_or(0);
-        let target = MIGRATIONS.len() as i64;
-        anyhow::ensure!(current >= 0, "Hub schema version cannot be negative");
-        if current > target {
-            bail!("hub database schema {current} is newer than this build supports ({target})");
-        }
-        if mysql {
-            anyhow::ensure!(
-                rows.len() == 1 && rows[0].get::<i64>(1)? == 1,
-                "Hub keyed schema version ledger is not a singleton"
-            );
-            let portable_rows = self
-                .backend
-                .query("SELECT version FROM schema_version", &[])
-                .await?;
-            anyhow::ensure!(
-                portable_rows.len() <= 1,
-                "Hub schema version ledger has duplicate rows"
-            );
-            anyhow::ensure!(
-                current == 0 || portable_rows.len() == 1,
-                "Hub portable schema version marker is missing"
-            );
-            if let Some(row) = portable_rows.first() {
-                anyhow::ensure!(
-                    row.get::<i64>(0)? == current,
-                    "Hub schema version ledgers disagree"
-                );
-            }
-        }
-        if current > 0 {
-            self.require_schema_identity().await?;
-        }
-
-        // Apply every pending migration *and* advance the version marker in one
-        // portable transaction. Keeping the marker in the same batch matters
-        // for Durable Objects: if an isolate is evicted after DDL commits but
-        // before a separate marker write, startup would replay a non-idempotent
-        // `ALTER TABLE` and permanently wedge the object.
-        if (current as usize) < MIGRATIONS.len() {
-            if mysql {
-                // MySQL implicitly commits DDL. Apply one replay-safe
-                // statement at a time, checking indexes through the catalog,
-                // then atomically advance the singleton ledger after each
-                // complete migration. A crash can repeat only idempotent work.
-                for (offset, migration) in MIGRATIONS[current as usize..].iter().enumerate() {
-                    let migration_version = current + offset as i64 + 1;
-                    for sql in crate::backend::split_statements(migration) {
-                        if let Some((table, index)) = mysql_migration_index_identity(&sql) {
-                            let exists = self
-                                .backend
-                                .query_opt(
-                                    "SELECT 1 FROM information_schema.statistics
-                                      WHERE table_schema = DATABASE()
-                                        AND table_name = ?1 AND index_name = ?2 LIMIT 1",
-                                    &vals![table, index],
-                                )
-                                .await?
-                                .is_some();
-                            if exists {
-                                continue;
-                            }
-                        }
-                        let replay_safe = mysql_replay_safe_migration_sql(&sql);
-                        if let Err(error) = self.backend.execute(&replay_safe, &[]).await {
-                            // Concurrent starters can both observe an absent
-                            // index. Treat the losing CREATE as success only
-                            // after the catalog proves the exact index exists.
-                            let concurrently_created = if let Some((table, index)) =
-                                mysql_migration_index_identity(&sql)
-                            {
-                                self.backend
-                                    .query_opt(
-                                        "SELECT 1 FROM information_schema.statistics
-                                          WHERE table_schema = DATABASE()
-                                            AND table_name = ?1 AND index_name = ?2 LIMIT 1",
-                                        &vals![table, index],
-                                    )
-                                    .await?
-                                    .is_some()
-                            } else {
-                                false
-                            };
-                            if !concurrently_created {
-                                return Err(error).with_context(|| {
-                                    format!("applying MySQL schema migration v{migration_version}")
-                                });
-                            }
-                        }
-                    }
-                    self.backend
-                        .batch(&[
-                            Statement::new(
-                                "UPDATE hub_schema_version SET version = ?1 WHERE id = 1",
-                                vals![migration_version],
-                            ),
-                            Statement::new("DELETE FROM schema_version", Vec::new()),
-                            Statement::new(
-                                "INSERT INTO schema_version (version) VALUES (?1)",
-                                vals![migration_version],
-                            ),
-                        ])
-                        .await?;
-                }
-            } else {
-                let mut pending = MIGRATIONS[current as usize..].join("\n");
-                pending.push_str("\nDELETE FROM schema_version;\n");
-                pending.push_str(&format!(
-                    "INSERT INTO schema_version (version) VALUES ({target});\n"
-                ));
-                let statements = crate::backend::split_statements(&pending)
-                    .into_iter()
-                    .map(|sql| Statement::new(sql, Vec::new()))
-                    .collect::<Vec<_>>();
-                self.backend
-                    .migration_batch(current, target, &statements)
-                    .await
-                    .with_context(|| format!("applying migrations v{}..=v{target}", current + 1))?;
-            }
-            self.require_schema_identity().await?;
-        }
-        Ok(())
+    /// Reports the current native SQL connection-pool occupancy, when available.
+    #[must_use]
+    pub fn pool_stats(&self) -> Option<crate::backend::PoolStats> {
+        self.backend.pool_stats()
     }
 
-    /// Rejects databases from a different migration lineage before changing data.
-    async fn require_schema_identity(&self) -> Result<()> {
-        let rows = self
-            .backend
-            .query("SELECT identity FROM hub_schema_identity", &[])
-            .await
-            .context("database predates the first stable production baseline")?;
-        anyhow::ensure!(
-            rows.len() == 1,
-            "Hub schema identity ledger must contain exactly one row"
-        );
-        let identity: String = rows[0].get(0)?;
-        anyhow::ensure!(
-            identity == SCHEMA_IDENTITY,
-            "unsupported Hub schema identity '{identity}'; expected '{SCHEMA_IDENTITY}'"
-        );
+    async fn migrate(&self) -> Result<()> {
+        // The driver admits lineage before even creating bookkeeping tables,
+        // under the same connection/lock used for the canonical forward writes.
+        self.backend.migrate_schema().await?;
+        self.backfill_mirror_import_index().await?;
+        self.backfill_binding_identity_reservations().await?;
         Ok(())
     }
 
@@ -4213,7 +4110,7 @@ impl Database {
              WHERE registry_id = ?1 AND surface_object_id IN (
                SELECT id FROM surface_objects
                WHERE registry_id = ?1 AND object_key LIKE 'images/sha256/%')
-               AND (?2 IS NULL OR placement_id = ?2)",
+               AND (CAST(?2 AS BIGINT) IS NULL OR placement_id = ?2)",
             vals![registry_id, indexed_placement_id].to_vec(),
         ));
         stmts.push(Statement::new(
@@ -5882,30 +5779,26 @@ impl Database {
     }
 
     /// Deletes mirror configuration under an exact resource version.
+    /// Advances the registry generation so recreating a source cannot revive
+    /// authority held by an older mirror original.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error while a mirror original is retained, for a concurrent
+    /// configuration change, or on database failure.
     pub async fn delete_registry_mirror_at_version(
         &self,
         registry_id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
-        Ok(self
-            .backend
-            .execute(
-                "DELETE FROM mirror_sources WHERE registry_id = ?1
-                 AND resource_version = ?2",
-                &vals![registry_id, expected_resource_version],
-            )
-            .await?
-            == 1)
+        self.delete_mirror_configuration(registry_id, Some(expected_resource_version)).await
     }
 
     /// Mark a registry as a mirror of `upstream_url` in `mode`.
     ///
     /// Idempotent: re-running for the same registry updates the upstream URL,
-    /// mode, verify flag, and schedule, preserving the last-sync record. `mode`
+    /// mode, verify flag, and schedule, advancing its source generation and
+    /// preserving the last-sync record. `mode`
     /// must be `full` or `pullthrough`. The `upstream_url` is validated as a
     /// safe remote target ([`crate::url_guard::is_safe_remote_url`]) so a mirror
     /// can never be pointed at the local filesystem or an internal address.
@@ -5936,7 +5829,8 @@ impl Database {
                upstream_url = excluded.upstream_url,
                mode = excluded.mode,
                verify = excluded.verify,
-               schedule_secs = excluded.schedule_secs",
+               schedule_secs = excluded.schedule_secs,
+               resource_version = mirror_sources.resource_version + 1",
                 &vals![registry_id, upstream_url, mode, verify, schedule_secs],
             )
             .await?;
@@ -6016,20 +5910,14 @@ impl Database {
     }
 
     /// Stop mirroring: remove a registry's mirror source. Returns whether a row
-    /// was removed.
+    /// was removed, advancing the registry generation before source retirement.
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error while a mirror original is retained, for a concurrent
+    /// configuration change, or on database failure.
     pub async fn delete_mirror_source(&self, registry_id: i64) -> Result<bool> {
-        let n = self
-            .backend
-            .execute(
-                "DELETE FROM mirror_sources WHERE registry_id = ?1",
-                &vals![registry_id],
-            )
-            .await?;
-        Ok(n > 0)
+        self.delete_mirror_configuration(registry_id, None).await
     }
 
     /// Record the outcome of a mirror sync attempt.
@@ -6193,19 +6081,19 @@ impl Database {
             .execute(
                 "UPDATE domains SET observed_dns_state = CASE
                       WHEN desired_dns_provider = ?3 OR
-                        (desired_dns_provider IS NULL AND ?3 IS NULL)
+                        (desired_dns_provider IS NULL AND CAST(?3 AS TEXT) IS NULL)
                       THEN observed_dns_state
-                      WHEN ?3 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                      WHEN CAST(?3 AS TEXT) IS NULL THEN 'unconfigured' ELSE 'pending' END,
                     observed_tls_state = CASE
                       WHEN desired_tls_provider = ?4 OR
-                        (desired_tls_provider IS NULL AND ?4 IS NULL)
+                        (desired_tls_provider IS NULL AND CAST(?4 AS TEXT) IS NULL)
                       THEN observed_tls_state
-                      WHEN ?4 IS NULL THEN 'unconfigured' ELSE 'pending' END,
+                      WHEN CAST(?4 AS TEXT) IS NULL THEN 'unconfigured' ELSE 'pending' END,
                     verified_at = CASE WHEN
                       (desired_dns_provider = ?3 OR
-                        (desired_dns_provider IS NULL AND ?3 IS NULL)) AND
+                        (desired_dns_provider IS NULL AND CAST(?3 AS TEXT) IS NULL)) AND
                       (desired_tls_provider = ?4 OR
-                        (desired_tls_provider IS NULL AND ?4 IS NULL))
+                        (desired_tls_provider IS NULL AND CAST(?4 AS TEXT) IS NULL))
                       THEN verified_at ELSE NULL END,
                     desired_dns_provider = ?3, desired_tls_provider = ?4,
                     access_provider_json = ?5,
@@ -6343,7 +6231,7 @@ impl Database {
                      WHERE state.registry_id = ?2
                        AND (registry.org_id IS NULL OR org.deleted_at IS NULL)
                        AND (state.current_publication_id = ?7 OR
-                            (state.current_publication_id IS NULL AND ?7 IS NULL))",
+                            (state.current_publication_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                     vals![
                         input.publication_id,
                         input.registry_id,
@@ -6552,7 +6440,7 @@ impl Database {
                         retired_at
                  FROM registry_publications
                  WHERE registry_id = ?1 AND (?2 = '' OR state = ?2)
-                   AND (?3 IS NULL OR ordinal < ?3)
+                   AND (CAST(?3 AS BIGINT) IS NULL OR ordinal < ?3)
                  ORDER BY ordinal DESC LIMIT ?4",
                 &vals![registry_id, state, before_ordinal, limit + 1],
             )
@@ -7256,13 +7144,91 @@ impl Database {
         etag: Option<&str>,
         observed_at: i64,
     ) -> Result<()> {
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            None,
+        )
+        .await
+    }
+
+    /// Records publication evidence only while the observed placement and binding
+    /// still have the resource versions admitted for a hybrid R2 upload.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when either resource version changed, the publication
+    /// no longer admits the object, or the database operation fails.
+    pub async fn record_registry_publication_object_presence_fenced(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        placement_resource_version: i64,
+        binding_resource_version: i64,
+    ) -> Result<()> {
+        self.record_registry_publication_object_presence_with_fence(
+            publication_id,
+            surface_object_id,
+            placement_id,
+            observed_hash,
+            observed_size,
+            etag,
+            observed_at,
+            Some((placement_resource_version, binding_resource_version)),
+        )
+        .await
+    }
+
+    async fn record_registry_publication_object_presence_with_fence(
+        &self,
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        fence: Option<(i64, i64)>,
+    ) -> Result<()> {
+        self.backend
+            .checked_batch(&self.verified_registry_publication_presence_statements(
+                publication_id, surface_object_id, placement_id, observed_hash,
+                observed_size, etag, observed_at, fence,
+            ).await?)
+            .await
+    }
+
+    /// Builds publication presence and immutable receipt evidence atomically.
+    ///
+    /// # Errors
+    /// Returns an error for malformed publication or observed object identity.
+    #[allow(clippy::too_many_arguments)]
+    pub fn registry_publication_object_presence_statements(
+        publication_id: &str,
+        surface_object_id: i64,
+        placement_id: i64,
+        observed_hash: &str,
+        observed_size: i64,
+        etag: Option<&str>,
+        observed_at: i64,
+        fence: Option<(i64, i64)>,
+    ) -> Result<Vec<CheckedStatement>> {
         validate_key_bytes(publication_id, "publication id", 64)?;
         validate_key_bytes(observed_hash, "observed object hash", 128)?;
         if observed_size < 0 {
             bail!("observed object size cannot be negative");
         }
-        self.backend
-            .checked_batch(&[
+        Ok(vec![
                 Statement::new(
                     "DELETE FROM object_placements
                      WHERE surface_object_id = ?2 AND placement_id = ?3
@@ -7293,6 +7259,11 @@ impl Database {
                       AND placement.registry_id = pub.registry_id
                      WHERE pub.publication_id = ?1 AND object.id = ?2
                        AND placement.id = ?3
+                       AND (CAST(?8 AS BIGINT) IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
                        AND pub.state IN ('preparing', 'writing_pointers')
                        AND declared.expected_hash = ?4
                        AND declared.expected_size = ?5",
@@ -7303,7 +7274,9 @@ impl Database {
                         observed_hash,
                         observed_size,
                         etag,
-                        observed_at
+                        observed_at,
+                        fence.map(|(placement_version, _)| placement_version),
+                        fence.map(|(_, binding_version)| binding_version)
                     ],
                 )
                 .expecting(1),
@@ -7326,6 +7299,11 @@ impl Database {
                       AND placement.registry_id = pub.registry_id
                      WHERE pub.publication_id = ?1 AND object.id = ?2
                        AND placement.id = ?3
+                       AND (CAST(?8 AS BIGINT) IS NULL OR (
+                         placement.resource_version = ?8
+                         AND EXISTS (SELECT 1 FROM bindings binding
+                           WHERE binding.id = placement.binding_id
+                             AND binding.resource_version = ?9)))
                        AND pub.state IN ('preparing', 'writing_pointers')
                        AND declared.expected_hash = ?4
                        AND declared.expected_size = ?5
@@ -7341,12 +7319,13 @@ impl Database {
                         observed_hash,
                         observed_size,
                         etag,
-                        observed_at
+                        observed_at,
+                        fence.map(|(placement_version, _)| placement_version),
+                        fence.map(|(_, binding_version)| binding_version)
                     ],
                 )
                 .expecting(1),
-            ])
-            .await
+        ])
     }
 
     /// Binds reusable placement evidence to a newly admitted publication.
@@ -8356,7 +8335,7 @@ impl Database {
     }
 
     /// Ensures the binding has a nullable, versioned write-state singleton.
-    async fn ensure_binding_write_state(&self, binding_id: i64) -> Result<()> {
+    pub(crate) async fn ensure_binding_write_state(&self, binding_id: i64) -> Result<()> {
         if self
             .backend
             .query_opt(
@@ -8829,7 +8808,7 @@ impl Database {
     ) -> Result<Vec<ReusablePlacementEvidence>> {
         self.backend
             .query(
-                "SELECT surface_object_id, state, observed_hash, observed_size, etag
+                "SELECT surface_object_id, state, observed_hash, observed_size, etag, provider_version
                    FROM object_placements
                   WHERE placement_id = ?1
                   ORDER BY surface_object_id",
@@ -8844,6 +8823,7 @@ impl Database {
                     observed_hash: row.get(2)?,
                     observed_size: row.get(3)?,
                     etag: row.get(4)?,
+                    provider_version: row.get(5)?,
                 })
             })
             .collect()
@@ -8970,7 +8950,8 @@ impl Database {
             if presence.state == "missing"
                 && (presence.observed_hash.is_some()
                     || presence.observed_size.is_some()
-                    || presence.etag.is_some())
+                    || presence.etag.is_some()
+                    || presence.provider_version.is_some())
             {
                 bail!("missing placement scan evidence cannot describe physical bytes");
             }
@@ -8978,6 +8959,13 @@ impl Database {
                 && (presence.observed_hash.is_none() || presence.observed_size.is_none())
             {
                 bail!("present placement scan evidence requires a digest and size");
+            }
+            if presence
+                .provider_version
+                .as_deref()
+                .is_some_and(|version| !crate::storage_work::valid_provider_version(version))
+            {
+                bail!("placement scan provider upload version is invalid");
             }
             if let Some(hash) = presence.observed_hash.as_deref() {
                 validate_key_bytes(hash, "placement scan observed hash", 128)?;
@@ -9018,9 +9006,9 @@ impl Database {
                        (surface_object_id, cache_id, registry_id, placement_id,
                         state, observed_hash, observed_size, etag,
                         observed_inventory_generation, observed_at,
-                        catalog_object_resource_version)
+                        catalog_object_resource_version, provider_version)
                      SELECT object.id, object.cache_id, object.registry_id, placement.id,
-                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version
+                            ?6, ?7, ?8, ?9, ?3, ?13, object.resource_version, ?15
                      FROM surface_objects object
                      JOIN surface_placements placement
                        ON object.registry_id = placement.registry_id
@@ -9056,7 +9044,8 @@ impl Database {
                         claim_token,
                         operation_resource_version,
                         observed_at,
-                        claim_checked_at
+                        claim_checked_at,
+                        presence.provider_version
                     ],
                 )
                 .expecting(1),
@@ -9803,17 +9792,19 @@ impl Database {
               AND g.consumer_scope_key = COALESCE(r.owner_scope_key, c.owner_scope_key)
               AND g.state = 'active'
              WHERE b.id = ?4
-               AND ((?1 IS NOT NULL AND r.id IS NOT NULL)
-                 OR (?2 IS NOT NULL AND c.id IS NOT NULL))
-               AND (?1 IS NULL OR NOT EXISTS (
+               AND ((CAST(?1 AS BIGINT) IS NOT NULL AND r.id IS NOT NULL)
+                 OR (CAST(?2 AS BIGINT) IS NOT NULL AND c.id IS NOT NULL))
+               AND (CAST(?1 AS BIGINT) IS NULL OR NOT EXISTS (
                  SELECT 1 FROM oci_gc_registry_locks registry_lock
                  WHERE registry_lock.registry_id = ?1))
                AND NOT EXISTS (SELECT 1 FROM surface_placements existing
                  WHERE existing.binding_id = b.id
                    AND (existing.prefix = '' OR ?5 = ''
                      OR existing.prefix = ?5
-                     OR substr(existing.prefix, 1, length(?5) + 1) = ?5 || '/'
-                     OR substr(?5, 1, length(existing.prefix) + 1) = existing.prefix || '/'))",
+                     OR (substr(existing.prefix, 1, length(?5)) = ?5
+                       AND substr(existing.prefix, length(?5) + 1, 1) = '/')
+                     OR (substr(?5, 1, length(existing.prefix)) = existing.prefix
+                       AND substr(?5, length(existing.prefix) + 1, 1) = '/')))",
                 &vals![
                     registry_id,
                     cache_id,
@@ -9856,8 +9847,10 @@ impl Database {
                          WHERE existing.binding_id = ?1
                            AND (existing.prefix = '' OR ?2 = ''
                              OR existing.prefix = ?2
-                             OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
-                             OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
+                             OR (substr(existing.prefix, 1, length(?2)) = ?2
+                               AND substr(existing.prefix, length(?2) + 1, 1) = '/')
+                             OR (substr(?2, 1, length(existing.prefix)) = existing.prefix
+                               AND substr(?2, length(existing.prefix) + 1, 1) = '/'))
                          LIMIT 1",
                         &vals![input.binding_id, prefix],
                     )
@@ -9881,8 +9874,10 @@ impl Database {
                      WHERE existing.binding_id = ?1
                        AND (existing.prefix = '' OR ?2 = ''
                          OR existing.prefix = ?2
-                         OR substr(existing.prefix, 1, length(?2) + 1) = ?2 || '/'
-                         OR substr(?2, 1, length(existing.prefix) + 1) = existing.prefix || '/')
+                         OR (substr(existing.prefix, 1, length(?2)) = ?2
+                           AND substr(existing.prefix, length(?2) + 1, 1) = '/')
+                         OR (substr(?2, 1, length(existing.prefix)) = existing.prefix
+                           AND substr(?2, length(existing.prefix) + 1, 1) = '/'))
                      LIMIT 1",
                     &vals![input.binding_id, prefix],
                 )
@@ -10615,7 +10610,7 @@ impl Database {
                 "INSERT INTO surface_objects (registry_id, cache_id, object_key,
                 object_kind, partition_key, content_hash, size,
                 mutable_publication_id, created_at, updated_at)
-             SELECT ?1, ?2, ?3, ?4, ?8, ?5, ?6, ?7, ?9, ?9
+             SELECT ?1, ?2, ?3, ?4, ?8, ?5, ?6, CAST(?7 AS VARCHAR), ?9, ?9
              WHERE EXISTS (SELECT 1 FROM registries WHERE id = ?1)
                 AND (?4 = 'immutable' OR EXISTS (
                   SELECT 1 FROM registry_publications pub
@@ -11171,13 +11166,13 @@ impl Database {
                 .execute(
                     "UPDATE cache_population_targets SET required = ?4,
                     placement_policy_revision_id = ?5,
-                    placement_policy_revision_state = CASE WHEN ?5 IS NULL
+                    placement_policy_revision_state = CASE WHEN CAST(?5 AS BIGINT) IS NULL
                       THEN NULL ELSE 'published' END, selector_json = ?6,
                     validation_gate = ?7, enabled = ?8,
                     resource_version = resource_version + 1, updated_at = ?9
                  WHERE cache_id = ?1 AND registry_id = ?2 AND trigger_kind = ?3
                    AND resource_version = ?10
-                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
                        WHERE id = ?5 AND cache_id = ?1 AND state = 'published'))",
                     &vals![
                         input.cache_id,
@@ -11201,10 +11196,10 @@ impl Database {
                     placement_policy_revision_state, selector_json,
                     validation_gate, enabled, created_at, updated_at)
                  SELECT c.id, r.id, ?3, ?4, ?5,
-                        CASE WHEN ?5 IS NULL THEN NULL ELSE 'published' END,
+                        CASE WHEN CAST(?5 AS BIGINT) IS NULL THEN NULL ELSE 'published' END,
                         ?6, ?7, ?8, ?9, ?9
                  FROM binary_caches c CROSS JOIN registries r WHERE c.id = ?1 AND r.id = ?2
-                   AND (?5 IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (SELECT 1 FROM placement_policy_revisions
                        WHERE id = ?5 AND cache_id = c.id AND state = 'published'))",
                     &vals![
                         input.cache_id,
@@ -11308,6 +11303,23 @@ impl Database {
         ) {
             bail!("invalid topology plan actor kind '{}'", input.actor_kind);
         }
+        if let Some(incarnation) = &input.actor_incarnation {
+            let kind = crate::domain::PrincipalKind::parse(&input.actor_kind)
+                .context("pinned topology plan actor kind is invalid")?;
+            let principal = crate::domain::Principal {
+                kind,
+                id: input
+                    .actor_id
+                    .context("pinned topology plan actor is missing")?,
+            };
+            direct_identity::validate_actor_incarnation(principal, incarnation)?;
+            anyhow::ensure!(
+                self.principal_incarnation(principal).await?.as_ref() == Some(incarnation),
+                "topology plan actor incarnation is unavailable"
+            );
+        }
+        // None remains available to historical trusted DB fixtures. Public
+        // control services require a validated UUID and reject unpinned replay.
         validate_key_bytes(&input.scope, "topology plan scope", 255)?;
         if let Some(hash) = input.confirmation_hash.as_deref() {
             validate_key_bytes(hash, "confirmation hash", 128)?;
@@ -11337,6 +11349,9 @@ impl Database {
                 )
                 .await?;
             if let Some(existing) = rows.first().map(row_to_topology_plan).transpose()? {
+                if existing.actor_incarnation != input.actor_incarnation {
+                    bail!("plan idempotency key belongs to another actor incarnation");
+                }
                 if existing.request_digest.as_deref() != Some(request_digest.as_str()) {
                     bail!("plan idempotency key was already used for different input");
                 }
@@ -11349,8 +11364,14 @@ impl Database {
                 "INSERT INTO topology_plans (plan_id, plan_kind, actor_kind, actor_id,
                 actor_label, scope, input_versions_json, effects_json, warnings_json,
                 confirmation_hash, request_idempotency_key, request_digest,
-                created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                created_at, expires_at, actor_incarnation)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15
+             WHERE ?15 IS NULL
+               OR (?3 = 'user' AND EXISTS (SELECT 1 FROM users u
+                   WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?15))
+               OR (?3 = 'service_account' AND EXISTS (SELECT 1 FROM service_accounts s
+                   JOIN orgs o ON o.id = s.org_id WHERE s.id = ?4
+                     AND o.deleted_at IS NULL AND s.principal_incarnation = ?15))",
                 &vals![
                     input.plan_id,
                     input.plan_kind,
@@ -11365,7 +11386,8 @@ impl Database {
                     input.request_idempotency_key,
                     request_digest,
                     now,
-                    input.expires_at
+                    input.expires_at,
+                    input.actor_incarnation
                 ],
             )
             .await;
@@ -11383,7 +11405,9 @@ impl Database {
                     )
                     .await?;
                 if let Some(existing) = rows.first().map(row_to_topology_plan).transpose()? {
-                    if existing.request_digest.as_deref() == Some(request_digest.as_str()) {
+                    if existing.actor_incarnation == input.actor_incarnation
+                        && existing.request_digest.as_deref() == Some(request_digest.as_str())
+                    {
                         return Ok(existing);
                     }
                     bail!("plan idempotency key was concurrently used for different input");
@@ -12037,15 +12061,43 @@ impl Database {
         now: i64,
         limit: usize,
     ) -> Result<Vec<TopologyOperationRecord>> {
+        self.due_physical_placement_operations(now, limit, true)
+            .await
+    }
+
+    /// Lists only read-only placement scans for runtimes without copy writes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn due_surface_placement_scan_only_operations(
+        &self,
+        now: i64,
+        limit: usize,
+    ) -> Result<Vec<TopologyOperationRecord>> {
+        self.due_physical_placement_operations(now, limit, false)
+            .await
+    }
+
+    async fn due_physical_placement_operations(
+        &self,
+        now: i64,
+        limit: usize,
+        include_copies: bool,
+    ) -> Result<Vec<TopologyOperationRecord>> {
         if limit == 0 {
             return Ok(Vec::new());
         }
+        let operation_filter = if include_copies {
+            "IN ('scan_placement', 'replicate_placement', 'repair_placement')"
+        } else {
+            "= 'scan_placement'"
+        };
         self.backend
             .query(
                 &format!(
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations operation
-                     WHERE operation.operation_kind IN
-                       ('scan_placement', 'replicate_placement', 'repair_placement')
+                     WHERE operation.operation_kind {operation_filter}
                        AND (operation.state = 'pending'
                          OR (operation.state = 'running' AND (
                            NOT EXISTS (SELECT 1 FROM placement_scan_claims claim
@@ -12350,7 +12402,7 @@ impl Database {
                     "SELECT {OPERATION_COLUMNS} FROM topology_operations o
                       WHERE o.primary_target_kind = ?1 AND o.primary_target_stable_id = ?2
                         AND (?3 = '' OR o.state = ?3)
-                        AND (?4 IS NULL OR o.created_at < ?4
+                        AND (CAST(?4 AS BIGINT) IS NULL OR o.created_at < ?4
                           OR (o.created_at = ?4 AND o.operation_id > ?5))
                       ORDER BY o.created_at DESC, o.operation_id
                       LIMIT ?6"
@@ -12444,7 +12496,7 @@ impl Database {
                          ON ancestry.descendant_scope_key = o.authorization_scope_key
                       WHERE ancestry.ancestor_scope_key = ?1
                         AND (?2 = '' OR o.state = ?2)
-                        AND (?3 IS NULL OR o.created_at < ?3
+                        AND (CAST(?3 AS BIGINT) IS NULL OR o.created_at < ?3
                           OR (o.created_at = ?3 AND o.operation_id > ?4))
                       ORDER BY o.created_at DESC, o.operation_id
                       LIMIT ?5"
@@ -13015,6 +13067,9 @@ impl Database {
         {
             bail!("operation finish time cannot precede its start time");
         }
+
+        // A claimed controller may checkpoint evidence while staying running;
+        // the version and monotonic-progress predicates still fence stale writers.
         let affected = self
             .backend
             .execute(
@@ -13024,11 +13079,11 @@ impl Database {
                 resource_version = resource_version + 1
              WHERE operation_id = ?1 AND resource_version = ?2
                AND progress_current <= ?4
-               AND (progress_total IS NULL OR ?5 IS NULL OR progress_total = ?5)
+               AND (progress_total IS NULL OR CAST(?5 AS BIGINT) IS NULL OR progress_total = ?5)
                AND (?3 <> 'succeeded' OR COALESCE(?5, progress_total) IS NULL
                     OR ?4 = COALESCE(?5, progress_total))
                AND ((state = 'pending' AND ?3 IN ('running', 'cancelled'))
-                 OR (state = 'running' AND ?3 IN ('succeeded', 'failed', 'cancelled'))) ",
+                 OR (state = 'running' AND ?3 IN ('running', 'succeeded', 'failed', 'cancelled'))) ",
                 &vals![
                     operation_id,
                     expected_version,
@@ -16441,8 +16496,8 @@ impl Database {
     pub async fn create_user(&self, email: &str, display_name: Option<&str>) -> Result<i64> {
         self.backend
             .execute_insert(
-                "INSERT INTO users (email, display_name, created_at) VALUES (?1, ?2, ?3)",
-                &vals![email, display_name, unix_now()],
+                "INSERT INTO users (email, display_name, created_at, principal_incarnation) VALUES (?1, ?2, ?3, ?4)",
+                &vals![email, display_name, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await
     }
@@ -16500,9 +16555,9 @@ impl Database {
         }
         self.backend
             .execute(
-                "INSERT INTO users (email, display_name, created_at) VALUES (?1, NULL, ?2)
+                "INSERT INTO users (email, display_name, created_at, principal_incarnation) VALUES (?1, NULL, ?2, ?3)
              ON CONFLICT(email) DO NOTHING",
-                &vals![email, unix_now()],
+                &vals![email, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await?;
         self.backend
@@ -16633,8 +16688,8 @@ impl Database {
     pub async fn create_service_account(&self, org_id: i64, name: &str) -> Result<i64> {
         self.backend
             .execute_insert(
-                "INSERT INTO service_accounts (org_id, name, created_at) VALUES (?1, ?2, ?3)",
-                &vals![org_id, name, unix_now()],
+                "INSERT INTO service_accounts (org_id, name, created_at, principal_incarnation) VALUES (?1, ?2, ?3, ?4)",
+                &vals![org_id, name, unix_now(), uuid::Uuid::new_v4().to_string()],
             )
             .await
     }
@@ -17899,7 +17954,14 @@ impl Database {
         let now = unix_now();
         let id = self.max_id("bindings").await? + 1;
         let default_key = is_instance_default.then_some("singleton");
+        let reservation_id = uuid::Uuid::new_v4().to_string();
         let statements = [
+            Statement::new(
+                "INSERT INTO binding_identity_reservations(stable_id, reservation_id, reserved_at)
+                 VALUES (?1, ?2, ?3)",
+                vals![stable_id, reservation_id, now],
+            )
+            .expecting(1),
             Statement::new(
                 "INSERT INTO bindings
                  (id, org_id, name, kind, is_instance_default, instance_default_key, created_at,
@@ -18080,21 +18142,21 @@ impl Database {
                        WHERE scope.scope_key = ?3 AND scope.retired_at IS NULL
                          AND {scope_identity_guard}
                          AND (scope.org_id IS NULL OR org.deleted_at IS NULL))
-                   AND (?4 IS NULL OR EXISTS (
+                   AND (CAST(?4 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM binding_consumer_scopes grant_row
                       WHERE grant_row.binding_id = ?4
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
-                   AND (?5 IS NULL OR EXISTS (
+                   AND (CAST(?5 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM domains domain
                       WHERE domain.id = ?5 AND domain.owner_scope_key = ?3))
-                   AND (?6 IS NULL OR EXISTS (
+                   AND (CAST(?6 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM endpoint_route_scopes grant_row
                       WHERE grant_row.endpoint_id = ?6
                         AND grant_row.endpoint_generation = ?7
                         AND grant_row.consumer_scope_key = ?3
                         AND grant_row.state = 'active'))
-                   AND (?8 IS NULL OR EXISTS (
+                   AND (CAST(?8 AS BIGINT) IS NULL OR EXISTS (
                      SELECT 1 FROM gateway_revision_route_scopes grant_row
                       WHERE grant_row.gateway_id = ?8 AND grant_row.generation = ?9
                         AND grant_row.consumer_scope_key = ?3
@@ -18308,6 +18370,28 @@ impl Database {
         credential_fingerprint: &str,
         actor: &str,
     ) -> Result<BindingCredentialRevisionRecord> {
+        self.set_binding_credential_revision_inner(
+            binding_id,
+            purpose,
+            secret_version_ref,
+            expected_current_generation,
+            credential_fingerprint,
+            actor,
+            None,
+        )
+        .await
+    }
+
+    async fn set_binding_credential_revision_inner(
+        &self,
+        binding_id: i64,
+        purpose: &str,
+        secret_version_ref: &str,
+        expected_current_generation: i64,
+        credential_fingerprint: &str,
+        actor: &str,
+        binding: Option<&BindingRecord>,
+    ) -> Result<BindingCredentialRevisionRecord> {
         if !matches!(purpose, "read" | "write" | "delete" | "list" | "presign") {
             bail!("invalid storage credential purpose '{purpose}'");
         }
@@ -18338,6 +18422,22 @@ impl Database {
                 && current.as_ref().map(|head| head.generation) == Some(existing.generation)
                 && existing.generation == expected_current_generation + 1
             {
+                if let Some(binding) = binding {
+                    self.backend.checked_batch(&[
+                        credential_registration::binding_fence(binding),
+                        Statement::new(
+                            "UPDATE binding_credential_heads SET updated_at = updated_at
+                             WHERE binding_id = ?1 AND purpose = ?2 AND current_generation = ?3
+                               AND resource_version = ?4
+                               AND EXISTS (SELECT 1 FROM binding_credential_revisions r
+                                 WHERE r.binding_id = ?1 AND r.purpose = ?2 AND r.generation = ?3
+                                   AND r.secret_version_ref = ?5 AND r.credential_fingerprint = ?6)",
+                            vals![binding_id, purpose, existing.generation,
+                                existing.head_resource_version, secret_version_ref,
+                                credential_fingerprint].to_vec(),
+                        ).expecting(1),
+                    ]).await?;
+                }
                 return Ok(existing);
             }
             if existing.credential_fingerprint == credential_fingerprint {
@@ -18394,7 +18494,11 @@ impl Database {
             ]
             .to_vec()
         };
-        let mut statements = vec![Statement::new(insert_sql, insert_values).expecting(1)];
+        let mut statements = Vec::new();
+        if let Some(binding) = binding {
+            statements.push(credential_registration::binding_fence(binding));
+        }
+        statements.push(Statement::new(insert_sql, insert_values).expecting(1));
         if current_generation == 0 {
             statements.push(
                 Statement::new(
@@ -18452,6 +18556,29 @@ impl Database {
         validation_error: Option<&str>,
         expected_resource_version: i64,
     ) -> Result<BindingCredentialRevisionRecord> {
+        self.validate_binding_credential_with_fence(
+            binding_id,
+            purpose,
+            generation,
+            state,
+            validation_error,
+            expected_resource_version,
+            Vec::new(),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn validate_binding_credential_with_fence(
+        &self,
+        binding_id: i64,
+        purpose: &str,
+        generation: i64,
+        state: &str,
+        validation_error: Option<&str>,
+        expected_resource_version: i64,
+        mut fences: Vec<crate::backend::CheckedStatement>,
+    ) -> Result<BindingCredentialRevisionRecord> {
         if !matches!(state, "valid" | "invalid") || (state == "valid") != validation_error.is_none()
         {
             bail!("credential validation must be valid without an error or invalid with an error");
@@ -18475,57 +18602,56 @@ impl Database {
             "generation": generation,
             "result": state,
         }))?;
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE binding_credential_revisions
+        fences.extend([
+            Statement::new(
+                "UPDATE binding_credential_revisions
                      SET validation_state = ?4, validated_at = ?5, validation_error = ?6
                      WHERE binding_id = ?1 AND purpose = ?2 AND generation = ?3
                        AND EXISTS (SELECT 1 FROM binding_credential_heads h
                          WHERE h.binding_id = ?1 AND h.purpose = ?2
                            AND h.current_generation = ?3 AND h.resource_version = ?7)",
-                    vals![
-                        binding_id,
-                        purpose,
-                        generation,
-                        state,
-                        now,
-                        validation_error,
-                        expected_resource_version
-                    ]
-                    .to_vec(),
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE binding_credential_heads
+                vals![
+                    binding_id,
+                    purpose,
+                    generation,
+                    state,
+                    now,
+                    validation_error,
+                    expected_resource_version
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE binding_credential_heads
                      SET resource_version = resource_version + 1, updated_at = ?4
                      WHERE binding_id = ?1 AND purpose = ?2
                        AND current_generation = ?3 AND resource_version = ?5",
-                    vals![
-                        binding_id,
-                        purpose,
-                        generation,
-                        now,
-                        expected_resource_version
-                    ]
-                    .to_vec(),
-                )
-                .expecting(1),
-                Database::topology_event_statement(&NewTopologyEvent {
-                    event_id: &event_id,
-                    event_name,
-                    owner_scope_key: &binding.owner_scope_key,
-                    resource_kind: "binding_credential",
-                    resource_stable_id: &binding.stable_id,
-                    resource_generation_key: generation,
-                    actor_kind: "system",
-                    actor_id: None,
-                    actor_label: "storage-credential-controller",
-                    payload_json: &payload_json,
-                    occurred_at: now,
-                }),
-            ])
-            .await?;
+                vals![
+                    binding_id,
+                    purpose,
+                    generation,
+                    now,
+                    expected_resource_version
+                ]
+                .to_vec(),
+            )
+            .expecting(1),
+            Database::topology_event_statement(&NewTopologyEvent {
+                event_id: &event_id,
+                event_name,
+                owner_scope_key: &binding.owner_scope_key,
+                resource_kind: "binding_credential",
+                resource_stable_id: &binding.stable_id,
+                resource_generation_key: generation,
+                actor_kind: "system",
+                actor_id: None,
+                actor_label: "storage-credential-controller",
+                payload_json: &payload_json,
+                occurred_at: now,
+            }),
+        ]);
+        self.backend.checked_batch(&fences).await?;
         let record = self
             .binding_credential_revision(binding_id, purpose, generation)
             .await?
@@ -18959,6 +19085,28 @@ impl Database {
         id: i64,
         expected_resource_version: i64,
     ) -> Result<bool> {
+        let Some(binding) = self.binding(id).await? else {
+            return Ok(false);
+        };
+        let reservation = self
+            .binding_identity_reservation(&binding.stable_id)
+            .await?
+            .context("binding lacks its permanent identity reservation")?;
+        self.delete_topology_binding_inner(
+            &binding,
+            &reservation.reservation_id,
+            expected_resource_version,
+        )
+        .await
+    }
+
+    async fn delete_topology_binding_inner(
+        &self,
+        binding: &BindingRecord,
+        reservation_id: &str,
+        expected_resource_version: i64,
+    ) -> Result<bool> {
+        let id = binding.id;
         let exists = self
             .backend
             .query_opt(
@@ -18980,9 +19128,17 @@ impl Database {
                 Statement::new(
                     "UPDATE bindings SET resource_version = resource_version
                      WHERE id = ?1 AND resource_version = ?2 AND is_instance_default = 0
+                       AND stable_id = ?3
+                       AND EXISTS (SELECT 1 FROM binding_identity_reservations identity
+                         WHERE identity.stable_id = ?3 AND identity.reservation_id = ?4)
                        AND NOT EXISTS (SELECT 1 FROM surface_placements WHERE binding_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM gateway_revisions WHERE binding_id = ?1)",
-                    vals![id, expected_resource_version],
+                    vals![
+                        id,
+                        expected_resource_version,
+                        &binding.stable_id,
+                        reservation_id
+                    ],
                 )
                 .expecting(1),
                 Statement::new(
@@ -20662,6 +20818,9 @@ impl Database {
         if !crate::domain::Scope::is_canonical(scope) {
             bail!("invalid stable authorization scope");
         }
+        // Capture the owner incarnation before authorization reads. The
+        // final INSERT must still observe that exact owner after every await.
+        let owner_incarnation = self.ensure_principal_incarnation(owner).await?;
         if !self
             .principal_is_live(owner.kind.as_str(), owner.id)
             .await?
@@ -20688,16 +20847,16 @@ impl Database {
             .execute(
                 "INSERT INTO tokens
              (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-              expires_at, revoked_at, last_used_at)
-             SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL
+              expires_at, revoked_at, last_used_at, owner_incarnation)
+             SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL, ?10
              FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
              WHERE a.scope_key = ?5 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                AND ((?3 = 'user' AND EXISTS (
-                      SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL))
+                      SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                  OR (?3 = 'service_account' AND EXISTS (
                       SELECT 1 FROM service_accounts s
                       JOIN orgs owner_org ON owner_org.id = s.org_id
-                       WHERE s.id = ?4 AND owner_org.deleted_at IS NULL)))",
+                       WHERE s.id = ?4 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                 &vals![
                     id,
                     hash,
@@ -20708,6 +20867,7 @@ impl Database {
                     comment,
                     unix_now(),
                     expires_at,
+                    owner_incarnation,
                 ],
             )
             .await?;
@@ -20745,23 +20905,28 @@ impl Database {
     }
 
     async fn live_token_auth_by_id(&self, id: &str, touch: bool) -> Result<Option<TokenAuth>> {
+        if !direct_identity::canonical_token_id(id) {
+            return Ok(None);
+        }
         let now = unix_now();
         let row = self
             .backend
             .query_opt(
                 "SELECT t.owner_kind, t.owner_id, t.scope_key, t.permissions,
-                        t.expires_at, t.revoked_at, t.rotated_at
+                        t.expires_at, t.revoked_at, t.rotated_at, t.owner_incarnation
                  FROM tokens t
                  JOIN authorization_scopes a ON a.scope_key = t.scope_key
                  LEFT JOIN orgs o ON o.id = a.org_id
                  WHERE t.id = ?1 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((t.owner_kind = 'user' AND EXISTS (
                           SELECT 1 FROM users u
-                           WHERE u.id = t.owner_id AND u.deleted_at IS NULL))
+                           WHERE u.id = t.owner_id AND u.deleted_at IS NULL
+                             AND u.principal_incarnation = t.owner_incarnation))
                      OR (t.owner_kind = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = t.owner_id AND owner_org.deleted_at IS NULL
+                             AND s.principal_incarnation = t.owner_incarnation)))",
                 &vals![id],
             )
             .await
@@ -20787,7 +20952,7 @@ impl Database {
             return Ok(None);
         }
         if let Some(rotated) = rotated_at {
-            if now >= rotated + ROTATION_GRACE_SECS {
+            if now.saturating_sub(rotated) >= ROTATION_GRACE_SECS {
                 return Ok(None);
             }
         }
@@ -20795,6 +20960,12 @@ impl Database {
             return Ok(None);
         };
         let principal = crate::domain::Principal { kind, id: owner_id };
+        let Some(owner_incarnation) = row.get::<Option<String>>(7)? else {
+            return Ok(None);
+        };
+        if direct_identity::validate_actor_incarnation(principal, &owner_incarnation).is_err() {
+            return Ok(None);
+        }
         if !self
             .principal_is_live(principal.kind.as_str(), principal.id)
             .await?
@@ -20828,9 +20999,18 @@ impl Database {
                 tracing::warn!(error = %e, token_id = %id, "failed to stamp token last_used_at");
             }
         }
+        let latest = unix_now();
+        if expires_at.is_some_and(|expiry| latest >= expiry)
+            || rotated_at
+                .is_some_and(|rotated| latest.saturating_sub(rotated) >= ROTATION_GRACE_SECS)
+        {
+            return Ok(None);
+        }
         Ok(Some(TokenAuth {
             token_id: id.to_string(),
             owner: principal,
+            owner_incarnation: Some(owner_incarnation),
+            browser_session_id_hash: None,
             scope: crate::domain::Scope::parse(&scope),
             permissions,
         }))
@@ -21008,7 +21188,7 @@ impl Database {
         let Some(old) = self
             .backend
             .query_opt(
-                "SELECT owner_kind, owner_id, scope_key, permissions, comment, expires_at
+                "SELECT owner_kind, owner_id, scope_key, permissions, comment, expires_at, owner_incarnation
              FROM tokens WHERE id = ?1 AND revoked_at IS NULL",
                 &vals![token_id],
             )
@@ -21026,6 +21206,12 @@ impl Database {
             return Ok(None);
         };
         let owner = crate::domain::Principal { kind, id: owner_id };
+        let Some(owner_incarnation) = old.get::<Option<String>>(6)? else {
+            return Ok(None);
+        };
+        if self.principal_incarnation(owner).await?.as_ref() != Some(&owner_incarnation) {
+            return Ok(None);
+        }
         if !self.principal_is_live(&owner_kind, owner_id).await? {
             return Ok(None);
         }
@@ -21047,26 +21233,27 @@ impl Database {
             .checked_batch(&[
                 Statement::new(
                     "UPDATE tokens SET rotated_at = ?2
-                     WHERE id = ?1 AND revoked_at IS NULL AND rotated_at IS NULL",
-                    vals![token_id, now].to_vec(),
+                     WHERE id = ?1 AND revoked_at IS NULL AND rotated_at IS NULL
+                       AND owner_incarnation = ?3",
+                    vals![token_id, now, owner_incarnation].to_vec(),
                 )
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-                  expires_at, revoked_at, last_used_at)
-                 SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL
+                  expires_at, revoked_at, last_used_at, owner_incarnation)
+                 SELECT ?1, ?2, ?3, ?4, a.scope_key, ?6, ?7, ?8, ?9, NULL, NULL, ?10
                  FROM authorization_scopes a LEFT JOIN orgs o ON o.id = a.org_id
-                 WHERE (a.org_id IS NULL OR o.deleted_at IS NULL)
+                 WHERE a.scope_key = ?5 AND (a.org_id IS NULL OR o.deleted_at IS NULL)
                    AND ((?3 = 'user' AND EXISTS (
-                          SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL))
+                          SELECT 1 FROM users u WHERE u.id = ?4 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                      OR (?3 = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = ?4 AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = ?4 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                     vals![
                         new_id, hash, owner_kind, owner_id, scope, perms_json, comment, now,
-                        expires_at
+                        expires_at, owner_incarnation
                     ]
                     .to_vec(),
                 )
@@ -21080,7 +21267,8 @@ impl Database {
 
     /// Create a session for `user_id`, returning the opaque cookie secret.
     ///
-    /// Only the SHA-256 hash of the secret is stored. `ttl_secs` is the
+    /// The original user UUID is pinned at mint; only the SHA-256 hash of the
+    /// cookie secret is stored. `ttl_secs` is the
     /// session's **absolute** lifetime: `expires_at` is stamped to
     /// `now + ttl_secs` (callers pass
     /// [`ABSOLUTE_LIFETIME_SECS`](crate::auth::session::ABSOLUTE_LIFETIME_SECS)).
@@ -21092,13 +21280,19 @@ impl Database {
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure.
+    /// Returns an error on database failure or an unavailable live canonical owner.
     pub async fn create_session(
         &self,
         user_id: i64,
         ttl_secs: i64,
         auth_level: i64,
     ) -> Result<String> {
+        // This port is reached after fresh authentication. Establish a legacy
+        // user's UUID here, never while accepting an old cookie; the insert
+        // below pins the winning UUID and refuses a changed numeric owner.
+        let owner_incarnation = self
+            .ensure_principal_incarnation(crate::domain::Principal::user(user_id))
+            .await?;
         let secret = crate::auth::session::new_session_secret();
         let hash = crate::auth::token::sha256_hex(&secret);
         let now = unix_now();
@@ -21107,10 +21301,17 @@ impl Database {
             .execute(
                 "INSERT INTO sessions
              (id_hash, user_id, created_at, last_seen_at, expires_at, auth_level,
-              last_authenticated_at)
-             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3 FROM users u
-              WHERE u.id = ?2 AND u.deleted_at IS NULL",
-                &vals![hash, user_id, now, now + ttl_secs, auth_level],
+              last_authenticated_at, owner_incarnation)
+             SELECT ?1, u.id, ?3, ?3, ?4, ?5, ?3, u.principal_incarnation FROM users u
+              WHERE u.id = ?2 AND u.deleted_at IS NULL AND u.principal_incarnation = ?6",
+                &vals![
+                    hash,
+                    user_id,
+                    now,
+                    now + ttl_secs,
+                    auth_level,
+                    owner_incarnation
+                ],
             )
             .await?;
         if affected != 1 {
@@ -21124,7 +21325,8 @@ impl Database {
     /// Accepts the secret when its hash is known and the session is live under
     /// all three lifetime bounds, then bumps `last_seen_at` to now (sliding
     /// the idle window). Returns `Ok(None)` for an unknown session or one that
-    /// has crossed any bound:
+    /// lacks an original owner pin, no longer matches that owner, or has crossed
+    /// any bound:
     ///
     /// - **absolute deadline**: `now >= expires_at` (the
     ///   [`ABSOLUTE_LIFETIME_SECS`](crate::auth::session::ABSOLUTE_LIFETIME_SECS)
@@ -21141,66 +21343,93 @@ impl Database {
         self.validate_session_at(secret, unix_now()).await
     }
 
-    /// Validates live session state at one clock sample, preserving second-level idle expiry.
+    /// Validates the cookie's original UUID without adopting a recycled owner.
     async fn validate_session_at(&self, secret: &str, now: i64) -> Result<Option<SessionAuth>> {
         use crate::auth::session::{ABSOLUTE_LIFETIME_SECS, IDLE_TIMEOUT_SECS};
+
         let hash = crate::auth::token::sha256_hex(secret);
-        let row = self
+        let Some(row) = self
             .backend
             .query_opt(
                 "SELECT s.user_id, s.auth_level, s.last_authenticated_at, s.expires_at,
-                        s.created_at, s.last_seen_at
-                 FROM sessions s JOIN users u ON u.id = s.user_id
-                 WHERE s.id_hash = ?1 AND u.deleted_at IS NULL",
+                    s.created_at, s.last_seen_at, s.owner_incarnation
+             FROM sessions s JOIN users u ON u.id = s.user_id
+             WHERE s.id_hash = ?1 AND u.deleted_at IS NULL
+               AND s.owner_incarnation IS NOT NULL
+               AND s.owner_incarnation = u.principal_incarnation",
                 &vals![hash],
             )
             .await
             .context("loading session by hash")?
-            .map(|row| -> Result<(SessionAuth, i64, i64)> {
-                let auth = SessionAuth {
-                    user_id: row.get(0)?,
-                    auth_level: row.get(1)?,
-                    last_authenticated_at: row.get(2)?,
-                    expires_at: row.get(3)?,
-                };
-                let created_at: i64 = row.get(4)?;
-                let last_seen_at: i64 = row.get(5)?;
-                Ok((auth, created_at, last_seen_at))
-            })
-            .transpose()?;
-        let Some((session, created_at, last_seen_at)) = row else {
+        else {
             return Ok(None);
         };
-        // Absolute deadline (the stamped cap), idle timeout (no activity for
-        // too long), and the absolute lifetime from creation. A session that
-        // crosses any bound is dead; expire it so the row does not linger.
-        let dead = now >= session.expires_at
+        let user_id: i64 = row.get(0)?;
+        let owner_incarnation: String = row.get(6)?;
+        if direct_identity::validate_actor_incarnation(
+            crate::domain::Principal::user(user_id),
+            &owner_incarnation,
+        )
+        .is_err()
+        {
+            return Ok(None);
+        }
+        let created_at: i64 = row.get(4)?;
+        let last_seen_at: i64 = row.get(5)?;
+        let expires_at: i64 = row.get(3)?;
+        let dead = now >= expires_at
             || now.saturating_sub(last_seen_at) > IDLE_TIMEOUT_SECS
             || now.saturating_sub(created_at) > ABSOLUTE_LIFETIME_SECS;
         if dead {
             self.backend
-                .execute("DELETE FROM sessions WHERE id_hash = ?1", &vals![hash])
+                .execute(
+                    "DELETE FROM sessions WHERE id_hash = ?1 AND user_id = ?2
+                       AND owner_incarnation = ?3 AND created_at = ?4 AND expires_at = ?5",
+                    &vals![hash, user_id, owner_incarnation, created_at, expires_at],
+                )
                 .await?;
             return Ok(None);
         }
-        // Repeated reads within one clock second must not rewrite identical
-        // bookkeeping. The SQL predicate also covers concurrent validations;
-        // liveness and expiry above remain authoritative on every request.
+
+        // Same-second reads avoid a bookkeeping write. Every actual update
+        // remains tied to the original session UUID and live account UUID.
         self.backend
             .execute(
                 "UPDATE sessions SET last_seen_at = ?2
-                 WHERE id_hash = ?1 AND last_seen_at != ?2",
-                &vals![hash, now],
+             WHERE id_hash = ?1 AND user_id = ?3 AND created_at = ?4
+               AND expires_at = ?5 AND owner_incarnation = ?6 AND last_seen_at != ?2
+               AND EXISTS (SELECT 1 FROM users u WHERE u.id = sessions.user_id
+                 AND u.deleted_at IS NULL AND u.principal_incarnation = ?6)",
+                &vals![
+                    hash,
+                    now,
+                    user_id,
+                    created_at,
+                    expires_at,
+                    owner_incarnation
+                ],
             )
             .await?;
-        Ok(Some(session))
+        let auth = SessionAuth {
+            owner_incarnation,
+            session_id_hash: hash,
+            user_id,
+            auth_level: row.get(1)?,
+            last_authenticated_at: row.get(2)?,
+            expires_at,
+        };
+        if !self.session_auth_is_current_at(&auth, now).await? {
+            return Ok(None);
+        }
+        Ok(Some(auth))
     }
 
     /// The signed-in user's email for a session secret, without bumping
     /// `last_seen_at` (the masthead reads this on every page render).
     ///
     /// Returns `None` when the secret is unknown, the session is expired, or
-    /// the user was deleted.
+    /// the user was deleted, or its original canonical owner pin is missing,
+    /// malformed, or differs from the current user.
     ///
     /// # Errors
     ///
@@ -21208,16 +21437,32 @@ impl Database {
     pub async fn session_email(&self, secret: &str) -> Result<Option<String>> {
         let hash = crate::auth::token::sha256_hex(secret);
         let now = unix_now();
-        self.backend
+        let Some(row) = self
+            .backend
             .query_opt(
-                "SELECT u.email FROM sessions s JOIN users u ON u.id = s.user_id
-                 WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND u.deleted_at IS NULL",
+                "SELECT u.email, s.user_id, s.owner_incarnation
+                 FROM sessions s JOIN users u ON u.id = s.user_id
+                 WHERE s.id_hash = ?1 AND s.expires_at > ?2 AND u.deleted_at IS NULL
+                   AND s.owner_incarnation IS NOT NULL
+                   AND s.owner_incarnation = u.principal_incarnation",
                 &vals![hash, now],
             )
             .await
             .context("loading session email")?
-            .map(|row| row.get(0))
-            .transpose()
+        else {
+            return Ok(None);
+        };
+        let user_id: i64 = row.get(1)?;
+        let owner_incarnation: String = row.get(2)?;
+        if direct_identity::validate_actor_incarnation(
+            crate::domain::Principal::user(user_id),
+            &owner_incarnation,
+        )
+        .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(row.get(0)?))
     }
 
     /// Revoke a single session by its cookie secret.
@@ -21623,6 +21868,7 @@ impl Database {
         {
             return Ok(false);
         }
+        let owner_incarnation = self.ensure_principal_incarnation(approver).await?;
         let Some(row) = self
             .backend
             .query_opt(
@@ -21671,9 +21917,9 @@ impl Database {
                 Statement::new(
                     "INSERT INTO tokens
                  (id, hash, owner_kind, owner_id, scope_key, permissions, comment, created_at,
-                  expires_at, revoked_at, last_used_at)
+                  expires_at, revoked_at, last_used_at, owner_incarnation)
                  SELECT ?1, ?8, ?2, ?3, a.scope_key, ?5,
-                        'OAuth device authorization', ?6, ?9, NULL, NULL
+                        'OAuth device authorization', ?6, ?9, NULL, NULL, ?10
                  FROM device_codes device
                  JOIN authorization_scopes a ON a.scope_key = ?4
                  LEFT JOIN orgs o ON o.id = a.org_id
@@ -21682,11 +21928,11 @@ impl Database {
                    AND device.user_code = ?7 AND device.approved_by_user = ?3
                    AND device.expires_at > ?6
                    AND ((?2 = 'user' AND EXISTS (
-                          SELECT 1 FROM users u WHERE u.id = ?3 AND u.deleted_at IS NULL))
+                          SELECT 1 FROM users u WHERE u.id = ?3 AND u.deleted_at IS NULL AND u.principal_incarnation = ?10))
                      OR (?2 = 'service_account' AND EXISTS (
                           SELECT 1 FROM service_accounts s
                           JOIN orgs owner_org ON owner_org.id = s.org_id
-                           WHERE s.id = ?3 AND owner_org.deleted_at IS NULL)))",
+                           WHERE s.id = ?3 AND owner_org.deleted_at IS NULL AND s.principal_incarnation = ?10)))",
                     vals![
                         token_id,
                         approver.kind.as_str(),
@@ -21697,6 +21943,7 @@ impl Database {
                         user_code,
                         authority_hash,
                         now + crate::auth::token::REFRESH_TOKEN_ABSOLUTE_TTL_SECS,
+                        owner_incarnation,
                     ]
                     .to_vec(),
                 )
@@ -22190,7 +22437,7 @@ impl Database {
                     incarnation_id = ?14, mutation_plan_id = ?15, updated_at = ?16
                   WHERE org_id = ?1 AND resource_version = ?17
                     AND (incarnation_id = ?18
-                         OR (incarnation_id IS NULL AND ?18 IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?18 AS VARCHAR) IS NULL))",
                 vals![
                     config.org_id,
                     config.issuer,
@@ -22302,7 +22549,7 @@ impl Database {
                     "DELETE FROM org_idp_configs
                       WHERE org_id = ?1 AND resource_version = ?2
                         AND (incarnation_id = ?3
-                             OR (incarnation_id IS NULL AND ?3 IS NULL))",
+                             OR (incarnation_id IS NULL AND CAST(?3 AS VARCHAR) IS NULL))",
                     vals![org_id, expected_resource_version, expected_incarnation_id],
                 )
                 .expecting(1),
@@ -22589,7 +22836,7 @@ impl Database {
                         incarnation_id = ?4, mutation_plan_id = ?5
                   WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?6
                     AND (incarnation_id = ?7
-                         OR (incarnation_id IS NULL AND ?7 IS NULL))",
+                         OR (incarnation_id IS NULL AND CAST(?7 AS VARCHAR) IS NULL))",
                 vals![
                     record.domain,
                     record.org_id,
@@ -22659,7 +22906,7 @@ impl Database {
               WHERE domain = ?1 AND org_id = ?2 AND txt_challenge = ?3
                 AND resource_version = ?7 AND verified_at IS NULL
                 AND (incarnation_id = ?8
-                     OR (incarnation_id IS NULL AND ?8 IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?8 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,
@@ -22710,7 +22957,7 @@ impl Database {
             "DELETE FROM org_domains
               WHERE domain = ?1 AND org_id = ?2 AND resource_version = ?3
                 AND (incarnation_id = ?4
-                     OR (incarnation_id IS NULL AND ?4 IS NULL))",
+                     OR (incarnation_id IS NULL AND CAST(?4 AS VARCHAR) IS NULL))",
             vals![
                 record.domain,
                 record.org_id,
@@ -25532,7 +25779,7 @@ const POPULATION_COLUMNS: &str = "id, cache_id, registry_id, trigger_kind, requi
 const PLAN_COLUMNS: &str = "plan_id, plan_kind, actor_kind, actor_id, actor_label,
     scope, input_versions_json, effects_json, warnings_json, confirmation_hash,
     request_idempotency_key, request_digest, apply_idempotency_key, apply_result_json,
-    created_at, expires_at, applied_at";
+    created_at, expires_at, applied_at, actor_incarnation";
 const OPERATION_COLUMNS: &str = "operation_id, operation_kind, authorization_scope_key,
     control_permission, primary_target_kind, primary_target_stable_id,
     primary_target_generation_key, primary_target_configuration_digest,
@@ -25701,6 +25948,7 @@ fn row_to_topology_plan(row: &Row) -> Result<TopologyPlanRecord> {
         created_at: row.get(14)?,
         expires_at: row.get(15)?,
         applied_at: row.get(16)?,
+        actor_incarnation: row.get(17)?,
     })
 }
 
@@ -27164,11 +27412,53 @@ source_nar_hash = ""
     }
 
     #[test]
+    fn r2_incarnation_migration_preserves_legacy_rows_as_nullable() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(MIGRATIONS[0]).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO oci_provider_inventory_entries
+                   (generation_id, registry_id, placement_id, object_key,
+                    object_digest, observed_hash, byte_size, strong_etag, classification)
+                 VALUES('legacy', 1, 1, 'key', 'digest', 'digest', 4, 'etag', 'untracked');
+                 INSERT INTO oci_gc_placement_actions
+                   (id, run_id, registry_id, digest, placement_id, object_key,
+                    expected_hash, expected_size, expected_strong_etag,
+                    inventory_generation_id, inventory_entry_present, state,
+                    next_attempt_at, confirmed_at)
+                 VALUES('action', 'run', 1, 'digest', 1, 'key', 'digest', 4,
+                        'etag', 'legacy', 1, 'confirmed_absent', 0, 1);",
+            )
+            .unwrap();
+        connection
+            .execute_batch(include_str!("002-r2-gc-incarnation.sql"))
+            .unwrap();
+
+        let inventory_version: Option<String> = connection
+            .query_row(
+                "SELECT provider_version FROM oci_provider_inventory_entries
+                 WHERE generation_id = 'legacy'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let action_version: Option<String> = connection
+            .query_row(
+                "SELECT expected_provider_version FROM oci_gc_placement_actions WHERE id='action'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(inventory_version, None);
+        assert_eq!(action_version, None);
+    }
+
+    #[test]
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            2,
-            "production baseline plus the per-train channel ledger"
+            8,
+            "immutable migrations 001–007 plus the channel ledger"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -27183,7 +27473,9 @@ source_nar_hash = ""
                 row.get(0)
             })
             .unwrap();
-        assert_eq!(identity, SCHEMA_IDENTITY);
+        // Immutable scripts keep their historical marker. Only the checked
+        // serving initializer stamps the new identity after all eight settle.
+        assert_eq!(identity, HISTORICAL_SCHEMA_IDENTITY);
 
         let violations: i64 = connection
             .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
@@ -27512,6 +27804,38 @@ source_nar_hash = ""
 
     #[tokio::test]
     async fn migrate_refuses_pre_cutover_version_collision() {
+        fn fingerprint(connection: &Connection) -> String {
+            let mut schema_statement = connection
+                .prepare("SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name")
+                .unwrap();
+            let schema = schema_statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            let marker: i64 = connection
+                .query_row("SELECT version FROM schema_version", [], |row| row.get(0))
+                .unwrap();
+            let mut rows_statement = connection
+                .prepare("SELECT id,slug FROM registries ORDER BY id")
+                .unwrap();
+            let rows = rows_statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+                })
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap();
+            serde_json::to_string(&(schema, marker, rows)).unwrap()
+        }
+
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy.db");
         let connection = Connection::open(&path).unwrap();
@@ -27519,10 +27843,11 @@ source_nar_hash = ""
             .execute_batch(
                 "CREATE TABLE schema_version(version INTEGER NOT NULL);
                  INSERT INTO schema_version(version) VALUES (1);
-                 CREATE TABLE registries(id INTEGER PRIMARY KEY, slug TEXT NOT NULL);",
+                 CREATE TABLE registries(id INTEGER PRIMARY KEY, slug TEXT NOT NULL);
+                 INSERT INTO registries(id,slug) VALUES (7,'retained');",
             )
             .unwrap();
-        drop(connection);
+        let before = fingerprint(&connection);
 
         let error = match Database::open(&path).await {
             Ok(_) => panic!("pre-cutover schema must be refused"),
@@ -27530,9 +27855,10 @@ source_nar_hash = ""
         };
         let message = format!("{error:#}");
         assert!(
-            message.contains("predates the first stable production baseline"),
+            message.contains(crate::backend::schema_lineage::RESET_REQUIRED),
             "{message}"
         );
+        assert_eq!(fingerprint(&connection), before);
     }
 
     #[tokio::test]
@@ -28708,6 +29034,68 @@ source_nar_hash = ""
                 ]
             })
             .collect::<Vec<_>>();
+
+        // Admit the verified manifest before indexing creates derived catalogue rows.
+        let origin_publication_id = "image-origin-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: origin_publication_id.into(),
+            registry_id,
+            generation: "image-origin-generation".into(),
+            manifest_digest: "1".repeat(64),
+            refs_digest: "2".repeat(64),
+            default_commit: Some(snapshot.commit.clone()),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: origin_publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: unix_now(),
+        })
+        .await
+        .unwrap();
+        db.admit_registry_publication_manifest_objects(
+            registry_id,
+            origin_publication_id,
+            &identities
+                .iter()
+                .map(|identity| RegistryPublicationManifestObject {
+                    object_key: identity.object_key.clone(),
+                    expected_hash: identity.sha256.clone(),
+                    expected_size: identity.byte_size,
+                    object_kind: "immutable".into(),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+
+        for identity in &identities {
+            let object = db
+                .surface_object_named(SurfaceTarget::Registry(registry_id), &identity.object_key)
+                .await
+                .unwrap()
+                .unwrap();
+            db.record_registry_publication_object_presence(
+                origin_publication_id,
+                object.id,
+                placement.id,
+                &identity.sha256,
+                identity.byte_size,
+                Some(&identity.strong_etag),
+                unix_now(),
+            )
+            .await
+            .unwrap();
+        }
+        // Closing the precursor preserves verified copies without blocking indexing.
+        db.fail_registry_publication(origin_publication_id, unix_now())
+            .await
+            .unwrap();
+
         db.lease_image_snapshot(
             "in-flight-index",
             &identities[0].sha256,
@@ -28791,21 +29179,28 @@ source_nar_hash = ""
         })
         .await
         .unwrap();
+        db.admit_registry_publication_manifest_objects(
+            registry_id,
+            publication_id,
+            &identities
+                .iter()
+                .map(|identity| RegistryPublicationManifestObject {
+                    object_key: identity.object_key.clone(),
+                    expected_hash: identity.sha256.clone(),
+                    expected_size: identity.byte_size,
+                    object_kind: "immutable".into(),
+                })
+                .collect::<Vec<_>>(),
+        )
+        .await
+        .unwrap();
+
         for identity in &identities {
             let object = db
                 .surface_object_named(SurfaceTarget::Registry(registry_id), &identity.object_key)
                 .await
                 .unwrap()
                 .unwrap();
-            db.set_registry_publication_object(&SetRegistryPublicationObject {
-                publication_id: publication_id.into(),
-                surface_object_id: object.id,
-                object_kind: "immutable".into(),
-                expected_hash: identity.sha256.clone(),
-                expected_size: identity.byte_size,
-            })
-            .await
-            .unwrap();
             db.record_registry_publication_object_presence(
                 publication_id,
                 object.id,
@@ -30118,7 +30513,7 @@ source_nar_hash = ""
         db.backend
             .execute(
                 "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
-                &vals![hash, now - IDLE_TIMEOUT_SECS - 1],
+                &vals![hash, now.saturating_sub(IDLE_TIMEOUT_SECS) - 1],
             )
             .await
             .unwrap();
@@ -30156,7 +30551,7 @@ source_nar_hash = ""
         db.backend
             .execute(
                 "UPDATE sessions SET last_seen_at = ?2 WHERE id_hash = ?1",
-                &vals![hash3, now - IDLE_TIMEOUT_SECS + 60],
+                &vals![hash3, now.saturating_sub(IDLE_TIMEOUT_SECS) + 60],
             )
             .await
             .unwrap();
@@ -32455,26 +32850,23 @@ source_nar_hash = ""
         })
         .await
         .unwrap();
-        let object = db
-            .create_surface_object(&SetSurfaceObject {
-                surface: SurfaceTarget::Registry(registry_id),
+        db.admit_registry_publication_manifest_objects(
+            registry_id,
+            publication_id,
+            &[RegistryPublicationManifestObject {
                 object_key: "objects/terminal".into(),
-                content_hash: Some("d".repeat(64)),
-                size: Some(9),
+                expected_hash: "d".repeat(64),
+                expected_size: 9,
                 object_kind: "immutable".into(),
-                mutable_publication_id: None,
-            })
-            .await
-            .unwrap();
-        db.set_registry_publication_object(&SetRegistryPublicationObject {
-            publication_id: publication_id.into(),
-            surface_object_id: object.id,
-            object_kind: "immutable".into(),
-            expected_hash: "d".repeat(64),
-            expected_size: 9,
-        })
+            }],
+        )
         .await
         .unwrap();
+        let object = db
+            .surface_object_named(SurfaceTarget::Registry(registry_id), "objects/terminal")
+            .await
+            .unwrap()
+            .unwrap();
         db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
             publication_id: publication_id.into(),
             placement_id: placement.id,
@@ -32495,6 +32887,15 @@ source_nar_hash = ""
         )
         .await
         .unwrap();
+
+        assert_eq!(
+            db.surface_object_usage(object.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .accounted_bytes,
+            9
+        );
 
         assert!(!db
             .delete_registry_surface_placement(placement.id, placement.resource_version)
@@ -33603,6 +34004,116 @@ source_nar_hash = ""
     }
 
     #[tokio::test]
+    async fn publication_presence_requires_exact_hybrid_placement_fence() {
+        let db = Database::open_in_memory().await.unwrap();
+        let org_id = db
+            .create_org("fenced-upload", "Fenced upload")
+            .await
+            .unwrap();
+        let binding_id =
+            create_test_binding(&db, org_id, "fenced-upload", "/tmp/fenced-upload").await;
+        let binding = db.binding(binding_id).await.unwrap().unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "registry", "public", &[], false)
+            .await
+            .unwrap();
+        let mut placement = topology_placement(
+            SurfaceTarget::Registry(registry_id),
+            "primary",
+            "fenced-upload",
+            0,
+        );
+        placement.binding_id = binding_id;
+        let placement = db.create_surface_placement(&placement).await.unwrap();
+        let publication_id = "fenced-upload-publication";
+        db.create_registry_publication(&NewRegistryPublication {
+            publication_id: publication_id.into(),
+            registry_id,
+            generation: "generation-1".into(),
+            manifest_digest: "a".repeat(64),
+            refs_digest: "b".repeat(64),
+            default_commit: Some("c".repeat(40)),
+            parent_publication_id: None,
+        })
+        .await
+        .unwrap();
+        let digest = "d".repeat(64);
+        db.admit_registry_publication_manifest_objects(
+            registry_id,
+            publication_id,
+            &[RegistryPublicationManifestObject {
+                object_key: "images/sha256/dd/system.qcow2".into(),
+                expected_hash: digest.clone(),
+                expected_size: 91,
+                object_kind: "immutable".into(),
+            }],
+        )
+        .await
+        .unwrap();
+        let object = db
+            .surface_object_named(
+                SurfaceTarget::Registry(registry_id),
+                "images/sha256/dd/system.qcow2",
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
+            publication_id: publication_id.into(),
+            placement_id: placement.id,
+            required: true,
+            state: "preparing".into(),
+            observed_at: 1,
+        })
+        .await
+        .unwrap();
+
+        let record = |placement_version, binding_version| {
+            db.record_registry_publication_object_presence_fenced(
+                publication_id,
+                object.id,
+                placement.id,
+                &digest,
+                91,
+                Some("\"r2-version-1\""),
+                2,
+                placement_version,
+                binding_version,
+            )
+        };
+        assert!(
+            record(placement.resource_version + 1, binding.resource_version)
+                .await
+                .is_err()
+        );
+        assert!(!db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+        record(placement.resource_version, binding.resource_version)
+            .await
+            .unwrap();
+        assert_eq!(
+            db.surface_object_usage(object.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .accounted_bytes,
+            91
+        );
+
+        assert!(
+            record(placement.resource_version, binding.resource_version + 1)
+                .await
+                .is_err()
+        );
+        assert!(db
+            .registry_publication_class_is_complete(publication_id, "immutable")
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn registry_publication_inherits_exact_reusable_evidence() {
         let db = Database::open_in_memory().await.unwrap();
         let org_id = db.create_org("reuse", "Reuse").await.unwrap();
@@ -33628,26 +34139,26 @@ source_nar_hash = ""
         })
         .await
         .unwrap();
-        let object = db
-            .create_surface_object(&SetSurfaceObject {
-                surface: SurfaceTarget::Registry(registry_id),
+        db.admit_registry_publication_manifest_objects(
+            registry_id,
+            first_publication,
+            &[RegistryPublicationManifestObject {
                 object_key: "images/sha256/aa/system.qcow2".into(),
-                content_hash: Some("d".repeat(64)),
-                size: Some(91),
+                expected_hash: "d".repeat(64),
+                expected_size: 91,
                 object_kind: "immutable".into(),
-                mutable_publication_id: None,
-            })
-            .await
-            .unwrap();
-        db.set_registry_publication_object(&SetRegistryPublicationObject {
-            publication_id: first_publication.into(),
-            surface_object_id: object.id,
-            object_kind: "immutable".into(),
-            expected_hash: "d".repeat(64),
-            expected_size: 91,
-        })
+            }],
+        )
         .await
         .unwrap();
+        let object = db
+            .surface_object_named(
+                SurfaceTarget::Registry(registry_id),
+                "images/sha256/aa/system.qcow2",
+            )
+            .await
+            .unwrap()
+            .unwrap();
         db.set_registry_publication_placement(&SetRegistryPublicationPlacement {
             publication_id: first_publication.into(),
             placement_id: placement.id,
@@ -33719,6 +34230,9 @@ source_nar_hash = ""
             .await
             .unwrap()
             .unwrap();
+        let usage = db.org_usage(org_id).await.unwrap();
+        assert_eq!((usage.used_bytes, usage.object_count), (91, 1));
+
         assert_eq!(evidence.get::<String>(0).unwrap(), "d".repeat(64));
         assert_eq!(evidence.get::<i64>(1).unwrap(), 91);
         assert_eq!(evidence.get::<String>(2).unwrap(), "\"r2-version-1\"");

@@ -35,7 +35,13 @@
 //!   unsigned `GET` of the public origin URL; writes are refused (there is
 //!   nothing to sign with).
 
+mod direct_multipart;
+mod direct_requests;
+mod direct_xml;
+pub use direct_multipart::*;
+
 use crate::db::BindingRecord;
+use crate::storage_work::StorageBindingSnapshot;
 
 /// Maximum in-memory S3 object read used by metadata/indexing operations.
 /// Large machine objects use [`crate::fetch::SurfaceFetch::fetch_stream`].
@@ -121,6 +127,17 @@ pub struct S3Surface {
     creds: Option<S3Creds>,
 }
 
+struct SurfaceCoordinates<'a> {
+    name: &'a str,
+    scheme: &'a str,
+    host_kind: &'a str,
+    host_bytes: &'a [u8],
+    port: Option<i64>,
+    bucket: &'a str,
+    binding_prefix: &'a str,
+    access_mode: &'a str,
+}
+
 impl S3Surface {
     /// Resolve a binding into an S3 surface scoped to `sub_prefix`, or `Ok(None)`
     /// when the binding is not an S3-compatible object store.
@@ -142,23 +159,84 @@ impl S3Surface {
             "s3" | "r2" => {}
             _ => return Ok(None),
         }
-        let scheme = binding
-            .endpoint_scheme
-            .as_deref()
-            .context("object-store binding has no typed endpoint scheme")?;
-        let host_bytes = binding
-            .endpoint_host_bytes
-            .as_deref()
-            .context("object-store binding has no typed endpoint host")?;
-        let host = match binding.endpoint_host_kind.as_deref() {
-            Some("dns") => std::str::from_utf8(host_bytes)
+        let coordinates = SurfaceCoordinates {
+            name: &binding.name,
+            scheme: binding
+                .endpoint_scheme
+                .as_deref()
+                .context("object-store binding has no typed endpoint scheme")?,
+            host_kind: binding
+                .endpoint_host_kind
+                .as_deref()
+                .context("object-store binding has no typed endpoint host kind")?,
+            host_bytes: binding
+                .endpoint_host_bytes
+                .as_deref()
+                .context("object-store binding has no typed endpoint host")?,
+            port: binding.endpoint_port,
+            bucket: binding
+                .object_bucket
+                .as_deref()
+                .context("object-store binding has no bucket")?,
+            binding_prefix: binding.object_prefix.as_deref().unwrap_or(""),
+            access_mode: binding
+                .access_mode
+                .as_deref()
+                .context("object-store binding has no access mode")?,
+        };
+        Self::from_coordinates(coordinates, sub_prefix, resolved_credential).map(Some)
+    }
+
+    /// Resolves an acknowledged hybrid binding without consulting Worker SQL.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot is stale or its provider coordinates
+    /// or selected credential are invalid.
+    pub fn from_snapshot(
+        snapshot: &StorageBindingSnapshot,
+        deployment_id: &str,
+        sub_prefix: &str,
+        resolved_credential: Option<&str>,
+        now: i64,
+    ) -> Result<S3Surface> {
+        snapshot.validate(deployment_id, now)?;
+        let coordinates = SurfaceCoordinates {
+            name: &snapshot.binding_stable_id,
+            scheme: &snapshot.endpoint_scheme,
+            host_kind: &snapshot.endpoint_host_kind,
+            host_bytes: &snapshot.endpoint_host_bytes,
+            port: snapshot.endpoint_port,
+            bucket: &snapshot.object_bucket,
+            binding_prefix: &snapshot.object_prefix,
+            access_mode: &snapshot.access_mode,
+        };
+        let surface = Self::from_coordinates(coordinates, sub_prefix, resolved_credential)?;
+        anyhow::ensure!(
+            surface
+                .creds
+                .as_ref()
+                .is_none_or(|credentials| credentials.region == snapshot.signing_region),
+            "binding snapshot signing region differs from its credential"
+        );
+        Ok(surface)
+    }
+
+    fn from_coordinates(
+        coordinates: SurfaceCoordinates<'_>,
+        sub_prefix: &str,
+        resolved_credential: Option<&str>,
+    ) -> Result<S3Surface> {
+        let host_bytes = coordinates.host_bytes;
+        let host = match coordinates.host_kind {
+            "dns" => std::str::from_utf8(host_bytes)
                 .context("object-store DNS host is not UTF-8")?
                 .to_string(),
-            Some("ipv4") if host_bytes.len() == 4 => {
+            "ipv4" if host_bytes.len() == 4 => {
                 std::net::Ipv4Addr::new(host_bytes[0], host_bytes[1], host_bytes[2], host_bytes[3])
                     .to_string()
             }
-            Some("ipv6") if host_bytes.len() == 16 => {
+            "ipv6" if host_bytes.len() == 16 => {
                 let bytes: [u8; 16] = host_bytes
                     .try_into()
                     .map_err(|_| anyhow::anyhow!("invalid IPv6 endpoint bytes"))?;
@@ -166,24 +244,18 @@ impl S3Surface {
             }
             _ => bail!("object-store binding has an invalid typed endpoint host"),
         };
-        let host = match binding.endpoint_port {
-            Some(port) => format!("{host}:{port}"),
-            None => host,
+        // URL parsers remove a scheme's default port before Fetch sends the
+        // request. Sign the same Host value that the origin will receive.
+        let host = match (coordinates.scheme, coordinates.port) {
+            ("https", Some(443)) | ("http", Some(80)) | (_, None) => host,
+            (_, Some(port)) => format!("{host}:{port}"),
         };
         if host.is_empty() {
-            bail!("binding '{}' has an empty endpoint host", binding.name);
+            bail!("binding '{}' has an empty endpoint host", coordinates.name);
         }
 
-        let bucket = binding
-            .object_bucket
-            .as_deref()
-            .context("object-store binding has no bucket")?
-            .trim_matches('/');
-        let binding_prefix = binding
-            .object_prefix
-            .as_deref()
-            .unwrap_or("")
-            .trim_matches('/');
+        let bucket = coordinates.bucket.trim_matches('/');
+        let binding_prefix = coordinates.binding_prefix.trim_matches('/');
         let sub = sub_prefix.trim_matches('/');
         let key_prefix = [bucket, binding_prefix, sub]
             .into_iter()
@@ -191,8 +263,8 @@ impl S3Surface {
             .collect::<Vec<_>>()
             .join("/");
 
-        let creds = match binding.access_mode.as_deref() {
-            Some("private") => {
+        let creds = match coordinates.access_mode {
+            "private" => {
                 let plaintext = resolved_credential
                     .context("private binding requires a resolved credential-version capability")?;
                 let (access_key, rest) = plaintext
@@ -211,7 +283,7 @@ impl S3Surface {
                     secret_key: Zeroizing::new(secret_key.to_string()),
                 })
             }
-            Some("public") => {
+            "public" => {
                 anyhow::ensure!(
                     resolved_credential.is_none(),
                     "public bindings must not resolve credentials"
@@ -221,12 +293,12 @@ impl S3Surface {
             _ => bail!("object-store binding has invalid access mode"),
         };
 
-        Ok(Some(S3Surface {
-            scheme: scheme.to_string(),
+        Ok(S3Surface {
+            scheme: coordinates.scheme.to_string(),
             host,
             key_prefix,
             creds,
-        }))
+        })
     }
 
     /// Whether this surface can be written to (a private, credentialed binding).
@@ -260,15 +332,7 @@ impl S3Surface {
         // `..` can never sign (or directly request) an object outside this
         // resource's prefix — the same containment the filesystem and R2 writers
         // enforce, applied here before the key reaches the origin.
-        crate::url_guard::validate_http_surface_path(path)?;
-        // Avoid a doubled slash when `key_prefix` is empty (a binding whose root
-        // and sub-prefix are both empty) or carries a trailing slash — an
-        // `s3://host/bucket//key` URL is rejected (R2 returns 400).
-        let key = if self.key_prefix.is_empty() {
-            path.to_string()
-        } else {
-            format!("{}/{}", self.key_prefix.trim_end_matches('/'), path)
-        };
+        let key = self.physical_key(path)?;
         let object_path = format!("/{key}");
         match &self.creds {
             Some(creds) => {
@@ -496,14 +560,29 @@ impl S3Surface {
         max_keys: usize,
         now: i64,
     ) -> Result<String> {
+        self.list_url_with_prefix("", continuation, max_keys, now)
+    }
+
+    /// Builds a presigned listing URL for a surface-relative key prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a public binding or a signing failure.
+    pub fn list_url_with_prefix(
+        &self,
+        relative_prefix: &str,
+        continuation: Option<&str>,
+        max_keys: usize,
+        now: i64,
+    ) -> Result<String> {
         let Some(creds) = &self.creds else {
             bail!("cannot list a public (credential-less) binding");
         };
         let (bucket, in_bucket) = self.bucket_split();
         let list_prefix = if in_bucket.is_empty() {
-            String::new()
+            relative_prefix.to_owned()
         } else {
-            format!("{in_bucket}/")
+            format!("{in_bucket}/{relative_prefix}")
         };
         let bucket_path = format!("/{bucket}");
         let params = crate::sigv4::PresignParams {
@@ -518,6 +597,26 @@ impl S3Surface {
             amz_date: &crate::sigv4::amz_date_from_unix(now),
         };
         crate::sigv4::presign_list_url(&params, &list_prefix, continuation, max_keys)
+    }
+
+    /// Resolves the exact path-style provider key using the object URL resolver.
+    ///
+    /// The key includes the bucket segment and binding/resource prefixes. Public
+    /// callers can inspect the fully resolved key for reserved private staging
+    /// segments before signing or fetching. This performs no URL decoding and
+    /// grants no read, write or provider-policy authority.
+    ///
+    /// # Errors
+    /// Returns an error for an absolute, traversing, empty-segment or control
+    /// path, using the same surface-path validation as object URL signing.
+    pub fn physical_key(&self, path: &str) -> Result<String> {
+        crate::url_guard::validate_http_surface_path(path)?;
+        // Preserve the exact existing composition, including empty/trailing prefixes.
+        Ok(if self.key_prefix.is_empty() {
+            path.to_string()
+        } else {
+            format!("{}/{}", self.key_prefix.trim_end_matches('/'), path)
+        })
     }
 
     /// Recover the surface-relative path from a `ListObjectsV2` `<Key>`.
@@ -618,6 +717,69 @@ pub fn visit_list_objects_v2(
         );
     }
     Ok((next, truncated))
+}
+
+/// Provider identity reported for one S3 `ListObjectsV2` object.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct S3ListedObject {
+    /// Bucket-relative object key.
+    pub key: String,
+    /// Full object length in bytes.
+    pub size: u64,
+    /// Strong provider entity tag suitable for a later conditional request.
+    pub strong_etag: String,
+}
+
+/// Parses bounded S3 listing evidence and its continuation token.
+///
+/// The existing key parser validates the enclosing document and pagination.
+/// Every key must also occur in exactly one `Contents` record with a size and
+/// strong ETag, so an incomplete provider page cannot become inventory proof.
+///
+/// # Errors
+///
+/// Returns an error for malformed XML, missing or duplicate evidence fields,
+/// or a listing key outside a `Contents` record.
+pub fn parse_list_objects_v2_evidence(
+    xml: &str,
+) -> Result<(Vec<S3ListedObject>, Option<String>, bool)> {
+    let (keys, next, truncated) = parse_list_objects_v2(xml)?;
+    anyhow::ensure!(
+        xml.matches("<Contents>").count() == xml.matches("</Contents>").count(),
+        "S3 listing has mismatched Contents elements"
+    );
+
+    let mut objects = Vec::new();
+    let mut rest = xml;
+    while let Some(start) = rest.find("<Contents>") {
+        let body = &rest[start + "<Contents>".len()..];
+        let end = body
+            .find("</Contents>")
+            .context("S3 listing has an unterminated Contents element")?;
+        let content = &body[..end];
+        anyhow::ensure!(
+            !content.contains("<Contents>"),
+            "S3 listing has nested Contents elements"
+        );
+        let key = extract_unique_tag(content, "Key")?.context("S3 listing object has no Key")?;
+        let size = extract_unique_tag(content, "Size")?
+            .context("S3 listing object has no Size")?
+            .trim()
+            .parse::<u64>()
+            .context("S3 listing object has an invalid Size")?;
+        let etag = extract_unique_tag(content, "ETag")?.context("S3 listing object has no ETag")?;
+        objects.push(S3ListedObject {
+            key: xml_unescape(key)?,
+            size,
+            strong_etag: crate::surface_write::strong_if_match_etag(&xml_unescape(etag)?)?,
+        });
+        rest = &body[end + "</Contents>".len()..];
+    }
+    anyhow::ensure!(
+        objects.iter().map(|object| &object.key).eq(keys.iter()),
+        "S3 listing keys differ from their Contents records"
+    );
+    Ok((objects, next, truncated))
 }
 
 /// Parses the opaque upload id from a bounded CreateMultipartUpload response.
@@ -927,6 +1089,33 @@ mod tests {
     }
 
     #[test]
+    fn listing_evidence_requires_complete_identity_per_key() {
+        let xml = "<ListBucketResult><Contents><Key>tenant/reg/a&amp;b</Key>\
+            <Size>17</Size><ETag>&quot;etag-1&quot;</ETag></Contents>\
+            <IsTruncated>false</IsTruncated></ListBucketResult>";
+        let (objects, next, truncated) = parse_list_objects_v2_evidence(xml).unwrap();
+        assert_eq!(
+            objects,
+            vec![S3ListedObject {
+                key: "tenant/reg/a&b".into(),
+                size: 17,
+                strong_etag: "\"etag-1\"".into(),
+            }]
+        );
+        assert_eq!(next, None);
+        assert!(!truncated);
+
+        assert!(parse_list_objects_v2_evidence(&xml.replace("<Size>17</Size>", "")).is_err());
+        assert!(parse_list_objects_v2_evidence(&xml.replace("<ETag>", "<ETag>W/")).is_err());
+        assert!(parse_list_objects_v2_evidence(&xml.replace("</Contents>", "")).is_err());
+        assert!(parse_list_objects_v2_evidence(&xml.replace(
+            "<IsTruncated>false",
+            "<Key>tenant/reg/extra</Key><IsTruncated>false",
+        ))
+        .is_err());
+    }
+
+    #[test]
     fn relative_from_key_strips_in_bucket_prefix() {
         // root "my-bucket", reg "andyl/demo" -> key_prefix "my-bucket/andyl/demo".
         let b = binding("s3", "private", Some("https://s3.example.com"));
@@ -951,6 +1140,13 @@ mod tests {
             "{url}"
         );
         assert!(url.contains("prefix=andyl%2Fdemo%2F"), "{url}");
+        let scoped = surface
+            .list_url_with_prefix("objects/ab", None, 20, 1_700_000_000)
+            .unwrap();
+        assert!(
+            scoped.contains("prefix=andyl%2Fdemo%2Fobjects%2Fab"),
+            "{scoped}"
+        );
         assert!(
             url.contains("list-type=2") && url.contains("X-Amz-Signature="),
             "{url}"
@@ -961,6 +1157,69 @@ mod tests {
     fn non_object_store_kinds_resolve_to_none() {
         let b = binding("local_fs", "private", None);
         assert!(S3Surface::from_binding(&b, "reg", None).unwrap().is_none());
+    }
+
+    #[test]
+    fn hybrid_snapshot_uses_the_same_scoped_sigv4_url_as_a_binding_row() {
+        let mut binding = binding("s3", "private", Some("https://s3.example.com"));
+        binding.stable_id = "external-store".into();
+        binding.resource_version = 1;
+        let snapshot = StorageBindingSnapshot {
+            version: 1,
+            deployment_id: "deployment-1".into(),
+            binding_id: binding.id,
+            binding_resource_version: binding.resource_version,
+            binding_stable_id: binding.stable_id.clone(),
+            binding_kind: binding.kind.clone(),
+            object_bucket: binding.object_bucket.clone().unwrap(),
+            object_prefix: "tenant".into(),
+            endpoint_scheme: binding.endpoint_scheme.clone().unwrap(),
+            endpoint_host_kind: binding.endpoint_host_kind.clone().unwrap(),
+            endpoint_host_bytes: binding.endpoint_host_bytes.clone().unwrap(),
+            endpoint_port: binding.endpoint_port,
+            signing_region: "auto".into(),
+            access_mode: "private".into(),
+            credentials: vec![],
+            issued_at: 1_700_000_000,
+            expires_at: 1_700_000_600,
+        };
+        binding.object_prefix = Some(snapshot.object_prefix.clone());
+        let credential = "AKID:secret:auto";
+        let from_row = S3Surface::from_binding(&binding, "registry", Some(credential))
+            .unwrap()
+            .unwrap();
+        let from_snapshot = S3Surface::from_snapshot(
+            &snapshot,
+            "deployment-1",
+            "registry",
+            Some(credential),
+            1_700_000_100,
+        )
+        .unwrap();
+        assert_eq!(
+            from_row
+                .object_url(Method::Get, "objects/ab", 1_700_000_100)
+                .unwrap(),
+            from_snapshot
+                .object_url(Method::Get, "objects/ab", 1_700_000_100)
+                .unwrap(),
+        );
+        assert!(S3Surface::from_snapshot(
+            &snapshot,
+            "deployment-1",
+            "registry",
+            Some(credential),
+            snapshot.expires_at + 1,
+        )
+        .is_err());
+        assert!(S3Surface::from_snapshot(
+            &snapshot,
+            "deployment-1",
+            "registry",
+            Some("AKID:secret:another-region"),
+            1_700_000_100,
+        )
+        .is_err());
     }
 
     #[test]
@@ -989,6 +1248,32 @@ mod tests {
     }
 
     #[test]
+    fn physical_key_preserves_exact_prefix_and_reserved_segment_resolution() {
+        let b = binding("s3", "public", Some("https://cdn.example.com"));
+        let normal = S3Surface::from_binding(&b, "tenant", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            normal.physical_key("objects/data").unwrap(),
+            "my-bucket/tenant/objects/data"
+        );
+        let private = S3Surface::from_binding(&b, "tenant/.aos-direct-upload/stage", None)
+            .unwrap()
+            .unwrap();
+        let key = private.physical_key("payload").unwrap();
+        assert!(crate::direct_upload::is_direct_staging_key(&key));
+        assert_eq!(
+            private.object_url(Method::Get, "payload", 1).unwrap(),
+            format!("https://cdn.example.com/{key}")
+        );
+        let literal = normal.physical_key("%2Eaos-direct-upload/payload").unwrap();
+        assert!(!crate::direct_upload::is_direct_staging_key(&literal));
+        for invalid in ["../x", "/x", "x//y", "x/./y", "x\n"] {
+            assert!(normal.physical_key(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn traversal_paths_are_rejected_before_signing() {
         let b = binding("s3", "private", Some("https://s3.example.com"));
         let surface = S3Surface::from_binding(&b, "andyl/demo", Some("AKID:sec:auto"))
@@ -1009,8 +1294,23 @@ mod tests {
         let surface = S3Surface::from_binding(&b, "reg", None).unwrap().unwrap();
         assert!(!surface.is_writable());
         let get = surface.object_url(Method::Get, "info/refs", 1).unwrap();
-        assert_eq!(get, "https://cdn.example.com:443/my-bucket/reg/info/refs");
+        assert_eq!(get, "https://cdn.example.com/my-bucket/reg/info/refs");
         assert!(surface.object_url(Method::Put, "info/refs", 1).is_err());
+    }
+
+    #[test]
+    fn private_binding_signs_the_normalized_default_port() {
+        let b = binding("s3", "private", Some("https://s3.example.com:443"));
+        let surface = S3Surface::from_binding(&b, "registry", Some("AKID:secret:auto"))
+            .unwrap()
+            .unwrap();
+        let head = surface
+            .object_url(Method::Head, "exists", 1_700_000_000)
+            .unwrap();
+
+        assert!(head.starts_with("https://s3.example.com/my-bucket/registry/exists?"));
+        assert!(!head.contains("s3.example.com:443"));
+        assert_eq!(url::Url::parse(&head).unwrap().as_str(), head);
     }
 
     #[test]

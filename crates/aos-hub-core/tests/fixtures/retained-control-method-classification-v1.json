@@ -1,5 +1,38 @@
 [
   {
+    "service": "StorageAuthorityService",
+    "method": "PlanStorageAuthorityDecision",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "plan",
+      "pair": "storage_authority_decision"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "StorageAuthorityService",
+    "method": "StorageAuthorityDecision",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "apply",
+      "pair": "storage_authority_decision",
+      "outcome": "immediate"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "StorageAuthorityService",
+    "method": "GetAuthority",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
     "service": "DeliveryService",
     "method": "PlanDeliveryDestination",
     "exposure": "public",
@@ -4006,5 +4039,75 @@
     "service": "DocumentationService", "method": "GetDocumentationArtifact",
     "exposure": "public", "durability": "read_only",
     "class": { "class": "read" }, "external_effects": false
+  },
+  {
+    "service": "DirectUploadService",
+    "method": "GetCapabilities",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DirectUploadService",
+    "method": "BeginBatch",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "DirectUploadService",
+    "method": "StatusBatch",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DirectUploadService",
+    "method": "GrantPartsBatch",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "DirectUploadService",
+    "method": "ReportPartsBatch",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "DirectUploadService",
+    "method": "CompleteBatch",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "DirectUploadService",
+    "method": "Abort",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
   }
 ]

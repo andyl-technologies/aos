@@ -34,6 +34,7 @@ const MAX_OCI_INVENTORY_OBJECT_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_PLACEMENTS_PER_PASS: usize = 100;
 const INVENTORY_CLAIM_LEASE_SECONDS: i64 = 60 * 60;
 const INVENTORY_PAGE_SIZE: usize = 1;
+const OCI_BLOB_PREFIX: &str = "oci/blobs/sha256/";
 
 /// Native provider work admitted by one maintenance dispatch.
 pub const NATIVE_OCI_INVENTORY_DISPATCH_BUDGET: OciInventoryDispatchBudget =
@@ -522,6 +523,7 @@ impl OciProviderInventoryController {
         let checkpoint_ordinal = match self
             .enumerate_and_append(
                 fetch.as_ref(),
+                binding.kind == "deployment_r2",
                 generation,
                 collector_id,
                 now,
@@ -552,6 +554,7 @@ impl OciProviderInventoryController {
     async fn enumerate_and_append(
         &self,
         fetch: &dyn SurfaceFetch,
+        require_provider_version: bool,
         generation: &OciProviderInventoryGenerationRecord,
         collector_id: &str,
         started_at: i64,
@@ -612,7 +615,11 @@ impl OciProviderInventoryController {
             let requested_cursor = cursor.clone();
             let Some(page) = before_dispatch_deadline(
                 dispatch,
-                fetch.list_page(requested_cursor.as_deref(), page_limit),
+                fetch.list_page_with_prefix(
+                    OCI_BLOB_PREFIX,
+                    requested_cursor.as_deref(),
+                    page_limit,
+                ),
             )
             .await?
             else {
@@ -647,25 +654,25 @@ impl OciProviderInventoryController {
                         progress
                     }
                     None => {
-                        let Some(declared_size) =
-                            before_dispatch_deadline(dispatch, fetch.inventory_size(path)).await?
+                        let Some(head) =
+                            before_dispatch_deadline(dispatch, fetch.inventory_head(path)).await?
                         else {
                             return Ok(InventoryEnumerationProgress::Continue(None));
                         };
-                        let declared_size = declared_size
+                        let head = head
                             .context("listed OCI provider object disappeared during inventory")?;
-                        let declared_size = u64::try_from(declared_size)
+                        let declared_size = u64::try_from(head.size)
                             .context("OCI provider object size is negative")?;
                         dispatch.validate_object_size(declared_size)?;
-                        let Some(strong_etag) =
-                            before_dispatch_deadline(dispatch, fetch.inventory_strong_etag(path))
-                                .await?
-                        else {
-                            return Ok(InventoryEnumerationProgress::Continue(None));
-                        };
-                        let strong_etag = strong_etag
-                            .context("listed OCI provider object has no strong entity tag")?;
-                        let strong_etag = crate::surface_write::strong_if_match_etag(&strong_etag)?;
+                        let strong_etag = crate::surface_write::strong_if_match_etag(
+                            &head
+                                .strong_etag
+                                .context("listed OCI provider object has no strong entity tag")?,
+                        )?;
+                        require_inventory_version(
+                            require_provider_version,
+                            head.provider_version.as_deref(),
+                        )?;
                         InventoryObjectContinuation::initial(
                             generation.placement_id,
                             checkpoint_ordinal,
@@ -674,12 +681,14 @@ impl OciProviderInventoryController {
                             object_digest,
                             declared_size,
                             strong_etag,
+                            head.provider_version,
                         )?
                     }
                 };
                 let entry = match self
                     .resume_inventory_object(
                         fetch,
+                        require_provider_version,
                         generation,
                         collector_id,
                         started_at,
@@ -724,12 +733,17 @@ impl OciProviderInventoryController {
     async fn resume_inventory_object(
         &self,
         fetch: &dyn SurfaceFetch,
+        require_provider_version: bool,
         generation: &OciProviderInventoryGenerationRecord,
         collector_id: &str,
         started_at: i64,
         dispatch: &mut InventoryDispatchTracker,
         mut progress: InventoryObjectContinuation,
     ) -> Result<InventoryObjectProgress> {
+        require_inventory_version(
+            require_provider_version,
+            progress.provider_version.as_deref(),
+        )?;
         let object_digest = Sha256Digest::parse(&progress.object_digest)?;
         let mut sha_state = progress.sha_state()?;
         while progress.next_offset < progress.expected_size {
@@ -740,31 +754,13 @@ impl OciProviderInventoryController {
             let Some(chunk_limit) = dispatch.next_chunk_bytes(remaining) else {
                 return Ok(InventoryObjectProgress::Continue(progress));
             };
-            let Some(current_size) =
-                before_dispatch_deadline(dispatch, fetch.inventory_size(&progress.object_key))
+            let Some(head) =
+                before_dispatch_deadline(dispatch, fetch.inventory_head(&progress.object_key))
                     .await?
             else {
                 return Ok(InventoryObjectProgress::Continue(progress));
             };
-            let Some(current_etag) = before_dispatch_deadline(
-                dispatch,
-                fetch.inventory_strong_etag(&progress.object_key),
-            )
-            .await?
-            else {
-                return Ok(InventoryObjectProgress::Continue(progress));
-            };
-            anyhow::ensure!(
-                current_size.and_then(|size| u64::try_from(size).ok())
-                    == Some(progress.expected_size)
-                    && current_etag
-                        .as_deref()
-                        .map(crate::surface_write::strong_if_match_etag)
-                        .transpose()?
-                        .as_deref()
-                        == Some(progress.strong_etag.as_str()),
-                "OCI provider object identity changed between inventory chunks"
-            );
+            ensure_inventory_identity(head.as_ref(), &progress, "between inventory chunks")?;
 
             let heartbeat = inventory_now(started_at);
             self.db
@@ -778,11 +774,14 @@ impl OciProviderInventoryController {
                 .await?;
             let Some(chunk) = before_dispatch_deadline(
                 dispatch,
-                fetch.inventory_chunk_bounded(
+                fetch.inventory_hash_chunk_bounded(
                     &progress.object_key,
                     progress.next_offset,
                     progress.expected_size,
                     chunk_limit,
+                    &progress.strong_etag,
+                    progress.provider_version.as_deref(),
+                    sha_state.clone(),
                 ),
             )
             .await?
@@ -793,47 +792,44 @@ impl OciProviderInventoryController {
             anyhow::ensure!(
                 chunk.total == progress.expected_size
                     && chunk.range.0 == progress.next_offset
-                    && chunk.strong_etag == progress.strong_etag,
+                    && chunk.strong_etag == progress.strong_etag
+                    && chunk.provider_version == progress.provider_version,
                 "OCI provider inventory chunk did not match its continuation identity"
             );
-            let chunk_len = u64::try_from(chunk.bytes.len())?;
+            let chunk_len = chunk
+                .range
+                .1
+                .checked_sub(chunk.range.0)
+                .and_then(|length| length.checked_add(1))
+                .context("OCI provider inventory range length overflowed")?;
             let expected_next = progress
                 .next_offset
                 .checked_add(chunk_len)
                 .context("OCI provider inventory chunk offset overflowed")?;
             anyhow::ensure!(
                 chunk_len > 0
+                    && chunk_len <= chunk_limit
                     && chunk.range.1.checked_add(1) == Some(expected_next)
                     && expected_next <= progress.expected_size,
                 "OCI provider inventory chunk overlapped or left an offset gap"
             );
-            sha_state.update(&chunk.bytes)?;
+            chunk.sha256_state.validate()?;
+            anyhow::ensure!(
+                chunk.sha256_state.total_bytes == expected_next,
+                "OCI provider inventory hash state did not advance by its exact range"
+            );
+            sha_state = chunk.sha256_state;
             progress.next_offset = expected_next;
             progress.set_sha_state(&sha_state)?;
             dispatch.record_chunk(chunk_len)?;
         }
 
-        let Some(final_size) =
-            before_dispatch_deadline(dispatch, fetch.inventory_size(&progress.object_key)).await?
+        let Some(head) =
+            before_dispatch_deadline(dispatch, fetch.inventory_head(&progress.object_key)).await?
         else {
             return Ok(InventoryObjectProgress::Continue(progress));
         };
-        let Some(final_etag) =
-            before_dispatch_deadline(dispatch, fetch.inventory_strong_etag(&progress.object_key))
-                .await?
-        else {
-            return Ok(InventoryObjectProgress::Continue(progress));
-        };
-        anyhow::ensure!(
-            final_size.and_then(|size| u64::try_from(size).ok()) == Some(progress.expected_size)
-                && final_etag
-                    .as_deref()
-                    .map(crate::surface_write::strong_if_match_etag)
-                    .transpose()?
-                    .as_deref()
-                    == Some(progress.strong_etag.as_str()),
-            "OCI provider object identity changed after inventory hashing"
-        );
+        ensure_inventory_identity(head.as_ref(), &progress, "after inventory hashing")?;
         let observed_hash = sha_state.final_digest()?;
         anyhow::ensure!(
             sha_state.total_bytes == progress.expected_size && observed_hash == object_digest,
@@ -841,6 +837,7 @@ impl OciProviderInventoryController {
         );
         Ok(InventoryObjectProgress::Complete(
             OciProviderInventoryEntryInput {
+                provider_version: progress.provider_version,
                 object_key: progress.object_key,
                 object_digest,
                 observed_hash,
@@ -851,8 +848,38 @@ impl OciProviderInventoryController {
     }
 }
 
+fn require_inventory_version(required: bool, version: Option<&str>) -> Result<()> {
+    anyhow::ensure!(
+        version.is_some_and(crate::storage_work::valid_provider_version)
+            || (!required && version.is_none()),
+        "OCI inventory requires a valid provider upload version; collect a fresh inventory"
+    );
+    Ok(())
+}
+
+fn ensure_inventory_identity(
+    head: Option<&crate::fetch::SurfaceInventoryHead>,
+    progress: &InventoryObjectContinuation,
+    phase: &str,
+) -> Result<()> {
+    let head = head.context("OCI provider object disappeared during inventory")?;
+    anyhow::ensure!(
+        u64::try_from(head.size).ok() == Some(progress.expected_size)
+            && head
+                .strong_etag
+                .as_deref()
+                .map(crate::surface_write::strong_if_match_etag)
+                .transpose()?
+                .as_deref()
+                == Some(progress.strong_etag.as_str())
+            && head.provider_version == progress.provider_version,
+        "OCI provider object identity changed {phase}"
+    );
+    Ok(())
+}
+
 const INVENTORY_CONTINUATION_VERSION: u8 = 1;
-const MAX_INVENTORY_CONTINUATION_BYTES: usize = 2_048;
+const MAX_INVENTORY_CONTINUATION_BYTES: usize = 4_096;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -942,6 +969,8 @@ struct InventoryObjectContinuation {
     object_digest: String,
     expected_size: u64,
     strong_etag: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_version: Option<String>,
     next_offset: u64,
     sha_version: u32,
     sha_words: [u32; 8],
@@ -958,6 +987,7 @@ impl InventoryObjectContinuation {
         object_digest: Sha256Digest,
         expected_size: u64,
         strong_etag: String,
+        provider_version: Option<String>,
     ) -> Result<Self> {
         let state = crate::db::OciSha256State::initial();
         let continuation = Self {
@@ -968,6 +998,7 @@ impl InventoryObjectContinuation {
             object_digest: object_digest.to_string(),
             expected_size,
             strong_etag,
+            provider_version,
             next_offset: 0,
             sha_version: state.version,
             sha_words: state.words,
@@ -992,6 +1023,7 @@ impl InventoryObjectContinuation {
                     .is_none_or(|cursor| !cursor.is_empty() && cursor.len() <= 512),
             "OCI inventory object continuation is invalid"
         );
+        require_inventory_version(false, self.provider_version.as_deref())?;
         crate::surface_write::strong_if_match_etag(&self.strong_etag)?;
         let object_digest = Sha256Digest::parse(&self.object_digest)?;
         anyhow::ensure!(
@@ -1160,6 +1192,7 @@ async fn inventory_entry(
         .context("OCI provider object has no strong ETag")?;
     crate::surface_write::strong_if_match_etag(&strong_etag)?;
     Ok(OciProviderInventoryEntryInput {
+        provider_version: evidence.provider_version,
         object_key: path.to_string(),
         object_digest,
         observed_hash,
@@ -1275,13 +1308,46 @@ mod tests {
 
     use aos_oci_types::RepositoryName;
     use async_trait::async_trait;
-    use sha2::{Digest as _, Sha256};
+    use sha2::Sha256;
 
     use super::*;
     use crate::db::{
         NewBindingWriteRevision, NewSurfacePlacementSpec, SurfacePlacementRecord, SurfaceTarget,
     };
     use crate::fetch::{SurfaceInventoryChunk, SurfaceListPage, SurfaceObjectEvidence};
+
+    #[test]
+    fn inventory_upload_version_rejects_identical_recreation_and_missing_r2_identity() {
+        let digest = Sha256Digest::digest(b"same bytes");
+        let progress = InventoryObjectContinuation::initial(
+            1,
+            0,
+            None,
+            &crate::db::oci_blob_object_key(digest),
+            digest,
+            10,
+            "\"same-etag\"".into(),
+            Some("upload-v1".into()),
+        )
+        .unwrap();
+        let mut head = crate::fetch::SurfaceInventoryHead {
+            size: 10,
+            strong_etag: Some("\"same-etag\"".into()),
+            provider_version: Some("upload-v1".into()),
+        };
+        assert!(ensure_inventory_identity(Some(&head), &progress, "before hashing").is_ok());
+
+        head.provider_version = Some("upload-v2".into());
+        assert!(
+            ensure_inventory_identity(Some(&head), &progress, "between inventory chunks").is_err()
+        );
+        assert!(
+            ensure_inventory_identity(Some(&head), &progress, "after inventory hashing").is_err()
+        );
+        assert!(require_inventory_version(true, None).is_err());
+        assert!(require_inventory_version(false, None).is_ok());
+        assert!(require_inventory_version(true, Some("")).is_err());
+    }
 
     struct MemoryInventory {
         pages: Vec<SurfaceListPage>,
@@ -1323,6 +1389,7 @@ mod tests {
                 .unwrap()
                 .get(path)
                 .map(|bytes| SurfaceObjectEvidence {
+                    provider_version: None,
                     sha256: Sha256::digest(bytes).into(),
                     size: bytes.len() as i64,
                     strong_etag: Some(format!("\"{}\"", hex::encode(Sha256::digest(bytes)))),
@@ -1342,6 +1409,7 @@ mod tests {
         requested_ranges: Arc<Mutex<Vec<(u64, u64)>>>,
         evidence_delay_ms: Arc<AtomicU64>,
         evidence_calls: Arc<AtomicUsize>,
+        provider_version: Arc<Mutex<Option<String>>>,
         evidence_started: Arc<tokio::sync::Notify>,
     }
 
@@ -1380,10 +1448,24 @@ mod tests {
                 .unwrap()
                 .get(path)
                 .map(|bytes| SurfaceObjectEvidence {
+                    provider_version: None,
                     sha256: Sha256::digest(bytes).into(),
                     size: bytes.len() as i64,
                     strong_etag: Some(format!("\"{}\"", hex::encode(Sha256::digest(bytes)))),
                 }))
+        }
+
+        async fn inventory_head(
+            &self,
+            path: &str,
+        ) -> Result<Option<crate::fetch::SurfaceInventoryHead>> {
+            Ok(self.objects.lock().unwrap().get(path).map(|bytes| {
+                crate::fetch::SurfaceInventoryHead {
+                    size: bytes.len() as i64,
+                    strong_etag: Some(format!("\"{}\"", hex::encode(Sha256::digest(bytes)))),
+                    provider_version: self.provider_version.lock().unwrap().clone(),
+                }
+            }))
         }
 
         async fn inventory_strong_etag(&self, path: &str) -> Result<Option<String>> {
@@ -1428,6 +1510,7 @@ mod tests {
                 .saturating_sub(1);
             self.requested_ranges.lock().unwrap().push((offset, end));
             Ok(Some(SurfaceInventoryChunk {
+                provider_version: self.provider_version.lock().unwrap().clone(),
                 bytes: bytes[offset as usize..=end as usize].to_vec(),
                 total: expected_total,
                 range: (offset, end),
@@ -1574,6 +1657,7 @@ mod tests {
                 requested_ranges: Arc::new(Mutex::new(Vec::new())),
                 evidence_delay_ms: Arc::new(AtomicU64::new(0)),
                 evidence_calls: Arc::new(AtomicUsize::new(0)),
+                provider_version: Arc::new(Mutex::new(None)),
                 evidence_started: Arc::new(tokio::sync::Notify::new()),
             },
             opened: AtomicUsize::new(0),
@@ -2112,6 +2196,51 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn identical_recreation_between_dispatches_rejects_frozen_upload_version() {
+        let bytes = b"mutation-between-ranges".to_vec();
+        let digest = hex::encode(Sha256::digest(&bytes));
+        let key = format!("oci/blobs/sha256/{digest}");
+        let pages = vec![SurfaceListPage {
+            paths: vec![key.clone()],
+            evidence: BTreeMap::new(),
+            next_cursor: None,
+        }];
+        let (db, _registry_id, placement, provider) =
+            inventory_fixture(pages, BTreeMap::from([(key.clone(), bytes.clone())])).await;
+        *provider.fetch.provider_version.lock().unwrap() = Some("upload-v1".into());
+        let controller = OciProviderInventoryController::new(db.clone(), provider.clone());
+        let budget = test_dispatch_budget(1, 1, 8, Duration::from_secs(5));
+        let now = crate::clock::now_unix_secs();
+        let first = controller
+            .run_due_bounded("worker", "mutation", now, 1, None, budget)
+            .await
+            .unwrap();
+        let continuation = first.continuation.unwrap();
+        let decoded = parse_inventory_continuation(&continuation).unwrap();
+        assert_eq!(
+            decoded.object.unwrap().provider_version.as_deref(),
+            Some("upload-v1")
+        );
+        // A new upload leaves content, size and strong ETag byte-identical.
+        *provider.fetch.provider_version.lock().unwrap() = Some("upload-v2".into());
+
+        let resumed = controller
+            .run_due_bounded("worker", "ignored", now + 1, 1, Some(&continuation), budget)
+            .await
+            .unwrap();
+        assert_eq!((resumed.completed, resumed.failed), (0, 1));
+        assert_eq!(
+            *provider.fetch.requested_ranges.lock().unwrap(),
+            vec![(0, 7)]
+        );
+        assert!(db
+            .active_oci_provider_inventory(placement.id)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]

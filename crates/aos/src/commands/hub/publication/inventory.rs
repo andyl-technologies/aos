@@ -420,7 +420,14 @@ fn read_pinned_publication_file(
     Ok(bytes)
 }
 
-fn open_publication_object(root: &std::os::fd::OwnedFd, relative: &str) -> Result<std::fs::File> {
+/// Opens a relative ordinary file beneath the retained inventory root.
+///
+/// # Errors
+/// Refuses malformed path components, symlink traversal and nonregular files.
+pub(super) fn open_publication_object(
+    root: &std::os::fd::OwnedFd,
+    relative: &str,
+) -> Result<std::fs::File> {
     let mut directory = root.try_clone()?;
     let mut components = relative.split('/').peekable();
     while let Some(component) = components.next() {
@@ -754,6 +761,40 @@ mod tests {
         std::fs::write(root.join("index.html"), b"changed").unwrap();
 
         assert!(snapshot_publication_object(&pinned.root, expected).is_err());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn direct_source_retains_original_inode_and_refuses_replaced_or_linked_inventory() {
+        use sha2::Digest as _;
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempfile::tempdir().unwrap();
+        let root = temporary.path();
+        std::fs::create_dir_all(root.join("info")).unwrap();
+        std::fs::write(root.join("HEAD"), format!("{}\n", "a".repeat(64))).unwrap();
+        std::fs::write(root.join("info/refs"), b"").unwrap();
+        std::fs::write(root.join("index.html"), b"original").unwrap();
+        let pinned = publication_from_root(root, "andyl/main").unwrap();
+        let descriptor = open_publication_object(&pinned.root, "index.html").unwrap();
+        std::fs::rename(root.join("index.html"), root.join("old-index")).unwrap();
+        std::fs::write(root.join("index.html"), b"replaced").unwrap();
+        let sha = hex::encode(sha2::Sha256::digest(b"original"));
+        // Opening before replacement retains the original inode and exact bytes.
+        let source = aos_net::direct_upload::AdmittedSource::admit(descriptor, 8, &sha, 1024)
+            .await
+            .unwrap();
+        assert_eq!(source.sha256(), sha);
+        // Reopening the current name cannot adopt changed inventory bytes.
+        let replacement = open_publication_object(&pinned.root, "index.html").unwrap();
+        assert!(
+            aos_net::direct_upload::AdmittedSource::admit(replacement, 8, &sha, 1024)
+                .await
+                .is_err()
+        );
+        std::fs::remove_file(root.join("index.html")).unwrap();
+        symlink(root.join("old-index"), root.join("index.html")).unwrap();
+        assert!(open_publication_object(&pinned.root, "index.html").is_err());
     }
 
     #[test]

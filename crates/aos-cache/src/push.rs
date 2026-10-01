@@ -33,6 +33,9 @@ use crate::bandwidth;
 use crate::compress::{compression_ext, compression_name, streaming_compress, streaming_export};
 use crate::resolve::resolve_installables;
 
+#[cfg(unix)]
+mod direct;
+
 /// Uploads all closure paths missing from the cache.
 ///
 /// The pipeline is:
@@ -134,6 +137,29 @@ pub async fn run_push(
         }
         printer.info("Dry run — nothing uploaded.");
         return Ok(());
+    }
+
+    #[cfg(unix)]
+    if let Some(coordinator) = backend
+        .direct_coordinator(
+            jobs.max(1),
+            max_bandwidth
+                .map(bandwidth::parse_bandwidth)
+                .transpose()?
+                .unwrap_or(0),
+        )
+        .await?
+    {
+        return direct::push(
+            printer,
+            &coordinator,
+            &infos,
+            &missing_hashes,
+            jobs.max(1),
+            compression,
+            compression_level,
+        )
+        .await;
     }
 
     // 5. Initialize cache.

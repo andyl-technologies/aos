@@ -31,6 +31,8 @@ pub struct OciGcPlacementActionClaim {
     pub expected_size: u64,
     /// Strong entity tag frozen by provider enumeration.
     pub expected_strong_etag: Option<String>,
+    /// Provider upload incarnation frozen by the reviewed inventory.
+    pub expected_provider_version: Option<String>,
     /// Whether the sealed inventory contained the exact canonical key.
     pub inventory_entry_present: bool,
     /// Frozen placement id.
@@ -75,6 +77,29 @@ pub struct OciGcPlacementActionClaim {
     pub max_attempts: u32,
     /// Action optimistic-concurrency version after claim.
     pub resource_version: i64,
+}
+
+impl OciGcPlacementActionClaim {
+    /// Returns the exact physical access fence retained by this cleanup claim.
+    #[must_use]
+    pub fn frozen_access(&self) -> crate::surface_write::FrozenSurfaceAccess {
+        crate::surface_write::FrozenSurfaceAccess {
+            registry_id: self.registry_id,
+            placement_id: self.placement_id,
+            placement_name: self.placement_name.clone(),
+            placement_prefix: self.placement_prefix.clone(),
+            placement_resource_version: self.placement_resource_version,
+            placement_write_spec_version: self.placement_write_spec_version,
+            placement_observation_version: self.placement_observation_version,
+            binding_id: self.binding_id,
+            binding_resource_version: self.binding_resource_version,
+            binding_write_revision: self.binding_write_revision,
+            delete_credential_purpose: self.delete_credential_purpose.clone(),
+            delete_credential_generation: self.delete_credential_generation,
+            delete_capability_fingerprint: self.delete_capability_fingerprint.clone(),
+            delete_capability_resource_version: self.delete_capability_resource_version,
+        }
+    }
 }
 
 /// Provider absence outcome accepted as deletion evidence.
@@ -242,7 +267,7 @@ impl Database {
                        AND binding.resource_version = snapshot.binding_resource_version
                        AND ((snapshot.delete_credential_purpose IS NULL
                              AND snapshot.delete_credential_generation IS NULL
-                             AND binding.kind = 'local_fs')
+                             AND binding.kind IN ('local_fs', 'deployment_r2'))
                          OR delete_credential.validation_state = 'valid'))
                    AND NOT EXISTS (SELECT 1 FROM oci_tags tag
                      WHERE tag.registry_id = action.registry_id AND tag.digest = action.digest)
@@ -279,95 +304,17 @@ impl Database {
             let claimed = self
                 .backend
                 .checked_batch(&[Statement::new(
-                    "UPDATE oci_gc_placement_actions
+                    format!(
+                        "UPDATE oci_gc_placement_actions
                      SET state = 'claimed', worker_id = ?2, claim_token = ?3,
                          lease_expires_at = ?4, attempt_count = attempt_count + 1,
                          resource_version = resource_version + 1
                      WHERE id = ?1 AND resource_version = ?5
                        AND ((state = 'pending' AND next_attempt_at <= ?6)
                          OR (state = 'claimed' AND lease_expires_at <= ?6))
-                       AND EXISTS (SELECT 1 FROM oci_gc_runs run
-                         JOIN oci_gc_registry_locks registry_lock
-                           ON registry_lock.registry_id = run.registry_id
-                          AND registry_lock.run_id = run.id
-                         JOIN oci_registry_state registry_state
-                           ON registry_state.registry_id = run.registry_id
-                         JOIN oci_gc_candidates candidate
-                           ON candidate.run_id = run.id
-                          AND candidate.digest = oci_gc_placement_actions.digest
-                         JOIN oci_gc_placement_snapshots snapshot
-                           ON snapshot.run_id = run.id
-                          AND snapshot.placement_id =
-                            oci_gc_placement_actions.placement_id
-                         JOIN surface_placements placement
-                           ON placement.id = snapshot.placement_id
-                          AND placement.registry_id = snapshot.registry_id
-                         JOIN surface_placement_observations observation
-                           ON observation.placement_id = placement.id
-                         JOIN bindings binding ON binding.id = snapshot.binding_id
-                         JOIN binding_write_revisions frozen_revision
-                           ON frozen_revision.binding_id = snapshot.binding_id
-                          AND frozen_revision.revision = snapshot.binding_write_revision
-                         LEFT JOIN binding_credential_revisions delete_credential
-                           ON delete_credential.binding_id = snapshot.binding_id
-                          AND delete_credential.purpose =
-                            snapshot.delete_credential_purpose
-                          AND delete_credential.generation =
-                            snapshot.delete_credential_generation
-                         WHERE run.id = oci_gc_placement_actions.run_id
-                           AND run.state = 'applying'
-                           AND registry_state.mutation_epoch = run.applied_mutation_epoch
-                           AND candidate.state = 'deleting'
-                           AND placement.name = snapshot.placement_name
-                           AND placement.prefix = snapshot.placement_prefix
-                           AND placement.resource_version = snapshot.placement_resource_version
-                           AND placement.write_spec_version = snapshot.placement_write_spec_version
-                           AND observation.observation_version >=
-                             snapshot.placement_observation_version
-                           AND observation.state = 'ready'
-                           AND observation.completeness = 'complete'
-                           AND binding.resource_version = snapshot.binding_resource_version
-                           AND ((snapshot.delete_credential_purpose IS NULL
-                                 AND snapshot.delete_credential_generation IS NULL
-                                 AND binding.kind = 'local_fs')
-                             OR (delete_credential.validation_state = 'valid'
-                               AND EXISTS (SELECT 1 FROM oci_gc_credential_holds hold
-                                 WHERE hold.run_id = run.id
-                                   AND hold.binding_id = snapshot.binding_id
-                                   AND hold.purpose = snapshot.delete_credential_purpose
-                                   AND hold.generation =
-                                     snapshot.delete_credential_generation)))
-                           AND NOT EXISTS (SELECT 1 FROM oci_tags tag
-                             WHERE tag.registry_id = oci_gc_placement_actions.registry_id
-                               AND tag.digest = oci_gc_placement_actions.digest)
-                           AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
-                             WHERE root.registry_id = oci_gc_placement_actions.registry_id
-                               AND root.index_digest = oci_gc_placement_actions.digest)
-                           AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
-                             WHERE evidence.registry_id = oci_gc_placement_actions.registry_id
-                               AND evidence.referrer_digest = oci_gc_placement_actions.digest
-                               AND evidence.verification = 'verified')
-                           AND NOT EXISTS (SELECT 1 FROM oci_leases lease
-                             WHERE lease.registry_id = oci_gc_placement_actions.registry_id
-                               AND lease.digest = oci_gc_placement_actions.digest
-                               AND lease.expires_at > ?6)
-                           AND NOT EXISTS (SELECT 1 FROM oci_upload_sessions upload
-                             WHERE upload.registry_id = oci_gc_placement_actions.registry_id
-                               AND upload.state IN('active', 'completing')
-                               AND (upload.expected_digest = oci_gc_placement_actions.digest
-                                 OR upload.final_digest = oci_gc_placement_actions.digest))
-                           AND NOT EXISTS (SELECT 1
-                             FROM oci_publication_sessions publication
-                             JOIN oci_publication_objects object
-                               ON object.publication_id = publication.id
-                             WHERE publication.registry_id = oci_gc_placement_actions.registry_id
-                               AND publication.state IN('preparing', 'committing')
-                               AND object.digest = oci_gc_placement_actions.digest))
-                           AND NOT EXISTS (SELECT 1
-                             FROM oci_publication_sessions publication
-                             WHERE publication.registry_id = oci_gc_placement_actions.registry_id
-                               AND publication.state IN('preparing', 'committing')
-                               AND publication.root_digest = oci_gc_placement_actions.digest)",
+                       AND {}",
+                        gc_action_authorization_sql("oci_gc_placement_actions", "?6")
+                    ),
                     vals![
                         action_id,
                         worker_id,
@@ -459,7 +406,8 @@ impl Database {
         self.backend
             .checked_batch(&[
                 Statement::new(
-                    "INSERT INTO oci_gc_deletion_evidence
+                    format!(
+                        "INSERT INTO oci_gc_deletion_evidence
                        (action_id, response_idempotency_key, outcome,
                         conditional_etag, provider_request_id, evidence_digest,
                         confirmed_at)
@@ -467,8 +415,11 @@ impl Database {
                      FROM oci_gc_placement_actions action
                      WHERE action.id = ?1 AND action.state = 'claimed'
                        AND action.claim_token = ?2
+                       AND action.lease_expires_at > ?8 AND {}
                        AND (?4 = 'already_absent'
                          OR action.expected_strong_etag = ?5)",
+                        gc_action_authorization_sql("action", "?8")
+                    ),
                     vals![
                         input.action_id,
                         input.claim_token,
@@ -1154,15 +1105,60 @@ impl Database {
         }))
     }
 
+    /// Reloads a live OCI cleanup claim with its frozen authority and credential hold.
+    ///
+    /// No current credential or capability head is selected. An invalid retained
+    /// credential, stale mutation epoch, changed address, missing hold, new root,
+    /// expired lease, or different claim token makes the claim unavailable.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for malformed identity/time, persisted data, or database IO.
+    pub async fn active_oci_gc_placement_action_claim(
+        &self,
+        action_id: &str,
+        claim_token: &str,
+        now: i64,
+    ) -> Result<Option<OciGcPlacementActionClaim>> {
+        validate_key_bytes(action_id, "OCI GC action id", 64)?;
+        validate_key_bytes(claim_token, "OCI GC claim token", 64)?;
+        if now < 0 {
+            bail!("OCI GC claim observation time is invalid");
+        }
+        self.load_oci_gc_action_claim(action_id, claim_token, Some(now))
+            .await
+    }
+
     async fn oci_gc_action_claim(
         &self,
         action_id: &str,
         claim_token: &str,
     ) -> Result<Option<OciGcPlacementActionClaim>> {
+        self.load_oci_gc_action_claim(action_id, claim_token, None)
+            .await
+    }
+
+    async fn load_oci_gc_action_claim(
+        &self,
+        action_id: &str,
+        claim_token: &str,
+        now: Option<i64>,
+    ) -> Result<Option<OciGcPlacementActionClaim>> {
+        let additional_fence = now.map_or_else(String::new, |_| {
+            format!(
+                " AND action.lease_expires_at > ?3 AND {}",
+                gc_action_authorization_sql("action", "?3")
+            )
+        });
+        let mut parameters = vals![action_id, claim_token];
+        if let Some(now) = now {
+            parameters.push(crate::value::Value::Int(now));
+        }
         let row = self
             .backend
             .query_opt(
-                "SELECT action.id, action.run_id, action.registry_id,
+                &format!(
+                    "SELECT action.id, action.run_id, action.registry_id,
                         action.digest, candidate.media_type, action.object_key,
                         action.expected_hash, action.expected_size,
                         action.expected_strong_etag, snapshot.placement_id,
@@ -1180,7 +1176,7 @@ impl Database {
                         snapshot.inventory_digest, snapshot.inventory_observed_at,
                         action.claim_token, action.lease_expires_at,
                         action.attempt_count, action.max_attempts,
-                        action.resource_version, action.inventory_entry_present
+                        action.resource_version, action.inventory_entry_present, action.expected_provider_version
                  FROM oci_gc_placement_actions action
                  JOIN oci_gc_candidates candidate
                    ON candidate.run_id = action.run_id
@@ -1189,8 +1185,9 @@ impl Database {
                    ON snapshot.run_id = action.run_id
                   AND snapshot.placement_id = action.placement_id
                  WHERE action.id = ?1 AND action.state = 'claimed'
-                   AND action.claim_token = ?2",
-                &vals![action_id, claim_token],
+                   AND action.claim_token = ?2{additional_fence}"
+                ),
+                &parameters,
             )
             .await?;
         let Some(row) = row else {
@@ -1223,6 +1220,7 @@ impl Database {
             expected_size: u64::try_from(row.get::<i64>(7)?)
                 .context("persisted OCI GC expected size is negative")?,
             expected_strong_etag: row.get(8)?,
+            expected_provider_version: row.get(31)?,
             inventory_entry_present: row.get::<i64>(30)? == 1,
             placement_id: row.get(9)?,
             placement_name: row.get(10)?,
@@ -1276,4 +1274,92 @@ impl Database {
             .map(super::read::row_to_action)
             .transpose()
     }
+}
+
+// Claim acquisition and post-claim provider admission use one predicate. The
+// substitutions are internal SQL aliases/placeholders, never caller input.
+fn gc_action_authorization_sql(action: &str, now: &str) -> String {
+    const PREDICATE: &str = "EXISTS (SELECT 1 FROM oci_gc_runs run
+                         JOIN oci_gc_registry_locks registry_lock
+                           ON registry_lock.registry_id = run.registry_id
+                          AND registry_lock.run_id = run.id
+                         JOIN oci_registry_state registry_state
+                           ON registry_state.registry_id = run.registry_id
+                         JOIN oci_gc_candidates candidate
+                           ON candidate.run_id = run.id
+                          AND candidate.digest = {action}.digest
+                         JOIN oci_gc_placement_snapshots snapshot
+                           ON snapshot.run_id = run.id
+                          AND snapshot.placement_id =
+                            {action}.placement_id
+                         JOIN surface_placements placement
+                           ON placement.id = snapshot.placement_id
+                          AND placement.registry_id = snapshot.registry_id
+                         JOIN surface_placement_observations observation
+                           ON observation.placement_id = placement.id
+                         JOIN bindings binding ON binding.id = snapshot.binding_id
+                         JOIN binding_write_revisions frozen_revision
+                           ON frozen_revision.binding_id = snapshot.binding_id
+                          AND frozen_revision.revision = snapshot.binding_write_revision
+                         LEFT JOIN binding_credential_revisions delete_credential
+                           ON delete_credential.binding_id = snapshot.binding_id
+                          AND delete_credential.purpose =
+                            snapshot.delete_credential_purpose
+                          AND delete_credential.generation =
+                            snapshot.delete_credential_generation
+                         WHERE run.id = {action}.run_id
+                           AND run.state = 'applying'
+                           AND registry_state.mutation_epoch = run.applied_mutation_epoch
+                           AND candidate.state = 'deleting'
+                           AND placement.name = snapshot.placement_name
+                           AND placement.prefix = snapshot.placement_prefix
+                           AND placement.resource_version = snapshot.placement_resource_version
+                           AND placement.write_spec_version = snapshot.placement_write_spec_version
+                           AND observation.observation_version >=
+                             snapshot.placement_observation_version
+                           AND observation.state = 'ready'
+                           AND observation.completeness = 'complete'
+                           AND binding.resource_version = snapshot.binding_resource_version
+                           AND ((snapshot.delete_credential_purpose IS NULL
+                                 AND snapshot.delete_credential_generation IS NULL
+                                 AND binding.kind IN ('local_fs', 'deployment_r2'))
+                             OR (delete_credential.validation_state = 'valid'
+                               AND EXISTS (SELECT 1 FROM oci_gc_credential_holds hold
+                                 WHERE hold.run_id = run.id
+                                   AND hold.binding_id = snapshot.binding_id
+                                   AND hold.purpose = snapshot.delete_credential_purpose
+                                   AND hold.generation =
+                                     snapshot.delete_credential_generation)))
+                           AND NOT EXISTS (SELECT 1 FROM oci_tags tag
+                             WHERE tag.registry_id = {action}.registry_id
+                               AND tag.digest = {action}.digest)
+                           AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
+                             WHERE root.registry_id = {action}.registry_id
+                               AND root.index_digest = {action}.digest)
+                           AND NOT EXISTS (SELECT 1 FROM oci_release_evidence evidence
+                             WHERE evidence.registry_id = {action}.registry_id
+                               AND evidence.referrer_digest = {action}.digest
+                               AND evidence.verification = 'verified')
+                           AND NOT EXISTS (SELECT 1 FROM oci_leases lease
+                             WHERE lease.registry_id = {action}.registry_id
+                               AND lease.digest = {action}.digest
+                               AND lease.expires_at > {now})
+                           AND NOT EXISTS (SELECT 1 FROM oci_upload_sessions upload
+                             WHERE upload.registry_id = {action}.registry_id
+                               AND upload.state IN('active', 'completing')
+                               AND (upload.expected_digest = {action}.digest
+                                 OR upload.final_digest = {action}.digest))
+                           AND NOT EXISTS (SELECT 1
+                             FROM oci_publication_sessions publication
+                             JOIN oci_publication_objects object
+                               ON object.publication_id = publication.id
+                             WHERE publication.registry_id = {action}.registry_id
+                               AND publication.state IN('preparing', 'committing')
+                               AND object.digest = {action}.digest))
+                           AND NOT EXISTS (SELECT 1
+                             FROM oci_publication_sessions publication
+                             WHERE publication.registry_id = {action}.registry_id
+                               AND publication.state IN('preparing', 'committing')
+                               AND publication.root_digest = {action}.digest)";
+    PREDICATE.replace("{action}", action).replace("{now}", now)
 }

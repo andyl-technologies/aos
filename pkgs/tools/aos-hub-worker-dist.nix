@@ -142,13 +142,16 @@
   src = builtins.path {
     path = repoRoot;
     name = "aos-hub-worker-workspace-src";
-    filter = path: _type: let
+    filter = path: type: let
       pathString = toString path;
       base = baseNameOf path;
     in
       base
       != "target"
       && base != ".git"
+      # Failed native tests retain custody fixtures beside their crate. Their
+      # evidence stays on disk without entering the deployable source identity.
+      && !(type == "directory" && lib.hasPrefix ".tmp" base)
       && (
         pathString
         == repoRootString
@@ -166,7 +169,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
+    hash = "sha256-bFrGLJz08aNxlYogCpbDOy9Oh7uFIcLXm4lMe5Ce9no=";
   };
   qualifiedFeatures =
     if cargoFeatures == ""
@@ -258,6 +261,8 @@ in
           export AOS_HUB_CONSOLE_JS="${buildConsoleDist}/hub-console.js"
           export AOS_HUB_CONSOLE_WASM="${buildConsoleDist}/hub-console_bg.wasm"
           export AOS_HUB_CONSOLE_CSS="${buildConsoleDist}/hub-console.css"
+          # Bind accepted provider/clock/capacity evidence to the exact sources.
+          export AOS_HUB_WORKER_SOURCE_DIGEST="${builtins.hashString "sha256" (toString src)}"
           export CARGO_PROFILE_RELEASE_OPT_LEVEL="s"
           export CARGO_PROFILE_RELEASE_LTO="fat"
           export CARGO_PROFILE_RELEASE_CODEGEN_UNITS="1"
@@ -350,25 +355,33 @@ in
             cp -r build/snippets build/worker/snippets
           fi
 
-          # glue.js — instantiates the wasm and re-exports its exports
-          # (worker-build src/js/glue.js, verbatim).
+          # The generated glue must receive the instance exports before bindgen
+          # initializes its externref table; initialization therefore runs from
+          # shim.js after the index_bg.js/glue.js module cycle has completed.
           cat > build/worker/glue.js << 'GLUE'
           import wasmModule from './index.wasm';
           import * as imports from './index_bg.js';
 
           const instance = new WebAssembly.Instance(wasmModule, { "./index_bg.js": imports });
+
+          export function initializeWasm() {
+              instance.exports.__wbindgen_start();
+          }
+
           export default instance.exports;
           GLUE
 
-          # shim.js — worker-build's event-handler entry (src/js/shim.js,
-          # verbatim). It wires fetch/queue/scheduled to the wasm exports.
+          # Initialize bindgen before wiring the worker-build event handlers.
           cat > build/worker/shim.js << 'SHIM'
           import * as imports from "./index_bg.js";
           export * from "./index_bg.js";
           import wasmModule from "./index.wasm";
           import { WorkerEntrypoint } from "cloudflare:workers";
+          import { initializeWasm } from "./glue.js";
 
-          // Run the worker's initialization function.
+          initializeWasm();
+
+          // Run an optional Worker start event after bindgen initialization.
           imports.start?.();
 
           export { wasmModule };

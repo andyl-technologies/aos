@@ -2718,6 +2718,21 @@ pub enum UploadConfigField {
 /// Authentication flags for registry static-cache uploads.
 #[derive(Debug, Clone, Args, Default)]
 pub struct CacheUploadAuthArgs {
+    /// Select the exact Hub metadata origin for registry publication uploads
+    #[arg(long, requires = "hub_registry")]
+    pub hub_origin: Option<String>,
+    /// Select the Hub registry owning the frozen Git/image publication
+    #[arg(long, requires = "hub_origin")]
+    pub hub_registry: Option<String>,
+    /// Read an explicit direct-provider origin/CIDR/public-CA policy
+    #[arg(long, value_name = "FILE")]
+    pub direct_provider_policy: Option<std::path::PathBuf>,
+    /// Resume or create this owner-private direct retry journal
+    #[arg(long, value_name = "FILE")]
+    pub direct_upload_journal: Option<std::path::PathBuf>,
+    /// Use a new direct upload run while preserving prior journals
+    #[arg(long)]
+    pub new_direct_upload_run: bool,
     /// AOS provisioning token (AOS_TOKEN env)
     #[arg(long, env = "AOS_TOKEN")]
     pub token: Option<String>,
@@ -2776,10 +2791,28 @@ impl CacheUploadAuthArgs {
         let mut auth = config
             .map(RegistryUploadAuthConfig::auth_options)
             .unwrap_or_else(|| aos_cache::AuthOptions {
+                #[cfg(unix)]
+                direct_upload: aos_remote::DirectUploadOptions::default(),
                 view: "default".to_string(),
                 ..aos_cache::AuthOptions::default()
             });
 
+        if let Some(origin) = &self.hub_origin {
+            auth.hub_origin = Some(origin.clone());
+        }
+        if let Some(registry) = &self.hub_registry {
+            auth.hub_registry = Some(registry.clone());
+        }
+        #[cfg(unix)]
+        {
+            if let Some(policy) = &self.direct_provider_policy {
+                auth.direct_upload.provider_policy = Some(policy.clone());
+            }
+            if let Some(journal) = &self.direct_upload_journal {
+                auth.direct_upload.journal = Some(journal.clone());
+            }
+            auth.direct_upload.new_run = self.new_direct_upload_run;
+        }
         if let Some(token) = &self.token {
             auth.token = Some(token.clone());
         }
@@ -7964,6 +7997,43 @@ contributable = ["allowedTCPPorts"]
     }
 
     #[test]
+    fn cache_upload_auth_args_preserve_explicit_hub_selectors_from_config_and_cli() {
+        let config = RegistryUploadAuthConfig {
+            hub_origin: Some("https://configured-hub.example.test".into()),
+            hub_registry: Some("configured-registry".into()),
+            upload_urls: vec!["https://unrelated.example.test/static".into()],
+            ..Default::default()
+        };
+        let from_config = config.auth_options();
+        assert_eq!(from_config.hub_origin, config.hub_origin);
+        assert_eq!(from_config.hub_registry, config.hub_registry);
+
+        let args = CacheUploadAuthArgs {
+            hub_origin: Some("https://selected-hub.example.test".into()),
+            ..Default::default()
+        };
+        let merged = args.auth_options_with_config(Some(&config));
+        assert_eq!(merged.hub_origin, args.hub_origin);
+        assert_eq!(merged.hub_registry, config.hub_registry);
+
+        let explicit = CacheUploadAuthArgs {
+            hub_origin: args.hub_origin.clone(),
+            hub_registry: Some("selected-registry".into()),
+            ..Default::default()
+        };
+        let from_cli = explicit.auth_options();
+        assert_eq!(from_cli.hub_origin, explicit.hub_origin);
+        assert_eq!(from_cli.hub_registry, explicit.hub_registry);
+
+        let generic = RegistryUploadAuthConfig {
+            upload_urls: config.upload_urls.clone(),
+            ..Default::default()
+        }
+        .auth_options();
+        assert!(generic.hub_origin.is_none() && generic.hub_registry.is_none());
+    }
+
+    #[test]
     fn cache_upload_auth_args_map_to_backend_options() {
         let args = CacheUploadAuthArgs {
             token: Some("token".into()),
@@ -7977,6 +8047,7 @@ contributable = ["allowedTCPPorts"]
             ssh_key: Some("/tmp/key".into()),
             ssh_password: Some("ssh-pass".into()),
             ssh_ask_pass: true,
+            ..CacheUploadAuthArgs::default()
         };
 
         let auth = args.auth_options();
@@ -8008,6 +8079,7 @@ contributable = ["allowedTCPPorts"]
             ssh_key: Some("/etc/apm/config-key".into()),
             ssh_password: Some("config-ssh-pass".into()),
             ssh_ask_pass: true,
+            ..RegistryUploadAuthConfig::default()
         };
         let args = CacheUploadAuthArgs {
             token: Some("cli-token".into()),
@@ -8021,6 +8093,7 @@ contributable = ["allowedTCPPorts"]
             ssh_key: Some("/tmp/cli-key".into()),
             ssh_password: None,
             ssh_ask_pass: false,
+            ..CacheUploadAuthArgs::default()
         };
 
         let auth = args.auth_options_with_config(Some(&config));

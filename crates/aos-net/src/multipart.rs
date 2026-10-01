@@ -6,13 +6,13 @@
 //! the choice to abort or preserve staged state after failure.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::{stream, StreamExt, TryStreamExt};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
 
 use crate::progress::{NoopObserver, TransferEvent, TransferObserver};
@@ -25,6 +25,9 @@ pub enum MultipartSource {
     /// Reads every part from a local file.
     File(PathBuf),
     /// Reads every part from a retained open file descriptor.
+    ///
+    /// Ranges use explicit offsets independently of the descriptor cursor.
+    /// Unix preserves that cursor; Windows advances it through `seek_read`.
     FileHandle(Arc<std::fs::File>),
     /// Reads every part from shared immutable memory.
     Bytes(Bytes),
@@ -506,16 +509,10 @@ async fn read_source_part(source: &MultipartSource, offset: u64, size: u64) -> R
             Ok(Bytes::from(bytes))
         }
         MultipartSource::FileHandle(file) => {
-            let file = file
-                .try_clone()
-                .context("cloning multipart source descriptor")?;
-            let mut file = tokio::fs::File::from_std(file);
-            file.seek(std::io::SeekFrom::Start(offset)).await?;
-            let mut bytes = vec![0_u8; size];
-            file.read_exact(&mut bytes)
+            let file = Arc::clone(file);
+            tokio::task::spawn_blocking(move || read_descriptor_part(&file, offset, size))
                 .await
-                .with_context(|| format!("reading multipart source part at offset {offset}"))?;
-            Ok(Bytes::from(bytes))
+                .context("joining multipart source descriptor read")?
         }
         MultipartSource::Bytes(bytes) => {
             let start = usize::try_from(offset).context("multipart part offset is too large")?;
@@ -526,6 +523,59 @@ async fn read_source_part(source: &MultipartSource, offset: u64, size: u64) -> R
             Ok(bytes.slice(start..end))
         }
     }
+}
+
+// Cloned descriptors share a cursor on Unix. Explicit-offset reads keep ranges
+// independent; Unix also preserves the cursor. Windows seek_read advances it.
+fn read_descriptor_part(file: &std::fs::File, offset: u64, size: usize) -> Result<Bytes> {
+    let mut bytes = vec![0_u8; size];
+    read_descriptor_exact_at(file, &mut bytes, offset)
+        .with_context(|| format!("reading multipart source part at offset {offset}"))?;
+    Ok(Bytes::from(bytes))
+}
+
+#[cfg(unix)]
+pub(crate) fn read_descriptor_exact_at(
+    file: &std::fs::File,
+    bytes: &mut [u8],
+    offset: u64,
+) -> std::io::Result<()> {
+    use std::os::unix::fs::FileExt;
+
+    file.read_exact_at(bytes, offset)
+}
+
+#[cfg(windows)]
+pub(crate) fn read_descriptor_exact_at(
+    file: &std::fs::File,
+    mut bytes: &mut [u8],
+    mut offset: u64,
+) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+
+    while !bytes.is_empty() {
+        match file.seek_read(bytes, offset) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => {
+                offset = offset
+                    .checked_add(read as u64)
+                    .ok_or(std::io::ErrorKind::InvalidInput)?;
+                bytes = &mut bytes[read..];
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+pub(crate) fn read_descriptor_exact_at(
+    _file: &std::fs::File,
+    _bytes: &mut [u8],
+    _offset: u64,
+) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
 }
 
 async fn settle_failure<B>(
@@ -558,10 +608,87 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Seek, SeekFrom, Write};
     use std::sync::Mutex;
 
     use super::*;
     use crate::transfer::TransferEngineConfig;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn descriptor_ranges_preserve_cursor_and_replay_exact_bytes() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"0123456789abcdefghijklmnop").unwrap();
+        file.seek(SeekFrom::Start(21)).unwrap();
+        let mut observer = file.try_clone().unwrap();
+        let source = MultipartSource::file(file);
+
+        for _ in 0..3 {
+            let bytes = read_source_part(&source, 5, 11).await.unwrap();
+            assert_eq!(&bytes[..], b"56789abcdef");
+            assert_eq!(observer.stream_position().unwrap(), 21);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn simultaneous_descriptor_ranges_ignore_shared_cursor_changes() {
+        let contents: Vec<u8> = (0..256 * 1024)
+            .map(|index| ((index * 31 + index / 257) % 251) as u8)
+            .collect();
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(&contents).unwrap();
+        let mut observer = file.try_clone().unwrap();
+        let source = MultipartSource::file(file);
+        let barrier = Arc::new(tokio::sync::Barrier::new(33));
+
+        let mut readers = Vec::new();
+        for index in 0..32 {
+            let source = source.clone();
+            let barrier = Arc::clone(&barrier);
+            readers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                let offset = (index * 7271) % (256 * 1024 - 8192);
+                let bytes = read_source_part(&source, offset as u64, 8192)
+                    .await
+                    .unwrap();
+                (offset, bytes)
+            }));
+        }
+
+        barrier.wait().await;
+        for index in 0..128 {
+            observer.seek(SeekFrom::Start(index * 137)).unwrap();
+            tokio::task::yield_now().await;
+        }
+        observer.seek(SeekFrom::Start(43)).unwrap();
+
+        for reader in readers {
+            let (offset, bytes) = reader.await.unwrap();
+            assert_eq!(&bytes[..], &contents[offset..offset + 8192]);
+        }
+        #[cfg(unix)]
+        assert_eq!(observer.stream_position().unwrap(), 43);
+    }
+
+    #[tokio::test]
+    async fn descriptor_short_ranges_fail() {
+        let mut file = tempfile::tempfile().unwrap();
+        file.write_all(b"abcdef").unwrap();
+        file.seek(SeekFrom::Start(2)).unwrap();
+        let mut observer = file.try_clone().unwrap();
+        let source = MultipartSource::file(file);
+
+        for (offset, length) in [(4, 3), (6, 1), (64, 1)] {
+            let error = read_source_part(&source, offset, length).await.unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::UnexpectedEof
+            );
+            #[cfg(unix)]
+            assert_eq!(observer.stream_position().unwrap(), 2);
+        }
+        assert!(read_source_part(&source, 6, 0).await.unwrap().is_empty());
+    }
 
     struct RecordingBackend {
         uploaded: Mutex<Vec<u32>>,

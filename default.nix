@@ -1579,6 +1579,9 @@ in rec {
       linux-workerd = import ./tests/build/linux-workerd.nix {
         pkgs = buildPackages;
       };
+      hub-authority-issuer = import ./tests/build/hub-authority-issuer.nix {
+        pkgs = buildPackages;
+      };
       package-platform-support = import ./tests/build/package-platform-support.nix {
         pkgs = buildPackages;
       };
@@ -1611,6 +1614,7 @@ in rec {
     in
       {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache;
+        inherit hub-authority-issuer;
         inherit critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell hardening-probe kernel-config linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
         # Single target that pulls in the whole build-check group.
         all = pkgs.mkDerivation {
@@ -1624,6 +1628,7 @@ in rec {
               else []
             )
             ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell kernel-config linux-hosted-toolchain linux-workerd package-platform-support package-root-image runtime-python-outputs structured-attrs-export systemd-verity]
+            ++ [hub-authority-issuer]
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
             ++ builtins.attrValues linux-hosted-rust

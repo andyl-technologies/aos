@@ -251,6 +251,7 @@ in
           mkdir -p "$destination/home" "$destination/surface"
           export HOME="$destination/home"
           export USER=aos-image-producer
+          export NIX_CONFIG='extra-experimental-features = nix-command'
           export GIT_AUTHOR_NAME='AOS Image E2E'
           export GIT_AUTHOR_EMAIL='image-e2e@aos.invalid'
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
@@ -265,7 +266,17 @@ in
           done <<< "$keygen"
           test -n "$public_key"
           key="$HOME/.config/apm/keys/image-e2e-release.key"
-          ${aos.apr}/bin/apr create image-e2e --trust-key "$public_key" --key "$key"
+          ${aos.apr}/bin/apr create image-e2e --trust-key "$public_key" \
+            --trust-key-id initial --key "$key"
+          mkdir -p "$HOME/.config/apm/registries.d"
+          cat > "$HOME/.config/apm/registries.d/image-e2e.toml" <<CONFIG
+          [registry]
+          name = "image-e2e"
+          url = "file://$HOME/.local/share/apm/registries/image-e2e"
+
+          [registry.signing_keys]
+          initial = "$key"
+          CONFIG
           ${aos.apr}/bin/apr release 2026.3.0 \
             --registry image-e2e \
             --store-path '${sysroot}' \
@@ -288,7 +299,7 @@ in
             --image-uki '${ukiImage}/systemd-bootx64.efi' \
             --channel stable \
             --init-channel \
-            --key "$key" \
+            --key-id initial \
             --cache-url http://127.0.0.1:8799/flat-cache \
             --upload-url "file://$destination/surface"
           printf '%s\n' "$public_key" > "$destination/trust-key"

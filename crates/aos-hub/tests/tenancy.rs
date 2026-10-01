@@ -13,8 +13,8 @@ use std::sync::Arc;
 
 use aos_hub::auth::extract::AuthState;
 use aos_hub::auth::jwt::JwtKeys;
-use aos_hub::db::{Database, SurfaceTarget, TokenAuth};
-use aos_hub::domain::{Permission, Principal, Role, Scope};
+use aos_hub::db::{Database, SurfaceTarget};
+use aos_hub::domain::{Permission, Principal, Role};
 use aos_hub::fetch::LocalFsFetch;
 use aos_hub::indexer::index_and_record;
 use aos_hub::server::{router, AppState};
@@ -58,18 +58,15 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
 }
 
 /// Mint a bearer JWT for `principal` scoped to `scope` with `perms`.
-fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
-    let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    keys.mint(
-        &TokenAuth {
-            token_id: "test-token".into(),
-            owner: principal,
-            scope: Scope::parse(scope),
-            permissions: perms.to_vec(),
-        },
-        900,
+async fn bearer(db: &Database, principal: Principal, scope: &str, perms: &[Permission]) -> String {
+    common::current_bearer(
+        db,
+        &JwtKeys::from_secret(TEST_JWT_SECRET),
+        principal,
+        scope,
+        perms,
     )
-    .unwrap()
+    .await
 }
 
 /// GET a URL, optionally carrying a `Cookie` or `Authorization` header.
@@ -409,10 +406,12 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     // surface. Successful private byte delivery after a typed publication is
     // covered by the signed-image end-to-end suite.
     let token = bearer(
+        &db,
         Principal::user(user),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, _) = get(
         &app,
         "/acme/infra/prod/cdn/-/packages?release=1.0.0",
@@ -546,10 +545,12 @@ async fn instance_home_lists_only_visible_registries() {
         .await
         .unwrap();
     let token = bearer(
+        &db,
         Principal::user(outsider),
         &private_scope,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, body) = get(&app, "/", None, Some(&token)).await;
     assert_eq!(status, StatusCode::OK);
     assert!(body.contains(&public), "{body}");
@@ -574,7 +575,7 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     let app = router(app_state(Arc::clone(&db)).await).await;
 
     // CreateOrganization with any authenticated principal; the caller becomes Owner.
-    let token = bearer(Principal::user(user), "instance", &[]);
+    let token = bearer(&db, Principal::user(user), "instance", &[]).await;
     let (status, value) = planned_rpc(
         &app,
         "OrganizationService/PlanCreateOrganization",
@@ -597,10 +598,12 @@ async fn rpc_create_org_project_binding_registry_happy_path() {
     // As Owner, the founder has registry.configure on acme — mint a token
     // carrying it for the subsequent mutations.
     let owner_token = bearer(
+        &db,
         Principal::user(user),
         &org_scope,
         &[Permission::RegistryConfigure, Permission::BindingManage],
-    );
+    )
+    .await;
 
     // CreateProject.
     let (status, value) = planned_rpc(
@@ -686,7 +689,7 @@ async fn organization_plans_enforce_cas_replay_and_delete_grace() {
         .unwrap();
     let user = db.create_user("owner@acme.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let bootstrap = bearer(Principal::user(user), "instance", &[]);
+    let bootstrap = bearer(&db, Principal::user(user), "instance", &[]).await;
 
     let (status, plan) = rpc(
         &app,
@@ -726,10 +729,12 @@ async fn organization_plans_enforce_cas_replay_and_delete_grace() {
 
     let version = created["organization"]["resourceVersion"].as_str().unwrap();
     let manager = bearer(
+        &db,
         Principal::user(user),
         &org_scope,
         &[Permission::MembersManage, Permission::IamAdmin],
-    );
+    )
+    .await;
     let (status, updated) = planned_rpc(
         &app,
         "OrganizationService/PlanUpdateOrganization",
@@ -800,7 +805,7 @@ async fn rpc_create_org_rejects_scope_smuggling_slugs() {
     db.create_org("victimorg", "Victim Org").await.unwrap();
     let attacker = db.create_user("attacker@evil.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(attacker), "instance", &[]);
+    let token = bearer(&db, Principal::user(attacker), "instance", &[]).await;
 
     for bad in [
         "/",
@@ -886,7 +891,7 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
         .unwrap();
     let founder = db.create_user("founder@acme.com", None).await.unwrap();
     let app = router(app_state(Arc::clone(&db)).await).await;
-    let token = bearer(Principal::user(founder), "instance", &[]);
+    let token = bearer(&db, Principal::user(founder), "instance", &[]).await;
 
     // The first CREATE_ORG_PER_OWNER creations in the window succeed.
     for i in 0..CREATE_ORG_PER_OWNER {
@@ -918,7 +923,7 @@ async fn rpc_create_org_is_rate_limited_per_principal() {
 
     // A *different* principal is unaffected — the limit is per-caller.
     let other = db.create_user("other@acme.com", None).await.unwrap();
-    let other_token = bearer(Principal::user(other), "instance", &[]);
+    let other_token = bearer(&db, Principal::user(other), "instance", &[]).await;
     let (status, value) = planned_rpc(
         &app,
         "OrganizationService/PlanCreateOrganization",
@@ -1027,10 +1032,12 @@ async fn private_registry_list_releases_requires_read() {
     .await
     .unwrap();
     let token = bearer(
+        &db,
         Principal::user(user),
         &common::registry_scope(&db, "acme/infra/prod/cdn").await,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, value) = rpc(
         &app,
         "RegistryService/ListReleases",
@@ -1058,11 +1065,22 @@ async fn rpc_mutations_reject_unauthenticated_and_unauthorized() {
     assert_eq!(status, StatusCode::UNAUTHORIZED);
 
     // Authenticated but lacking registry.configure on acme: denied.
+    let viewer = db.create_user("viewer@acme.test", None).await.unwrap();
+    db.grant_membership(
+        "user",
+        viewer,
+        &common::org_scope(&db, "acme").await,
+        Role::Viewer.as_str(),
+    )
+    .await
+    .unwrap();
     let weak = bearer(
-        Principal::user(1),
+        &db,
+        Principal::user(viewer),
         &common::org_scope(&db, "acme").await,
         &[Permission::Read],
-    );
+    )
+    .await;
     let (status, _) = rpc(
         &app,
         "ProjectService/PlanCreateProject",

@@ -186,8 +186,16 @@ pub fn decode_loose(compressed: &[u8], expected: Option<Oid>) -> Result<(ObjectK
     decode_loose_with_limit(compressed, expected, MAX_OBJECT_BYTES)
 }
 
-/// [`decode_loose`] with an explicit inflation cap (factored for tests).
-fn decode_loose_with_limit(
+/// Decodes and verifies a loose object under a caller-selected inflation cap.
+///
+/// The cap includes the Git framing header and limits inflation before the
+/// remaining compressed stream is read. Storage-local projections can select
+/// a smaller budget than [`decode_loose`] without implementing another decoder.
+///
+/// # Errors
+/// Returns an error for invalid zlib or Git framing, inflation beyond `limit`,
+/// inconsistent content length or a hash differing from `expected`.
+pub fn decode_loose_with_limit(
     compressed: &[u8],
     expected: Option<Oid>,
     limit: u64,

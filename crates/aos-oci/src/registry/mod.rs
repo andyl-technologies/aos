@@ -6,9 +6,14 @@
 //! persists only upload locations and offsets - never credentials - and updates
 //! a mutable tag only after the entire descriptor graph is verified and durable.
 
+#[cfg(unix)]
+mod direct;
 mod publication;
 mod pull;
 mod push;
+
+#[cfg(test)]
+mod request_tests;
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -21,7 +26,9 @@ use anyhow::{Context, Result, bail, ensure};
 use bytes::Bytes;
 use futures_util::StreamExt as _;
 use futures_util::future::BoxFuture;
-use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderName, HeaderValue, WWW_AUTHENTICATE};
+use reqwest::header::{
+    AUTHORIZATION, CONTENT_LENGTH, HeaderMap, HeaderName, HeaderValue, WWW_AUTHENTICATE,
+};
 use reqwest::redirect::Policy;
 use reqwest::{Method, Response, StatusCode};
 use serde::{Deserialize, Serialize};
@@ -157,6 +164,8 @@ impl PushOptions {
 #[derive(Clone)]
 pub struct RegistryClient {
     inner: Arc<ClientInner>,
+    #[cfg(unix)]
+    direct_options: aos_remote::DirectUploadOptions,
 }
 
 type CredentialProvider = Arc<dyn Fn() -> BoxFuture<'static, Result<Option<String>>> + Send + Sync>;
@@ -169,6 +178,8 @@ struct ClientInner {
     credential_provider: Option<CredentialProvider>,
     deferred_token: tokio::sync::OnceCell<Option<Zeroizing<String>>>,
     scoped_tokens: Mutex<BTreeMap<String, Zeroizing<String>>>,
+    #[cfg(unix)]
+    direct_registry: Mutex<Option<String>>,
 }
 
 impl RegistryClient {
@@ -246,7 +257,11 @@ impl RegistryClient {
                 credential_provider,
                 deferred_token: tokio::sync::OnceCell::new(),
                 scoped_tokens: Mutex::new(BTreeMap::new()),
+                #[cfg(unix)]
+                direct_registry: Mutex::new(None),
             }),
+            #[cfg(unix)]
+            direct_options: aos_remote::DirectUploadOptions::default(),
         })
     }
 
@@ -407,9 +422,14 @@ impl RegistryClient {
         let scopes = normalized_scopes(scopes)?;
         let cache_key = scopes.join("\n");
         let mut retries = 0;
+        let mut retried_closed_head = false;
         let mut previous_challenge = None;
+        ensure_not_cancelled(cancellation)?;
+        // A concurrent cache refresh must not change a transport replay's
+        // Authorization. Only this request's explicit challenge replaces it.
+        let mut token = self.token_for_scope(&cache_key)?;
         loop {
-            let token = self.token_for_scope(&cache_key)?;
+            ensure_not_cancelled(cancellation)?;
             let mut request = self
                 .inner
                 .http
@@ -419,11 +439,34 @@ impl RegistryClient {
                 request = request.bearer_auth(token);
             }
             if let Some(body) = body.clone() {
+                // Some registries require explicit framing for empty upload
+                // requests even when the transport could infer their length.
+                if body.is_empty() && !headers.contains_key(CONTENT_LENGTH) {
+                    request = request.header(CONTENT_LENGTH, "0");
+                }
                 request = request.body(body);
             }
-            let response = tokio::select! {
+            let result = tokio::select! {
+                biased;
                 () = cancellation.cancelled() => bail!("OCI transfer cancelled"),
-                response = request.send() => response.context("sending Distribution request")?,
+                response = request.send() => response,
+            };
+            let response = match result {
+                Ok(response) => response,
+                Err(error)
+                    if method == Method::HEAD
+                        && body.as_ref().is_none_or(Bytes::is_empty)
+                        && !retried_closed_head
+                        && is_closed_connection_error(&error) =>
+                {
+                    // A bodyless HEAD has no provider effect to replay. Spend
+                    // one transport retry across this entire logical request,
+                    // independently of the existing authentication exchanges.
+                    // Reqwest's existing safe protocol-NACK policy is retained.
+                    retried_closed_head = true;
+                    continue;
+                }
+                Err(error) => return Err(error).context("sending Distribution request"),
             };
             let denied = matches!(
                 response.status(),
@@ -437,6 +480,8 @@ impl RegistryClient {
                 || (retries == 1 && !retry_credentials)
                 || (retries == 0 && response.status() != StatusCode::UNAUTHORIZED)
             {
+                #[cfg(unix)]
+                self.observe_direct_readiness(&response)?;
                 return Ok(response);
             }
             let challenge = match response.headers().get(WWW_AUTHENTICATE) {
@@ -448,10 +493,11 @@ impl RegistryClient {
                     .clone()
                     .context("registry returned 401 without WWW-Authenticate")?,
             };
-            let token = self
+            let authorized_token = self
                 .authorize(&challenge, &scopes, cancellation, retry_credentials)
                 .await?;
-            self.store_scoped_token(&cache_key, token)?;
+            self.store_scoped_token(&cache_key, authorized_token.clone())?;
+            token = Some(authorized_token);
             previous_challenge = Some(challenge);
             retries += 1;
         }
@@ -817,6 +863,30 @@ fn build_http_client(resolution: Option<(&str, &[SocketAddr])>) -> Result<reqwes
     builder.build().context("building confined OCI HTTP client")
 }
 
+// Inspect typed causes only after excluding establishment, timeout, redirect,
+// and body failures. Status responses and error messages never authorize retry.
+fn is_closed_connection_error(error: &reqwest::Error) -> bool {
+    if error.is_connect() || error.is_timeout() || error.is_redirect() || error.is_body() {
+        return false;
+    }
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(error);
+    while let Some(error) = cause {
+        if let Some(error) = error.downcast_ref::<std::io::Error>()
+            && matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+                    | std::io::ErrorKind::UnexpectedEof
+            )
+        {
+            return true;
+        }
+        cause = error.source();
+    }
+    false
+}
+
 fn http_client_builder() -> reqwest::ClientBuilder {
     let native_roots = rustls_native_certs::load_native_certs()
         .certs
@@ -1159,5 +1229,18 @@ mod tests {
             )
             .is_err()
         );
+    }
+}
+
+#[cfg(unix)]
+impl RegistryClient {
+    /// Sets explicit provider network policy and private direct retry custody.
+    ///
+    /// Direct mode is selected only by authenticated readiness/discovery, never
+    /// by a registry URL shape. Unconfigured third-party Distribution is unchanged.
+    #[must_use]
+    pub fn with_direct_upload_options(mut self, options: aos_remote::DirectUploadOptions) -> Self {
+        self.direct_options = options;
+        self
     }
 }

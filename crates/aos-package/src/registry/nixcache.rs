@@ -39,7 +39,6 @@ use aos_core::nar::cache::{
 use aos_core::nar::info::{basename, store_hash};
 use aos_core::nix::aos_nix_env;
 use aos_core::output::Printer;
-use futures_util::future::join_all;
 use futures_util::stream::{StreamExt, TryStreamExt};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -759,6 +758,60 @@ pub async fn upload_static_cache(
     let narinfos = list_narinfo_files(output_dir)?;
     let nars = referenced_nar_files(output_dir, &narinfos)?;
 
+    #[cfg(unix)]
+    if let Some(coordinator) = cache.direct_coordinator(32, 0).await? {
+        use aos_proto_types::direct_upload::{
+            DirectCapabilitiesTarget, DirectDependencyPhase, DirectUploadTarget,
+        };
+        let DirectCapabilitiesTarget::Cache { cache_id } = coordinator.target() else {
+            anyhow::bail!("static cache direct discovery returned a different owner");
+        };
+        let files = nars
+            .iter()
+            .map(|(name, path)| {
+                (
+                    format!("nar/{name}"),
+                    path.clone(),
+                    DirectDependencyPhase::Content,
+                )
+            })
+            .chain(narinfos.iter().map(|(stem, path)| {
+                (
+                    format!("{stem}.narinfo"),
+                    path.clone(),
+                    DirectDependencyPhase::Visibility,
+                )
+            }))
+            .chain(std::iter::once((
+                "nix-cache-info".to_owned(),
+                output_dir.join("nix-cache-info"),
+                DirectDependencyPhase::Visibility,
+            )));
+        let mut wave = Vec::new();
+        for (path, source, phase) in files {
+            wave.push(aos_remote::DirectStagePath {
+                source,
+                expected_sha256: None,
+                target: DirectUploadTarget::CacheObject {
+                    cache_id: cache_id.clone(),
+                    path,
+                },
+                phase,
+            });
+            if wave.len() == 64 {
+                coordinator.stage_paths(std::mem::take(&mut wave)).await?;
+            }
+        }
+        if !wave.is_empty() {
+            coordinator.stage_paths(wave).await?;
+        }
+        coordinator
+            .finish(std::time::Duration::from_secs(3600))
+            .await?;
+        printer.success("Static cache direct staging committed.");
+        return Ok(());
+    }
+
     // Immutable payloads first (NARs), then narinfos, then the
     // nix-cache-info marker last. A consumer racing a partial upload never
     // sees a narinfo or marker pointing at NAR bytes that are not there yet.
@@ -813,6 +866,8 @@ pub async fn upload_static_cache(
     let cache_info = std::fs::read_to_string(&cache_info_path)
         .with_context(|| format!("reading {}", cache_info_path.display()))?;
     cache.put_cache_info(&cache_info).await?;
+    #[cfg(unix)]
+    cache.finish_direct_uploads().await?;
 
     printer.success(&format!("Uploaded static cache files to {upload_url}"));
     Ok(())
@@ -1020,11 +1075,13 @@ pub async fn upload_static_cache_to_all(
     no_skip: bool,
     printer: &Printer,
 ) -> Result<()> {
-    let results = join_all(upload_urls.iter().map(|upload_url| async move {
+    let results = futures_util::stream::iter(upload_urls.iter().map(|upload_url| async move {
         upload_static_cache(output_dir, upload_url, auth, root_hashes, no_skip, printer)
             .await
             .map_err(|err| format!("{upload_url}: {err:#}"))
     }))
+    .buffer_unordered(4)
+    .collect::<Vec<_>>()
     .await;
 
     let failures: Vec<String> = results.into_iter().filter_map(Result::err).collect();

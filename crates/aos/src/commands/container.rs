@@ -105,6 +105,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
             .await
         }
         ContainerCommand::Push {
+            direct,
             source,
             reference,
             platform,
@@ -119,6 +120,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
                 mount_from,
                 hub.as_deref(),
                 token.as_deref(),
+                direct,
                 printer,
             )
             .await
@@ -133,6 +135,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
             output,
         } => finalize_signature(inputs, signer, signature, output, printer),
         ContainerCommand::Publish {
+            direct,
             name,
             reference,
             release,
@@ -151,6 +154,7 @@ pub async fn run(command: &ContainerCommand, printer: &Printer) -> Result<()> {
         } => {
             publish(
                 PublishInput {
+                    direct,
                     name,
                     reference,
                     release_path: release,
@@ -522,6 +526,7 @@ async fn push(
     mount_from: &[String],
     hub: Option<&str>,
     token: Option<&str>,
+    direct: &crate::cli::ContainerDirectUploadArgs,
     printer: &Printer,
 ) -> Result<()> {
     let reference = RegistryReference::parse(reference)?;
@@ -537,6 +542,7 @@ async fn push(
             &mount_from,
             hub,
             token,
+            direct,
             printer,
         )
         .await?;
@@ -561,6 +567,7 @@ async fn push(
         &mount_from,
         hub,
         token,
+        direct,
         printer,
     )
     .await?;
@@ -568,6 +575,7 @@ async fn push(
 }
 
 struct PublishInput<'a> {
+    direct: &'a crate::cli::ContainerDirectUploadArgs,
     name: &'a str,
     reference: &'a str,
     release_path: &'a Path,
@@ -587,6 +595,7 @@ struct PublishInput<'a> {
 
 async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
     let PublishInput {
+        direct,
         name,
         reference,
         release_path,
@@ -693,6 +702,8 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         Some(registry_origin),
         Some(registry_token),
     )?;
+    #[cfg(unix)]
+    let registry_client = registry_client.with_direct_upload_options(direct.options());
     let cancellation = CancellationToken::new();
     let signal = cancellation_on_signal(cancellation.clone());
     let (events, reporter) = progress_reporter(printer, "Publishing");
@@ -1221,9 +1232,12 @@ async fn push_layout(
     mount_from: &[RepositoryName],
     hub: Option<&str>,
     token: Option<&str>,
+    direct: &crate::cli::ContainerDirectUploadArgs,
     printer: &Printer,
 ) -> Result<aos_oci::PushResult> {
     let client = registry_client(reference, hub, token)?;
+    #[cfg(unix)]
+    let client = client.with_direct_upload_options(direct.options());
     let cancellation = CancellationToken::new();
     let signal = cancellation_on_signal(cancellation.clone());
     let (events, reporter) = progress_reporter(printer, "Pushing");

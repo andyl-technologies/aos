@@ -14,6 +14,10 @@
 
 pub mod route;
 
+#[cfg(any(target_arch = "wasm32", test))]
+#[path = "workflows/cache_objects/direct/model.rs"]
+mod direct_upload_model;
+
 #[cfg(target_arch = "wasm32")]
 pub mod app;
 #[cfg(target_arch = "wasm32")]

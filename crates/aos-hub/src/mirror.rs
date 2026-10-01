@@ -44,6 +44,8 @@
 //! `apm` work and is mirrored in full; the nix-cache files are mirrored when
 //! the upstream serves them.
 
+pub mod hybrid;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
@@ -109,6 +111,7 @@ struct VerifiedSurface {
     /// post-copy re-index's oid/signature checks; only the unindexed
     /// narinfo/NAR class needs write==verified.
     verified_bytes: BTreeMap<String, Vec<u8>>,
+    nar_proofs: BTreeMap<String, aos_hub_core::mirror_work::MirrorVerification>,
 }
 
 /// Run a full-mirror sync for `registry` against its recorded upstream.
@@ -261,6 +264,15 @@ async fn verify_surface(
     trust_keys: &[String],
     verify: bool,
 ) -> Result<VerifiedSurface> {
+    verify_surface_inner(fetch, trust_keys, verify, false).await
+}
+
+async fn verify_surface_inner(
+    fetch: &dyn SurfaceFetch,
+    trust_keys: &[String],
+    verify: bool,
+    storage_local: bool,
+) -> Result<VerifiedSurface> {
     let refs_bytes = fetch
         .fetch("info/refs")
         .await?
@@ -333,6 +345,10 @@ async fn verify_surface(
             bail!("release tag '{tag_name}' does not target a commit");
         }
         objects.insert(*tag_oid);
+        let release_oid = Oid::from_hex(&signed.tag.object)?;
+        objects.insert(release_oid);
+        let release_commit = reader.read_commit(release_oid).await?;
+        collect_tree_objects(&reader, release_commit.tree, &mut objects).await?;
         releases.push((tag_name.clone(), tag_oid.to_hex()));
     }
 
@@ -386,7 +402,14 @@ async fn verify_surface(
 
     // Per-release pack files (best effort): mirror the per-release
     // `objects/info/packs` listing and its referenced packs when present.
-    let mut immutable: Vec<String> = objects.iter().map(|oid| oid.loose_path()).collect();
+    let mut immutable = Vec::new();
+    let closure: Vec<_> = objects.iter().copied().collect();
+    for sources in fetch.verified_git_sources(&closure).await? {
+        immutable.extend(sources);
+    }
+    immutable.extend(fetch.git_auxiliary_source_paths()?);
+    immutable.sort();
+    immutable.dedup();
     for (semver_str, _) in &releases {
         collect_release_packs(fetch, semver_str, &mut immutable).await?;
     }
@@ -399,6 +422,7 @@ async fn verify_surface(
     // upstream cache never reaches the binding (C1). With `verify` off the
     // narinfos/NARs are mirrored unverified, the operator's documented opt-out.
     let mut verified_bytes: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut nar_proofs = BTreeMap::new();
     if fetch.fetch("nix-cache-info").await?.is_some() {
         mutable.push("nix-cache-info".to_string());
         collect_nix_cache(
@@ -408,6 +432,8 @@ async fn verify_surface(
             verify,
             &mut immutable,
             &mut verified_bytes,
+            storage_local,
+            &mut nar_proofs,
         )
         .await?;
     }
@@ -421,6 +447,7 @@ async fn verify_surface(
         channels: channel_count,
         roster_added,
         verified_bytes,
+        nar_proofs,
     })
 }
 
@@ -483,8 +510,7 @@ async fn collect_tree_objects_capped(
         if !out.insert(oid) {
             continue;
         }
-        let content = reader.read_kind(oid, ObjectKind::Tree).await?;
-        for entry in crate::surface::object::parse_tree(&content)? {
+        for entry in reader.tree_entries(oid).await? {
             if out.len() >= max {
                 bail!("upstream tree closure exceeds the {max}-object mirror cap; aborting sync");
             }
@@ -580,6 +606,8 @@ async fn collect_nix_cache(
     verify: bool,
     out: &mut Vec<String>,
     retained: &mut BTreeMap<String, Vec<u8>>,
+    storage_local: bool,
+    nar_proofs: &mut BTreeMap<String, aos_hub_core::mirror_work::MirrorVerification>,
 ) -> Result<()> {
     let mut seen = BTreeSet::new();
     for package in &tree.packages {
@@ -635,7 +663,11 @@ async fn collect_nix_cache(
                 // The NAR path is the narinfo's URL field (relative to root),
                 // constrained to the conventional `nar/` location.
                 if let Some(url) = narinfo_nar_url(narinfo) {
-                    if verify {
+                    if storage_local {
+                        let parsed = aos_core::nar::info::parse(narinfo)?;
+                        let proof = hybrid::nar_proof(&parsed)?;
+                        nar_proofs.insert(url.clone(), proof);
+                    } else if verify {
                         let nar_bytes = fetch.fetch(&url).await?.with_context(|| {
                             format!("NAR {url} named by {narinfo_path} is missing upstream")
                         })?;

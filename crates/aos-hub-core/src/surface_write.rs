@@ -35,7 +35,10 @@ use anyhow::Result;
 use md5::{Digest as _, Md5};
 
 use crate::backend::BackendBounds;
-use crate::db::{BindingWriteRevisionRecord, SurfacePlacementRecord};
+use crate::db::{
+    BindingWriteRevisionRecord, OciUploadChunkRecord, SurfacePlacementRecord, TopologyOperationRecord,
+};
+use crate::fetch::{SurfaceListedEvidence, SurfaceObjectEvidence};
 
 /// One multipart-upload part's identity: its 1-based `part_number` and the
 /// backend's entity tag.
@@ -45,7 +48,8 @@ use crate::db::{BindingWriteRevisionRecord, SurfacePlacementRecord};
 /// returns a SHA-256 tag and verifies it before assembly. The hub and client
 /// carry the value through the wire protocol and echo the full ordered set
 /// back at [`complete`](SurfaceWrite::complete_multipart).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PartTag {
     /// 1-based, contiguous part index.
     pub part_number: u32,
@@ -62,6 +66,8 @@ pub struct SurfaceDeletePrecondition {
     pub content_hash: Option<String>,
     /// Exact object size, when supplied by inventory.
     pub size: Option<i64>,
+    /// Upload incarnation frozen by inventory; never substituted from live HEAD.
+    pub expected_provider_version: Option<String>,
 }
 
 /// Immutable physical address and topology fence for one provider operation.
@@ -73,7 +79,10 @@ pub struct SurfaceDeletePrecondition {
 /// conditional-delete capability, while the durable claim revalidates this
 /// frozen snapshot and its retained credential hold. The adapter therefore
 /// resolves the exact frozen credential without consulting a capability or
-/// credential head that may legitimately advance after Apply. The frozen
+/// credential head that may legitimately advance after Apply. For R2, the same
+/// physical bucket/prefix must retain its guard namespace and authority identity
+/// for its lifetime: upload versions do not settle an already dispatched DELETE
+/// or make an authority rotation safe. The frozen
 /// capability identity remains part of durable audit evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrozenSurfaceAccess {
@@ -185,7 +194,8 @@ pub enum SurfaceDeleteOutcome {
 }
 
 /// Durable-cleanup significance of a multipart abort attempt.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum MultipartAbortOutcome {
     /// The backend confirmed that the staged upload was aborted.
     Aborted,
@@ -277,6 +287,15 @@ pub fn md5_multipart_etag(parts: &[PartTag]) -> Result<Option<String>> {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWrite: BackendBounds {
+    /// Requires an actual provider version for this adapter's conditional deletes.
+    ///
+    /// This constraint grants no capability. Probes must reject unsupported
+    /// provider metadata before dispatch; other adapters retain their existing
+    /// conditional ETag/guard semantics.
+    fn conditional_delete_requires_provider_version(&self) -> bool {
+        false
+    }
+
     /// Reports the exact multipart protocol version implemented by this backend.
     ///
     /// Callers must check this capability before creating a durable ticket or
@@ -360,6 +379,26 @@ pub trait SurfaceWrite: BackendBounds {
     ) -> Result<SurfaceDeleteOutcome> {
         let _ = (path, expected);
         anyhow::bail!("this backend does not support identity-checked deletion")
+    }
+
+    /// Deletes one reviewed object with a durable claim identity for retries.
+    ///
+    /// Providers that enforce the object condition atomically need no extra
+    /// claim state. Hybrid R2 uses the claim to prevent a replay from deleting
+    /// a later object at the same physical key.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error under the same conditions as
+    /// [`delete_if_matches`](Self::delete_if_matches).
+    async fn delete_if_matches_claimed(
+        &self,
+        path: &str,
+        expected: &SurfaceDeletePrecondition,
+        claim_id: &str,
+    ) -> Result<SurfaceDeleteOutcome> {
+        let _ = claim_id;
+        self.delete_if_matches(path, expected).await
     }
 
     /// Begin a multipart upload targeting the logical `path`, returning the
@@ -459,6 +498,81 @@ pub trait SurfaceWrite: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWriteProvider: BackendBounds {
+    /// Copies one object between placements without returning its body to the caller.
+    ///
+    /// `Some(size)` means the provider completed a storage-local copy. Local
+    /// providers return `None` and use the existing streaming copy path.
+    ///
+    /// # Errors
+    /// Returns an error when the source identity, destination authority, or
+    /// provider copy cannot be verified.
+    async fn copy_placement_object(
+        &self,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        let _ = (source, destination, path, listed_source);
+        Ok(None)
+    }
+
+    /// Copies one object under the actual retained controller operation and claim.
+    ///
+    /// Existing local and R2 providers keep their normal copy behavior. External
+    /// Hybrid implementations use the supplied original and claim to authorize
+    /// bounded metadata controls; they must return an error for unsupported
+    /// cases instead of permitting a Native body fallback.
+    ///
+    /// # Errors
+    /// Returns an error for stale controller authority or under the same
+    /// conditions as [`copy_placement_object`](Self::copy_placement_object).
+    async fn copy_placement_object_claimed(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        let _ = (operation, claim_token);
+        self.copy_placement_object(source, destination, path, listed_source)
+            .await
+    }
+
+    /// Composes a claimed OCI upload beside storage and returns physical evidence.
+    ///
+    /// `None` means this runtime uses the ordinary in-process writer path.
+    /// Hybrid implementations must keep staged object bodies off the Native
+    /// process and verify the ordered bytes before returning evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the frozen source or destination is unavailable,
+    /// a staged chunk differs from its SQL digest, or composition fails.
+    async fn compose_oci_blob(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        expected_digest: aos_oci_types::Sha256Digest,
+        expected_size: u64,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        let _ = (
+            destination,
+            revision,
+            staging,
+            path,
+            chunks,
+            expected_digest,
+            expected_size,
+        );
+        Ok(None)
+    }
+
     /// Builds a writer rooted at one explicit physical placement.
     ///
     /// # Errors
@@ -523,6 +637,25 @@ pub trait SurfaceWriteProvider: BackendBounds {
     ) -> Result<Box<dyn SurfaceWrite>> {
         let _ = access;
         anyhow::bail!("this provider does not support frozen conditional deletion")
+    }
+
+    /// Builds a frozen deleter with its genuine live OCI cleanup claim.
+    ///
+    /// Remote adapters use the opaque claim token for metadata-only retained
+    /// credential custody. Other providers retain their existing frozen path.
+    ///
+    /// # Errors
+    /// Returns an error for changed access/claim scope or unavailable exact IO.
+    async fn claimed_placement_deleter(
+        &self,
+        access: &FrozenSurfaceAccess,
+        claim: &crate::db::OciGcPlacementActionClaim,
+    ) -> Result<Box<dyn SurfaceWrite>> {
+        anyhow::ensure!(
+            *access == claim.frozen_access(),
+            "delete access differs from claim"
+        );
+        self.frozen_placement_deleter(access).await
     }
 }
 

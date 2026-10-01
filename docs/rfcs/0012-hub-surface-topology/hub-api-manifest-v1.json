@@ -31,6 +31,27 @@
    "manifest_version" : "aos.hub.api/v1",
    "methods" : [
       {
+         "method" : "PlanStorageAuthorityDecision",
+         "path" : "aos.hub.v1.StorageAuthorityService/PlanStorageAuthorityDecision",
+         "request" : "PlanStorageAuthorityDecisionRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "StorageAuthorityService"
+      },
+      {
+         "method" : "StorageAuthorityDecision",
+         "path" : "aos.hub.v1.StorageAuthorityService/StorageAuthorityDecision",
+         "request" : "ApplyStorageAuthorityDecisionRequest",
+         "response" : "StorageAuthorityDecisionResponse",
+         "service" : "StorageAuthorityService"
+      },
+      {
+         "method" : "GetAuthority",
+         "path" : "aos.hub.v1.StorageAuthorityService/GetAuthority",
+         "request" : "GetStorageAuthorityRequest",
+         "response" : "StorageAuthorityProjection",
+         "service" : "StorageAuthorityService"
+      },
+      {
          "method" : "GetRegistryMetadata",
          "path" : "aos.hub.v1.RegistryService/GetRegistryMetadata",
          "request" : "GetRegistryRequest",
@@ -2955,6 +2976,55 @@
          "request" : "ListAccessTokensRequest",
          "response" : "ListAccessTokensResponse",
          "service" : "IdentityService"
+      },
+      {
+         "method" : "GetCapabilities",
+         "path" : "aos.hub.v1.DirectUploadService/GetCapabilities",
+         "request" : "DirectGetCapabilities",
+         "response" : "DirectUploadCapabilities",
+         "service" : "DirectUploadService"
+      },
+      {
+         "method" : "BeginBatch",
+         "path" : "aos.hub.v1.DirectUploadService/BeginBatch",
+         "request" : "DirectBeginBatch",
+         "response" : "DirectUploadResponse",
+         "service" : "DirectUploadService"
+      },
+      {
+         "method" : "StatusBatch",
+         "path" : "aos.hub.v1.DirectUploadService/StatusBatch",
+         "request" : "DirectStatusBatch",
+         "response" : "DirectUploadResponse",
+         "service" : "DirectUploadService"
+      },
+      {
+         "method" : "GrantPartsBatch",
+         "path" : "aos.hub.v1.DirectUploadService/GrantPartsBatch",
+         "request" : "DirectGrantPartsBatch",
+         "response" : "DirectUploadResponse",
+         "service" : "DirectUploadService"
+      },
+      {
+         "method" : "ReportPartsBatch",
+         "path" : "aos.hub.v1.DirectUploadService/ReportPartsBatch",
+         "request" : "DirectReportPartsBatch",
+         "response" : "DirectUploadResponse",
+         "service" : "DirectUploadService"
+      },
+      {
+         "method" : "CompleteBatch",
+         "path" : "aos.hub.v1.DirectUploadService/CompleteBatch",
+         "request" : "DirectCompleteBatch",
+         "response" : "DirectUploadResponse",
+         "service" : "DirectUploadService"
+      },
+      {
+         "method" : "Abort",
+         "path" : "aos.hub.v1.DirectUploadService/Abort",
+         "request" : "DirectAbortBatch",
+         "response" : "DirectUploadResponse",
+         "service" : "DirectUploadService"
       }
    ],
    "mutation_protocol" : {
@@ -2978,7 +3048,7 @@
    },
    "protobuf_package" : "aos.hub.v1",
    "protobuf_source" : "crates/aos-proto/src/proto/aos/hub/v1/hub.proto",
-   "rpc_count" : 334,
+   "rpc_count" : 428,
    "services" : [
       "RegistryService",
       "OrganizationService",
@@ -3011,6 +3081,7 @@
       "DeliveryControllerService",
       "RouteControllerService",
       "TopologyControllerService",
-      "BinaryCacheUploadControllerService"
+      "BinaryCacheUploadControllerService",
+      "DirectUploadService"
    ]
 }

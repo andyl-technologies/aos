@@ -181,6 +181,7 @@ async fn frozen_local_access_never_reselects_a_current_placement_address() {
             .delete_if_matches(
                 &object_key,
                 &core_sw::SurfaceDeletePrecondition {
+                    expected_provider_version: None,
                     etag: Some(format!("\"snapshot-sha256-{digest}\"")),
                     content_hash: Some(format!("sha256:{digest}")),
                     size: Some(bytes.len() as i64),

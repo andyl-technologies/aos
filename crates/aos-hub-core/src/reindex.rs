@@ -18,11 +18,14 @@
 //!   `LocalFsFetch` over the storage-binding root) and records an `index` audit
 //!   row, so the index is consistent the instant the final pointer write returns
 //!   `200`. This is the relocated behavior of the hub's prior facade `reindex`.
+//!   In hybrid mode, the Native service starts this work after the durable
+//!   publication commit and returns the control response promptly; its periodic
+//!   index pass recovers interrupted work.
 //! - The **Cloudflare Worker** uses [`QueuedReindexer`] to submit one
 //!   registry-scoped job. Its queue consumer runs the same indexer over R2, and
 //!   the periodic all-registry pass remains the recovery path if queue admission
 //!   fails. The published read surface is immediately current; only the derived
-//!   browse index is eventually consistent. The native hub keeps its synchronous
+//!   browse index is eventually consistent. Native-only keeps its synchronous
 //!   index guarantee.
 //!
 //! The port carries the same target-conditional bound as the rest of the core
