@@ -110,14 +110,39 @@ pub(crate) async fn fetch_with_verified_graph(
     verified: &mut repo::VerifiedObjectGraph,
 ) -> Result<()> {
     let client = reqwest::Client::new();
+    fetch_with_optional_head(
+        repo_dir, base_url, refspecs, progress, verified, &client, false,
+    )
+    .await
+    .map(|_| ())
+}
+
+/// Fetches selected references and an optional roster HEAD using one advertisement.
+///
+/// # Errors
+/// Returns an error if required refs, downloads, or object verification fail.
+pub(crate) async fn fetch_with_optional_head(
+    repo_dir: &Path,
+    base_url: &str,
+    refspecs: &[String],
+    progress: Option<&TransferProgress>,
+    verified: &mut repo::VerifiedObjectGraph,
+    client: &reqwest::Client,
+    include_head: bool,
+) -> Result<bool> {
     set_phase(progress, "Reading registry references");
-    let advertised = fetch_info_refs(&client, base_url, progress).await?;
-    let head = fetch_head_oid(&client, base_url, &advertised, progress).await?;
+    let advertised = fetch_info_refs(client, base_url, progress).await?;
+    let head = fetch_head_oid(client, base_url, &advertised, progress).await?;
 
     // Resolve every refspec to (oid, optional destination ref).
     let mut targets: Vec<(String, Option<String>)> = Vec::new();
     for spec in refspecs {
         resolve_refspec(spec, &advertised, head.as_deref(), &mut targets)?;
+    }
+
+    let fetched_head = include_head && head.is_some();
+    if let Some(head) = head.filter(|_| include_head) {
+        targets.push((head, Some("refs/remotes/origin/HEAD".to_owned())));
     }
 
     let target_oids: Vec<String> = targets.iter().map(|(oid, _)| oid.clone()).collect();
@@ -136,7 +161,7 @@ pub(crate) async fn fetch_with_verified_graph(
         // already have. A handful of large requests instead of one round trip
         // per loose object; libgit2's indexer verifies each pack on commit.
         set_phase(progress, "Discovering registry packs");
-        let advertised = fetch_pack_list(&client, base_url, progress).await?;
+        let advertised = fetch_pack_list(client, base_url, progress).await?;
         let pack_dir = objects_dir.join("pack");
         let new_packs: Vec<String> = advertised
             .into_iter()
@@ -144,7 +169,6 @@ pub(crate) async fn fetch_with_verified_graph(
             .collect();
         if !new_packs.is_empty() {
             set_phase(progress, "Downloading registry packs");
-            let client = &client;
             let packs: Vec<Vec<u8>> = stream::iter(new_packs.into_iter())
                 .map(|name| async move { fetch_pack(client, base_url, &name, progress).await })
                 .buffer_unordered(MAX_CONCURRENCY)
@@ -188,7 +212,6 @@ pub(crate) async fn fetch_with_verified_graph(
             if total_fetched > MAX_OBJECTS {
                 bail!("registry object graph exceeded {MAX_OBJECTS} objects; refusing to continue");
             }
-            let client = &client;
             let objects_dir = &objects_dir;
             verified.invalidate();
             stream::iter(missing.into_iter())
@@ -229,7 +252,7 @@ pub(crate) async fn fetch_with_verified_graph(
         .context("ref-writing task panicked")??;
     }
 
-    Ok(())
+    Ok(fetched_head)
 }
 
 /// Maximum attempts for a single GET before giving up. Exponential backoff
@@ -616,6 +639,8 @@ mod tests {
         /// Count of GETs whose path is under `objects/` (object + pack
         /// downloads), used to assert incremental syncs do no extra work.
         object_requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        reference_requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        head_requests: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     }
 
     /// Build a SHA-256 repo (optionally repacked) with a nested subdirectory and
@@ -678,12 +703,18 @@ mod tests {
         let listener = TcpListener::bind("127.0.0.1:0").ok()?;
         let addr = listener.local_addr().unwrap();
         let object_requests = Arc::new(AtomicUsize::new(0));
+        let reference_requests = Arc::new(AtomicUsize::new(0));
+        let head_requests = Arc::new(AtomicUsize::new(0));
+        let references = reference_requests.clone();
+        let heads = head_requests.clone();
         let counter = object_requests.clone();
         std::thread::spawn(move || {
             for stream in listener.incoming() {
                 let Ok(mut stream) = stream else { break };
                 let root = git_dir.clone();
                 let counter = counter.clone();
+                let references = references.clone();
+                let heads = heads.clone();
                 std::thread::spawn(move || {
                     let mut buf = [0u8; 1024];
                     let n = stream.read(&mut buf).unwrap_or(0);
@@ -693,6 +724,12 @@ mod tests {
                         .nth(1)
                         .unwrap_or("/")
                         .trim_start_matches('/');
+                    if path == "info/refs" {
+                        references.fetch_add(1, Ordering::Relaxed);
+                    }
+                    if path == "HEAD" {
+                        heads.fetch_add(1, Ordering::Relaxed);
+                    }
                     if path.starts_with("objects/") {
                         counter.fetch_add(1, Ordering::Relaxed);
                     }
@@ -720,6 +757,8 @@ mod tests {
             url: format!("http://{addr}/"),
             head,
             object_requests,
+            reference_requests,
+            head_requests,
         })
     }
 
@@ -813,6 +852,68 @@ mod tests {
 
     /// A second sync of an unchanged origin must download zero objects/packs —
     /// the local graph already satisfies the targets.
+    #[tokio::test]
+    async fn optional_roster_head_shares_one_reference_fetch() {
+        use std::sync::atomic::Ordering;
+        let Some(origin) = serve_repo(true) else {
+            return;
+        };
+        let directory = origin._tmp.path().join("client.git");
+        repo::init_bare_sha256(&directory).await.unwrap();
+        let mut verified = repo::VerifiedObjectGraph::new(&directory);
+        let client = reqwest::Client::new();
+
+        assert!(
+            fetch_with_optional_head(
+                &directory,
+                &origin.url,
+                &[MAIN_REFSPEC.to_owned()],
+                None,
+                &mut verified,
+                &client,
+                true
+            )
+            .await
+            .unwrap()
+        );
+        assert_eq!(origin.reference_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(origin.head_requests.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            repo::rev_parse(&directory, "refs/remotes/origin/HEAD")
+                .await
+                .unwrap(),
+            origin.head
+        );
+
+        std::fs::remove_file(origin._tmp.path().join("work/.git/HEAD")).unwrap();
+        assert!(
+            !fetch_with_optional_head(
+                &directory,
+                &origin.url,
+                &[MAIN_REFSPEC.to_owned()],
+                None,
+                &mut verified,
+                &client,
+                true
+            )
+            .await
+            .unwrap()
+        );
+        assert!(
+            fetch_with_optional_head(
+                &directory,
+                &origin.url,
+                &["+refs/heads/missing:refs/remotes/origin/missing".to_owned()],
+                None,
+                &mut verified,
+                &client,
+                true
+            )
+            .await
+            .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn fetch_is_incremental() {
         use std::sync::atomic::Ordering;

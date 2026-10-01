@@ -33,15 +33,15 @@ use sha2::{Digest, Sha256};
 
 use crate::registry::dumb_http;
 
-/// Memoizes complete, content-verified object graphs within one registry sync.
+/// Memoizes complete object graphs, optionally bound to a persistent database digest.
 ///
-/// Git objects are immutable by identity. Reusing verification within a sync
-/// avoids decoding the same history for overlapping refs. This cache is bound
-/// to one repository and never survives an update, so later updates still
-/// detect missing or damaged objects. Incomplete walks are never memoized.
+/// Incomplete walks are never memoized. Persistent proofs require identical
+/// object database bytes; release trust and freshness remain separate checks.
 pub(crate) struct VerifiedObjectGraph {
     repo_dir: PathBuf,
     verified: HashSet<git2::Oid>,
+    database: Option<String>,
+    persisted_objects: Option<usize>,
 }
 
 impl VerifiedObjectGraph {
@@ -50,12 +50,56 @@ impl VerifiedObjectGraph {
         Self {
             repo_dir: repo_dir.to_path_buf(),
             verified: HashSet::new(),
+            database: None,
+            persisted_objects: None,
         }
+    }
+
+    /// Loads prior integrity work only after hashing the current database bytes.
+    ///
+    /// Unsupported databases and invalid receipts fall back to a full graph scan.
+    pub(crate) async fn load(repo_dir: &Path) -> Self {
+        let path = repo_dir.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            let mut cache = Self::new(&path);
+            cache.database = super::verified_cache::fingerprint(&path).ok();
+            if let Some(database) = &cache.database {
+                if let Ok(verified) = super::verified_cache::load(&path, database) {
+                    cache.persisted_objects = Some(verified.len());
+                    cache.verified = verified;
+                }
+            }
+            cache
+        })
+        .await
+        .unwrap_or_else(|_| Self::new(repo_dir))
+    }
+
+    /// Saves successful integrity work only if database bytes stayed unchanged.
+    ///
+    /// Receipt failures merely disable reuse on the next update.
+    pub(crate) async fn persist(&self) {
+        if self.persisted_objects == Some(self.verified.len()) {
+            return;
+        }
+        let Some(database) = self.database.clone() else {
+            return;
+        };
+        let path = self.repo_dir.clone();
+        let verified = self.verified.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            if super::verified_cache::fingerprint(&path).ok().as_ref() == Some(&database) {
+                let _ = super::verified_cache::save(&path, database, &verified);
+            }
+        })
+        .await;
     }
 
     /// Invalidates prior reads before downloaded objects can change pack lookup.
     pub(crate) fn invalidate(&mut self) {
         self.verified.clear();
+        self.database = None;
+        self.persisted_objects = None;
     }
 
     /// Finds missing objects while reusing complete graphs verified in this sync.
@@ -67,13 +111,16 @@ impl VerifiedObjectGraph {
         let repo_dir = self.repo_dir.clone();
         let targets = targets.to_vec();
         let mut verified = std::mem::take(&mut self.verified);
-        let (verified, result) = tokio::task::spawn_blocking(move || {
+        let database = self.database.take();
+        let (verified, database, result) = tokio::task::spawn_blocking(move || {
+            let database = database.or_else(|| super::verified_cache::fingerprint(&repo_dir).ok());
             let result = walk_missing_objects(&repo_dir, &targets, &mut verified);
-            (verified, result)
+            (verified, database, result)
         })
         .await
         .context("object verification task panicked")?;
         self.verified = verified;
+        self.database = database;
         result
     }
 }
@@ -1166,6 +1213,81 @@ mod verified_graph_tests {
     fn remove_blob(repo_dir: &Path, blob: git2::Oid) {
         let hex = blob.to_string();
         std::fs::remove_file(repo_dir.join("objects").join(&hex[..2]).join(&hex[2..])).unwrap();
+    }
+
+    #[tokio::test]
+    async fn persistent_graphs_require_identical_database_bytes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repository = git2::Repository::init_bare(tmp.path()).unwrap();
+        let (commit, blob) = release(&repository, b"metadata");
+        let targets = [commit.to_string()];
+        let mut first = VerifiedObjectGraph::load(tmp.path()).await;
+        assert!(first.verified.is_empty());
+        assert!(first.missing_objects(&targets).await.unwrap().is_empty());
+        first.persist().await;
+
+        let warm = VerifiedObjectGraph::load(tmp.path()).await;
+        assert_eq!(warm.verified, first.verified);
+
+        let hex = blob.to_string();
+        let path = tmp.path().join("objects").join(&hex[..2]).join(&hex[2..]);
+        let original = std::fs::read(&path).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let mut damaged = original.clone();
+        let last = damaged.len() - 1;
+        damaged[last] ^= 1;
+        std::fs::write(&path, damaged).unwrap();
+        assert!(
+            VerifiedObjectGraph::load(tmp.path())
+                .await
+                .verified
+                .is_empty()
+        );
+        std::fs::write(&path, original).unwrap();
+        assert_eq!(
+            VerifiedObjectGraph::load(tmp.path()).await.verified,
+            first.verified
+        );
+
+        remove_blob(tmp.path(), blob);
+        let mut missing = VerifiedObjectGraph::load(tmp.path()).await;
+        assert!(missing.verified.is_empty());
+        assert_eq!(
+            missing.missing_objects(&targets).await.unwrap(),
+            vec![blob.to_string()]
+        );
+        assert_eq!(repository.blob(b"metadata").unwrap(), blob);
+        missing.invalidate();
+        assert!(missing.missing_objects(&targets).await.unwrap().is_empty());
+        missing.persist().await;
+        assert_eq!(
+            VerifiedObjectGraph::load(tmp.path()).await.verified,
+            first.verified
+        );
+    }
+
+    #[tokio::test]
+    async fn database_changes_during_verification_are_not_persisted() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repository = git2::Repository::init_bare(tmp.path()).unwrap();
+        let (commit, _) = release(&repository, b"metadata");
+        let mut cache = VerifiedObjectGraph::load(tmp.path()).await;
+        assert!(
+            cache
+                .missing_objects(&[commit.to_string()])
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        repository.blob(b"concurrent write").unwrap();
+        cache.persist().await;
+        assert!(
+            VerifiedObjectGraph::load(tmp.path())
+                .await
+                .verified
+                .is_empty()
+        );
     }
 
     #[tokio::test]

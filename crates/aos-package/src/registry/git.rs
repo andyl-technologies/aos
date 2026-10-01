@@ -184,8 +184,9 @@ pub(crate) async fn sync_git_with_continuity(
             config.name,
         );
     }
+    let client = reqwest::Client::new();
     if is_plain_http_url(&config.url) {
-        preflight_git_native_http_origin(&git_url).await?;
+        preflight_git_native_http_origin(&client, &git_url).await?;
     }
     ensure_repo(&repo_dir, &git_url).await?;
     let previous_selected_commit = state.last_commit.clone();
@@ -199,8 +200,8 @@ pub(crate) async fn sync_git_with_continuity(
         }
     }
 
-    // Share only within this update; the next update must revalidate local data.
-    let mut verified_objects = repo::VerifiedObjectGraph::new(&repo_dir);
+    // Reuse prior graph checks only when all object database bytes still match.
+    let mut verified_objects = repo::VerifiedObjectGraph::load(&repo_dir).await;
 
     // Step 2: Fetch refs.
     progress.phase("Fetching registry objects");
@@ -213,6 +214,7 @@ pub(crate) async fn sync_git_with_continuity(
             fetch_roster_head,
             &progress,
             &mut verified_objects,
+            &client,
         )
         .await
         {
@@ -234,6 +236,7 @@ pub(crate) async fn sync_git_with_continuity(
             fetch_roster_head,
             &progress,
             &mut verified_objects,
+            &client,
         )
         .await?
     };
@@ -305,6 +308,7 @@ pub(crate) async fn sync_git_with_continuity(
             &repo_dir,
             &post_pin_trusted_keys,
             state,
+            &client,
         )
         .await
         {
@@ -515,6 +519,7 @@ pub(crate) async fn sync_git_with_continuity(
         state.tuf_timestamp_version = Some(verified_tuf.timestamp_version);
     }
 
+    verified_objects.persist().await;
     progress.finish();
 
     Ok(SyncResult {
@@ -788,19 +793,18 @@ fn is_plain_http_url(url: &str) -> bool {
 ///
 /// Detects the retired bundle-mode registry layout (`bundle-list.toml`)
 /// and fails with a dedicated migration message for it.
-async fn preflight_git_native_http_origin(base_url: &str) -> Result<()> {
-    let client = reqwest::Client::new();
+async fn preflight_git_native_http_origin(client: &reqwest::Client, base_url: &str) -> Result<()> {
     let head_url = join_cache_url(base_url, "HEAD");
     let refs_url = join_cache_url(base_url, "info/refs");
     let legacy_url = join_cache_url(base_url, "bundle-list.toml");
 
-    let head_status = probe_static_http_status(&client, &head_url).await?;
-    let refs_status = probe_static_http_status(&client, &refs_url).await?;
+    let head_status = probe_static_http_status(client, &head_url).await?;
+    let refs_status = probe_static_http_status(client, &refs_url).await?;
     if head_status.is_success() && refs_status.is_success() {
         return Ok(());
     }
 
-    let legacy_status = probe_static_http_status(&client, &legacy_url).await?;
+    let legacy_status = probe_static_http_status(client, &legacy_url).await?;
     if legacy_status.is_success() {
         bail!(
             "registry origin {base_url} is a legacy bundle-mode registry (`bundle-list.toml` exists) \
@@ -856,6 +860,7 @@ async fn fetch_refs(
     fetch_roster_head: bool,
     progress: &TransferProgress,
     verified: &mut repo::VerifiedObjectGraph,
+    client: &reqwest::Client,
 ) -> Result<bool> {
     let refspecs: Vec<String> = match tracking_mode {
         // Fetch the specific commit by object id (no local ref).
@@ -874,6 +879,20 @@ async fn fetch_refs(
         // is configured.
         TrackingMode::Default => vec!["+HEAD:refs/remotes/origin/HEAD".to_string()],
     };
+
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return super::dumb_http::fetch_with_optional_head(
+            repo_dir,
+            url,
+            &refspecs,
+            Some(progress),
+            verified,
+            client,
+            fetch_roster_head,
+        )
+        .await
+        .with_context(|| format!("fetching from {url}"));
+    }
 
     repo::fetch_with_verified_graph(repo_dir, url, &refspecs, Some(progress.clone()), verified)
         .await
@@ -986,6 +1005,7 @@ async fn resolve_channel_head(
     repo_dir: &Path,
     trusted_keys: &[String],
     state: &mut RegistryState,
+    client: &reqwest::Client,
 ) -> Result<(verify::VerifiedRelease, String)> {
     if trusted_keys.is_empty() {
         bail!(
@@ -1000,7 +1020,6 @@ async fn resolve_channel_head(
         None => channel::select_registry_bucket(&config.name, &channel::generate_bucket_salt()),
     };
 
-    let client = reqwest::Client::new();
     let probes = stream::iter(
         channel::probe_order(assigned_bucket)
             .into_iter()
@@ -1323,43 +1342,33 @@ async fn extract_provenance(
     if !declared_refs.is_empty() {
         artifact_paths.push(PACKAGE_PROVENANCE_TRANSPARENCY_LOG.to_string());
     }
-    // Clear every old artifact before the batch read, so any missing or
-    // invalid declaration cannot leave stale provenance behind.
-    for provenance_ref in &declared_refs {
-        clear_declared_registry_artifact_target(provenance_ref, registry_cache_dir).await?;
-    }
-    if !declared_refs.is_empty() {
-        ensure_registry_artifact_parent(registry_cache_dir, PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
-            .await?;
-        remove_cached_registry_artifact_target(
-            &registry_cache_dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG),
-        )
-        .await?;
-    }
-    let mut artifacts = repo::read_required_blobs_at(repo_dir, commit, &artifact_paths).await?;
-    if let Some(log_bytes) = artifacts.remove(PACKAGE_PROVENANCE_TRANSPARENCY_LOG) {
-        write_required_registry_blob(
-            PACKAGE_PROVENANCE_TRANSPARENCY_LOG,
-            &log_bytes,
-            registry_cache_dir,
-        )
-        .await?;
-        let log =
-            tokio::fs::read_to_string(registry_cache_dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG))
-                .await
-                .with_context(|| {
-                    format!(
-                        "reading extracted package transparency log {}",
-                        registry_cache_dir
-                            .join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG)
-                            .display()
-                    )
-                })?;
-        provenance::validate_transparency_log(&log)
-            .context("validating package transparency log")?;
+    // Load and validate the replacement set before touching matching cache files.
+    // Any failure still removes every declared artifact, so stale provenance
+    // cannot survive an unsuccessful refresh.
+    let artifacts = repo::read_required_blobs_at(repo_dir, commit, &artifact_paths).await;
+    let artifacts = match artifacts {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            clear_provenance_artifacts(&artifact_paths, registry_cache_dir).await?;
+            return Err(error);
+        }
+    };
+    if let Some(log_bytes) = artifacts.get(PACKAGE_PROVENANCE_TRANSPARENCY_LOG) {
+        let validation = std::str::from_utf8(log_bytes)
+            .context("reading package transparency log as UTF-8")
+            .and_then(provenance::validate_transparency_log);
+        if let Err(error) = validation {
+            clear_provenance_artifacts(&artifact_paths, registry_cache_dir).await?;
+            return Err(error).context("validating package transparency log");
+        }
     }
     for (provenance_ref, bytes) in artifacts {
-        write_required_registry_blob(&provenance_ref, &bytes, registry_cache_dir).await?;
+        if let Err(error) =
+            write_required_registry_blob(&provenance_ref, &bytes, registry_cache_dir).await
+        {
+            clear_provenance_artifacts(&artifact_paths, registry_cache_dir).await?;
+            return Err(error);
+        }
     }
 
     Ok(())
@@ -1517,15 +1526,14 @@ async fn prune_cached_extra_provenance_artifacts(
     Ok(())
 }
 
-/// Clear one currently-declared artifact path before reading new commit blobs.
-async fn clear_declared_registry_artifact_target(
-    tree_path: &str,
-    registry_cache_dir: &Path,
-) -> Result<()> {
-    validate_attestation_provenance_ref(tree_path)?;
-    let output_path = registry_cache_dir.join(Path::new(tree_path));
-    ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
-    remove_cached_registry_artifact_target(&output_path).await
+/// Invalidates the complete declared set after a failed artifact refresh.
+async fn clear_provenance_artifacts(paths: &[String], registry_cache_dir: &Path) -> Result<()> {
+    for tree_path in paths {
+        validate_extractable_registry_blob_ref(tree_path)?;
+        ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
+        remove_cached_registry_artifact_target(&registry_cache_dir.join(tree_path)).await?;
+    }
+    Ok(())
 }
 
 /// Write one content-verified registry artifact blob into the cache root.
@@ -1537,6 +1545,9 @@ async fn write_required_registry_blob(
     validate_extractable_registry_blob_ref(tree_path)?;
     let output_path = registry_cache_dir.join(Path::new(tree_path));
     ensure_registry_artifact_parent(registry_cache_dir, tree_path).await?;
+    if cached_artifact_matches(&output_path, content)? {
+        return Ok(());
+    }
     remove_cached_registry_artifact_target(&output_path).await?;
 
     let mut output = OpenOptions::new()
@@ -1550,6 +1561,30 @@ async fn write_required_registry_blob(
         .write_all(content)
         .with_context(|| format!("writing registry artifact {}", output_path.display()))?;
     Ok(())
+}
+
+/// Compares an ordinary cached artifact without following symlinks or opening FIFOs.
+fn cached_artifact_matches(path: &Path, content: &[u8]) -> Result<bool> {
+    use std::io::Read;
+
+    let Ok(file) = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+    else {
+        return Ok(false);
+    };
+    let metadata = file
+        .metadata()
+        .with_context(|| format!("inspecting {}", path.display()))?;
+    if !metadata.is_file() || metadata.len() != content.len() as u64 {
+        return Ok(false);
+    }
+    let mut cached = Vec::new();
+    file.take(content.len() as u64 + 1)
+        .read_to_end(&mut cached)
+        .with_context(|| format!("reading {}", path.display()))?;
+    Ok(cached == content)
 }
 
 fn validate_extractable_registry_blob_ref(tree_path: &str) -> Result<()> {
@@ -2418,6 +2453,7 @@ mod tests {
             false,
             &progress,
             &mut repo::VerifiedObjectGraph::new(&repo_dir),
+            &reqwest::Client::new(),
         )
         .await
         .unwrap();
@@ -2895,6 +2931,34 @@ provenance = "{provenance}"
                 .await
                 .unwrap(),
             "custom statement\n",
+        );
+
+        let artifact_path = registry_cache_dir.join(custom_ref);
+        let before = std::fs::metadata(&artifact_path).unwrap();
+        extract_provenance(
+            &work_dir,
+            &custom_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        let after = std::fs::metadata(&artifact_path).unwrap();
+        assert_eq!(before.ino(), after.ino());
+        assert_eq!(before.modified().unwrap(), after.modified().unwrap());
+
+        std::fs::write(&artifact_path, "changed statement\n").unwrap();
+        extract_provenance(
+            &work_dir,
+            &custom_commit,
+            &packages_dir,
+            &registry_cache_dir,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&artifact_path).unwrap(),
+            "custom statement\n"
         );
 
         let generated_ref = "provenance/w/web/x86_64-linux/abc.intoto.jsonl";
