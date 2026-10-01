@@ -19,6 +19,7 @@ use worker::{
 
 use crate::direct_upload::{config::QualifiedConfig, provider_capacity};
 
+pub(crate) mod batch;
 mod length;
 mod lifetime;
 

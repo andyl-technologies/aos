@@ -9,6 +9,8 @@ use aos_hub_core::{db::Database, hybrid_ingress::live::HybridLiveDeliveryTarget}
 use crate::storage_work::RemoteStorageWorkClient;
 use base64::Engine as _;
 
+pub(super) mod batch;
+
 /// Selects current SQL pins without opening an upstream body at Native.
 ///
 /// # Errors
@@ -33,9 +35,20 @@ pub(crate) async fn delivery(
         .await?
         .context("mirror registry disappeared")?;
     let selected = super::selection::Selection::capture(db, work, &registry, source).await?;
+    let target = target_for(&selected, &registry, path);
+    target.validate()?;
+    selected.validate_current(db, work, &registry).await?;
+    Ok(Some(target))
+}
+
+fn target_for(
+    selected: &super::selection::Selection,
+    registry: &aos_hub_core::db::RegistryRecord,
+    path: &str,
+) -> HybridLiveDeliveryTarget {
     let class = aos_hub_core::hybrid_ingress::live::delivery_class(path);
-    let target = HybridLiveDeliveryTarget {
-        registry_id,
+    HybridLiveDeliveryTarget {
+        registry_id: registry.id,
         registry_resource_version: registry.resource_version,
         mirror_resource_version: selected.source.resource_version,
         placement_id: selected.placement.id,
@@ -55,10 +68,7 @@ pub(crate) async fn delivery(
         } else {
             aos_hub_core::mirror_work::MIRROR_MAX_OBJECT_BYTES
         },
-    };
-    target.validate()?;
-    selected.validate_current(db, work, &registry).await?;
-    Ok(Some(target))
+    }
 }
 
 /// Retrieves only the bounded metadata query output from storage-local execution.

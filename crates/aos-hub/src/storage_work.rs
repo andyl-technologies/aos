@@ -59,6 +59,8 @@ mod frozen;
 mod frozen_head;
 mod mirror_guard;
 mod mirror_inspection;
+#[cfg(test)]
+mod live_metadata_batch_fixture;
 mod mirror_membership;
 #[cfg(test)]
 mod result_acceptance_tests;
@@ -281,6 +283,16 @@ impl RemoteStorageWorkClient {
             serde_json::from_slice(&body).context("decoding storage Worker capabilities")?;
         validate_capabilities(&self.deployment_id, &capabilities)?;
         Ok(capabilities)
+    }
+
+    pub(crate) async fn supports_live_metadata_batch(&self) -> Result<bool> {
+        let capabilities = self.capabilities().await?;
+        let advertised = |kind: &str| capabilities.operations.iter().any(|value| value == kind);
+        anyhow::ensure!(
+            advertised("inspect_mirror_live_metadata_v1"),
+            "storage Worker does not advertise live metadata queries"
+        );
+        Ok(advertised(aos_hub_core::storage_work::live_metadata_batch::OPERATION))
     }
 
     /// Publishes one frozen external binding and its exact credential heads.
@@ -1043,6 +1055,14 @@ fn validate_result_acceptance_at(
     result: &StorageWorkResult,
     now: i64,
 ) -> Result<()> {
+    if matches!(
+        plan.operation,
+        StorageWorkOperation::InspectMirrorLiveMetadataBatch { .. }
+    ) {
+        plan.validate(&plan.deployment_id, now)?;
+        anyhow::ensure!(now < plan.expires_at, "live metadata batch reply expired");
+        return Ok(());
+    }
     if !matches!(
         plan.operation,
         StorageWorkOperation::InspectMirrorMembership { .. }
@@ -1077,6 +1097,46 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
         "storage Worker result does not match the issued fence"
     );
     match (&plan.operation, &result.outcome) {
+        (
+            StorageWorkOperation::InspectMirrorLiveMetadata { target },
+            StorageWorkOutcome::MirrorLiveMetadata {
+                sha256,
+                size,
+                content_base64,
+            },
+        ) => {
+            let item = aos_hub_core::storage_work::live_metadata_batch::LiveMetadataObservation {
+                target_digest: aos_hub_core::storage_work::live_metadata_batch::target_digest(target)?,
+                source_bytes: Some(result.source_bytes),
+                outcome: aos_hub_core::storage_work::live_metadata_batch::LiveMetadataOutcome::Found {
+                    sha256: sha256.clone(),
+                    size: *size,
+                    content_base64: content_base64.clone(),
+                },
+            };
+            aos_hub_core::storage_work::live_metadata_batch::validate_observations(
+                std::slice::from_ref(target),
+                &[item],
+                result.source_bytes,
+            )?;
+        }
+        (StorageWorkOperation::InspectMirrorLiveMetadata { .. }, StorageWorkOutcome::NotFound) => {
+            anyhow::ensure!(result.source_bytes == 0, "live absence reports body bytes");
+        }
+        (
+            StorageWorkOperation::InspectMirrorLiveMetadataBatch { targets },
+            StorageWorkOutcome::MirrorLiveMetadataBatch { items },
+        ) => {
+            aos_hub_core::storage_work::live_metadata_batch::validate_observations(
+                targets,
+                items,
+                result.source_bytes,
+            )?;
+            anyhow::ensure!(
+                serde_json::to_vec(result)?.len() <= MAX_RESULT_BYTES,
+                "live metadata batch result exceeds the aggregate bound"
+            );
+        }
         (
             StorageWorkOperation::InspectMirrorMembership { query },
             StorageWorkOutcome::MirrorMembership { projection },
@@ -1930,15 +1990,25 @@ impl SurfaceFetch for HybridSurfaceFetch {
         }
         // Stored observations retain their batch transport. Only missing live
         // metadata gets a fresh bounded query; bulk sources never enter this port.
-        for path in &requested {
-            if observations.get(path).is_some_and(Option::is_none)
-                && aos_hub_core::hybrid_ingress::live::live_path(path)
-            {
-                if let Some(registry_id) = self.placement.registry_id {
-                    let bytes =
-                        crate::mirror::hybrid::live_metadata(&self.db, &self.work, registry_id, path)
-                            .await?;
-                    observations.insert(path.clone(), bytes);
+        let missing_live: Vec<_> = requested
+            .iter()
+            .filter(|path| {
+                observations.get(*path).is_some_and(Option::is_none)
+                    && aos_hub_core::hybrid_ingress::live::live_path(path)
+            })
+            .cloned()
+            .collect();
+        if let Some(registry_id) = self.placement.registry_id {
+            if !missing_live.is_empty() {
+                let returned = crate::mirror::hybrid::live_metadata_batch(
+                    &self.db,
+                    &self.work,
+                    registry_id,
+                    &missing_live,
+                )
+                .await?;
+                for (path, bytes) in missing_live.into_iter().zip(returned) {
+                    observations.insert(path, bytes);
                 }
             }
         }

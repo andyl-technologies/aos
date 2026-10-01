@@ -92,3 +92,45 @@ fn cold_semantic_reads_keep_the_original_finite_horizon() {
     assert!(validate_result_acceptance_at(&plan, &result, 129).is_ok());
     assert!(validate_result_acceptance_at(&plan, &result, 131).is_err());
 }
+
+#[test]
+fn live_batch_reply_keeps_the_original_short_permission_horizon() {
+    use aos_hub_core::hybrid_ingress::live::{HybridLiveDeliveryClass, HybridLiveDeliveryTarget};
+    use aos_hub_core::storage_work::live_metadata_batch::{
+        self, LiveMetadataObservation, LiveMetadataOutcome,
+    };
+
+    let (mut plan, mut result) = inventory();
+    let target = HybridLiveDeliveryTarget {
+        registry_id: 1,
+        registry_resource_version: 1,
+        mirror_resource_version: 1,
+        placement_id: plan.placement_id,
+        placement_resource_version: plan.placement_resource_version,
+        binding_id: plan.binding_id,
+        binding_resource_version: plan.binding_resource_version,
+        write_spec_version: 1,
+        placement_prefix: plan.placement_prefix.clone(),
+        protected_profile_digest: "a".repeat(64),
+        upstream_base: "https://example.org/registry/".into(),
+        path: "channels/stable/00".into(),
+        class: HybridLiveDeliveryClass::Metadata,
+        maximum_bytes: 128 * 1024,
+    };
+    result.outcome = StorageWorkOutcome::MirrorLiveMetadataBatch {
+        items: vec![LiveMetadataObservation {
+            target_digest: live_metadata_batch::target_digest(&target).unwrap(),
+            source_bytes: Some(0),
+            outcome: LiveMetadataOutcome::NotFound,
+        }],
+    };
+    plan.operation = StorageWorkOperation::InspectMirrorLiveMetadataBatch {
+        targets: vec![target],
+    };
+
+    // Historical structural inspection grants no new permission at the live boundary.
+    assert!(validate_result(&plan, &result).is_ok());
+    assert!(validate_result_acceptance_at(&plan, &result, 129).is_ok());
+    assert!(validate_result_acceptance_at(&plan, &result, 130).is_err());
+    assert!(validate_result_acceptance_at(&plan, &result, 699).is_err());
+}

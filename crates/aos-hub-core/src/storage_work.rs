@@ -80,6 +80,7 @@ mod binding_snapshot;
 pub mod binding_custody;
 mod frozen_cleanup;
 mod metadata_batch;
+pub mod live_metadata_batch;
 
 pub use frozen_cleanup::{
     StorageFrozenCleanupAccess, StorageFrozenCleanupHeadResult, StorageFrozenCleanupOperation,
@@ -116,6 +117,11 @@ const MAX_PLAN_LIFETIME_SECONDS: i64 = 30;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageWorkOperation {
+    /// Reads up to 32 fresh metadata paths under one exact source selection.
+    InspectMirrorLiveMetadataBatch {
+        /// Ordered immutable per-path selectors with identical authority pins.
+        targets: Vec<crate::hybrid_ingress::live::HybridLiveDeliveryTarget>,
+    },
     /// Reads fresh bounded pointer metadata without a Native upstream body fetch.
     InspectMirrorLiveMetadata {
         /// Exact current SQL upstream selection; only the metadata class is admitted.
@@ -381,6 +387,7 @@ impl StorageWorkOperation {
             Self::MirrorTransfer { .. } | Self::MirrorTransferBatch { .. } => &["read", "write"],
             Self::InspectMirrorPack { .. }
             | Self::InspectMirrorLiveMetadata { .. }
+            | Self::InspectMirrorLiveMetadataBatch { .. }
             | Self::InspectMirrorMembership { .. }
             | Self::InspectMirrorTreeInventory { .. }
             | Self::FilterStoredGitPackTree { .. }
@@ -418,6 +425,7 @@ impl StorageWorkOperation {
     pub const fn kind(&self) -> &'static str {
         match self {
             Self::InspectMirrorLiveMetadata { .. } => "inspect_mirror_live_metadata_v1",
+            Self::InspectMirrorLiveMetadataBatch { .. } => live_metadata_batch::OPERATION,
             Self::InspectMirrorMembership { .. } => "inspect_mirror_membership_v1",
             Self::InspectMirrorPack { .. } => "inspect_mirror_pack_v1",
             Self::InspectMirrorTreeInventory { .. } => "inspect_mirror_tree_inventory_v1",
@@ -598,6 +606,11 @@ impl StorageDocumentationPage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageWorkOutcome {
+    /// Ordered bounded live observations; refusals never imply absence.
+    MirrorLiveMetadataBatch {
+        /// Exact original selector commitments and complete response partition.
+        items: Vec<live_metadata_batch::LiveMetadataObservation>,
+    },
     /// Fresh bounded upstream metadata, without a fabricated stored incarnation.
     MirrorLiveMetadata {
         /// Actual full bounded body SHA-256.
@@ -780,6 +793,9 @@ pub struct StorageWorkResult {
     /// Frozen binding resource version from the plan.
     pub binding_resource_version: i64,
     /// Actual source bytes read by the executor.
+    ///
+    /// Live metadata batches sum only completed reads with known counts. An item
+    /// with an unknown count prevents this field from establishing total cost.
     pub source_bytes: u64,
     /// Typed semantic result.
     pub outcome: StorageWorkOutcome,
@@ -975,6 +991,10 @@ impl StorageWorkPlan {
             return Err(StorageWorkError::InvalidTime);
         }
         match &self.operation {
+            StorageWorkOperation::InspectMirrorLiveMetadataBatch { targets } => {
+                live_metadata_batch::validate_targets(targets, self)
+                    .map_err(|_| StorageWorkError::InvalidPlan)?;
+            }
             StorageWorkOperation::InspectMirrorLiveMetadata { target } => {
                 if target.validate().is_err()
                     || target.class != crate::hybrid_ingress::live::HybridLiveDeliveryClass::Metadata

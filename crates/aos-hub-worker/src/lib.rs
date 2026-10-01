@@ -174,6 +174,10 @@ mod hybrid;
 #[cfg(target_arch = "wasm32")]
 mod mirror_live;
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "mirror_live/batch.rs"]
+mod mirror_live_batch_tests;
+
 #[cfg(target_arch = "wasm32")]
 mod digest;
 #[cfg(any(test, target_arch = "wasm32"))]

@@ -852,6 +852,7 @@ pub(crate) async fn execute_r2_storage_work(
         }
         StorageWorkOperation::MirrorTransfer { .. }
         | StorageWorkOperation::InspectMirrorLiveMetadata { .. }
+        | StorageWorkOperation::InspectMirrorLiveMetadataBatch { .. }
         | StorageWorkOperation::MirrorTransferBatch { .. }
         | StorageWorkOperation::InspectMirrorPack { .. }
         | StorageWorkOperation::InspectMirrorTreeInventory { .. }

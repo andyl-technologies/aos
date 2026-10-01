@@ -1057,6 +1057,7 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
         operations: vec![
             "inspect_mirror_pack_v1".into(),
             "inspect_mirror_live_metadata_v1".into(),
+            aos_hub_core::storage_work::live_metadata_batch::OPERATION.into(),
             "inspect_mirror_tree_inventory_v1".into(),
             "mirror_transfer_batch_v1".into(),
             "inspect_stored_git_pack_v1".into(),
@@ -1300,6 +1301,9 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     let operation_kind = plan.operation.kind();
 
     let execution = if matches!(plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadataBatch { .. }) {
+        crate::mirror_live::batch::inspect(env, &plan).await
+    } else if matches!(&plan.operation,
         aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadata { .. }) {
         crate::mirror_live::inspect_metadata(env, &plan).await
     } else if matches!(plan.operation,

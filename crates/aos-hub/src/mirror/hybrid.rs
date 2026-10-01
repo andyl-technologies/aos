@@ -25,6 +25,7 @@ mod selection;
 
 pub(crate) use live::delivery as live_delivery;
 pub(crate) use live::metadata as live_metadata;
+pub(crate) use live::batch::metadata as live_metadata_batch;
 
 use discovery::MetadataDiscovery;
 
