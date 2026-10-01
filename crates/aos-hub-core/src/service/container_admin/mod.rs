@@ -76,11 +76,26 @@ impl RpcService {
         &self,
         registry_id: i64,
     ) -> Result<Option<String>, RpcError> {
+        let canonical_registry_url = self
+            .db
+            .ready_registry_canonical_url(registry_id)
+            .await
+            .map_err(RpcError::internal)?;
+        let preferred_authority = canonical_registry_url
+            .map(|value| {
+                let mut url = url::Url::parse(&value).map_err(RpcError::internal)?;
+                url.set_path("/");
+                distribution_authority(url.as_str())
+            })
+            .transpose()?;
+
         let routes = self
             .db
             .list_routes(SurfaceTarget::Registry(registry_id))
             .await
             .map_err(RpcError::internal)?;
+        let mut fallback_authority = None;
+
         for route in routes {
             if !route.enabled {
                 continue;
@@ -111,9 +126,18 @@ impl RpcService {
                 continue;
             }
 
-            return distribution_authority(&snapshot.canonical_url).map(Some);
+            let authority = distribution_authority(&snapshot.canonical_url)?;
+            // A CDN can serve static registry objects and expose OCI on /v2/.
+            // Prefer that configured route without deriving an implicit one.
+            if preferred_authority.as_deref() == Some(authority.as_str()) {
+                return Ok(Some(authority));
+            }
+            if fallback_authority.is_none() {
+                fallback_authority = Some(authority);
+            }
         }
-        Ok(None)
+
+        Ok(fallback_authority)
     }
 }
 
