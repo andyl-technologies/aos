@@ -117,6 +117,25 @@ struct ClaimedReaderLaunch<'a> {
     inode: u64,
 }
 
+/// Keeps launch custody independent of the fence loan, including partial work.
+///
+/// The exact-name comparison drops before the claimed marker, matching the
+/// legacy retirement local. Results are historical observations, not exit or
+/// durable-absence authority. In particular, unlink success plus sync failure
+/// remains unresolved and does not clear either descriptor.
+#[derive(Default)]
+struct HeldReaderLaunchCapture {
+    retirement_marker: Option<OwnedFd>,
+    marker: Option<OwnedFd>,
+    identity: Option<(u64, u64)>,
+    claim_started: bool,
+    retirement_started: bool,
+    claim: Option<Result<(), ZfsWorkerError>>,
+    retirement: Option<Result<(), ZfsWorkerError>>,
+    unlink: Option<Result<(), rustix::io::Errno>>,
+    directory_sync: Option<Result<(), rustix::io::Errno>>,
+}
+
 impl HeldReaderLaunchFence {
     fn open(path: &Path) -> Result<Self, ZfsWorkerError> {
         let anchor = open_protected_directory(path, 0).map_err(|_| ZfsWorkerError::Authority)?;
@@ -147,21 +166,82 @@ impl HeldReaderLaunchFence {
     where
         F: FnMut(&OwnedFd) -> Result<(), rustix::io::Errno>,
     {
+        let mut capture = HeldReaderLaunchCapture::default();
+        self.capture_claim_with_sync(&mut capture, &mut sync)?;
+        capture.claim.take().ok_or(ZfsWorkerError::Protocol(
+            "reader launch claim is absent",
+        ))??;
+        let marker = capture.marker.take().ok_or(ZfsWorkerError::Protocol(
+            "reader launch marker is absent",
+        ))?;
+        let (device, inode) = capture.identity.ok_or(ZfsWorkerError::Protocol(
+            "reader launch identity is absent",
+        ))?;
+
+        Ok(ClaimedReaderLaunch {
+            fence: self,
+            marker,
+            device,
+            inode,
+        })
+    }
+
+    /// Captures the original claim while borrowing only this operation's fence.
+    fn capture_claim_with_sync<F>(
+        &self,
+        capture: &mut HeldReaderLaunchCapture,
+        sync: &mut F,
+    ) -> Result<(), ZfsWorkerError>
+    where
+        F: FnMut(&OwnedFd) -> Result<(), rustix::io::Errno>,
+    {
+        if capture.claim_started
+            || capture.retirement_started
+            || capture.marker.is_some()
+            || capture.claim.is_some()
+            || capture.retirement.is_some()
+            || capture.retirement_marker.is_some()
+            || capture.identity.is_some()
+            || capture.unlink.is_some()
+            || capture.directory_sync.is_some()
+        {
+            return Err(ZfsWorkerError::Protocol("reader launch capture is occupied"));
+        }
+
+        capture.claim_started = true;
+        capture.claim = Some(self.claim_into(capture, sync));
+        Ok(())
+    }
+
+    fn claim_into<F>(
+        &self,
+        capture: &mut HeldReaderLaunchCapture,
+        sync: &mut F,
+    ) -> Result<(), ZfsWorkerError>
+    where
+        F: FnMut(&OwnedFd) -> Result<(), rustix::io::Errno>,
+    {
         self.validate_directory()?;
-        let marker = openat(
-            &self.directory,
-            LAUNCH_FENCE_NAME,
-            OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
-            Mode::from_raw_mode(0o600),
-        )
-        .map_err(|error| {
-            if error == rustix::io::Errno::EXIST {
-                ZfsWorkerError::Quiescence("an earlier reader launch is unresolved".to_owned())
-            } else {
-                error.into()
-            }
-        })?;
-        let identity = fstat(&marker)?;
+        capture.marker = Some(
+            openat(
+                &self.directory,
+                LAUNCH_FENCE_NAME,
+                OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                Mode::from_raw_mode(0o600),
+            )
+            .map_err(|error| {
+                if error == rustix::io::Errno::EXIST {
+                    ZfsWorkerError::Quiescence("an earlier reader launch is unresolved".to_owned())
+                } else {
+                    error.into()
+                }
+            })?,
+        );
+        let marker = capture.marker.as_ref().ok_or(ZfsWorkerError::Protocol(
+            "reader launch marker is absent",
+        ))?;
+        let identity = fstat(marker)?;
+        capture.identity = Some((identity.st_dev, identity.st_ino));
         if FileType::from_raw_mode(identity.st_mode) != FileType::RegularFile
             || identity.st_uid != self.owner_uid
             || identity.st_nlink != 1
@@ -169,15 +249,10 @@ impl HeldReaderLaunchFence {
         {
             return Err(ZfsWorkerError::Authority);
         }
-        sync(&marker)?;
+        sync(marker)?;
         sync(&self.directory)?;
         self.validate_directory()?;
-        Ok(ClaimedReaderLaunch {
-            fence: self,
-            marker,
-            device: identity.st_dev,
-            inode: identity.st_ino,
-        })
+        Ok(())
     }
 
     fn validate_directory(&self) -> Result<(), ZfsWorkerError> {
@@ -190,33 +265,84 @@ impl HeldReaderLaunchFence {
         }
         Ok(())
     }
-}
 
-impl ClaimedReaderLaunch<'_> {
-    fn retire(self) -> Result<(), ZfsWorkerError> {
-        self.fence.validate_directory()?;
-        let held = fstat(&self.marker)?;
-        if (held.st_dev, held.st_ino) != (self.device, self.inode) {
+    /// Retains retirement results and the exact-name descriptor before checks.
+    fn capture_retirement(
+        &self,
+        capture: &mut HeldReaderLaunchCapture,
+    ) -> Result<(), ZfsWorkerError> {
+        if !matches!(&capture.claim, Some(Ok(())))
+            || capture.retirement_started
+            || capture.retirement.is_some()
+            || capture.retirement_marker.is_some()
+            || capture.unlink.is_some()
+            || capture.directory_sync.is_some()
+        {
+            return Err(ZfsWorkerError::Protocol(
+                "reader launch retirement is not pending",
+            ));
+        }
+
+        capture.retirement_started = true;
+        capture.retirement = Some(self.retire_into(capture));
+        Ok(())
+    }
+
+    fn retire_into(&self, capture: &mut HeldReaderLaunchCapture) -> Result<(), ZfsWorkerError> {
+        self.validate_directory()?;
+        let marker = capture.marker.as_ref().ok_or(ZfsWorkerError::Protocol(
+            "reader launch marker is absent",
+        ))?;
+        let expected = capture.identity.ok_or(ZfsWorkerError::Protocol(
+            "reader launch identity is absent",
+        ))?;
+        let held = fstat(marker)?;
+        if (held.st_dev, held.st_ino) != expected {
             return Err(ZfsWorkerError::Authority);
         }
-        let marker = openat(
-            &self.fence.directory,
+        capture.retirement_marker = Some(openat(
+            &self.directory,
             LAUNCH_FENCE_NAME,
             OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
             Mode::empty(),
-        )?;
-        let identity = fstat(&marker)?;
-        if (identity.st_dev, identity.st_ino) != (self.device, self.inode)
+        )?);
+        let marker = capture.retirement_marker.as_ref().ok_or(ZfsWorkerError::Protocol(
+            "reader retirement marker is absent",
+        ))?;
+        let identity = fstat(marker)?;
+        if (identity.st_dev, identity.st_ino) != expected
             || FileType::from_raw_mode(identity.st_mode) != FileType::RegularFile
-            || identity.st_uid != self.fence.owner_uid
+            || identity.st_uid != self.owner_uid
             || identity.st_nlink != 1
             || identity.st_mode & 0o7777 != 0o600
         {
             return Err(ZfsWorkerError::Authority);
         }
-        unlinkat(&self.fence.directory, LAUNCH_FENCE_NAME, AtFlags::empty())?;
-        fsync(&self.fence.directory)?;
+        capture.unlink = Some(unlinkat(&self.directory, LAUNCH_FENCE_NAME, AtFlags::empty()));
+        if let Some(Err(error)) = &capture.unlink {
+            return Err((*error).into());
+        }
+        capture.directory_sync = Some(fsync(&self.directory));
+        if let Some(Err(error)) = &capture.directory_sync {
+            return Err((*error).into());
+        }
         Ok(())
+    }
+}
+
+impl ClaimedReaderLaunch<'_> {
+    fn retire(self) -> Result<(), ZfsWorkerError> {
+        let mut capture = HeldReaderLaunchCapture {
+            marker: Some(self.marker),
+            identity: Some((self.device, self.inode)),
+            claim_started: true,
+            claim: Some(Ok(())),
+            ..HeldReaderLaunchCapture::default()
+        };
+        self.fence.capture_retirement(&mut capture)?;
+        capture.retirement.take().ok_or(ZfsWorkerError::Protocol(
+            "reader retirement result is absent",
+        ))?
     }
 }
 
@@ -494,19 +620,37 @@ fn require_prior_reader_empty(state: CgroupPopulationState) -> Result<(), ZfsWor
     }
 }
 
+/// Keeps the original setup failure separate from unproved cancellation debt.
+struct ReaderSetupFailure {
+    cause: ZfsWorkerError,
+    cancellation: Option<aos_sandbox_linux::Error>,
+}
+
+impl ReaderSetupFailure {
+    /// Explicitly projects a legacy temporary capture into its old text error.
+    fn into_legacy_error(self) -> ZfsWorkerError {
+        let error = self.cause;
+        let detail = match self.cancellation {
+            Some(cancellation_error) => format!(
+                "held snapshot reader setup failed before quiescence was proved: {error}; cancellation: {cancellation_error}"
+            ),
+            None => format!("held snapshot reader setup failed before quiescence was proved: {error}"),
+        };
+        ZfsWorkerError::Quiescence(detail)
+    }
+}
+
 fn fail_stop_unproved_setup<T>(
     fail_stopped: &mut bool,
     error: ZfsWorkerError,
     cancellation_error: Option<aos_sandbox_linux::Error>,
 ) -> Result<T, ZfsWorkerError> {
     *fail_stopped = true;
-    let detail = match cancellation_error {
-        Some(cancellation_error) => format!(
-            "held snapshot reader setup failed before quiescence was proved: {error}; cancellation: {cancellation_error}"
-        ),
-        None => format!("held snapshot reader setup failed before quiescence was proved: {error}"),
-    };
-    Err(ZfsWorkerError::Quiescence(detail))
+    Err(ReaderSetupFailure {
+        cause: error,
+        cancellation: cancellation_error,
+    }
+    .into_legacy_error())
 }
 
 /// Runs one Storage-only reader on its inherited systemd socket.
@@ -825,6 +969,29 @@ fn decode_result_with_mount(
     let [mount]: [OwnedFd; 1] = descriptors.try_into().map_err(|_| {
         ZfsWorkerError::Protocol("reader descriptor result requires exactly one mount")
     })?;
+    let measured = validate_result_with_mount(
+        bytes,
+        expected,
+        expected_snapshot_guid,
+        expected_pool_guid,
+        std::slice::from_ref(&mount),
+    )?;
+    Ok((measured, mount))
+}
+
+/// Borrows the complete table; no descriptor or record subject leaves custody.
+fn validate_result_with_mount(
+    bytes: &[u8],
+    expected: ObjectDigest,
+    expected_snapshot_guid: u64,
+    expected_pool_guid: u64,
+    descriptors: &[OwnedFd],
+) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
+    let [mount] = descriptors else {
+        return Err(ZfsWorkerError::Protocol(
+            "reader descriptor result requires exactly one mount",
+        ));
+    };
     let measured = decode_result_for(
         bytes,
         expected,
@@ -832,7 +999,7 @@ fn decode_result_with_mount(
         ReaderReplyMode::WithMount,
     )?;
     verify_received_mount_fd(mount.as_fd(), &measured, expected_pool_guid)?;
-    Ok((measured, mount))
+    Ok(measured)
 }
 
 fn decode_result_for(
@@ -960,6 +1127,81 @@ pub(crate) fn verify_received_mount_fd(
         measured.mounted_snapshot_guid,
     )
     .map_err(|_| ZfsWorkerError::Protocol("reader mount UUID differs from selected snapshot"))
+}
+
+#[cfg(test)]
+mod lower_custody_tests {
+    use super::*;
+
+    #[test]
+    fn borrowed_mount_validation_rejects_missing_custody_before_the_header() {
+        let descriptors = Vec::new();
+        let result = validate_result_with_mount(
+            b"invalid header",
+            ObjectDigest::from_bytes([1; 32]),
+            7,
+            9,
+            &descriptors,
+        );
+
+        assert!(matches!(
+            result,
+            Err(ZfsWorkerError::Protocol(
+                "reader descriptor result requires exactly one mount",
+            )),
+        ));
+        assert!(descriptors.is_empty());
+    }
+
+    #[test]
+    fn retirement_sync_debt_does_not_replace_claim_or_unlink_history() {
+        // This is only error-bookkeeping DATA, not a constructed marker or
+        // proof that a real directory entry was removed.
+        let capture = HeldReaderLaunchCapture {
+            claim_started: true,
+            claim: Some(Ok(())),
+            retirement_started: true,
+            retirement: Some(Err(ZfsWorkerError::Kernel(rustix::io::Errno::IO))),
+            unlink: Some(Ok(())),
+            directory_sync: Some(Err(rustix::io::Errno::IO)),
+            ..HeldReaderLaunchCapture::default()
+        };
+
+        assert!(matches!(&capture.claim, Some(Ok(()))));
+        assert!(matches!(&capture.unlink, Some(Ok(()))));
+        assert!(matches!(
+            &capture.directory_sync,
+            Some(Err(rustix::io::Errno::IO)),
+        ));
+        assert!(matches!(
+            &capture.retirement,
+            Some(Err(ZfsWorkerError::Kernel(rustix::io::Errno::IO))),
+        ));
+    }
+
+    #[test]
+    fn setup_capture_keeps_the_original_cause_separate_from_cancellation_debt() {
+        let capture = ReaderSetupFailure {
+            cause: ZfsWorkerError::Protocol("original setup"),
+            cancellation: Some(aos_sandbox_linux::Error::WrongDescriptorType {
+                expected: "cgroup.kill",
+            }),
+        };
+
+        assert!(matches!(
+            &capture.cause,
+            ZfsWorkerError::Protocol("original setup"),
+        ));
+        let expected = format!(
+            "held snapshot reader setup failed before quiescence was proved: {}; cancellation: {}",
+            capture.cause,
+            capture.cancellation.as_ref().unwrap(),
+        );
+        let ZfsWorkerError::Quiescence(detail) = capture.into_legacy_error() else {
+            panic!("setup projection changed its legacy error");
+        };
+        assert_eq!(detail, expected);
+    }
 }
 
 #[cfg(test)]
