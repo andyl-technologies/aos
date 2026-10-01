@@ -810,7 +810,7 @@ in
 
       features = testing.mkVMTest {
         name = "storage-postgresql-features";
-        rootfsDeps = [self];
+        rootfsDeps = [self pkgs.findutils];
         testScript = ''
           pg_config --configure > /tmp/postgresql-configure
           for flag in \

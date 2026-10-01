@@ -74,7 +74,7 @@ in
       tool = testing.mkToolCheck {
         pname = "tool-c-ares";
         tool = self;
-        command = "adig --help >/dev/null";
+        command = "adig -h > /tmp/adig-help && grep -F 'usage: adig' /tmp/adig-help";
       };
     };
 
