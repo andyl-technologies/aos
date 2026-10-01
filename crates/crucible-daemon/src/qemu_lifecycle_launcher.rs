@@ -6,7 +6,7 @@
 //! the sealed process contract only after preparation. Any unreaped QEMU or
 //! helper child is transferred into the aggregate guard before an error returns.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use crucible_api::{
@@ -323,7 +323,8 @@ where
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         debt.closed = true;
 
-        for (_, child) in std::mem::take(&mut debt.children) {
+        for (generation, child) in std::mem::take(&mut debt.children) {
+            debt.transferred.insert(generation);
             self.owner.retain_failed_launch_child(child);
         }
     }
@@ -476,6 +477,9 @@ where
 struct ImageHelperCleanupDebt {
     closed: bool,
     children: BTreeMap<ProductionVmNodeGeneration, crucible_qemu::QemuNodeChild>,
+    // Aggregate quarantine owns the wait handle after transfer. An empty local
+    // map must not let a retained lease claim that its helper was reaped.
+    transferred: BTreeSet<ProductionVmNodeGeneration>,
 }
 
 impl ImageHelperCleanupDebt {
@@ -483,6 +487,11 @@ impl ImageHelperCleanupDebt {
         &mut self,
         generation: &ProductionVmNodeGeneration,
     ) -> Result<(), LifecycleApiError> {
+        if self.transferred.contains(generation) {
+            return Err(launcher_message(
+                "hot-fork image helper cleanup belongs to aggregate quarantine",
+            ));
+        }
         if let Some(child) = self.children.get_mut(generation) {
             child
                 .force_kill_and_reap_failed_helper(std::time::Duration::from_secs(5))
@@ -781,14 +790,16 @@ mod tests {
             .lock()
             .expect("helper registry")
             .children
-            .insert(generation, child);
+            .insert(generation.clone(), child);
 
         drop(lease);
         drop(launcher);
 
-        let debt = helper_debt.lock().expect("helper registry");
+        let mut debt = helper_debt.lock().expect("helper registry");
         assert!(debt.closed);
         assert!(debt.children.is_empty());
+        assert!(debt.transferred.contains(&generation));
+        assert!(debt.retry_generation(&generation).is_err());
         let mut receipts = receipts.lock().expect("fixture receipts");
         assert!(receipts.quarantined);
         assert_eq!(receipts.children.len(), 1);
@@ -798,6 +809,9 @@ mod tests {
         receipts.children[0]
             .force_kill_and_reap_failed_helper(std::time::Duration::from_secs(5))?;
         assert!(receipts.children[0].reaped());
+        // Reap belongs to the aggregate guard; it does not mint a fresh local
+        // generation completion receipt for an abandoned lease.
+        assert!(debt.retry_generation(&generation).is_err());
         Ok(())
     }
 
