@@ -334,28 +334,38 @@ impl LocalStageStore {
         let repository = git2::Repository::open(&self.registry)?;
         let odb = repository.odb()?;
         let git_dir = crate::registry::objectstore::repo_git_dir(&self.registry)?;
+
+        let import_loose = |path: &str, bytes: &[u8]| -> Result<()> {
+            let hex = path.trim_start_matches("objects/").replace('/', "");
+            let expected = object::Oid::from_hex(&hex)?;
+            let (kind, payload) = object::decode_loose(bytes, Some(expected))?;
+            let kind = match kind {
+                object::ObjectKind::Blob => git2::ObjectType::Blob,
+                object::ObjectKind::Tree => git2::ObjectType::Tree,
+                object::ObjectKind::Commit => git2::ObjectType::Commit,
+                object::ObjectKind::Tag => git2::ObjectType::Tag,
+            };
+            if odb.write(kind, &payload)?.to_string() != expected.to_hex() {
+                bail!("candidate object imported with a different Git identity");
+            }
+            Ok(())
+        };
+
         for entry in &candidate.inventory {
             if keymap::is_loose_git_object_path(&entry.path) {
-                let hex = entry.path.trim_start_matches("objects/").replace('/', "");
-                let expected = object::Oid::from_hex(&hex)?;
-                let (kind, payload) = object::decode_loose(
-                    &fs::read(self.object_path(&entry.sha256)?)?,
-                    Some(expected),
-                )?;
-                let kind = match kind {
-                    object::ObjectKind::Blob => git2::ObjectType::Blob,
-                    object::ObjectKind::Tree => git2::ObjectType::Tree,
-                    object::ObjectKind::Commit => git2::ObjectType::Commit,
-                    object::ObjectKind::Tag => git2::ObjectType::Tag,
-                };
-                if odb.write(kind, &payload)?.to_string() != expected.to_hex() {
-                    bail!("candidate object imported with a different Git identity");
-                }
+                import_loose(&entry.path, &fs::read(self.object_path(&entry.sha256)?)?)?;
             } else if entry.path.starts_with("releases/") {
                 let path = git_dir.join(&entry.path);
                 self.write_new(&path, &fs::read(self.object_path(&entry.sha256)?)?)?;
             }
         }
+
+        for pointer in &candidate.publication {
+            if keymap::is_loose_git_object_path(&pointer.path) {
+                import_loose(&pointer.path, &pointer.bytes)?;
+            }
+        }
+
         let tag = release_tag_oid(candidate, repository.object_format())?;
         let name = format!("refs/tags/{}", candidate.release_id);
         match repository.find_reference(&name) {

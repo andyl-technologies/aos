@@ -174,7 +174,7 @@ struct TufVersionedMeta {
 
 /// Generate and write release TUF metadata in a registry authoring clone.
 ///
-/// The catalog covers every file in the current `HEAD` tree except `tuf/`.
+/// The catalog covers every file in the current worktree except `tuf/`.
 /// The caller commits the returned changes before creating the release tag,
 /// so the signed tag covers both the catalog and the generated metadata.
 ///
@@ -193,7 +193,7 @@ pub fn write_release_metadata_worktree(
     // The file adapter performs synchronous signing and cannot yield. Keeping
     // this wrapper synchronous preserves APR's existing producer API without
     // starting or nesting an async runtime.
-    write_metadata_with_signer(repo_dir, registry, release, &mut signer, false)
+    write_metadata_with_signer(repo_dir, registry, release, &mut signer, true)
         .now_or_never()
         .context("synchronous catalog metadata signer unexpectedly yielded")?
 }
@@ -1786,6 +1786,56 @@ mod tests {
         }
         let err = validate_root_policy(&keys, &roles).unwrap_err();
         assert!(format!("{err:#}").contains("duplicate public key material"));
+    }
+
+    #[test]
+    fn synchronous_metadata_binds_an_uncommitted_container_sidecar() -> Result<()> {
+        let temporary = TempDir::new()?;
+        let repo = init_repo(temporary.path());
+        fs::write(repo.join("registry.toml"), "[registry]\nname = \"core\"\n")?;
+        testutil::git(&repo, &["add", "registry.toml"]);
+        testutil::git(&repo, &["commit", "-m", "initial catalog"]);
+        let base = git2::Repository::open(&repo)?
+            .head()?
+            .peel_to_commit()?
+            .id();
+
+        let sidecar_path = aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
+        let sidecar_bytes = b"exact uncommitted container sidecar\n";
+        fs::create_dir_all(repo.join(sidecar_path).parent().context("sidecar parent")?)?;
+        fs::write(repo.join(sidecar_path), sidecar_bytes)?;
+        let key = write_test_key(temporary.path(), "core", "maintainer", [34; 32]);
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 0, 0),
+            &[metadata_signer(&key)],
+        )?;
+
+        let targets: Envelope<TargetsSigned> =
+            parse_envelope(&fs::read(repo.join(TARGETS_JSON))?, TARGETS_JSON)?;
+        assert_eq!(
+            targets.signed.targets[sidecar_path].length,
+            sidecar_bytes.len() as u64
+        );
+        assert_eq!(
+            targets.signed.targets[sidecar_path].sha256,
+            sha256_digest(sidecar_bytes)
+        );
+        assert!(verify_worktree_metadata(&repo, "core", &[key.trust])?.is_some());
+        assert_eq!(
+            git2::Repository::open(&repo)?
+                .head()?
+                .peel_to_commit()?
+                .id(),
+            base
+        );
+        assert!(
+            git2::Repository::open(&repo)?
+                .find_reference("refs/tags/1.0.0")
+                .is_err()
+        );
+        Ok(())
     }
 
     #[tokio::test]

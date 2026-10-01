@@ -503,7 +503,9 @@ impl HttpProtocol {
                 // We cannot consume the reader through a shared reference, so for
                 // the direct protocol path we fall back to reading to bytes.
                 // The transfer engine's streaming path handles this properly.
-                anyhow::bail!("stream body upload not directly supported via Protocol::execute(); use TransferEngine");
+                anyhow::bail!(
+                    "stream body upload not directly supported via Protocol::execute(); use TransferEngine"
+                );
             }
             None => {}
         }
@@ -519,6 +521,14 @@ impl HttpProtocol {
 
         let body = if status < 400 {
             response.bytes().await.ok().map(|b| b.to_vec())
+        } else if status == 404 {
+            let body = bounded_error_body(response, request.maximum_bytes).await;
+            return Err(HttpStatusError {
+                status,
+                url: request.url.clone(),
+                body,
+            }
+            .into());
         } else {
             let text = response.text().await.unwrap_or_default();
             anyhow::bail!("HTTP {} for PUT {}: {}", status, request.url, text);
@@ -567,7 +577,9 @@ impl HttpProtocol {
                     .body(body);
             }
             Some(TransferBody::Stream(_reader)) => {
-                anyhow::bail!("stream body upload not directly supported via Protocol::execute(); use TransferEngine");
+                anyhow::bail!(
+                    "stream body upload not directly supported via Protocol::execute(); use TransferEngine"
+                );
             }
             None => {}
         }
@@ -583,6 +595,14 @@ impl HttpProtocol {
 
         let body = if status < 400 {
             response.bytes().await.ok().map(|b| b.to_vec())
+        } else if status == 404 {
+            let body = bounded_error_body(response, request.maximum_bytes).await;
+            return Err(HttpStatusError {
+                status,
+                url: request.url.clone(),
+                body,
+            }
+            .into());
         } else {
             let text = response.text().await.unwrap_or_default();
             anyhow::bail!("HTTP {} for POST {}: {}", status, request.url, text);

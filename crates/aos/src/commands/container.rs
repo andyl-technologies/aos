@@ -777,9 +777,19 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         events,
     };
     let graph = if let Some(record) = &staged {
+        // Capture must not precreate the checkpoint directory: the uploader
+        // claims that directory by writing its repository ownership marker.
         let object_directory = options
             .state_directory
+            .parent()
+            .context("OCI upload-state directory lacks a parent")?
             .join("registry-stages")
+            .join(
+                options
+                    .state_directory
+                    .file_name()
+                    .context("OCI upload-state directory lacks its repository key")?,
+            )
             .join(&record.revision.id)
             .join("objects");
         let container = record
