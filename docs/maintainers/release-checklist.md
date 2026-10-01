@@ -38,8 +38,8 @@ The destinations and what each one requires:
 
 | Registry | Destination | Profile | Tests before publication | Reviews | Rollout | Fitness |
 | --- | --- | --- | --- | --- | --- | --- |
-| `andyl/testing` | `staging/edge` | `build` | build only | none | all partitions on publish | none |
-| `andyl/testing` | `production/edge` | `smoke` | changed targets and cells | none | all partitions; completes automatically | none |
+| `andyl/main`, `andyl/testing` | `staging/edge` | `build` | build only | none | all partitions on publish | none |
+| `andyl/main`, `andyl/testing` | `production/edge` | `smoke` | changed targets and cells | none | all partitions; completes automatically | none |
 | `andyl/main` | `staging/candidate`, `staging/stable` | `build` | build only | none | all partitions on publish | none |
 | `andyl/main` | `production/candidate` | `functional` | every target and cell | 1 per report | all partitions after fresh health; completes automatically | 14-day automated, 90-day operator |
 | `andyl/main` | `production/stable` | `soak` | every target and cell, complete matrix | 1 per report, including each ring; completion approvals | 4, 32, 128, 256 partitions; 7-day soak; complete-phase report | as candidate plus key rotation |
@@ -72,12 +72,13 @@ Complete this section before starting builds or requesting signatures.
 
 - [ ] **Record the release.** Record the release version, registry, intended
   destinations, source commit, operator, and reviewer. Use a version whose
-  class matches the registry: `-dev.YYYYMMDD.N` for `andyl/testing`, `-rc.N`
-  or a final `YYYY.M.P` for `andyl/main`.
+  class matches the intended channel: `-dev.YYYYMMDD.N` for `edge` on either
+  registry, `-rc.N` for a main candidate, or a final `YYYY.M.P` for a main
+  stable release. `andyl/testing` accepts only edge versions.
 
   **Check when:** those fields are filled in and the registry/version
   combination is valid. A final version plans both candidate and stable
-  destinations; an edge version is never valid for `andyl/main`.
+  destinations; an edge version plans both edge destinations.
 
 - [ ] **Check the maintainer configuration.** Open the
   [maintainer configuration](canonical-releases.md#maintainer-configuration)
@@ -218,8 +219,8 @@ Complete this section before starting builds or requesting signatures.
 Run the driver for the first staging destination of this release:
 
 ```sh
-aos maintain release advance --to staging/edge        # andyl/testing
-aos maintain release advance --to staging/candidate   # andyl/main
+aos maintain release advance --to staging/edge        # edge release on either registry
+aos maintain release advance --to staging/candidate   # andyl/main candidate or final
 ```
 
 It builds, signs, closes, verifies, and publishes the release, then moves the
@@ -316,7 +317,7 @@ publish, and advance rings. `production/edge` and `production/candidate`
 complete with their final ring; only `production/stable` adds a complete-phase
 report and completion approvals.
 
-### 4a. `andyl/testing`: `production/edge` (`smoke`)
+### 4a. `production/edge` (`smoke`) on `andyl/main` or `andyl/testing`
 
 - [ ] **Confirm the change scope.** Run
   `aos maintain release explain --to production/edge`.
@@ -356,7 +357,9 @@ report and completion approvals.
   `channels/production-edge/ring-1/channel-receipt.json` exist, and
   `aos maintain release status` reports `production/edge` `complete`. Then complete the
   clean-client, profile, and warning checks in
-  [the testing runbook](registry-testing.md#publish-the-first-or-a-later-edge-release).
+  [the testing runbook](registry-testing.md#publish-the-first-or-a-later-edge-release);
+  they apply unchanged to a main edge release, whose artifacts also bake an
+  edge warning.
 
 ### 4b. `andyl/main`: `production/candidate` (`functional`)
 

@@ -69,19 +69,31 @@ fn shipped_contract_has_the_exact_destination_table() {
         table,
         [
             "production/production/candidate=functional",
+            "production/production/edge=smoke",
             "production/production/stable=soak",
             "production/testing/edge=smoke",
             "staging/production/candidate=build",
+            "staging/production/edge=build",
             "staging/production/stable=build",
             "staging/testing/edge=build",
         ]
     );
     assert_eq!(contract.destinations_for(RegistryTier::Testing).count(), 2);
-    assert!(
-        contract
-            .destinations_for(RegistryTier::Production)
-            .all(|destination| destination.channel != "edge")
+    assert_eq!(
+        contract.destinations_for(RegistryTier::Production).count(),
+        6
     );
+    // The same channel kind selects the same profile on both tiers: the tier
+    // changes the infrastructure behind a release, not its obligations.
+    for tier in [RegistryTier::Testing, RegistryTier::Production] {
+        assert_eq!(
+            contract
+                .destination(tier, SurfaceRole::Production, "edge")
+                .unwrap()
+                .profile,
+            "smoke"
+        );
+    }
     assert_eq!(contract.profile("soak").unwrap().soak_seconds, 604_800);
     assert_eq!(contract.profile("soak").unwrap().rollout.rings.len(), 4);
     assert!(contract.profile("emergency").is_err());
@@ -92,7 +104,7 @@ fn shipped_contract_has_the_exact_destination_table() {
     );
     assert!(
         contract
-            .destination(RegistryTier::Production, SurfaceRole::Production, "edge")
+            .destination(RegistryTier::Testing, SurfaceRole::Production, "stable")
             .is_err()
     );
 }

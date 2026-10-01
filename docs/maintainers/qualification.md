@@ -34,24 +34,27 @@ A **surface** is one publication endpoint with the role `staging` or
 `production`. It is either an AOS Hub deployment or a
 [static origin](#static-surfaces). A **destination** is one surface role and
 one channel of the plan's registry, written `<role>/<channel>`. The registry
-comes from the plan, so `production/stable` in an `andyl/main` plan and
-`production/edge` in an `andyl/testing` plan are unambiguous.
+comes from the plan, so `production/edge` in an `andyl/main` plan and
+`production/edge` in an `andyl/testing` plan are distinct destinations on
+different registries.
 
 The contract exports exactly these destinations. Anything else is not a
 destination, and plan validation rejects it.
 
 | Destination | Registry tier | Profile | Published after |
 | --- | --- | --- | --- |
-| `staging/edge` | testing (`andyl/testing`, `andyl/testing-vN`) | `build` | nothing |
-| `production/edge` | testing | `smoke` | a staging publication |
-| `staging/candidate` | production (`andyl/main`) | `build` | nothing |
+| `staging/edge` | production (`andyl/main`) and testing (`andyl/testing`, `andyl/testing-vN`) | `build` | nothing |
+| `production/edge` | production and testing | `smoke` | a staging publication |
+| `staging/candidate` | production | `build` | nothing |
 | `production/candidate` | production | `functional` | a staging publication |
 | `staging/stable` | production | `build` | nothing |
 | `production/stable` | production | `soak` | a staging publication |
 
-Testing registries carry the `edge` channel only. `andyl/main` carries
-`candidate` and `stable` and never publishes `edge`. A per-train channel such
-as `stable-2026.3` has the kind of the prefix before its first `-` and selects
+`andyl/main` carries `edge`, `candidate`, and `stable`. Testing registries
+carry the `edge` channel only. A channel kind selects the same profile on every
+tier that carries it: the tier describes the key custody and pipeline behind a
+registry, not what a release must prove. A per-train channel such as
+`stable-2026.3` has the kind of the prefix before its first `-` and selects
 that kind's destination.
 
 The release class, derived from the version, restricts which destinations a
@@ -112,8 +115,9 @@ contract type:
   day;
 - rings are strictly increasing and end at 256;
 - fitness kinds must be declared in the contract; and
-- a destination in the production registry tier (`andyl/main`) whose profile
-  selects claims requires at least one reviewer.
+- a candidate or stable destination whose profile selects claims requires at
+  least one reviewer, on every tier. Edge makes no support promise, so its
+  automated A2 evidence is published without a review.
 
 A reviewed contract revision may change shipped values with `mkForce`, within
 those floors. Record the frozen plan's values; the plan binds each
