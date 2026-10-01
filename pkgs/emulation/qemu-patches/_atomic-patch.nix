@@ -6,7 +6,7 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "5a70238b51bfab9846fb856248d8df14ae1e2b9faca05b09ed9f7d30af332d84";
+  sha256 = "0a722f398a903697e0d6596e235ebac0a43d507f76818d90196fa73dda4ceb9d";
   subject = "crucible: integrate deterministic QEMU execution";
   body = builtins.concatStringsSep "\n" [
     "Integrate Crucible's versioned GPL-side plugin protocol, exact checkpoint,"
@@ -163,9 +163,16 @@
     "Pass the source firmware directory explicitly to the pre-install multiboot check. Preserve uninitialized nonperiodic PIT startup before HPET enables its IRQ, and reject a zero periodic divisor."
     ""
     "Preserve fullword ICH9 TCO, software SMI and periodic SMI timer state, require exact mode-tagged migration and validate all auxiliary deadlines before any timer arm."
+    ""
+    "Wait for the detached call_rcu worker to process a drain callback before"
+    "hot-fork child unit tests inspect the registry. This stabilizes the"
+    "strict three-entry startup assertion without changing runtime behavior."
+    ""
+    "Report runstate and VMStop transaction and flush facts when template"
+    "preparation rejects the exact paused boundary; leave its guards intact."
   ];
-  commit = "ba5604dd75cda9f20826bacb09d7aa0c1bb4a1fd";
-  tree = "da4ab9e54ca0908b7558b2af8e0301b1f1a686c9";
+  commit = "706f48e102f26d3230c1a536f4e53f92d72a9f08";
+  tree = "b6e3639ee4db89e807e005d91a078153f3f5f0e5";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
@@ -174,13 +181,13 @@
   branchRef = "crucible/qemu-11.1.1";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "32a3124eb45f0c75c5d68c6690a7473236448fa11f8c774daa73ea25b2a7d09e";
+  bundleSha256 = "2c4ad4edef2bf650640767c196968065fd583f418e66b9f53e727516d327ebd1";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2001-01-01T00:00:01Z";
+  deterministicPatchDate = "2026-09-30T19:23:17-07:00";
 
   additionalCapabilities = [
     {
