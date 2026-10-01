@@ -155,22 +155,24 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
             .await
             .unwrap();
         }
-        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
-        let outcome = index_and_record_from_placement(
-            &db,
-            &LocalFsFetch::new(&fixture.registry.root)
-                .with_image_snapshots(Arc::clone(&image_snapshots))
-                .with_image_snapshot_indexing(),
-            &registry,
-            Some(placement.id),
-        )
-        .await
-        .unwrap();
-        assert_eq!(outcome.packages, 1);
-        assert_eq!(db.list_system_images(registry_id).await.unwrap().len(), 2);
         if registry_id == public_id {
+            // The producer target starts without inventory-derived catalogue
+            // rows: their unknown accounting origin cannot authorize uploads.
             public_placement_id = Some(placement.id);
         } else {
+            let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+            let outcome = index_and_record_from_placement(
+                &db,
+                &LocalFsFetch::new(&fixture.registry.root)
+                    .with_image_snapshots(Arc::clone(&image_snapshots))
+                    .with_image_snapshot_indexing(),
+                &registry,
+                Some(placement.id),
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome.packages, 1);
+            assert_eq!(db.list_system_images(registry_id).await.unwrap().len(), 2);
             private_placement_id = Some(placement.id);
         }
     }
@@ -226,19 +228,6 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
             public_fixture.release_commit,
         )],
     );
-    let public_registry = db.registry_by_id(public_id).await.unwrap().unwrap();
-    let outcome = index_and_record_from_placement(
-        &db,
-        &LocalFsFetch::new(&public_fixture.registry.root)
-            .with_image_snapshots(Arc::clone(&image_snapshots))
-            .with_image_snapshot_indexing(),
-        &public_registry,
-        public_placement_id,
-    )
-    .await
-    .unwrap();
-    assert_eq!(outcome.packages, 0);
-    assert_eq!(db.list_system_images(public_id).await.unwrap().len(), 2);
 
     let user = db
         .create_user("image-reader@example.invalid", None)
@@ -383,6 +372,30 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     assert_eq!(status, StatusCode::OK, "{}", String::from_utf8_lossy(&body));
     let committed: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(committed["state"], "ready");
+
+    let published_bytes = publication_files
+        .iter()
+        .map(|(_, bytes, _)| i64::try_from(bytes.len()).unwrap())
+        .sum::<i64>();
+    assert_eq!(db.org_usage(org).await.unwrap().used_bytes, published_bytes);
+
+    // Index the public surface after publication establishes each object's
+    // accounting origin and verified charge. The signed tag still supplies
+    // images when default-branch HEAD contains no packages.
+    let public_registry = db.registry_by_id(public_id).await.unwrap().unwrap();
+    let outcome = index_and_record_from_placement(
+        &db,
+        &LocalFsFetch::new(&public_fixture.registry.root)
+            .with_image_snapshots(Arc::clone(&image_snapshots))
+            .with_image_snapshot_indexing(),
+        &public_registry,
+        public_placement_id,
+    )
+    .await
+    .unwrap();
+    assert_eq!(outcome.packages, 0);
+    assert_eq!(db.list_system_images(public_id).await.unwrap().len(), 2);
+    assert_eq!(db.org_usage(org).await.unwrap().used_bytes, published_bytes);
 
     let list_body = br#"{"slug":"images/public","channel":"stable"}"#.to_vec();
     let (status, _, body) = request(
