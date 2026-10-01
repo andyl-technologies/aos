@@ -49,7 +49,7 @@ impl<'open> BrokerPhysicalOpenV1<'open> {
 
 /// Keeps the original restricted sealed backend attached to the shared owner.
 pub(in crate::recovery::journal::tpm_floor) struct PhysicalTpmNvIoV1 {
-    owner: RetainedPhysicalTpmOwnerV1,
+    owner: RetainedPhysicalTpmOwnerV1<'static, 'static, 'static>,
 }
 
 impl PhysicalTpmNvIoV1 {

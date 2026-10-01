@@ -4,13 +4,16 @@
 //! second, with no create, repair, seed or recovery fallback. Transient Core
 //! guards reborrow these same owned fields; no self-borrowed guard is stored.
 //! The whole owner and exact TX remain borrowed through native funding DATA.
-//! No Host effect, physical TPM, AUTH transfer, lock loan or activation exists.
+//! The private physical borrow can lend only these same original locks and
+//! compare this complete disk pair. No journal effect or activation is exposed.
 
 use std::path::Path;
 
 use aos_sandbox::{
+    HostPhysicalInvocationErrorV1, HostPhysicalInvocationLeaseV1,
     Journal, JournalLimits, JournalTransaction, ProtectedJournalPreflight,
-    ProtectedJournalSnapshot, RecordNamespace, RuntimeDeploymentComparisonOriginsV1,
+    ProtectedJournalSnapshot, ProtectedJournalLockCustodyV1,
+    RecordNamespace, RuntimeDeploymentComparisonOriginsV1,
 };
 
 use super::{
@@ -234,6 +237,88 @@ impl<'origin, 'startup> HostOwnedJournalInputsV1<'origin, 'startup> {
         self.store.validate_held()?;
         self.origins.recheck()?;
         Ok(stored)
+    }
+}
+
+/// Parks the SAME whole owner before any fallible physical invocation work.
+///
+/// No raw writer or configurable input escapes. The physical owner retains
+/// this borrow; it alone may use these named original comparison/loan seams.
+pub(in crate::tpm_nv_custody) struct HeldHostPhysicalJournalV1<'owner, 'origin, 'startup> {
+    owner: &'owner mut HostOwnedJournalInputsV1<'origin, 'startup>,
+    admitted_usable: bool,
+}
+
+impl<'owner, 'origin, 'startup> HeldHostPhysicalJournalV1<'owner, 'origin, 'startup> {
+    pub(super) fn park(owner: &'owner mut HostOwnedJournalInputsV1<'origin, 'startup>) -> Self {
+        let admitted_usable = owner.usable;
+        owner.usable = false;
+        Self { owner, admitted_usable }
+    }
+
+    pub(super) fn claim_invocation(
+        &self,
+    ) -> Result<HostPhysicalInvocationLeaseV1<'origin, 'startup>, HostPhysicalInvocationErrorV1> {
+        self.owner.origins.claim_host_physical_invocation()
+    }
+
+    pub(super) fn close(&mut self) {
+        self.admitted_usable = false;
+        self.owner.usable = false;
+    }
+
+    pub(super) fn compare_state(
+        &mut self,
+    ) -> Result<(StoredHostFloorV1, [u8; 32]), HostOwnedJournalErrorV1> {
+        if !self.admitted_usable {
+            return Err(HostOwnedJournalErrorV1::Unusable);
+        }
+        let stored = self.owner.recheck_inner()?;
+        let scope = self.owner.origins_scope()?;
+        if self.owner.recheck_inner()? != stored {
+            return Err(HostOwnedJournalErrorV1::Changed);
+        }
+        Ok((stored, scope))
+    }
+
+    pub(super) fn helper_path(&self) -> &Path {
+        self.owner.inputs.helper_path()
+    }
+
+    pub(super) fn require_executed_helper(
+        &mut self,
+        pid: u32,
+    ) -> Result<(), super::HostTpmAdmissionErrorV1> {
+        self.owner.inputs.require_executed_helper(pid)
+    }
+
+    pub(super) fn current_auth(
+        &mut self,
+    ) -> Result<zeroize::Zeroizing<[u8; 32]>, super::HostTpmAdmissionErrorV1> {
+        self.owner.inputs.current_auth()
+    }
+
+    pub(super) fn names(&self) -> ([u8; 34], [u8; 34]) {
+        let claims = self.owner.origins.genesis_claims();
+        (claims.nv_name, claims.salt_name)
+    }
+
+    pub(super) fn loan_main(
+        &mut self,
+    ) -> Result<ProtectedJournalLockCustodyV1, HostOwnedJournalErrorV1> {
+        self.compare_state()?;
+        let loan = self.owner.origins.hold_main(&mut self.owner.main)?.loan_main_lock()?;
+        self.compare_state()?;
+        Ok(loan)
+    }
+
+    pub(super) fn loan_sidecar(
+        &mut self,
+    ) -> Result<ProtectedJournalLockCustodyV1, HostOwnedJournalErrorV1> {
+        self.compare_state()?;
+        let loan = self.owner.store.loan_host_lock()?;
+        self.compare_state()?;
+        Ok(loan)
     }
 }
 

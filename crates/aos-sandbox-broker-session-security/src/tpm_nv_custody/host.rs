@@ -3,10 +3,11 @@
 //! The input owner borrows Core's actual comparison Origins and retains fixed
 //! mode, auth commitment and helper/loader inputs. A separate private disk
 //! owner admits two original existing Journals and exact native funding DATA.
-//! Neither opens a TPM, spawns a child, lends a lock or publishes an effect.
-//! A later closed coordinator must independently authenticate the real carrier,
-//! both original writers and fresh NV. Input rechecks cannot stand in for that
-//! ownership or a failed-invocation population barrier.
+//! The closed physical read consumer parks that same whole owner and derives
+//! its one-shot invocation from the same Origins. It alone admits the fixed
+//! helper, original lock loans and fresh055 classification, never an effect.
+//! A durable coordinator, independent bootstrap publisher and installed
+//! terminal-population/next-activation producer remain separate prerequisites.
 
 use aos_sandbox::{
     RuntimeDeploymentComparisonErrorV1, RuntimeDeploymentComparisonOriginsV1,
@@ -19,6 +20,7 @@ use crate::recovery::{FloorErrorV1, MeasuredHelperImageV1};
 mod provisioning;
 mod journal;
 mod store;
+pub(super) mod physical;
 
 pub(super) use journal::HostSidecarCustodyV1;
 
@@ -136,6 +138,22 @@ impl<'origin, 'startup> AdmittedHostTpmInputsV1<'origin, 'startup> {
         self.recheck_inner()?;
         self.usable = true;
         Ok(auth)
+    }
+
+    pub(super) fn helper_path(&self) -> &std::path::Path {
+        self.image.path()
+    }
+
+    pub(super) fn require_executed_helper(&mut self, pid: u32) -> Result<(), HostTpmAdmissionErrorV1> {
+        self.recheck()?;
+        begin_recheck(&mut self.usable)?;
+        self.image.require_executed(pid)
+            .map_err(HostTpmAdmissionErrorV1::Image)?;
+        self.image.revalidate()
+            .map_err(HostTpmAdmissionErrorV1::Image)?;
+        self.recheck_inner()?;
+        self.usable = true;
+        Ok(())
     }
 
     fn recheck_inner(&mut self) -> Result<(), HostTpmAdmissionErrorV1> {
