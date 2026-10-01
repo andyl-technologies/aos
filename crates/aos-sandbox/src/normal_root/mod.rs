@@ -42,6 +42,7 @@ use profile::{CONTEXT, NormalRootProfileV1, UNIT};
 
 pub(crate) use client::OriginalNormalRootPeerV1;
 pub use client::{
+    ControllerProfileAdmissionFailureV1, ProductionControllerSelectedProfileAdmissionV1,
     ProductionControllerNormalRootCaptureV1, ProductionControllerNormalRootProfileV1,
     ProductionControllerNormalRootStartupPartsV1,
 };

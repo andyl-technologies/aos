@@ -6,8 +6,12 @@
 //! None of these objects can produce Intent, Floor or CurrentRead authority.
 
 pub(super) mod source_successor_credential;
+mod admission;
 
-use std::fs::File;
+pub use admission::{
+    ControllerProfileAdmissionFailureV1, ProductionControllerSelectedProfileAdmissionV1,
+};
+
 use std::num::NonZeroU32;
 use std::os::fd::OwnedFd;
 use std::path::Path;
@@ -23,7 +27,7 @@ use aos_systemd::{OwnedValue, Value};
 use crate::immutable_image::RetainedImmutableFileV1;
 
 use super::{
-    NormalRootStartupErrorV1, images, profile::NormalRootProfileV1, require_status, require_unit,
+    NormalRootStartupErrorV1, profile::NormalRootProfileV1, require_status, require_unit,
     retain_fixed_cgroup, service, startup,
 };
 
@@ -149,6 +153,17 @@ impl ProductionControllerNormalRootCaptureV1 {
         self.git_source_listener.take()
     }
 
+    /// Moves this actual returned capture into an armed admission reservoir.
+    ///
+    /// This infallible move performs no observation, allocation or duplication.
+    /// It cannot recover earlier table-copy or lower unreturned descriptions.
+    /// Failure or abandonment requires intentional process termination while
+    /// the retained attempt stays resident; no installed caller selects it yet.
+    #[must_use]
+    pub fn begin_retained_selected_admission(self) -> ProductionControllerSelectedProfileAdmissionV1 {
+        ProductionControllerSelectedProfileAdmissionV1::new(self)
+    }
+
     /// Retains actual selected inputs without requiring Root to have started.
     ///
     /// The configured identities are comparison inputs, not authority. The
@@ -162,70 +177,7 @@ impl ProductionControllerNormalRootCaptureV1 {
         uid: u32,
         gid: u32,
     ) -> Result<Option<ProductionControllerNormalRootProfileV1>, NormalRootStartupErrorV1> {
-        let Some(original) = self.profile else {
-            // Normal Controller also serves configurations without Root. No
-            // selected profile means this producer is unavailable, not legacy
-            // authority inferred from policy equality or a later pathname.
-            return Ok(None);
-        };
-        let nix_delivery = self.nix_delivery
-            .map(|fd| super::nix_startup::retain_controller_profile(File::from(fd)))
-            .transpose()?;
-        require_subject(CONTEXT).map_err(|_| NormalRootStartupErrorV1::Confinement)?;
-        let (profile_file, bytes) = images::retain_profile(File::from(original))?;
-        let profile = NormalRootProfileV1::decode(&bytes)?;
-        if profile.identities[..2] != [uid, gid]
-            || profile_file.path().parent() != Path::new(&profile.effective_matrix.path).parent()
-        {
-            return Err(NormalRootStartupErrorV1::Profile);
-        }
-        let policy = VerifiedLiveSelinuxPolicy::verify(&profile.canonical_policy.path)
-            .map_err(|_| NormalRootStartupErrorV1::Confinement)?;
-        if policy.digest() != profile.canonical_policy.sha256 {
-            return Err(NormalRootStartupErrorV1::Confinement);
-        }
-        let files = profile
-            .runtime_files
-            .iter()
-            .chain([
-                &profile.pid1,
-                &profile.canonical_policy,
-                &profile.source_policy,
-                &profile.effective_matrix,
-            ])
-            .map(|pin| {
-                let executable = pin.path == profile.executable.path
-                    || pin.path == profile.loader.path
-                    || pin.path == profile.pid1.path;
-                images::retain_pin(pin, None, executable)
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        let observed = observe_delivery(
-            profile_file.path(),
-            self.tpm_image,
-            nix_delivery.as_ref().map(|file| file.path()),
-        )?;
-        let fragment = RetainedImmutableFileV1::observe_fragment(observed.fragment.clone())
-            .map_err(|_| NormalRootStartupErrorV1::Service)?;
-        let process = PidFd::open(
-            NonZeroU32::new(std::process::id()).ok_or(NormalRootStartupErrorV1::Service)?,
-        )
-        .map_err(|_| NormalRootStartupErrorV1::Service)?;
-        let cgroup = retain_fixed_cgroup(Path::new(CGROUP))?;
-        let retained = ProductionControllerNormalRootProfileV1 {
-            profile_file,
-            profile,
-            files,
-            policy,
-            fragment,
-            observed,
-            process,
-            cgroup,
-            tpm_image: self.tpm_image,
-            nix_delivery,
-        };
-        retained.recheck()?;
-        Ok(Some(retained))
+        admission::legacy_recipe(self, uid, gid)
     }
 }
 

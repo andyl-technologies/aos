@@ -37,6 +37,131 @@ pub struct RetainedImmutableFileV1 {
     executable: bool,
 }
 
+// This is measurement storage, never selected-profile or role authority. The
+// administrative admission owner parks it before entering fallible checks.
+#[derive(Default)]
+pub(crate) struct PendingImmutableFileV1 {
+    file: Option<File>,
+    path: Option<PathBuf>,
+    measured: Option<RetainedImmutableFileV1>,
+    complete: bool,
+    bytes: Vec<u8>,
+}
+
+impl PendingImmutableFileV1 {
+    pub(crate) fn park_original(&mut self, file: File) {
+        self.file = Some(file);
+    }
+
+    pub(crate) fn original(&self) -> Result<&File, ImmutableImageErrorV1> {
+        self.file.as_ref().ok_or(ImmutableImageErrorV1::Provisioning)
+    }
+
+    pub(crate) fn open_and_measure(
+        &mut self,
+        path: PathBuf,
+        expected_digest: Option<[u8; 32]>,
+        maximum_bytes: u64,
+        executable: bool,
+    ) -> Result<(), ImmutableImageErrorV1> {
+        self.path = Some(path);
+        let path = self.path.as_ref().ok_or(ImmutableImageErrorV1::Provisioning)?;
+        require_immutable_path(path)?;
+        let file = File::from(
+            openat(
+                CWD,
+                path,
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )
+            .map_err(|_| ImmutableImageErrorV1::Unavailable)?,
+        );
+        self.file = Some(file);
+        self.measure_parked(expected_digest, maximum_bytes, executable)
+    }
+
+    pub(crate) fn measure_original(
+        &mut self,
+        path: PathBuf,
+        expected_digest: Option<[u8; 32]>,
+        maximum_bytes: u64,
+        executable: bool,
+    ) -> Result<(), ImmutableImageErrorV1> {
+        self.path = Some(path);
+        self.measure_parked(expected_digest, maximum_bytes, executable)
+    }
+
+    fn measure_parked(
+        &mut self,
+        expected_digest: Option<[u8; 32]>,
+        maximum_bytes: u64,
+        executable: bool,
+    ) -> Result<(), ImmutableImageErrorV1> {
+        let path = self.path.as_ref().ok_or(ImmutableImageErrorV1::Provisioning)?;
+        require_immutable_path(path)?;
+        let metadata = self.original()?.metadata()
+            .map_err(|_| ImmutableImageErrorV1::Unavailable)?;
+
+        // Both removals are checked together. An impossible missing slot still
+        // returns its actual originals to this reservoir before refusal.
+        let originals = (self.file.take(), self.path.take());
+        let (file, path) = match originals {
+            (Some(file), Some(path)) => (file, path),
+            (file, path) => {
+                self.file = file;
+                self.path = path;
+                return Err(ImmutableImageErrorV1::Provisioning);
+            }
+        };
+        self.measured = Some(RetainedImmutableFileV1 {
+            file,
+            path,
+            digest: [0; 32],
+            identity: identity(&metadata),
+            maximum_bytes,
+            executable,
+        });
+        self.measured.as_mut().ok_or(ImmutableImageErrorV1::Provisioning)?
+            .complete_measurement(expected_digest)?;
+        self.complete = true;
+        Ok(())
+    }
+
+    pub(crate) fn read_bounded(&mut self) -> Result<(), ImmutableImageErrorV1> {
+        let measured = self.measurement()?;
+        let length = measured.bounded_read_length()?;
+        self.bytes = vec![0; length];
+        self.measured.as_ref().ok_or(ImmutableImageErrorV1::Provisioning)?
+            .read_original_buffer(&mut self.bytes)
+    }
+
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    pub(crate) fn measurement(&self) -> Result<&RetainedImmutableFileV1, ImmutableImageErrorV1> {
+        if !self.complete {
+            return Err(ImmutableImageErrorV1::Provisioning);
+        }
+        self.measured.as_ref().ok_or(ImmutableImageErrorV1::Provisioning)
+    }
+
+    pub(crate) fn take_measurement(&mut self) -> Option<RetainedImmutableFileV1> {
+        if !self.complete {
+            return None;
+        }
+        self.complete = false;
+        self.measured.take()
+    }
+
+    // Restores only the same already-measured tuple member after an assembly
+    // invariant refusal. The administrative attempt remains permanently ended.
+    pub(crate) fn restore_measurement(&mut self, measured: Option<RetainedImmutableFileV1>) {
+        self.complete = measured.is_some();
+        self.measured = measured;
+    }
+}
+
 impl RetainedImmutableFileV1 {
     /// Compares one immutable executable against separately selected bytes.
     ///
@@ -66,12 +191,7 @@ impl RetainedImmutableFileV1 {
         maximum_bytes: u64,
         executable: bool,
     ) -> Result<Self, ImmutableImageErrorV1> {
-        if !path.starts_with("/nix/store")
-            || std::fs::canonicalize(&path).map_err(|_| ImmutableImageErrorV1::Provisioning)?
-                != path
-        {
-            return Err(ImmutableImageErrorV1::Provisioning);
-        }
+        require_immutable_path(&path)?;
         let file = File::from(
             openat(
                 CWD,
@@ -97,12 +217,7 @@ impl RetainedImmutableFileV1 {
         maximum_bytes: u64,
         executable: bool,
     ) -> Result<Self, ImmutableImageErrorV1> {
-        if !path.starts_with("/nix/store")
-            || std::fs::canonicalize(&path).map_err(|_| ImmutableImageErrorV1::Provisioning)?
-                != path
-        {
-            return Err(ImmutableImageErrorV1::Provisioning);
-        }
+        require_immutable_path(&path)?;
         let metadata = file
             .metadata()
             .map_err(|_| ImmutableImageErrorV1::Unavailable)?;
@@ -114,14 +229,21 @@ impl RetainedImmutableFileV1 {
             maximum_bytes,
             executable,
         };
-        measured.validate_names()?;
-        let observed = measured.current_digest()?;
+        measured.complete_measurement(expected_digest)?;
+        Ok(measured)
+    }
+
+    fn complete_measurement(
+        &mut self,
+        expected_digest: Option<[u8; 32]>,
+    ) -> Result<(), ImmutableImageErrorV1> {
+        self.validate_names()?;
+        let observed = self.current_digest()?;
         if expected_digest.is_some_and(|digest| digest != observed) {
             return Err(ImmutableImageErrorV1::Provisioning);
         }
-        measured.digest = observed;
-        measured.revalidate()?;
-        Ok(measured)
+        self.digest = observed;
+        self.revalidate()
     }
 
     /// Rechecks the same original immutable file, name and bounded bytes.
@@ -180,15 +302,22 @@ impl RetainedImmutableFileV1 {
     /// # Errors
     /// Rejects changed custody, length overflow or incomplete reads.
     pub fn read_bounded(&self) -> Result<Vec<u8>, ImmutableImageErrorV1> {
-        self.revalidate()?;
-        let length =
-            usize::try_from(self.identity.2).map_err(|_| ImmutableImageErrorV1::Provisioning)?;
+        let length = self.bounded_read_length()?;
         let mut bytes = vec![0; length];
-        self.file
-            .read_exact_at(&mut bytes, 0)
-            .map_err(|_| ImmutableImageErrorV1::Unavailable)?;
-        self.revalidate()?;
+        self.read_original_buffer(&mut bytes)?;
         Ok(bytes)
+    }
+
+    fn bounded_read_length(&self) -> Result<usize, ImmutableImageErrorV1> {
+        self.revalidate()?;
+        usize::try_from(self.identity.2).map_err(|_| ImmutableImageErrorV1::Provisioning)
+    }
+
+    fn read_original_buffer(&self, bytes: &mut [u8]) -> Result<(), ImmutableImageErrorV1> {
+        self.file
+            .read_exact_at(bytes, 0)
+            .map_err(|_| ImmutableImageErrorV1::Unavailable)?;
+        self.revalidate()
     }
 
     fn validate_names(&self) -> Result<(), ImmutableImageErrorV1> {
@@ -241,6 +370,15 @@ impl RetainedImmutableFileV1 {
         }
         Ok(hash.finalize().into())
     }
+}
+
+fn require_immutable_path(path: &Path) -> Result<(), ImmutableImageErrorV1> {
+    if !path.starts_with("/nix/store")
+        || std::fs::canonicalize(path).map_err(|_| ImmutableImageErrorV1::Provisioning)? != path
+    {
+        return Err(ImmutableImageErrorV1::Provisioning);
+    }
+    Ok(())
 }
 
 /// Rejects file-status flags that do not describe a read-only data descriptor.
