@@ -10,6 +10,7 @@
       '"status":"$status","request_http_bytes":"$request_length",'
       '"request_body_bytes":"$content_length","response_body_bytes":"$body_bytes_sent",'
       '"response_http_bytes":"$bytes_sent","elapsed_seconds":"$request_time",'
+      '"completed_unix_seconds":"$msec",'
       '"upstream_status":"$upstream_status","upstream_seconds":"$upstream_response_time",'
       '"request_id":"$request_id","request_body_file":"$request_body_file",'
       '"response_body_file":"${root}/response-bodies/$request_id",'

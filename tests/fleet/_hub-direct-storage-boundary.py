@@ -159,16 +159,43 @@ def observe_direct_boundary_lifetimes(native, worker, tools, stage):
     return observed
 
 
+def direct_storage_completion_receipts(text, worker_received=False):
+    """Retain actual proxy completion UTC independently of a plan's claimed time.
+
+    The access-log observation follows proxy response completion. It is not an
+    exact in-handler authorization clock and cannot supply current permission.
+    """
+    normalized, completed = [], {}
+    extra = {"origin_request_id", "caller"} if worker_received else set()
+    for line in text.splitlines():
+        raw = _closed_review_json(line)
+        if set(raw) != NATIVE_OBSERVATION_FIELDS | extra | {"completed_unix_seconds"}:
+            raise ValueError("storage completion receipt differs from its closed schema")
+        observed = raw.pop("completed_unix_seconds")
+        if not isinstance(observed, str) or not re.fullmatch(r"(?:0|[1-9][0-9]{0,12})\.[0-9]{3}", observed):
+            raise ValueError("actual proxy completion UTC is missing or malformed")
+        seconds, milliseconds = observed.split(".")
+        identifier = raw["request_id"]
+        if identifier in completed:
+            raise ValueError("proxy completion request identity is ambiguous")
+        completed[identifier] = str(int(seconds) * 1000 + int(milliseconds))
+        normalized.append(raw)
+    return normalized, completed
+
+
 def capture_direct_storage_boundary(native, worker, tools, native_text, worker_text,
                                     runtime_text, source_digest, native_address):
     """Join every actual Native request to its independently received bytes."""
-    originals = native_control_observations(native_text, "/var/lib/hybrid-native-outbound")
+    native_raw, native_completed = direct_storage_completion_receipts(native_text)
+    worker_raw, worker_completed = direct_storage_completion_receipts(worker_text, True)
+    originals = native_control_observations(
+        "\n".join(json.dumps(row) for row in native_raw), "/var/lib/hybrid-native-outbound",
+    )
     original_observations, original_bodies = capture_direct_native_bodies(
         native, tools, originals, "/var/lib/hybrid-native-outbound", "native-original",
     )
     received, correlations, unrelated = [], {}, []
-    for line in worker_text.splitlines():
-        raw = _closed_review_json(line)
+    for raw in worker_raw:
         if set(raw) != NATIVE_OBSERVATION_FIELDS | {"origin_request_id", "caller"}:
             raise ValueError("Worker storage receipt schema differs")
         origin, caller = raw.pop("origin_request_id"), raw.pop("caller")
@@ -176,6 +203,7 @@ def capture_direct_storage_boundary(native, worker, tools, native_text, worker_t
         if caller != native_address:
             unrelated.append({"requestId": raw["request_id"],
                 "callerSha256": hashlib.sha256(caller.encode()).hexdigest(),
+                "workerProxyCompletedAtUnixMillis": worker_completed[raw["request_id"]],
                 "scope": "outside selected Native-origin boundary"})
             continue
         if not re.fullmatch(r"[0-9a-f]{32}", origin):
@@ -239,7 +267,8 @@ def capture_direct_storage_boundary(native, worker, tools, native_text, worker_t
             unresolved.append(identifier)
             continue
         captures.append({**body, "storageWorkSelection": {"sourceDigest": source_digest,
-            "originalPlan": dict(original["bodies"]["request"])}})
+            "originalPlan": dict(original["bodies"]["request"]),
+            "completionObservedAtUnixMillis": worker_completed[body["requestId"]]}})
         authenticated.append({"requestId": body["requestId"],
             "nativeRequestId": identifier, "planIdSha256": hashlib.sha256(plan.encode()).hexdigest(),
             "operation": operation, "requestSha256": body["bodies"]["request"]["sha256"],
@@ -247,6 +276,9 @@ def capture_direct_storage_boundary(native, worker, tools, native_text, worker_t
             "replySha256": body["bodies"]["response"]["sha256"],
             "requestBytes": request_bytes, "replyBytes": response_bytes,
             "executorSourceBytes": source_bytes,
+            "nativeProxyCompletedAtUnixMillis": native_completed[identifier],
+            "workerProxyCompletedAtUnixMillis": worker_completed[body["requestId"]],
+            "completionClockScope": "actual proxy response completion; not exact handler authorization time",
             "scope": "actual protected production handler completion plus independent original/received bytes; no fresh authority inference"})
     missing_originals = sorted(set(by_origin) - accounted)
     report = {"version": 1, "captures": captures, "authenticatedCompletions": authenticated,
