@@ -5,6 +5,8 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod retirement;
+
 use super::*;
 use crate::cbor;
 use crate::refs::Locality;
@@ -28,6 +30,7 @@ fn state(revision: u64) -> PublicationState {
         binding: local(),
         branches: vec![],
         guard: None,
+        burn_owners: None,
     }
 }
 

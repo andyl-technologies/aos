@@ -14,7 +14,10 @@
 //! ```
 
 mod cbor;
+pub mod evidence;
 mod validation;
+
+pub use super::retirement::{PermanentBurnOwner, PermanentOwnerSelection};
 
 use crate::refs::RefRecord;
 use alloc::{boxed::Box, string::String, vec::Vec};
@@ -220,6 +223,9 @@ pub struct PublicationState {
     pub branches: Vec<HistoryEntry>,
     /// Selected Guard snapshot digest, or explicit pre-Guard absence.
     pub guard: Option<RawDigest>,
+    /// Recoverable permanent owners sorted uniquely by pack ID.
+    /// Absence is legacy unknown, while an empty array is explicitly complete.
+    pub burn_owners: Option<Vec<PermanentBurnOwner>>,
 }
 
 /// Holds the optional nonauthoritative selected-commit cache.
@@ -268,6 +274,13 @@ pub enum PublicationProof {
         fence_digest: RawDigest,
         /// Exact removed pack/index witnesses in their recorded order.
         removed: Vec<RemovedPack>,
+        /// Carried source/prior-lineage pairs, sorted uniquely by name.
+        carried: Vec<SourceLineage>,
+    },
+    /// Separately privately checked permanent physical retirement (D-82 case 3).
+    PermanentRetirement {
+        /// Exact canonical immutable authorization, never private permission.
+        authorization: Vec<u8>,
         /// Carried source/prior-lineage pairs, sorted uniquely by name.
         carried: Vec<SourceLineage>,
     },

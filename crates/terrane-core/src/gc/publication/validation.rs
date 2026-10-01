@@ -175,11 +175,9 @@ fn logical_key(key: &str) -> Result<(), PublicationError> {
         return Ok(());
     }
     BucketKey::parse(key).map_err(|_| PublicationError::Schema)?;
-    // Unsuffixed refs are exclusively read-only legacy names. A protected
-    // deletion intent is never a selected logical payload value.
-    if key.starts_with("refs/") && !key.ends_with(":record")
-        || key.starts_with("gc/") && key.contains("/delete/")
-    {
+    // Unsuffixed refs are exclusively read-only legacy names. Selected v2
+    // retirement controls are checked separately and stay outside projections.
+    if key.starts_with("refs/") && !key.ends_with(":record") {
         return Err(PublicationError::Schema);
     }
     Ok(())
@@ -283,6 +281,14 @@ pub(super) fn snapshot(record: &PortableSnapshot) -> Result<(), PublicationError
 /// Rejects invalid field shapes or represented contradictions.
 pub(super) fn state(record: &PublicationState) -> Result<(), PublicationError> {
     binding(&record.binding)?;
+    if let Some(owners) = &record.burn_owners {
+        if owners.windows(2).any(|pair| pair[0].pack >= pair[1].pack) {
+            return Err(PublicationError::Schema);
+        }
+        for owner in owners {
+            owner.encode().map_err(|_| PublicationError::Schema)?;
+        }
+    }
     history(&record.branches)?;
     sources(&record.sources)?;
     if record.guard.is_none() && !record.sources.is_empty() {
@@ -305,6 +311,21 @@ pub(super) fn state(record: &PublicationState) -> Result<(), PublicationError> {
 /// # Errors
 /// Rejects invalid field shapes or represented contradictions.
 pub(super) fn proof(proof: &PublicationProof) -> Result<(), PublicationError> {
+    if let PublicationProof::PermanentRetirement {
+        authorization,
+        carried,
+    } = proof
+    {
+        let authorization =
+            super::super::retirement::PermanentDeleteAuthorization::decode(authorization)
+                .map_err(|_| PublicationError::Schema)?;
+        sources(carried)?;
+        if !carried.is_empty()
+            && matches!(authorization, super::super::retirement::PermanentDeleteAuthorization::Copied(ref copy) if copy.lineage_fence.is_none())
+        {
+            return Err(PublicationError::Contradiction);
+        }
+    }
     if let PublicationProof::Collection {
         fence_key: key,
         removed,
@@ -401,6 +422,13 @@ pub(super) fn transaction(record: &PublicationTransaction) -> Result<(), Publica
 
     match (&record.old, &record.predecessor) {
         (None, None) => {
+            if record.new.burn_owners.as_ref().is_some_and(|owners| {
+                owners
+                    .iter()
+                    .any(|owner| matches!(owner.selection, PermanentOwnerSelection::Permanent(_)))
+            }) {
+                return Err(PublicationError::Contradiction);
+            }
             if record.new.revision != 0 || record.changes.iter().any(|row| row.expected.is_some()) {
                 return Err(PublicationError::Contradiction);
             }
@@ -436,14 +464,48 @@ pub(super) fn transaction(record: &PublicationTransaction) -> Result<(), Publica
             {
                 return Err(PublicationError::Contradiction);
             }
+            next_owners(old, &record.new, &record.proof)?;
             next_history(old, &record.new, &record.changes)?;
             transition_proof(old, &record.new, &record.proof, &record.changes)?;
         }
         _ => return Err(PublicationError::Contradiction),
     }
 
+    if let PublicationProof::PermanentRetirement { authorization, .. } = &record.proof {
+        let authorization =
+            super::super::retirement::PermanentDeleteAuthorization::decode(authorization)
+                .map_err(|_| PublicationError::Schema)?;
+        authorization
+            .check_predecessor(record.old.as_ref().ok_or(PublicationError::Contradiction)?)
+            .map_err(|_| PublicationError::Contradiction)?;
+        if authorization.backend() != &record.new.binding {
+            return Err(PublicationError::Contradiction);
+        }
+    }
+
     for row in &record.changes {
         logical_key(&row.key)?;
+        if row.key.starts_with("gc/") && row.key.contains("/delete/") {
+            super::super::retirement::publication::check_change(record, row)?;
+        }
+        if row.key.starts_with("objects/index/")
+            && row.key.ends_with("/MANIFEST")
+            && let Some(bytes) = &row.new
+        {
+            let manifest = crate::bucket::GenerationManifest::decode(bytes)
+                .map_err(|_| PublicationError::Schema)?;
+            record.new.check_manifest_burns(&manifest)?;
+            if row.key != alloc::format!("objects/index/{}/MANIFEST", manifest.generation) {
+                return Err(PublicationError::Contradiction);
+            }
+            if let Some(previous) = &row.expected {
+                let previous = crate::bucket::GenerationManifest::decode(previous)
+                    .map_err(|_| PublicationError::Schema)?;
+                previous
+                    .check_burn_successor(&manifest)
+                    .map_err(|_| PublicationError::Contradiction)?;
+            }
+        }
         let current = whole_ref(&row.key, row.new.as_deref())?;
         let previous = whole_ref(&row.key, row.expected.as_deref())?;
         if let Some(name) = row.key.strip_suffix(":record")
@@ -505,6 +567,7 @@ pub(super) fn transaction(record: &PublicationTransaction) -> Result<(), Publica
     {
         return Err(PublicationError::Contradiction);
     }
+    super::super::retirement::publication::check_owner_change(record)?;
     Ok(())
 }
 
@@ -564,6 +627,22 @@ fn transition_proof(
                 return Err(PublicationError::Contradiction);
             }
             if new.sources.len() != carried.len() {
+                return Err(PublicationError::Contradiction);
+            }
+            for (next, prior) in new.sources.iter().zip(carried) {
+                if next.name != prior.name || !old.sources.contains(prior) {
+                    return Err(PublicationError::Contradiction);
+                }
+            }
+        }
+        PublicationProof::PermanentRetirement { carried, .. } => {
+            if old
+                .loss_generation
+                .checked_add(1)
+                .ok_or(PublicationError::Exhausted)?
+                != new.loss_generation
+                || new.sources.len() != carried.len()
+            {
                 return Err(PublicationError::Contradiction);
             }
             for (next, prior) in new.sources.iter().zip(carried) {
@@ -753,5 +832,98 @@ impl PortableSnapshot {
             return Err(PublicationError::Contradiction);
         }
         Ok(())
+    }
+}
+
+fn next_owners(
+    old: &PublicationState,
+    new: &PublicationState,
+    proof: &PublicationProof,
+) -> Result<(), PublicationError> {
+    let expected = if let PublicationProof::PermanentRetirement { authorization, .. } = proof {
+        let decoded = super::super::retirement::PermanentDeleteAuthorization::decode(authorization)
+            .map_err(|_| PublicationError::Schema)?;
+        let exclusion = decoded.exclusion();
+        let pack = exclusion
+            .pack
+            .iter()
+            .map(|byte| alloc::format!("{byte:02x}"))
+            .collect::<String>();
+        let nonce = decoded
+            .nonce()
+            .iter()
+            .map(|byte| alloc::format!("{byte:02x}"))
+            .collect::<String>();
+        let key = alloc::format!("gc/{}/delete/{pack}/{nonce}", exclusion.cycle);
+        Some(PermanentBurnOwner {
+            pack: exclusion.pack,
+            selection: PermanentOwnerSelection::Permanent(
+                super::super::retirement::RecordPointer {
+                    key,
+                    digest: *blake3::hash(authorization).as_bytes(),
+                },
+            ),
+        })
+    } else {
+        None
+    };
+
+    if old.burn_owners.is_some() && new.burn_owners.is_none() {
+        return Err(PublicationError::Contradiction);
+    }
+    let old_rows = old.burn_owners.as_deref().unwrap_or_default();
+    let new_rows = new.burn_owners.as_deref().unwrap_or_default();
+    for prior in old_rows {
+        let next = new_rows
+            .iter()
+            .find(|row| row.pack == prior.pack)
+            .ok_or(PublicationError::Contradiction)?;
+        if next != prior
+            && !(prior.selection == PermanentOwnerSelection::CopiedVisibility
+                && expected.as_ref() == Some(next))
+        {
+            return Err(PublicationError::Contradiction);
+        }
+    }
+    for next in new_rows {
+        if !old_rows.iter().any(|row| row.pack == next.pack) && expected.as_ref() != Some(next) {
+            return Err(PublicationError::Contradiction);
+        }
+    }
+    if let Some(expected) = expected
+        && (old.burn_owners.is_none()
+            || new.burn_owners.is_none()
+            || !new_rows.contains(&expected)
+            || old_rows.iter().any(|prior| {
+                prior.pack == expected.pack
+                    && matches!(prior.selection, PermanentOwnerSelection::Permanent(_))
+            }))
+    {
+        return Err(PublicationError::Contradiction);
+    }
+    Ok(())
+}
+
+impl PublicationState {
+    /// Checks that represented owner IDs exactly equal the current MANIFEST burns.
+    ///
+    /// Known empty and legacy unknown remain distinct. This checks data only;
+    /// it cannot establish selection, migration, copy freshness or owner permission.
+    ///
+    /// # Errors
+    /// Rejects malformed records, completeness disagreement or unequal pack-ID sets.
+    pub fn check_manifest_burns(
+        &self,
+        manifest: &crate::bucket::GenerationManifest,
+    ) -> Result<(), PublicationError> {
+        state(self)?;
+        manifest.encode().map_err(|_| PublicationError::Schema)?;
+        match (&self.burn_owners, &manifest.burns) {
+            (None, None) => Ok(()),
+            (Some(owners), Some(burns)) if owners.iter().map(|row| &row.pack).eq(burns.iter()) => {
+                Ok(())
+            }
+            _ => Err(PublicationError::Contradiction),
+        }
     }
 }

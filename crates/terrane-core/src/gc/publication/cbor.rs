@@ -469,7 +469,14 @@ impl Record for PortableSnapshot {
 
 impl Record for PublicationState {
     fn read(decoder: &mut Decoder<'_>) -> Result<Self, PublicationError> {
-        map(decoder, 7)?;
+        let fields = decoder.map(8)?;
+        if !matches!(fields, 7 | 8) {
+            return Err(PublicationError::Schema);
+        }
+        key(decoder, 0)?;
+        if decoder.uint()? != 1 {
+            return Err(PublicationError::Schema);
+        }
         key(decoder, 1)?;
         let revision = decoder.uint()?;
         key(decoder, 2)?;
@@ -482,6 +489,24 @@ impl Record for PublicationState {
         let branches = history(decoder)?;
         key(decoder, 6)?;
         let guard = optional(decoder, digest)?;
+        let burn_owners = if fields == 8 {
+            key(decoder, 7)?;
+            let count = decoder.array(decoder.remaining().len())?;
+            // Counts can be backed by padding rather than complete typed rows.
+            // Grow only after a whole canonical owner has been checked.
+            let mut owners = Vec::new();
+            for _ in 0..count {
+                let start = decoder.position();
+                decoder.skip_value(decoder.remaining().len())?;
+                owners.push(
+                    PermanentBurnOwner::decode(decoder.slice(start, decoder.position())?)
+                        .map_err(|_| PublicationError::Schema)?,
+                );
+            }
+            Some(owners)
+        } else {
+            None
+        };
         let record = Self {
             revision,
             loss_generation,
@@ -489,6 +514,7 @@ impl Record for PublicationState {
             binding,
             branches,
             guard,
+            burn_owners,
         };
         validation::state(&record)?;
         Ok(record)
@@ -496,7 +522,7 @@ impl Record for PublicationState {
 
     fn write(&self, output: &mut Vec<u8>) -> Result<(), PublicationError> {
         validation::state(self)?;
-        header(output, 7);
+        header(output, 7 + usize::from(self.burn_owners.is_some()));
         write_uint(output, 1);
         write_uint(output, self.revision);
         write_uint(output, 2);
@@ -508,7 +534,15 @@ impl Record for PublicationState {
         write_uint(output, 5);
         write_history(output, &self.branches)?;
         write_uint(output, 6);
-        write_optional(output, self.guard.as_ref(), write_digest)
+        write_optional(output, self.guard.as_ref(), write_digest)?;
+        if let Some(owners) = &self.burn_owners {
+            write_uint(output, 7);
+            write_array(output, owners.len());
+            for owner in owners {
+                output.extend(owner.encode().map_err(|_| PublicationError::Schema)?);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -578,6 +612,12 @@ impl Record for PublicationProof {
             (0, 1) => Self::Raw,
             (1, 2) => Self::Candidate(digest(decoder)?),
             (4, 2) => Self::Guard(digest(decoder)?),
+            (3, 3) => Self::PermanentRetirement {
+                authorization: decoder
+                    .bytes(super::super::retirement::MAX_RECORD_BYTES)?
+                    .to_vec(),
+                carried: sources(decoder)?,
+            },
             (2, 5) => {
                 let fence_key = text(decoder)?;
                 validation::fence_key(&fence_key)?;
@@ -623,6 +663,15 @@ impl Record for PublicationProof {
                     },
                 );
                 write_bytes(output, digest);
+            }
+            Self::PermanentRetirement {
+                authorization,
+                carried,
+            } => {
+                write_array(output, 3);
+                write_uint(output, 3);
+                write_bytes(output, authorization);
+                write_sources(output, carried)?;
             }
             Self::Collection {
                 fence_key,

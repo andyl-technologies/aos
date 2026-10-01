@@ -494,10 +494,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   paths, including 16 independent hexadecimal witnesses, match the qualified
   collector graph byte-for-byte; their source formatting passes. The base
   publication codecs are now integrated, including complete checkpoint coverage
-  of represented catalog changes. The actual trunk core passes all 260 tests,
-  no-default compilation, strict Clippy and rustdoc, complete core formatting
-  and the hermetic `formats-no-std` gate. D-79 evidence records, D-82 extensions
-  and qualification on the complete trunk remain pending.
+  of represented catalog changes. D-79 original, Guard and consumed-lineage
+  evidence codecs and D-82 permanent ownership, copied-retirement and recurring
+  reconciliation formats are integrated. All 31 adopted evidence/retirement
+  paths match the reviewed collector graph byte-for-byte. The actual trunk core
+  passes all 299 tests, no-default compilation, strict Clippy and rustdoc,
+  complete core formatting and the hermetic `formats-no-std` and
+  `canonical-cbor` gates. The latter executes all 14 evidence fixtures, 27
+  collector cases, 21 retirement cases and four decoding regressions in actual
+  test processes bounded to 256 MiB. Qualification on the complete native trunk
+  remains pending.
   The shared canonical collector lease preserves whole-value proposal and
   fencing checks. Actual selected lease authority remains joint native work;
   native integration, actual crash/timer/restore qualification and complete
@@ -507,13 +513,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and source-lineage preservation; their native implementation and actual
   effect/recovery qualification remain incomplete. D-82 registers permanent
   burns, destination retirement barriers for ordinary copies, and recurring
-  physical-residue reconciliation. The reviewed pure codec candidate passes
-  272 core tests, strict Clippy and rustdoc, and the no-default-feature core
-  build. Selected permanent control records preserve their whole authorization
-  and ownership associations, and four
-  inventory and ref-row regressions pass in actual test processes bounded to
-  256 MiB. The canonical format gate now requires those byte and allocation
-  witnesses; its Nix build remains pending. Ref rows check canonical registered
+  physical-residue reconciliation. Selected permanent control record formats
+  preserve their represented whole authorization and ownership associations.
+  Their canonical byte and allocation witnesses pass the actual trunk Nix gate;
+  they do not establish native ownership or deletion permission.
+  Ref rows check canonical registered
   names, unsigned order and whole current records before storage; Notes retain
   their opaque bytes. Private factories, local copied-retirement effects and
   provider qualification remain pending. Decoded records grant no physical
@@ -528,8 +532,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   processes; each runs one test and exits successfully. Strict Clippy and
   rustdoc, a no-default-feature core build and mandatory formatting also pass
   with the exact reviewed publication/retirement prerequisites temporarily
-  present and byte-verified before removal. Complete trunk source
-  integration and Nix qualification remain pending. No decoded checkpoint,
+  present and byte-verified before removal. Complete native trunk source
+  integration and runtime Nix qualification remain pending. No decoded checkpoint,
   elapsed bound or physical intent grants native collection authority.
   A separate shared opaque lease carrier and anchored producer/executor hooks
   now distinguish selected lease publication from ordinary Raw writes and

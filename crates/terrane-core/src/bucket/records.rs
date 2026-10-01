@@ -4,7 +4,7 @@
 //! CAPABILITIES = {1: 1, 2: true, 3: true, 4: true, 5: false,
 //!                 6: 1, 7: timestamp, 8: store-profile, 10: []}
 //! MANIFEST = {1: generation, 2: [shard-entry], 3: timestamp, 4: cycle,
-//!             5: [pack-inventory-entry], 6: [pack-exclusion]}
+//!             5: [pack-inventory-entry], 6: [pack-exclusion], 7: [pack-id]}
 //! Tombstone = {1: pack-id, 2: cycle, 3: timestamp, 4: removed-entries, 5: epoch}
 //! ```
 
@@ -319,6 +319,9 @@ pub struct GenerationManifest {
     /// Complete active physical exclusions, sorted by unique pack ID.
     /// Absence preserves legacy unknown completeness; an empty array is explicit.
     pub exclusions: Option<Vec<PackExclusion>>,
+    /// Complete permanent burns, sorted uniquely by unsigned pack-ID bytes.
+    /// Absence is legacy unknown; an empty array is explicitly known empty.
+    pub burns: Option<Vec<[u8; 16]>>,
 }
 
 impl GenerationManifest {
@@ -351,10 +354,20 @@ impl GenerationManifest {
         }) {
             return Err(RecordError::Schema);
         }
+        if self
+            .burns
+            .as_ref()
+            .is_some_and(|entries| entries.windows(2).any(|pair| pair[0] >= pair[1]))
+        {
+            return Err(RecordError::Schema);
+        }
+
         let mut bytes = Vec::new();
         cbor::write_map(
             &mut bytes,
-            4 + usize::from(self.inventory.is_some()) + usize::from(self.exclusions.is_some()),
+            4 + usize::from(self.inventory.is_some())
+                + usize::from(self.exclusions.is_some())
+                + usize::from(self.burns.is_some()),
         );
         uint_field(&mut bytes, 1, self.generation);
         cbor::write_uint(&mut bytes, 2);
@@ -393,6 +406,13 @@ impl GenerationManifest {
                 cbor::write_uint(&mut bytes, entry.epoch);
             }
         }
+        if let Some(entries) = &self.burns {
+            cbor::write_uint(&mut bytes, 7);
+            cbor::write_array(&mut bytes, entries.len());
+            for pack in entries {
+                cbor::write_bytes(&mut bytes, pack);
+            }
+        }
         Ok(bytes)
     }
 
@@ -402,8 +422,8 @@ impl GenerationManifest {
     /// Rejects malformed fields, duplicate or unordered shards, and trailing bytes.
     pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
         let mut decoder = Decoder::new(bytes);
-        let fields = decoder.map(6)?;
-        if !(4..=6).contains(&fields) {
+        let fields = decoder.map(7)?;
+        if !(4..=7).contains(&fields) {
             return Err(RecordError::Schema);
         }
         key(&mut decoder, 1)?;
@@ -443,6 +463,7 @@ impl GenerationManifest {
         let cycle = decoder.uint()?;
         let mut inventory = None;
         let mut exclusions = None;
+        let mut burns = None;
         let mut previous_key = 4;
         for _ in 4..fields {
             let field = decoder.uint()?;
@@ -507,6 +528,23 @@ impl GenerationManifest {
                     }
                     exclusions = Some(entries);
                 }
+                7 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    // A padded malformed array must not reserve typed storage
+                    // from its count before even one complete ID is checked.
+                    let mut entries = Vec::new();
+                    for _ in 0..count {
+                        let pack: [u8; 16] = decoder
+                            .bytes(16)?
+                            .try_into()
+                            .map_err(|_| RecordError::Schema)?;
+                        if entries.last().is_some_and(|previous| previous >= &pack) {
+                            return Err(RecordError::Schema);
+                        }
+                        entries.push(pack);
+                    }
+                    burns = Some(entries);
+                }
                 _ => return Err(RecordError::Schema),
             }
         }
@@ -519,7 +557,30 @@ impl GenerationManifest {
             cycle,
             inventory,
             exclusions,
+            burns,
         })
+    }
+
+    /// Checks monotone permanent burns in a represented selected successor.
+    ///
+    /// This checks data consistency only and cannot establish selection or admission.
+    /// Unknown completeness cannot erase a known complete burn set.
+    ///
+    /// # Errors
+    /// Rejects malformed records, known-to-unknown regression or removed burns.
+    pub fn check_burn_successor(&self, next: &Self) -> Result<(), RecordError> {
+        self.encode()?;
+        next.encode()?;
+        if let Some(previous) = &self.burns {
+            let current = next.burns.as_ref().ok_or(RecordError::Schema)?;
+            if previous
+                .iter()
+                .any(|pack| current.binary_search(pack).is_err())
+            {
+                return Err(RecordError::Schema);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -752,6 +813,7 @@ mod tests {
             cycle: 0,
             inventory: None,
             exclusions: None,
+            burns: None,
         };
         let unknown = manifest.encode().unwrap();
         assert_eq!(
@@ -810,6 +872,7 @@ mod tests {
             generation: 2,
             inventory: None,
             exclusions: None,
+            burns: None,
             shards: alloc::vec![
                 GenerationShard {
                     shard: 0,
@@ -842,5 +905,120 @@ mod tests {
             epoch: 3,
         };
         assert_eq!(Tombstone::decode(&tombstone.encode()).unwrap(), tombstone);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod burn_tests {
+    //! Checks independently fixed MANIFEST key-7 bytes and permanent monotonicity.
+
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn generation_burns_preserve_legacy_bytes_and_known_empty_distinction() {
+        let legacy = vec![0xa4, 1, 0, 2, 0x80, 3, 0, 4, 0];
+        let manifest = GenerationManifest::decode(&legacy).unwrap();
+        assert_eq!(manifest.burns, None);
+        assert_eq!(manifest.encode().unwrap(), legacy);
+        let mut empty = legacy;
+        empty[0] = 0xa5;
+        empty.extend_from_slice(&[7, 0x80]);
+        let manifest = GenerationManifest::decode(&empty).unwrap();
+        assert_eq!(manifest.burns, Some(vec![]));
+        assert_eq!(manifest.encode().unwrap(), empty);
+        let mut burned = empty;
+        burned.pop();
+        burned.extend_from_slice(&[0x81, 0x50]);
+        burned.extend_from_slice(&[1; 16]);
+        let manifest = GenerationManifest::decode(&burned).unwrap();
+        assert_eq!(manifest.burns, Some(vec![[1; 16]]));
+        assert_eq!(manifest.encode().unwrap(), burned);
+        for invalid in [
+            vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 7, 0xf6],
+            vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 8, 0x80],
+        ] {
+            assert!(GenerationManifest::decode(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn generation_burns_are_unsigned_unique_and_never_removed_or_replaced() {
+        let mut manifest = GenerationManifest {
+            generation: 0,
+            shards: vec![],
+            written_at: 0,
+            cycle: 0,
+            inventory: Some(vec![]),
+            exclusions: Some(vec![]),
+            burns: Some(vec![[1; 16], [2; 16]]),
+        };
+        let mut next = manifest.clone();
+        next.generation = 1;
+        next.burns.as_mut().unwrap().push([3; 16]);
+        manifest.check_burn_successor(&next).unwrap();
+        next.burns = Some(vec![[2; 16], [3; 16]]);
+        assert!(manifest.check_burn_successor(&next).is_err());
+        next.burns = None;
+        assert!(manifest.check_burn_successor(&next).is_err());
+        for invalid in [vec![[2; 16], [1; 16]], vec![[1; 16], [1; 16]]] {
+            manifest.burns = Some(invalid);
+            assert!(manifest.encode().is_err());
+        }
+        manifest.burns = Some(vec![[0x7f; 16], [0x80; 16], [0xff; 16]]);
+        let bytes = manifest.encode().unwrap();
+        assert_eq!(GenerationManifest::decode(&bytes).unwrap(), manifest);
+        let state = crate::gc::publication::PublicationState {
+            revision: 0,
+            loss_generation: 0,
+            sources: vec![],
+            binding: crate::gc::publication::BackendBinding::Local {
+                root: b"/a".to_vec(),
+                root_device: 1,
+                root_inode: 2,
+                coordination_device: 3,
+                coordination_inode: 4,
+            },
+            branches: vec![],
+            guard: None,
+            burn_owners: Some(
+                manifest
+                    .burns
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|pack| crate::gc::retirement::PermanentBurnOwner {
+                        pack: *pack,
+                        selection: crate::gc::retirement::PermanentOwnerSelection::CopiedVisibility,
+                    })
+                    .collect(),
+            ),
+        };
+        state.check_manifest_burns(&manifest).unwrap();
+        manifest.burns = None;
+        assert!(state.check_manifest_burns(&manifest).is_err());
+    }
+
+    #[test]
+    fn generation_burn_headers_validate_ids_before_growing_storage() {
+        let mut malformed = vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 7];
+        crate::cbor::write_array(&mut malformed, 16_000_000);
+        malformed.resize(16 * 1024 * 1024, 0);
+
+        // The count fits the remaining encoded bytes; the uint first ID is
+        // malformed. Reserving all declared IDs would exceed 244 MiB alone.
+        assert_eq!(
+            GenerationManifest::decode(&malformed),
+            Err(RecordError::Cbor(crate::cbor::Error::Malformed)),
+        );
+
+        let mut valid = vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 7, 0x82, 0x50];
+        valid.extend_from_slice(&[0x7f; 16]);
+        valid.push(0x50);
+        valid.extend_from_slice(&[0x80; 16]);
+        let decoded = GenerationManifest::decode(&valid).unwrap();
+        assert_eq!(decoded.burns, Some(vec![[0x7f; 16], [0x80; 16]]));
+        assert_eq!(decoded.encode().unwrap(), valid);
     }
 }
