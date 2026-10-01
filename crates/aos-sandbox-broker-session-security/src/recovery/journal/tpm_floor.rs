@@ -26,6 +26,7 @@
 
 mod backend;
 mod durable;
+pub(crate) use durable::BrokerSidecarCustodyV1;
 mod format;
 mod head;
 mod provisioning;

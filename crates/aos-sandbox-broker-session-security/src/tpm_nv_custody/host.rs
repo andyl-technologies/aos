@@ -1,8 +1,9 @@
-//! Genuine fixed Host TPM input admission, before any physical or durable owner.
+//! Genuine fixed Host inputs and original full-state journal comparisons.
 //!
-//! The private owner borrows Core's actual comparison Origins and retains fixed
-//! mode, auth commitment and helper/loader inputs. It opens no journal or TPM,
-//! spawns no child, lends no lock and publishes no floor, readiness or effect.
+//! The input owner borrows Core's actual comparison Origins and retains fixed
+//! mode, auth commitment and helper/loader inputs. A separate private disk
+//! owner admits two original existing Journals and exact native funding DATA.
+//! Neither opens a TPM, spawns a child, lends a lock or publishes an effect.
 //! A later closed coordinator must independently authenticate the real carrier,
 //! both original writers and fresh NV. Input rechecks cannot stand in for that
 //! ownership or a failed-invocation population barrier.
@@ -16,8 +17,35 @@ use crate::fixed_role_credential::FixedRoleCredentialErrorV1;
 use crate::recovery::{FloorErrorV1, MeasuredHelperImageV1};
 
 mod provisioning;
+mod journal;
+mod store;
+
+pub(super) use journal::HostSidecarCustodyV1;
+
+// These are the existing fixed Core roles, not configurable opener inputs.
+// The genuine held-pair comparison independently enforces those same names.
+const JOURNAL_DIRECTORY: &str = "/var/lib/aos/sandbox/runtime-deployment";
+const MAIN_JOURNAL_NAME: &str = "preparation.journal";
+const SIDECAR_JOURNAL_NAME: &str = "tpm-floor.journal";
 
 use provisioning::HostProvisioningPinV1;
+
+/// Retains typed original-owner failures without granting a retry or floor.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum HostOwnedJournalErrorV1 {
+    #[error("Host original journal inputs were rejected")]
+    Inputs(#[from] HostTpmAdmissionErrorV1),
+    #[error("Host original journal origins were rejected")]
+    Origins(#[from] RuntimeDeploymentComparisonErrorV1),
+    #[error("Host original native journal was rejected")]
+    Journal(#[from] aos_sandbox::JournalError),
+    #[error("Host original canonical sidecar was rejected")]
+    Canonical(#[from] FloorErrorV1),
+    #[error("Host original retained disk comparison changed")]
+    Changed,
+    #[error("Host original journal owner is unusable")]
+    Unusable,
+}
 
 /// Reports a retained cause without formatting credentials or commitments.
 #[derive(Debug, thiserror::Error)]
