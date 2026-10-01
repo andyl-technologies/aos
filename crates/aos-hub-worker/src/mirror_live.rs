@@ -19,6 +19,8 @@ use worker::{
 
 use crate::direct_upload::{config::QualifiedConfig, provider_capacity};
 
+mod length;
+
 /// Opens a separately reviewed source only after exact current ingress authentication.
 ///
 /// # Errors
@@ -199,7 +201,8 @@ async fn stream_source(
         }
         Ok(Some((view.to_vec(), state)))
     });
-    Ok(Response::from_stream(output)?.with_headers(headers))
+    let response = Response::from_stream(output)?;
+    Ok(length::enforce(response, declared)?.with_headers(headers))
 }
 
 struct StreamState {
