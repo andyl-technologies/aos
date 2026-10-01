@@ -1378,37 +1378,45 @@ impl QemuPreparedRunDirectory {
             return Ok(None);
         }
 
+        // Each fdset candidate needs its own access mode and open-file description.
+        let read = self.open_direct_root_overlay(OFlags::RDONLY)?;
+        let write = self.open_direct_root_overlay(OFlags::RDWR)?;
+        Ok(Some((read, write)))
+    }
+
+    pub(super) fn open_direct_root_overlay_for_probe(
+        &self,
+    ) -> Result<Option<OwnedFd>, QemuSpawnError> {
+        self.root_overlay
+            .as_ref()
+            .map(|_| self.open_direct_root_overlay(OFlags::RDONLY))
+            .transpose()
+    }
+
+    fn open_direct_root_overlay(&self, mode: OFlags) -> Result<OwnedFd, QemuSpawnError> {
         let path = self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME);
         let identity = self
             .root_overlay_identity
             .ok_or_else(|| QemuSpawnError::PreparedRootOverlayNotReady { path: path.clone() })?;
-        // QEMU opens a cache=none qcow2 first read-only, then read-write. Each
-        // fdset candidate needs its own access mode and open-file description.
-        let open_mode = |mode: OFlags, operation| -> Result<OwnedFd, QemuSpawnError> {
-            let direct = openat(
-                &self.directory,
-                crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
-                mode | OFlags::DIRECT | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-                Mode::empty(),
-            )
-            .map_err(|source| QemuSpawnError::Io {
-                operation,
-                source: source.into(),
-            })?;
-            let metadata = fstat(&direct).map_err(|source| QemuSpawnError::Io {
-                operation: "inspect direct guarded root overlay",
-                source: source.into(),
-            })?;
-            if !identity.matches(&metadata)
-                || FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
-            {
-                return Err(QemuSpawnError::PreparedRootOverlayChanged { path: path.clone() });
-            }
-            Ok(direct)
-        };
-
-        let read = open_mode(OFlags::RDONLY, "open read-only direct guarded root overlay")?;
-        let write = open_mode(OFlags::RDWR, "open read-write direct guarded root overlay")?;
-        Ok(Some((read, write)))
+        let direct = openat(
+            &self.directory,
+            crate::DEFAULT_ROOT_OVERLAY_FILE_NAME,
+            mode | OFlags::DIRECT | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+            Mode::empty(),
+        )
+        .map_err(|source| QemuSpawnError::Io {
+            operation: "open direct guarded root overlay",
+            source: source.into(),
+        })?;
+        let metadata = fstat(&direct).map_err(|source| QemuSpawnError::Io {
+            operation: "inspect direct guarded root overlay",
+            source: source.into(),
+        })?;
+        if !identity.matches(&metadata)
+            || FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
+        {
+            return Err(QemuSpawnError::PreparedRootOverlayChanged { path });
+        }
+        Ok(direct)
     }
 }
