@@ -8,6 +8,27 @@ use crate::sigv4::{DirectPartCopySource, DirectSignedProviderRequest, PresignPar
 use super::S3Surface;
 
 impl S3Surface {
+    /// Signs one bounded immutable source range with exact version and If-Match.
+    ///
+    /// # Errors
+    /// Returns an error for invalid surface, source version/condition, range,
+    /// current material lifetime or signing failure.
+    pub fn versioned_conditional_range_request(
+        &self,
+        path: &str,
+        source: &crate::storage_authority::external_object::copy::CopySourceObject,
+        offset: u64,
+        bytes: u64,
+        now: i64,
+        maximum_ttl: u32,
+    ) -> Result<DirectSignedProviderRequest> {
+        self.with_direct_params(path, now, maximum_ttl, |parameters| {
+            crate::sigv4::presign_versioned_conditional_range(
+                parameters, source, offset, bytes, maximum_ttl,
+            )
+        })
+    }
+
     /// Signs metadata observation of one exact external provider version.
     ///
     /// # Errors

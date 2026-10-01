@@ -21,6 +21,8 @@ use crate::storage_authority::canonical_digest;
 
 use super::{digest_string, CopySourceObject, ExternalCopyOriginal};
 
+mod progress;
+
 /// Names one closed provider mutation retained before its dispatch.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

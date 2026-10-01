@@ -25,6 +25,9 @@ use crate::storage_authority::{canonical_digest, lease::LeaseInteger};
 /// Compact physical ownership and positive receipt transitions.
 pub mod session;
 
+/// Fresh metadata-only application controls and compact retained progress.
+pub mod control;
+
 /// Maximum encoded immutable original retained in the physical guard.
 pub const MAX_EXTERNAL_COPY_ORIGINAL_BYTES: usize = 16 * 1024;
 
