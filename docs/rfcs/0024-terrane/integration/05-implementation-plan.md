@@ -472,8 +472,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cases, five epoch-fencing cases, three watch cases and 12 commit-order cases.
   Each gate runs individual exact test processes with the original bounds.
   These passes preserve the grouped-run failure as separate evidence and do
-  not establish reliable timing. Forwarding the new initializer through the
-  native reference adapters and joint source qualification remain pending.
+  not establish reliable timing. Both native reference adapters now forward
+  the initializer to their actual binding; scalar fault interception and
+  deadlines remain unchanged. Three fresh-reference cases and mandatory
+  formatting pass on that frozen forwarding candidate. All four actual Nix
+  gates pass again with the same 16/5/3/12 exact selectors. Integration of the
+  owned adapters and joint source qualification remain pending.
   No deadline change or speedup is claimed.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
