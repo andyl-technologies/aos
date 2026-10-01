@@ -13,6 +13,9 @@ use sha2::{Digest as _, Sha256};
 
 const MAXIMUM_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 
+#[cfg(all(target_os = "linux", feature = "git-helper-mechanics"))]
+pub(crate) mod git_helper;
+
 /// Reports unavailable or changed nonauthorizing immutable-file custody.
 #[derive(Debug, thiserror::Error)]
 pub enum ImmutableImageErrorV1 {

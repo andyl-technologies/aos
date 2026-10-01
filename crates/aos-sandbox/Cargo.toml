@@ -5,6 +5,8 @@ edition = "2024"
 license.workspace = true
 
 [features]
+# Compiles private fixed-helper mechanics without installing an authority caller.
+git-helper-mechanics = []
 # Run explicitly in the AOS kernel-test VM, outside the package-build sandbox.
 kernel-tests = ["aos-sandbox-linux/kernel-tests"]
 # Enables a private-directory protected-journal opener for dependent crate tests.
