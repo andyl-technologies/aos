@@ -12,6 +12,7 @@ use super::{Error, ManagerProxy, Result, ServiceProxy, SystemdClient, UnitProxy}
 pub(super) enum ObservationPhase {
     Active,
     StartingOrRunning,
+    StoppedNix,
 }
 
 pub(super) async fn observe(
@@ -25,7 +26,7 @@ pub(super) async fn observe(
     if !name.ends_with(".service") || name.contains('/') || name.contains('\0') {
         return Err(changed("service name is not an exact unit name"));
     }
-    if expected_main_pid == 0 {
+    if expected_main_pid == 0 && !matches!(phase, ObservationPhase::StoppedNix) {
         return Err(changed("service main PID is absent"));
     }
 
@@ -66,7 +67,9 @@ pub(super) async fn observe(
     );
     let before_substate = match phase {
         ObservationPhase::Active => None,
-        ObservationPhase::StartingOrRunning => Some(unit.sub_state().await?),
+        ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix => {
+            Some(unit.sub_state().await?)
+        }
     };
 
     let properties = zbus::fdo::PropertiesProxy::builder(&client.conn)
@@ -89,7 +92,9 @@ pub(super) async fn observe(
 
     let after_substate = match phase {
         ObservationPhase::Active => None,
-        ObservationPhase::StartingOrRunning => Some(unit.sub_state().await?),
+        ObservationPhase::StartingOrRunning | ObservationPhase::StoppedNix => {
+            Some(unit.sub_state().await?)
+        }
     };
     let after = (
         unit.id().await?,
@@ -103,7 +108,8 @@ pub(super) async fn observe(
         || !phase.accepts(&before.1, before_substate.as_deref())
         || before.2 != expected_main_pid
         || before.3.len() != 16
-        || before.3.iter().all(|byte| *byte == 0)
+        || (!matches!(phase, ObservationPhase::StoppedNix)
+            && before.3.iter().all(|byte| *byte == 0))
         || bus.get_name_owner(manager_name).await? != owner
     {
         return Err(changed("PID 1 service changed during property readback"));
@@ -121,8 +127,60 @@ impl ObservationPhase {
                     ("activating", Some("start")) | ("active", Some("running"))
                 )
             }
+            Self::StoppedNix => matches!((state, substate), ("inactive", Some("dead"))),
         }
     }
+}
+
+pub(super) async fn observe_stopped_nix(
+    client: &SystemdClient,
+) -> Result<[(Vec<OwnedValue>, Vec<OwnedValue>); 2]> {
+    const SERVICE: &[&str] = &[
+        "ControlGroup",
+        "ExecStart",
+        "ExecStartPre",
+        "ExecStartPost",
+    ];
+    const UNIT: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
+
+    let controller = observe(
+        client,
+        "aos-sandboxd.service",
+        0,
+        SERVICE,
+        UNIT,
+        ObservationPhase::StoppedNix,
+    )
+    .await?;
+    let owner = observe(
+        client,
+        "aos-sandbox-nixd.service",
+        0,
+        SERVICE,
+        UNIT,
+        ObservationPhase::StoppedNix,
+    )
+    .await?;
+
+    for (service, unit) in [&controller, &owner] {
+        require_signatures(
+            service,
+            &["s", "a(sasbttttuii)", "a(sasbttttuii)", "a(sasbttttuii)"],
+        )?;
+        require_signatures(unit, &["s", "as", "b", "ay"])?;
+    }
+    Ok([controller, owner])
+}
+
+fn require_signatures(values: &[OwnedValue], signatures: &[&str]) -> Result<()> {
+    if values.len() != signatures.len()
+        || values.iter().zip(signatures).any(|(value, signature)| {
+            value.value_signature().to_string() != *signature
+        })
+    {
+        return Err(changed("stopped Nix property schema differs"));
+    }
+    Ok(())
 }
 
 async fn read_properties(
@@ -146,6 +204,24 @@ fn changed(message: &str) -> Error {
 #[cfg(test)]
 mod tests {
     use super::ObservationPhase;
+
+    #[test]
+    fn stopped_nix_phase_accepts_only_inactive_dead() {
+        let stopped = ObservationPhase::StoppedNix;
+        assert!(stopped.accepts("inactive", Some("dead")));
+
+        for (state, substate) in [
+            ("active", Some("running")),
+            ("activating", Some("start")),
+            ("deactivating", Some("stop")),
+            ("failed", Some("failed")),
+            ("inactive", None),
+        ] {
+            assert!(!stopped.accepts(state, substate));
+        }
+        assert!(!ObservationPhase::Active.accepts("inactive", Some("dead")));
+        assert!(!ObservationPhase::StartingOrRunning.accepts("inactive", Some("dead")));
+    }
 
     #[test]
     fn startup_property_phase_does_not_grant_other_activation_states() {

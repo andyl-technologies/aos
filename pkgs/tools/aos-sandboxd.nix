@@ -55,7 +55,7 @@
     cargoRoot = "crates";
     checkType = "debug";
     cargoBuildCommands = [
-      "build --release --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision"
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security"
     ];
     buildDeps = [buildProtobuf gitHelperImages];
@@ -66,7 +66,7 @@ in
     pname = "aos-sandboxd";
     inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
     cargoRoot = "crates";
-    cargoFlags = "${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher";
+    cargoFlags = "${mechanicsFeature} -p aos-sandbox-broker-session-security --bin aos-sandboxd --bin aos-sandbox-git-gateway --bin aos-sandbox-entitlement-sign --bin aos-sandbox-policy-authorityd --bin aos-sandbox-cache-signerd --bin aos-sandbox-source-signerd --bin aos-sandbox-policy-key-pin --bin aos-view-publisher --bin aos-sandbox-nix-floor-provision";
     checkType = "debug";
     # Keep the core suite when moving process ownership into the transport crate.
     cargoTestFlags = "${mechanicsFeature} -p aos-sandbox -p aos-sandbox-broker-session-security";
@@ -84,6 +84,7 @@ in
       test -x "$out/bin/aos-sandbox-source-signerd"
       test -x "$out/bin/aos-sandbox-policy-key-pin"
       test -x "$out/bin/aos-view-publisher"
+      test -x "$out/bin/aos-sandbox-nix-floor-provision"
     '';
 
     passthru = {

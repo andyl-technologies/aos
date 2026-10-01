@@ -606,6 +606,22 @@ impl SystemdClient {
         .await
     }
 
+    /// Observes only the two fixed Nix runtime units in the inactive/dead phase.
+    ///
+    /// The same unique-PID-1 observer brackets each uncached read with its unit,
+    /// state, main PID and invocation. Missing units fail; zero invocation is
+    /// accepted only here. These properties are DATA, not population or drain
+    /// authority. A genuine offline owner separately checks fixed kernel cgroups.
+    ///
+    /// # Errors
+    /// Rejects missing, nonstopped, changed or schematically invalid units,
+    /// a non-PID-1 manager, unavailable properties or a D-Bus failure.
+    pub async fn observe_fixed_stopped_nix_units_v3(
+        &self,
+    ) -> Result<[(Vec<OwnedValue>, Vec<OwnedValue>); 2]> {
+        service_properties::observe_stopped_nix(self).await
+    }
+
     /// Observes an active service's exact unit, invocation, main PID, and cgroup.
     ///
     /// The returned path is only a locator. Consumers must retain and validate

@@ -587,6 +587,261 @@ fn identity(metadata: &std::fs::Metadata) -> CredentialIdentity {
     )
 }
 
+/// Parks the prepare-only unit's two independently delivered public originals.
+///
+/// This private reader supplies no startup or provisioning authority. Its
+/// caller must retain the genuine selected unit and bracket every observation.
+pub(crate) struct OfflinePrepareCredentialsV3 {
+    ancestors: Vec<File>,
+    files: [Option<File>; 2],
+    originals: [Option<CredentialIdentity>; 2],
+    directory_identity: Option<CredentialIdentity>,
+    mount: Option<aos_sandbox_linux::inventory::MountId>,
+    readbacks: Vec<[Zeroizing<Vec<u8>>; 2]>,
+    named: Vec<File>,
+    admitted: bool,
+}
+
+impl OfflinePrepareCredentialsV3 {
+    pub(crate) fn new() -> Self {
+        Self {
+            ancestors: Vec::new(),
+            files: [None, None],
+            originals: [None, None],
+            directory_identity: None,
+            mount: None,
+            readbacks: Vec::new(),
+            named: Vec::new(),
+            admitted: false,
+        }
+    }
+
+    pub(crate) fn admit(&mut self) -> std::io::Result<()> {
+        use std::os::fd::AsFd as _;
+
+        if !self.ancestors.is_empty() {
+            return Err(offline_credential_rejected());
+        }
+        self.ancestors
+            .try_reserve_exact(4)
+            .map_err(std::io::Error::other)?;
+        self.named
+            .try_reserve_exact(48)
+            .map_err(std::io::Error::other)?;
+        self.readbacks
+            .try_reserve_exact(16)
+            .map_err(std::io::Error::other)?;
+
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        self.ancestors.push(File::from(open("/", flags, Mode::empty())?));
+        for name in ["run", "credentials", "aos-sandbox-nix-floor-provision.service"] {
+            let parent = self.ancestors.last().ok_or_else(offline_credential_rejected)?;
+            let metadata = parent.metadata()?;
+            if metadata.uid() != 0 || metadata.gid() != 0 || metadata.mode() & 0o022 != 0 {
+                return Err(offline_credential_rejected());
+            }
+            let next = openat(parent, name, flags, Mode::empty())?;
+            self.ancestors.push(File::from(next));
+        }
+
+        let directory = self.ancestors.last().ok_or_else(offline_credential_rejected)?;
+        let metadata = directory.metadata()?;
+        if !metadata.is_dir()
+            || metadata.uid() != 0
+            || metadata.gid() != 0
+            || metadata.mode() & 0o7777 != 0o500
+            || !rustix::fs::fstatvfs(directory)?.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
+        {
+            return Err(offline_credential_rejected());
+        }
+        offline_credential_label(directory)?;
+        self.directory_identity = Some(identity(&metadata));
+        self.mount = Some(
+            aos_sandbox_linux::inventory::MountId::from_fd(directory.as_fd())
+                .map_err(std::io::Error::other)?,
+        );
+        offline_credential_names()?;
+
+        for (index, name) in OFFLINE_PREPARE_NAMES.iter().enumerate() {
+            // Park the actual returned descriptor before any metadata/read gate.
+            self.files[index] = Some(File::from(openat(
+                directory,
+                *name,
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?));
+            let file = self.files[index].as_ref().ok_or_else(offline_credential_rejected)?;
+            let metadata = file.metadata()?;
+            require_offline_credential_file(&metadata, OFFLINE_PREPARE_LENGTHS[index])?;
+            offline_credential_label(file)?;
+            self.originals[index] = Some(identity(&metadata));
+        }
+        self.capture_bytes()?;
+        let [node, approval] = self.readbacks.first().ok_or_else(offline_credential_rejected)?;
+        if node.iter().all(|byte| *byte == 0)
+            || approval[..16].iter().all(|byte| *byte == 0)
+            || approval[16..].iter().all(|byte| *byte == 0)
+        {
+            return Err(offline_credential_rejected());
+        }
+        let public: [u8; 32] = approval[16..]
+            .try_into()
+            .map_err(|_| offline_credential_rejected())?;
+        ed25519_dalek::VerifyingKey::from_bytes(&public)
+            .map_err(|_| offline_credential_rejected())?;
+        self.admitted = true;
+        self.recheck()
+    }
+
+    pub(crate) fn public_originals(&self) -> std::io::Result<(&[u8], &[u8])> {
+        if !self.admitted {
+            return Err(offline_credential_rejected());
+        }
+        let [node, approval] = self.readbacks.first().ok_or_else(offline_credential_rejected)?;
+        Ok((node, approval))
+    }
+
+    pub(crate) fn recheck(&mut self) -> std::io::Result<()> {
+        use std::os::fd::AsFd as _;
+
+        if !self.admitted || self.named.len() > 45 {
+            return Err(offline_credential_rejected());
+        }
+        let directory = self.ancestors.last().ok_or_else(offline_credential_rejected)?;
+        if Some(identity(&directory.metadata()?)) != self.directory_identity
+            || Some(aos_sandbox_linux::inventory::MountId::from_fd(directory.as_fd())
+                .map_err(std::io::Error::other)?) != self.mount
+            || !rustix::fs::fstatvfs(directory)?.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY)
+        {
+            return Err(offline_credential_rejected());
+        }
+        offline_credential_label(directory)?;
+
+        // Named readbacks stay resident too; failed name or content observations
+        // cannot release the originals or replace the initial public preimages.
+        self.named.push(File::from(rustix::fs::openat2(
+            rustix::fs::CWD,
+            OFFLINE_PREPARE_DIRECTORY,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+            Mode::empty(),
+            rustix::fs::ResolveFlags::NO_SYMLINKS | rustix::fs::ResolveFlags::NO_MAGICLINKS,
+        )?));
+        let named_directory = self.named.last().ok_or_else(offline_credential_rejected)?;
+        if Some(identity(&named_directory.metadata()?)) != self.directory_identity
+            || Some(aos_sandbox_linux::inventory::MountId::from_fd(named_directory.as_fd())
+                .map_err(std::io::Error::other)?) != self.mount
+        {
+            return Err(offline_credential_rejected());
+        }
+        for index in 0..2 {
+            let file = self.files[index].as_ref().ok_or_else(offline_credential_rejected)?;
+            if Some(identity(&file.metadata()?)) != self.originals[index] {
+                return Err(offline_credential_rejected());
+            }
+            offline_credential_label(file)?;
+            self.named.push(File::from(openat(
+                directory,
+                OFFLINE_PREPARE_NAMES[index],
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                Mode::empty(),
+            )?));
+            let named = self.named.last().ok_or_else(offline_credential_rejected)?;
+            if Some(identity(&named.metadata()?)) != self.originals[index] {
+                return Err(offline_credential_rejected());
+            }
+            offline_credential_label(named)?;
+        }
+        offline_credential_names()?;
+        self.capture_bytes()?;
+        if self.readbacks.first() != self.readbacks.last() {
+            return Err(offline_credential_rejected());
+        }
+        Ok(())
+    }
+
+    fn capture_bytes(&mut self) -> std::io::Result<()> {
+        if self.readbacks.len() == 16 {
+            return Err(offline_credential_rejected());
+        }
+        self.readbacks.push([
+            Zeroizing::new(vec![0; 16]),
+            Zeroizing::new(vec![0; 48]),
+        ]);
+        let bytes = self.readbacks.last_mut().ok_or_else(offline_credential_rejected)?;
+        for index in 0..2 {
+            let file = self.files[index].as_ref().ok_or_else(offline_credential_rejected)?;
+            aos_sandbox_linux::protected_file::read_exact_positioned(file, &mut bytes[index])
+                .map_err(|error| std::io::Error::other(OfflinePrepareExactReadError(error)))?;
+            if Some(identity(&file.metadata()?)) != self.originals[index] {
+                return Err(offline_credential_rejected());
+            }
+            offline_credential_label(file)?;
+        }
+        Ok(())
+    }
+}
+
+const OFFLINE_PREPARE_DIRECTORY: &str = "/run/credentials/aos-sandbox-nix-floor-provision.service";
+const OFFLINE_PREPARE_NAMES: [&str; 2] = ["node-id", "nix-floor-provision-approval-public-key-v3"];
+const OFFLINE_PREPARE_LENGTHS: [u64; 2] = [16, 48];
+
+fn offline_credential_rejected() -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, "offline prepare credential custody differs")
+}
+
+fn require_offline_credential_file(metadata: &std::fs::Metadata, length: u64) -> std::io::Result<()> {
+    if !metadata.is_file() || metadata.uid() != 0 || metadata.gid() != 0
+        || metadata.mode() & 0o7777 != 0o400 || metadata.nlink() != 1 || metadata.len() != length
+    {
+        return Err(offline_credential_rejected());
+    }
+    Ok(())
+}
+
+fn offline_credential_names() -> std::io::Result<()> {
+    let mut names = Vec::new();
+    names.try_reserve_exact(3).map_err(std::io::Error::other)?;
+    for entry in std::fs::read_dir(OFFLINE_PREPARE_DIRECTORY)? {
+        names.push(entry?.file_name());
+        if names.len() > 2 {
+            return Err(offline_credential_rejected());
+        }
+    }
+    require_offline_credential_names(names)
+}
+
+fn require_offline_credential_names(mut names: Vec<std::ffi::OsString>) -> std::io::Result<()> {
+    names.sort();
+    let mut expected = OFFLINE_PREPARE_NAMES.map(std::ffi::OsString::from);
+    expected.sort();
+    if names != expected {
+        return Err(offline_credential_rejected());
+    }
+    Ok(())
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("offline prepare original exact read failed ({0:?})")]
+struct OfflinePrepareExactReadError(aos_sandbox_linux::protected_file::ExactReadError);
+
+fn offline_credential_label(file: &File) -> std::io::Result<()> {
+    let mut context = [0; 256];
+    let length = rustix::fs::fgetxattr(file, "security.selinux", &mut context[..])?;
+    let actual = context[..length].strip_suffix(&[0]).unwrap_or(&context[..length]);
+    if actual != b"system_u:object_r:aos_nix_offline_prepare_credential_t" {
+        return Err(offline_credential_rejected());
+    }
+    let mut bytes = [0; 4096];
+    for name in ["system.posix_acl_access", "system.posix_acl_default"] {
+        match rustix::fs::fgetxattr(file, name, &mut bytes[..]) {
+            Err(rustix::io::Errno::NODATA) => {}
+            Err(error) => return Err(error.into()),
+            Ok(_) => return Err(offline_credential_rejected()),
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -597,6 +852,21 @@ mod tests {
     use crate::hierarchy::source_seed::{
         PinnedControllerSourceTreeSeedIssuerV1, encode_controller_source_tree_seed_credential_v1,
     };
+
+    #[test]
+    fn offline_prepare_names_are_an_exact_set_not_processing_order() {
+        let original = OFFLINE_PREPARE_NAMES.map(std::ffi::OsString::from);
+        assert!(require_offline_credential_names(original.to_vec()).is_ok());
+        assert!(require_offline_credential_names(original.into_iter().rev().collect()).is_ok());
+
+        assert!(require_offline_credential_names(vec!["node-id".into()]).is_err());
+        assert!(require_offline_credential_names(vec!["node-id".into(), "node-id".into()]).is_err());
+        assert!(require_offline_credential_names(vec![
+            "node-id".into(),
+            "nix-floor-provision-approval-public-key-v3".into(),
+            "hierarchy-auth".into(),
+        ]).is_err());
+    }
 
     #[test]
     fn nix_owner_public_names_keep_the_original_twelve_pin_order_without_node() {

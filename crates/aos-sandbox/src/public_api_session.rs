@@ -36,6 +36,7 @@ pub(crate) use handshake_custody::{
 };
 
 pub(crate) use credentials::{
+    OfflinePrepareCredentialsV3,
     PinnedOperatorRecoveryKeyV1, PinnedSystemdCredential, load_entitlement_credentials,
 };
 pub(crate) use original_registration::CurrentOriginalPublicRegistrationV3;

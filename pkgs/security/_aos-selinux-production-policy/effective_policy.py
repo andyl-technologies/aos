@@ -46,7 +46,10 @@ PRIVATE_ROOT_CUSTODY_ATTRIBUTE = "aos_private_root_custody_domain"
 EXPLICIT_DOMAIN_ATTRIBUTES = (
     (EXPLICIT_LOADER_ATTRIBUTE, EXPLICIT_LOADER_DOMAINS),
     (NO_CONTEXT_TRANSLATION_ATTRIBUTE, NO_CONTEXT_TRANSLATION_DOMAINS),
-    (PRIVATE_ROOT_CUSTODY_ATTRIBUTE, ("aos_sandbox_policy_authority_t",)),
+    (PRIVATE_ROOT_CUSTODY_ATTRIBUTE, (
+        "aos_sandbox_policy_authority_t",
+        "aos_nix_offline_prepare_t",
+    )),
 )
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"
 GUEST_PUBLICATION = "aos_sandbox_guest_publication_t"

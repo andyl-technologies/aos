@@ -28,10 +28,25 @@ pub(crate) fn nonzero_random<const N: usize, Source: EntropySource>(
     source: &mut Source,
 ) -> Result<[u8; N], BrokerSessionSecurityError> {
     let mut output = [0_u8; N];
+    fill_nonzero(source, &mut output)?;
+    Ok(output)
+}
+
+/// Fills the caller's already parked zeroizing allocation through the same engine.
+pub(crate) fn fill_retained_nonzero(
+    output: &mut zeroize::Zeroizing<Vec<u8>>,
+) -> Result<(), BrokerSessionSecurityError> {
+    fill_nonzero(&mut KernelEntropy, output.as_mut_slice())
+}
+
+fn fill_nonzero<Source: EntropySource>(
+    source: &mut Source,
+    output: &mut [u8],
+) -> Result<(), BrokerSessionSecurityError> {
     for zero_retry in 0..=MAXIMUM_ALL_ZERO_RETRIES {
-        fill_exact(source, &mut output)?;
+        fill_exact(source, output)?;
         if output.iter().any(|byte| *byte != 0) {
-            return Ok(output);
+            return Ok(());
         }
         if zero_retry == MAXIMUM_ALL_ZERO_RETRIES {
             break;
@@ -86,6 +101,18 @@ mod tests {
         ScriptedEntropy {
             steps: steps.into_iter().collect(),
         }
+    }
+
+    #[test]
+    fn retained_fill_keeps_partial_bytes_on_the_same_kernel_error() {
+        let mut source = scripted([Ok(vec![1, 2]), Err(Errno::IO)]);
+        let mut retained = zeroize::Zeroizing::new(vec![0; 4]);
+
+        assert_eq!(
+            fill_nonzero(&mut source, &mut retained),
+            Err(BrokerSessionSecurityError::Entropy),
+        );
+        assert_eq!(retained.as_slice(), [1, 2, 0, 0]);
     }
 
     #[test]

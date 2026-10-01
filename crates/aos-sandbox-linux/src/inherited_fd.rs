@@ -8,7 +8,7 @@
 //! Only fresh duplicates become [`OwnedFd`] values.
 
 use std::collections::BTreeSet;
-use std::os::fd::{BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
+use std::os::fd::{AsFd as _, BorrowedFd, FromRawFd as _, OwnedFd, RawFd};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -22,6 +22,108 @@ const DUPLICATE_FD_MINIMUM: RawFd = 64;
 
 static CLAIMED_DESCRIPTOR_NUMBERS: Mutex<BTreeSet<RawFd>> = Mutex::new(BTreeSet::new());
 static INITIAL_ACTIVATION_DUPLICATED: AtomicBool = AtomicBool::new(false);
+
+/// Retains the fixed two-entry offline-prepare startup observation, including failures.
+///
+/// This is descriptor DATA, not launcher, role, profile or provisioning authority.
+/// The caller parks this owner before calling its one-shot observation. Partial
+/// duplicates never leave it; a failed or interrupted observation stays fenced.
+pub struct NixOfflinePrepareInitialTableV3 {
+    descriptors: [Option<OwnedFd>; 2],
+    attempted: bool,
+    complete: bool,
+    failure: Option<Error>,
+}
+
+impl NixOfflinePrepareInitialTableV3 {
+    /// Creates empty resident slots without observing or admitting a descriptor.
+    pub const fn new() -> Self {
+        Self {
+            descriptors: [None, None],
+            attempted: false,
+            complete: false,
+            failure: None,
+        }
+    }
+
+    /// Observes only the original entries 3 and 4 through the shared startup fence.
+    ///
+    /// Each fresh duplicate is parked before the next fallible operation.
+    /// A caught unwind leaves the attempted observation closed; the outer owner
+    /// retains that unwind separately, rather than treating it as a returned error.
+    ///
+    /// # Errors
+    /// Returns the retained first error for a repeat, missing entry, kernel failure,
+    /// or an unexpected complete descriptor table. No failure permits another try.
+    pub fn observe(&mut self) -> std::result::Result<(), &Error> {
+        if self.attempted {
+            self.complete = false;
+            if self.failure.is_none() {
+                self.failure = Some(Error::invalid(
+                    "offline prepare startup",
+                    "observation is already closed",
+                ));
+            }
+        } else {
+            self.attempted = true;
+            if let Err(error) = self.observe_once() {
+                self.failure = Some(error);
+            } else {
+                self.complete = true;
+                return Ok(());
+            }
+        }
+
+        Err(self.failure.get_or_insert_with(|| {
+            Error::invalid("offline prepare startup", "observation did not complete")
+        }))
+    }
+
+    /// Borrows the complete validated table without releasing either original.
+    ///
+    /// Failed or interrupted observations expose no partial descriptor.
+    pub fn validated_entries(&self) -> Option<[BorrowedFd<'_>; 2]> {
+        if !self.complete {
+            return None;
+        }
+        let [Some(first), Some(second)] = &self.descriptors else {
+            return None;
+        };
+        Some([first.as_fd(), second.as_fd()])
+    }
+
+    /// Borrows the first returned observation failure, not an unwind receipt.
+    pub fn failure(&self) -> Option<&Error> {
+        self.failure.as_ref()
+    }
+
+    fn observe_once(&mut self) -> Result<()> {
+        INITIAL_ACTIVATION_DUPLICATED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| Error::invalid("initial activation table", "already observed"))?;
+
+        for (slot, number) in self.descriptors.iter_mut().zip([3, 4]) {
+            *slot = Some(duplicate_inherited_descriptor(number)?);
+        }
+        for number in [3, 4] {
+            mark_inherited_descriptor_close_on_exec(number)?;
+        }
+
+        use std::os::fd::AsRawFd as _;
+        let expected = [0, 1, 2, 3, 4]
+            .into_iter()
+            .chain(self.descriptors.iter().flatten().map(|descriptor| descriptor.as_raw_fd()))
+            .collect::<BTreeSet<_>>();
+        require_complete_startup_table(&expected)?;
+        require_complete_startup_table(&expected)
+    }
+}
+
+impl Default for NixOfflinePrepareInitialTableV3 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 /// Copies the complete initial activation table without taking numeric ownership.
 ///
@@ -653,6 +755,17 @@ mod tests {
     use std::os::fd::AsRawFd as _;
 
     use super::*;
+
+    #[test]
+    fn interrupted_offline_slots_stay_closed_without_observing_the_process_table() {
+        let mut resident = super::NixOfflinePrepareInitialTableV3::new();
+        resident.attempted = true;
+
+        assert!(resident.validated_entries().is_none());
+        assert!(resident.observe().is_err());
+        assert!(resident.failure().is_some());
+        assert!(resident.validated_entries().is_none());
+    }
 
     #[test]
     fn duplication_never_takes_the_callers_original_ownership() {
