@@ -1,8 +1,9 @@
 //! Closed observational audit of the original Host055 native journal history.
 //!
 //! The sole Journal parser calls this observer after validating each COMMIT.
-//! It retains only a count and the previous ten-byte phase key, never a second
-//! materializer, phase reducer or global metadata index. The real held writer
+//! Ordinary audit retains only a count and previous ten-byte phase key. The
+//! genuine pair bridge may also retain bounded authenticated native TXs, never
+//! full-map prefixes, a second materializer or phase reducer. The held writer
 //! is reread with independent offsets and checked against its complete original
 //! snapshot. Success establishes neither fresh NV nor live specimen custody.
 
@@ -16,7 +17,7 @@ use ed25519_dalek::VerifyingKey;
 
 use crate::runtime_deployment::{
     GENESIS_KEY, MAIN_DIRECTORY_V1, MAIN_LIMITS, MAIN_NAME, NAMESPACE,
-    VerifiedDeploymentGenesisV1, genesis_native_transaction_v1,
+    SIDECAR_NAME, VerifiedDeploymentGenesisV1, genesis_native_transaction_v1,
     require_deployment_row_bound_v1, require_native_step_binding_v1,
 };
 
@@ -24,8 +25,55 @@ use super::{
     BTreeMap, File, FileIdentity, Journal, JournalError, JournalTransaction,
     RecordNamespace, ReplayState, replay_observed,
 };
+use super::runtime_deployment_sidecar_history::RetainedDeploymentNativeHistoryV1;
 
 impl Journal {
+    /// Retains bounded native transactions under the unchanged main audit.
+    pub(crate) fn capture_runtime_deployment_main_history_v1(
+        &self,
+        owner: &VerifiedDeploymentGenesisV1<'_>,
+    ) -> Result<RetainedDeploymentNativeHistoryV1, JournalError> {
+        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
+        self.require_protected_named_location(
+            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
+        )?;
+        require_deployment_row_bound_v1(self.state.len())
+            .map_err(|_| JournalError::ProtectedBoundary)?;
+        if self.committed_transactions > MAIN_LIMITS.maximum_transactions {
+            return Err(JournalError::LimitExceeded("deployment native transactions"));
+        }
+
+        let witness = self.protected_writer_name_witness()?;
+        let physical = FileIdentity::of(&self.file)?;
+        if physical.size > MAIN_LIMITS.maximum_journal_bytes {
+            return Err(JournalError::JournalTooLarge);
+        }
+        let result = (|| {
+            let mut history = HistoryAuditV1::from_bindings(
+                &self.state, owner.exact_bytes(), owner.claims(), owner.publisher_verifier(),
+            )?;
+            history.retained = Some(RetainedDeploymentNativeHistoryV1::new(physical.size)?);
+            let mut reader = ReadAtCursorV1::new(&self.file, physical.size);
+            let replayed = replay_observed(&mut reader, MAIN_LIMITS, Some(&mut history))?;
+            history.finish(&replayed)?;
+            self.require_deployment_replayed_snapshot(&replayed, physical.size)?;
+            self.require_deployment_pair_replayed_snapshot_v1(&replayed, physical.size)?;
+            let retained = history.retained.take().ok_or(JournalError::ProtectedBoundary)?;
+            retained.finish(&replayed)?;
+            Ok(retained)
+        })();
+
+        self.require_protected_named_location(
+            Path::new(MAIN_DIRECTORY_V1), MAIN_NAME, 0, MAIN_LIMITS,
+        )?;
+        self.validate_protected_writer_name_witness(&witness)?;
+        if FileIdentity::of(&self.file)? != physical {
+            return Err(JournalError::StaleAuthoritySnapshot);
+        }
+        owner.recheck().map_err(|_| JournalError::ProtectedBoundary)?;
+        result
+    }
+
     /// Audits actual native associations on this original fixed main writer.
     ///
     /// The common physical owner must invoke the enclosing original-main guard
@@ -107,6 +155,8 @@ pub(super) enum OriginalCompactionSelectionV1 {
     Other,
     /// Denies compaction of the original fixed deployment main, including orphans.
     DeploymentMain,
+    /// Denies compaction of the original fixed deployment sidecar.
+    DeploymentSidecar,
 }
 
 impl OriginalCompactionSelectionV1 {
@@ -115,6 +165,8 @@ impl OriginalCompactionSelectionV1 {
     pub(super) fn capture(directory_path: &Path, name: &str) -> Self {
         if directory_path == Path::new(MAIN_DIRECTORY_V1) && name == MAIN_NAME {
             Self::DeploymentMain
+        } else if directory_path == Path::new(MAIN_DIRECTORY_V1) && name == SIDECAR_NAME {
+            Self::DeploymentSidecar
         } else {
             Self::Other
         }
@@ -129,13 +181,26 @@ impl OriginalCompactionSelectionV1 {
 /// is captured from the actual original opener rather than that basename.
 pub(super) fn require_no_compaction(journal: &Journal) -> Result<(), JournalError> {
     if journal.path == Path::new(MAIN_DIRECTORY_V1).join(MAIN_NAME)
+        || journal.path == Path::new(MAIN_DIRECTORY_V1).join(SIDECAR_NAME)
         || journal.protected.as_ref().is_some_and(|location| {
-            location.original_compaction_selection == OriginalCompactionSelectionV1::DeploymentMain
+            matches!(
+                location.original_compaction_selection,
+                OriginalCompactionSelectionV1::DeploymentMain
+                    | OriginalCompactionSelectionV1::DeploymentSidecar,
+            )
         })
     {
         return Err(JournalError::ProtectedBoundary);
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn deployment_original_compaction_selected_for_test(
+    directory: &Path,
+    name: &str,
+) -> bool {
+    OriginalCompactionSelectionV1::capture(directory, name) != OriginalCompactionSelectionV1::Other
 }
 
 pub(super) struct HistoryAuditV1<'data> {
@@ -146,6 +211,7 @@ pub(super) struct HistoryAuditV1<'data> {
     genesis_transaction: [u8; 16],
     commits: usize,
     last_phase_key: Option<[u8; 10]>,
+    retained: Option<RetainedDeploymentNativeHistoryV1>,
 }
 
 impl<'data> HistoryAuditV1<'data> {
@@ -169,6 +235,7 @@ impl<'data> HistoryAuditV1<'data> {
             genesis_transaction,
             commits: 0,
             last_phase_key: None,
+            retained: None,
         })
     }
 
@@ -226,6 +293,9 @@ impl<'data> HistoryAuditV1<'data> {
             self.last_phase_key = Some(key);
         }
 
+        if let Some(retained) = &mut self.retained {
+            retained.observe(transaction, begin_sequence, commit_sequence)?;
+        }
         self.commits = next_commits;
         Ok(())
     }
@@ -243,14 +313,14 @@ impl<'data> HistoryAuditV1<'data> {
 }
 
 /// Uses only `read_at` on the original file, with a private captured-length cursor.
-struct ReadAtCursorV1<'file> {
+pub(super) struct ReadAtCursorV1<'file> {
     file: &'file File,
     cursor: u64,
     length: u64,
 }
 
 impl<'file> ReadAtCursorV1<'file> {
-    fn new(file: &'file File, length: u64) -> Self {
+    pub(super) fn new(file: &'file File, length: u64) -> Self {
         Self {
             file,
             cursor: 0,
