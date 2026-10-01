@@ -4,6 +4,10 @@
 require {
     attribute aos_private_root_custody_domain;
     attribute aos_no_context_translation_domain;
+    attribute unreserved_port_type;
+    type node_t;
+    type netif_t;
+    type unlabeled_t;
     type lib_t;
     type ld_so_t;
     type usr_t;
@@ -27,7 +31,74 @@ require {
     class service { status start stop reload enable disable };
     class system { status start stop reload reboot halt };
     class process { fork getattr getsched setrlimit sigchld sigkill signal dyntransition setsockcreate };
+    class tcp_socket { accept bind create getattr getopt listen name_bind name_connect node_bind read recvfrom setopt shutdown write };
+    class netif { egress ingress };
+    class node { recvfrom sendto };
+    class peer recv;
+    class packet { recv send };
 }
+
+# Dedicated transport-only Gateway. Its explicit unit context is the only
+# normal entry route; no writer, protected owner, helper or default transition
+# is inherited. The node-network envelope still blocks service enablement.
+type aos_sandbox_git_gateway_t;
+typeattribute aos_sandbox_git_gateway_t domain;
+role system_r types aos_sandbox_git_gateway_t;
+type aos_sandbox_git_gateway_exec_t;
+type aos_sandbox_git_gateway_credential_t;
+
+allow init_t aos_sandbox_git_gateway_exec_t:file { execute execute_no_trans getattr map open read };
+allow init_t aos_sandbox_git_gateway_t:process transition;
+allow init_t aos_sandbox_git_gateway_t:process2 nnp_transition;
+allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_exec_t:file { entrypoint getattr map open read };
+allow aos_sandbox_git_gateway_t self:process { fork getattr getsched sigchld signal };
+allow aos_sandbox_git_gateway_t init_t:fd use;
+allow aos_sandbox_git_gateway_t init_t:unix_stream_socket write;
+allow aos_sandbox_git_gateway_t null_device_t:chr_file { getattr open read write };
+
+# Original self/image, immutable fragment/policy, read-only kernel limits and
+# fixed credential observations use existing physical admission engines.
+allow aos_sandbox_git_gateway_t { root_t var_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_sandbox_git_gateway_t { usr_t etc_t }:file { getattr open read };
+allow aos_sandbox_git_gateway_t etc_t:lnk_file { getattr read };
+allow aos_sandbox_git_gateway_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_sandbox_git_gateway_t proc_t:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t proc_t:filesystem getattr;
+allow aos_sandbox_git_gateway_t self:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t self:file { getattr open read };
+allow aos_sandbox_git_gateway_t self:lnk_file { getattr read };
+allow aos_sandbox_git_gateway_t security_t:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t security_t:filesystem getattr;
+allow aos_sandbox_git_gateway_t security_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t cgroup_t:dir { getattr open read search };
+allow aos_sandbox_git_gateway_t cgroup_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t sysctl_t:dir search;
+allow aos_sandbox_git_gateway_t sysctl_kernel_t:dir search;
+allow aos_sandbox_git_gateway_t sysctl_kernel_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t systemd_unit_t:file { getattr open read };
+allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_credential_t:dir { getattr open search };
+allow aos_sandbox_git_gateway_t aos_sandbox_git_gateway_credential_t:file { getattr open read };
+allow aos_sandbox_git_gateway_credential_t tmpfs_t:filesystem associate;
+
+# Status-only D-Bus observations cannot mutate PID1 service policy.
+allow aos_sandbox_git_gateway_t self:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
+allow aos_sandbox_git_gateway_t system_dbusd_var_run_t:sock_file { getattr open read write };
+allow aos_sandbox_git_gateway_t system_dbusd_t:unix_stream_socket connectto;
+allow aos_sandbox_git_gateway_t { init_t system_dbusd_t }:dbus send_msg;
+allow { init_t system_dbusd_t } aos_sandbox_git_gateway_t:dbus send_msg;
+allow aos_sandbox_git_gateway_t systemd_unit_t:service status;
+allow aos_sandbox_git_gateway_t init_t:system status;
+
+# Numeric unprivileged listener ingress only. No name_connect, UDP/raw socket,
+# outgoing client, device, writable state or protected-journal grant is added.
+allow aos_sandbox_git_gateway_t self:tcp_socket { accept bind create getattr getopt listen read setopt shutdown write };
+allow aos_sandbox_git_gateway_t unreserved_port_type:tcp_socket name_bind;
+allow aos_sandbox_git_gateway_t node_t:tcp_socket node_bind;
+allow aos_sandbox_git_gateway_t netif_t:netif { egress ingress };
+allow aos_sandbox_git_gateway_t node_t:node { recvfrom sendto };
+allow aos_sandbox_git_gateway_t unlabeled_t:tcp_socket recvfrom;
+allow aos_sandbox_git_gateway_t unlabeled_t:peer recv;
+allow aos_sandbox_git_gateway_t unlabeled_t:packet { recv send };
 
 type aos_sandbox_controller_t;
 typeattribute aos_sandbox_controller_t domain;
