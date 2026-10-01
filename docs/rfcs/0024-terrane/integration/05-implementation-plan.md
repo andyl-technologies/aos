@@ -312,8 +312,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   duplicated exclusion without stronger generic clock or lock bounds. Native
   and supported non-Send builds qualify the shared seam; private factories,
   final consumed-control fencing and complete effect routing remain pending.
-  The combined retained-effect and held-read candidate passes 36 selected
-  native regressions and all 63 supported non-Send tests. Actual descriptor
+  The combined retained-effect and held-read candidate passes 37 selected
+  native regressions and all 64 supported non-Send tests. Actual descriptor
   rebinding, queued expiry and cancellation checks preserve the original
   exclusions through physical completion. The private factory namespace and
   producer-owned effect-context handoff are present. Reviewed directory repair
@@ -347,13 +347,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   effect/recovery qualification remain incomplete. D-82 registers permanent
   burns, destination retirement barriers for ordinary copies, and recurring
   physical-residue reconciliation. The reviewed pure codec candidate passes
-  271 core tests, strict Clippy and rustdoc. Selected permanent control records
-  preserve their whole authorization and ownership associations, and three
-  malformed inventory regressions pass in actual test processes bounded to
+  272 core tests, strict Clippy and rustdoc, and the no-default-feature core
+  build. Selected permanent control records preserve their whole authorization
+  and ownership associations, and four
+  inventory and ref-row regressions pass in actual test processes bounded to
   256 MiB. The canonical format gate now requires those byte and allocation
-  witnesses; its Nix build remains pending. Incremental ref-row validation,
-  private factories, local copied-retirement effects and provider qualification
-  remain pending. Decoded records grant no physical collection authority.
+  witnesses; its Nix build remains pending. Ref rows check canonical registered
+  names, unsigned order and whole current records before storage; Notes retain
+  their opaque bytes. Private factories, local copied-retirement effects and
+  provider qualification remain pending. Decoded records grant no physical
+  collection authority.
   Narrowed
   to trunk scope: compaction is T-GC-2 on
   B-jobs. — satisfies GC-1, GC-3 to GC-7, GC-9 to GC-17, GC-22 to GC-24,
