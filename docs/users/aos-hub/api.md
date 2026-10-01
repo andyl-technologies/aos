@@ -225,8 +225,8 @@ return an independently authored schema. Interface metadata identifies each
 interface's release owner: package interfaces use the owning package release,
 and OS/base interfaces use the OS release. `moduleRequirements` entries
 preserve `owner`, `package`, and `packageVersion`; `osRequirements` entries
-preserve `owner` and `osVersion` for the selected host OS. Exact dependencies remain
-valid without a range. These fields are generated from the same module
+preserve `owner` and `osVersion` for the selected host OS. Plain dependencies inherit the recipe's generated
+`package.versionRequirement`; explicit source pins remain exact. These fields are generated from the same module
 declarations; they do not report a resolver decision. The generic reference
 schema is available through local documentation tooling. Native comparison output keeps
 option path segments and `[ability, operation]` pairs separate, and compares

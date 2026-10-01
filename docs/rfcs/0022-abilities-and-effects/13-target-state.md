@@ -12,8 +12,12 @@ Every package may expose a native `module` directory and explicit `moduleDeps`.
 Its recipe continues to build ordinary payload outputs. Packages with no module
 remain valid payload-only members of an installation scope.
 
-Exact dependencies pin their source; explicitly compatible dependencies specify
-a package SemVer range and an exact build-time seed. Package interfaces use their
+Plain module dependencies inherit the package recipe's generated version
+requirement. Bare strict SemVer implies caret; `^`, `~`, and `=` recipe shorthand
+set a policy alongside the normalized exact release version. Bare non-SemVer
+versions remain exact-only. Explicit package ranges override inference, while
+`exact = true` pins source identity. Each dependency retains an exact build-time
+seed. Package interfaces use their
 owning package's release version, and OS/base interfaces use the OS release
 version. Ability declarations have no independent release version. An optional
 recipe `osVersion` requirement checks the selected host OS, a fixed input that the

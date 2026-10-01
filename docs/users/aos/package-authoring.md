@@ -145,6 +145,26 @@ corruption or as evidence for a permanent package-specific limit. See the
 [build concurrency notes](../../maintainers/build-concurrency.md) for packages
 to watch under resource pressure and the available reproduction results.
 
+A recipe `version` can carry its compatibility policy: `"^7.4.2"`, `"~7.4.2"`,
+and `"=7.4.2"` all publish exact version `7.4.2`, with caret, tilde, or equal-version
+requirements. Bare strict SemVer defaults to caret; other bare version schemes
+remain exact-only. Use one optional operator and a full version, not a compound
+range. Keep the source URL variable exact when adding an operator:
+
+```nix
+{ mkDerivation, fetchurl, fakeHash, ... }: let
+  version = "7.4.2";
+in mkDerivation {
+  pname = "acme-agent";
+  version = "~${version}";
+  src = fetchurl {
+    urls = ["https://downloads.example.com/acme-agent-${version}.tar.gz"];
+    hash = fakeHash;
+  };
+  # Dependencies and phases are declared normally.
+}
+```
+
 For an upstream release, add `fetchurl` and `fakeHash` to the package function
 arguments, keep `version` beside the source, and replace `src = null` with:
 
@@ -256,9 +276,13 @@ mkDerivation {
 
 The interface dependency is illustrative: select the package defining your
 actual domain contract. Module dependencies are separate from build and runtime
-library dependencies. Exact dependencies retain this syntax. To permit compatible
-interface package releases, use
+library dependencies. A plain dependency inherits the package's generated
+`package.versionRequirement`, so consumers need not repeat its declared range.
+To override the range, use
 `moduleDeps = [ { package = service-interface; packageVersion = "^7.0"; } ];`.
+To pin immutable source identity, use
+`moduleDeps = [ { package = service-interface; exact = true; } ];`; an equal-version
+range can still select another source with that semantic version.
 An optional recipe `osVersion = "^1.0";` checks the selected host OS release;
 dependency resolution never selects or upgrades the OS. A payload-only package
 does not need a module.

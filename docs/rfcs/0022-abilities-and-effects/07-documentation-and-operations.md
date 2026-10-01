@@ -24,9 +24,11 @@ owning package version; OS/base interfaces follow the OS release version.
 Removed operations or fields, new required inputs, and type changes are breaking
 changes or require review. Optional input additions and new operations are
 allowed. Opaque constraints require explicit review, and structural comparison
-does not prove runtime behavior. Breaking changes require an owner major release
-increase or an exception identifying the exact diagnostic and explaining why it
-is permitted. The check consumes the generated reference rather than a separately
+does not prove runtime behavior. Breaking changes are permitted outside the
+previous release's captured compatibility range, or with an exception identifying
+the exact diagnostic and explaining why it is permitted. A new release's policy
+cannot relax previous obligations. Package recipe shorthand supplies the captured
+requirement; OS versions remain exact declarations with default caret policy. The check consumes the generated reference rather than a separately
 maintained interface manifest. `--exceptions FILE` supplies exact diagnostic
 IDs with explanatory reasons; incompatible reports are emitted before a nonzero
 exit.
