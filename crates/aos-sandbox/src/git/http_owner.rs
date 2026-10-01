@@ -47,6 +47,8 @@ use super::{
     GitSmartDispatchStateV1, GitSmartEndpointV1, GitSmartRequestV1, GitSmartTransportErrorV1,
 };
 
+use super::gateway_funding::FundedBodyBackingV1;
+
 type GitConnection = Connection<AuthenticatedPublicApiStream<TcpStream>, Bytes>;
 
 // Both legacy and retained accepts use this closed HTTP/2 configuration.
@@ -63,8 +65,8 @@ pub(super) fn fixed_handshake(
     builder.handshake(transport)
 }
 
-const MAXIMUM_BODY_BYTES: usize = 256 * 1024 * 1024;
-const FRAME_BYTES: usize = 16 * 1024;
+pub(super) const MAXIMUM_BODY_BYTES: usize = 256 * 1024 * 1024;
+pub(super) const FRAME_BYTES: usize = 16 * 1024;
 const REQUEST_LIFETIME_NANOSECONDS: u64 = 300_000_000_000;
 
 /// Preserves the first actual transport cause with redacted diagnostics.
@@ -344,7 +346,7 @@ fn require_current(
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
-struct RequestFactsV1 {
+pub(super) struct RequestFactsV1 {
     request: GitSmartRequestV1,
     stream_id: h2::StreamId,
     cookie: NonZeroU64,
@@ -418,6 +420,7 @@ struct OriginalHttpStateV1 {
     status: OriginalHttpStatusV1,
     cut: Option<OriginalRequestCutV1>,
     original: Option<OriginalGitRequestV1>,
+    funded_body: Option<Vec<u8>>,
 }
 
 /// Retains one concrete connection, its original request and its one-way end state.
@@ -482,6 +485,7 @@ impl GitHttpConnectionV1 {
                 status: OriginalHttpStatusV1::new(),
                 cut: None,
                 original: None,
+                funded_body: None,
             },
         };
         owner.recheck_handshake();
@@ -540,7 +544,28 @@ impl GitHttpConnectionV1 {
     pub(crate) async fn next_request(
         &mut self,
     ) -> Result<GitHttpRequestV1<'_>, GitHttpReceiveFailureV1<'_>> {
-        let ready = {
+        let ready = self.receive_ready_facts().await;
+        self.ready_view(ready)
+    }
+
+    /// Parks the sole allocated body before any funded receive future exists.
+    pub(super) fn park_funded_body(
+        &mut self,
+        backing: FundedBodyBackingV1,
+    ) -> Result<(), FundedBodyBackingV1> {
+        if self.state.status.phase != OriginalHttpPhaseV1::Idle
+            || self.state.original.is_some()
+            || self.state.funded_body.is_some()
+        {
+            return Err(backing);
+        }
+        self.state.funded_body = Some(backing.into_vec());
+        Ok(())
+    }
+
+    // Both legacy and funded loans run this one receive/check/end engine.
+    pub(super) async fn receive_ready_facts(&mut self) -> Option<RequestFactsV1> {
+        {
             let mut attempt = ReceiveAttemptV1 { owner: self, armed: true };
             let result = attempt.owner.receive_original_request().await;
             let ready = match result {
@@ -552,8 +577,13 @@ impl GitHttpConnectionV1 {
             };
             attempt.armed = false;
             ready
-        };
+        }
+    }
 
+    pub(super) fn ready_view(
+        &mut self,
+        ready: Option<RequestFactsV1>,
+    ) -> Result<GitHttpRequestV1<'_>, GitHttpReceiveFailureV1<'_>> {
         let Self { connection, peer, state } = self;
         match (ready, state.original.as_mut(), state.cut.as_ref()) {
             (Some(facts), Some(original), Some(cut))
@@ -593,6 +623,11 @@ impl GitHttpConnectionV1 {
             Ok(Some(Ok((request, response)))) => {
                 // No parse, stream-id call, currentness check or await precedes parking.
                 self.state.original = Some(OriginalGitRequestV1::park(request, response));
+                if let Some(backing) = self.state.funded_body.take() {
+                    if let Some(original) = self.state.original.as_mut() {
+                        original.body.bytes = backing;
+                    }
+                }
             }
             Ok(Some(Err(cause))) => return Err(GitHttpErrorV1::Transport(cause)),
             Ok(None) => return Err(GitHttpErrorV1::Closed),
@@ -634,7 +669,7 @@ impl GitHttpConnectionV1 {
 
     async fn receive_body(&mut self) -> Result<(), GitHttpErrorV1> {
         let Self { connection, peer, state } = self;
-        let OriginalHttpStateV1 { status, cut, original } = state;
+        let OriginalHttpStateV1 { status, cut, original, .. } = state;
         let cut = cut.as_ref().ok_or(GitHttpErrorV1::Request)?;
         let original = original.as_mut().ok_or(GitHttpErrorV1::Request)?;
 
@@ -752,6 +787,11 @@ pub(crate) struct RetainedGitHttpConnectionCustodyV1 {
 }
 
 impl RetainedGitHttpConnectionCustodyV1 {
+    /// Borrows an actual source; interruption state has no nested error object.
+    pub(super) fn actual_cause(&self) -> Option<&GitHttpErrorV1> {
+        self.owner.state.status.first_actual_cause()
+    }
+
     /// Returns a redacted view of the original first cause.
     pub(crate) fn cause(&self) -> GitHttpErrorV1 {
         self.owner.state.status.retained_error()

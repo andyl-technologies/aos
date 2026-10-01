@@ -14,6 +14,10 @@ mod durable;
 mod durable_payload;
 mod fork_history;
 mod format;
+#[cfg(target_os = "linux")]
+mod gateway_funding;
+#[cfg(target_os = "linux")]
+mod gateway_registry;
 mod history;
 #[cfg(all(target_os = "linux", feature = "git-helper-mechanics"))]
 mod helper_process;
