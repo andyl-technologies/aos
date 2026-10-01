@@ -90,6 +90,8 @@ impl<L, B> BackendNetworkOutputInterceptor<L, B> for NoopBackendNetworkOutputInt
 pub struct BackendQuantumLoop<L, B, I = NoopBackendNetworkOutputInterceptor> {
     pub(super) loop_impl: L,
     pub(super) backend: B,
+    // The first RUN/fixed-input selection binds the contract before its effects.
+    dispatch_contract: Option<crate::BackendDispatchContract>,
     network_output_interceptor: I,
     pending_network_outputs: Vec<BackendNetworkOutput>,
     // Pending frames may outlive a selectable pause. Their pre-pause emission
@@ -117,6 +119,7 @@ impl<L: Clone, B: Clone, I: Clone> Clone for BackendQuantumLoop<L, B, I> {
         Self {
             loop_impl: self.loop_impl.clone(),
             backend: self.backend.clone(),
+            dispatch_contract: self.dispatch_contract,
             network_output_interceptor: self.network_output_interceptor.clone(),
             pending_network_outputs: self.pending_network_outputs.clone(),
             frozen_network_output_times: self.frozen_network_output_times.clone(),
@@ -137,6 +140,24 @@ impl<L: Clone, B: Clone, I: Clone> Clone for BackendQuantumLoop<L, B, I> {
             // A cloned mock world has its own controller authority. Witness
             // clones retain the original identity and cannot cross this fork.
             held_stop_controller: HeldHostStopController::new(),
+        }
+    }
+}
+
+impl<L, B: SimulationBackend, I> BackendQuantumLoop<L, B, I> {
+    pub(super) fn selected_dispatch_contract(
+        &mut self,
+    ) -> Result<crate::BackendDispatchContract, SchedulerError> {
+        let current = self.backend.dispatch_contract();
+        match self.dispatch_contract {
+            Some(selected) if selected != current => Err(SchedulerError::BoundaryViolation {
+                message: String::from("backend dispatch contract changed after selection"),
+            }),
+            Some(selected) => Ok(selected),
+            None => {
+                self.dispatch_contract = Some(current);
+                Ok(current)
+            }
         }
     }
 }
@@ -187,6 +208,7 @@ impl<L, B> BackendQuantumLoop<L, B, NoopBackendNetworkOutputInterceptor> {
         Self {
             loop_impl,
             backend,
+            dispatch_contract: None,
             network_output_interceptor: NoopBackendNetworkOutputInterceptor,
             pending_network_outputs: Vec::new(),
             frozen_network_output_times: BTreeMap::new(),
@@ -244,6 +266,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         Self {
             loop_impl,
             backend,
+            dispatch_contract: None,
             network_output_interceptor,
             pending_network_outputs: Vec::new(),
             frozen_network_output_times: BTreeMap::new(),
@@ -282,6 +305,7 @@ impl<L, B, I> BackendQuantumLoop<L, B, I> {
         Self {
             loop_impl,
             backend,
+            dispatch_contract: None,
             network_output_interceptor,
             pending_network_outputs,
             frozen_network_output_times: BTreeMap::new(),

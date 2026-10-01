@@ -214,6 +214,8 @@ pub trait ConcurrentSimulationBackend: SimulationBackend {
 pub(super) struct PreparedHostRun {
     pub(super) plan: AdvancePlan,
     pub(super) admission: PreparedRunAdmission,
+    // Retains the selected backend contract through held-stop validation.
+    pub(super) dispatch_contract: crate::BackendDispatchContract,
     pub(super) preemptions: Vec<PlannedPreemptionApplication>,
     // Artificial watermark ceilings do not revoke a future command's natural horizon.
     pub(super) authorized_preemption_horizon: u64,
@@ -294,6 +296,7 @@ impl SingleScheduler {
         Ok(PreparedHostRun {
             plan,
             admission,
+            dispatch_contract: crate::BackendDispatchContract::PhysicalSource,
             preemptions,
             authorized_preemption_horizon,
             authorized_preemption_request,
@@ -309,7 +312,24 @@ impl SingleScheduler {
         index: usize,
         catchup_at: SimInstant,
     ) -> Result<Option<PreparedHostRun>, SchedulerError> {
-        self.prepare_host_catchup_run_with_authorization(index, catchup_at, None)
+        self.prepare_host_catchup_run_with_authorization(
+            index,
+            catchup_at,
+            None,
+            crate::BackendDispatchContract::PhysicalSource,
+        )
+    }
+
+    pub(super) fn prepare_host_catchup_run_for_contract(
+        &mut self,
+        index: usize,
+        catchup_at: SimInstant,
+        dispatch_contract: crate::BackendDispatchContract,
+    ) -> Result<Option<PreparedHostRun>, SchedulerError> {
+        if dispatch_contract == crate::BackendDispatchContract::PhysicalSource {
+            return self.prepare_host_catchup_run(index, catchup_at);
+        }
+        self.prepare_host_catchup_run_with_authorization(index, catchup_at, None, dispatch_contract)
     }
 
     /// Replans a completed catch-up without revoking its unchanged pending command.
@@ -322,6 +342,7 @@ impl SingleScheduler {
             previous.plan.index,
             catchup_at,
             Some(previous),
+            previous.dispatch_contract,
         )
     }
 
@@ -330,6 +351,7 @@ impl SingleScheduler {
         index: usize,
         catchup_at: SimInstant,
         previous: Option<&PreparedHostRun>,
+        dispatch_contract: crate::BackendDispatchContract,
     ) -> Result<Option<PreparedHostRun>, SchedulerError> {
         let node = self
             .nodes
@@ -359,6 +381,7 @@ impl SingleScheduler {
                 ),
             });
         };
+        let candidate = self.prepare_host_candidate_for_contract(candidate, dispatch_contract)?;
         let draft = self.advance_plan_draft(&candidate)?;
         if let Some(previous) = previous
             && (previous.plan.node != draft.node
@@ -412,12 +435,13 @@ impl SingleScheduler {
                 None
             },
         };
-        self.prepare_host_preemptible_run(
+        let mut run = self.prepare_host_preemptible_run(
             plan,
             authorized_horizon,
             previous.map(|previous| &previous.admission),
-        )
-        .map(Some)
+        )?;
+        run.dispatch_contract = dispatch_contract;
+        Ok(Some(run))
     }
 
     /// Republishes the remaining part of an authorized RUN after an output yield.
@@ -459,6 +483,8 @@ impl SingleScheduler {
             .ok_or_else(|| SchedulerError::BoundaryViolation {
                 message: String::from("residual host RUN has no fresh horizon authorization"),
             })?;
+        let candidate =
+            self.prepare_host_candidate_for_contract(candidate, original.dispatch_contract)?;
         let fresh = self.advance_plan_draft(&candidate)?;
         let target_counter = plan.target_counter.min(fresh.target_counter);
         if target_counter <= before.ticks {
@@ -493,7 +519,10 @@ impl SingleScheduler {
         };
         let authorized_horizon =
             self.retained_preemption_horizon(&plan.node, fresh.target_counter, Some(original));
-        self.prepare_host_preemptible_run(plan, authorized_horizon, Some(&original.admission))
+        let mut run =
+            self.prepare_host_preemptible_run(plan, authorized_horizon, Some(&original.admission))?;
+        run.dispatch_contract = original.dispatch_contract;
+        Ok(run)
     }
 
     fn retained_preemption_horizon(
@@ -527,6 +556,19 @@ impl SingleScheduler {
         request: QuantumRequest,
         maximum_runs: usize,
     ) -> Result<PreparedHostConcurrentQuantum, SchedulerError> {
+        self.prepare_host_concurrent_quantum_for_contract(
+            request,
+            maximum_runs,
+            crate::BackendDispatchContract::PhysicalSource,
+        )
+    }
+
+    pub(super) fn prepare_host_concurrent_quantum_for_contract(
+        &self,
+        request: QuantumRequest,
+        maximum_runs: usize,
+        dispatch_contract: crate::BackendDispatchContract,
+    ) -> Result<PreparedHostConcurrentQuantum, SchedulerError> {
         if request.configuration != self.configuration {
             return Err(SchedulerError::BoundaryViolation {
                 message: String::from(
@@ -547,7 +589,18 @@ impl SingleScheduler {
         let topology_recomputed = next.apply_topology_changes_at_boundary()?;
         next.last_topology_recompute = topology_recomputed;
 
-        let candidates = next.advance_candidates()?;
+        let mut candidates = next
+            .advance_candidates()?
+            .into_iter()
+            .map(|candidate| next.prepare_host_candidate_for_contract(candidate, dispatch_contract))
+            .collect::<Result<Vec<_>, _>>()?;
+        candidates.sort_by(|left, right| {
+            left.target_time
+                .cmp(&right.target_time)
+                .then_with(|| left.key.node.cmp(&right.key.node))
+                .then_with(|| left.key.virtual_time.cmp(&right.key.virtual_time))
+                .then_with(|| left.index.cmp(&right.index))
+        });
         let mut run_set = next.concurrent_run_set_from_candidates(&candidates)?;
         run_set.candidates.truncate(maximum_runs.max(1));
         let selected_candidates = candidates
@@ -586,7 +639,9 @@ impl SingleScheduler {
             if let Some(input) = next.prepared_run_next_input(node)? {
                 authorized_horizon = authorized_horizon.min(input.ticks);
             }
-            runs.push(next.prepare_host_preemptible_run(plan, authorized_horizon, None)?);
+            let mut run = next.prepare_host_preemptible_run(plan, authorized_horizon, None)?;
+            run.dispatch_contract = dispatch_contract;
+            runs.push(run);
         }
         for candidate in &mut run_set.candidates {
             if let Some(run) = runs.iter().find(|run| run.plan.node == candidate.node) {
@@ -603,6 +658,56 @@ impl SingleScheduler {
             control_applications,
             topology_recomputed,
         })
+    }
+
+    fn prepare_host_candidate_for_contract(
+        &self,
+        mut candidate: AdvanceCandidate,
+        dispatch_contract: crate::BackendDispatchContract,
+    ) -> Result<AdvanceCandidate, SchedulerError> {
+        if dispatch_contract != crate::BackendDispatchContract::ControlV3 {
+            return Ok(candidate);
+        }
+        let consumer = &self.nodes[candidate.index];
+        for edge in self.effective_topology.edges() {
+            if edge.to != consumer.id {
+                continue;
+            }
+            let producer = self
+                .nodes
+                .iter()
+                .find(|node| node.id == edge.from)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("control 3 incoming edge lost its actual producer"),
+                })?;
+            let earliest_delivery = self
+                .node_current_time(producer)?
+                .ticks
+                .checked_add(edge.minimum_latency.ticks)
+                .ok_or_else(|| SchedulerError::BoundaryViolation {
+                    message: String::from("control 3 earliest delivery overflowed shared ticks"),
+                })?;
+            // Control 3 completes physical ceilings; it cannot retain a native
+            // Source dispatch stop at an inclusive possible-delivery boundary.
+            let strict_tick = earliest_delivery.checked_sub(1).ok_or_else(|| {
+                SchedulerError::BoundaryViolation {
+                    message: String::from("control 3 has no strictly safe delivery tick"),
+                }
+            })?;
+            if strict_tick <= candidate.target_time.ticks {
+                candidate.target_time = SimInstant { ticks: strict_tick };
+                candidate.icount_rounding = SchedulerIcountRounding::ConservativeFloor;
+            }
+        }
+        if !self.candidate_has_representable_advance(&candidate)? {
+            return Err(SchedulerError::BoundaryViolation {
+                message: format!(
+                    "control 3 has no strictly safe representable RUN for `{}`",
+                    consumer.id.node.name,
+                ),
+            });
+        }
+        Ok(candidate)
     }
 
     pub(super) fn concurrent_run_set_from_candidates(

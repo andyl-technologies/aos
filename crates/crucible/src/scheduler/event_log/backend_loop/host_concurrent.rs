@@ -35,6 +35,11 @@ fn execute_one_host_run<B: ConcurrentSimulationBackend>(
     backend: &mut B,
     run: &PreparedHostRun,
 ) -> Result<ConcurrentBackendRunResult, SchedulerError> {
+    if backend.dispatch_contract() != run.dispatch_contract {
+        return Err(SchedulerError::BoundaryViolation {
+            message: String::from("backend dispatch contract changed before physical RUN"),
+        });
+    }
     let mut results = backend.execute_concurrent_runs(vec![backend_run(run)], 1)?;
     if results.len() != 1 {
         return Err(SchedulerError::BoundaryViolation {
@@ -150,10 +155,18 @@ where
                 });
             }
         }
-        let prepared = self
+        let dispatch_contract = self.selected_dispatch_contract()?;
+        let mut prepared = self
             .loop_impl
             .borrow()
-            .prepare_host_concurrent_quantum_limited(request.clone(), maximum_runs)?;
+            .prepare_host_concurrent_quantum_for_contract(
+                request.clone(),
+                maximum_runs,
+                dispatch_contract,
+            )?;
+        for run in &mut prepared.runs {
+            run.dispatch_contract = dispatch_contract;
+        }
         if prepared.runs.is_empty() {
             let mut next = SingleScheduler::clone(self.loop_impl.borrow());
             let outcome =
@@ -171,6 +184,7 @@ where
                     .collect(),
             });
         }
+        self.selected_dispatch_contract()?;
         let completed = match self.backend.execute_concurrent_runs(runs, max_host_workers) {
             Ok(completed) => completed,
             Err(error) => return Err(self.poison_continuation(error.into())),
@@ -289,6 +303,8 @@ where
         B: ConcurrentSimulationBackend,
         I: BackendNetworkOutputInterceptor<SingleScheduler, B> + Clone,
     {
+        self.selected_dispatch_contract()
+            .map_err(|error| self.poison_continuation(error))?;
         let HeldHostContinuation {
             runs: mut held_runs,
             mut boundary_runs,
@@ -377,11 +393,13 @@ where
                 refresh_held_host_run_boundary(&mut staged_scheduler, &initial_topology)
                     .map_err(|error| self.poison_continuation(error))?;
                 let run = staged_scheduler
-                    .prepare_host_catchup_run(
+                    .prepare_host_catchup_run_for_contract(
                         index,
                         SimInstant {
                             ticks: next_time.ticks,
                         },
+                        self.selected_dispatch_contract()
+                            .map_err(|error| self.poison_continuation(error))?,
                     )
                     .map_err(|error| self.poison_continuation(error))?;
                 if let Some(run) = run {
@@ -390,6 +408,9 @@ where
                 }
             }
             if let Some((node, current, mut run)) = omitted_run {
+                run.dispatch_contract = self
+                    .selected_dispatch_contract()
+                    .map_err(|error| self.poison_continuation(error))?;
                 run.canonical_lineage = Some(lineage.clone());
                 validate_held_network_lookahead(
                     &staged_scheduler,
@@ -473,6 +494,9 @@ where
                 }
             }
             if let Some((node, mut run, current)) = lagging {
+                run.dispatch_contract = self
+                    .selected_dispatch_contract()
+                    .map_err(|error| self.poison_continuation(error))?;
                 run.canonical_lineage = Some(lineage.clone());
                 validate_held_network_lookahead(
                     &staged_scheduler,

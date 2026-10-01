@@ -47,14 +47,14 @@ pub mod trigger;
 pub use crucible_campaign as campaign;
 
 pub use backend::{
-    AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendIoComputedReply,
-    BackendIoInventory, BackendIoInventoryAuthority, BackendIoNativeCap, BackendIoNativeCaps,
-    BackendIoQueueSnapshot, BackendNetworkCompletedFaultPhase, BackendNetworkFaultContinuation,
-    BackendNetworkFaultCursor, BackendNetworkFaultCursorError, BackendNetworkOutput,
-    BackendNetworkOutputCodecError, BackendNetworkPreservedAvailability, BackendNetworkRoute,
-    BackendPhysicalStop, BackendSnapshot, ExecutionFingerprint, ExecutionHorizon,
-    FingerprintSample, GdbAttachInfo, GdbListen, SimulationBackend, StepObservation,
-    deterministic_node_mac, deterministic_node_mac_string,
+    AdvanceOutcome, Backend, BackendDispatchContract, BackendEffect, BackendError, BackendInput,
+    BackendIoComputedReply, BackendIoInventory, BackendIoInventoryAuthority, BackendIoNativeCap,
+    BackendIoNativeCaps, BackendIoQueueSnapshot, BackendNetworkCompletedFaultPhase,
+    BackendNetworkFaultContinuation, BackendNetworkFaultCursor, BackendNetworkFaultCursorError,
+    BackendNetworkOutput, BackendNetworkOutputCodecError, BackendNetworkPreservedAvailability,
+    BackendNetworkRoute, BackendPhysicalStop, BackendSnapshot, ExecutionFingerprint,
+    ExecutionHorizon, FingerprintSample, GdbAttachInfo, GdbListen, SimulationBackend,
+    StepObservation, deterministic_node_mac, deterministic_node_mac_string,
 };
 #[cfg(any(test, feature = "test-double"))]
 pub use backend::{MockSimulationBackend, MockSimulationBackendState};
