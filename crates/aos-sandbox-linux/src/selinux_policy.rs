@@ -147,7 +147,14 @@ fn require_selinuxfs(fd: BorrowedFd<'_>) -> Result<(), PolicyReadbackError> {
     Ok(())
 }
 
-fn require_enforcing() -> Result<(), PolicyReadbackError> {
+/// Requires the actual selinuxfs enforcement state without admitting a policy.
+///
+/// This kernel observation is not subject, image, or effect authority.
+///
+/// # Errors
+///
+/// Rejects absent or foreign selinuxfs, unreadable state, or permissive mode.
+pub fn require_enforcing() -> Result<(), PolicyReadbackError> {
     let fd = open(
         "/sys/fs/selinux/enforce",
         OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,

@@ -30,6 +30,11 @@ use crate::{
 use super::{
     CaptureZfsToolV1, Deadline, Decoder, PinnedCaptureZfsTools, ZfsWorkerError, execute_observation,
 };
+use super::original_cutoff::{
+    OriginalBoottimeTimerV3, OriginalCutoffExchangeV3, OriginalWorkerCutoffErrorV3,
+    WorkerOriginalCheckedViewV3,
+};
+use crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3;
 
 const REQUEST_MAGIC: &[u8; 8] = b"AOSZHS01";
 const RESPONSE_MAGIC: &[u8; 8] = b"AOSZHO01";
@@ -213,9 +218,25 @@ pub(super) fn encode_response(
     request_digest: ObjectDigest,
     observation: HeldSnapshotPhysicalObservationV1,
 ) -> [u8; RESPONSE_BYTES] {
+    encode_response_for(request_digest, observation, RESPONSE_MAGIC, VERSION)
+}
+
+pub(super) fn encode_original_response(
+    request_digest: ObjectDigest,
+    observation: HeldSnapshotPhysicalObservationV1,
+) -> [u8; RESPONSE_BYTES] {
+    encode_response_for(request_digest, observation, b"AOSZHO02", 2)
+}
+
+fn encode_response_for(
+    request_digest: ObjectDigest,
+    observation: HeldSnapshotPhysicalObservationV1,
+    magic: &[u8; 8],
+    version: u16,
+) -> [u8; RESPONSE_BYTES] {
     let mut bytes = [0_u8; RESPONSE_BYTES];
-    bytes[..8].copy_from_slice(RESPONSE_MAGIC);
-    bytes[8..10].copy_from_slice(&VERSION.to_be_bytes());
+    bytes[..8].copy_from_slice(magic);
+    bytes[8..10].copy_from_slice(&version.to_be_bytes());
     bytes[10..42].copy_from_slice(request_digest.as_bytes());
     match observation {
         HeldSnapshotPhysicalObservationV1::Matched { pool_guid, digest } => {
@@ -232,13 +253,29 @@ pub(super) fn decode_response(
     bytes: &[u8],
     expected_request_digest: ObjectDigest,
 ) -> Result<HeldSnapshotPhysicalObservationV1, ZfsWorkerError> {
+    decode_response_for(bytes, expected_request_digest, RESPONSE_MAGIC, VERSION)
+}
+
+pub(super) fn decode_original_response(
+    bytes: &[u8],
+    expected_request_digest: ObjectDigest,
+) -> Result<HeldSnapshotPhysicalObservationV1, ZfsWorkerError> {
+    decode_response_for(bytes, expected_request_digest, b"AOSZHO02", 2)
+}
+
+fn decode_response_for(
+    bytes: &[u8],
+    expected_request_digest: ObjectDigest,
+    magic: &[u8; 8],
+    version: u16,
+) -> Result<HeldSnapshotPhysicalObservationV1, ZfsWorkerError> {
     if bytes.len() != RESPONSE_BYTES {
         return Err(ZfsWorkerError::Protocol(
             "held-snapshot response length is invalid",
         ));
     }
     let mut decoder = Decoder::new(bytes);
-    if decoder.take(8)? != RESPONSE_MAGIC || decoder.u16()? != VERSION {
+    if decoder.take(8)? != magic || decoder.u16()? != version {
         return Err(ZfsWorkerError::Protocol(
             "held-snapshot response version mismatch",
         ));
@@ -263,6 +300,27 @@ pub(super) fn decode_response(
             "held-snapshot response state is invalid",
         )),
     }
+}
+
+pub(super) fn validate_original_selected(
+    cutoff: &super::original_cutoff::DecodedOriginalWorkerCutoffV3,
+    selected: &[u8],
+) -> Result<HeldSnapshotWorkerRequestV1, ZfsWorkerError> {
+    let request = decode_request(selected)?;
+    let claims = cutoff.request.request().claims();
+    let catalog = claims.catalog();
+    let (_, snapshot) = catalog.select_under_head(
+        catalog.generation(), catalog.digest(), catalog.namespace_digest(), claims.selection().0,
+    ).map_err(|_| ZfsWorkerError::Authority)?;
+    if request.snapshot.dataset().storage_handle() != snapshot.storage_handle()
+        || request.snapshot.dataset().guid() != snapshot.dataset_guid()
+        || request.snapshot.guid() != snapshot.snapshot_guid()
+        || request.hold_id.as_bytes() != snapshot.hold_id()
+        || request.binding.pool_guid != snapshot.pool_guid()
+    {
+        return Err(ZfsWorkerError::Authority);
+    }
+    Ok(request)
 }
 
 pub(super) fn execute_request(
@@ -308,6 +366,250 @@ pub(super) fn execute_request(
         pool_guid: first_pool.0,
         digest,
     })
+}
+
+/// Retains the actual tools, timers, output and lower diagnostics for seven probes.
+pub(super) struct OriginalProbeProgressV3 {
+    zfs_pin: Option<super::PinnedExecutable>,
+    zpool_pin: Option<super::PinnedExecutable>,
+    zpool: Option<ZfsHelperContract>,
+    captures: [aos_sandbox_linux::process::FixedProcessCaptureV1; 7],
+    outcomes: [Option<aos_sandbox_linux::process::FixedProcessRetainedSessionOutcome<()>>; 7],
+    timers: [OriginalBoottimeTimerV3; 7],
+    post_image_checks: [Option<Result<(), ZfsWorkerError>>; 7],
+    next: usize,
+}
+
+impl Default for OriginalProbeProgressV3 {
+    fn default() -> Self {
+        Self {
+            zfs_pin: None,
+            zpool_pin: None,
+            zpool: None,
+            captures: std::array::from_fn(|_| aos_sandbox_linux::process::FixedProcessCaptureV1::new()),
+            outcomes: std::array::from_fn(|_| None),
+            timers: std::array::from_fn(|_| OriginalBoottimeTimerV3::default()),
+            post_image_checks: std::array::from_fn(|_| None),
+            next: 0,
+        }
+    }
+}
+
+pub(super) fn execute_original_request(
+    request: &HeldSnapshotWorkerRequestV1,
+    view: &mut WorkerOriginalCheckedViewV3<'_>,
+    progress: &mut OriginalProbeProgressV3,
+) -> Result<HeldSnapshotPhysicalObservationV1, OriginalHeldMeasurementErrorV3> {
+    view.check()?;
+    if request
+        .executable
+        .executable()
+        .file_name()
+        .is_none_or(|name| name != "zfs")
+    {
+        return Err(ZfsWorkerError::Executable(
+            "held-snapshot worker requires fixed zfs executable".to_owned(),
+        )
+        .into());
+    }
+    progress.zpool = Some(
+        ZfsHelperContract::new(request.executable.executable().with_file_name("zpool"))
+            .map_err(ZfsWorkerError::from)?,
+    );
+    super::PinnedExecutable::capture_open(&request.executable, &mut progress.zfs_pin)?;
+    super::PinnedExecutable::capture_open(
+        progress
+            .zpool
+            .as_ref()
+            .ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+        &mut progress.zpool_pin,
+    )?;
+    view.check()?;
+
+    let pool = request.snapshot.dataset().root().pool();
+    let pool_arguments = ["list", "-H", "-p", "-o", "name,guid", pool].map(OsString::from);
+    let first_pool = run_original_command(
+        request,
+        view,
+        progress,
+        CaptureZfsToolV1::Zpool,
+        &pool_arguments,
+        MAXIMUM_POOL_OUTPUT_BYTES,
+        0,
+    )?;
+    let first_guid = parse_pool_guid(progress.captures[first_pool].stdout(), pool)?;
+    if first_guid != request.binding.pool_guid {
+        return Ok(HeldSnapshotPhysicalObservationV1::Mismatch);
+    }
+    let plan = ZfsObservationPlan::held_snapshot(&request.snapshot, request.hold_id)
+        .map_err(|_| ZfsWorkerError::Protocol("held-snapshot plan is invalid"))?;
+    if plan.commands().len() != 5 {
+        return Err(OriginalHeldMeasurementErrorV3::Bound);
+    }
+    let mut evaluation = plan.evaluation();
+    let mut output_bytes = 0_usize;
+    let mut observed = None;
+    for command in plan.commands() {
+        view.check()?;
+        let index = run_original_command(
+            request,
+            view,
+            progress,
+            CaptureZfsToolV1::Zfs,
+            command.arguments(),
+            super::MAXIMUM_STDOUT_BYTES.saturating_sub(output_bytes),
+            super::MAXIMUM_STDERR_BYTES,
+        )?;
+        let captured = progress.captures[index].stdout();
+        output_bytes = output_bytes
+            .checked_add(captured.len())
+            .filter(|bytes| *bytes <= super::MAXIMUM_STDOUT_BYTES)
+            .ok_or(OriginalHeldMeasurementErrorV3::Bound)?;
+        // The existing evaluator owns its input Vec. Keep the lower capture
+        // separately so errors never discard the original stdout/stderr.
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(captured.len())?;
+        bytes.extend_from_slice(captured);
+        observed = evaluation
+            .accept(bytes)
+            .map_err(|_| ZfsWorkerError::Protocol("invalid ZFS observation output"))?;
+        view.check()?;
+        if observed.is_some() {
+            break;
+        }
+    }
+    let observation = observed.ok_or(ZfsWorkerError::Protocol(
+        "ZFS observation plan did not produce a result",
+    ))?;
+    if observation.state != ZfsObservationState::Matched {
+        return Ok(HeldSnapshotPhysicalObservationV1::Mismatch);
+    }
+    let observed_digest = observation.digest.ok_or(ZfsWorkerError::Protocol(
+        "held-snapshot digest is missing",
+    ))?;
+    let second_pool = run_original_command(
+        request,
+        view,
+        progress,
+        CaptureZfsToolV1::Zpool,
+        &pool_arguments,
+        MAXIMUM_POOL_OUTPUT_BYTES,
+        0,
+    )?;
+    let second_guid = parse_pool_guid(progress.captures[second_pool].stdout(), pool)?;
+    view.check()?;
+    if second_guid != first_guid {
+        return Ok(HeldSnapshotPhysicalObservationV1::Mismatch);
+    }
+    let digest = ObjectDigest::from_bytes(
+        Sha256::new()
+            .chain_update(PHYSICAL_DOMAIN)
+            .chain_update(view.digest().as_bytes())
+            .chain_update(progress.captures[first_pool].stdout())
+            .chain_update(observed_digest.as_bytes())
+            .chain_update(progress.captures[second_pool].stdout())
+            .finalize()
+            .into(),
+    );
+    Ok(HeldSnapshotPhysicalObservationV1::Matched {
+        pool_guid: first_guid,
+        digest,
+    })
+}
+
+fn run_original_command(
+    request: &HeldSnapshotWorkerRequestV1,
+    view: &mut WorkerOriginalCheckedViewV3<'_>,
+    progress: &mut OriginalProbeProgressV3,
+    tool: CaptureZfsToolV1,
+    arguments: &[OsString],
+    maximum_stdout_bytes: usize,
+    maximum_stderr_bytes: usize,
+) -> Result<usize, OriginalHeldMeasurementErrorV3> {
+    use aos_sandbox_linux::process::{
+        FixedProcessCapturedStreamV1, FixedProcessRetainedSessionOutcome,
+        FixedProcessSessionRequest, run_fixed_process_session_retained_v1,
+    };
+
+    let index = progress.next;
+    if index >= progress.captures.len()
+        || maximum_stdout_bytes > super::MAXIMUM_STDOUT_BYTES
+        || maximum_stderr_bytes > super::MAXIMUM_STDERR_BYTES
+    {
+        return Err(OriginalHeldMeasurementErrorV3::Bound);
+    }
+    progress.next += 1;
+    let (contract, pin) = match tool {
+        CaptureZfsToolV1::Zfs => (&request.executable, progress.zfs_pin.as_ref()),
+        CaptureZfsToolV1::Zpool => (
+            progress
+                .zpool
+                .as_ref()
+                .ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+            progress.zpool_pin.as_ref(),
+        ),
+    };
+    let pin = pin.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+    pin.validate_current(contract)?;
+    let later = view.check()?;
+    let remaining = view
+        .cutoff()
+        .checked_sub(later.boottime_nanoseconds())
+        .filter(|remaining| *remaining != 0)
+        .ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+    progress.timers[index].arm(view.cutoff())?;
+    let result = {
+        let mut exchange = OriginalCutoffExchangeV3::new(view);
+        run_fixed_process_session_retained_v1(
+            FixedProcessSessionRequest {
+                process: FixedProcessRequest {
+                    executable: contract.executable(),
+                    arguments,
+                    timeout: std::time::Duration::from_nanos(remaining),
+                    maximum_stdout_bytes,
+                    maximum_stderr_bytes,
+                },
+                stdin: None,
+                inherited: Vec::new(),
+                control: progress.timers[index].descriptor()?,
+            },
+            &mut exchange,
+            &mut progress.captures[index],
+        )
+    };
+    progress.post_image_checks[index] = Some(pin.validate_current(contract));
+    let post_clock = view.check();
+    // The runner's first concrete cause precedes the later bookend checks.
+    let outcome = result?;
+    progress.outcomes[index] = Some(outcome);
+    if matches!(&progress.post_image_checks[index], Some(Err(_))) {
+        if let Some(Err(cause)) = progress.post_image_checks[index].take() {
+            return Err(cause.into());
+        }
+    }
+    if let Err(cause) = post_clock {
+        return Err(view.take_first_failure().unwrap_or(cause).into());
+    }
+    let success = matches!(
+        &progress.outcomes[index],
+        Some(FixedProcessRetainedSessionOutcome::ChildExitedBeforeExchange {
+            exit_code: Some(0),
+            signal: None,
+        }),
+    );
+    let capture = &progress.captures[index];
+    if !success
+        || !capture.stderr().is_empty()
+        || capture.observation().stdout() != FixedProcessCapturedStreamV1::Eof
+        || capture.observation().stderr() != FixedProcessCapturedStreamV1::Eof
+        || !capture.observation().reaped() || capture.observation().ownership_lost()
+    {
+        return Err(ZfsWorkerError::Protocol(
+            "held-snapshot original command did not complete",
+        )
+        .into());
+    }
+    Ok(index)
 }
 
 fn observe_pool_guid(
@@ -370,6 +672,43 @@ fn parse_pool_guid(output: &[u8], pool: &str) -> Result<u64, ZfsWorkerError> {
         ));
     }
     Ok(value)
+}
+
+#[cfg(test)]
+mod original_response_tests {
+    use super::*;
+
+    #[test]
+    fn original_response_uses_the_same_full_fields_but_not_the_legacy_header() {
+        let request = ObjectDigest::from_bytes([1; 32]);
+        let physical = HeldSnapshotPhysicalObservationV1::Matched {
+            pool_guid: 9,
+            digest: ObjectDigest::from_bytes([2; 32]),
+        };
+        let legacy = encode_response(request, physical);
+        let original = encode_original_response(request, physical);
+
+        assert_eq!(&legacy[10..], &original[10..]);
+        assert_eq!(&legacy[..10], b"AOSZHO01\0\x01");
+        assert_eq!(&original[..10], b"AOSZHO02\0\x02");
+        assert_eq!(decode_response(&legacy, request).unwrap(), physical);
+        assert_eq!(decode_original_response(&original, request).unwrap(), physical);
+        assert!(decode_response(&original, request).is_err());
+        assert!(decode_original_response(&legacy, request).is_err());
+    }
+
+    #[test]
+    fn original_mismatch_and_wrong_digest_preserve_the_shared_decoder_refusal() {
+        let request = ObjectDigest::from_bytes([3; 32]);
+        let original = encode_original_response(request, HeldSnapshotPhysicalObservationV1::Mismatch);
+
+        assert_eq!(decode_original_response(&original, request).unwrap(), HeldSnapshotPhysicalObservationV1::Mismatch);
+        assert!(decode_original_response(&original, ObjectDigest::from_bytes([4; 32])).is_err());
+        assert!(decode_original_response(&original[..82], request).is_err());
+        let mut noncanonical = original;
+        noncanonical[43] = 1;
+        assert!(decode_original_response(&noncanonical, request).is_err());
+    }
 }
 
 fn encode_text(bytes: &mut Vec<u8>, text: &OsStr) -> Result<(), ZfsWorkerError> {

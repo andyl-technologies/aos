@@ -1,5 +1,10 @@
 //! Exact systemd record-subject socket activation for `aos-storaged`.
 
+mod original_worker;
+
+pub(crate) use original_worker::StorageOriginalWorkerStartupCauseV3;
+pub use original_worker::{StorageOriginalWorkerStartupErrorV3, StorageOriginalWorkerStartupV3};
+
 use std::os::fd::OwnedFd;
 
 use aos_sandbox_linux::inherited_fd::duplicate_initial_activation_table;
@@ -39,6 +44,29 @@ impl CapturedStorageStartupV1 {
     #[must_use]
     pub fn into_parts(self) -> (StorageSystemdListenersV1, Option<OwnedFd>) {
         (self.listeners, self.pid1_image)
+    }
+
+    /// Admits worker startup custody from this one complete actual capture.
+    ///
+    /// The same original image remains available to the separate Security
+    /// owner. Absence returns `None`, never an admitted empty image or grant.
+    /// The returned opaque owner conveys no floor or backend readiness.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed actual process, unit, image, or confinement. Admission
+    /// failure owns the original table and any partial retained observations.
+    pub fn into_original_worker_parts(
+        self,
+    ) -> Result<
+        (
+            StorageSystemdListenersV1,
+            Option<OwnedFd>,
+            Option<StorageOriginalWorkerStartupV3>,
+        ),
+        StorageOriginalWorkerStartupErrorV3,
+    > {
+        original_worker::admit_captured(self)
     }
 }
 

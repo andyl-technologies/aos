@@ -8,18 +8,16 @@
 
 use std::fs::File;
 use std::io::Read as _;
-use std::os::unix::fs::MetadataExt as _;
 use std::path::{Path, PathBuf};
 
+#[cfg(test)]
 use rustix::fs::OFlags;
 
 use super::super::FloorErrorV1;
-use crate::fixed_role_credential::{
-    CredentialOwnerPolicyV1, read_optional_bounded_role_credential_v1,
-};
 
 const MAXIMUM_IMAGE_BYTES: u64 = 16 * 1024 * 1024;
 pub(super) use crate::immutable_image::RetainedImmutableFileV1 as MeasuredFileV1;
+#[cfg(test)]
 use crate::immutable_image::require_readonly_launch_flags;
 
 const MAXIMUM_MAPS_BYTES: u64 = 64 * 1024;
@@ -168,32 +166,7 @@ impl MeasuredHelperImageV1 {
 pub(super) fn open_original_pid1_image(
     launch_image: &crate::production_startup::Pid1LaunchImageV1,
 ) -> Result<MeasuredFileV1, FloorErrorV1> {
-    let path =
-        PathBuf::from(option_env!("AOS_METHOD46_TPM_PID1").ok_or(FloorErrorV1::Unavailable)?);
-    let package = path
-        .parent()
-        .and_then(Path::parent)
-        .and_then(Path::parent)
-        .ok_or(FloorErrorV1::Provisioning)?;
-    let pin = read_pin(
-        &package.join("share/aos"),
-        "backend-policy-artifact-v2",
-        74,
-        4096,
-    )?;
-    if !pin.starts_with(b"AOSBPA02\n") {
-        return Err(FloorErrorV1::Provisioning);
-    }
-    let digest = decode_hash(pin.get(9..74).ok_or(FloorErrorV1::Provisioning)?)?;
-    // Retain the actual launch inode, not a reopened package image asserted
-    // to be executing. OpenFile runs before service UID/proc confinement.
-    let file = launch_image
-        .file()
-        .try_clone()
-        .map_err(|_| FloorErrorV1::Unavailable)?;
-    let flags = rustix::fs::fcntl_getfl(&file).map_err(|_| FloorErrorV1::Unavailable)?;
-    require_readonly_launch_flags(flags)?;
-    MeasuredFileV1::retain_with_profile(path, file, Some(digest), MAXIMUM_IMAGE_BYTES, true)
+    aos_sandbox::immutable_image::retain_original_backend_pid1_v1(launch_image.file())
         .map_err(Into::into)
 }
 
@@ -212,48 +185,12 @@ fn read_pin(
     minimum: usize,
     maximum: usize,
 ) -> Result<Vec<u8>, FloorErrorV1> {
-    let metadata =
-        std::fs::symlink_metadata(directory.join(name)).map_err(|_| FloorErrorV1::Provisioning)?;
-    if !metadata.is_file()
-        || metadata.uid() != 0
-        || metadata.gid() != 0
-        || metadata.mode() & 0o222 != 0
-    {
-        return Err(FloorErrorV1::Provisioning);
-    }
-    read_optional_bounded_role_credential_v1(
-        directory,
-        name,
-        minimum,
-        maximum,
-        false,
-        CredentialOwnerPolicyV1::RootOrCurrent,
-    )
-    .map_err(|_| FloorErrorV1::Provisioning)?
-    .ok_or(FloorErrorV1::Provisioning)
+    aos_sandbox::immutable_image::read_immutable_image_pin_v1(directory, name, minimum, maximum)
+        .map_err(Into::into)
 }
 
 fn decode_hash(bytes: &[u8]) -> Result<[u8; 32], FloorErrorV1> {
-    if bytes.len() != 65
-        || bytes[64] != b'\n'
-        || bytes[..64]
-            .iter()
-            .any(|byte| !byte.is_ascii_digit() && !(b'a'..=b'f').contains(byte))
-    {
-        return Err(FloorErrorV1::Provisioning);
-    }
-    let mut digest = [0; 32];
-    for (index, pair) in bytes[..64].chunks_exact(2).enumerate() {
-        let digit = |byte: u8| {
-            if byte <= b'9' {
-                byte - b'0'
-            } else {
-                byte - b'a' + 10
-            }
-        };
-        digest[index] = (digit(pair[0]) << 4) | digit(pair[1]);
-    }
-    Ok(digest)
+    aos_sandbox::immutable_image::decode_immutable_sha256_pin_v1(bytes).map_err(Into::into)
 }
 
 #[cfg(test)]

@@ -134,6 +134,48 @@ impl ProductionStorageStartupV1 {
     /// presence, or any fixed broker-listener failure. This cannot be retried.
     pub fn capture() -> Result<Self, StorageServiceError> {
         let (listeners, image) = take_systemd_startup()?.into_parts();
+        Self::admit_captured_parts(listeners, image)
+    }
+
+    /// Captures once and transfers genuine original worker startup downward.
+    ///
+    /// The existing six-listener tuple and separate method-46 launch owner are
+    /// unchanged. Missing original image yields no worker owner, not a grant.
+    ///
+    /// # Errors
+    ///
+    /// Rejects the same legacy activation/mode failures or typed original
+    /// startup admission failures, retaining admitted worker custody on error.
+    pub fn capture_original_worker_startup(
+    ) -> Result<
+        (
+            Self,
+            Option<aos_sandbox_storage::activation::StorageOriginalWorkerStartupV3>,
+        ),
+        aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3,
+    > {
+        use aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3;
+
+        let captured = take_systemd_startup()?;
+        let (listeners, image, startup) = captured.into_original_worker_parts()?;
+        let startup_owner = match Self::admit_captured_parts(listeners, image) {
+            Ok(owner) => owner,
+            Err(error) => {
+                return Err(StorageOriginalWorkerStartupErrorV3::retain_service_failure(
+                    error,
+                    startup,
+                ));
+            }
+        };
+        Ok((startup_owner, startup))
+    }
+
+    // Both capture paths consume the same complete table through the original
+    // image-mode and fixed-listener admission sequence, without a second scan.
+    fn admit_captured_parts(
+        listeners: aos_sandbox_storage::activation::StorageSystemdListenersV1,
+        image: Option<OwnedFd>,
+    ) -> Result<Self, StorageServiceError> {
         let (control, export, live_export, zfs_hold, operator, existing_output) = listeners;
         let endpoint = ProtectedBrokerSessionFixedEndpointV1::StorageBroker;
         let image = admit_launch_observation(endpoint, image)

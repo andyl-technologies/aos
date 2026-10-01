@@ -54,6 +54,8 @@ use super::{
     verify_systemd_activation_peer, wait_for_worker_quiescence,
 };
 
+pub(crate) mod original;
+
 const REQUEST_MAGIC: &[u8; 8] = b"AOSHSR01";
 const RESULT_MAGIC: &[u8; 8] = b"AOSHSM02";
 const MOUNT_REQUEST_MAGIC: &[u8; 8] = b"AOSHSR02";
@@ -82,6 +84,7 @@ const LAUNCH_FENCE_NAME: &str = "held-snapshot-reader.launch";
 enum ReaderReplyMode {
     MeasurementOnly,
     WithMount,
+    OriginalWithMount,
 }
 
 /// Retains a measured byte identity and mount identity, without authority.
@@ -354,15 +357,41 @@ pub(crate) struct SystemdHeldSnapshotReaderV1 {
     fail_stopped: bool,
 }
 
+/// Retains partial passive owner capture before the next fallible check.
+#[derive(Default)]
+pub(crate) struct HeldReaderOwnerCaptureV3 {
+    manager: Option<RetainedCgroupAnchor>,
+    worker_parent: Option<RetainedCgroupAnchor>,
+    launch_fence: Option<HeldReaderLaunchFence>,
+    cgroup_root: Option<CgroupV2Root>,
+}
+
 impl SystemdHeldSnapshotReaderV1 {
     pub(crate) fn new(
         cgroup_root: CgroupV2Root,
         state_directory: &Path,
     ) -> Result<Self, ZfsWorkerError> {
+        let mut capture = HeldReaderOwnerCaptureV3::default();
+        Self::capture_new(cgroup_root, state_directory, &mut capture)
+    }
+
+    pub(crate) fn capture_new(
+        cgroup_root: CgroupV2Root,
+        state_directory: &Path,
+        capture: &mut HeldReaderOwnerCaptureV3,
+    ) -> Result<Self, ZfsWorkerError> {
+        if capture.cgroup_root.is_some() {
+            return Err(ZfsWorkerError::Protocol("reader owner capture is occupied"));
+        }
+        capture.cgroup_root = Some(cgroup_root);
+        let root = capture.cgroup_root.as_ref().ok_or(ZfsWorkerError::Authority)?;
+        capture.manager = Some(root.resolve(Path::new("init.scope"))?);
+        capture.worker_parent = Some(root.resolve(Path::new("aos.slice/aos-control.slice"))?);
+        capture.launch_fence = Some(HeldReaderLaunchFence::open(state_directory)?);
         Ok(Self {
-            manager: cgroup_root.resolve(Path::new("init.scope"))?,
-            worker_parent: cgroup_root.resolve(Path::new("aos.slice/aos-control.slice"))?,
-            launch_fence: HeldReaderLaunchFence::open(state_directory)?,
+            manager: capture.manager.take().ok_or(ZfsWorkerError::Authority)?,
+            worker_parent: capture.worker_parent.take().ok_or(ZfsWorkerError::Authority)?,
+            launch_fence: capture.launch_fence.take().ok_or(ZfsWorkerError::Authority)?,
             fail_stopped: false,
         })
     }
@@ -500,6 +529,9 @@ impl SystemdHeldSnapshotReaderV1 {
                         descriptors,
                     )?;
                     (measured, Some(mount))
+                }
+                ReaderReplyMode::OriginalWithMount => {
+                    return Err(ZfsWorkerError::Protocol("original reader requires its checked branch"));
                 }
             };
             send_before(&mut socket, &encode_ack(), deadline)?;
@@ -678,6 +710,9 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
     let record = receive_before(&mut socket, MAXIMUM_REQUEST_BYTES, deadline)?;
     verify_same_subject(socket.peer(), record.subject())?;
     storaged.verify_exact_membership(record.subject().pidfd())?;
+    if super::original_cutoff::OriginalWorkerPurposeV3::Reader.selects_introduction(record.payload()) {
+        return original::run_original_reader(socket, record, storaged);
+    }
     let (snapshot_name, expected_pool_guid, expected_snapshot_guid, request_digest, mode) =
         decode_request(record.payload())?;
 
@@ -699,6 +734,9 @@ pub fn run_inherited_held_snapshot_reader() -> Result<(), ZfsWorkerError> {
             )
             .map_err(|error| ZfsWorkerError::Executable(error.to_string()))?;
             (measured, Some(mount))
+        }
+        ReaderReplyMode::OriginalWithMount => {
+            return Err(ZfsWorkerError::Protocol("original reader requires its checked branch"));
         }
     };
     let observation = HeldSnapshotReaderObservationV1 {
@@ -790,6 +828,9 @@ fn encode_request_for(
     let (magic, version) = match mode {
         ReaderReplyMode::MeasurementOnly => (REQUEST_MAGIC, VERSION),
         ReaderReplyMode::WithMount => (MOUNT_REQUEST_MAGIC, MOUNT_REQUEST_VERSION),
+        ReaderReplyMode::OriginalWithMount => {
+            return Err(ZfsWorkerError::Protocol("original reader has no legacy request encoding"));
+        }
     };
     bytes.extend_from_slice(magic);
     bytes.extend_from_slice(&version.to_be_bytes());
@@ -922,6 +963,7 @@ fn encode_result_for(
     let (magic, version) = match mode {
         ReaderReplyMode::MeasurementOnly => (RESULT_MAGIC, RESULT_VERSION),
         ReaderReplyMode::WithMount => (MOUNT_RESULT_MAGIC, MOUNT_RESULT_VERSION),
+        ReaderReplyMode::OriginalWithMount => (b"AOSHSM04", 4),
     };
     bytes[..8].copy_from_slice(magic);
     bytes[8..10].copy_from_slice(&version.to_be_bytes());
@@ -987,6 +1029,20 @@ fn validate_result_with_mount(
     expected_pool_guid: u64,
     descriptors: &[OwnedFd],
 ) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
+    validate_result_with_mount_for(
+        bytes, expected, expected_snapshot_guid, expected_pool_guid, descriptors,
+        ReaderReplyMode::WithMount,
+    )
+}
+
+fn validate_result_with_mount_for(
+    bytes: &[u8],
+    expected: ObjectDigest,
+    expected_snapshot_guid: u64,
+    expected_pool_guid: u64,
+    descriptors: &[OwnedFd],
+    mode: ReaderReplyMode,
+) -> Result<HeldSnapshotReaderObservationV1, ZfsWorkerError> {
     let [mount] = descriptors else {
         return Err(ZfsWorkerError::Protocol(
             "reader descriptor result requires exactly one mount",
@@ -996,7 +1052,7 @@ fn validate_result_with_mount(
         bytes,
         expected,
         expected_snapshot_guid,
-        ReaderReplyMode::WithMount,
+        mode,
     )?;
     verify_received_mount_fd(mount.as_fd(), &measured, expected_pool_guid)?;
     Ok(measured)
@@ -1011,6 +1067,7 @@ fn decode_result_for(
     let (magic, version) = match mode {
         ReaderReplyMode::MeasurementOnly => (RESULT_MAGIC, RESULT_VERSION),
         ReaderReplyMode::WithMount => (MOUNT_RESULT_MAGIC, MOUNT_RESULT_VERSION),
+        ReaderReplyMode::OriginalWithMount => (b"AOSHSM04", 4),
     };
     if bytes.len() != RESULT_BYTES
         || &bytes[..8] != magic

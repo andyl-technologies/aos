@@ -62,12 +62,15 @@ use crate::{
 
 mod held_snapshot;
 mod held_snapshot_reader;
+pub(crate) mod original_cutoff;
 mod wire;
 
 pub(crate) use held_snapshot::{HeldSnapshotPhysicalObservationV1, HeldSnapshotWorkerBindingV1};
+pub(crate) use held_snapshot_reader::original::OriginalHeldWorkerProgressV3;
 pub use held_snapshot_reader::run_inherited_held_snapshot_reader;
 pub(crate) use held_snapshot_reader::{
-    HeldSnapshotReaderObservationV1, SystemdHeldSnapshotReaderV1, verify_received_mount_fd,
+    HeldReaderOwnerCaptureV3, HeldSnapshotReaderObservationV1, SystemdHeldSnapshotReaderV1,
+    verify_received_mount_fd,
 };
 
 use wire::{
@@ -100,6 +103,9 @@ const CGROUP_ROOT: &str = "/sys/fs/cgroup";
 /// Reports a fixed-worker setup, authentication, protocol, or execution error.
 #[derive(Debug, thiserror::Error)]
 pub enum ZfsWorkerError {
+    /// A new-version worker retains its actual originals and first typed cause.
+    #[error(transparent)]
+    OriginalWorker(#[from] Box<OriginalWorkerFailureV3>),
     /// The configured executable contract is invalid.
     #[error("invalid fixed ZFS executable: {0}")]
     Executable(String),
@@ -133,6 +139,37 @@ pub enum ZfsWorkerError {
     /// The local worker preserved this exact child-side executable error.
     #[error("local fixed ZFS exec failed: {0}")]
     Exec(std::io::Error),
+}
+
+/// Owns rejected new-version worker custody without retry or drain authority.
+///
+/// The original socket, consumed records, images, mount and process captures
+/// remain in the private child owner. Dropping this error or process abort
+/// loses in-memory custody; this is not a universal unwind or cold-retry claim.
+pub struct OriginalWorkerFailureV3 {
+    cause: crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3,
+    custody: Box<held_snapshot_reader::original::WorkerOriginalChildCustodyV3>,
+}
+
+impl std::fmt::Debug for OriginalWorkerFailureV3 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OriginalWorkerFailureV3")
+            .field("cause", &self.cause)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for OriginalWorkerFailureV3 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.cause.fmt(formatter)
+    }
+}
+
+impl std::error::Error for OriginalWorkerFailureV3 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.cause)
+    }
 }
 
 /// Returns the fixed internal process timeout enforced by every worker.
@@ -298,6 +335,29 @@ pub struct SystemdZfsExecutor {
 }
 
 impl SystemdZfsExecutor {
+    pub(crate) fn observe_original_held_snapshot(
+        &mut self,
+        contract: &ZfsHelperContract,
+        snapshot: &crate::ResolvedSnapshot,
+        hold_id: crate::HoldId,
+        binding: HeldSnapshotWorkerBindingV1,
+        loan: &mut crate::runtime::original_held_measurement::OriginalWorkerLoanV3<'_, '_, '_>,
+        progress: &mut OriginalHeldWorkerProgressV3,
+    ) -> Result<
+        HeldSnapshotPhysicalObservationV1,
+        crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3,
+    > {
+        held_snapshot_reader::original::observe_original(
+            self,
+            contract,
+            snapshot,
+            hold_id,
+            binding,
+            loan,
+            progress,
+        )
+    }
+
     /// Reobserves one protected held snapshot through the fixed read-only worker.
     ///
     /// The caller must keep its protected catalog lock across this exchange and
@@ -580,6 +640,15 @@ pub fn run_inherited_worker(configured_zfs: PathBuf) -> Result<(), ZfsWorkerErro
     let request = receive_before(&mut socket, MAXIMUM_REQUEST_BYTES, deadline)?;
     verify_same_subject(socket.peer(), request.subject())?;
     storaged_cgroup.verify_exact_membership(request.subject().pidfd())?;
+    if original_cutoff::OriginalWorkerPurposeV3::Observer.selects_introduction(request.payload()) {
+        return held_snapshot_reader::original::run_original_observer(
+            socket,
+            request,
+            storaged_cgroup,
+            contract,
+            _executable_pin,
+        );
+    }
     if is_atomic_snapshot_request(request.payload()) {
         let request = decode_atomic_snapshot_request(request.payload())?;
         if request.executable != *contract.executable() {
@@ -1075,6 +1144,22 @@ impl<'a> PinnedCaptureZfsTools<'a> {
 
 impl PinnedExecutable {
     pub(crate) fn open(contract: &ZfsHelperContract) -> Result<Self, ZfsWorkerError> {
+        let mut captured = None;
+        Self::capture_open(contract, &mut captured)?;
+        captured.ok_or(ZfsWorkerError::Protocol(
+            "fixed executable capture is absent",
+        ))
+    }
+
+    fn capture_open(
+        contract: &ZfsHelperContract,
+        captured: &mut Option<Self>,
+    ) -> Result<(), ZfsWorkerError> {
+        if captured.is_some() {
+            return Err(ZfsWorkerError::Protocol(
+                "fixed executable capture is occupied",
+            ));
+        }
         let metadata = std::fs::symlink_metadata(contract.executable())?;
         if !metadata.file_type().is_file()
             || metadata.uid() != 0
@@ -1085,17 +1170,23 @@ impl PinnedExecutable {
             ));
         }
         let file = File::open(contract.executable())?;
-        let opened = file.metadata()?;
+        *captured = Some(Self {
+            _file: file,
+            device: 0,
+            inode: 0,
+        });
+        let pin = captured.as_mut().ok_or(ZfsWorkerError::Protocol(
+            "fixed executable capture is absent",
+        ))?;
+        let opened = pin._file.metadata()?;
         if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
             return Err(ZfsWorkerError::Executable(
                 "changed while its identity was pinned".to_owned(),
             ));
         }
-        Ok(Self {
-            _file: file,
-            device: opened.dev(),
-            inode: opened.ino(),
-        })
+        pin.device = opened.dev();
+        pin.inode = opened.ino();
+        Ok(())
     }
 
     pub(crate) fn validate_current(

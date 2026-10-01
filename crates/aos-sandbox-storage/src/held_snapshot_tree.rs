@@ -43,6 +43,7 @@ use aos_sandbox_source_provider_protocol::held_snapshot_content_digest_v1;
 use rustix::fs::{Mode, OFlags, SeekFrom, Stat, StatVfsMountFlags};
 use sha2::{Digest as _, Sha256};
 
+use crate::process::original_cutoff::WorkerOriginalCheckedViewV3;
 use crate::root_policy::PortableRootAttributesV1;
 
 const MAXIMUM_DEPTH: usize = 64;
@@ -122,6 +123,14 @@ pub(crate) fn measure_read_only_held_snapshot_tree(
 fn measure_secure_root(
     root: OwnedFd,
 ) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    measure_secure_root_for(root, None)
+}
+
+fn measure_secure_root_for(
+    root: OwnedFd,
+    mut original: Option<&mut WorkerOriginalCheckedViewV3<'_>>,
+) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    check_original(&mut original)?;
     let mount_id = MountId::from_fd(root.as_fd())?;
     let flags = rustix::fs::fstatvfs(root.as_fd())?.f_flag;
     if !flags.contains(
@@ -135,8 +144,12 @@ fn measure_secure_root(
 
     let root_stat = rustix::fs::fstat(root.as_fd())?;
     let beneath = BeneathRoot::from_owned(root)?;
-    let mut walker = PhysicalTreeWalker::default();
+    let mut walker = PhysicalTreeWalker {
+        original,
+        ..PhysicalTreeWalker::default()
+    };
     let tree = walker.measure_tree(&beneath)?;
+    walker.check_original()?;
     let final_stat = rustix::fs::fstat(beneath.as_fd())?;
     if !same_inode_state(&root_stat, &final_stat) || MountId::from_fd(beneath.as_fd())? != mount_id
     {
@@ -145,6 +158,7 @@ fn measure_secure_root(
     let content_digest =
         held_snapshot_content_digest_v1(&tree).map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
     let identity = walker.identity_observation()?;
+    walker.check_original()?;
     Ok(MeasuredHeldSnapshotTreeV1 {
         mount_id,
         root_device: root_stat.st_dev,
@@ -197,11 +211,65 @@ pub(crate) fn measure_bound_detached_snapshot_with_mount(
     expected_pool_guid: u64,
     expected_snapshot_guid: u64,
 ) -> Result<(MeasuredHeldSnapshotTreeV1, DetachedMount), HeldSnapshotTreeErrorV1> {
+    measure_bound_detached_snapshot_for(
+        snapshot_name,
+        expected_pool_guid,
+        expected_snapshot_guid,
+        None,
+    )
+}
+
+/// Borrows only the already admitted original worker branch, never raw DATA.
+pub(crate) fn measure_bound_original_snapshot_with_mount(
+    snapshot_name: &str,
+    expected_pool_guid: u64,
+    expected_snapshot_guid: u64,
+    original: &mut WorkerOriginalCheckedViewV3<'_>,
+    retained_mount: &mut Option<DetachedMount>,
+) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    if expected_pool_guid == 0 || expected_snapshot_guid == 0 || retained_mount.is_some() {
+        return Err(HeldSnapshotTreeErrorV1::Unsupported);
+    }
+
+    mount_detached_snapshot_into(snapshot_name, Some(original), retained_mount)?;
+    let mount = retained_mount
+        .as_ref()
+        .ok_or(HeldSnapshotTreeErrorV1::Unsupported)?;
+    measure_bound_mount_for(
+        mount,
+        expected_pool_guid,
+        expected_snapshot_guid,
+        Some(original),
+    )
+}
+
+fn measure_bound_detached_snapshot_for(
+    snapshot_name: &str,
+    expected_pool_guid: u64,
+    expected_snapshot_guid: u64,
+    mut original: Option<&mut WorkerOriginalCheckedViewV3<'_>>,
+) -> Result<(MeasuredHeldSnapshotTreeV1, DetachedMount), HeldSnapshotTreeErrorV1> {
     if expected_pool_guid == 0 || expected_snapshot_guid == 0 {
         return Err(HeldSnapshotTreeErrorV1::Unsupported);
     }
 
-    let mount = mount_detached_snapshot(snapshot_name)?;
+    let mount = mount_detached_snapshot_for(snapshot_name, original.as_deref_mut())?;
+    let measured = measure_bound_mount_for(
+        &mount,
+        expected_pool_guid,
+        expected_snapshot_guid,
+        original,
+    )?;
+    Ok((measured, mount))
+}
+
+fn measure_bound_mount_for(
+    mount: &DetachedMount,
+    expected_pool_guid: u64,
+    expected_snapshot_guid: u64,
+    mut original: Option<&mut WorkerOriginalCheckedViewV3<'_>>,
+) -> Result<MeasuredHeldSnapshotTreeV1, HeldSnapshotTreeErrorV1> {
+    check_original(&mut original)?;
     let readable_root = rustix::fs::openat(
         mount.as_fd(),
         ".",
@@ -217,7 +285,12 @@ pub(crate) fn measure_bound_detached_snapshot_with_mount(
         expected_snapshot_guid,
     )?;
 
-    let measured = measure_secure_root(rustix::io::dup(mount.as_fd())?)?;
+    check_original(&mut original)?;
+    let measured = measure_secure_root_for(
+        rustix::io::dup(mount.as_fd())?,
+        original.as_deref_mut(),
+    )?;
+    check_original(&mut original)?;
     if measured.mount_id != mount.mount_id()
         || MountId::from_fd(readable_root.as_fd())? != mount.mount_id()
     {
@@ -228,7 +301,8 @@ pub(crate) fn measure_bound_detached_snapshot_with_mount(
         expected_pool_guid,
         expected_snapshot_guid,
     )?;
-    Ok((measured, mount))
+    check_original(&mut original)?;
+    Ok(measured)
 }
 
 pub(crate) fn verify_mounted_snapshot_uuid(
@@ -249,15 +323,56 @@ pub(crate) fn verify_mounted_snapshot_uuid(
 }
 
 fn mount_detached_snapshot(snapshot_name: &str) -> Result<DetachedMount, HeldSnapshotTreeErrorV1> {
+    mount_detached_snapshot_for(snapshot_name, None)
+}
+
+fn mount_detached_snapshot_for(
+    snapshot_name: &str,
+    original: Option<&mut WorkerOriginalCheckedViewV3<'_>>,
+) -> Result<DetachedMount, HeldSnapshotTreeErrorV1> {
+    let mut mount = None;
+    mount_detached_snapshot_into(snapshot_name, original, &mut mount)?;
+    mount.ok_or(HeldSnapshotTreeErrorV1::Unsupported)
+}
+
+fn mount_detached_snapshot_into(
+    snapshot_name: &str,
+    mut original: Option<&mut WorkerOriginalCheckedViewV3<'_>>,
+    retained_mount: &mut Option<DetachedMount>,
+) -> Result<(), HeldSnapshotTreeErrorV1> {
+    if retained_mount.is_some() {
+        return Err(HeldSnapshotTreeErrorV1::Unsupported);
+    }
+    check_original(&mut original)?;
     let mut context = FileSystemContext::open("zfs")?;
+    check_original(&mut original)?;
     context.set_string("source", snapshot_name)?;
-    let mount = context.create()?.mount()?;
+    check_original(&mut original)?;
+    // The lower consuming create/mount prefix can fail before handoff. Once
+    // returned, this exact mount enters its owner's slot before postchecks.
+    *retained_mount = Some(context.create()?.mount()?);
+    check_original(&mut original)?;
+    let mount = retained_mount
+        .as_ref()
+        .ok_or(HeldSnapshotTreeErrorV1::Unsupported)?;
     mount.set_attributes(
         true,
         MountAttributes::secure_read_only().with_no_exec(true),
         None,
     )?;
-    Ok(mount)
+    check_original(&mut original)?;
+    Ok(())
+}
+
+fn check_original(
+    original: &mut Option<&mut WorkerOriginalCheckedViewV3<'_>>,
+) -> Result<(), HeldSnapshotTreeErrorV1> {
+    if let Some(original) = original.as_deref_mut() {
+        original
+            .check_for_tree()
+            .map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
+    }
+    Ok(())
 }
 
 /// Measures an exact fixture snapshot from a detached, secured ZFS mount.
@@ -328,7 +443,8 @@ fn fixture_report(
 }
 
 #[derive(Default)]
-struct PhysicalTreeWalker {
+struct PhysicalTreeWalker<'loan, 'records> {
+    original: Option<&'loan mut WorkerOriginalCheckedViewV3<'records>>,
     nodes: usize,
     file_bytes: usize,
     object_bytes: usize,
@@ -339,11 +455,16 @@ struct PhysicalTreeWalker {
     identity_hasher: Sha256,
 }
 
-impl PhysicalTreeWalker {
+impl PhysicalTreeWalker<'_, '_> {
+    fn check_original(&mut self) -> Result<(), HeldSnapshotTreeErrorV1> {
+        check_original(&mut self.original)
+    }
+
     fn measure_tree(
         &mut self,
         root: &BeneathRoot,
     ) -> Result<ObjectDescriptor, HeldSnapshotTreeErrorV1> {
+        self.check_original()?;
         self.identity_hasher.update(IDENTITY_TREE_DOMAIN);
         let directory = self.measure_directory(root, Path::new(""), 0)?;
         let tree =
@@ -357,6 +478,7 @@ impl PhysicalTreeWalker {
         relative: &Path,
         depth: usize,
     ) -> Result<ObjectDescriptor, HeldSnapshotTreeErrorV1> {
+        self.check_original()?;
         if depth > MAXIMUM_DEPTH {
             return Err(HeldSnapshotTreeErrorV1::Unsupported);
         }
@@ -380,10 +502,19 @@ impl PhysicalTreeWalker {
         self.record_identity_node(relative, b'd', &before)?;
         let mut names = Vec::new();
         for entry in rustix::fs::Dir::new(readable)? {
+            self.check_original()?;
             let entry = entry?;
             let name = entry.file_name().to_bytes();
             if matches!(name, b"." | b"..") {
                 continue;
+            }
+            if self.original.is_some() {
+                if names.len() >= MAXIMUM_NODES {
+                    return Err(HeldSnapshotTreeErrorV1::Unsupported);
+                }
+                names
+                    .try_reserve(1)
+                    .map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
             }
             names.push(
                 PathName::new(name.to_vec()).map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?,
@@ -399,6 +530,7 @@ impl PhysicalTreeWalker {
 
         let mut entries = Vec::with_capacity(names.len());
         for name in names {
+            self.check_original()?;
             let mut child = relative.to_path_buf();
             child.push(OsString::from_vec(name.as_bytes().to_vec()));
             let pinned = root.resolve(&child, ResolveOptions::any())?;
@@ -422,6 +554,7 @@ impl PhysicalTreeWalker {
         }
         let directory =
             Directory::new(metadata, entries).map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
+        self.check_original()?;
         self.object(PortableMediaType::Directory, &encode_directory(&directory))
     }
 
@@ -431,6 +564,7 @@ impl PhysicalTreeWalker {
         relative: &Path,
         pinned: aos_sandbox_linux::path::FileIdentity,
     ) -> Result<Node, HeldSnapshotTreeErrorV1> {
+        self.check_original()?;
         self.add_node()?;
         let file = root.open_regular(relative)?;
         if file.identity() != pinned {
@@ -463,7 +597,38 @@ impl PhysicalTreeWalker {
             .try_reserve_exact(size)
             .map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
         let reader = std::fs::File::from(rustix::io::dup(file.as_fd())?);
-        reader.take((size as u64) + 1).read_to_end(&mut bytes)?;
+        if self.original.is_some() {
+            // One bounded read is followed by the same paired-clock/peer check.
+            // An in-flight kernel read is not universally preemptible.
+            bytes
+                .try_reserve_exact(1)
+                .map_err(|_| HeldSnapshotTreeErrorV1::Unsupported)?;
+            let mut reader = reader.take((size as u64) + 1);
+            let mut scratch = [0_u8; 64 * 1024];
+            loop {
+                self.check_original()?;
+                let read = reader.read(&mut scratch);
+                let postcheck = self.check_original();
+                match read {
+                    Ok(0) => {
+                        postcheck?;
+                        break;
+                    }
+                    Ok(count) => {
+                        postcheck?;
+                        bytes.extend_from_slice(&scratch[..count]);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                        postcheck?;
+                        continue;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+            }
+        } else {
+            reader.take((size as u64) + 1).read_to_end(&mut bytes)?;
+        }
+        self.check_original()?;
         if bytes.len() != size || !same_inode_state(&before, &rustix::fs::fstat(file.as_fd())?) {
             return Err(HeldSnapshotTreeErrorV1::Unsupported);
         }
@@ -543,6 +708,7 @@ impl PhysicalTreeWalker {
         kind: PortableMediaType,
         bytes: &[u8],
     ) -> Result<ObjectDescriptor, HeldSnapshotTreeErrorV1> {
+        self.check_original()?;
         self.object_bytes = self
             .object_bytes
             .checked_add(bytes.len())
