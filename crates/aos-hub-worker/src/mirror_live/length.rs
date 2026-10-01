@@ -17,7 +17,11 @@ use worker::{Response, ResponseBody};
 ///
 /// # Errors
 /// Refuses an inexact length or unavailable native stream framing interface.
-pub(super) fn enforce(response: Response, declared: Option<u64>) -> Result<Response> {
+pub(super) fn enforce(
+    response: Response,
+    declared: Option<u64>,
+    client_signal: &worker::web_sys::AbortSignal,
+) -> Result<Response> {
     let Some(length) = declared else {
         return Ok(response);
     };
@@ -41,7 +45,11 @@ pub(super) fn enforce(response: Response, declared: Option<u64>) -> Result<Respo
         .map_err(|_| refused())?
         .dyn_into::<Function>()
         .map_err(|_| refused())?;
-    let framed = pipe.call1(source.as_ref(), &fixed).map_err(|_| refused())?;
+    let options = js_sys::Object::new();
+    Reflect::set(&options, &JsValue::from_str("signal"), client_signal).map_err(|_| refused())?;
+    let framed = pipe
+        .call2(source.as_ref(), &fixed, &options)
+        .map_err(|_| refused())?;
     let mut framed_owner = UnhandedStream(Some(framed.clone()));
     let framed = framed
         .dyn_into::<worker::web_sys::ReadableStream>()

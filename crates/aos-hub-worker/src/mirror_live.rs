@@ -20,6 +20,7 @@ use worker::{
 use crate::direct_upload::{config::QualifiedConfig, provider_capacity};
 
 mod length;
+mod lifetime;
 
 /// Opens a separately reviewed source only after exact current ingress authentication.
 ///
@@ -30,6 +31,7 @@ pub(crate) async fn deliver(
     key: &HybridIngressKey,
     compact: &str,
     request: &HybridIngressAssertion,
+    client_signal: worker::web_sys::AbortSignal,
 ) -> Result<Response> {
     // Authenticate before reading configuration or taking shared capacity.
     key.verify_live_delivery(compact, request, aos_hub_core::clock::now_unix_secs())?;
@@ -64,6 +66,7 @@ pub(crate) async fn deliver(
             .context("live stream cutoff overflow")?,
         config.uncertainty,
         target.maximum_bytes.min(live.maximum_bytes),
+        client_signal,
         &before_dispatch,
     )
     .await
@@ -77,8 +80,13 @@ async fn stream_source(
     stream_cutoff: i64,
     uncertainty: u64,
     maximum: u64,
+    client_signal: worker::web_sys::AbortSignal,
     before_dispatch: &dyn Fn() -> Result<()>,
 ) -> Result<Response> {
+    let before_dispatch = || -> Result<()> {
+        ensure!(!client_signal.aborted(), "live client disconnected");
+        before_dispatch()
+    };
     let metadata = target.class == HybridLiveDeliveryClass::Metadata;
     let buffer = crate::mirror_import::buffers::acquire(metadata, &before_dispatch).await?;
     let capacity = provider_capacity::acquire_class_checked(
@@ -100,13 +108,15 @@ async fn stream_source(
         .with_redirect(RequestRedirect::Manual);
     let upstream = Request::new_with_init(target.upstream_url()?.as_str(), &init)?;
     let cancellation = SourceCancellation::new()?;
-    let signal = worker::AbortSignal::from(cancellation.0.signal());
+    let lifetime = lifetime::Lifetime::new(client_signal.clone(), cancellation, buffer, capacity)?;
+    let signal = lifetime.source_signal()?;
     let response = bounded(stream_cutoff, uncertainty, async {
         before_dispatch()?;
         provider_capacity::record_dispatch();
         Ok(Fetch::Request(upstream).send_with_signal(&signal).await?)
     })
     .await?;
+    ensure!(!lifetime.closed(), "live client disconnected");
     let now = qualified_latest_now(uncertainty)?;
     ensure!(
         now < stream_cutoff,
@@ -149,18 +159,20 @@ async fn stream_source(
         ResponseBody::Empty => None,
         _ => anyhow::bail!("live delivery requires a native source stream"),
     };
+    lifetime.attach_reader(reader)?;
     let state = StreamState {
-        reader,
-        _cancellation: cancellation,
-        _buffer: buffer,
-        _capacity: capacity,
+        lifetime,
         budget: LiveBodyBudget::new(maximum, declared)?,
         cutoff: stream_cutoff,
         uncertainty: uncertainty,
     };
     let output = stream::try_unfold(state, |mut state| async move {
         if state.budget.ended() {
+            state.lifetime.close();
             return Ok(None);
+        }
+        if state.lifetime.closed() {
+            return Err(worker::Error::RustError("live client disconnected".into()));
         }
         let now = aos_hub_core::clock::now_unix_secs()
             .checked_add(
@@ -171,14 +183,9 @@ async fn stream_source(
         if now >= state.cutoff {
             return Err(worker::Error::RustError("live stream expired".into()));
         }
-        let Some(reader) = &state.reader else {
-            state
-                .budget
-                .consume(0, true)
-                .map_err(|_| worker::Error::RustError("live body truncated".into()))?;
-            return Ok(None);
-        };
-        let (view, done) = bounded(state.cutoff, state.uncertainty, reader.read())
+        let (view, done) = state
+            .lifetime
+            .read(state.cutoff, state.uncertainty)
             .await
             .map_err(|_| worker::Error::RustError("live source read failed".into()))?;
         let now = aos_hub_core::clock::now_unix_secs()
@@ -202,15 +209,11 @@ async fn stream_source(
         Ok(Some((view.to_vec(), state)))
     });
     let response = Response::from_stream(output)?;
-    Ok(length::enforce(response, declared)?.with_headers(headers))
+    Ok(length::enforce(response, declared, &client_signal)?.with_headers(headers))
 }
 
 struct StreamState {
-    reader: Option<crate::direct_digest::Reader>,
-    _cancellation: SourceCancellation,
-    _buffer: crate::mirror_import::buffers::Permit,
-    // The source occupies actual provider capacity until EOF/error/cancellation.
-    _capacity: provider_capacity::Permit,
+    lifetime: std::rc::Rc<lifetime::Lifetime>,
     budget: LiveBodyBudget,
     cutoff: i64,
     uncertainty: u64,
@@ -393,11 +396,24 @@ impl SourceCancellation {
             .map(Self)
             .map_err(|_| anyhow::anyhow!("live source cancellation unavailable"))
     }
+
+    fn cancel(&self) {
+        // Cleanup must not interrupt Rust destruction if the invocation has
+        // already ended. The native abort has no provider values to report.
+        use wasm_bindgen::JsCast as _;
+        let Ok(abort) = js_sys::Reflect::get(&self.0, &wasm_bindgen::JsValue::from_str("abort"))
+        else {
+            return;
+        };
+        if let Ok(abort) = abort.dyn_into::<js_sys::Function>() {
+            let _ = abort.call0(&self.0);
+        }
+    }
 }
 
 impl Drop for SourceCancellation {
     fn drop(&mut self) {
-        self.0.abort();
+        self.cancel();
     }
 }
 

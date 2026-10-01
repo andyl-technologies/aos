@@ -62,7 +62,7 @@ const main :Workerd.Worker=(
  modules=[(name="wrapper.mjs",esModule=embed "wrapper.mjs"),
   (name="shim.mjs",esModule=embed "shim.mjs"),(name="index.wasm",wasm=embed "index.wasm"),
   (name="provider.mjs",esModule=embed "provider.mjs")],
- compatibilityDate="2024-09-09",compatibilityFlags=["nodejs_compat"],globalOutbound="upstream",
+ compatibilityDate="2024-09-09",compatibilityFlags=["nodejs_compat","enable_request_signal"],globalOutbound="upstream",
  durableObjectNamespaces=[(className="HybridObjectGuard",uniqueKey="live-http-guard",enableSql=true),
   (className="MirrorFixtureStore",uniqueKey="live-http-provider",enableSql=true)],
  durableObjectStorage=(localDisk="disk"),bindings=[${bindings.join(",\n")}]

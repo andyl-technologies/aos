@@ -76,6 +76,7 @@ async fn execute(request: &mut Request, env: &Env) -> Result<Response> {
         cutoff,
         uncertainty,
         original.target.maximum_bytes,
+        request.inner().signal(),
         &before_dispatch,
     )
     .await?;

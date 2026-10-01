@@ -428,11 +428,13 @@ impl Reader {
         );
         Ok((bytes, done))
     }
-}
 
-impl Drop for Reader {
-    fn drop(&mut self) {
-        if !self.ended.get() {
+    /// Cancels the exact native reader, including an outstanding BYOB read.
+    ///
+    /// Native cancellation closes the source and resolves its pending read. It
+    /// does not settle a provider mutation or authenticate any object identity.
+    pub(crate) fn cancel(&self) {
+        if !self.ended.replace(true) {
             if let Ok(value) = invoke(
                 &self.reader,
                 "cancel",
@@ -441,6 +443,12 @@ impl Drop for Reader {
                 consume_rejection(value);
             }
         }
+    }
+}
+
+impl Drop for Reader {
+    fn drop(&mut self) {
+        self.cancel();
         let _ = invoke(&self.reader, "releaseLock", &[]);
     }
 }

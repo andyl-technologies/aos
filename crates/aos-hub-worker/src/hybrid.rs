@@ -1535,7 +1535,15 @@ pub(crate) async fn proxy_origin(
         if requested_range.is_some() {
             return Response::error("fresh upstream range delivery is unsupported", 501);
         }
-        return match crate::mirror_live::deliver(env, &key, &compact, &assertion).await {
+        return match crate::mirror_live::deliver(
+            env,
+            &key,
+            &compact,
+            &assertion,
+            request.inner().signal(),
+        )
+        .await
+        {
             Ok(response) => Ok(response),
             Err(_) => Response::error("fresh upstream delivery is unavailable", 503),
         };
