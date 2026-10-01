@@ -292,6 +292,7 @@ fn run() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "controller UID required"))?;
     if first.starts_with("--") {
         startup.require_non_normal_invocation()?;
+        require_absent_git_evidence_credential()?;
     }
     if first == "--serve-cache-signer-recovery" {
         let controller_uid: u32 = arguments
@@ -569,11 +570,15 @@ fn run() -> Result<(), Box<dyn Error>> {
         cache_signer_uid,
         source_signer_uid,
     ])?;
+    if startup.is_none() {
+        require_absent_git_evidence_credential()?;
+    }
 
     // An unresolved CAS never reaches credential admission. Its isolated
     // service admits only historical replay and the qualified, nonauthorizing
     // Controller ACK exchange; Root validates the pinned signer before writing.
     if read_fixed_inert_closed_policy_binding_hold_v1()?.is_some() {
+        require_absent_git_evidence_credential()?;
         return serve_held_binding_recovery(controller_uid, controller_gid, startup);
     }
 
@@ -698,6 +703,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let current = match current {
         Ok(current) => current,
         Err(error) => {
+            require_absent_git_evidence_credential()?;
             if fixed_root_project_admission_recovery_required_v1()?
                 || fixed_root_project_history_readback_available_v1()?
                 || fixed_root_project_negative_recovery_available_v1()?
@@ -739,6 +745,22 @@ fn run() -> Result<(), Box<dyn Error>> {
     };
 
     recover_fixed_root_unstaged_project_intent_v1()?;
+
+    // The existing deployment admission above is sequencing, not a fabricated
+    // current-policy token. Only the actual normal owner plus its independent
+    // protected administrative credential can install dedicated Git evidence.
+    if let Some(owner) = &startup {
+        let mut attempt = owner.git_evidence_provisioning_attempt();
+        if let Err(error) = attempt.install_once() {
+            // Keep the original attempt and Root owner resident until OS
+            // process death. This is not Drop, queue settlement or Drained.
+            // An ambiguous append never continues into this listener loop.
+            eprintln!("aos-sandbox-policy-authorityd: {error}");
+            std::process::exit(1);
+        }
+        // Verified or absent installation data grant no Git route. Release
+        // this dedicated writer before future evidence consumers can open it.
+    }
 
     let listener = bind_policy_socket(Path::new(POLICY_AUTHORITY_SOCKET_PATH_V2))?;
 
@@ -992,6 +1014,18 @@ fn serve_held_binding_request(
             controller_gid,
         ),
         _ => Err(io::Error::new(io::ErrorKind::PermissionDenied, "replay only").into()),
+    }
+}
+
+fn require_absent_git_evidence_credential() -> io::Result<()> {
+    let path = Path::new(CREDENTIAL_ROOT).join("git-evidence-provision-v1");
+    match std::fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "Git evidence credential is forbidden outside normal current startup",
+        )),
     }
 }
 

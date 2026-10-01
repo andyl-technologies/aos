@@ -14,6 +14,7 @@
 
 mod client;
 mod controller_peer;
+mod git_evidence_credential;
 pub(crate) mod images;
 mod nix_startup;
 pub(crate) mod profile;
@@ -45,6 +46,9 @@ pub use client::{
     ProductionControllerNormalRootStartupPartsV1,
 };
 pub(crate) use controller_peer::OriginalControllerPolicyPeerV1;
+pub(crate) use git_evidence_credential::{
+    RootGitEvidenceCredentialCustodyV1, RootGitEvidenceCredentialErrorV1,
+};
 pub use nix_startup::{
     ControllerNixSessionFloorOriginV2, NixOwnerSessionFloorStartupV2,
     ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1,
@@ -261,6 +265,18 @@ pub struct ProductionNormalRootStartupV1 {
 }
 
 impl ProductionNormalRootStartupV1 {
+    /// Assembles one fixed administrative Git-evidence attempt before I/O.
+    ///
+    /// The actual startup borrow is retained, not converted into authority.
+    /// Only the separately protected fixed credential can admit installation.
+    /// This grants no Source, repository, validator measurement or Git backend.
+    #[must_use]
+    pub fn git_evidence_provisioning_attempt(
+        &self,
+    ) -> crate::git::RootGitEvidenceProvisioningAttemptV1<'_> {
+        crate::git::RootGitEvidenceProvisioningAttemptV1::new(self)
+    }
+
     /// Rechecks the same actual server-local launch, images, unit and policy.
     ///
     /// # Errors

@@ -35,6 +35,8 @@ use rustix::fs::{
 use sha2::{Digest, Sha256};
 
 pub mod canonical_map;
+#[cfg(target_os = "linux")]
+mod git_evidence_namespace;
 pub(crate) mod mount_manager_startup;
 mod prepared_transaction;
 mod root_local_recovery;

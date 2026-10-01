@@ -85,7 +85,10 @@
     sourceTreeSeedIssuer = "controller-source-tree-seed-issuer-v1";
     projectAuthorizationIssuer = "project-authorization-issuer-v2";
   };
-  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials // genesisCredentials;
+  gitEvidenceCredentials = {
+    gitEvidenceProvision = "git-evidence-provision-v1";
+  };
+  credentialFiles = requiredCredentials // projectCredentials // cacheCredentials // controllerCredentials // sourceCredentials // genesisCredentials // gitEvidenceCredentials;
   cacheJournalSource = "/var/lib/aos/sandbox/cache-residency-journals";
   cacheJournalView = "/run/aos/sandbox-policy-cache-journals";
   prepareCacheJournalView = preparer.writeScript "aos-sandbox-cache-journal-view" ''
@@ -228,6 +231,8 @@ in {
           then "Optional existing 80-byte AOSCSK01 administrative Source Tree seed issuer pin. Genesis requires this and the independent project authorization issuer together; this is not a readback key."
           else if option == "projectAuthorizationIssuer"
           then "Optional existing 80-byte AOSPAK02 administrative project authorization issuer pin for exact signed seven-limit genesis inputs; no readback role or inferred grant is added."
+          else if option == "gitEvidenceProvision"
+          then "Optional bounded AOSGEP01 trusted Root-administration Git evidence instruction, not a dynamic validator attestation or Git activation."
           else if option == "projectHeadPacketV2" || option == "projectLayerV2"
           then "Optional AOSPPH02/AOSPPL02 project source; both credentials are required for the closed AOSPHQ04 path."
           else "Externally provisioned signed deployment policy authority input.";
@@ -243,6 +248,10 @@ in {
       })
       requiredCredentials
       ++ [
+        {
+          assertion = cfg.credentials.gitEvidenceProvision == null || (confined && cfg.package == pkgs.aos-sandboxd);
+          message = "Git evidence provisioning requires the selected confined normal Root package";
+        }
         {
           assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || cfg.package == pkgs.aos-sandboxd;
           message = "confined normal policy authority requires the exact policy-labelled AOS package; the same-ELF recovery invocation remains outside the normal role";
@@ -394,6 +403,10 @@ in {
         ProtectKernelTunables = true;
         ProtectProc = "invisible";
         ProtectSystem = "strict";
+        # Administration must preprovision this exact labelled Root directory.
+        ReadWritePaths = lib.mkIf (cfg.credentials.gitEvidenceProvision != null) [
+          "/var/lib/aos/sandbox/source-evidence"
+        ];
         RestrictAddressFamilies = ["AF_UNIX"];
         RestrictNamespaces = true;
         RestrictRealtime = true;
