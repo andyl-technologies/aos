@@ -56,6 +56,13 @@ mod control;
 mod external_observation;
 mod frozen;
 mod frozen_head;
+mod mirror_guard;
+mod mirror_inspection;
+mod mirror_membership;
+#[cfg(test)]
+mod result_acceptance_tests;
+#[cfg(test)]
+mod mirror_candidate;
 mod telemetry;
 mod tree_projection;
 
@@ -68,9 +75,19 @@ const MAX_IN_FLIGHT_STORAGE_PLANS: usize = 4;
 const MAX_READ_WORK_ATTEMPTS: usize = 3;
 
 fn retryable_read_operation(operation: &StorageWorkOperation) -> bool {
+    if let StorageWorkOperation::MirrorTransferBatch { items } = operation {
+        return items.iter().all(|item| matches!(item.step,
+            aos_hub_core::mirror_work::MirrorStep::VerifyStage
+            | aos_hub_core::mirror_work::MirrorStep::Status { .. }));
+    }
+    if matches!(operation, StorageWorkOperation::MirrorTransfer { step: aos_hub_core::mirror_work::MirrorStep::VerifyStage | aos_hub_core::mirror_work::MirrorStep::Status { .. }, .. }) { return true; }
     matches!(
         operation,
         StorageWorkOperation::Head { .. }
+            | StorageWorkOperation::InspectMirrorPack { .. }
+            | StorageWorkOperation::InspectMirrorMembership { .. }
+            | StorageWorkOperation::InspectStoredGitPack { .. }
+            | StorageWorkOperation::FilterStoredGitPackTree { .. }
             | StorageWorkOperation::ListPage { .. }
             | StorageWorkOperation::InspectSha256 { .. }
             | StorageWorkOperation::InspectGitObject { .. }
@@ -103,6 +120,10 @@ pub struct RemoteStorageWorkClient {
     frozen_cleanup_endpoint: String,
     deployment_id: String,
     key: StorageWorkKey,
+    mirror_profiles: Option<crate::direct_upload::authority::NativeDirectUploadAcceptances>,
+    mirror_guard_key: Option<StorageWorkKey>,
+    #[cfg(test)]
+    controlled_mirror: Option<mirror_candidate::ControlledMirrorAuthority>,
     http: reqwest::Client,
     semantic_observation_http: reqwest::Client,
     in_flight: Semaphore,
@@ -161,6 +182,10 @@ impl RemoteStorageWorkClient {
             frozen_cleanup_endpoint,
             deployment_id,
             key: StorageWorkKey::new(key)?,
+            mirror_profiles: None,
+            mirror_guard_key: None,
+            #[cfg(test)]
+            controlled_mirror: None,
             http,
             semantic_observation_http: external_observation::http_client()?,
             in_flight: Semaphore::new(MAX_IN_FLIGHT_STORAGE_PLANS),
@@ -168,6 +193,47 @@ impl RemoteStorageWorkClient {
             binding_custody_cohorts: binding_cohorts::BindingCustodyCohorts::default(),
             published_bindings: RwLock::new(BTreeMap::new()),
         })
+    }
+
+    /// Installs independently verified prerequisite provider/runtime profiles.
+    ///
+    /// Mirror producer acceptance is checked separately for each workflow;
+    /// direct acceptance alone never grants mirror effect authority.
+    pub fn with_mirror_profiles(mut self, profiles: crate::direct_upload::authority::NativeDirectUploadAcceptances) -> Self {
+        self.mirror_profiles = Some(profiles);
+        self
+    }
+
+    /// Installs the independent metadata readback role for mirror final guards.
+    ///
+    /// # Errors
+    /// Returns an error for a weak key or reuse of the producer work key.
+    pub fn with_mirror_guard_key(mut self, key: &[u8]) -> Result<Self> {
+        let guard = StorageWorkKey::new(key)?;
+        let separation = b"aos.hub.mirror-guard-role-separation.v1";
+        anyhow::ensure!(
+            self.key.verify_body(&guard.sign_body(separation)?, separation).is_err(),
+            "mirror guard role must differ from producer work authority"
+        );
+        self.mirror_guard_key = Some(guard);
+        Ok(self)
+    }
+
+    /// Resolves the exact current managed prerequisite profile commitment.
+    ///
+    /// # Errors
+    /// Returns an error for missing, expired or ambiguous managed acceptance.
+    pub(crate) fn mirror_managed_profile_digest(&self) -> Result<String> {
+        #[cfg(test)]
+        if let Some(candidate) = &self.controlled_mirror {
+            return Ok(candidate.profile_digest.clone());
+        }
+
+        let profiles = self.mirror_profiles.as_ref().context("mirror requires independently accepted managed provider/runtime evidence")?
+            .profiles(&self.deployment_id, &self.executor_origin()?, u64::try_from(aos_hub_core::clock::now_unix_secs())?)?;
+        let managed = profiles.iter().filter(|profile| matches!(profile, aos_hub_core::direct_upload::DirectProtectedProfile::Managed { .. })).collect::<Vec<_>>();
+        anyhow::ensure!(managed.len() == 1, "mirror requires exactly one accepted managed profile");
+        managed[0].digest()
     }
 
     /// Confirms that the paired Worker has the expected deployment and R2 contract.
@@ -637,6 +703,25 @@ impl RemoteStorageWorkClient {
         plan.validate(&self.deployment_id, now)?;
         let body = serde_json::to_vec(plan).context("encoding storage work plan")?;
         let signature = self.key.sign_body(&body)?;
+        let endpoint = self.endpoint.clone();
+        #[cfg(test)]
+        let (signature, endpoint) = match &self.controlled_mirror {
+            Some(candidate) => {
+                if matches!(&plan.operation, StorageWorkOperation::InspectMirrorMembership { .. }) {
+                    let signature = aos_hub_core::mirror_candidate::query::sign(&candidate.key, plan)?;
+                    let origin = self.executor_origin()?;
+                    (signature, format!("{origin}{}", aos_hub_core::mirror_candidate::query::MIRROR_CANDIDATE_QUERY_PATH))
+                } else {
+                let signature = aos_hub_core::mirror_candidate::sign_mirror_candidate_plan(
+                    &candidate.key, plan,
+                )?;
+                let origin = self.executor_origin()?;
+                (signature, format!("{origin}{}", aos_hub_core::mirror_candidate::MIRROR_CANDIDATE_PATH))
+                }
+            }
+            None => (signature, endpoint.clone()),
+        };
+
         let request_bytes = body.len();
         let started = Instant::now();
         let mut exchange = telemetry::ExchangeTelemetry::new(plan);
@@ -654,11 +739,19 @@ impl RemoteStorageWorkClient {
                 .inspect_err(|_| exchange.finish("invalid_plan"))?;
             let mut request = self
                 .http
-                .post(&self.endpoint)
+                .post(&endpoint)
                 .header("content-type", "application/json")
                 .header(STORAGE_WORK_SIGNATURE_HEADER, signature.clone())
                 .body(body.clone());
-            if matches!(&plan.operation, StorageWorkOperation::ComposeOciBlob { .. })
+            if matches!(&plan.operation, StorageWorkOperation::ComposeOciBlob { .. }
+                | StorageWorkOperation::InspectMirrorPack { .. }
+                | StorageWorkOperation::InspectMirrorMembership { .. }
+                | StorageWorkOperation::InspectStoredGitPack { .. }
+                | StorageWorkOperation::FilterStoredGitPackTree { .. }
+                | StorageWorkOperation::InspectMirrorTreeInventory { .. })
+                || matches!(&plan.operation, StorageWorkOperation::MirrorTransferBatch { items }
+                    if items.iter().any(|item| matches!(item.step, aos_hub_core::mirror_work::MirrorStep::VerifyStage)))
+                || matches!(&plan.operation, StorageWorkOperation::MirrorTransfer { step: aos_hub_core::mirror_work::MirrorStep::VerifyStage, .. })
                 || matches!(
                     &plan.operation,
                     StorageWorkOperation::InspectSha256 { max_source_bytes, .. }
@@ -742,6 +835,8 @@ impl RemoteStorageWorkClient {
             .context("decoding storage work result")
             .inspect_err(|_| exchange.finish("malformed_result"))?;
         validate_result(plan, &result).inspect_err(|_| exchange.finish("invalid_result"))?;
+        validate_result_acceptance_at(plan, &result, aos_hub_core::clock::now_unix_secs())
+            .inspect_err(|_| exchange.finish("expired_result"))?;
         exchange.finish("success");
         tracing::info!(
             plan_id = %plan.plan_id,
@@ -864,6 +959,24 @@ fn validate_console_asset_version(capabilities: &StorageCapabilities) -> Result<
     Ok(())
 }
 
+/// Checks retained legacy storage capabilities against the Native contract.
+///
+/// This observational facade does not authenticate the challenge response or
+/// establish deployment authorization. The caller must retain the independently
+/// correlated transport acceptance and original challenge.
+///
+/// # Errors
+/// Returns an error for changed deployment, protocol, limits, required operations
+/// or the console asset version compiled into Native.
+#[cfg(feature = "test-support")]
+pub fn validate_capabilities_for_test(
+    deployment_id: &str,
+    capabilities: &StorageCapabilities,
+) -> Result<()> {
+    validate_capabilities(deployment_id, capabilities)?;
+    validate_console_asset_version(capabilities)
+}
+
 fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities) -> Result<()> {
     anyhow::ensure!(
         capabilities.version == 1
@@ -908,13 +1021,49 @@ fn validate_capabilities(deployment_id: &str, capabilities: &StorageCapabilities
     Ok(())
 }
 
-/// Runs production storage-result validation for cross-runtime test fixtures.
+/// Checks retained storage-result correlation, semantics and byte budgets.
+///
+/// This observational check does not authenticate a reply, establish its live
+/// acceptance time or grant execution permission. Transport evidence must bind
+/// the exact accepted request and response independently.
 ///
 /// # Errors
 /// Returns an error for changed fences, invalid outcomes or exceeded costs.
 #[cfg(feature = "test-support")]
 pub fn validate_result_for_test(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result<()> {
     validate_result(plan, result)
+}
+
+// Live acceptance is separate from pure retained-result validation. A cached
+// page retains its original short plan; a cold immutable verification has one
+// finite horizon derived from the original issue time, never from reply arrival.
+fn validate_result_acceptance_at(
+    plan: &StorageWorkPlan,
+    result: &StorageWorkResult,
+    now: i64,
+) -> Result<()> {
+    if !matches!(
+        plan.operation,
+        StorageWorkOperation::InspectMirrorMembership { .. }
+            | StorageWorkOperation::InspectMirrorTreeInventory { .. }
+    ) {
+        return Ok(());
+    }
+
+    if result.source_bytes == 0 {
+        plan.validate(&plan.deployment_id, now)?;
+        return Ok(());
+    }
+
+    let cutoff = plan
+        .issued_at
+        .checked_add(600)
+        .context("immutable verification cutoff overflow")?;
+    anyhow::ensure!(
+        now >= plan.issued_at && now < cutoff,
+        "immutable verification response expired or clock regressed"
+    );
+    Ok(())
 }
 
 fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result<()> {
@@ -927,6 +1076,75 @@ fn validate_result(plan: &StorageWorkPlan, result: &StorageWorkResult) -> Result
         "storage Worker result does not match the issued fence"
     );
     match (&plan.operation, &result.outcome) {
+        (
+            StorageWorkOperation::InspectMirrorMembership { query },
+            StorageWorkOutcome::MirrorMembership { projection },
+        ) => {
+            projection.validate(query)?;
+            let total = projection.pair.pack.size + projection.pair.index.size;
+            anyhow::ensure!(
+                result.source_bytes == 0 || result.source_bytes == total,
+                "membership accounting is neither a cache hit nor a complete pair read"
+            );
+        }
+        (
+            StorageWorkOperation::InspectMirrorTreeInventory { query },
+            StorageWorkOutcome::NotFound,
+        ) => {
+            anyhow::ensure!(
+                matches!(
+                    query.source,
+                    aos_hub_core::mirror_tree_inventory::MirrorTreeInventorySource::Loose { .. }
+                ) && query.cursor.is_none()
+                    && result.source_bytes == 0,
+                "inventory absence changed authority"
+            );
+        }
+        (
+            StorageWorkOperation::InspectMirrorTreeInventory { query },
+            StorageWorkOutcome::MirrorTreeInventory { projection },
+        ) => {
+            projection.validate(query)?;
+            let total = projection.source.source_bytes();
+            anyhow::ensure!(
+                result.source_bytes == 0 || result.source_bytes == total,
+                "inventory source accounting is neither a cache hit nor one complete pair read"
+            );
+        }
+        (StorageWorkOperation::FilterStoredGitPackTree { query },
+            StorageWorkOutcome::GitPackTreeProjection { projection }) => {
+            projection.validate(query)?;
+            anyhow::ensure!(result.source_bytes == projection.pair.pack.size + projection.pair.index.size,
+                "pack tree source-byte accounting differs");
+        }
+        (StorageWorkOperation::MirrorTransferBatch { items }, StorageWorkOutcome::MirrorBatch { items: results }) => {
+            aos_hub_core::mirror_batch::validate_results(items, results, result.source_bytes)?;
+        }
+        (StorageWorkOperation::InspectMirrorPack { inspection },
+            StorageWorkOutcome::GitPackProjection { projection }) => {
+            projection.validate(&inspection.index_path, &inspection.selections)?;
+            anyhow::ensure!(result.source_bytes == projection.pack.size + projection.index.size,
+                "pack projection source-byte accounting differs");
+        }
+        (StorageWorkOperation::InspectStoredGitPack { index_path, selections, .. },
+            StorageWorkOutcome::GitPackProjection { projection }) => {
+            projection.validate(index_path, selections)?;
+            anyhow::ensure!(result.source_bytes == projection.pack.size + projection.index.size,
+                "pack projection source-byte accounting differs");
+        }
+        (StorageWorkOperation::MirrorTransfer { original, step }, StorageWorkOutcome::MirrorProgress { progress }) => {
+            progress.validate(original)?;
+            let maximum = match step {
+                aos_hub_core::mirror_work::MirrorStep::UploadParts { maximum_parts, .. }
+                | aos_hub_core::mirror_work::MirrorStep::CopyParts { maximum_parts, .. } => u64::from(*maximum_parts) * aos_hub_core::mirror_work::MIRROR_PART_BYTES,
+                aos_hub_core::mirror_work::MirrorStep::VerifyStage => original.verification.size(),
+                _ => 0,
+            };
+            anyhow::ensure!(result.source_bytes <= maximum, "mirror result exceeds its issued source-byte budget");
+            if let aos_hub_core::mirror_work::MirrorStep::Acknowledge { commit_digest } = step {
+                anyhow::ensure!(progress.commit_digest(original)? == *commit_digest, "mirror acknowledgement changed final proof");
+            }
+        }
         (
             StorageWorkOperation::Head { .. }
             | StorageWorkOperation::InspectSha256 { .. }
@@ -1510,6 +1728,11 @@ impl HybridSurfaceFetch {
                 _ => bail!("storage Worker returned an unexpected Git batch result"),
             }
         }
+        let missing = decoded.iter().filter_map(|(oid, value)| value.is_none().then_some(*oid))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            decoded.extend(self.inspect_packed_git(&missing).await?);
+        }
         Ok(decoded)
     }
 
@@ -1556,7 +1779,19 @@ impl HybridSurfaceFetch {
         )?;
         let result = self.execute(&plan).await?;
         match result.outcome {
-            StorageWorkOutcome::NotFound => Ok(None),
+            StorageWorkOutcome::NotFound => {
+                if let Some(registry_id) = self.placement.registry_id {
+                    if crate::mirror::hybrid::fetch_through(&self.db, &self.work, registry_id, path).await? {
+                        let refreshed = self.work.plan_for_placement(&self.placement, &self.binding,
+                            StorageWorkOperation::Head { path: path.into() }, aos_hub_core::clock::now_unix_secs())?;
+                        return match self.execute(&refreshed).await?.outcome {
+                            StorageWorkOutcome::Head { object } => Ok(Some(object)),
+                            _ => anyhow::bail!("positive pull-through import has no exact delivery HEAD"),
+                        };
+                    }
+                }
+                Ok(None)
+            }
             StorageWorkOutcome::Head { object } => Ok(Some(object)),
             _ => bail!("storage Worker returned an unexpected head result"),
         }
@@ -1602,7 +1837,19 @@ impl SurfaceFetch for HybridSurfaceFetch {
         )?;
         let result = self.execute(&plan).await?;
         match result.outcome {
-            StorageWorkOutcome::NotFound => Ok(None),
+            StorageWorkOutcome::NotFound => {
+                if let Some(registry_id) = self.placement.registry_id {
+                    if crate::mirror::hybrid::fetch_through(&self.db, &self.work, registry_id, path).await? {
+                        let refreshed = self.work.plan_for_placement(&self.placement, &self.binding,
+                            StorageWorkOperation::InspectMetadata { path: path.into() }, aos_hub_core::clock::now_unix_secs())?;
+                        let StorageWorkOutcome::Metadata { content_base64, .. } = self.execute(&refreshed).await?.outcome else {
+                            anyhow::bail!("positive pull-through import lacks bounded metadata");
+                        };
+                        return Ok(Some(base64::engine::general_purpose::STANDARD.decode(content_base64)?));
+                    }
+                }
+                Ok(None)
+            }
             StorageWorkOutcome::Metadata { content_base64, .. } => Ok(Some(
                 base64::engine::general_purpose::STANDARD
                     .decode(content_base64)
@@ -1769,7 +2016,9 @@ impl SurfaceFetch for HybridSurfaceFetch {
         )?;
         let result = self.execute(&plan).await?;
         match result.outcome {
-            StorageWorkOutcome::NotFound => Ok(None),
+            StorageWorkOutcome::NotFound => {
+                Ok(self.inspect_packed_git(&[oid]).await?.remove(&oid).flatten())
+            }
             StorageWorkOutcome::GitObject {
                 object_kind,
                 content_base64,

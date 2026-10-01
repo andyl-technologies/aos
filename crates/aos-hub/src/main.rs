@@ -1030,15 +1030,19 @@ async fn main() -> Result<()> {
                     aos_hub::auth::seal::read_secret_file(&ingress_key_file)?,
                 )?;
                 let storage_key = aos_hub::auth::seal::read_secret_file(&storage_key_file)?;
+                let mut mirror_profiles = None;
+                let mut mirror_guard_key = None;
                 match (direct_upload_acceptance_file, direct_upload_review_keys_file, direct_upload_guard_key_file) {
                     (Some(acceptance_file), Some(review_keys_file), Some(guard_key_file)) => {
                         let acceptances = aos_hub::direct_upload::authority::NativeDirectUploadAcceptances::from_files_for_positive_recovery(
                             &acceptance_file, &review_keys_file,
                         )?;
+                        mirror_profiles = Some(acceptances.clone());
                         let guard_key = aos_hub::auth::seal::read_secret_file(&guard_key_file)?;
                         direct_runtime = Some(Arc::new(aos_hub::direct_upload::authority::NativeDirectUploadRuntime::new_for_positive_recovery(
                             &worker_url, &deployment_id, &storage_key, &guard_key, acceptances,
                         )?));
+                        mirror_guard_key = Some(guard_key);
                     }
                     (None, None, None) => {}
                     _ => anyhow::bail!("direct acceptance, review keys and independent guard key files must be configured together"),
@@ -1048,6 +1052,8 @@ async fn main() -> Result<()> {
                     deployment_id.clone(),
                     &storage_key,
                 )?;
+                let work = match mirror_profiles { Some(profiles) => work.with_mirror_profiles(profiles), None => work };
+                let work = match mirror_guard_key { Some(key) => work.with_mirror_guard_key(&key)?, None => work };
                 work.check_console_ready().await?;
                 Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
             } else {
@@ -1326,6 +1332,7 @@ async fn main() -> Result<()> {
             if reindex_interval > 0 {
                 let db = Arc::clone(&app_state.db);
                 let index_surfaces = Arc::clone(&index_surfaces);
+                let mirror_work = hybrid_runtime.as_ref().map(|(_, _, work)| Arc::clone(work));
                 tokio::spawn(async move {
                     let mut tick =
                         tokio::time::interval(std::time::Duration::from_secs(reindex_interval));
@@ -1333,9 +1340,7 @@ async fn main() -> Result<()> {
                     loop {
                         tick.tick().await;
                         index_all(&db, index_surfaces.as_ref()).await;
-                        if !hybrid {
-                            sync_due_mirrors(&db, now_secs()).await;
-                        }
+                        sync_due_mirrors(&db, mirror_work.as_ref(), now_secs()).await;
                         prune_expired_invitation_secrets(&db).await;
                         match aos_hub::export::purge_expired_orgs(&db, now_secs()).await {
                             Ok(purged) => {
@@ -2376,7 +2381,7 @@ async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfacePro
 /// elapsed since its last attempt. Each sync verifies the upstream surface and
 /// copies it into the local binding; a verification failure is recorded and
 /// logged, never fatal to the loop.
-async fn sync_due_mirrors(db: &Database, now: i64) {
+async fn sync_due_mirrors(db: &Arc<Database>, work: Option<&Arc<aos_hub::storage_work::RemoteStorageWorkClient>>, now: i64) {
     let sources = match db.list_mirror_sources().await {
         Ok(sources) => sources,
         Err(err) => {
@@ -2403,7 +2408,11 @@ async fn sync_due_mirrors(db: &Database, now: i64) {
                 continue;
             }
         };
-        match aos_hub::mirror::sync_full_mirror(db, &registry).await {
+        let result = match work {
+            Some(work) => aos_hub::mirror::hybrid::sync_full_mirror(db, work, &registry).await,
+            None => aos_hub::mirror::sync_full_mirror(db, &registry).await,
+        };
+        match result {
             Ok(result) => tracing::info!(
                 slug = %registry.slug,
                 commit = %result.commit,

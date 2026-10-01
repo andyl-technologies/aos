@@ -48,12 +48,44 @@ async fn execute(request: &mut Request, env: &Env) -> Result<DirectUploadRespons
         ),
     };
     // The fixed entry budget precedes the first body read and all durable/queue waits.
-    let qualified = QualifiedConfig::load(env).await?;
     let bytes = crate::hybrid::read_bounded_body(request, MAX_DIRECT_CONTROL_BYTES)
         .await?
         .ok_or_else(|| anyhow::anyhow!("direct public control exceeds bound"))?;
     let public = decode_public(request.url()?.path(), &bytes)?;
     public.validate()?;
+    let qualified = match QualifiedConfig::load(env).await {
+        Ok(qualified) => qualified,
+        Err(error) => {
+            let DirectUploadRequest::CompleteBatch(batch) = public else {
+                return Err(error);
+            };
+            let context = context_at(
+                request,
+                env,
+                &bytes,
+                foreground,
+                super::config::guard_latest_now(env)?,
+            )?;
+            let mut response = DirectUploadResponse {
+                operation_id: batch.operation_id,
+                sessions: Vec::new(),
+                grants: Vec::new(),
+                errors: Vec::new(),
+            };
+            // This runtime can only read exact retained positives and exchange
+            // fresh Native controls. Missing evidence never enters a provider phase.
+            complete::execute_historical(
+                request,
+                env,
+                &context,
+                &bytes,
+                batch.items,
+                &mut response,
+            )
+            .await;
+            return Ok(response);
+        }
+    };
     let context = context(request, env, &bytes, foreground, &qualified)?;
     let operation_id = public_operation_id(&public).to_owned();
     let mut response = DirectUploadResponse {
@@ -476,13 +508,20 @@ pub(super) fn fresh_context(
     qualified: &QualifiedConfig,
     original: &DirectRequestContext,
 ) -> Result<DirectRequestContext> {
+    fresh_context_at(original, qualified.latest_now()?)
+}
+
+pub(super) fn fresh_context_at(
+    original: &DirectRequestContext,
+    latest_now: u64,
+) -> Result<DirectRequestContext> {
     let mut context = original.clone();
     context.issued_at = WireInteger::new(u64::try_from(aos_hub_core::clock::now_unix_secs())?);
     context.request_nonce = journal::digest(&uuid::Uuid::new_v4().to_string())?;
     context.validate(
         &original.deployment_id,
         &original.executor_public_origin,
-        qualified.latest_now()?,
+        latest_now,
     )?;
     Ok(context)
 }
@@ -494,13 +533,23 @@ pub(super) async fn logical_with_context(
     context: &DirectRequestContext,
     value: DirectUploadLogicalRequest,
 ) -> Result<LogicalReply> {
+    logical_with_clock(request, env, context, value, || qualified.latest_now()).await
+}
+
+pub(super) async fn logical_with_clock(
+    request: &Request,
+    env: &Env,
+    context: &DirectRequestContext,
+    value: DirectUploadLogicalRequest,
+    latest_now: impl Fn() -> Result<u64>,
+) -> Result<LogicalReply> {
     let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())?;
     control::exchange(
         &WorkerTransport { request, env },
         &key,
         context,
         value,
-        || qualified.latest_now(),
+        latest_now,
     )
     .await
 }
@@ -550,6 +599,16 @@ fn context(
     foreground: DirectForegroundBudget,
     qualified: &QualifiedConfig,
 ) -> Result<DirectRequestContext> {
+    context_at(request, env, body, foreground, qualified.latest_now()?)
+}
+
+fn context_at(
+    request: &Request,
+    env: &Env,
+    body: &[u8],
+    foreground: DirectForegroundBudget,
+    latest_now: u64,
+) -> Result<DirectRequestContext> {
     use sha2::{Digest as _, Sha256};
     let url = request.url()?;
     ensure!(
@@ -576,7 +635,7 @@ fn context(
     context.validate(
         &context.deployment_id,
         &context.executor_public_origin,
-        qualified.latest_now()?,
+        latest_now,
     )?;
     Ok(context)
 }

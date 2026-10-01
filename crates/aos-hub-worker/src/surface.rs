@@ -831,6 +831,17 @@ pub(crate) async fn execute_r2_storage_work(
                 .await?;
             (StorageWorkOutcome::MultipartAborted { outcome }, 0)
         }
+        StorageWorkOperation::MirrorTransfer { .. }
+        | StorageWorkOperation::MirrorTransferBatch { .. }
+        | StorageWorkOperation::InspectMirrorPack { .. }
+        | StorageWorkOperation::InspectMirrorTreeInventory { .. }
+        | StorageWorkOperation::InspectMirrorMembership { .. }
+        | StorageWorkOperation::InspectStoredGitPack { .. } => {
+            anyhow::bail!("mirror requires its exact signed control transport")
+        }
+        StorageWorkOperation::FilterStoredGitPackTree { .. } => {
+            anyhow::bail!("mirror requires its exact signed control transport")
+        }
     };
     Ok(storage_work_result(plan, outcome, source_bytes))
 }
@@ -984,6 +995,9 @@ async fn inspect_git_object(
                 None
             }
         }
+    }).filter(|(_, loose)| {
+        object::decode_loose_with_limit(loose, Some(oid_value),
+            object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES).is_ok()
     });
     let (loose, source) = match selected {
         Some((_, loose)) => {
@@ -1291,7 +1305,7 @@ fn storage_object_identity(key: String, head: R2HeadObject) -> StorageObjectIden
     }
 }
 
-fn storage_work_result(
+pub(crate) fn storage_work_result(
     plan: &StorageWorkPlan,
     outcome: StorageWorkOutcome,
     source_bytes: u64,

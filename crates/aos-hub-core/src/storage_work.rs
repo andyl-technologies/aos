@@ -116,6 +116,47 @@ const MAX_PLAN_LIFETIME_SECONDS: i64 = 30;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageWorkOperation {
+    /// Answers exact OID membership from one complete verified semantic catalogue.
+    InspectMirrorMembership {
+        /// Approved immutable source and bounded metadata-only predicate.
+        query: crate::mirror_membership::MirrorMembershipQuery,
+    },
+    /// Enumerates a verified upstream tree through source-bound semantic pages.
+    InspectMirrorTreeInventory {
+        /// Exact upstream, tree and contiguous continuation.
+        query: crate::mirror_tree_inventory::MirrorTreeInventoryQuery,
+    },
+    /// Returns bounded named tree rows from a fully verified stored Git pair.
+    FilterStoredGitPackTree {
+        /// Exact source and closed name/cursor predicate.
+        query: crate::mirror_inspection::MirrorPackTreeQuery,
+    },
+    /// Advances independent objects through one actual bounded control exchange.
+    MirrorTransferBatch {
+        /// Exact originals and their independently ordered next phases.
+        items: Vec<crate::mirror_batch::MirrorBatchItem>,
+    },
+    /// Verifies an approved immutable upstream pair beside storage.
+    InspectMirrorPack {
+        /// Exact Native source selection and bounded decoded query.
+        inspection: crate::mirror_inspection::MirrorPackInspection,
+    },
+    /// Selects decoded Git content from one canonical stored pack/index pair.
+    InspectStoredGitPack {
+        /// Exact canonical index path under the selected placement.
+        index_path: String,
+        /// Strictly ordered bounded OIDs and content ranges.
+        selections: Vec<crate::mirror_inspection::MirrorPackSelection>,
+        /// Current qualified managed provider and workflow commitment.
+        protected_profile_digest: String,
+    },
+    /// Advances one retained managed-R2 mirror original beside storage.
+    MirrorTransfer {
+        /// Immutable Native-selected source and destination pins.
+        original: crate::mirror_work::MirrorOriginal,
+        /// Bounded phase admitted by this fresh control.
+        step: crate::mirror_work::MirrorStep,
+    },
     /// Reads provider metadata without transferring the body.
     Head {
         /// Surface-relative object path.
@@ -328,7 +369,13 @@ impl StorageWorkOperation {
     #[must_use]
     pub const fn credential_purposes(&self) -> &'static [&'static str] {
         match self {
-            Self::Head { .. }
+            Self::MirrorTransfer { .. } | Self::MirrorTransferBatch { .. } => &["read", "write"],
+            Self::InspectMirrorPack { .. }
+            | Self::InspectMirrorMembership { .. }
+            | Self::InspectMirrorTreeInventory { .. }
+            | Self::FilterStoredGitPackTree { .. }
+            | Self::InspectStoredGitPack { .. }
+            | Self::Head { .. }
             | Self::InspectSha256 { .. }
             | Self::InspectGitObject { .. }
             | Self::InspectGitObjects { .. }
@@ -356,6 +403,13 @@ impl StorageWorkOperation {
     #[must_use]
     pub const fn kind(&self) -> &'static str {
         match self {
+            Self::InspectMirrorMembership { .. } => "inspect_mirror_membership_v1",
+            Self::InspectMirrorPack { .. } => "inspect_mirror_pack_v1",
+            Self::InspectMirrorTreeInventory { .. } => "inspect_mirror_tree_inventory_v1",
+            Self::FilterStoredGitPackTree { .. } => "filter_stored_git_pack_tree_v1",
+            Self::InspectStoredGitPack { .. } => "inspect_stored_git_pack_v1",
+            Self::MirrorTransfer { .. } => "mirror_transfer",
+            Self::MirrorTransferBatch { .. } => "mirror_transfer_batch_v1",
             Self::Head { .. } => "head",
             Self::ListPage { .. } => "list_page",
             Self::InspectSha256 { .. } => "inspect_sha256",
@@ -529,6 +583,36 @@ impl StorageDocumentationPage {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StorageWorkOutcome {
+    /// Complete ordered membership answers for one fully verified companion pair.
+    MirrorMembership {
+        /// Exact pair source and presence partition; no object content bytes.
+        projection: crate::mirror_membership::MirrorMembershipProjection,
+    },
+    /// Contiguous tree inventory rows, with complete source commitments.
+    MirrorTreeInventory {
+        /// No raw tree, pack or index body is a result field.
+        projection: crate::mirror_tree_inventory::MirrorTreeInventoryProjection,
+    },
+    /// Selected verified tree rows bound to whole-pair source commitments.
+    GitPackTreeProjection {
+        /// Closed page or verified absence; encoded/decoded tree bodies omitted.
+        projection: crate::mirror_inspection::MirrorPackTreeProjection,
+    },
+    /// Ordered independent settlement from one signed phase batch.
+    MirrorBatch {
+        /// One result per exact original, including explicit refusals.
+        items: Vec<crate::mirror_batch::MirrorBatchResult>,
+    },
+    /// Full encoded pair commitments and bounded decoded query output.
+    GitPackProjection {
+        /// No encoded pack or index body is a result field.
+        projection: crate::mirror_inspection::MirrorPackProjection,
+    },
+    /// Positive progress under one exact Native-owned mirror original.
+    MirrorProgress {
+        /// Closed provider receipts and verification evidence without bodies.
+        progress: crate::mirror_work::MirrorProgress,
+    },
     /// The selected object does not exist.
     NotFound,
     /// Provider metadata for one object.
@@ -796,6 +880,31 @@ impl StorageWorkPlan {
     ///
     /// Returns an error for a stale, malformed, or unsupported plan.
     pub fn validate(&self, deployment_id: &str, now: i64) -> Result<(), StorageWorkError> {
+        self.validate_checked(deployment_id, Some(now))
+    }
+
+    /// Checks a retained plan's original shape, audience and intrinsic bounds.
+    ///
+    /// This observational check does not authenticate a plan, assert present
+    /// freshness or authorize execution. Observers must independently retain
+    /// the original authenticated handler acceptance and exact body correlation.
+    /// No current or synthesized authorization timestamp is supplied.
+    ///
+    /// # Errors
+    /// Returns an error for changed deployment, invalid intrinsic issue/expiry
+    /// geometry, unsupported operations, malformed paths or changed fence shapes.
+    pub fn validate_observation_shape(
+        &self,
+        deployment_id: &str,
+    ) -> Result<(), StorageWorkError> {
+        self.validate_checked(deployment_id, None)
+    }
+
+    fn validate_checked(
+        &self,
+        deployment_id: &str,
+        now: Option<i64>,
+    ) -> Result<(), StorageWorkError> {
         if self.version != 1
             || self.plan_id.len() != 32
             || !self.plan_id.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -835,14 +944,53 @@ impl StorageWorkPlan {
         if self.deployment_id != deployment_id {
             return Err(StorageWorkError::DeploymentMismatch);
         }
-        if self.issued_at > now.saturating_add(5)
-            || self.expires_at < now
+        if now.is_some_and(|now| self.issued_at > now.saturating_add(5) || self.expires_at < now)
             || self.expires_at < self.issued_at
             || self.expires_at.saturating_sub(self.issued_at) > MAX_PLAN_LIFETIME_SECONDS
         {
             return Err(StorageWorkError::InvalidTime);
         }
         match &self.operation {
+            StorageWorkOperation::InspectMirrorMembership { query } => {
+                if self.binding_kind != "deployment_r2" || query.validate().is_err() {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::InspectMirrorTreeInventory { query } => {
+                if self.binding_kind != "deployment_r2" || query.validate().is_err() {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::FilterStoredGitPackTree { query } => {
+                if self.binding_kind != "deployment_r2" || query.validate().is_err() {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::MirrorTransferBatch { items } => {
+                crate::mirror_batch::validate_items(items, self)
+                    .map_err(|_| StorageWorkError::InvalidPlan)?;
+            }
+            StorageWorkOperation::InspectMirrorPack { inspection } => {
+                if self.binding_kind != "deployment_r2" || inspection.validate().is_err() {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::InspectStoredGitPack {
+                index_path, selections, protected_profile_digest,
+            } => {
+                if self.binding_kind != "deployment_r2"
+                    || index_path.len() > 512
+                    || aos_registry_surface::pack_index::companion_pack_path(index_path).is_none()
+                    || !crate::direct_upload::valid_direct_digest(protected_profile_digest)
+                    || crate::mirror_inspection::validate_selections(selections).is_err()
+                {
+                    return Err(StorageWorkError::InvalidPlan);
+                }
+            }
+            StorageWorkOperation::MirrorTransfer { original, step } => {
+                original.validate_plan(self).map_err(|_| StorageWorkError::InvalidPlan)?;
+                step.validate().map_err(|_| StorageWorkError::InvalidPlan)?;
+            }
             StorageWorkOperation::Head { path } => {
                 if !valid_relative_path(path, false) {
                     return Err(StorageWorkError::InvalidPlan);
@@ -1407,6 +1555,20 @@ mod tests {
                 path: "objects/ab/1234".into(),
             },
         }
+    }
+
+    #[test]
+    fn retained_plan_shape_never_supplies_a_live_authorization_time() {
+        let mut retained = plan(100);
+        assert!(retained.validate_observation_shape("deployment-1").is_ok());
+        assert_eq!(retained.validate("deployment-1", 200), Err(StorageWorkError::InvalidTime));
+        assert!(retained.validate_observation_shape("another-deployment").is_err());
+
+        retained.expires_at = retained.issued_at + 31;
+        assert!(retained.validate_observation_shape("deployment-1").is_err());
+        retained.expires_at = retained.issued_at + 30;
+        retained.operation = StorageWorkOperation::Head { path: "../outside".into() };
+        assert!(retained.validate_observation_shape("deployment-1").is_err());
     }
 
     #[test]

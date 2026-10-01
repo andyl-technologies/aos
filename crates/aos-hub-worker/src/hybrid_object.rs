@@ -70,8 +70,8 @@ enum GuardReply {
 /// Coordinates visible writes and reviewed deletion for one R2 object key.
 #[durable_object]
 pub struct HybridObjectGuard {
-    state: State,
-    env: Env,
+    pub(crate) state: State,
+    pub(crate) env: Env,
     gate: Arc<Mutex<()>>,
 }
 
@@ -94,6 +94,33 @@ impl DurableObject for HybridObjectGuard {
 
         let _permit = acquire_gate(Arc::clone(&self.gate)).await;
         let path = request.url()?.path().to_owned();
+        if key.starts_with(crate::mirror_import::inventory::CACHE_PREFIX) {
+            if matches!(path.as_str(), crate::mirror_import::membership::PHYSICAL_PATH
+                | crate::mirror_import::membership::CANDIDATE_PHYSICAL_PATH) {
+                return crate::mirror_import::membership::physical_fetch(self, &key, &mut request).await;
+            }
+            if path == crate::mirror_import::inventory::PHYSICAL_PATH {
+                return crate::mirror_import::inventory::physical_fetch(self, &key, &mut request).await;
+            }
+            return Response::error("semantic cache keys admit no provider operations", 403);
+        }
+        if matches!(path.as_str(), "/mirror-final-guard-batch" | "/mirror-candidate-final-guard-batch") {
+            return crate::mirror_import::guard_proof::batch::physical_fetch(
+                self, &key, &mut request, path == "/mirror-candidate-final-guard-batch",
+            ).await;
+        }
+        if matches!(path.as_str(), "/mirror-final-guard" | "/mirror-candidate-final-guard") {
+            return crate::mirror_import::guard_proof::physical_fetch(
+                self,
+                &key,
+                &mut request,
+                path == "/mirror-candidate-final-guard",
+            ).await;
+        }
+        if matches!(path.as_str(), "/mirror-transfer" | "/mirror-source" | "/mirror-stage-ack"
+            | "/mirror-candidate-transfer" | "/mirror-candidate-source" | "/mirror-candidate-stage-ack") {
+            return crate::mirror_import::runtime::fetch(self, &key, &mut request).await;
+        }
         #[cfg(feature = "do-e2e")]
         if path == "/_e2e/direct-guard" {
             return crate::direct_guard::conformance_physical_fetch(
@@ -117,6 +144,8 @@ impl DurableObject for HybridObjectGuard {
         crate::direct_guard::deny_legacy(&self.state.storage())
             .await
             .map_err(storage_error)?;
+        crate::mirror_import::runtime::deny_other_owner(&self.state.storage())
+            .await.map_err(storage_error)?;
         let bucket = self
             .env
             .bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
@@ -215,6 +244,14 @@ impl DurableObject for HybridObjectGuard {
         };
         Response::from_json(&result)
     }
+
+    async fn alarm(&self) -> worker::Result<Response> {
+        let _permit = acquire_gate(Arc::clone(&self.gate)).await;
+        if self.state.storage().get::<bool>(crate::mirror_import::membership::MARKER).await? == Some(true) {
+            return crate::mirror_import::membership::expire(self).await;
+        }
+        crate::mirror_import::inventory::expire(self).await
+    }
 }
 
 impl HybridObjectGuard {
@@ -232,7 +269,7 @@ impl HybridObjectGuard {
         self.state.storage().get("pending-mutation").await
     }
 
-    async fn begin_mutation(&self, mutation: &Mutation) -> worker::Result<Option<MutationOutcome>> {
+    pub(crate) async fn begin_mutation(&self, mutation: &Mutation) -> worker::Result<Option<MutationOutcome>> {
         let receipt = self
             .state
             .storage()
@@ -261,7 +298,7 @@ impl HybridObjectGuard {
         Ok(replay)
     }
 
-    async fn finish_mutation(
+    pub(crate) async fn finish_mutation(
         &self,
         mutation: Mutation,
         outcome: MutationOutcome,
@@ -360,7 +397,7 @@ fn mutation<T: Serialize>(
     Mutation::new(key, operation_id, kind, payload).map_err(storage_error)
 }
 
-fn receipt_key(mutation: &Mutation) -> String {
+pub(crate) fn receipt_key(mutation: &Mutation) -> String {
     format!("mutation-receipt:{}", mutation.operation_id)
 }
 
@@ -400,7 +437,7 @@ fn valid_claim(claim: &DeleteClaim) -> bool {
             .is_none_or(|hash| !hash.is_empty() && hash.len() <= 128)
 }
 
-fn guard_name(env: &Env, key: &str) -> worker::Result<String> {
+pub(crate) fn guard_name(env: &Env, key: &str) -> worker::Result<String> {
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     Ok(format!("{deployment}:{}", hex::encode(Sha256::digest(key))))
 }

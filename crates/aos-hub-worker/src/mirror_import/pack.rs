@@ -8,7 +8,7 @@
 #[cfg(target_arch = "wasm32")]
 use anyhow::{ensure, Result};
 #[cfg(target_arch = "wasm32")]
-use aos_registry_surface::pack_index::projection::{PairReader, Selection, VerifiedPair};
+use aos_registry_surface::pack_index::projection::{AvailablePair, PairReader, Selection};
 #[cfg(target_arch = "wasm32")]
 use futures_util::future::{select, Either};
 #[cfg(target_arch = "wasm32")]
@@ -31,7 +31,54 @@ pub(crate) async fn verify_pair(
     index: ReadableStream,
     execution_deadline: i64,
     before_read: impl Fn() -> Result<()>,
-) -> Result<VerifiedPair> {
+) -> Result<AvailablePair> {
+    let verifier = read_pair(index_path, pack, index, execution_deadline, &before_read).await?;
+    let verified = verifier.finish_available(selections)?;
+    before_read()?;
+    check_deadline(now_seconds()?, execution_deadline)?;
+    Ok(verified)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn verify_tree<T>(
+    index_path: &str,
+    oid: aos_registry_surface::object::Oid,
+    pack: ReadableStream,
+    index: ReadableStream,
+    execution_deadline: i64,
+    before_read: impl Fn() -> Result<()>,
+    project: impl FnOnce(&[u8]) -> Result<T>,
+) -> Result<aos_registry_surface::pack_index::projection::VerifiedTreeProjection<T>> {
+    let verifier = read_pair(index_path, pack, index, execution_deadline, &before_read).await?;
+    let verified = verifier.finish_tree_projection(oid, project)?;
+    before_read()?;
+    check_deadline(now_seconds()?, execution_deadline)?;
+    Ok(verified)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn verify_catalogue(
+    index_path: &str,
+    pack: ReadableStream,
+    index: ReadableStream,
+    execution_deadline: i64,
+    before_read: impl Fn() -> Result<()>,
+) -> Result<aos_registry_surface::pack_index::projection::VerifiedCatalogue> {
+    let verifier = read_pair(index_path, pack, index, execution_deadline, &before_read).await?;
+    let verified = verifier.finish_catalogue()?;
+    before_read()?;
+    check_deadline(now_seconds()?, execution_deadline)?;
+    Ok(verified)
+}
+
+#[cfg(target_arch = "wasm32")]
+async fn read_pair(
+    index_path: &str,
+    pack: ReadableStream,
+    index: ReadableStream,
+    execution_deadline: i64,
+    before_read: &impl Fn() -> Result<()>,
+) -> Result<PairReader> {
     // These guards own cancellation even when path validation or opening the
     // second BYOB reader fails before both Readers have assumed ownership.
     let mut pack = UnopenedStream {
@@ -64,14 +111,11 @@ pub(crate) async fn verify_pair(
     }
     before_read()?;
     check_deadline(now_seconds()?, execution_deadline)?;
-    let verified = verifier.finish(selections)?;
-    before_read()?;
-    check_deadline(now_seconds()?, execution_deadline)?;
-    Ok(verified)
+    Ok(verifier)
 }
 
 #[cfg(target_arch = "wasm32")]
-async fn read_checked(
+pub(super) async fn read_checked(
     reader: &crate::direct_digest::Reader,
     execution_deadline: i64,
     before_read: &impl Fn() -> Result<()>,

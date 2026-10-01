@@ -32,7 +32,7 @@ pub(super) async fn inspect(
     )?;
     match fetch.execute(&plan).await?.outcome {
         StorageWorkOutcome::GitTreeEntries { page, .. } => Ok(Some(page)),
-        StorageWorkOutcome::NotFound => Ok(None),
+        StorageWorkOutcome::NotFound => fetch.inspect_packed_tree(oid, names, cursor).await,
         _ => anyhow::bail!("storage Worker returned another tree projection result"),
     }
 }

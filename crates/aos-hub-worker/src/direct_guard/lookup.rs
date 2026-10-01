@@ -27,7 +27,6 @@ async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl>
     let body = crate::hybrid::read_bounded_body(request, MAX_DIRECT_CONTROL_BYTES)
         .await?
         .ok_or_else(|| anyhow::anyhow!("direct authority lookup body exceeds bound"))?;
-    let qualified = QualifiedConfig::load(env).await?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     let key = transport::key(env)?;
     if request.url()?.path() == DIRECT_FINAL_GUARD_PATH {
@@ -40,7 +39,7 @@ async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl>
             &signature,
             &body,
             &deployment,
-            qualified.latest_now()?,
+            crate::direct_upload::config::guard_latest_now(env)?,
         )?;
         return forward(
             env,
@@ -66,8 +65,22 @@ async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl>
         &signature,
         &body,
         &deployment,
-        qualified.latest_now()?,
+        crate::direct_upload::config::guard_latest_now(env)?,
     )?;
+    // Positive Stage receipt lookup is historical metadata. It grants no
+    // provider read or mutation; every other authority path remains qualified.
+    let qualified = if matches!(
+        &challenge.operation,
+        DirectAuthorityLookupOperation::Stage { .. }
+    ) {
+        None
+    } else {
+        Some(QualifiedConfig::load(env).await?)
+    };
+    let latest_now = || match &qualified {
+        Some(qualified) => qualified.latest_now(),
+        None => crate::direct_upload::config::guard_latest_now(env),
+    };
     match &challenge.operation {
         DirectAuthorityLookupOperation::Stage {
             admission,
@@ -86,7 +99,7 @@ async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl>
                         &signed.signature,
                         &signed.body,
                         &challenge,
-                        qualified.latest_now()?,
+                        latest_now()?,
                     )?;
                 }
             }
@@ -173,7 +186,7 @@ async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl>
                         &signed.signature,
                         &signed.body,
                         &challenge,
-                        qualified.latest_now()?,
+                        latest_now()?,
                     )?;
                 }
             }
@@ -183,7 +196,7 @@ async fn handle(request: &mut Request, env: &Env) -> Result<SignedDirectControl>
             );
         }
     }
-    challenge.validate(&deployment, qualified.latest_now()?)?;
+    challenge.validate(&deployment, latest_now()?)?;
     sign_direct_authority_lookup_reply(&key, &DirectAuthorityLookupReply { request: challenge })
 }
 
@@ -481,7 +494,9 @@ async fn read_physical(
     let bytes = crate::hybrid::read_bounded_body(request, MAX_DIRECT_CONTROL_BYTES)
         .await?
         .ok_or_else(|| anyhow::anyhow!("direct physical lookup exceeds bound"))?;
-    let qualified = QualifiedConfig::load(env).await?;
+    if request.url()?.path() == DIRECT_FINAL_GUARD_PATH {
+        return read_retained_final(request, env, state, &bytes).await;
+    }
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     let key = transport::key(env)?;
     let storage = state.storage();
@@ -495,7 +510,7 @@ async fn read_physical(
             &signature,
             &bytes,
             &deployment,
-            qualified.latest_now()?,
+            crate::direct_upload::config::guard_latest_now(env)?,
         )?;
         match &challenge.operation {
             DirectAuthorityLookupOperation::Stage {
@@ -503,7 +518,7 @@ async fn read_physical(
                 complete,
                 evidence,
             } => {
-                let placement_id = addressed_source(env, state, admission).await?;
+                let placement_id = addressed_source(env, state, admission, None).await?;
                 let placement = evidence
                     .placements
                     .iter()
@@ -513,7 +528,10 @@ async fn read_physical(
                     env, &storage, admission, complete, placement,
                 )
                 .await?;
-                challenge.validate(&deployment, qualified.latest_now()?)?;
+                challenge.validate(
+                    &deployment,
+                    crate::direct_upload::config::guard_latest_now(env)?,
+                )?;
                 return sign_direct_authority_lookup_reply(
                     &key,
                     &DirectAuthorityLookupReply { request: challenge },
@@ -522,7 +540,9 @@ async fn read_physical(
             DirectAuthorityLookupOperation::Abort {
                 admission, abort, ..
             } => {
-                let placement_id = addressed_source(env, state, admission).await?;
+                let qualified = QualifiedConfig::load(env).await?;
+                let placement_id =
+                    addressed_source(env, state, admission, Some(&qualified)).await?;
                 crate::external_object::direct_abort(env, &storage, admission, abort, placement_id)
                     .await?;
                 challenge.validate(&deployment, qualified.latest_now()?)?;
@@ -534,6 +554,7 @@ async fn read_physical(
             DirectAuthorityLookupOperation::Baseline { .. } => {}
         }
     }
+    let qualified = QualifiedConfig::load(env).await?;
     let owner = runtime::retained(&storage).await?;
     owner.validate()?;
     let (binding, address, _) =
@@ -550,40 +571,6 @@ async fn read_physical(
         owner.binding.placement.placement_id,
     )?;
     qualified.protected(env, placement).await?;
-    if request.url()?.path() == DIRECT_FINAL_GUARD_PATH {
-        let signature = request
-            .headers()
-            .get(DIRECT_FINAL_GUARD_SIGNATURE_HEADER)?
-            .ok_or_else(|| anyhow::anyhow!("direct final readback signature absent"))?;
-        let challenge = verify_direct_final_guard_lookup(
-            &key,
-            &signature,
-            &bytes,
-            &deployment,
-            qualified.latest_now()?,
-        )?;
-        ensure!(
-            owner.admission == challenge.admission
-                && owner.complete == challenge.complete
-                && !owner.native_committed
-                && owner.final_record.as_ref() == Some(&challenge.expected),
-            "direct final reservation no longer held or originals changed"
-        );
-        let record: DirectFinalGuardRecord = runtime::read(
-            &storage,
-            &runtime::final_key(&owner.binding.reservation_operation_id),
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("direct final acknowledged receipt absent"))?;
-        challenge.validate(&deployment, qualified.latest_now()?)?;
-        return sign_direct_final_guard_reply(
-            &key,
-            &DirectFinalGuardReply {
-                request: challenge,
-                record,
-            },
-        );
-    }
     ensure!(
         request.url()?.path() == DIRECT_AUTHORITY_LOOKUP_PATH,
         "direct physical readback route differs"
@@ -640,14 +627,69 @@ async fn read_physical(
     sign_direct_authority_lookup_reply(&key, &DirectAuthorityLookupReply { request: challenge })
 }
 
+/// Authenticates only the held durable final record, without provider authority.
+async fn read_retained_final(
+    request: &Request,
+    env: &Env,
+    state: &State,
+    bytes: &[u8],
+) -> Result<SignedDirectControl> {
+    let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let latest_now = || crate::direct_upload::config::guard_latest_now(env);
+    let key = transport::key(env)?;
+    let signature = request
+        .headers()
+        .get(DIRECT_FINAL_GUARD_SIGNATURE_HEADER)?
+        .ok_or_else(|| anyhow::anyhow!("direct retained final signature absent"))?;
+    let challenge =
+        verify_direct_final_guard_lookup(&key, &signature, bytes, &deployment, latest_now()?)?;
+    let storage = state.storage();
+    let owner = runtime::retained(&storage).await?;
+    owner.validate()?;
+    let (binding, address, _) =
+        transport::physical_address(env, &owner.admission, owner.binding.placement.placement_id)?;
+    ensure!(
+        env.durable_object(&binding)?
+            .id_from_name(&address)?
+            .to_string()
+            == state.id().to_string(),
+        "direct retained final physical owner differs"
+    );
+    ensure!(
+        owner.admission == challenge.admission
+            && owner.complete == challenge.complete
+            && !owner.native_committed
+            && owner.final_record.as_ref() == Some(&challenge.expected),
+        "direct retained final owner released or originals changed"
+    );
+    let record: DirectFinalGuardRecord = runtime::read(
+        &storage,
+        &runtime::final_key(&owner.binding.reservation_operation_id),
+    )
+    .await?
+    .ok_or_else(|| anyhow::anyhow!("direct retained final positive receipt absent"))?;
+    ensure!(
+        record == challenge.expected,
+        "direct retained final receipt changed"
+    );
+    challenge.validate(&deployment, latest_now()?)?;
+    sign_direct_final_guard_reply(
+        &key,
+        &DirectFinalGuardReply {
+            request: challenge,
+            record,
+        },
+    )
+}
+
 async fn addressed_source(
     env: &Env,
     state: &State,
     admission: &DirectUploadAdmission,
+    qualified: Option<&QualifiedConfig>,
 ) -> Result<WireInteger> {
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     let mut found = None;
-    let qualified = QualifiedConfig::load(env).await?;
     for placement in &admission.placements {
         if !matches!(placement.physical, DirectPhysicalContext::External { .. }) {
             continue;
@@ -660,7 +702,9 @@ async fn addressed_source(
             == state.id().to_string()
         {
             ensure!(found.is_none(), "direct source physical guard is ambiguous");
-            qualified.protected(env, placement).await?;
+            if let Some(qualified) = qualified {
+                qualified.protected(env, placement).await?;
+            }
             found = Some(placement.placement_id);
         }
     }

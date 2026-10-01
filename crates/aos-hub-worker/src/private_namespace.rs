@@ -8,7 +8,10 @@ pub(crate) fn contains_private_namespace(path: &str) -> bool {
     let mut bytes = path.as_bytes().to_vec();
     for _ in 0..=4 {
         if bytes.split(|byte| *byte == b'/').any(|segment| {
-            segment == b".aos-direct-upload" || segment == b".aos-direct-qualification"
+            segment == b".aos-direct-upload"
+                || segment == b".aos-direct-qualification"
+                || segment == b".aos-mirror-qualification"
+                || segment == b".aos-mirror-query"
         }) {
             return true;
         }
@@ -54,6 +57,10 @@ mod tests {
             "/org/%2eaos-direct-upload/source",
             "/org%2f.aos-direct-upload%2fsource",
             "/%252eaos-direct-qualification/run",
+            "/.aos-mirror-qualification/run/final/object",
+            "/%252eaos-mirror-qualification/run/final/object",
+            "/org/.aos-mirror-query/cache",
+            "/%252eaos-mirror-query/cache",
         ] {
             assert!(contains_private_namespace(path), "{path}");
         }

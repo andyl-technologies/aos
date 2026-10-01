@@ -4,29 +4,34 @@ use anyhow::{ensure, Result};
 use aos_hub_core::direct_upload::*;
 use worker::{Env, Request};
 
-use super::{finish, Published, Ready, Reserved, Runtime};
+use super::{
+    finish, require_historical_original, require_historical_publication, Published, Ready,
+    Reserved, Runtime,
+};
 use crate::direct_upload::{
-    broker::{created, current, fresh_context, logical_with_context, parallelism},
-    config::QualifiedConfig,
+    broker::{created, current, fresh_context_at, logical_with_clock, parallelism},
+    config::{guard_latest_now, QualifiedConfig},
     control::LogicalReply,
-    storage::{self, Operation},
+    storage::{self, Operation, Reply},
     verification::{self, VerificationJob},
 };
 
 pub(super) struct WorkerRuntime<'a> {
     pub(super) request: &'a Request,
     pub(super) env: &'a Env,
-    pub(super) qualified: &'a QualifiedConfig,
+    pub(super) qualified: Option<&'a QualifiedConfig>,
 }
 
 #[async_trait::async_trait(?Send)]
 impl Runtime for WorkerRuntime<'_> {
     fn maximum(&self) -> usize {
-        parallelism(self.qualified)
+        self.qualified.map(parallelism).unwrap_or(1)
     }
 
     fn fresh_context(&self, original: &DirectRequestContext) -> Result<DirectRequestContext> {
-        fresh_context(self.qualified, original)
+        // Minting a metadata challenge grants no provider permission. Effect
+        // phases separately require the original producer window after waits.
+        fresh_context_at(original, guard_latest_now(self.env)?)
     }
 
     async fn logical(
@@ -34,7 +39,14 @@ impl Runtime for WorkerRuntime<'_> {
         context: &DirectRequestContext,
         value: DirectUploadLogicalRequest,
     ) -> Result<LogicalReply> {
-        logical_with_context(self.request, self.env, self.qualified, context, value).await
+        let terminal = matches!(&value, DirectUploadLogicalRequest::Commit { .. });
+        logical_with_clock(self.request, self.env, context, value, || {
+            match self.qualified.filter(|_| !terminal) {
+                Some(qualified) => qualified.latest_now(),
+                None => guard_latest_now(self.env),
+            }
+        })
+        .await
     }
 
     async fn prepare(
@@ -47,11 +59,17 @@ impl Runtime for WorkerRuntime<'_> {
     }
 
     async fn reserve(&self, context: &DirectRequestContext, ready: Ready) -> Result<Reserved> {
-        reserve(self.env, self.qualified, context, ready).await
+        let qualified = self
+            .qualified
+            .ok_or_else(|| anyhow::anyhow!("direct historical reservation refused"))?;
+        reserve(self.env, qualified, context, ready).await
     }
 
     async fn promote(&self, reserved: Reserved, permission: &LogicalReply) -> Result<Published> {
-        promote(self.env, self.qualified, reserved, permission).await
+        let qualified = self
+            .qualified
+            .ok_or_else(|| anyhow::anyhow!("direct historical promotion refused"))?;
+        promote(self.env, qualified, reserved, permission).await
     }
 
     async fn acknowledge(
@@ -64,7 +82,7 @@ impl Runtime for WorkerRuntime<'_> {
             committed
                 .context
                 .foreground
-                .validate_at(self.qualified.latest_now()?)?;
+                .validate_at(guard_latest_now(self.env)?)?;
             crate::direct_guard::acknowledge_native_commit(
                 self.env,
                 &item.ready.admission,
@@ -83,20 +101,37 @@ impl Runtime for WorkerRuntime<'_> {
 
 async fn prepare(
     env: &Env,
-    qualified: &QualifiedConfig,
+    qualified: Option<&QualifiedConfig>,
     context: &DirectRequestContext,
     admission: DirectUploadAdmission,
     complete: DirectCompleteRequest,
 ) -> Result<Option<Ready>> {
-    context.foreground.validate_at(qualified.latest_now()?)?;
-    storage::call(
-        env,
-        &admission,
-        Operation::Freeze {
-            complete: complete.clone(),
-        },
-    )
-    .await?;
+    if let Some(qualified) = qualified {
+        context.foreground.validate_at(qualified.latest_now()?)?;
+        storage::call(
+            env,
+            &admission,
+            Operation::Freeze {
+                complete: complete.clone(),
+            },
+        )
+        .await?;
+    } else {
+        context.foreground.validate_at(guard_latest_now(env)?)?;
+        let Reply::Original {
+            admission: retained_admission,
+            complete: retained_complete,
+        } = storage::call(env, &admission, Operation::ReadOriginal).await?
+        else {
+            anyhow::bail!("direct historical original absent");
+        };
+        require_historical_original(
+            &admission,
+            &complete,
+            &retained_admission,
+            retained_complete.as_ref(),
+        )?;
+    }
     let mut verified = Vec::new();
     for placement in &admission.placements {
         if let Some(receipt) =
@@ -106,6 +141,8 @@ async fn prepare(
             continue;
         }
 
+        let qualified =
+            qualified.ok_or_else(|| anyhow::anyhow!("direct historical verification absent"))?;
         let created = created(env, &admission, placement.placement_id).await?;
         current(qualified, context, &admission)?;
         let closed = verification::close_checked(
@@ -164,12 +201,17 @@ async fn prepare(
             settled.push(DirectSettledPlacement { evidence, guard });
         }
     }
-    Ok(Some(Ready {
+    let ready = Ready {
         admission,
         complete,
         stage,
         settled,
-    }))
+    };
+    if qualified.is_none() {
+        require_historical_publication(&ready)?;
+        context.foreground.validate_at(guard_latest_now(env)?)?;
+    }
+    Ok(Some(ready))
 }
 
 async fn reserve(

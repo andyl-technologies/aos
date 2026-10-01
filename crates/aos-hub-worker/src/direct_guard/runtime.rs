@@ -63,6 +63,13 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
         serde_json::to_vec(&turn)? == body,
         "direct guard request noncanonical"
     );
+    if matches!(
+        turn.operation,
+        Operation::ReadPublication | Operation::NativeCommit { .. }
+    ) {
+        return historical_metadata(env, state, &turn).await;
+    }
+    crate::mirror_import::runtime::deny_other_owner(&state.storage()).await?;
     let qualified = QualifiedConfig::load(env).await?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
     turn.context.validate(
@@ -92,37 +99,8 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
 
     match &turn.operation {
         Operation::Reserve => reserve(env, &storage, &turn, selected, &qualified).await,
-        Operation::ReadPublication => {
-            let record: Option<DirectFinalGuardRecord> = read(
-                &storage,
-                &final_key(&direct_destination_promotion_operation_id(
-                    &turn.complete.session,
-                    turn.placement_id,
-                    &turn.complete.operation_id,
-                )?),
-            )
-            .await?;
-            let record = match record {
-                Some(record) => Some(record),
-                None => recover_publication(env, &storage, &turn, &selected).await?,
-            };
-            let Some(record) = record else {
-                return Ok(Reply::Unsettled);
-            };
-            record.reservation.validate_for(
-                &turn.admission,
-                &turn.complete,
-                &deployment,
-                &selected.protected_profile_digest,
-            )?;
-            ensure!(
-                record.selected == selected,
-                "direct retained publication original Complete changed"
-            );
-            Ok(Reply::Final {
-                evidence: placement_evidence(placement, &record),
-                record,
-            })
+        Operation::ReadPublication | Operation::NativeCommit { .. } => {
+            anyhow::bail!("direct metadata operation reached provider authority path")
         }
         Operation::Promote {
             stage,
@@ -243,6 +221,69 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
                 record,
             })
         }
+    }
+}
+
+/// Replays retained positives and exact Native acknowledgements without dispatch.
+async fn historical_metadata(env: &Env, state: &State, turn: &Turn) -> Result<Reply> {
+    let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    let latest_now = || crate::direct_upload::config::guard_latest_now(env);
+    turn.context.validate(
+        &deployment,
+        &env.var("HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN")?.to_string(),
+        latest_now()?,
+    )?;
+    let (binding, address, _) =
+        transport::physical_address(env, &turn.admission, turn.placement_id)?;
+    ensure!(
+        env.durable_object(&binding)?
+            .id_from_name(&address)?
+            .to_string()
+            == state.id().to_string(),
+        "direct historical physical owner differs"
+    );
+    let placement = original::placement(&turn.admission, turn.placement_id)?;
+    let storage = state.storage();
+    match &turn.operation {
+        Operation::ReadPublication => {
+            let operation = direct_destination_promotion_operation_id(
+                &turn.complete.session,
+                turn.placement_id,
+                &turn.complete.operation_id,
+            )?;
+            let record = read::<DirectFinalGuardRecord>(&storage, &final_key(&operation)).await?;
+            let record = match record {
+                Some(record) => Some(record),
+                None => {
+                    let owner: Option<Reservation> = read(&storage, OWNER).await?;
+                    match owner {
+                        Some(owner) => {
+                            check_originals(&owner, turn, &owner.selected)?;
+                            // This repairs only an already positive retained SDK
+                            // receipt; it performs no provider read or mutation.
+                            recover_publication(env, &storage, turn, &owner.selected).await?
+                        }
+                        None => None,
+                    }
+                }
+            };
+            let Some(record) = record else {
+                return Ok(Reply::Unsettled);
+            };
+            let evidence = placement_evidence(placement, &record);
+            record.validate_placement_for(
+                &turn.admission,
+                &turn.complete,
+                &evidence,
+                &deployment,
+            )?;
+            turn.context.validate(
+                &deployment,
+                &env.var("HUB_DIRECT_UPLOAD_PUBLIC_ORIGIN")?.to_string(),
+                latest_now()?,
+            )?;
+            Ok(Reply::Final { evidence, record })
+        }
         Operation::NativeCommit {
             record,
             public_body,
@@ -250,10 +291,10 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
             reply_signature,
         } => {
             let owner = retained(&storage).await?;
-            check_originals(&owner, &turn, &selected)?;
+            check_originals(&owner, turn, &owner.selected)?;
             ensure!(
                 owner.final_record.as_ref() == Some(record),
-                "direct Native acknowledgement original publication differs"
+                "direct historical Native acknowledgement differs"
             );
             let key = StorageWorkKey::new(env.secret("HUB_STORAGE_WORK_KEY")?.to_string())?;
             let committed = super::state::authenticate_native_commit(
@@ -264,10 +305,8 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
                 public_body.as_bytes(),
                 reply_body.as_bytes(),
                 reply_signature,
-                qualified.latest_now()?,
+                latest_now()?,
             )?;
-            // Retain authenticated commit evidence before releasing the physical
-            // reservation. A lost acknowledgement therefore holds it safely.
             retain_native_control(
                 &storage,
                 "native",
@@ -280,6 +319,7 @@ async fn handle(request: &mut Request, env: &Env, state: &State) -> Result<Reply
             write(&storage, OWNER, &committed).await?;
             Ok(Reply::Acknowledged)
         }
+        _ => anyhow::bail!("direct historical route attempted provider dispatch"),
     }
 }
 
@@ -617,14 +657,9 @@ async fn validate_positive_source(
         anyhow::bail!("direct original stage Create receipt absent");
     };
     let expected_create = Effect::new(create_id, &(admission, placement_id), false)?;
-    ensure!(
-        create.intent_digest == expected_create.intent_digest && create.pending_attempt.is_none(),
-        "direct original provider Create remains unknown or changed"
-    );
-    let created: verification::CreatedStage =
-        serde_json::from_value(create.terminal.ok_or_else(|| {
-            anyhow::anyhow!("direct provider Create positive acknowledgement absent")
-        })?)?;
+    let created: verification::CreatedStage = serde_json::from_value(
+        super::state::positive_effect_terminal(&create, &expected_create)?.clone(),
+    )?;
     if let ClosedStage::Managed { object } = &source.closed {
         let verification::CreatedStage::Managed { receipt } = created else {
             anyhow::bail!("direct original provider Create scope differs");
@@ -658,14 +693,9 @@ async fn validate_positive_source(
                 anyhow::bail!("direct original positive stage Close absent");
             };
             let expected = Effect::new(close_id, &(complete, placement_id, &upload_id), false)?;
-            ensure!(
-                close.intent_digest == expected.intent_digest && close.pending_attempt.is_none(),
-                "direct original stage Close remains unknown or changed"
-            );
-            let acknowledged: managed::ObjectReceipt =
-                serde_json::from_value(close.terminal.ok_or_else(|| {
-                    anyhow::anyhow!("direct stage positive Close receipt absent")
-                })?)?;
+            let acknowledged: managed::ObjectReceipt = serde_json::from_value(
+                super::state::positive_effect_terminal(&close, &expected)?.clone(),
+            )?;
             ensure!(
                 &acknowledged == object,
                 "direct stage source incarnation differs from positive Close"
@@ -698,11 +728,7 @@ async fn validate_positive_source(
         placement_id,
         closed: source.closed.clone(),
     };
-    ensure!(
-        verified.intent_digest == Effect::new(verify_id, &job, true)?.intent_digest
-            && verified.pending_attempt.is_none(),
-        "direct original source verification changed or remains unknown"
-    );
+    super::state::positive_effect_terminal(&verified, &Effect::new(verify_id, &job, true)?)?;
     Ok(())
 }
 

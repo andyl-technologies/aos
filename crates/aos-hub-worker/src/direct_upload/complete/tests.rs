@@ -150,6 +150,7 @@ fn response() -> DirectUploadResponse {
 }
 
 struct PhysicalFixture {
+    metadata_only: bool,
     store: Rc<FixtureStore>,
     transport: http::HttpTransport,
     nonce: Cell<u64>,
@@ -239,6 +240,7 @@ impl PhysicalFixture {
 
     fn reopen(store: Rc<FixtureStore>, transport: http::HttpTransport) -> Self {
         Self {
+            metadata_only: false,
             store,
             transport,
             nonce: Cell::new(0),
@@ -293,10 +295,12 @@ impl Runtime for PhysicalFixture {
         complete: DirectCompleteRequest,
     ) -> Result<Option<Ready>> {
         let original = self.original(&complete.session);
-        ensure!(
-            admission == original.admission && complete == original.complete,
-            "retained Complete changed"
-        );
+        super::require_historical_original(
+            &admission,
+            &complete,
+            &original.admission,
+            Some(&original.complete),
+        )?;
         self.inflight.set(self.inflight.get() + 1);
         self.peak.set(self.peak.get().max(self.inflight.get()));
         let ticks = if admission.intent.client_operation_id == digest("begin-0") {
@@ -317,15 +321,23 @@ impl Runtime for PhysicalFixture {
             .published(&complete.session)
             .into_iter()
             .collect();
-        Ok(Some(Ready {
+        let ready = Ready {
             admission,
             complete,
             stage: original.stage.clone(),
             settled,
-        }))
+        };
+        if self.metadata_only {
+            super::require_historical_publication(&ready)?;
+        }
+        Ok(Some(ready))
     }
 
     async fn reserve(&self, context: &DirectRequestContext, ready: Ready) -> Result<Reserved> {
+        ensure!(
+            !self.metadata_only,
+            "historical provider reservation refused"
+        );
         let baseline = self.original(&ready.complete.session).baseline.clone();
         let witness = DirectDestinationBaselineWitness {
             binding: baseline.binding.clone(),
@@ -349,6 +361,7 @@ impl Runtime for PhysicalFixture {
         mut reserved: Reserved,
         permission: &LogicalReply,
     ) -> Result<Published> {
+        ensure!(!self.metadata_only, "historical provider promotion refused");
         let baseline = &reserved.baselines[0];
         let allowed = permission
             .reply
@@ -517,7 +530,11 @@ async fn lost_http_commit_reply_holds_guards_and_replays_exact_old_complete() {
 
     let store = Rc::clone(&runtime.store);
     drop(runtime);
-    let runtime = PhysicalFixture::reopen(store, server.transport());
+    let mut runtime = PhysicalFixture::reopen(store, server.transport());
+    let expired =
+        crate::direct_upload::acceptance_window::AcceptedProducerWindow::new(100, 110, 1).unwrap();
+    assert!(expired.latest_now(110).is_err());
+    runtime.metadata_only = true;
     // A fresh broker invocation receives Native originals again over HTTP;
     // its physical ports reload retained proof bytes from the durable fixture.
     runtime.nonce.set(100);
@@ -529,6 +546,7 @@ async fn lost_http_commit_reply_holds_guards_and_replays_exact_old_complete() {
     assert!(replay.errors.is_empty());
     assert_eq!(runtime.store.count(), 4);
     assert_eq!(runtime.acknowledged.borrow().len(), 4);
+    assert!(runtime.promotion_order.borrow().is_empty());
     let captured = server.captured();
     assert_eq!(captured.requests.len(), 6);
     assert_eq!(captured.requests[3].request, captured.requests[5].request);
@@ -552,6 +570,39 @@ async fn lost_http_commit_reply_holds_guards_and_replays_exact_old_complete() {
     assert_eq!(refused.errors.len(), 1);
     assert_eq!(server.captured().requests.len(), 7);
     assert_eq!(runtime.store.count(), 4);
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn historical_complete_missing_positive_never_enters_provider_phases() {
+    let fixtures = vec![fixture(0)];
+    let (context, public_bytes) = public(&fixtures);
+    let server = http::Server::start(fixtures.clone(), None, false).await;
+    let mut runtime = PhysicalFixture::new(fixtures.clone(), server.transport());
+    runtime.metadata_only = true;
+    let mut output = response();
+
+    run(
+        &runtime,
+        &context,
+        &public_bytes,
+        vec![fixtures[0].complete.clone()],
+        &mut output,
+    )
+    .await;
+
+    assert_eq!(output.errors.len(), 1);
+    assert_eq!(server.captured().requests.len(), 1);
+    assert_eq!(runtime.store.count(), 0);
+    assert!(runtime.promotion_order.borrow().is_empty());
+    assert!(runtime.acknowledged.borrow().is_empty());
+    assert!(super::require_historical_original(
+        &fixtures[0].admission,
+        &fixtures[0].complete,
+        &fixtures[0].admission,
+        None,
+    )
+    .is_err());
     server.stop().await;
 }
 

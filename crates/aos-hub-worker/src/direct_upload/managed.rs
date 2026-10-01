@@ -60,7 +60,26 @@ pub(crate) async fn create_checked<F: Fn() -> Result<()>>(
     empty: bool,
     before_dispatch: F,
 ) -> Result<CreateReceipt> {
-    let _capacity = super::provider_capacity::acquire_checked(1, &before_dispatch).await?;
+    create_class_checked(
+        env,
+        key,
+        empty,
+        super::provider_capacity::Class::Foreground,
+        before_dispatch,
+    )
+    .await
+}
+
+/// Creates a source under the selected shared capacity class and fresh cutoff.
+pub(crate) async fn create_class_checked<F: Fn() -> Result<()>>(
+    env: &Env,
+    key: &str,
+    empty: bool,
+    class: super::provider_capacity::Class,
+    before_dispatch: F,
+) -> Result<CreateReceipt> {
+    let _capacity =
+        super::provider_capacity::acquire_class_checked(1, class, &before_dispatch).await?;
     let bucket = bucket(env)?;
     before_dispatch()?;
     if empty {
@@ -204,9 +223,38 @@ pub(crate) async fn get_class(
     worker::web_sys::ReadableStream,
     super::provider_capacity::Permit,
 )> {
-    let capacity = super::provider_capacity::acquire_class(1, class).await?;
+    get_class_checked(env, key, range, class, || Ok(())).await
+}
+
+/// Rechecks the read authority after waiting for shared provider capacity.
+pub(crate) async fn get_class_checked<F: Fn() -> Result<()>>(
+    env: &Env,
+    key: &str,
+    range: Option<(u64, u64)>,
+    class: super::provider_capacity::Class,
+    before_dispatch: F,
+) -> Result<(
+    ObjectReceipt,
+    worker::web_sys::ReadableStream,
+    super::provider_capacity::Permit,
+)> {
+    let capacity =
+        super::provider_capacity::acquire_class_checked(1, class, &before_dispatch).await?;
+    before_dispatch()?;
     let (identity, stream) = get_unmetered(env, key, range).await?;
     Ok((identity, stream, capacity))
+}
+
+/// Opens a source while its caller retains an aggregate provider reservation.
+///
+/// This seam permits a pair verifier to reserve both live GET slots atomically.
+pub(crate) async fn get_reserved(
+    env: &Env,
+    key: &str,
+    capacity: &super::provider_capacity::Permit,
+) -> Result<(ObjectReceipt, worker::web_sys::ReadableStream)> {
+    let _retained = capacity;
+    get_unmetered(env, key, None).await
 }
 
 async fn get_unmetered(
@@ -587,7 +635,26 @@ pub(crate) async fn invoke_await_checked<F: Fn() -> Result<()>>(
     arguments: &[JsValue],
     before_dispatch: F,
 ) -> Result<JsValue> {
-    let _capacity = super::provider_capacity::acquire_checked(1, &before_dispatch).await?;
+    invoke_await_class_checked(
+        object,
+        method,
+        arguments,
+        super::provider_capacity::Class::Foreground,
+        before_dispatch,
+    )
+    .await
+}
+
+/// Invokes one SDK effect under its shared capacity class and original cutoff.
+pub(crate) async fn invoke_await_class_checked<F: Fn() -> Result<()>>(
+    object: &JsValue,
+    method: &str,
+    arguments: &[JsValue],
+    class: super::provider_capacity::Class,
+    before_dispatch: F,
+) -> Result<JsValue> {
+    let _capacity =
+        super::provider_capacity::acquire_class_checked(1, class, &before_dispatch).await?;
     before_dispatch()?;
     invoke_await_unmetered(object, method, arguments).await
 }

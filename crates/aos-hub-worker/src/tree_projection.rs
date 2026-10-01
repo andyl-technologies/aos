@@ -45,6 +45,10 @@ pub(crate) async fn inspect(
                     tracing::warn!(error = %error, "ignoring invalid optional Git tree bundle");
                     None
                 }
+            }).filter(|(_, loose)| {
+                // Optional shards are an accelerator. A malformed selected
+                // member must retain the canonical loose-path compatibility.
+                object::decode_loose_with_limit(loose, Some(selected_oid), MAX_TREE_INFLATED_BYTES).is_ok()
             });
     let (loose, source, source_bytes) = match selected {
         Some((_, loose)) => {

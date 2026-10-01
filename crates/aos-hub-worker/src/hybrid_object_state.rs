@@ -33,6 +33,7 @@ pub(crate) mod external;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum MutationKind {
+    Mirror,
     EmptyPut,
     MultipartCompletion,
     StagingDelete,
@@ -86,6 +87,7 @@ impl Mutation {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum MutationOutcome {
+    Mirror { progress: aos_hub_core::mirror_work::MirrorProgress },
     Acknowledged,
     MultipartCompleted { etag: String },
 }
@@ -149,6 +151,7 @@ pub(crate) fn recover_mutation(
         }
         let valid_outcome = matches!(
             (&mutation.kind, &receipt.outcome),
+            (MutationKind::Mirror, MutationOutcome::Mirror { .. }) |
             (
                 MutationKind::MultipartCompletion,
                 MutationOutcome::MultipartCompleted { .. }

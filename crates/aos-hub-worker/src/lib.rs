@@ -193,6 +193,7 @@ pub(crate) mod pitr;
 pub mod placeholder;
 mod hybrid_front;
 mod private_namespace;
+mod mirror_import;
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;

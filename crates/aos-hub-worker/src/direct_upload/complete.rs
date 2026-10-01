@@ -67,7 +67,7 @@ pub(super) async fn execute(
         &worker::WorkerRuntime {
             request,
             env,
-            qualified,
+            qualified: Some(qualified),
         },
         context,
         public_bytes,
@@ -75,6 +75,55 @@ pub(super) async fn execute(
         response,
     )
     .await;
+}
+
+/// Replays retained positive publication through the same authenticated scheduler.
+#[cfg(target_arch = "wasm32")]
+pub(super) async fn execute_historical(
+    request: &::worker::Request,
+    env: &::worker::Env,
+    context: &DirectRequestContext,
+    public_bytes: &[u8],
+    items: Vec<DirectCompleteRequest>,
+    response: &mut DirectUploadResponse,
+) {
+    run(
+        &worker::WorkerRuntime {
+            request,
+            env,
+            qualified: None,
+        },
+        context,
+        public_bytes,
+        items,
+        response,
+    )
+    .await;
+}
+
+fn require_historical_original(
+    admission: &DirectUploadAdmission,
+    complete: &DirectCompleteRequest,
+    retained_admission: &DirectUploadAdmission,
+    retained_complete: Option<&DirectCompleteRequest>,
+) -> Result<()> {
+    ensure!(
+        retained_admission == admission && retained_complete == Some(complete),
+        "direct historical original differs"
+    );
+    Ok(())
+}
+
+fn require_historical_publication(ready: &Ready) -> Result<()> {
+    ensure!(
+        ready
+            .admission
+            .placements
+            .iter()
+            .all(|placement| ready.is_settled(placement.placement_id)),
+        "direct historical publication incomplete"
+    );
+    Ok(())
 }
 
 struct Ready {

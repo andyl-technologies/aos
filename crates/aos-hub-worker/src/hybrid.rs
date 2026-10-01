@@ -98,6 +98,40 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
     if path == STORAGE_WORK_PATH {
         return execute_storage_work(request, env).await;
     }
+    if path == aos_hub_core::mirror_candidate::MIRROR_CANDIDATE_PATH {
+        #[cfg(feature = "do-e2e")]
+        return crate::mirror_import::candidate::fetch(request, env).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
+    if path == aos_hub_core::mirror_candidate::query::MIRROR_CANDIDATE_QUERY_PATH {
+        #[cfg(feature = "do-e2e")]
+        return crate::mirror_import::membership::candidate_fetch(request, env).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
+    if path == aos_hub_core::mirror_guard::MIRROR_GUARD_LOOKUP_PATH {
+        return crate::mirror_import::guard_proof::fetch(request, env, false).await;
+    }
+    if path == aos_hub_core::mirror_guard::batch::MIRROR_GUARD_BATCH_LOOKUP_PATH {
+        return crate::mirror_import::guard_proof::batch::fetch(request, env, false).await;
+    }
+    if path == aos_hub_core::mirror_guard::batch::MIRROR_CANDIDATE_GUARD_BATCH_LOOKUP_PATH {
+        #[cfg(feature = "do-e2e")]
+        return crate::mirror_import::guard_proof::batch::fetch(request, env, true).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
+    if path == aos_hub_core::mirror_guard::MIRROR_CANDIDATE_GUARD_LOOKUP_PATH {
+        #[cfg(feature = "do-e2e")]
+        return crate::mirror_import::guard_proof::fetch(request, env, true).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
     if path == STORAGE_CAPABILITIES_PATH {
         return storage_capabilities(request, env).await;
     }
@@ -1007,6 +1041,12 @@ async fn storage_capabilities(mut request: Request, env: &Env) -> Result<Respons
         r2_gc_incarnation_v1: true,
         console_asset_version: Some(aos_hub_core::web::assets::asset_version().into()),
         operations: vec![
+            "inspect_mirror_pack_v1".into(),
+            "inspect_mirror_tree_inventory_v1".into(),
+            "mirror_transfer_batch_v1".into(),
+            "inspect_stored_git_pack_v1".into(),
+            "filter_stored_git_pack_tree_v1".into(),
+            "mirror_transfer".into(),
             "head".into(),
             "list_page".into(),
             "inspect_sha256".into(),
@@ -1238,7 +1278,23 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     };
     let operation_kind = plan.operation.kind();
 
-    let execution = if plan.binding_kind == "deployment_r2" {
+    let execution = if matches!(plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorMembership { .. }) {
+        crate::mirror_import::membership::dispatch(env, &plan, &body, &signature).await
+    } else if matches!(plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorTreeInventory { .. }) {
+        crate::mirror_import::inventory::dispatch(env, &plan, &body, &signature).await
+    } else if matches!(plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::MirrorTransferBatch { .. }) {
+        crate::mirror_import::batch::execute(env, &plan, &body, &signature, false).await
+    } else if matches!(plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorPack { .. }
+        | aos_hub_core::storage_work::StorageWorkOperation::InspectStoredGitPack { .. }
+        | aos_hub_core::storage_work::StorageWorkOperation::FilterStoredGitPackTree { .. }) {
+        crate::mirror_import::inspection::execute(env, &plan).await
+    } else if matches!(plan.operation, aos_hub_core::storage_work::StorageWorkOperation::MirrorTransfer { .. }) {
+        crate::mirror_import::runtime::dispatch(env, &plan, &body, &signature).await.map(|(progress, source_bytes)| crate::surface::storage_work_result(&plan, aos_hub_core::storage_work::StorageWorkOutcome::MirrorProgress { progress }, source_bytes))
+    } else if plan.binding_kind == "deployment_r2" {
         crate::surface::execute_r2_storage_work(env, &plan).await
     } else {
         let publication = match crate::hybrid_binding::resolve_for_plan(env, &plan).await {

@@ -9,6 +9,28 @@ use aos_hub_core::storage_work::StorageWorkKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
+/// Reads an exact acknowledged original without accepting an unknown effect.
+///
+/// # Errors
+/// Returns an error for changed operation, intent, effect kind, pending attempt
+/// or a missing positive terminal receipt. Expiration cannot change this result.
+pub(crate) fn positive_effect_terminal<'a>(
+    actual: &'a crate::direct_upload::journal::Effect,
+    expected: &crate::direct_upload::journal::Effect,
+) -> Result<&'a serde_json::Value> {
+    ensure!(
+        actual.operation_id == expected.operation_id
+            && actual.intent_digest == expected.intent_digest
+            && actual.immutable_read == expected.immutable_read
+            && actual.pending_attempt.is_none(),
+        "direct positive effect original changed or remains unknown"
+    );
+    actual
+        .terminal
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("direct positive effect acknowledgement absent"))
+}
+
 /// Exact source identity retained before any final provider mutation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

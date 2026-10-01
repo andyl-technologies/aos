@@ -12,6 +12,7 @@ use worker::Env;
 pub(crate) struct QualifiedConfig {
     /// Exact independently verified prerequisite measurement commitment.
     pub(crate) acceptance_evidence: String,
+    acceptance_window: super::acceptance_window::AcceptedProducerWindow,
     pub(crate) runtime: DirectRuntimeQualification,
     pub(crate) clock_qualification: String,
     pub(crate) uncertainty: u64,
@@ -126,6 +127,11 @@ impl QualifiedConfig {
         )?;
         Ok(Self {
             acceptance_evidence: artifact.evidence_sha256,
+            acceptance_window: super::acceptance_window::AcceptedProducerWindow::new(
+                facts.issued_at.get(),
+                facts.valid_until.get(),
+                facts.clock.uncertainty_seconds.get(),
+            )?,
             clock_qualification: facts.clock_policy.commitment()?,
             uncertainty: facts.clock.uncertainty_seconds.get(),
             runtime: facts.runtime,
@@ -136,9 +142,8 @@ impl QualifiedConfig {
     }
 
     pub(crate) fn latest_now(&self) -> Result<u64> {
-        u64::try_from(aos_hub_core::clock::now_unix_secs())?
-            .checked_add(self.uncertainty)
-            .ok_or_else(|| anyhow::anyhow!("direct qualified clock overflow"))
+        self.acceptance_window
+            .latest_now(u64::try_from(aos_hub_core::clock::now_unix_secs())?)
     }
 
     pub(crate) async fn protected(
@@ -217,6 +222,28 @@ pub(crate) fn runtime_script_version(env: &Env) -> Result<String> {
         .as_string()
         .filter(|version| valid_direct_identity(version))
         .ok_or_else(|| anyhow::anyhow!("actual hosted script identity absent"))
+}
+
+/// Projects metadata-only guard time without granting provider dispatch.
+pub(crate) fn guard_latest_now(env: &Env) -> Result<u64> {
+    let uncertainty = integer(env, "HUB_DIRECT_UPLOAD_CLOCK_UNCERTAINTY_SECONDS")?;
+    let policy = DirectClockPolicy {
+        version: 1,
+        mode: DirectClockPolicyMode::BoundedUtc,
+        uncertainty_seconds: uncertainty,
+    };
+    ensure!(
+        (1..30).contains(&uncertainty.get())
+            && env.var("HUB_DIRECT_UPLOAD_CLOCK_MODE")?.to_string() == "bounded_utc"
+            && env
+                .var("HUB_DIRECT_UPLOAD_CLOCK_QUALIFICATION")?
+                .to_string()
+                == policy.commitment()?,
+        "guard bounded clock projection differs"
+    );
+    u64::try_from(aos_hub_core::clock::now_unix_secs())?
+        .checked_add(uncertainty.get())
+        .ok_or_else(|| anyhow::anyhow!("guard clock overflow"))
 }
 
 pub(crate) fn managed_policy(env: &Env) -> Result<DirectPrivateStagePolicyRef> {

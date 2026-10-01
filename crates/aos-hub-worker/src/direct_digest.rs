@@ -376,13 +376,18 @@ impl Drop for Digest {
     }
 }
 
-struct Reader {
+/// Keeps each storage-side byte-stream read within the fixed 64 KiB view.
+pub(crate) struct Reader {
     reader: JsValue,
     ended: std::cell::Cell<bool>,
 }
 
 impl Reader {
-    fn new(stream: JsValue) -> Result<Self> {
+    /// Opens a native BYOB reader without reading or buffering the object.
+    ///
+    /// # Errors
+    /// Returns an error when the platform has no native BYOB reader.
+    pub(crate) fn new(stream: JsValue) -> Result<Self> {
         let options = js_sys::Object::new();
         Reflect::set(
             &options,
@@ -397,7 +402,11 @@ impl Reader {
         })
     }
 
-    async fn read(&self) -> Result<(Uint8Array, bool)> {
+    /// Reads one bounded native view and an independent end-of-stream flag.
+    ///
+    /// # Errors
+    /// Returns an error for failed reads or an oversized/unfinished empty view.
+    pub(crate) async fn read(&self) -> Result<(Uint8Array, bool)> {
         let buffer = Uint8Array::new_with_length(CHUNK_BYTES);
         let result = awaited(invoke(&self.reader, "read", &[buffer.into()])?)
             .await
@@ -413,6 +422,10 @@ impl Reader {
             value.dyn_into::<Uint8Array>().map_err(|_| refused())?
         };
         self.ended.set(done);
+        ensure!(
+            bytes.length() <= CHUNK_BYTES && (done || bytes.length() > 0),
+            "native BYOB reader exceeded its fixed view bound"
+        );
         Ok((bytes, done))
     }
 }
