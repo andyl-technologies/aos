@@ -689,6 +689,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   dedup scoping, existence-oracle rules and durable disclosure evidence.
   Special tree, whiteout, conflict and index disclosure remain required;
   file/directory-marker/symlink certificates alone do not qualify DOM-7.
+  Eight reviewed native domain paths now supply guarded root/domain bindings,
+  independent storage, namespace configuration and administrative request types.
+  Their complete source matches the reference candidate; no manifest, lockfile,
+  Guard or publication interface changed. Mandatory repository formatting passes.
+  The current native production build still stops on 27 missing Guard/consumer
+  and resulting inference diagnostics before runtime qualification. Actual
+  current-authority disclosure, deletion and domain gates remain incomplete.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
