@@ -61,6 +61,10 @@ pub(crate) enum OriginalWorkerCutoffErrorV3 {
     Worker(#[from] Box<super::ZfsWorkerError>),
 }
 
+fn worker_error(cause: super::ZfsWorkerError) -> OriginalWorkerCutoffErrorV3 {
+    OriginalWorkerCutoffErrorV3::Worker(Box::new(cause))
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum OriginalWorkerPurposeV3 {
     Reader,
@@ -383,7 +387,7 @@ impl<'a> WorkerOriginalCheckedViewV3<'a> {
                     .map(OriginalWorkerSelectionV3::Observer)
             }
         }
-        .map_err(|cause| OriginalWorkerCutoffErrorV3::Worker(Box::new(cause)))?;
+        .map_err(worker_error)?;
         let mut view = Self {
             socket,
             introduction_record,
@@ -438,7 +442,7 @@ impl<'a> WorkerOriginalCheckedViewV3<'a> {
             Ok::<_, super::ZfsWorkerError>(())
         })();
         let result = checked_peer
-            .map_err(|cause| OriginalWorkerCutoffErrorV3::Worker(Box::new(cause)))
+            .map_err(worker_error)
             .and_then(|()| self.decoded.check_kernel_pair());
         match result {
             Ok(later) => {
@@ -498,7 +502,7 @@ impl<'a> WorkerOriginalCheckedViewV3<'a> {
         let checked = self.check();
         sent
             .map_err(super::ZfsWorkerError::from)
-            .map_err(|cause| OriginalWorkerCutoffErrorV3::Worker(Box::new(cause)))?;
+            .map_err(worker_error)?;
         checked?;
         Ok(())
     }
@@ -510,7 +514,7 @@ impl<'a> WorkerOriginalCheckedViewV3<'a> {
     ) -> Result<(), OriginalWorkerCutoffErrorV3> {
         self.check()?;
         slot.capture_once(self.socket, maximum)
-            .map_err(|cause| OriginalWorkerCutoffErrorV3::Worker(Box::new(cause)))?;
+            .map_err(worker_error)?;
         self.check()?;
         Ok(())
     }
@@ -532,7 +536,7 @@ impl<'a> WorkerOriginalCheckedViewV3<'a> {
             .socket
             .as_fd()
             .map_err(super::ZfsWorkerError::from)
-            .map_err(|cause| OriginalWorkerCutoffErrorV3::Worker(Box::new(cause)))?;
+            .map_err(worker_error)?;
         let mut descriptors = [rustix::event::PollFd::new(&descriptor, events)];
         let polled = rustix::event::poll(&mut descriptors, Some(&timeout));
         let checked = self.check();
@@ -552,11 +556,11 @@ impl<'a> WorkerOriginalCheckedViewV3<'a> {
             .and_then(|()| {
                 super::verify_same_live_subject(self.body_record.subject(), record.subject())
             })
-            .map_err(|cause| OriginalWorkerCutoffErrorV3::Worker(Box::new(cause)))?;
+            .map_err(worker_error)?;
         self.storaged
             .verify_exact_membership(record.subject().pidfd())
             .map_err(super::ZfsWorkerError::from)
-            .map_err(|cause| OriginalWorkerCutoffErrorV3::Worker(Box::new(cause)))?;
+            .map_err(worker_error)?;
         decode_acknowledgement(record.payload(), self.digest)?;
         self.check()?;
         Ok(())

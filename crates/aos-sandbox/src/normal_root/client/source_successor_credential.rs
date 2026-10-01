@@ -75,7 +75,7 @@ impl From<rustix::io::Errno> for SourceSuccessorCredentialErrorV2 {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 struct Identity {
     device: u64,
     inode: u64,
