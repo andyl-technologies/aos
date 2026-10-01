@@ -36,7 +36,7 @@
     grep -Fxq 'whitebox=off' "$install_result"
 
     mkdir -p "$out"
-    cp "$install_result" "$out/result"
+    cat "$install_result" > "$out/result"
     {
       printf 'attr_path=%s\n' '${attrPath}'
       printf 'task_ids=%s\n' '${taskList}'
