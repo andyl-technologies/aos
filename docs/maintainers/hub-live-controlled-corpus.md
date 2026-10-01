@@ -4,10 +4,11 @@ The live stream and metadata query need a newly captured `do-e2e` Worker. An
 older direct-upload or mirror artifact does not exercise these routes. The
 controlled runner creates no reviewer signature or production acceptance.
 
-`pkgs/tools/aos-hub-live-runtime-e2e.mjs` launches the actual Rust Worker and a
-bounded upstream fixture. Invoke it with the explicit source-built Node path
-and a fresh private fixture directory. The directory's `live-runtime.json`
-supplies these closed inputs:
+Use `pkgs/tools/aos-hub-live-runtime-http-e2e.mjs` for the measured physical
+HTTP/TLS corpus. It launches the actual Rust Worker and a bounded TLS upstream
+fixture with exact request-sequence and socket observations. Invoke it with the
+explicit source-built Node path and a fresh private fixture directory. The
+directory's `live-runtime.json` supplies these closed inputs:
 
 ```json
 {
@@ -20,6 +21,10 @@ supplies these closed inputs:
   "scriptVersion": "<actual installed script identity>",
   "runId": "<32 lowercase hexadecimal characters>",
   "workerPort": 18796,
+  "sourcePort": 18797,
+  "sourceCa": "/nix/store/.../fixture-ca.crt",
+  "sourceCertificate": "/nix/store/.../fixture-server.crt",
+  "sourceKey": "/nix/store/.../fixture-server.key",
   "vars": {}
 }
 ```
@@ -37,6 +42,22 @@ same directory. Its separate private `live-plan.json` selects `streamKeyFile`,
 without implicit trimming. The target supplies the real controlled profile
 digest and positive registry, mirror, placement, write and binding coordinates.
 This context is a controlled request, not a fabricated Native IAM grant.
+
+The physical HTTP/TLS path passed all thirteen controlled cases on the captured
+Rust artifact. The cancellation case deliberately resets the exact matched
+client TCP connection before cancelling its response reader, at 65,536 consumed
+bytes. It requires cancellation of that original upstream response before EOF;
+the socket and source observations must precede fixture teardown. The retained
+ordinary reader-cancellation comparison did not show prompt upstream
+cancellation and is not counted as a passing cancellation observation.
+
+`aos-hub-live-runtime-e2e.mjs` is a separate service-binding diagnostic. Its
+upstream has no physical HTTP/TLS socket. A comparison with incoming request
+signals enabled passed twelve cases but failed the exact source-cancellation
+callback predicate, despite client reset and fresh capacity reuse. That failure
+is retained; the service-binding path does not establish upstream cancellation
+or substitute for the physical HTTP/TLS corpus. Its checked-in launcher remains
+unchanged by this scope correction.
 
 The runner executes thirteen cases, including two metadata reads during an
 open bulk response, client cancellation, expiry after an admission wait, and
