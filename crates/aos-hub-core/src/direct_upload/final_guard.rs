@@ -191,6 +191,22 @@ impl DirectFinalGuardLookup {
     /// # Errors
     /// Returns an error for malformed identity or an expired/future challenge.
     pub fn validate(&self, deployment: &str, latest_now: u64) -> Result<()> {
+        self.validate_context(deployment, Some(latest_now))
+    }
+
+    /// Checks retained final-guard structure without asserting current authority.
+    ///
+    /// The original admission, Complete, record and bounded challenge lifetime
+    /// remain exact. This observation-only check does not authenticate captures
+    /// or establish freshness; execution must use [`Self::validate`].
+    ///
+    /// # Errors
+    /// Returns an error for malformed records, originals, lifetime or encoding.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_context(deployment, None)
+    }
+
+    fn validate_context(&self, deployment: &str, latest_now: Option<u64>) -> Result<()> {
         self.expected.validate()?;
         self.expected.reservation.validate_for(
             &self.admission,
@@ -206,8 +222,9 @@ impl DirectFinalGuardLookup {
         ensure!(
             self.expected.reservation.deployment_id == deployment
                 && valid_direct_digest(&self.request_nonce)
-                && self.issued_at.get() <= latest_now
-                && latest_now < self.expires_at.get()
+                && latest_now.is_none_or(|now| {
+                    self.issued_at.get() <= now && now < self.expires_at.get()
+                })
                 && self
                     .expires_at
                     .get()
@@ -228,6 +245,32 @@ pub struct DirectFinalGuardReply {
     pub request: DirectFinalGuardLookup,
     /// Independently retained acknowledged publication record.
     pub record: DirectFinalGuardRecord,
+}
+
+impl DirectFinalGuardReply {
+    /// Correlates retained final-guard metadata with the complete original challenge.
+    ///
+    /// This observation-only check does not authenticate a reply, establish live
+    /// authority or prove publication. Production verification and independently
+    /// retained transport evidence remain necessary for those facts.
+    ///
+    /// # Errors
+    /// Returns an error for malformed records, changed originals or oversized encoding.
+    pub fn validate_observation_for(&self, expected: &DirectFinalGuardLookup) -> Result<()> {
+        expected.validate_observation_shape(&expected.expected.reservation.deployment_id)?;
+        self.validate_original(expected)?;
+        encode_direct_control(self)?;
+        Ok(())
+    }
+
+    fn validate_original(&self, expected: &DirectFinalGuardLookup) -> Result<()> {
+        self.record.validate()?;
+        ensure!(
+            self.request == *expected && self.record == expected.expected,
+            "direct final guard reply correlation differs"
+        );
+        Ok(())
+    }
 }
 
 /// Signs an exact fresh guard challenge under a dedicated authentication domain.
@@ -287,11 +330,7 @@ pub fn verify_direct_final_guard_reply(
 ) -> Result<DirectFinalGuardReply> {
     expected.validate(&expected.expected.reservation.deployment_id, latest_now)?;
     let value: DirectFinalGuardReply = verify(key, REPLY_DOMAIN, signature, body)?;
-    value.record.validate()?;
-    ensure!(
-        value.request == *expected && value.record == expected.expected,
-        "direct final guard reply correlation differs"
-    );
+    value.validate_original(expected)?;
     Ok(value)
 }
 

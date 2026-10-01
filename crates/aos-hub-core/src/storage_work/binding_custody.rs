@@ -192,15 +192,36 @@ impl StorageBindingAdoptionRequest {
     /// # Errors
     /// Returns an error for malformed, expired, or foreign snapshot authority.
     pub fn validate(&self, deployment: &str, now: i64) -> Result<(), StorageWorkError> {
-        fresh(
+        self.validate_context(deployment, Some(now))
+    }
+
+    /// Checks retained adoption metadata without asserting current eligibility.
+    ///
+    /// The complete snapshot, audience, nonce and intrinsic thirty-second request
+    /// lifetime remain validated. This observation-only check authenticates no
+    /// capture and grants no permission; execution uses [`Self::validate`].
+    ///
+    /// # Errors
+    /// Returns an error for malformed identity, audience, snapshot, lifetime or size.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<(), StorageWorkError> {
+        self.validate_context(deployment, None)?;
+        encode(self)?;
+        Ok(())
+    }
+
+    fn validate_context(&self, deployment: &str, now: Option<i64>) -> Result<(), StorageWorkError> {
+        fresh_context(
             self.version,
             &self.nonce,
             self.issued_at,
             self.expires_at,
             now,
         )?;
-        self.expected.validate(deployment, now)?;
-        if self.expected.issued_at > now || self.expected.expires_at <= now {
+        match now {
+            Some(now) => self.expected.validate(deployment, now)?,
+            None => self.expected.validate_observation_shape(deployment)?,
+        }
+        if now.is_some_and(|now| self.expected.issued_at > now || self.expected.expires_at <= now) {
             return Err(StorageWorkError::InvalidTime);
         }
         Ok(())
@@ -215,6 +236,54 @@ pub struct StorageBindingAdoptionReply {
     pub request: StorageBindingAdoptionRequest,
     /// Exact durable snapshot acknowledged by Worker custody.
     pub acknowledged: StorageBindingSnapshot,
+}
+
+impl StorageBindingAdoptionReply {
+    /// Correlates retained adoption metadata with an independently selected original.
+    ///
+    /// Only the acknowledged snapshot's issue and expiry times may differ from
+    /// the original snapshot. Both intrinsic lifetimes remain bounded. This
+    /// observation-only check proves neither authentication nor live adoption.
+    ///
+    /// # Errors
+    /// Returns an error for malformed snapshots, changed originals or oversized encoding.
+    pub fn validate_observation_for(
+        &self,
+        request: &StorageBindingAdoptionRequest,
+    ) -> Result<(), StorageWorkError> {
+        request.validate_observation_shape(&request.expected.deployment_id)?;
+        self.validate_original(request, None)?;
+        encode(self)?;
+        Ok(())
+    }
+
+    fn validate_original(
+        &self,
+        request: &StorageBindingAdoptionRequest,
+        now: Option<i64>,
+    ) -> Result<(), StorageWorkError> {
+        match now {
+            Some(now) => self
+                .acknowledged
+                .validate(&request.expected.deployment_id, now)?,
+            None => self
+                .acknowledged
+                .validate_observation_shape(&request.expected.deployment_id)?,
+        }
+
+        let mut expected = request.expected.clone();
+        expected.issued_at = self.acknowledged.issued_at;
+        expected.expires_at = self.acknowledged.expires_at;
+        if self.request != *request
+            || self.acknowledged != expected
+            || now.is_some_and(|now| {
+                self.acknowledged.issued_at > now || self.acknowledged.expires_at <= now
+            })
+        {
+            return Err(StorageWorkError::InvalidSnapshot);
+        }
+        Ok(())
+    }
 }
 
 /// Bounded canonical bytes and their purpose-separated MAC.
@@ -232,11 +301,20 @@ fn fresh(
     expires: i64,
     now: i64,
 ) -> Result<(), StorageWorkError> {
+    fresh_context(version, nonce, issued, expires, Some(now))
+}
+
+fn fresh_context(
+    version: u8,
+    nonce: &str,
+    issued: i64,
+    expires: i64,
+    now: Option<i64>,
+) -> Result<(), StorageWorkError> {
     if version != 1
         || !digest(nonce)
         || issued <= 0
-        || issued > now
-        || now >= expires
+        || now.is_some_and(|now| issued > now || now >= expires)
         || expires <= issued
         || expires.saturating_sub(issued) > 30
     {
@@ -257,12 +335,17 @@ fn sign<T: Serialize>(
     domain: &[u8],
     value: &T,
 ) -> Result<SignedStorageCustodyControl, StorageWorkError> {
+    let body = encode(value)?;
+    let signature = key.sign_body(&[domain, &body].concat())?;
+    Ok(SignedStorageCustodyControl { body, signature })
+}
+
+fn encode<T: Serialize>(value: &T) -> Result<Vec<u8>, StorageWorkError> {
     let body = serde_json::to_vec(value).map_err(|_| StorageWorkError::InvalidSnapshot)?;
     if body.len() > MAX_BINDING_CUSTODY_BYTES {
         return Err(StorageWorkError::InvalidSnapshot);
     }
-    let signature = key.sign_body(&[domain, &body].concat())?;
-    Ok(SignedStorageCustodyControl { body, signature })
+    Ok(body)
 }
 
 fn verify<T: DeserializeOwned + Serialize>(
@@ -427,19 +510,7 @@ pub fn verify_storage_binding_adoption_reply(
 ) -> Result<StorageBindingAdoptionReply, StorageWorkError> {
     request.validate(&request.expected.deployment_id, now)?;
     let reply: StorageBindingAdoptionReply = verify(key, ADOPT_REPLY, signature, body)?;
-    reply
-        .acknowledged
-        .validate(&request.expected.deployment_id, now)?;
-    let mut expected = request.expected.clone();
-    expected.issued_at = reply.acknowledged.issued_at;
-    expected.expires_at = reply.acknowledged.expires_at;
-    if reply.request != *request
-        || reply.acknowledged != expected
-        || reply.acknowledged.issued_at > now
-        || reply.acknowledged.expires_at <= now
-    {
-        return Err(StorageWorkError::InvalidSnapshot);
-    }
+    reply.validate_original(request, Some(now))?;
     Ok(reply)
 }
 

@@ -445,6 +445,26 @@ impl StorageBindingSnapshot {
     /// Returns an error for a different deployment, malformed endpoint,
     /// duplicate credential purpose, or expired snapshot.
     pub fn validate(&self, deployment_id: &str, now: i64) -> Result<(), StorageWorkError> {
+        self.validate_context(deployment_id, Some(now))
+    }
+
+    /// Checks retained binding structure without asserting current eligibility.
+    ///
+    /// Coordinates, credential references, deployment and the original bounded
+    /// lifetime remain validated. This observation-only check grants no provider
+    /// authority and establishes no freshness; execution uses [`Self::validate`].
+    ///
+    /// # Errors
+    /// Returns an error for malformed coordinates, references, audience or lifetime.
+    pub fn validate_observation_shape(&self, deployment_id: &str) -> Result<(), StorageWorkError> {
+        self.validate_context(deployment_id, None)
+    }
+
+    fn validate_context(
+        &self,
+        deployment_id: &str,
+        now: Option<i64>,
+    ) -> Result<(), StorageWorkError> {
         let valid_endpoint = self.endpoint_scheme == "https"
             && match self.endpoint_host_kind.as_str() {
                 "dns" => std::str::from_utf8(&self.endpoint_host_bytes).is_ok_and(|host| {
@@ -504,8 +524,7 @@ impl StorageBindingSnapshot {
         if self.deployment_id != deployment_id {
             return Err(StorageWorkError::DeploymentMismatch);
         }
-        if self.issued_at > now.saturating_add(5)
-            || self.expires_at < now
+        if now.is_some_and(|now| self.issued_at > now.saturating_add(5) || self.expires_at < now)
             || self.expires_at < self.issued_at
             || self.expires_at.saturating_sub(self.issued_at) > MAX_SNAPSHOT_LIFETIME_SECONDS
         {

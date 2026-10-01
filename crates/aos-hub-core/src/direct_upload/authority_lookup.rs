@@ -82,12 +82,29 @@ impl DirectAuthorityLookup {
     /// # Errors
     /// Returns an error for malformed or expired challenge or changed originals.
     pub fn validate(&self, deployment: &str, latest_now: u64) -> Result<()> {
+        self.validate_context(deployment, Some(latest_now))
+    }
+
+    /// Checks retained challenge structure without asserting current authority.
+    ///
+    /// This observation-only check preserves the original audience, bounded
+    /// lifetime and proof correlations. It neither authenticates a capture nor
+    /// establishes freshness; execution must use [`Self::validate`].
+    ///
+    /// # Errors
+    /// Returns an error for malformed identity, lifetime, encoding or originals.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_context(deployment, None)
+    }
+
+    fn validate_context(&self, deployment: &str, latest_now: Option<u64>) -> Result<()> {
         ensure!(
             self.deployment_id == deployment
                 && valid_direct_identity(deployment)
                 && valid_direct_digest(&self.request_nonce)
-                && self.issued_at.get() <= latest_now
-                && latest_now < self.expires_at.get()
+                && latest_now.is_none_or(|now| {
+                    self.issued_at.get() <= now && now < self.expires_at.get()
+                })
                 && self
                     .expires_at
                     .get()
@@ -130,8 +147,9 @@ impl DirectAuthorityLookup {
                 ensure!(
                     witness.binding == evidence.binding
                         && witness.baseline_digest == evidence.fingerprint()?
-                        && witness.issued_at.get() <= latest_now
-                        && latest_now < witness.expires_at.get(),
+                        && latest_now.is_none_or(|now| {
+                            witness.issued_at.get() <= now && now < witness.expires_at.get()
+                        }),
                     "direct authority current baseline witness differs"
                 );
             }
@@ -169,6 +187,31 @@ impl DirectAuthorityLookup {
 pub struct DirectAuthorityLookupReply {
     /// Full exact original challenge and retained proof identity.
     pub request: DirectAuthorityLookup,
+}
+
+impl DirectAuthorityLookupReply {
+    /// Correlates bounded retained metadata with an independently selected original.
+    ///
+    /// This observation-only check provides no authentication, live authority or
+    /// positive physical readback. Those facts require the production verifier
+    /// and independently retained transport evidence.
+    ///
+    /// # Errors
+    /// Returns an error for malformed originals, changed challenges or oversized encoding.
+    pub fn validate_observation_for(&self, expected: &DirectAuthorityLookup) -> Result<()> {
+        expected.validate_observation_shape(&expected.deployment_id)?;
+        self.validate_original(expected)?;
+        encode_direct_control(self)?;
+        Ok(())
+    }
+
+    fn validate_original(&self, expected: &DirectAuthorityLookup) -> Result<()> {
+        ensure!(
+            self.request == *expected,
+            "direct authority reply original challenge differs"
+        );
+        Ok(())
+    }
 }
 
 /// Signs a stage/baseline challenge under a distinct independent guard domain.
@@ -232,10 +275,7 @@ pub fn verify_direct_authority_lookup_reply(
         signature,
         body,
     )?;
-    ensure!(
-        reply.request == *expected,
-        "direct authority reply original challenge differs"
-    );
+    reply.validate_original(expected)?;
     Ok(reply)
 }
 

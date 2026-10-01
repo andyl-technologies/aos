@@ -207,6 +207,128 @@ fn cold_adoption_accepts_current_exact_snapshot_without_rotating_eligibility() {
     .is_err());
 }
 
+fn adoption_observation_fixture() -> (StorageBindingAdoptionRequest, StorageBindingAdoptionReply) {
+    let mut expected = request().snapshot;
+    expected.issued_at = 110;
+    expected.expires_at = 3710;
+    let original = StorageBindingAdoptionRequest {
+        version: 1,
+        nonce: "dd".repeat(32),
+        issued_at: 110,
+        expires_at: 140,
+        expected,
+    };
+    let mut acknowledged = original.expected.clone();
+    acknowledged.issued_at = 100;
+    acknowledged.expires_at = 3700;
+    let reply = StorageBindingAdoptionReply {
+        request: original.clone(),
+        acknowledged,
+    };
+    (original, reply)
+}
+
+#[test]
+fn retained_adoption_observation_preserves_live_deadline_and_mac_checks() {
+    let key = StorageWorkKey::new("fixture-custody-key-independent-0001").unwrap();
+    let (original, reply) = adoption_observation_fixture();
+    let signed = sign_storage_binding_adoption_reply(&key, &reply).unwrap();
+
+    reply.validate_observation_for(&original).unwrap();
+    verify_storage_binding_adoption_reply(&key, &signed.signature, &signed.body, &original, 115)
+        .unwrap();
+    for now in [109, 140, 10_000] {
+        assert!(verify_storage_binding_adoption_reply(
+            &key,
+            &signed.signature,
+            &signed.body,
+            &original,
+            now,
+        )
+        .is_err());
+    }
+    assert!(verify_storage_binding_adoption_reply(
+        &key,
+        &"00".repeat(32),
+        &signed.body,
+        &original,
+        115,
+    )
+    .is_err());
+}
+
+#[test]
+fn adoption_observation_normalizes_only_snapshot_times() {
+    let (original, reply) = adoption_observation_fixture();
+    let changes: [fn(&mut StorageBindingAdoptionReply); 4] = [
+        |reply: &mut StorageBindingAdoptionReply| reply.acknowledged.credentials[0].generation += 1,
+        |reply: &mut StorageBindingAdoptionReply| {
+            reply.acknowledged.object_prefix.push_str("/other")
+        },
+        |reply: &mut StorageBindingAdoptionReply| {
+            reply.acknowledged.endpoint_host_bytes = b"other.example.test".to_vec();
+        },
+        |reply: &mut StorageBindingAdoptionReply| reply.request.nonce = "ee".repeat(32),
+    ];
+    for change in changes {
+        let mut changed = reply.clone();
+        change(&mut changed);
+        assert!(changed.validate_observation_for(&original).is_err());
+    }
+
+    let mut changed = reply.clone();
+    changed.acknowledged.expires_at = changed.acknowledged.issued_at + 3601;
+    assert!(changed.validate_observation_for(&original).is_err());
+    changed.acknowledged.expires_at = changed.acknowledged.issued_at - 1;
+    assert!(changed.validate_observation_for(&original).is_err());
+}
+
+#[test]
+fn adoption_observation_retains_original_nonce_audience_and_intrinsic_ttl() {
+    let (original, _) = adoption_observation_fixture();
+    assert!(original
+        .validate_observation_shape("other-deployment")
+        .is_err());
+    let changes: [fn(&mut StorageBindingAdoptionRequest); 5] = [
+        |request: &mut StorageBindingAdoptionRequest| request.version = 2,
+        |request: &mut StorageBindingAdoptionRequest| request.nonce = "not-a-digest".into(),
+        |request: &mut StorageBindingAdoptionRequest| request.issued_at = 0,
+        |request: &mut StorageBindingAdoptionRequest| request.expires_at = request.issued_at,
+        |request: &mut StorageBindingAdoptionRequest| request.expires_at = request.issued_at + 31,
+    ];
+    for change in changes {
+        let mut changed = original.clone();
+        change(&mut changed);
+        assert!(changed
+            .validate_observation_shape("fixture-deployment")
+            .is_err());
+    }
+
+    let mut value = serde_json::to_value(&original).unwrap();
+    value["unexpected"] = serde_json::json!(true);
+    assert!(serde_json::from_value::<StorageBindingAdoptionRequest>(value).is_err());
+}
+
+#[test]
+fn snapshot_live_validation_keeps_issue_skew_and_inclusive_expiry() {
+    let mut snapshot = request().snapshot;
+    snapshot.issued_at = 115;
+    snapshot.expires_at = 130;
+    snapshot.validate("fixture-deployment", 110).unwrap();
+    assert!(snapshot.validate("fixture-deployment", 109).is_err());
+    snapshot.validate("fixture-deployment", 130).unwrap();
+    assert!(snapshot.validate("fixture-deployment", 131).is_err());
+    snapshot
+        .validate_observation_shape("fixture-deployment")
+        .unwrap();
+
+    snapshot.endpoint_scheme = "http".into();
+    assert!(snapshot
+        .validate_observation_shape("fixture-deployment")
+        .is_err());
+    assert!(snapshot.validate("fixture-deployment", 120).is_err());
+}
+
 fn frozen_request() -> StorageFrozenCleanupCustodyRequest {
     let mut snapshot = request().snapshot;
     snapshot.credentials[0].purpose = "delete".into();

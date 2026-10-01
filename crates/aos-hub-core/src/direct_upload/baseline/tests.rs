@@ -1,5 +1,7 @@
 //! Baseline commitment, exact reservation correlation and current witness gates.
 
+mod observation;
+
 use super::*;
 use crate::storage_work::StorageWorkKey;
 
