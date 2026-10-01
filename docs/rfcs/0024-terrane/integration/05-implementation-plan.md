@@ -324,11 +324,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   the joint closed-consumer candidate refuses a consumed registration replaced
   after Guard-installation staging and preserves the selected slot through
   independent reopen. Ordinary branch staging races and complete effect routing
-  remain unqualified. Ordered ancestry and record-parent batching preserve all metadata
-  observations,
-  duplicate reads, exact payload reads and initial/final fences. The CAS gate
+  remain unqualified. Ordered ancestry and record-parent batching preserve all
+  metadata observations, duplicate reads, exact payload reads and initial/final
+  fences. The CAS gate
   now requires their actual cardinality, error-priority and ancestry regressions;
-  the complete current gate build remains pending vendor qualification.
+  the hermetic registry gate qualifies all 292 registered specification names,
+  including the four ref gates. This registry result does not qualify their
+  implementations. The complete current gate build remains pending vendor
+  qualification and remaining producer/GC source integration; trunk formatting
+  also awaits those missing source modules.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
