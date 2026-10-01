@@ -1254,7 +1254,7 @@ fn launch_command_builder_adds_plugin_and_hashes_full_argv() {
         window
             == [
                 "-drive",
-                "id=crucible-root0,file=crucible-root-overlay.qcow2,backing.driver=qcow2,backing.file.driver=file,backing.file.filename=/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2,if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
+                "id=crucible-root0,node-name=crucible-root-overlay,file=crucible-root-overlay.qcow2,backing.driver=qcow2,backing.file.driver=file,backing.file.filename=/nix/store/44444444444444444444444444444444-crucible-root/root.qcow2,if=none,format=qcow2,cache=none,aio=threads,discard=unmap",
             ]
     }));
     assert!(args.windows(2).any(|window| {

@@ -4,9 +4,9 @@
 fn hot_fork_qmp_schemas_have_current_registry_owners() {
     use crucible_qemu::{
         QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION,
-        QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
-        QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
-        QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION,
+        QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION,
+        QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
+        QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
         QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
@@ -41,6 +41,7 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
             "block-source-proof",
             QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
         ),
+        ("block-seal", QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION),
         ("rcu-barrier", QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION),
         ("private-rings", QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION),
         (
@@ -91,6 +92,52 @@ fn hot_fork_qmp_schemas_have_current_registry_owners() {
 }
 
 #[test]
+fn cold_stop_qapi_contract_matches_its_patch_owned_schema() {
+    let patch = include_str!("../../../../pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch");
+    let registry =
+        include_str!("../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+    let version = 1;
+    let owner = format!(
+        "crucible.qemu.hot-fork.cold-stop\t{version}\tqemu-patch::hot-fork-cold-stop\tprocess-protocol-message\t"
+    );
+    assert!(registry.lines().any(|line| line.starts_with(&owner)));
+
+    // Cold stop has no Rust adapter yet. Bind its patch owner to the native
+    // producer and the closed QAPI shape shared by the issuer and query.
+    let (_, producer) = patch
+        .split_once("+qmp_query_crucible_hot_fork_cold_stop(Error **errp)\n+{\n")
+        .expect("cold-stop producer");
+    let (producer, _) = producer.split_once("+}\n").expect("producer body");
+    assert!(producer.contains(&format!("+    state->schema_version = {version};")));
+
+    let (_, state) = patch
+        .split_once("+{ 'struct': 'CrucibleHotForkColdStopState',\n")
+        .expect("cold-stop QAPI state");
+    let (state, _) = state.split_once("+##").expect("state definition end");
+    let actual = state
+        .lines()
+        .filter_map(|line| line.strip_prefix('+'))
+        .flat_map(str::split_whitespace)
+        .collect::<Vec<_>>();
+    let expected = "'data': { 'schema-version': 'uint32',
+                            'qemu-pid': 'int64',
+                            'cold-receipt-generation': 'uint64',
+                            'runstate': 'RunState',
+                            'vmstop-disposition': 'CrucibleHotForkColdStopDisposition',
+                            'flush-status': 'int' } }"
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    assert_eq!(actual, expected, "cold-stop QAPI response shape drift");
+
+    for declaration in [
+        "+{ 'command': 'crucible-hot-fork-cold-stop',\n+  'data': { 'expected-qemu-pid': 'int64' },\n+  'returns': 'CrucibleHotForkColdStopState' }",
+        "+{ 'command': 'query-crucible-hot-fork-cold-stop',\n+  'returns': 'CrucibleHotForkColdStopState' }",
+    ] {
+        assert!(patch.contains(declaration));
+    }
+}
+
+#[test]
 fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
     use std::collections::BTreeSet;
 
@@ -107,6 +154,22 @@ fn patched_qapi_commands_have_schema_owners_or_qapi_only_contracts() {
         (
             "crucible-hot-fork-block-barrier",
             "crucible.qemu.hot-fork.block-barrier",
+        ),
+        (
+            "crucible-hot-fork-block-seal",
+            "crucible.qemu.hot-fork.block-seal",
+        ),
+        (
+            "query-crucible-hot-fork-block-seal",
+            "crucible.qemu.hot-fork.block-seal",
+        ),
+        (
+            "crucible-hot-fork-cold-stop",
+            "crucible.qemu.hot-fork.cold-stop",
+        ),
+        (
+            "query-crucible-hot-fork-cold-stop",
+            "crucible.qemu.hot-fork.cold-stop",
         ),
         (
             "query-crucible-hot-fork-plugin-resource-inventory",

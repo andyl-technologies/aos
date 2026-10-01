@@ -14,7 +14,8 @@ use thiserror::Error;
 
 use super::{
     CrucibleShmemBlockDevice, DEFAULT_CRUCIBLE_SHMEM_DEVICE_ID, DEFAULT_VMSTATE_FILE_NAME,
-    QemuLaunchCommand, ROOT_DRIVE_ID, VMSTATE_DRIVE_ID, validate_overlay_file_name,
+    QemuLaunchCommand, ROOT_DRIVE_ID, ROOT_OVERLAY_NODE_NAME, VMSTATE_DRIVE_ID,
+    validate_overlay_file_name,
 };
 
 const UNASSIGNED_X86_IO_REGION: &str = "io";
@@ -296,6 +297,7 @@ fn is_root_overlay_drive(value: &str) -> bool {
     let fields = value.split(',').collect::<Vec<_>>();
     let [
         id,
+        node_name,
         overlay,
         backing_driver,
         file_driver,
@@ -311,6 +313,7 @@ fn is_root_overlay_drive(value: &str) -> bool {
     };
 
     *id == format!("id={ROOT_DRIVE_ID}")
+        && *node_name == format!("node-name={ROOT_OVERLAY_NODE_NAME}")
         && overlay
             .strip_prefix("file=")
             .is_some_and(|path| validate_overlay_file_name(path).is_ok())
@@ -530,13 +533,34 @@ mod tests {
 
         for backing_driver in ["qcow2", "raw"] {
             let root = format!(
-                "id={ROOT_DRIVE_ID},file=custom-root-overlay.qcow2,backing.driver={backing_driver},backing.file.driver=file,backing.file.filename=/nix/store/00000000000000000000000000000000-root/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap"
+                "id={ROOT_DRIVE_ID},node-name={ROOT_OVERLAY_NODE_NAME},file=custom-root-overlay.qcow2,backing.driver={backing_driver},backing.file.driver=file,backing.file.filename=/nix/store/00000000000000000000000000000000-root/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap"
             );
             assert_eq!(
                 probe_storage_argument("-drive", &root)
                     .unwrap_or_else(|error| panic!("root drive should validate: {error}")),
                 format!("{root},readonly=on")
             );
+        }
+    }
+
+    #[test]
+    fn setup_probe_requires_the_exact_root_node_and_closed_drive_fields() {
+        let root = format!(
+            "id={ROOT_DRIVE_ID},node-name={ROOT_OVERLAY_NODE_NAME},file=custom-root-overlay.qcow2,backing.driver=qcow2,backing.file.driver=file,backing.file.filename=/nix/store/00000000000000000000000000000000-root/root.img,if=none,format=qcow2,cache=none,aio=threads,discard=unmap"
+        );
+
+        for rejected in [
+            root.replace(&format!("node-name={ROOT_OVERLAY_NODE_NAME},"), ""),
+            root.replace(
+                &format!("node-name={ROOT_OVERLAY_NODE_NAME}"),
+                "node-name=foreign-root",
+            ),
+            format!("{root},unknown=on"),
+        ] {
+            assert!(matches!(
+                probe_storage_argument("-drive", &rejected),
+                Err(QemuWhiteboxSetupError::UnsupportedProbeStorageArgument { option: "-drive" })
+            ));
         }
     }
 
