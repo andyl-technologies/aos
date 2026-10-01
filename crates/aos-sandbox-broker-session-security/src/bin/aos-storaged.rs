@@ -14,6 +14,7 @@ use aos_sandbox_broker_session_security::{
     production_deadline_after,
 };
 use aos_sandbox_linux::cgroup::CgroupV2Root;
+use aos_sandbox_linux::seqpacket::RecordSubjectListener;
 use aos_sandbox_storage::execution_output_credential::{
     StorageExecutionOutputCustodyV1, provision_execution_output_ledger,
 };
@@ -115,18 +116,14 @@ fn run() -> Result<(), StorageServiceError> {
             )
         })?;
         activation.storage_listener_fd().map_err(production_error)?;
-        for listener in [
+        let provisioning_listeners = [
             Some(&export_listener),
             live_export_listener.as_ref(),
             zfs_hold_listener.as_ref(),
             operator_listener.as_ref(),
             existing_output_listener.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            listener.validate_current()?;
-        }
+        ];
+        validate_operator_provisioning_listeners(&provisioning_listeners)?;
         credentials.recheck()?;
 
         DormantStorageApplyCompositionV1::provision_empty_operator_repair_v4(
@@ -142,18 +139,7 @@ fn run() -> Result<(), StorageServiceError> {
 
         credentials.recheck()?;
         activation.storage_listener_fd().map_err(production_error)?;
-        for listener in [
-            Some(&export_listener),
-            live_export_listener.as_ref(),
-            zfs_hold_listener.as_ref(),
-            operator_listener.as_ref(),
-            existing_output_listener.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            listener.validate_current()?;
-        }
+        validate_operator_provisioning_listeners(&provisioning_listeners)?;
         if let Some(key) = &zfs_hold_key {
             key.recheck()?;
         }
@@ -512,6 +498,17 @@ fn run() -> Result<(), StorageServiceError> {
             custody.recheck(state_root)?;
         }
     }
+}
+
+// Both provisioning bookends inspect the same borrowed original listeners.
+fn validate_operator_provisioning_listeners(
+    listeners: &[Option<&RecordSubjectListener>; 5],
+) -> Result<(), StorageServiceError> {
+    for listener in listeners.iter().flatten() {
+        listener.validate_current()?;
+    }
+
+    Ok(())
 }
 
 fn production_error(error: ProductionBrokerSessionActivationErrorV1) -> StorageServiceError {
