@@ -767,7 +767,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
 - [ ] **T-CRATE-1** SDK types and verbs (`Tree`, `View`, `Store`,
   `Repository`, `fork`, `commit`, `merge`, `diff`, `realize`) and the `sdk`
   surface (checkout to a directory). Native repository and protected retention
-  source still need integration on the trunk. The mandatory ext4 workflow is
+  source still need integration on the trunk. Pure core view, endpoint, exposure
+  and schema vocabulary is integrated as an SDK prerequisite. View parsing
+  rejects an explicit empty subtree and normalizes the grammar's optional
+  trailing directory separator. All 439 core tests, strict core Clippy and
+  rustdoc, `formats-no-std`, and both mandatory formatting commands pass.
+  This does not qualify runtime surfaces or complete the exposure configuration.
+  The mandatory ext4 workflow is
   registered; a separate candidate's audit passes, but directory KeepConflict
   publication still exceeds the unchanged writer deadline. Complete workflow
   and package qualification remain
