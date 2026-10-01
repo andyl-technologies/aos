@@ -16,8 +16,12 @@
       needle = "qemu_crucible_fault_vcpu_service_clamp_budget";
     }
     {
-      label = "checked instruction-to-virtual-time conversion";
-      needle = "icount_crucible_instructions_to_ns";
+      label = "checked exact-tick service advance";
+      needle = "icount_crucible_advance_virtual_time_by_ticks";
+    }
+    {
+      label = "versioned exact-tick service evidence";
+      needle = "\"CRUCVCS2\"";
     }
     {
       label = "bounded work-conserving donation ledger";
@@ -227,7 +231,7 @@ in
               printf 'live_ratios=1/1,1/2,1/3\n'
               printf 'live_windows_per_case=6\n'
               printf 'live_vcpu_states=online,offline,stalled,recovery\n'
-              printf 'production_effect_row=cpu.service|service-ratio-ledger|gate:patch-microtests|actual-patched-qemu|CRUCVCS1\n'
+              printf 'production_effect_row=cpu.service|service-ratio-ledger|gate:patch-microtests|actual-patched-qemu|CRUCVCS2\n'
               printf 'production_effect_row=cpu.vcpu_state|online-offline-stalled-recovery|gate:patch-microtests|actual-patched-qemu|CRUCVST1\n'
             } > "$out/result"
           '';

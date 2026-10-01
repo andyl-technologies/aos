@@ -89,6 +89,28 @@ impl FaultCommandBridge {
                 })?;
             let observed_logical_tick = event.observed_tick;
             let event_command_kind = command_kind(event.command_kind)?;
+            if event_command_kind == FaultCommandKind::CpuService
+                && event.outcome == FaultEventOutcomeV1::Applied as u16
+                && (payload.len() != 192
+                    || payload.get(..8) != Some(b"CRUCVCS2")
+                    || raw_u64(payload, 112)? != event.observed_icount
+                    || raw_u64(payload, 96)? != event.observed_tick)
+            {
+                // Authenticate both native clocks before the public header
+                // retains only the logical tick; offset112 remains raw count.
+                return Err(FaultCommandBridgeError::EventEnvelope);
+            }
+            if event_command_kind == FaultCommandKind::CpuVcpuState
+                && event.outcome == FaultEventOutcomeV1::Applied as u16
+                && (payload.len() != 192
+                    || payload.get(..8) != Some(b"CRUCVST1")
+                    || raw_u16(payload, 8)? != 1
+                    || raw_u64(payload, 24)? != event.observed_icount)
+            {
+                // State evidence retains its native raw count after the
+                // public event header is translated to a logical tick.
+                return Err(FaultCommandBridgeError::EventEnvelope);
+            }
             let register_command = if event_command_kind == FaultCommandKind::CpuRegisterTransform {
                 Some(register_command_expectation(
                     request_payload,
