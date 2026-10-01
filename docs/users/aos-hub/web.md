@@ -51,7 +51,8 @@ Interfaces show their package or OS release owner and use that owner's release
 version. Module requirements link each requesting owner to its dependency package
 and preserve package version ranges and OS release requirements. These generated
 declarations describe compatibility requirements; they are not a resolution
-result or evidence of live execution. Exact module dependencies remain valid.
+result or evidence of live execution. Plain module dependencies inherit their
+package's version requirement; explicit immutable source pins remain valid.
 
 Hub verifies the signed documentation directory and exact `options.json` bytes
 before rendering a detail page. A package without a native documentation

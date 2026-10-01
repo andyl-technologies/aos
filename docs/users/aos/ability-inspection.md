@@ -59,8 +59,8 @@ aos ability check-compat before-options.json after-options.json --os
 ```
 
 Select one package owner with `--owner` or OS/base interfaces with `--os`.
-The report lists structural changes, whether the owner major release increased,
-and any reviewed exceptions. Incompatible changes produce a report and a nonzero
+The report lists structural changes, whether the new release lies outside the
+previous release's captured compatibility guarantee, and reviewed exceptions. Incompatible changes produce a report and a nonzero
 exit status. `--json` emits JSON; `--exceptions FILE` reads a JSON array of exact
 `id` and explanatory `reason` pairs. See the
 [release compatibility guide](runtime-abilities.md#version-and-compose-interfaces-across-packages)

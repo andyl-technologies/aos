@@ -267,8 +267,18 @@ OS release version. Ability declarations contain their operations and schemas,
 without an independent ability version. An effect's automatic revision remains
 separate from release compatibility.
 
-A consumer can retain an exact dependency, `moduleDeps = [ service-interface ];`,
-or explicitly permit compatible package releases:
+A package recipe's `version` also declares its compatibility promise. A bare
+strict SemVer such as `"7.4.2"` defaults to caret compatibility. `"^7.4.2"`,
+`"~7.4.2"`, and `"=7.4.2"` publish the same exact package version `7.4.2`, with
+caret, tilde, and equal-version requirements respectively. Other bare version
+schemes remain exact-only. This shorthand accepts one optional operator followed
+by a full release version, not compound ranges; there is no separate
+`moduleCompatibility` field.
+
+Generated `package.versionRequirement` retains the inferred requirement. A
+consumer can therefore write `moduleDeps = [ service-interface ];` without
+repeating the interface package's declared range. To override it, use an explicit
+requirement:
 
 ```nix
 { mkDerivation, service-interface, ... }:
@@ -287,11 +297,14 @@ mkDerivation {
 }
 ```
 
-`package` supplies the exact build-time seed. Nix checks the seed's package
-version against `packageVersion`. APM may select another authenticated release
-of the same package that satisfies the range. Package `7.3.0` satisfies `^7.0`;
-package `8.0.0` does not. Declare each dependency package once. Exact dependencies
-continue to pin the selected source without a compatibility range.
+`package` supplies the exact build-time seed. Nix checks its package version
+against the inferred or overridden range. APM may select another authenticated
+release of the same package that satisfies the range. Package `7.3.0` satisfies
+`^7.0`; package `8.0.0` does not. Declare each dependency package once.
+
+Use `moduleDeps = [ { package = service-interface; exact = true; } ];` to pin the
+immutable source identity. This differs from `packageVersion = "=7.4.2"`, which
+requires that semantic version but can select another source with that version.
 
 `osVersion` constrains the OS release already selected for the host, retained as
 `osRelease = { name = "aos"; version = "1.2.0"; }` in activation inputs. The host OS
@@ -299,11 +312,13 @@ is a fixed input: dependency resolution checks it and never solves for or upgrad
 it. A mismatch requires a compatible package choice or a separately managed OS
 upgrade. Omitting the requirement imposes no explicit OS release range.
 
-Keep compatible interface additions within the owner's release major version;
-breaking input, result, or behavioral changes normally require a new major
-package or OS release. SemVer is the author's compatibility promise, not a proof
-that arbitrary Nix modules are interchangeable. Modules can still extend shared
-option trees.
+Keep interface changes compatible with the previous release's captured
+requirement. Caret policy normally permits a breaking change at the next major
+release; tilde and equal-version policies have narrower guarantees. A new
+release's policy cannot relax the previous release's obligations. OS release
+versions remain exact declarations, with default caret policy for the structural
+check. SemVer is the author's compatibility promise, not a proof that arbitrary
+Nix modules are interchangeable. Modules can still extend shared option trees.
 
 Range matching and the structural release check require strict SemVer release
 numbers. Packages with other upstream version schemes can still use exact
@@ -369,9 +384,10 @@ schemas from the previous and current release, together with their package or OS
 release owner. Removed operations or fields, newly required inputs, and type
 changes are breaking changes or require review. Optional inputs and new
 operations are compatible additions. Opaque constraints require human review;
-the check does not prove runtime behavior. A breaking change requires a major
-release bump or a documented exception explaining the exact change and why it
-is permitted. This is a focused release check, not another schema catalog.
+the check does not prove runtime behavior. A breaking change is permitted when
+the new release falls outside the previous release's captured compatible range,
+or through a documented exception explaining the exact change and why it is
+permitted. This is a focused release check, not another schema catalog.
 
 Compare the generated native references for two releases:
 
@@ -381,9 +397,9 @@ aos ability check-compat before-options.json after-options.json --os
 ```
 
 Use `--owner` for interfaces owned by the named package or `--os` for OS/base
-interfaces. The check reports structural changes and accepts an owner major
-release increase. An incompatible report is still printed before the command
-exits unsuccessfully. `--json` emits the report as JSON.
+interfaces. The check reports structural changes and checks whether the new
+release is outside the previous release's compatibility guarantee. An incompatible
+report is still printed before the command exits unsuccessfully. `--json` emits the report as JSON.
 
 For a reviewed exception, pass `--exceptions exceptions.json`. The file is a JSON
 array naming the exact diagnostic ID and the reason it is permitted:

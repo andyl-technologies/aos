@@ -1,8 +1,13 @@
 # Module resolution and handler selection
 
 Package resolution selects an exact module closure and payload artifacts before
-evaluation. `moduleDeps` accepts exact package references or explicit compatibility
-requirements with an exact build-time seed and `packageVersion` range. Interfaces
+evaluation. Plain `moduleDeps` entries inherit `package.versionRequirement`
+from the dependency recipe. Bare strict SemVer recipe versions imply caret;
+`^`, `~`, or `=` followed by a full version set the policy while preserving
+the exact published version. Other bare version schemes remain exact-only.
+Explicit `packageVersion` ranges override inference; `exact = true` pins immutable
+source identity, unlike an equal-version requirement. Every entry retains its
+exact build-time seed. Interfaces
 released by a package use that package's release version; OS/base interfaces use
 the selected OS release version. Ability declarations have no independent
 version. Effect revisions remain independent of release compatibility.
@@ -10,8 +15,8 @@ version. Effect revisions remain independent of release compatibility.
 A scope selects one exact identity per package name. An optional recipe
 `osVersion` requirement checks the selected host OS release, which is a fixed
 input and is never solved for or upgraded by the dependency resolver.
-The bounded dependency solver considers transitive requirements and historical releases from configured authenticated
-registries. Compatible releases must retain the requested package identity;
+The bounded dependency solver considers transitive requirements and historical
+releases from configured authenticated registries. Compatible releases must retain the requested package identity;
 resolution does not substitute unrelated implementations. Ordinary installation
 prefers compatible retained choices; explicit upgrades permit reselection.
 Unsatisfiable requirements and exhausted search budgets are distinct failures.

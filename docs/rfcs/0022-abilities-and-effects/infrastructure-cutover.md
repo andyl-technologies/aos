@@ -214,10 +214,12 @@ fixed-NAR source inputs, pure/restricted evaluation, and IFD disabled. Its proce
 transport bounds input, output, duration, and cancellation. The generated document
 must retain the selected platform, package contexts, and artifact identities.
 
-A package appears once in a scope's resolved module closure. Exact dependencies
-pin source identity. Compatible dependencies carry an exact seed and a package
-SemVer range; build evaluation checks the seed and APM resolves compatible
-authenticated package releases. Package interfaces follow their owning package
+A package appears once in a scope's resolved module closure. Plain dependencies
+inherit `package.versionRequirement` from the recipe's normalized release and
+compatibility policy. Explicit `packageVersion` overrides that range;
+`exact = true` pins immutable source identity. Compatible dependencies retain
+an exact build-time seed; build evaluation checks the seed and APM resolves
+compatible authenticated package releases. Package interfaces follow their owning package
 release; OS/base interfaces follow the selected OS release. The selected host OS
 is fixed input, and optional `osVersion` requirements check it without asking the
 dependency resolver to select or upgrade the OS. Conflicts fail before evaluation.
