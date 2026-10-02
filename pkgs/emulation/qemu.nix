@@ -1678,7 +1678,7 @@ in
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
-                  "stopped-control-rearm",
+                  "stopped-control-rearm", "template-control-drain",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1690,7 +1690,7 @@ in
               PYTHON
               cat net-output-stop.result lifecycle-projection.result \
                 control-deferred.result control-observer.result control-delivery.result \
-                stopped-control-rearm.result
+                stopped-control-rearm.result template-control-drain.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -1699,10 +1699,12 @@ in
                 control-deferred.result
               grep -Fxq 'PASS native OOB template observer, guarded PREPARE/restart, cold mutation' \
                 control-observer.result
-              grep -Fxq 'PASS native delivery witness: disabled, deduplicated, late, callback, child PID' \
+              grep -Fxq 'PASS native delivery witness: disabled, deduplicated, late, callback, child PID; stderr mirror fields, bound, refusal, errno, unchanged delivery' \
                 control-delivery.result
               grep -Fxq 'PASS native stop reassertion, retained intent, RR drain edge, explicit resume' \
                 stopped-control-rearm.result
+              grep -Fxq 'PASS production template control drain: original FD, callback return, connection lifetime, exact coordinate, failure refusal' \
+                template-control-drain.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -2025,7 +2027,7 @@ in
               ]
               control_outstanding = plugin[
                   plugin.index("bool qemu_plugin_crucible_control_boundary_outstanding(void)\n{"):
-                  plugin.index("void qemu_plugin_crucible_rr_control_boundary_defer(void)\n{")
+                  plugin.index("bool qemu_plugin_crucible_control_drain_settled(void)\n{")
               ]
               control_outstanding_code = re.sub(
                   r"/\*.*?\*/", "", control_outstanding, flags=re.DOTALL
@@ -3405,6 +3407,7 @@ in
                    r"&qemu_plugin_rr_control_complete_generation,\s*"
                    r"request_generation\);\s*"
                    r"qemu_crucible_fault_lifecycle_ready_marker_cancel\(\);\s*"
+                   r"qemu_plugin_control_drain_invalidate\(\);\s*"
                    r'qemu_plugin_trace_control_delivery\("cancel"\);\s*'
                    r"if \(request_generation != complete_generation\) \{\s*"
                    r'rr_crucible_sim_trace_control_boundary\(\s*"cancel",\s*'
@@ -3786,7 +3789,8 @@ in
                   ("stopped RR rearm retains the guarded control owner", plugin,
                    r"void qemu_plugin_crucible_rr_control_boundary_rearm"
                    r"\(void\)\s*\{\s*"
-                   r"qemu_plugin_rearm_deferred_control_boundary\(\);\s*\}",
+                   r"qemu_plugin_rearm_deferred_control_boundary\(\);\s*"
+                   r"qemu_plugin_control_drain_notify\(\);\s*\}",
                    1),
                   ("deferred control rearms only at a valid owner", control_rearm,
                    r"g_assert\(bql_locked\(\)\);\s*"
@@ -4199,7 +4203,8 @@ in
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
               for name in net-output-stop lifecycle-projection control-deferred \
-                control-observer control-delivery stopped-control-rearm; do
+                control-observer control-delivery stopped-control-rearm \
+                template-control-drain; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
