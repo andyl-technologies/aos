@@ -114,6 +114,10 @@ impl DurableObject for HybridObjectGuard {
             .await;
         }
         let _permit = acquire_gate(Arc::clone(&self.gate)).await;
+        #[cfg(feature = "do-e2e")]
+        if path == "/_e2e/managed-gc-state" {
+            return crate::managed_gc_sdk_observer::inspect_guard(self, &key, &mut request).await;
+        }
         if key.starts_with(crate::mirror_import::inventory::CACHE_PREFIX) {
             if matches!(
                 path.as_str(),
@@ -426,6 +430,14 @@ impl HybridObjectGuard {
             return Err(worker::Error::RustError("invalid delete claim".into()));
         }
 
+        #[cfg(feature = "do-e2e")]
+        let trace = crate::managed_gc_sdk_observer::from_env(
+            &self.env,
+            crate::managed_gc_sdk_observer::Scope::ManagedGcGuard,
+            key,
+            &claim.claim_id,
+        );
+
         // Keep receipts per claim so a frequently reused object key never
         // grows one storage value past Durable Object limits.
         let receipt_key = format!("delete-receipt:{}", claim.claim_id);
@@ -444,14 +456,37 @@ impl HybridObjectGuard {
             if pending.as_ref() == Some(&claim) {
                 self.state.storage().delete("pending-delete").await?;
             }
+            #[cfg(feature = "do-e2e")]
+            if let Some(trace) = &trace {
+                trace.finish();
+            }
             return Ok(outcome);
         }
 
         // GC observation shares the mutation boundary. A provider HEAD (even
         // absence) cannot authorize GC while an older write/delete may finish.
         let mutation = self.pending_mutation().await?;
-        let head = observe_when_ready(mutation.as_ref(), pending.as_ref(), || {
-            crate::surface::hybrid_r2_head(bucket.clone(), key)
+        let head = observe_when_ready(mutation.as_ref(), pending.as_ref(), || async {
+            #[cfg(feature = "do-e2e")]
+            let call = trace
+                .as_ref()
+                .and_then(|trace| trace.call(crate::managed_gc_sdk_observer::Method::Head));
+            let result = crate::surface::hybrid_r2_head(bucket.clone(), key).await;
+            #[cfg(feature = "do-e2e")]
+            if let Some(call) = call {
+                use crate::managed_gc_sdk_observer::Outcome;
+                let outcome = match &result {
+                    Ok(Some(head)) => Outcome::Object {
+                        size: head.size,
+                        etag: head.etag.clone(),
+                        version: head.version.clone(),
+                    },
+                    Ok(None) => Outcome::Absent,
+                    Err(_) => Outcome::Unknown,
+                };
+                call.finish(outcome);
+            }
+            result
         })
         .await
         .map_err(storage_error)?;
@@ -462,9 +497,21 @@ impl HybridObjectGuard {
             }
             Some(_) => {
                 self.state.storage().put("pending-delete", &claim).await?;
-                crate::surface::hybrid_r2_delete(bucket, key)
-                    .await
-                    .map_err(storage_error)?;
+                #[cfg(feature = "do-e2e")]
+                let call = trace
+                    .as_ref()
+                    .and_then(|trace| trace.call(crate::managed_gc_sdk_observer::Method::Delete));
+                let result = crate::surface::hybrid_r2_delete(bucket, key).await;
+                #[cfg(feature = "do-e2e")]
+                if let Some(call) = call {
+                    use crate::managed_gc_sdk_observer::Outcome;
+                    call.finish(if result.is_ok() {
+                        Outcome::Resolved
+                    } else {
+                        Outcome::Unknown
+                    });
+                }
+                result.map_err(storage_error)?;
                 DeleteOutcome::Deleted {
                     etag: claim.expected_etag.clone(),
                 }
@@ -483,6 +530,10 @@ impl HybridObjectGuard {
             .await?;
         if matches!(outcome, DeleteOutcome::Deleted { .. }) {
             self.state.storage().delete("pending-delete").await?;
+        }
+        #[cfg(feature = "do-e2e")]
+        if let Some(trace) = &trace {
+            trace.finish();
         }
         Ok(outcome)
     }

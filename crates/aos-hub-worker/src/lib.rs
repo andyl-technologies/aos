@@ -223,6 +223,9 @@ pub(crate) mod pitr;
 pub mod placeholder;
 mod private_namespace;
 pub(crate) mod r2_adapter;
+
+#[cfg(any(test, all(target_arch = "wasm32", feature = "do-e2e")))]
+mod managed_gc_sdk_observer;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;
 mod remoteprotocol;

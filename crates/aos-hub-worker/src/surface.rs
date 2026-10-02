@@ -491,7 +491,23 @@ pub(crate) async fn execute_r2_storage_work(
         "deployment R2 executor requires its exact bound storage kind"
     );
     let bucket = env.bucket(aos_hub_core::binding::DEPLOYMENT_R2_ATTACHMENT)?;
+    #[cfg(feature = "do-e2e")]
+    let sdk_trace = match &plan.operation {
+        StorageWorkOperation::HashOciRange { path, .. } => {
+            plan.object_key(path).ok().and_then(|key| {
+                crate::managed_gc_sdk_observer::from_env(
+                    env,
+                    crate::managed_gc_sdk_observer::Scope::ManagedInventoryRange,
+                    &key,
+                    &plan.plan_id,
+                )
+            })
+        }
+        _ => None,
+    };
     let fetcher = R2SurfaceFetch {
+        #[cfg(feature = "do-e2e")]
+        sdk_trace: sdk_trace.clone(),
         contract: R2Contract::new(WorkerR2BucketAdapter {
             bucket: bucket.as_ref().clone(),
         }),
@@ -872,6 +888,10 @@ pub(crate) async fn execute_r2_storage_work(
             anyhow::bail!("mirror requires its exact signed control transport")
         }
     };
+    #[cfg(feature = "do-e2e")]
+    if let Some(trace) = &sdk_trace {
+        trace.finish();
+    }
     Ok(storage_work_result(plan, outcome, source_bytes))
 }
 
@@ -1967,6 +1987,24 @@ async fn r2_get_range(
     offset: u64,
     length: u64,
 ) -> Result<Option<wasm_bindgen::JsValue>> {
+    r2_get_range_observed(
+        bucket,
+        key,
+        offset,
+        length,
+        #[cfg(feature = "do-e2e")]
+        None,
+    )
+    .await
+}
+
+async fn r2_get_range_observed(
+    bucket: &wasm_bindgen::JsValue,
+    key: &str,
+    offset: u64,
+    length: u64,
+    #[cfg(feature = "do-e2e")] trace: Option<&crate::managed_gc_sdk_observer::RequestTrace>,
+) -> Result<Option<wasm_bindgen::JsValue>> {
     use js_sys::{Function, Object, Promise, Reflect};
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
@@ -2001,6 +2039,8 @@ async fn r2_get_range(
         .map_err(|e| anyhow::anyhow!("R2 get {key}: get is not a function: {e:?}"))?;
     let mut attempt = 0u32;
     loop {
+        #[cfg(feature = "do-e2e")]
+        let observation = trace.and_then(|trace| trace.call_range(offset, length));
         let promise: Promise = get_fn
             .call2(bucket, &JsValue::from_str(key), &options)
             .map_err(|e| anyhow::anyhow!("R2 get {key}: ranged call: {e:?}"))?
@@ -2008,7 +2048,10 @@ async fn r2_get_range(
             .map_err(|e| {
                 anyhow::anyhow!("R2 get {key}: ranged get did not return a promise: {e:?}")
             })?;
-        match JsFuture::from(promise).await {
+        let result = JsFuture::from(promise).await;
+        #[cfg(feature = "do-e2e")]
+        crate::managed_gc_sdk_observer::record_js_result(observation, &result);
+        match result {
             Ok(v) if v.is_null() || v.is_undefined() => return Ok(None),
             Ok(v) => return Ok(Some(v)),
             Err(e) if attempt < 2 && is_transient_r2(&format!("{e:?}")) => attempt += 1,
@@ -2102,6 +2145,8 @@ impl SurfaceProvider for R2SurfaceProvider {
             }));
         }
         Ok(Box::new(R2SurfaceFetch {
+            #[cfg(feature = "do-e2e")]
+            sdk_trace: None,
             bucket: self.bucket.clone(),
             contract: R2Contract::new(WorkerR2BucketAdapter {
                 bucket: self.bucket.as_ref().clone(),
@@ -2143,6 +2188,8 @@ impl SurfaceProvider for R2SurfaceProvider {
 
 /// A [`SurfaceFetch`] reading one registry's prefix from an R2 bucket.
 struct R2SurfaceFetch {
+    #[cfg(feature = "do-e2e")]
+    sdk_trace: Option<crate::managed_gc_sdk_observer::RequestTrace>,
     bucket: Bucket,
     contract: R2Contract<WorkerR2BucketAdapter>,
     prefix: String,
@@ -2159,6 +2206,8 @@ pub(crate) async fn hybrid_delivery_read(
     range: Option<(u64, u64)>,
 ) -> Result<StreamedRead> {
     let fetcher = R2SurfaceFetch {
+        #[cfg(feature = "do-e2e")]
+        sdk_trace: None,
         contract: R2Contract::new(WorkerR2BucketAdapter {
             bucket: bucket.as_ref().clone(),
         }),
@@ -2423,7 +2472,15 @@ impl R2SurfaceFetch {
                             "R2 range length for {key} overflows u64"
                         ))
                     })?;
-                r2_get_range(self.bucket.as_ref(), &key, start, length).await?
+                r2_get_range_observed(
+                    self.bucket.as_ref(),
+                    &key,
+                    start,
+                    length,
+                    #[cfg(feature = "do-e2e")]
+                    self.sdk_trace.as_ref(),
+                )
+                .await?
             }
             None => r2_get(self.bucket.as_ref(), &key).await?,
             Some(_) => r2_get(self.bucket.as_ref(), &key).await?,
