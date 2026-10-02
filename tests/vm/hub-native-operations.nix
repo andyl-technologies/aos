@@ -545,6 +545,15 @@ in
         exit 1
       fi
       ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json
+      # The public catalog projects the default channel's released tree, so
+      # the published package becomes visible only through a signed release.
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json release 1.0.0 --registry maintenance \
+        --key-id maintainer --channel stable --init-channel \
+        >/tmp/apr-release-initial.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-release-initial.json >&2
+        exit 1
+      fi
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json web generate --registry maintenance \
         --output /tmp/producer-web >/tmp/apr-web-generate.json
@@ -639,10 +648,15 @@ in
         /tmp/publication-abort.json >/dev/null
       hub_cli_into /tmp/registry-channels.json registry channel list \
         operations/maintenance --page-size 1
-      ${pkgs.jq}/bin/jq -e '(.data.channels // []) == []' \
+      ${pkgs.jq}/bin/jq -e \
+        '.data.channels | any(.name == "stable" and .frontier == "1.0.0")' \
         /tmp/registry-channels.json >/dev/null
+      hub_cli_into /tmp/registry-channel-stable.json registry channel show \
+        operations/maintenance stable
+      ${pkgs.jq}/bin/jq -e '(.data.channel // .data).frontier == "1.0.0"' \
+        /tmp/registry-channel-stable.json >/dev/null
       expect_hub_error registry-channel-missing 'not.?found' \
-        registry channel show operations/maintenance stable
+        registry channel show operations/maintenance missing
 
       reviewed registry-mirror-set registry mirror set operations/maintenance \
         --source https://mirror.operations.example.test/registry/ \
@@ -773,6 +787,16 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.cache_pointer_updated == true and .committed == true' \
         /tmp/apr-cache-b.json >/dev/null
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json release 1.0.1 --registry maintenance \
+        --key-id maintainer >/tmp/apr-release-cache-stack.json 2>&1 \
+        || ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json channel advance stable 1.0.1 \
+        --count 256 --registry maintenance --key-id maintainer \
+        >>/tmp/apr-release-cache-stack.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-release-cache-stack.json >&2
+        exit 1
+      fi
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json origin upload \
           --registry maintenance --upload-url "file://$producer_surface" \
@@ -1937,7 +1961,8 @@ in
         | ${pkgs.jq}/bin/jq -e '.data | tostring | contains("maintenance")' >/dev/null
       ${pkgs.aos}/bin/aos --json hub registry releases operations/maintenance \
         --hub "$hub_url" --token "$token" \
-        | ${pkgs.jq}/bin/jq -e '(.data.releases // []) == []' >/dev/null
+        | ${pkgs.jq}/bin/jq -e \
+          '[.data.releases[].semver] | sort == ["1.0.0", "1.0.1"]' >/dev/null
       ${pkgs.aos}/bin/aos --json hub registry package list operations/maintenance \
         --hub "$hub_url" --token "$token" \
         | ${pkgs.jq}/bin/jq -e \
