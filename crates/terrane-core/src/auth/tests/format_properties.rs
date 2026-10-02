@@ -314,7 +314,7 @@ fn attenuation_preimages_match_unsigned_models_for_every_caveat_and_presence() {
         let number = INTEGERS[case / 16];
         let presence = case % 16;
         let label = Locality {
-            region: (case & 1 != 0).then(|| String::new()),
+            region: (case & 1 != 0).then(String::new),
             zone: (case & 2 != 0).then(|| "z".repeat([1, 23, 24, 255, 256][case % 5])),
             host: (case & 4 != 0).then(|| format!("host-{}", next(&mut state))),
         };

@@ -1613,7 +1613,7 @@
         "Canonical wrong row widths 4/6 and side widths 8/10; scalar/empty selection; digest widths 31/33; path 0/4097 and component 256; duplicate/reordered keys; view/domain/name agreement; noncanonical nested value"
       ],
       "shared_evidence": "Validator-only wire models; does not qualify the verified-history-dependent production context/selected-evidence encoder",
-      "qualification": "Defensive schema regression currently fails on d235065775; preserved for shared validator production fix"
+      "qualification": "Regression demonstrated 16 accepted malformed cases on d235065775. Borrowed decoder correction 7964a246e4 is a prerequisite; the retained cases must reject through this public validator."
     }
   ],
   "test_catalog": [
@@ -1850,6 +1850,39 @@
   ],
   "private_unit_evidence": [
     {
+      "codec": "Regenerated disclosure statement",
+      "private_api": "provenance::disclosure::statement::encode_statement",
+      "requirements": ["TEST-3", "CRATE-4"],
+      "test": "provenance::disclosure::statement::tests::disclosure_statement_models_retain_every_registered_field",
+      "source": "crates/terrane-core/src/provenance/disclosure/statement/tests.rs",
+      "seed": "0xa791_365d_ef42_08c3",
+      "models": "192 ordinary models: inline file/manifest file/directory/symlink; 12 integer boundaries; complete path byte lengths 1/23/255/4096 with valid components; symlink target lengths 0/23/255/4096; all four source/target domain forms; seeded digest and opaque proof-signature bytes",
+      "projection_evidence": "Actual private serializer compared with independent registered eight-field projection and prefix; canonical whole-value parsing; all retained proof/source/original/reference/target/content/binding fields are sensitive. Typed proof signature, destination commit identity and mode are omitted by the registered projection; four unsupported entry kinds reject.",
+      "scope_limit": "Private borrowed byte serializer only. Genuine history/context/receipt checks remain in its existing caller. No VerifiedHistory construction or standalone stored statement decoder. Public target-binding properties separately test metadata retention."
+    },
+    {
+      "codec": "Serialized provenance context",
+      "private_api": "provenance::trust::encoding::encode",
+      "requirements": ["TEST-3", "CRATE-4"],
+      "test": "provenance::trust::encoding::tests::context_models_preserve_versions_presence_and_selected_bytes",
+      "source": "crates/terrane-core/src/provenance/trust/encoding/tests.rs",
+      "seed": "0x409b_715e_a38c_d267",
+      "models": "144 ordinary field models each at versions 1/2, for 288 projections; all four presets/domain forms; baseline absent/empty/present with text byte lengths 1/23/24/255/256/4096; 12 integer boundaries; selected rows 1/2/7/32 with complete path byte lengths 1/255/4096",
+      "projection_evidence": "Actual private encoder compared with independent slot projection, field-by-field public CBOR parsing and the public untrusted schema validator; sensitivity for every field; selected bytes retained verbatim; empty/nonempty evidence chooses v1/v2.",
+      "scope_limit": "No trust evaluator or authenticated history is constructed. The existing caller retains verified-context and commit lookup checks. This wire encoder does not replace those checks or provide a standalone authority decoder."
+    },
+    {
+      "codec": "Selected side rows and nine-field evidence tuple",
+      "private_api": "provenance::side_attributes::serialization::{selected,encode_evidence}",
+      "requirements": ["TEST-3", "CRATE-4"],
+      "test": "provenance::side_attributes::serialization::tests::selected_evidence_models_preserve_tuple_fields_and_filtered_row_order",
+      "source": "crates/terrane-core/src/provenance/side_attributes/serialization/tests.rs",
+      "seed": "0x892c_14af_7ed0_563b",
+      "models": "48 ordinary maps at input row counts 0/1/2/7/24/256; all eight attribute names/values/functions, all eight magic labels, ELF 32/64 and optional interpreter/needed fields, shebang argument absent/empty; path byte lengths 1/23/255/4096 with valid components; all four producer/selected domains; independent producer and carrying-witness commits",
+      "projection_evidence": "Actual tuple helper compared with independent nine-slot model; sensitivity for every tuple field and location component; full canonical parsing. Actual selection helper filters both view and domain over the sorted unique BTreeMap input contract; six view/domain selections and three seeded insertion histories preserve independent five-slot row models; public untrusted context validator checks each resulting projection.",
+      "scope_limit": "Ordinary borrowed payloads and map keys only, without VerifiedAttributeEvidence or history construction. Production keeps the same BTreeMap ordering and genuine evidence getter calls; no extra sort or authority constructor is introduced."
+    },
+    {
       "codec": "Authority signature-preimage projection",
       "private_api": "auth::format::authority_preimage",
       "requirements": ["TEST-3", "CRATE-4"],
@@ -1884,14 +1917,6 @@
       "status": "unimplemented public core byte codec",
       "detail": "Identity domains, generic metadata kinds8/9 and recipes exist; no public memo/ruleset object codec exists in terrane-core.",
       "milestone_owner": "B-derive / T-DRV-2 and T-RULE-1; required future formats, currently unimplemented"
-    },
-    {
-      "format": "Regenerated disclosure statement and verified provenance context encoders",
-      "status": "T1 private property-test seam required; no standalone decoder by design",
-      "requirement": "TEST-3 / CRATE-4; CRATE-33 is specific to untrusted mapped indexes",
-      "api": "provenance::disclosure::statement::preimage; TrustContext::from_shared serialization and VerifiedHistory::side_context require authenticated history",
-      "detail": "The statement is regenerated from verified history for signing/verification, rather than decoded as a stored record. Context validation has separate untrusted public API properties, including a preserved failing v2 schema regression. Existing private statement/context/selected-side encoders need pure unit property seams without widening verified-authority constructors.",
-      "milestone_owner": "T1 / T-TEST-1 with T-PROV-1; supported encoder coverage gap"
     },
     {
       "format": "compressed frame contents",

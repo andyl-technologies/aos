@@ -6,11 +6,26 @@ use crate::{
     cbor::{self, Decoder},
     identity::Digest,
     properties::Defaults,
-    refs::{Commit, EntryOrigin, EntryReceipt},
+    refs::{Commit, DisclosureProof, EntryOrigin, EntryReceipt, EntrySource},
     tree_format::{ContentRef, Entry, EntryKind},
 };
 use alloc::vec::Vec;
 use ed25519_dalek::{Signer, SigningKey};
+
+#[cfg(test)]
+mod tests;
+
+/// Borrows already selected statement fields without carrying verified authority.
+struct StatementFields<'a> {
+    proof: &'a DisclosureProof,
+    source: &'a EntrySource,
+    original: Digest,
+    reference: &'a str,
+    destination: &'a EntryLocation,
+    target_domain: &'a str,
+    kind: &'a EntryKind<'a>,
+    binding: Digest,
+}
 
 /// Calculates the registered whole-destination disclosure binding.
 ///
@@ -72,22 +87,36 @@ pub(super) fn preimage(
         return Err(Rejected);
     }
 
+    encode_statement(StatementFields {
+        proof,
+        source,
+        original: original(&entry)?,
+        reference: context.reference(),
+        destination: location,
+        target_domain,
+        kind: &entry.kind,
+        binding,
+    })
+}
+
+/// Encodes the registered projection after the caller checks history witnesses.
+fn encode_statement(fields: StatementFields<'_>) -> Result<Vec<u8>, Rejected> {
     let mut bytes = b"terrane-disclosure-proof-v1\0".to_vec();
     cbor::write_array(&mut bytes, 8);
-    cbor::write_text(&mut bytes, &proof.authority_key);
-    cbor::write_text(&mut bytes, &proof.source_domain);
-    cbor::write_uint(&mut bytes, proof.observed_at);
+    cbor::write_text(&mut bytes, &fields.proof.authority_key);
+    cbor::write_text(&mut bytes, &fields.proof.source_domain);
+    cbor::write_uint(&mut bytes, fields.proof.observed_at);
     cbor::write_array(&mut bytes, 3);
-    cbor::write_bytes(&mut bytes, &source.commit);
-    cbor::write_bytes(&mut bytes, &source.root);
-    cbor::write_bytes(&mut bytes, &source.path);
-    cbor::write_bytes(&mut bytes, &original(&entry)?);
+    cbor::write_bytes(&mut bytes, &fields.source.commit);
+    cbor::write_bytes(&mut bytes, &fields.source.root);
+    cbor::write_bytes(&mut bytes, &fields.source.path);
+    cbor::write_bytes(&mut bytes, &fields.original);
     cbor::write_array(&mut bytes, 4);
-    cbor::write_text(&mut bytes, context.reference());
-    cbor::write_bytes(&mut bytes, &location.root);
-    cbor::write_bytes(&mut bytes, &location.path);
-    cbor::write_text(&mut bytes, target_domain);
-    match &entry.kind {
+    cbor::write_text(&mut bytes, fields.reference);
+    cbor::write_bytes(&mut bytes, &fields.destination.root);
+    cbor::write_bytes(&mut bytes, &fields.destination.path);
+    cbor::write_text(&mut bytes, fields.target_domain);
+    match fields.kind {
         EntryKind::File { size, content, .. } => {
             cbor::write_array(&mut bytes, 3);
             cbor::write_uint(&mut bytes, 1);
@@ -111,7 +140,7 @@ pub(super) fn preimage(
         }
         _ => return Err(Rejected),
     }
-    cbor::write_bytes(&mut bytes, &binding);
+    cbor::write_bytes(&mut bytes, &fields.binding);
     Ok(bytes)
 }
 
