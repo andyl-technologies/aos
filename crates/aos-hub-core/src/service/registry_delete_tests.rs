@@ -436,6 +436,68 @@ async fn repositories_fail_closed_with_the_blocker_breakdown() {
 }
 
 #[tokio::test]
+async fn enabled_oci_namespace_blocks_deletion_until_disabled() {
+    let fixture = Fixture::new("delete-namespace", true).await;
+    let now = crate::clock::now_unix_secs();
+    fixture
+        .db
+        .backend
+        .checked_batch(&[Statement::new(
+            "INSERT INTO registry_oci_namespaces
+               (registry_id, enabled, resource_version, created_at, updated_at)
+             VALUES (?1, 1, 1, ?2, ?2)",
+            values![fixture.registry.id, now],
+        )
+        .expecting(1)])
+        .await
+        .unwrap();
+
+    let planned = fixture.plan().await;
+    let readiness = planned.readiness.as_ref().unwrap();
+    assert_eq!(readiness.verdict, "blocked");
+    assert_eq!(blockers(Some(readiness)).enabled_oci_namespaces, 1);
+    assert!(readiness.blocking_reasons[0].contains("OCI namespace is still enabled"));
+    let refused = fixture.apply(&planned).await.unwrap_err();
+    assert!(
+        matches!(&refused, RpcError::FailedPrecondition(message)
+            if message.contains("OCI namespace is still enabled")),
+        "{refused:?}"
+    );
+    assert!(fixture.registry_exists().await);
+
+    // Disabling the namespace leaves only automatic steps, and the deletion
+    // retires the disabled namespace row with the registry.
+    fixture
+        .db
+        .backend
+        .execute(
+            "UPDATE registry_oci_namespaces SET enabled = 0 WHERE registry_id = ?1",
+            &values![fixture.registry.id],
+        )
+        .await
+        .unwrap();
+    let started = fixture.apply(&planned).await.unwrap();
+    let stats = fixture.run_controller().await;
+
+    assert_eq!(stats.deleted, 1, "{stats:?}");
+    assert!(!fixture.registry_exists().await);
+    assert_eq!(fixture.operation(&started).await.state, "succeeded");
+    let namespace_rows = fixture
+        .db
+        .backend
+        .query_opt(
+            "SELECT COUNT(*) FROM registry_oci_namespaces WHERE registry_id = ?1",
+            &values![fixture.registry.id],
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .get::<i64>(0)
+        .unwrap();
+    assert_eq!(namespace_rows, 0);
+}
+
+#[tokio::test]
 async fn planned_gc_runs_are_abandoned_and_applying_runs_block() {
     let fixture = Fixture::new("delete-gc-runs", true).await;
     let now = crate::clock::now_unix_secs();

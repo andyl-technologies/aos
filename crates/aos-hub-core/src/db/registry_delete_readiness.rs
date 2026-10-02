@@ -5,8 +5,9 @@
 //!
 //! - *blocking* conditions that only an operator can resolve: OCI catalog
 //!   content, active publication or GC work, provider objects in a current
-//!   inventory, retained cache roots, snapshot references, and placements that
-//!   can never be inventoried; and
+//!   inventory, retained cache roots, snapshot references, live exposure
+//!   through instance OCI routes, and placements that can never be
+//!   inventoried; and
 //! - *automatic* steps that the deletion operation performs itself: abandoning
 //!   never-applied GC plans, acquiring the registry purge fence, scanning
 //!   unobserved placements, and collecting a provider inventory for every
@@ -143,6 +144,12 @@ pub struct RegistryDeletionBlockers {
     pub abandonable_gc_runs: u64,
     /// Placements that can never be inventoried as configured.
     pub unavailable_placements: u64,
+    /// Enabled OCI namespace of the registry on instance OCI routes (0 or 1).
+    pub enabled_oci_namespaces: u64,
+    /// Instance OCI routes that name the registry as their default registry.
+    ///
+    /// Disabled routes count too: the reference is a restrictive foreign key.
+    pub instance_oci_route_defaults: u64,
 }
 
 /// The current collecting purge fence of a registry.
@@ -268,6 +275,20 @@ impl RegistryDeletionReadiness {
             reasons.push(format!(
                 "{} image snapshot references or snapshot leases still name the registry",
                 blockers.snapshot_references
+            ));
+        }
+        if blockers.enabled_oci_namespaces > 0 {
+            reasons.push(
+                "the registry OCI namespace is still enabled; disable it before deletion \
+                 (aos hub registry container namespace disable)"
+                    .to_string(),
+            );
+        }
+        if blockers.instance_oci_route_defaults > 0 {
+            reasons.push(format!(
+                "{} instance OCI routes still serve the registry as their default; clear that \
+                 default before deletion",
+                blockers.instance_oci_route_defaults
             ));
         }
         if let Some(reason) = self.fence_mismatch() {
@@ -426,6 +447,8 @@ impl Database {
             active_untracked_repairs: count(&row, 10, "untracked repair")?,
             snapshot_references: count(&row, 11, "snapshot reference")?,
             abandonable_gc_runs: count(&row, 12, "planned GC run")?,
+            enabled_oci_namespaces: count(&row, 13, "enabled OCI namespace")?,
+            instance_oci_route_defaults: count(&row, 14, "instance OCI route default")?,
             ..RegistryDeletionBlockers::default()
         };
 
@@ -533,7 +556,10 @@ const REGISTRY_FACTS_SQL: &str = "SELECT registry.resource_version,
            AND state IN('planned', 'pending', 'claimed', 'failed')),
        (SELECT COUNT(*) FROM image_snapshot_references WHERE registry_id = ?1)
         + (SELECT COUNT(*) FROM oci_gc_snapshot_lease_holds WHERE registry_id = ?1),
-       (SELECT COUNT(*) FROM oci_gc_runs WHERE registry_id = ?1 AND state = 'planned')
+       (SELECT COUNT(*) FROM oci_gc_runs WHERE registry_id = ?1 AND state = 'planned'),
+       (SELECT COUNT(*) FROM registry_oci_namespaces
+         WHERE registry_id = ?1 AND enabled = 1),
+       (SELECT COUNT(*) FROM instance_oci_routes WHERE default_registry_id = ?1)
      FROM registries registry WHERE registry.id = ?1";
 
 /// Per-placement facts. `?2` is the oldest acceptable inventory observation.
