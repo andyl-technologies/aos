@@ -26,6 +26,9 @@ pub(super) struct ImportedEvidence {
     import: Vec<u8>,
     binding: Vec<u8>,
     trust: Vec<u8>,
+    // A same-original round trip supplements independently checked local
+    // originals; its imported controls never replace their dependencies.
+    pub(super) supplements_local: bool,
 }
 
 impl ImportedEvidence {
@@ -286,8 +289,9 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             import: import.encode().map_err(|_| invalid())?,
             binding: binding.encode().map_err(|_| invalid())?,
             trust: trust.encode().map_err(|_| invalid())?,
+            supplements_local: baseline.authority() == owner,
         };
-        let records = vec![
+        let mut records = vec![
             (import.selector(), imported.import.clone()),
             (
                 binding.selector().map_err(|_| invalid())?,
@@ -295,6 +299,35 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             ),
             (trust_key, imported.trust.clone()),
         ];
+        if imported.supplements_local {
+            // Even an exact protected import cannot repair missing local
+            // authoring authority. Check it independently, then include both
+            // local originals in the final single held control observation.
+            self.bind_original_commit_at(baseline, view, held).await?;
+            use crate::repository::local_authority::retention::{
+                BootstrapRecord, CommitAssociation,
+            };
+            let bootstrap = BootstrapRecord {
+                id: *owner.id(),
+                reference: baseline.reference().to_owned(),
+                epoch: baseline.epoch(),
+                acl: baseline.acl().to_vec(),
+            };
+            let association = CommitAssociation {
+                commit: *view.commit,
+                id: *owner.id(),
+                reference: view.reference.to_owned(),
+                epoch: view.epoch,
+            };
+            records.push((
+                bootstrap.selector().map_err(|_| invalid())?,
+                bootstrap.encode().map_err(|_| invalid())?,
+            ));
+            records.push((
+                association.selector(),
+                association.encode().map_err(|_| invalid())?,
+            ));
+        }
         let namespace = DomainNamespace {
             root: owner.root().to_path_buf(),
             domain: owner.domain().to_owned(),
@@ -343,6 +376,66 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             .await?;
         self.check_original_commit(&baseline, import.association.view())
             .await
+    }
+
+    /// Installs exact import context under the caller's actual held destination.
+    ///
+    /// This acquires only protected configuration exclusion and returns the
+    /// checked context actually installed by the native verifier.
+    ///
+    /// # Errors
+    /// Rejects an unrelated or read-only holder, unavailable originals, changed
+    /// import controls, conflicting installed context and physical mismatches.
+    pub(crate) async fn load_original_import_held(
+        &self,
+        owner: &OriginalAuthority,
+        import: &ImportRecord,
+        held: &HeldIdentity<'_>,
+    ) -> Result<OriginalCommitContext, StoreFailure> {
+        let baseline = RetainedBootstrap {
+            authority: original_authority(import),
+            reference: import.baseline.reference.clone(),
+            epoch: import.baseline.epoch,
+            acl: import.baseline.acl.clone(),
+        };
+        if owner.root() != held.root() || owner.physical_identity() != held.physical_identity() {
+            return Err(invalid());
+        }
+        self.check_original_import_held(&baseline, import.association.view(), held)
+            .await
+    }
+
+    /// Preserves local originals before considering supplemental protected trust.
+    ///
+    /// Missing supplemental data keeps an ordinary local context. Present data
+    /// must pass the complete native import check; it never supplies a fallback
+    /// for missing or conflicting original local bootstrap or association bytes.
+    ///
+    /// # Errors
+    /// Rejects missing local originals, invalid present supplements, changed
+    /// protected records or namespaces and unavailable filesystem observations.
+    pub(in crate::guard::original) async fn bind_local_or_import_at(
+        &self,
+        owner: &OriginalAuthority,
+        baseline: &RetainedBootstrap,
+        view: AssociationView<'_>,
+        held: Option<&HeldIdentity<'_>>,
+    ) -> Result<OriginalCommitContext, StoreFailure> {
+        let local = self.bind_original_commit_at(baseline, view, held).await?;
+        let selector = format!("import-{}.cbor", super::hex(view.commit));
+        match self
+            .store()
+            .fs()
+            .symlink_metadata(&owner.control().join(selector))
+            .await
+        {
+            Ok(_) => {
+                self.bind_imported_commit_at(owner, baseline, view, held)
+                    .await
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(local),
+            Err(error) => Err(super::io_failure(error)),
+        }
     }
 }
 

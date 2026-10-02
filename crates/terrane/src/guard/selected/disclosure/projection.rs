@@ -10,7 +10,7 @@ use crate::guard::{StagedUpload, TreeEvidence};
 use crate::store::StoreFailure;
 use terrane_core::identity::{Digest, IdentityKind};
 use terrane_core::tree_builder::Tree;
-use terrane_core::tree_format::{Entry, EntryKind, LeafItem, Property};
+use terrane_core::tree_format::{Attribute, Entry, EntryKind, LeafItem};
 
 use super::invalid;
 
@@ -26,14 +26,44 @@ pub(super) struct MarkerTrees {
     pub(super) uploads: Vec<StagedUpload>,
 }
 
+/// Describes one actual destination occurrence selected by the private producer.
+pub(super) struct MarkerOccurrence {
+    pub(super) root: Digest,
+    pub(super) path: Vec<u8>,
+    pub(super) introducer: Digest,
+    pub(super) destination_domain: String,
+}
+
 /// Installs only independently derived public-introducer marker values.
+///
+/// # Errors
+/// Rejects missing or unsupported entries, incomplete grafts, cyclic topology
+/// and invalid rebuilt canonical trees.
 pub(super) fn normalize_markers(
     evidence: &TreeEvidence,
-    markers: &BTreeMap<(Digest, Vec<u8>), Digest>,
+    occurrences: &[MarkerOccurrence],
     minimum_chunk_size: u64,
 ) -> Result<MarkerTrees, StoreFailure> {
     let mut encoded_markers = BTreeMap::new();
-    for ((root, path), introducer) in markers {
+    let mut marker_scopes = BTreeMap::new();
+    for occurrence in occurrences {
+        let MarkerOccurrence {
+            root,
+            path,
+            introducer,
+            destination_domain,
+        } = occurrence;
+        let selector = (*root, path.clone());
+        let scope = (*introducer, destination_domain.as_str());
+        if marker_scopes
+            .get(&selector)
+            .is_some_and(|prior| prior != &scope)
+        {
+            // A shared canonical root cannot encode different markers or
+            // destination domains for its separate graft occurrences.
+            return Err(invalid());
+        }
+        marker_scopes.insert(selector.clone(), scope);
         if !evidence.roots.contains(root) {
             return Err(invalid());
         }
@@ -41,13 +71,13 @@ pub(super) fn normalize_markers(
         let entry = tree.get(path).ok_or_else(invalid)?;
         if !matches!(
             entry.kind,
-            EntryKind::File { .. } | EntryKind::Directory | EntryKind::Symlink { .. }
+            EntryKind::File { .. } | EntryKind::Directory { .. } | EntryKind::Symlink { .. }
         ) {
             return Err(invalid());
         }
         let mut bytes = Vec::new();
         terrane_core::cbor::write_bytes(&mut bytes, introducer);
-        encoded_markers.insert((*root, path.clone()), bytes);
+        encoded_markers.insert(selector, bytes);
     }
 
     let mut roots = BTreeMap::new();
@@ -81,7 +111,7 @@ pub(super) fn normalize_markers(
                         entry
                             .attrs
                             .retain(|attribute| attribute.name != "provenance.reintroduced-from");
-                        entry.attrs.push(Property {
+                        entry.attrs.push(Attribute {
                             name: "provenance.reintroduced-from",
                             value: marker,
                         });
@@ -130,19 +160,20 @@ pub(super) fn normalize_markers(
 }
 
 fn collect_roots(entry: &Entry<'_>, roots: &mut BTreeSet<Digest>) {
-    match &entry.kind {
-        EntryKind::Tree { root, .. } => {
-            roots.insert(*root);
-        }
-        EntryKind::Conflict { candidates, base } => {
-            for candidate in candidates {
-                collect_roots(candidate, roots);
+    let mut pending = vec![entry];
+    while let Some(entry) = pending.pop() {
+        match &entry.kind {
+            EntryKind::Tree { root, .. } => {
+                roots.insert(*root);
             }
-            if let Some(Some(base)) = base {
-                collect_roots(base, roots);
+            EntryKind::Conflict { candidates, base } => {
+                if let Some(Some(base)) = base {
+                    pending.push(base);
+                }
+                pending.extend(candidates.iter().rev());
             }
+            _ => {}
         }
-        _ => {}
     }
 }
 
@@ -150,19 +181,20 @@ fn replace_roots(
     entry: &mut Entry<'_>,
     roots: &BTreeMap<Digest, Digest>,
 ) -> Result<(), StoreFailure> {
-    match &mut entry.kind {
-        EntryKind::Tree { root, .. } => {
-            *root = *roots.get(root).ok_or_else(invalid)?;
-        }
-        EntryKind::Conflict { candidates, base } => {
-            for candidate in candidates {
-                replace_roots(candidate, roots)?;
+    let mut pending = vec![entry];
+    while let Some(entry) = pending.pop() {
+        match &mut entry.kind {
+            EntryKind::Tree { root, .. } => {
+                *root = *roots.get(root).ok_or_else(invalid)?;
             }
-            if let Some(Some(base)) = base {
-                replace_roots(base, roots)?;
+            EntryKind::Conflict { candidates, base } => {
+                if let Some(Some(base)) = base {
+                    pending.push(base.as_mut());
+                }
+                pending.extend(candidates.iter_mut().rev());
             }
+            _ => {}
         }
-        _ => {}
     }
     Ok(())
 }
