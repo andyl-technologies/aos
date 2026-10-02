@@ -877,6 +877,7 @@ mod tests {
             "PlanSetContainerTag",
             "BeginContainerPublication",
             "PlanRunContainerGc",
+            "CancelContainerGcRun",
             "ListContainerGcCandidates",
             "ListContainerGcBlockers",
             "ListContainerGcPlacementActions",

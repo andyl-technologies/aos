@@ -364,6 +364,20 @@ mod tests {
         ));
         assert!(matches!(
             service
+                .cancel_container_gc_run(
+                    Some(&bearer),
+                    pb::CancelContainerGcRunRequest {
+                        registry: registry.slug.clone(),
+                        run_id: "gc-run".to_string(),
+                        expected_resource_version: "1".to_string(),
+                        idempotency_key: "worker-gc-cancel-disabled".to_string(),
+                    },
+                )
+                .await,
+            Err(aos_hub_core::service::RpcError::Unavailable(_))
+        ));
+        assert!(matches!(
+            service
                 .list_container_untracked_inventory(
                     Some(&bearer),
                     pb::ListContainerUntrackedInventoryRequest {
