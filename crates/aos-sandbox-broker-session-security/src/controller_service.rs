@@ -27,11 +27,20 @@
 //! compiler and Guardian signer; authority-bound effects already present in the
 //! durable controller journal execute through their exact authenticated broker
 //! sessions without manufacturing replacement identity.
+//!
+//! Selected original startup uses one partial parent/worker custody graph;
+//! the empty ordinary route keeps its original consuming locals. Both borrow
+//! the sole reconciliation loop. The private slots and parent-frame server
+//! pins belong here with the installed startup recipe, its terminal ordering
+//! and worker/server handoff, rather than a generic owner framework. This does
+//! not retain callee-local failed constructors, task populations or provider
+//! prefixes, nor establish funding, drain or readiness for those missing paths.
 
 use std::io::IoSlice;
 use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -369,8 +378,9 @@ where
 /// Original capture, selected Root/Nix startup and recipe admission failures
 /// intentionally terminate instead of returning an error. Later ordinary
 /// failures also terminate while the continuation remains armed or retains
-/// Root, Nix selector or launch-image custody. Issue-only failures retain their
-/// original invocation through intentional termination.
+/// Root, Nix selector or launch-image custody. Selected Publisher and partial
+/// worker startup also retain returned originals through intentional
+/// termination. Issue-only failures retain their original invocation.
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
@@ -413,6 +423,14 @@ fn run_ordinary_controller(
         startup.terminate_failed();
     }
     let launch_image = startup.image_share();
+    if startup.must_retain_failure() {
+        return run_retained_controller(
+            configuration,
+            startup,
+            normal_root_profile,
+            launch_image,
+        );
+    }
     let publisher_descriptor = startup.take_publisher();
     let publisher_listener = publisher_descriptor
         .map(publisher_ingress::adopt_observed_listener)
@@ -578,6 +596,24 @@ fn run_ordinary_controller(
         commands: commands_tx,
         endpoint: ControllerEndpoint::RootDiagnostic,
     });
+    let (public_application, application) =
+        controller_applications(public_service, diagnostic_service);
+    let result = runtime.block_on(serve_until_worker_failure(
+        listener,
+        application,
+        public_listener,
+        public_application,
+        events_rx,
+    ));
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    result
+}
+
+// Keeps the complete fixed public-first/diagnostic-second owning recipe together.
+fn controller_applications(
+    public_service: Arc<CapabilityService>,
+    diagnostic_service: Arc<CapabilityService>,
+) -> (axum::Router, axum::Router) {
     let public_connect =
         DiscoveryServiceExt::register(Arc::clone(&public_service), connectrpc::Router::new());
     let public_connect = SandboxServiceExt::register(Arc::clone(&public_service), public_connect);
@@ -596,15 +632,740 @@ fn run_ordinary_controller(
         DiscoveryServiceExt::register(Arc::clone(&diagnostic_service), connectrpc::Router::new());
     let connect = OperationServiceExt::register(diagnostic_service, connect).into_axum_service();
     let application = axum::Router::new().fallback_service(connect);
-    let result = runtime.block_on(serve_until_worker_failure(
-        listener,
-        application,
-        public_listener,
-        public_application,
-        events_rx,
+
+    (public_application, application)
+}
+
+fn run_retained_controller(
+    configuration: RuntimeConfiguration,
+    startup: &mut crate::production_startup::ControllerStartupContinuationV1,
+    profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
+    launch: Option<crate::production_startup::Pid1LaunchImageV1>,
+) -> ! {
+    let mut parent = ControllerParentCustodyV1::new(profile, launch);
+    let worker = Arc::clone(&parent.worker);
+    let Ok(mut originals) = worker.originals.lock() else {
+        worker.terminate(ControllerResidentCauseV1::Closed("Controller owner lock poisoned"));
+    };
+    let _unwind = AbortControllerCustodyUnwindV1;
+
+    // Local propagation only: success is assigned immediately into an already
+    // prepared field. No helper consumes an original or supplies authority.
+    macro_rules! checked {
+        ($result:expr) => {
+            match $result {
+                Ok(value) => value,
+                Err(cause) => worker.terminate(ControllerResidentCauseV1::Runtime(cause)),
+            }
+        };
+    }
+
+    macro_rules! required {
+        ($value:expr) => {
+            match $value {
+                Some(value) => value,
+                None => worker.terminate(ControllerResidentCauseV1::Closed(
+                    "Controller partial destination unavailable",
+                )),
+            }
+        };
+    }
+
+    macro_rules! begin {
+        ($step:ident) => {
+            if worker.ended.load(Ordering::Acquire)
+                || !parent.stage.begin(ControllerParentStepV1::$step)
+            {
+                worker.terminate(ControllerResidentCauseV1::Closed("Controller step reentered"));
+            }
+        };
+    }
+
+    macro_rules! complete {
+        ($step:ident) => {
+            if worker.ended.load(Ordering::Acquire)
+                || !parent.stage.complete(ControllerParentStepV1::$step)
+            {
+                worker.terminate(ControllerResidentCauseV1::Closed("Controller step incomplete"));
+            }
+        };
+    }
+
+    begin!(Publisher);
+    // Prepare the destination before the same actual FIRST6 role handoff.
+    originals.publisher_attempt = startup
+        .take_publisher()
+        .map(publisher_ingress::PublisherStartupAttemptV1::from_original_listener);
+    if let Some(attempt) = &mut originals.publisher_attempt {
+        if attempt.admit_listener_once().is_err() {
+            worker.terminate(ControllerResidentCauseV1::Publisher);
+        }
+    }
+    complete!(Publisher);
+
+    begin!(Node);
+    originals.node = Some(checked!(read_node_id()));
+    let node_id = required!(originals.node);
+    complete!(Node);
+
+    begin!(Nix);
+    if configuration.nix_start_admission {
+        if !startup.admit_nix_once(
+            configuration.uid,
+            configuration.gid,
+            NodeId::from_bytes(node_id),
+        ) {
+            worker.close(ControllerResidentCauseV1::Closed(
+                "resident original Nix admission failed",
+            ));
+            startup.terminate_failed();
+        }
+        originals.nix_selector = Some(startup.selector_share());
+    } else {
+        originals.nix_selector = Some(None);
+    }
+    complete!(Nix);
+
+    begin!(GenesisInput);
+    originals.genesis = Some(checked!(
+        ProvisionedControllerSourceGenesisInputV1::from_systemd_credentials_optional()
+            .map_err(ControllerRuntimeError::from)
     ));
-    runtime.shutdown_timeout(Duration::from_secs(1));
-    result
+    complete!(GenesisInput);
+
+    begin!(PublisherRegistration);
+    originals.publisher_registration = Some(None);
+    if let Some(attempt) = &mut originals.publisher_attempt {
+        if attempt
+            .construct_registration_once(NodeId::from_bytes(node_id))
+            .is_err()
+        {
+            worker.terminate(ControllerResidentCauseV1::Publisher);
+        }
+        originals.publisher_registration = Some(Some(required!(
+            attempt.take_completed_registration()
+        )));
+    }
+    complete!(PublisherRegistration);
+
+    begin!(Cache);
+    originals.cache_bundle = Some(checked!(read_cache_replay_bundle()));
+    if let Some(bundle) = required!(originals.cache_bundle.as_ref()) {
+        checked!(
+            CacheReplayControllerBootstrapOwnerV1::import_fixed_bundle_for_uid(
+                configuration.uid,
+                bundle,
+            )
+            .map_err(ControllerRuntimeError::CacheReplaySource)
+        );
+    }
+    complete!(Cache);
+
+    begin!(Ownership);
+    originals.ownership = Some(checked!(
+        ControllerOwnershipConfigurationV1::from_process_credentials_optional()
+            .map_err(|_| ControllerRuntimeError::InvalidOwnershipCredential)
+    ));
+    complete!(Ownership);
+
+    begin!(Attach);
+    originals.attach = Some(checked!(
+        ControllerAttachCredentialsV1::from_process_credentials_optional()
+            .map_err(|_| ControllerRuntimeError::InvalidAttachCredential)
+    ));
+    complete!(Attach);
+
+    begin!(Signer);
+    originals.signer = Some(checked!(
+        ControllerBrokerPlanSignerV1::from_process_credentials_optional()
+            .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)
+    ));
+    complete!(Signer);
+
+    begin!(Pins);
+    originals.pins = Some(checked!(
+        load_guest_root_template_pins_optional()
+            .map_err(|_| ControllerRuntimeError::InvalidGuestRootCredential)
+    ));
+    complete!(Pins);
+
+    begin!(Diagnostic);
+    parent.diagnostic_std = Some(checked!(bind_diagnostic_socket(&configuration)));
+    complete!(Diagnostic);
+
+    begin!(Sessions);
+    originals.sessions = Some(Arc::new(Mutex::new(ControllerBrokerSessions {
+        launch_image: required!(parent.launch.take()),
+        ..ControllerBrokerSessions::default()
+    })));
+    complete!(Sessions);
+
+    begin!(Runtime);
+    parent.runtime = Some(checked!(
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(ControllerRuntimeError::Runtime)
+    ));
+    complete!(Runtime);
+
+    begin!(Host);
+    parent.host = Some(match required!(parent.runtime.as_ref())
+        .block_on(attachment_target::observe_host_service_identity())
+    {
+        Ok(identity) => Some(identity),
+        Err(error) => {
+            eprintln!("aos-sandboxd: Host attachment identity unavailable: {error}");
+            None
+        }
+    });
+    complete!(Host);
+
+    begin!(Mount);
+    parent.mount = Some(match required!(parent.runtime.as_ref())
+        .block_on(attachment_target::observe_mount_service_identity())
+    {
+        Ok(identity) => Some(identity),
+        Err(error) => {
+            eprintln!("aos-sandboxd: Mount attachment identity unavailable: {error}");
+            None
+        }
+    });
+    complete!(Mount);
+
+    begin!(Controller);
+    // The unchanged consuming constructor still has a pre-return custody gap
+    // for these attachment inputs and its own Journal/executor locals.
+    originals.controller = Some(checked!(open_controller(
+        &configuration,
+        node_id,
+        Arc::clone(required!(originals.sessions.as_ref())),
+        required!(parent.host.take()),
+        required!(parent.mount.take()),
+        required!(originals.nix_selector.as_ref()).clone(),
+    )));
+    complete!(Controller);
+
+    begin!(ControllerStartup);
+    {
+        let ControllerWorkerOriginalsV1 {
+            controller,
+            genesis,
+            profile,
+            publisher_registration,
+            ..
+        } = &mut *originals;
+        let controller = required!(controller.as_mut());
+        let genesis = required!(genesis.as_ref()).as_ref();
+        let profile = required!(profile.as_ref()).as_deref();
+        let replay_genesis = checked!(
+            genesis
+                .map(|input| controller.has_retained_provisioned_source_genesis_v1(input))
+                .transpose()
+                .map_err(ControllerRuntimeError::from)
+        )
+        .unwrap_or(false);
+        if replay_genesis {
+            checked!(
+                complete_configured_source_genesis(controller, genesis, profile)
+                    .map_err(ControllerRuntimeError::from)
+            );
+        }
+        if let Some(scope) = required!(publisher_registration.as_ref())
+            .as_ref()
+            .map(|owner| owner.service_scope())
+        {
+            checked!(
+                publisher_policy_source::install_from_process_credentials(controller, scope)
+                    .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))
+            );
+        }
+        if !replay_genesis {
+            checked!(
+                complete_configured_source_genesis(controller, genesis, profile)
+                    .map_err(ControllerRuntimeError::from)
+            );
+        }
+    }
+    complete!(ControllerStartup);
+
+    begin!(AsyncDiagnostic);
+    // Returned-to-consuming Tokio registration remains a FUNCTIONAL provider
+    // seam: an error can consume the original std listener, not restore it.
+    parent.diagnostic = Some(checked!(required!(parent.runtime.as_ref()).block_on(
+        into_async_diagnostic_listener(required!(parent.diagnostic_std.take())),
+    )));
+    complete!(AsyncDiagnostic);
+
+    begin!(Public);
+    parent.public = Some(if configuration.public_api {
+        Some(checked!(required!(parent.runtime.as_ref()).block_on(
+            public_api::bind(configuration.uid),
+        )))
+    } else {
+        None
+    });
+    complete!(Public);
+
+    begin!(Capabilities);
+    originals.capabilities = Some(Arc::new(Mutex::new(CapabilityState::starting(node_id))));
+    complete!(Capabilities);
+
+    begin!(Events);
+    // Both target guards are acquired BEFORE the tuple producer returns either
+    // original end. The receiver never enters a consuming monitor closure.
+    {
+        let Ok(mut receiver) = worker.receiver.lock() else {
+            worker.terminate(ControllerResidentCauseV1::Closed("Controller receiver lock poisoned"));
+        };
+        if receiver.is_some() || originals.events.is_some() {
+            worker.terminate(ControllerResidentCauseV1::Closed("Controller event targets occupied"));
+        }
+        let (sender, received) = mpsc::channel();
+        originals.events = Some(sender);
+        *receiver = Some(received);
+    }
+    complete!(Events);
+
+    begin!(Commands);
+    let (commands_tx, commands_rx) = mpsc::sync_channel(CONTROLLER_COMMAND_CAPACITY);
+    parent.commands = Some(commands_tx);
+    originals.commands = Some(commands_rx);
+    complete!(Commands);
+    if !originals.complete_worker_inputs(&parent.stage) {
+        worker.terminate(ControllerResidentCauseV1::Closed("Controller worker fields incomplete"));
+    }
+    let capabilities = Arc::clone(required!(originals.capabilities.as_ref()));
+
+    begin!(Spawn);
+    drop(originals);
+    let thread_worker = Arc::clone(&worker);
+    parent.thread = Some(checked!(
+        std::thread::Builder::new()
+            .name("aos-sandboxd-reconciler".to_owned())
+            .spawn(move || retained_controller_worker(&thread_worker))
+            .map_err(ControllerRuntimeError::WorkerSpawn)
+    ));
+    complete!(Spawn);
+    // No acquisition of the long owner loan after a successful spawn.
+    startup.complete_worker_handoff();
+
+    begin!(Readiness);
+    match worker.receive() {
+        ControllerMonitorOutcomeV1::Event(WorkerEvent::Ready)
+            if !worker.ended.load(Ordering::Acquire) => {}
+        ControllerMonitorOutcomeV1::Event(WorkerEvent::Fatal(message)) => {
+            worker.terminate(ControllerResidentCauseV1::Worker(message))
+        }
+        _ => worker.terminate(ControllerResidentCauseV1::Closed(
+            "resident Controller worker stopped before readiness",
+        )),
+    }
+    complete!(Readiness);
+    begin!(Profile);
+    if let Some(profile) = startup.profile() {
+        checked!(profile.recheck().map_err(ControllerRuntimeError::NormalRootProfile));
+    }
+    complete!(Profile);
+    begin!(Notifier);
+    parent.notifier = Some(checked!(SystemdReadyNotifier::from_environment()));
+    complete!(Notifier);
+    begin!(Notify);
+    checked!(required!(parent.notifier.as_ref()).notify_ready());
+    complete!(Notify);
+
+    // These are the same routers and service sharing points as Legacy.
+    begin!(Applications);
+    let public_service = Arc::new(CapabilityService {
+        capabilities: Arc::clone(&capabilities),
+        commands: required!(parent.commands.as_ref()).clone(),
+        endpoint: ControllerEndpoint::RegisteredPublic,
+    });
+    let diagnostic_service = Arc::new(CapabilityService {
+        capabilities,
+        commands: required!(parent.commands.take()),
+        endpoint: ControllerEndpoint::RootDiagnostic,
+    });
+    let (public_application, application) =
+        controller_applications(public_service, diagnostic_service);
+    complete!(Applications);
+
+    // Future construction is an infallible ownership park. Axum's unchanged
+    // IntoFuture boxing happens during poll, an excluded provider boundary.
+    let public = std::pin::pin!(public_api::serve(
+        required!(parent.public.take()),
+        public_application,
+    ));
+    let _public_unwind = AbortControllerCustodyUnwindV1;
+    let diagnostic_listener = required!(parent.diagnostic.take());
+    let _diagnostic_input_unwind = AbortControllerCustodyUnwindV1;
+    let diagnostic = std::pin::pin!(async move {
+        axum::serve(diagnostic_listener, application)
+            .await
+            .map_err(ControllerRuntimeError::DiagnosticServer)
+    });
+    let _diagnostic_unwind = AbortControllerCustodyUnwindV1;
+
+    // Only the concrete listener/router enters that future. Runtime remains
+    // in the parent, and the receiver stays in its independent original slot.
+    begin!(Monitor);
+    let monitor_worker = Arc::clone(&worker);
+    parent.monitor = Some(
+        required!(parent.runtime.as_ref()).spawn_blocking(move || monitor_worker.receive()),
+    );
+    complete!(Monitor);
+    let _serve_unwind = AbortControllerCustodyUnwindV1;
+    let runtime = required!(parent.runtime.as_ref());
+    let monitor = required!(parent.monitor.as_mut());
+    let _stopped: () = runtime.block_on(async {
+        let mut public = public;
+        let mut diagnostic = diagnostic;
+        tokio::select! {
+            result = &mut public => {
+                let cause = match result {
+                    Err(cause) => ControllerResidentCauseV1::Runtime(cause),
+                    Ok(()) => ControllerResidentCauseV1::Closed("Controller public server completed"),
+                };
+                worker.terminate(cause)
+            }
+            result = &mut diagnostic => {
+                let cause = match result {
+                    Err(cause) => ControllerResidentCauseV1::Runtime(cause),
+                    Ok(()) => ControllerResidentCauseV1::Closed("Controller diagnostic server completed"),
+                };
+                worker.terminate(cause)
+            }
+            result = monitor => {
+                let cause = match result {
+                    Err(cause) => ControllerResidentCauseV1::Runtime(
+                        ControllerRuntimeError::WorkerJoin(cause),
+                    ),
+                    Ok(ControllerMonitorOutcomeV1::Event(WorkerEvent::Fatal(message))) => {
+                        ControllerResidentCauseV1::Worker(message)
+                    }
+                    Ok(_) => ControllerResidentCauseV1::Closed("Controller worker monitor ended"),
+                };
+                worker.terminate(cause)
+            }
+        }
+    });
+    worker.terminate(ControllerResidentCauseV1::Closed(
+        "Controller server monitor returned unexpectedly",
+    ))
+}
+
+// These slots are a fixed destination for actual returned startup inputs, not
+// an authority tuple. Outer None is unobserved; Some(None) is the same producer's
+// observed optional absence. The worker only borrows a completed destination.
+#[derive(Default)]
+struct ControllerWorkerOriginalsV1 {
+    publisher_attempt: Option<publisher_ingress::PublisherStartupAttemptV1>,
+    publisher_registration: Option<Option<publisher_ingress::PublisherRegistrationOwnerV1>>,
+    node: Option<[u8; 16]>,
+    profile: Option<
+        Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
+    >,
+    nix_selector: Option<Option<Arc<ControllerNixStartRecipeSelectorV2>>>,
+    genesis: Option<Option<ProvisionedControllerSourceGenesisInputV1>>,
+    cache_bundle: Option<Option<Vec<u8>>>,
+    ownership: Option<Option<ControllerOwnershipConfigurationV1>>,
+    attach: Option<Option<ControllerAttachCredentialsV1>>,
+    signer: Option<Option<ControllerBrokerPlanSignerV1>>,
+    pins: Option<Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>>,
+    sessions: Option<SharedControllerBrokerSessions>,
+    controller: Option<ProductionController>,
+    capabilities: Option<Arc<Mutex<CapabilityState>>>,
+    commands: Option<mpsc::Receiver<ControllerCommand>>,
+    events: Option<mpsc::Sender<WorkerEvent>>,
+    worker_stage: ControllerWorkerStageV1,
+}
+
+// Consecutive values constrain this private, single execution recipe. They are
+// negative bookkeeping, never a currentness, floor, or detached Ready witness.
+#[derive(Clone, Copy, Eq, PartialEq)]
+#[repr(u8)]
+enum ControllerParentStepV1 {
+    Publisher = 1,
+    Node,
+    Nix,
+    GenesisInput,
+    PublisherRegistration,
+    Cache,
+    Ownership,
+    Attach,
+    Signer,
+    Pins,
+    Diagnostic,
+    Sessions,
+    Runtime,
+    Host,
+    Mount,
+    Controller,
+    ControllerStartup,
+    AsyncDiagnostic,
+    Public,
+    Capabilities,
+    Events,
+    Commands,
+    Spawn,
+    Readiness,
+    Profile,
+    Notifier,
+    Notify,
+    Applications,
+    Monitor,
+}
+
+#[derive(Default)]
+enum ControllerParentStageV1 {
+    #[default]
+    Prepared,
+    Checking(ControllerParentStepV1),
+    Completed(ControllerParentStepV1),
+    Ended,
+}
+
+impl ControllerParentStageV1 {
+    fn begin(&mut self, step: ControllerParentStepV1) -> bool {
+        let previous = match *self {
+            ControllerParentStageV1::Prepared => 0,
+            ControllerParentStageV1::Completed(previous) => previous as u8,
+            ControllerParentStageV1::Checking(_) | ControllerParentStageV1::Ended => {
+                *self = ControllerParentStageV1::Ended;
+                return false;
+            }
+        };
+        if previous.checked_add(1) != Some(step as u8) {
+            *self = ControllerParentStageV1::Ended;
+            return false;
+        }
+        *self = ControllerParentStageV1::Checking(step);
+        true
+    }
+
+    fn complete(&mut self, step: ControllerParentStepV1) -> bool {
+        if !matches!(*self, ControllerParentStageV1::Checking(actual) if actual == step) {
+            *self = ControllerParentStageV1::Ended;
+            return false;
+        }
+        *self = ControllerParentStageV1::Completed(step);
+        true
+    }
+}
+
+#[derive(Default)]
+enum ControllerWorkerStageV1 {
+    #[default]
+    Building,
+    Ready,
+    Ended,
+}
+
+impl ControllerWorkerOriginalsV1 {
+    fn complete_worker_inputs(&mut self, stage: &ControllerParentStageV1) -> bool {
+        if !matches!(self.worker_stage, ControllerWorkerStageV1::Building)
+            || !matches!(
+                stage,
+                ControllerParentStageV1::Completed(ControllerParentStepV1::Commands)
+            )
+        {
+            self.worker_stage = ControllerWorkerStageV1::Ended;
+            return false;
+        }
+        self.worker_stage = ControllerWorkerStageV1::Ready;
+        if self.ready_loan().is_none() {
+            self.worker_stage = ControllerWorkerStageV1::Ended;
+            return false;
+        }
+        true
+    }
+
+    fn ready_loan(&mut self) -> Option<ControllerWorkerLoanV1<'_>> {
+        if !matches!(self.worker_stage, ControllerWorkerStageV1::Ready)
+            || self.nix_selector.is_none()
+            || self.cache_bundle.is_none()
+            || self.publisher_registration.is_none()
+        {
+            return None;
+        }
+        Some(ControllerWorkerLoanV1 {
+            controller: self.controller.as_mut()?,
+            profile: self.profile.as_ref()?.as_deref(),
+            node: self.node?,
+            ownership: self.ownership.as_ref()?.as_ref(),
+            attach: self.attach.as_ref()?.as_ref(),
+            signer: self.signer.as_ref()?.as_ref(),
+            pins: *self.pins.as_ref()?,
+            genesis: self.genesis.as_ref()?.as_ref(),
+            publisher: self.publisher_registration.as_mut()?.as_mut(),
+            capabilities: self.capabilities.as_ref()?,
+            sessions: self.sessions.as_ref()?,
+            commands: self.commands.as_ref()?,
+            events: self.events.as_ref()?,
+        })
+    }
+}
+
+/// Borrows the actual stored fields for the sole reconciliation loop.
+struct ControllerWorkerLoanV1<'owner> {
+    controller: &'owner mut ProductionController,
+    profile: Option<&'owner aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>,
+    node: [u8; 16],
+    ownership: Option<&'owner ControllerOwnershipConfigurationV1>,
+    attach: Option<&'owner ControllerAttachCredentialsV1>,
+    signer: Option<&'owner ControllerBrokerPlanSignerV1>,
+    pins: Option<aos_sandbox::guest_root_publication::GuestRootTemplatePinsV1>,
+    genesis: Option<&'owner ProvisionedControllerSourceGenesisInputV1>,
+    publisher: Option<&'owner mut publisher_ingress::PublisherRegistrationOwnerV1>,
+    capabilities: &'owner Arc<Mutex<CapabilityState>>,
+    sessions: &'owner SharedControllerBrokerSessions,
+    commands: &'owner mpsc::Receiver<ControllerCommand>,
+    events: &'owner mpsc::Sender<WorkerEvent>,
+}
+
+enum ControllerResidentCauseV1 {
+    Runtime(ControllerRuntimeError),
+    Worker(String),
+    ReadySend(mpsc::SendError<WorkerEvent>),
+    Receive(mpsc::RecvError),
+    // The actual typed cause remains in SAME pending Publisher attempt.
+    Publisher,
+    Closed(&'static str),
+}
+
+impl ControllerResidentCauseV1 {
+    fn diagnostic(&self) -> &'static str {
+        match self {
+            Self::Runtime(_) => "resident Controller startup/server failure",
+            Self::Worker(_) => "resident Controller worker failure",
+            Self::ReadySend(_) => "resident Controller readiness delivery failure",
+            Self::Receive(_) => "resident Controller event receiver disconnected",
+            Self::Publisher => "resident original Publisher startup failure",
+            Self::Closed(label) => label,
+        }
+    }
+}
+
+// Neither terminal handling nor event reception needs the worker's long owner
+// loan. In particular diagnostics must never wait on owner under terminal.
+struct ControllerWorkerCustodyV1 {
+    originals: Mutex<ControllerWorkerOriginalsV1>,
+    terminal: Mutex<Option<ControllerResidentCauseV1>>,
+    receiver: Mutex<Option<mpsc::Receiver<WorkerEvent>>>,
+    ended: AtomicBool,
+}
+
+impl ControllerWorkerCustodyV1 {
+    fn close(&self, cause: ControllerResidentCauseV1) {
+        self.ended.store(true, Ordering::Release);
+        let Ok(mut terminal) = self.terminal.lock() else {
+            std::process::abort();
+        };
+        if terminal.is_none() {
+            *terminal = Some(cause);
+        }
+    }
+
+    fn terminate(&self, cause: ControllerResidentCauseV1) -> ! {
+        self.close(cause);
+        let Ok(terminal) = self.terminal.lock() else {
+            std::process::abort();
+        };
+        let label = terminal.as_ref().map(ControllerResidentCauseV1::diagnostic);
+        eprintln!("aos-sandboxd: {}", label.unwrap_or("resident Controller closed"));
+        std::process::exit(1)
+    }
+
+    fn receive(&self) -> ControllerMonitorOutcomeV1 {
+        let Ok(receiver) = self.receiver.lock() else {
+            self.close(ControllerResidentCauseV1::Closed("Controller receiver lock poisoned"));
+            return ControllerMonitorOutcomeV1::Ended;
+        };
+        let Some(receiver) = receiver.as_ref() else {
+            self.close(ControllerResidentCauseV1::Closed("Controller receiver unavailable"));
+            return ControllerMonitorOutcomeV1::Ended;
+        };
+        match receiver.recv() {
+            Ok(event) => ControllerMonitorOutcomeV1::Event(event),
+            Err(cause) => {
+                self.close(ControllerResidentCauseV1::Receive(cause));
+                ControllerMonitorOutcomeV1::Ended
+            }
+        }
+    }
+}
+
+enum ControllerMonitorOutcomeV1 {
+    Event(WorkerEvent),
+    Ended,
+}
+
+// Same parent frame owns these partial I/O returns independently of the worker
+// mutex. Selected termination intentionally precedes every normal field Drop.
+struct ControllerParentCustodyV1 {
+    worker: Arc<ControllerWorkerCustodyV1>,
+    stage: ControllerParentStageV1,
+    launch: Option<Option<crate::production_startup::Pid1LaunchImageV1>>,
+    runtime: Option<tokio::runtime::Runtime>,
+    diagnostic_std: Option<std::os::unix::net::UnixListener>,
+    diagnostic: Option<AuthenticatedDiagnosticListener>,
+    public: Option<Option<public_api::PublicListener>>,
+    host: Option<Option<aos_sandbox::runtime_scope::HostServiceIdentity>>,
+    mount: Option<Option<aos_sandbox::mount_preparation::MountServiceIdentity>>,
+    notifier: Option<SystemdReadyNotifier>,
+    thread: Option<std::thread::JoinHandle<()>>,
+    monitor: Option<tokio::task::JoinHandle<ControllerMonitorOutcomeV1>>,
+    commands: Option<mpsc::SyncSender<ControllerCommand>>,
+}
+
+impl ControllerParentCustodyV1 {
+    fn new(
+        profile: Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
+        launch: Option<crate::production_startup::Pid1LaunchImageV1>,
+    ) -> Self {
+        Self {
+            worker: Arc::new(ControllerWorkerCustodyV1 {
+                originals: Mutex::new(ControllerWorkerOriginalsV1 {
+                    profile: Some(profile),
+                    ..ControllerWorkerOriginalsV1::default()
+                }),
+                terminal: Mutex::new(None),
+                receiver: Mutex::new(None),
+                ended: AtomicBool::new(false),
+            }),
+            stage: ControllerParentStageV1::Prepared,
+            launch: Some(launch),
+            runtime: None,
+            diagnostic_std: None,
+            diagnostic: None,
+            public: None,
+            host: None,
+            mount: None,
+            notifier: None,
+            thread: None,
+            monitor: None,
+            commands: None,
+        }
+    }
+}
+
+impl Drop for ControllerParentCustodyV1 {
+    fn drop(&mut self) {
+        self.worker.ended.store(true, Ordering::Release);
+        std::process::abort();
+    }
+}
+
+// This fence is placed AFTER newly pinned futures or a worker owner loan so it
+// fires before their Drop. It cannot rescue already-unwound callee-local frames.
+struct AbortControllerCustodyUnwindV1;
+
+impl Drop for AbortControllerCustodyUnwindV1 {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
 }
 
 fn complete_configured_source_genesis(
@@ -643,6 +1404,9 @@ async fn serve_until_worker_failure(
                 Ok(WorkerEvent::Fatal(message)) => Err(ControllerRuntimeError::Worker(message)),
                 Ok(WorkerEvent::Ready) => Err(ControllerRuntimeError::Worker(
                     "controller worker emitted duplicate readiness".to_owned(),
+                )),
+                Ok(WorkerEvent::ResidentFailure) => Err(ControllerRuntimeError::Worker(
+                    "controller worker retained its original failure".to_owned(),
                 )),
                 Err(_) => Err(ControllerRuntimeError::Worker(
                     "controller worker exited without a terminal status".to_owned(),
@@ -734,15 +1498,79 @@ fn controller_worker(
     commands: mpsc::Receiver<ControllerCommand>,
     events: mpsc::Sender<WorkerEvent>,
 ) {
+    controller_worker_loop(
+        ControllerWorkerLoanV1 {
+            controller: &mut controller,
+            profile: normal_root_profile.as_deref(),
+            node: node_id,
+            ownership: ownership.as_ref(),
+            attach: attach_credentials.as_ref(),
+            signer: attach_plan_signer.as_ref(),
+            pins: guest_root_pins,
+            genesis: source_genesis_input.as_ref(),
+            publisher: publisher_registration.as_mut(),
+            capabilities: &capabilities,
+            sessions: &sessions,
+            commands: &commands,
+            events: &events,
+        },
+        None,
+    );
+}
+
+fn retained_controller_worker(worker: &ControllerWorkerCustodyV1) {
+    let Ok(mut originals) = worker.originals.lock() else {
+        worker.terminate(ControllerResidentCauseV1::Closed("Controller owner lock poisoned"));
+    };
+    let _unwind = AbortControllerCustodyUnwindV1;
+    if worker.ended.load(Ordering::Acquire) {
+        return;
+    }
+    let Some(loan) = originals.ready_loan() else {
+        worker.terminate(ControllerResidentCauseV1::Closed("Controller worker fields incomplete"));
+    };
+    controller_worker_loop(loan, Some(worker));
+}
+
+// The only loop is borrowed by both the literal consuming Legacy wrapper and
+// the selected resident owner. No stored reference or duplicate reducer exists.
+fn controller_worker_loop(
+    loan: ControllerWorkerLoanV1<'_>,
+    custody: Option<&ControllerWorkerCustodyV1>,
+) {
+    let ControllerWorkerLoanV1 {
+        controller,
+        profile: normal_root_profile,
+        node: node_id,
+        ownership,
+        attach: attach_credentials,
+        signer: attach_plan_signer,
+        pins: guest_root_pins,
+        genesis: source_genesis_input,
+        publisher: mut publisher_registration,
+        capabilities,
+        sessions,
+        commands,
+        events,
+    } = loan;
     let mut ready = false;
     let mut next_cycle = Instant::now();
     let mut next_attach_poll = Instant::now();
     let mut attach_poll_cursor = 0;
     loop {
+        if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
+            return;
+        }
         if Instant::now() >= next_cycle {
             if let Some(input) = &source_genesis_input {
                 if let Err(error) = input.recheck() {
-                    let _ = events.send(WorkerEvent::Fatal(error.to_string()));
+                    report_controller_worker_failure(
+                        events,
+                        custody,
+                        ControllerResidentCauseV1::Runtime(
+                            ControllerRuntimeError::SourceGenesisInput(error),
+                        ),
+                    );
                     return;
                 }
             }
@@ -751,29 +1579,48 @@ fn controller_worker(
             // no Root readiness or genesis authority follows from this check.
             if let Some(profile) = &normal_root_profile {
                 if let Err(error) = profile.recheck() {
-                    let _ = events.send(WorkerEvent::Fatal(error.to_string()));
+                    report_controller_worker_failure(
+                        events,
+                        custody,
+                        ControllerResidentCauseV1::Runtime(
+                            ControllerRuntimeError::NormalRootProfile(error),
+                        ),
+                    );
                     return;
                 }
             }
+            if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
+                return;
+            }
             match run_controller_cycle(
-                &mut controller,
+                controller,
                 node_id,
-                &sessions,
+                sessions,
                 !ready,
                 guest_root_pins,
-                attach_plan_signer.as_ref(),
+                attach_plan_signer,
             ) {
                 Ok(catalog) => {
+                    if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
+                        return;
+                    }
                     let update = capabilities
                         .lock()
                         .map_err(|_| "capability status lock is poisoned".to_owned())
                         .map(|mut state| state.record_success(catalog.generation, catalog.digest));
                     if let Err(message) = update {
-                        let _ = events.send(WorkerEvent::Fatal(message));
+                        report_controller_worker_failure(
+                            events,
+                            custody,
+                            ControllerResidentCauseV1::Worker(message),
+                        );
                         return;
                     }
                     if !ready {
-                        if events.send(WorkerEvent::Ready).is_err() {
+                        if let Err(cause) = events.send(WorkerEvent::Ready) {
+                            if let Some(owner) = custody {
+                                owner.close(ControllerResidentCauseV1::ReadySend(cause));
+                            }
                             return;
                         }
                         ready = true;
@@ -783,39 +1630,60 @@ fn controller_worker(
                     if let Ok(mut state) = capabilities.lock() {
                         state.record_retryable_failure(message.clone());
                     } else {
-                        let _ = events.send(WorkerEvent::Fatal(
-                            "capability status lock is poisoned".to_owned(),
-                        ));
+                        report_controller_worker_failure(
+                            events,
+                            custody,
+                            ControllerResidentCauseV1::Worker(
+                                "capability status lock is poisoned".to_owned(),
+                            ),
+                        );
                         return;
                     }
                     eprintln!("aos-sandboxd: reconciliation pending: {message}");
                 }
                 Err(CycleFailure::Fatal(message)) => {
-                    let _ = events.send(WorkerEvent::Fatal(message));
+                    report_controller_worker_failure(
+                        events,
+                        custody,
+                        ControllerResidentCauseV1::Worker(message),
+                    );
                     return;
                 }
             }
             next_cycle = Instant::now() + RECONCILIATION_INTERVAL;
         }
 
+        if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
+            return;
+        }
         if Instant::now() >= next_attach_poll {
             original_attach::poll_one(
-                &mut controller,
+                controller,
                 NodeId::from_bytes(node_id),
-                &sessions,
-                attach_plan_signer.as_ref(),
+                sessions,
+                attach_plan_signer,
                 &mut attach_poll_cursor,
             );
             next_attach_poll = Instant::now() + ORIGINAL_ATTACH_POLL_INTERVAL;
         }
 
+        if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
+            return;
+        }
         if let Some(owner) = publisher_registration.as_mut() {
-            if let Err(message) = owner.try_register(&mut controller) {
-                let _ = events.send(WorkerEvent::Fatal(message));
+            if let Err(message) = owner.try_register(controller) {
+                report_controller_worker_failure(
+                    events,
+                    custody,
+                    ControllerResidentCauseV1::Worker(message),
+                );
                 return;
             }
         }
 
+        if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
+            return;
+        }
         let mut wait = next_cycle
             .min(next_attach_poll)
             .saturating_duration_since(Instant::now());
@@ -827,27 +1695,65 @@ fn controller_worker(
         }
         match commands.recv_timeout(wait) {
             Ok(command) => {
+                if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
+                    return;
+                }
                 if let Err(message) = handle_controller_command(
-                    &mut controller,
-                    ownership.as_ref(),
-                    attach_credentials.as_ref(),
-                    attach_plan_signer.as_ref(),
+                    controller,
+                    ownership,
+                    attach_credentials,
+                    attach_plan_signer,
                     NodeId::from_bytes(node_id),
-                    &sessions,
+                    sessions,
                     command,
                 ) {
-                    let _ = events.send(WorkerEvent::Fatal(message));
+                    report_controller_worker_failure(
+                        events,
+                        custody,
+                        ControllerResidentCauseV1::Worker(message),
+                    );
                     return;
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
-                let _ = events.send(WorkerEvent::Fatal(
-                    "controller command channel disconnected".to_owned(),
-                ));
+                report_controller_worker_failure(
+                    events,
+                    custody,
+                    ControllerResidentCauseV1::Worker(
+                        "controller command channel disconnected".to_owned(),
+                    ),
+                );
                 return;
             }
         }
+    }
+}
+
+fn report_controller_worker_failure(
+    events: &mpsc::Sender<WorkerEvent>,
+    custody: Option<&ControllerWorkerCustodyV1>,
+    cause: ControllerResidentCauseV1,
+) {
+    if let Some(owner) = custody {
+        // Store the actual cause before allocating diagnostics or notifying.
+        // The parent resolves a fixed marker without waiting on this owner loan.
+        owner.close(cause);
+        if let Err(cause) = events.send(WorkerEvent::ResidentFailure) {
+            owner.close(ControllerResidentCauseV1::ReadySend(cause));
+        }
+    } else {
+        let message = match cause {
+            ControllerResidentCauseV1::Worker(message) => message,
+            ControllerResidentCauseV1::Runtime(ControllerRuntimeError::SourceGenesisInput(cause)) => {
+                cause.to_string()
+            }
+            ControllerResidentCauseV1::Runtime(ControllerRuntimeError::NormalRootProfile(cause)) => {
+                cause.to_string()
+            }
+            _ => "controller worker closed".to_owned(),
+        };
+        let _ = events.send(WorkerEvent::Fatal(message));
     }
 }
 
@@ -1392,6 +2298,9 @@ fn wait_for_initial_readiness(
     match events.recv() {
         Ok(WorkerEvent::Ready) => Ok(()),
         Ok(WorkerEvent::Fatal(message)) => Err(ControllerRuntimeError::Worker(message)),
+        Ok(WorkerEvent::ResidentFailure) => Err(ControllerRuntimeError::Worker(
+            "controller worker retained its original failure".to_owned(),
+        )),
         Err(_) => Err(ControllerRuntimeError::Worker(
             "controller worker exited before readiness".to_owned(),
         )),
@@ -5047,6 +5956,7 @@ enum CycleFailure {
 enum WorkerEvent {
     Ready,
     Fatal(String),
+    ResidentFailure,
 }
 
 struct CapabilityState {
@@ -6098,6 +7008,147 @@ mod tests {
     use super::*;
     use axum::serve::Listener as _;
     use buffa::Message as _;
+
+    // These vectors exercise DATA/negative bookkeeping and actual std channel
+    // errors only. They do not construct a positive original startup owner.
+    #[test]
+    fn partial_controller_stage_cannot_skip_or_repeat_a_crossing() {
+        let mut skipped = ControllerParentStageV1::Prepared;
+        let mut repeated = ControllerParentStageV1::Prepared;
+        let mut mismatched = ControllerParentStageV1::Prepared;
+        let mut completed = ControllerParentStageV1::Prepared;
+
+        assert!(!skipped.begin(ControllerParentStepV1::Node));
+        assert!(!skipped.begin(ControllerParentStepV1::Publisher));
+
+        assert!(repeated.begin(ControllerParentStepV1::Publisher));
+        assert!(!repeated.begin(ControllerParentStepV1::Publisher));
+        assert!(!repeated.complete(ControllerParentStepV1::Publisher));
+
+        assert!(mismatched.begin(ControllerParentStepV1::Publisher));
+        assert!(!mismatched.complete(ControllerParentStepV1::Node));
+        assert!(!mismatched.complete(ControllerParentStepV1::Publisher));
+
+        assert!(completed.begin(ControllerParentStepV1::Publisher));
+        assert!(completed.complete(ControllerParentStepV1::Publisher));
+        assert!(completed.begin(ControllerParentStepV1::Node));
+        assert!(completed.complete(ControllerParentStepV1::Node));
+        assert!(!completed.complete(ControllerParentStepV1::Node));
+    }
+
+    #[test]
+    fn partial_optional_absence_does_not_create_a_worker_loan() {
+        let mut originals = ControllerWorkerOriginalsV1::default();
+        assert!(originals.genesis.is_none());
+
+        originals.genesis = Some(None);
+        originals.nix_selector = Some(None);
+        originals.cache_bundle = Some(None);
+        originals.publisher_registration = Some(None);
+
+        assert!(matches!(originals.genesis, Some(None)));
+        assert!(originals.ready_loan().is_none());
+        assert!(!originals.complete_worker_inputs(&ControllerParentStageV1::Prepared));
+        assert!(!originals.complete_worker_inputs(&ControllerParentStageV1::Completed(
+            ControllerParentStepV1::Commands,
+        )));
+    }
+
+    fn empty_controller_test_custody() -> ControllerWorkerCustodyV1 {
+        ControllerWorkerCustodyV1 {
+            originals: Mutex::new(ControllerWorkerOriginalsV1::default()),
+            terminal: Mutex::new(None),
+            receiver: Mutex::new(None),
+            ended: AtomicBool::new(false),
+        }
+    }
+
+    #[test]
+    fn terminal_close_does_not_wait_on_the_worker_owner_loan() {
+        let custody = empty_controller_test_custody();
+        let _owner_loan = custody.originals.lock().unwrap();
+        let message = "original worker cause".to_owned();
+        let original_buffer = message.as_ptr();
+
+        custody.close(ControllerResidentCauseV1::Worker(message));
+        custody.close(ControllerResidentCauseV1::Closed("later failure"));
+
+        assert!(custody.ended.load(Ordering::Acquire));
+        let terminal = custody.terminal.lock().unwrap();
+        assert!(matches!(
+            terminal.as_ref(),
+            Some(ControllerResidentCauseV1::Worker(message))
+                if message.as_ptr() == original_buffer && message == "original worker cause"
+        ));
+    }
+
+    #[test]
+    fn ready_send_failure_retains_the_actual_returned_send_error() {
+        let custody = empty_controller_test_custody();
+        let (sender, receiver) = mpsc::channel();
+        drop(receiver);
+        let cause = match sender.send(WorkerEvent::Ready) {
+            Err(cause) => cause,
+            Ok(()) => panic!("disconnected actual channel unexpectedly accepted readiness"),
+        };
+
+        custody.close(ControllerResidentCauseV1::ReadySend(cause));
+
+        let terminal = custody.terminal.lock().unwrap();
+        assert!(matches!(
+            terminal.as_ref(),
+            Some(ControllerResidentCauseV1::ReadySend(mpsc::SendError(WorkerEvent::Ready)))
+        ));
+    }
+
+    #[test]
+    fn original_event_receiver_stays_in_its_slot_after_reception() {
+        let custody = empty_controller_test_custody();
+        let (sender, receiver) = mpsc::channel();
+        *custody.receiver.lock().unwrap() = Some(receiver);
+        assert!(sender.send(WorkerEvent::Ready).is_ok());
+
+        let observed = custody.receive();
+
+        assert!(matches!(
+            observed,
+            ControllerMonitorOutcomeV1::Event(WorkerEvent::Ready)
+        ));
+        assert!(custody.receiver.lock().unwrap().is_some());
+        assert!(!custody.ended.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn selected_worker_failure_parks_cause_before_marker_notification() {
+        let custody = empty_controller_test_custody();
+        let (sender, receiver) = mpsc::channel();
+        let original = "original returned worker failure".to_owned();
+        let original_buffer = original.as_ptr();
+
+        report_controller_worker_failure(
+            &sender,
+            Some(&custody),
+            ControllerResidentCauseV1::Worker(original),
+        );
+
+        assert!(matches!(receiver.recv(), Ok(WorkerEvent::ResidentFailure)));
+        let terminal = custody.terminal.lock().unwrap();
+        assert!(matches!(
+            terminal.as_ref(),
+            Some(ControllerResidentCauseV1::Worker(cause)) if cause.as_ptr() == original_buffer
+        ));
+        assert!(custody.ended.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn actual_partial_destination_types_are_send_and_shared_holder_is_sync() {
+        fn require_send<T: Send>() {}
+        fn require_sync<T: Sync>() {}
+
+        require_send::<ControllerWorkerOriginalsV1>();
+        require_send::<ControllerResidentCauseV1>();
+        require_sync::<ControllerWorkerCustodyV1>();
+    }
 
     #[test]
     fn source_successor_issue_mode_is_exclusive_and_keeps_fixed_paths() {
