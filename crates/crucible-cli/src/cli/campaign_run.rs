@@ -87,7 +87,8 @@ fn run_local_qemu_campaign_continuation_workflow(
     resume_plan: &ResumeInvocationPlan,
     evidence: &ResumeHandleEvidence,
 ) -> Result<ResumeWorkflowReport, CliError> {
-    let deployment_path = resolve_guarded_campaign_deployment_path(None)?;
+    let deployment_path =
+        resolve_guarded_campaign_deployment_path(resume_plan.campaign_deployment.as_deref())?;
     let deployment = load_campaign_run_deployment(&deployment_path)?;
     let resources = guarded_run_resources(deployment.resources, None)?;
     let verify_determinism_findings = deployment.verify_determinism_findings;
