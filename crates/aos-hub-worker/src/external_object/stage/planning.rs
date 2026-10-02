@@ -519,11 +519,14 @@ async fn issue_lease(
         .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let provider =
         Request::new_with_init(&format!("https://authority{ISSUER_CONTROL_PATH}"), &init)?;
+    let issuer = env.service("HUB_AUTHORITY_ISSUER")?;
+    #[cfg(feature = "do-e2e")]
+    let observation =
+        super::lease_scale::prepare_dispatch_observation(env, object, &request, &body);
     window.check(object.clock())?;
-    let response = env
-        .service("HUB_AUTHORITY_ISSUER")?
-        .fetch_request(provider)
-        .await?;
+    #[cfg(feature = "do-e2e")]
+    super::lease_scale::emit_dispatch_observation(observation);
+    let response = issuer.fetch_request(provider).await?;
     ensure!(response.status_code() == 200, "issuer renewal refused");
     let bytes = crate::direct_digest::read_bounded_native(response, MAX_ISSUER_REPLY).await?;
     let verifier = object.verifier()?;

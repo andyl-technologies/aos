@@ -165,3 +165,92 @@ fn incomplete_repeated_or_foreign_configurations_refuse() {
     object.clock_uncertainty = 3;
     assert!(fixture.validate(&object).is_err());
 }
+
+fn issuer_request(
+    fixture: &FixtureConfiguration,
+    object: &super::super::super::config::Config,
+) -> aos_hub_core::storage_authority::lease::control::IssuerRequest {
+    use aos_hub_core::storage_authority::lease::control::{IssuerOperation, IssuerRequest};
+    use aos_hub_core::storage_authority::lease::LeaseInteger;
+
+    IssuerRequest {
+        protocol_version: 1,
+        installation: fixture.installations[0].clone(),
+        nonce: "7".repeat(64),
+        issued_at: LeaseInteger::new(100).unwrap(),
+        expires_at: LeaseInteger::new(130).unwrap(),
+        operation: IssuerOperation::Issue {
+            cohort: object.cohorts[0].clone(),
+            requested_not_after: LeaseInteger::new(
+                100 + object.timing_profile.maximum_lifetime.get(),
+            )
+            .unwrap(),
+        },
+    }
+}
+
+#[test]
+fn dispatch_observation_binds_actual_owner_and_bytes_without_private_material() {
+    use sha2::{Digest as _, Sha256};
+
+    for lifetime in [8, 120] {
+        let (fixture, object) = configuration(lifetime);
+        let request = issuer_request(&fixture, &object);
+        let body = serde_json::to_vec(&request).unwrap();
+
+        let encoded =
+            dispatch_observation(&"3".repeat(64), &fixture, &object, &request, &body).unwrap();
+        let event: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+
+        assert!(encoded.len() <= 1024);
+        assert_eq!(event.as_object().unwrap().len(), 12);
+        assert_eq!(event["ownerNonce"], request.nonce);
+        assert_eq!(event["requestSha256"], hex::encode(Sha256::digest(&body)));
+        assert_eq!(event["requestBytes"], body.len());
+        assert_eq!(event["issuedAt"], 100);
+        assert_eq!(event["expiresAt"], 130);
+        assert_eq!(
+            event["configurationDigest"],
+            digest(&(&object, &fixture)).unwrap()
+        );
+        assert_eq!(event["cohortDigest"], digest(&object.cohorts[0]).unwrap());
+        assert_eq!(event["isolateLabel"], fixture.isolate_label);
+        assert!(!encoded.contains(&object.issuer_public_key));
+        assert!(!encoded.contains("signature"));
+        assert!(!encoded.contains("token"));
+    }
+}
+
+#[test]
+fn dispatch_observation_refuses_foreign_configuration_original_or_body() {
+    use aos_hub_core::storage_authority::lease::control::IssuerOperation;
+
+    let (fixture, object) = configuration(8);
+    let request = issuer_request(&fixture, &object);
+    let body = serde_json::to_vec(&request).unwrap();
+    let observe = |request, body: &[u8]| {
+        dispatch_observation(&"3".repeat(64), &fixture, &object, request, body)
+    };
+
+    assert!(dispatch_observation("missing", &fixture, &object, &request, &body).is_err());
+    assert!(observe(&request, b"{}").is_err());
+    let mut foreign = request.clone();
+    foreign.installation.issuer_resource_id = "foreign".into();
+    assert!(observe(&foreign, &serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut foreign = request.clone();
+    if let IssuerOperation::Issue { cohort, .. } = &mut foreign.operation {
+        cohort.admitted_prefix.push_str("/unconfigured");
+    }
+    assert!(observe(&foreign, &serde_json::to_vec(&foreign).unwrap()).is_err());
+    let mut malformed = request.clone();
+    malformed.nonce = "Z".repeat(64);
+    assert!(observe(&malformed, &serde_json::to_vec(&malformed).unwrap()).is_err());
+}
+
+#[test]
+fn absent_opt_in_is_disabled_and_malformed_opt_in_is_incomplete() {
+    assert!(!observation_enabled(None).unwrap());
+    assert!(observation_enabled(Some("1")).unwrap());
+    assert!(observation_enabled(Some("0")).is_err());
+    assert!(observation_enabled(Some("true")).is_err());
+}

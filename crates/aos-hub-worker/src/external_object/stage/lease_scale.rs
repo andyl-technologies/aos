@@ -138,6 +138,100 @@ fn domain_body(domain: &[u8], body: &[u8]) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+fn observation_enabled(flag: Option<&str>) -> Result<bool> {
+    match flag {
+        None => Ok(false),
+        Some("1") => Ok(true),
+        Some(_) => anyhow::bail!("measurement opt-in differs"),
+    }
+}
+
+// This checks measurement provenance only. It neither supplies a lease nor
+// participates in renewal permission, cache eligibility, or dispatch cutoffs.
+fn dispatch_observation(
+    source: &str,
+    fixture: &FixtureConfiguration,
+    object: &super::super::config::Config,
+    request: &aos_hub_core::storage_authority::lease::control::IssuerRequest,
+    body: &[u8],
+) -> Result<String> {
+    use aos_hub_core::storage_authority::lease::control::IssuerOperation;
+    use sha2::{Digest as _, Sha256};
+
+    ensure!(digest_string(source), "measurement source differs");
+    fixture.validate(object)?;
+    ensure!(
+        fixture.installations.contains(&request.installation),
+        "measurement installation differs"
+    );
+    request.validate(&request.installation, request.issued_at.get())?;
+    let IssuerOperation::Issue { cohort, .. } = &request.operation else {
+        anyhow::bail!("measurement is not a lease issue");
+    };
+    let cohort_digest = digest(cohort)?;
+    ensure!(
+        object.cohort(&cohort_digest)? == cohort
+            && cohort.authority == request.installation.authority
+            && body.len() <= 64 * 1024
+            && serde_json::to_vec(request)? == body,
+        "measurement request differs from configured original"
+    );
+
+    let event = serde_json::to_string(&serde_json::json!({
+        "event": "aos_lease_scale_issuer_dispatch", "version": 1,
+        "sourceDigest": source, "runId": fixture.run_id,
+        "isolateLabel": fixture.isolate_label,
+        "configurationDigest": digest(&(object, fixture))?,
+        "cohortDigest": cohort_digest, "ownerNonce": request.nonce,
+        "requestSha256": hex::encode(Sha256::digest(body)),
+        "requestBytes": body.len(), "issuedAt": request.issued_at.get(),
+        "expiresAt": request.expires_at.get(),
+    }))?;
+    ensure!(event.len() <= 1024, "measurement event exceeds bound");
+    Ok(event)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn prepare_dispatch_observation(
+    env: &worker::Env,
+    object: &super::super::config::Config,
+    request: &aos_hub_core::storage_authority::lease::control::IssuerRequest,
+    body: &[u8],
+) -> Option<Result<String>> {
+    let flag = match js_sys::Reflect::get(
+        env.as_ref(),
+        &wasm_bindgen::JsValue::from_str("HUB_LEASE_SCALE_OBSERVE"),
+    ) {
+        Ok(flag) if flag.is_null() || flag.is_undefined() => return None,
+        Ok(flag) => flag,
+        Err(_) => return Some(Err(anyhow::anyhow!("measurement opt-in unavailable"))),
+    };
+    Some((|| {
+        let flag = flag
+            .as_string()
+            .ok_or_else(|| anyhow::anyhow!("measurement opt-in malformed"))?;
+        ensure!(observation_enabled(Some(&flag))?, "measurement disabled");
+        let source = option_env!("AOS_HUB_WORKER_SOURCE_DIGEST")
+            .ok_or_else(|| anyhow::anyhow!("measurement source absent"))?;
+        let raw = env.var("HUB_LEASE_SCALE_FIXTURE")?.to_string();
+        ensure!(
+            raw.len() <= 128 * 1024,
+            "measurement configuration oversized"
+        );
+        let fixture: FixtureConfiguration = serde_json::from_str(&raw)?;
+        dispatch_observation(source, &fixture, object, request, body)
+    })())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn emit_dispatch_observation(observation: Option<Result<String>>) {
+    match observation {
+        Some(Ok(event)) => worker::console_log!("{}", event),
+        Some(Err(_)) => worker::console_log!("aos_lease_scale_measurement_incomplete"),
+        None => {}
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod runtime {
     use super::*;
