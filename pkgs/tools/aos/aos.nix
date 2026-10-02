@@ -31,7 +31,6 @@
   nftables,
   remove-references-to,
   sqlite,
-  socat,
   tpm2-tools,
   util-linux,
   which,
@@ -347,7 +346,7 @@ in
       ++ aosRuntimeTools
       ++ aprRuntimeTools
       ++ apmRuntimeTools
-      ++ lib.optionals (!isDarwinCross) (linuxRuntimeDeps ++ [socat]);
+      ++ lib.optionals (!isDarwinCross) linuxRuntimeDeps;
 
     # mkDerivation normally constructs one RPATH from every runtimeDep. That
     # is correct for a single-output package, but would make each executable
@@ -652,10 +651,6 @@ in
           mv "$out/bin/aos-package-attestation-provider" "$packageRuntime/libexec/"
           mv "$out/bin/aos-image-rollout-observer" "$packageRuntime/libexec/"
           mv "$out/bin/aos-image-rollout-provider" "$packageRuntime/bin/"
-          ln -s ${coreutils}/bin/env "$packageRuntime/libexec/aos-env"
-          ln -s ${nftables}/bin/nft "$packageRuntime/libexec/aos-nft"
-          ln -s ${util-linux}/bin/setpriv "$packageRuntime/libexec/aos-setpriv"
-          ln -s ${socat}/bin/socat "$packageRuntime/libexec/aos-socat"
       ''}
 
           grep -Fqx 'export AOS_NIX_STORE="${nix}/bin/nix-store"' "$packageRuntime/bin/aos-package-runtime"
@@ -664,10 +659,6 @@ in
           test "$(readlink "$packageRuntime/bin/.aos-package-runtime-unwrapped")" = \
             "$apm/bin/.aos-package-runtime-unwrapped"
           ${lib.optionalString (!isDarwinCross) ''
-        test "$(readlink "$packageRuntime/libexec/aos-env")" = "${coreutils}/bin/env"
-        test "$(readlink "$packageRuntime/libexec/aos-nft")" = "${nftables}/bin/nft"
-        test "$(readlink "$packageRuntime/libexec/aos-setpriv")" = "${util-linux}/bin/setpriv"
-        test "$(readlink "$packageRuntime/libexec/aos-socat")" = "${socat}/bin/socat"
         test -x "$packageRuntime/bin/aos-provisioning-configuration-evaluator"
         test -x "$packageRuntime/bin/aos-boot-configuration"
         test -x "$packageRuntime/libexec/aos-image-rollout-boot"
