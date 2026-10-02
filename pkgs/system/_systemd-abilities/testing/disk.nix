@@ -100,7 +100,8 @@
       if builtins.elem provisioningSource ["operator" "fallback"]
       then provisioningSource
       else throw "mkTestDisk provisioningSource must be operator or fallback";
-    bakeVar = builtins.seq checkedProvisioningSource (varProvisioning == "baked");
+    storageLayout = import ./storage-layout.nix {inherit varProvisioning varSizeMiB;};
+    bakeVar = builtins.seq checkedProvisioningSource storageLayout.baked;
 
     # rootfsPost — shell fragment spliced into the shared rootfs
     # helper's populate phase after tree population, before mkfs.
@@ -402,7 +403,7 @@
           script = ''
             set -eu
             ${lib.optionalString bakeVar ''
-              VAR_SIZE_MIB=${builtins.toString varSizeMiB}
+              VAR_SIZE_MIB=${builtins.toString storageLayout.varSizeMiB}
 
               # ── /var partition staging ────────────────────────────────
               mkdir -p var
@@ -433,7 +434,7 @@
             # make room before boot (see lib/testing/fleet.nix).
             BOOT_SECTORS=$(( 4 * 1024 * 1024 / 512 ))   # 4 MiB
             ROOT_SECTORS=$(( root_bytes / 512 ))
-            SWAP_SECTORS=$(( 8 * 1024 * 1024 / 512 ))   # 8 MiB
+            SWAP_SECTORS=$(( ${toString storageLayout.swapSizeMiB} * 1024 * 1024 / 512 ))
             SENTINEL_SECTORS=$(( 1 * 1024 * 1024 / 512 ))
 
             BOOT_START=2048
