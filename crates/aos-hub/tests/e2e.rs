@@ -204,6 +204,8 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
     // Move default-branch HEAD to a signed commit with no packages while the
     // immutable release tag remains pinned to the original image catalog.
     // Image discovery must continue to project the tag commit, never HEAD.
+    // Only branches at released commits are channels, so the authoring HEAD
+    // lives on its own branch and `stable` stays at the release.
     let registry_toml = public_fixture.registry.put_blob(
         "[registry]\nname = \"demo\"\ndescription = \"HEAD without images\"\n\n\
          [caches]\nendpoint = \"https://cdn.example.invalid/demo/\"\n",
@@ -220,8 +222,11 @@ async fn signed_system_images_work_end_to_end_for_public_and_private_registries(
         .registry
         .put_signed_commit(head_tree, "HEAD intentionally differs from release");
     public_fixture.registry.put_refs(
-        "stable",
-        &[("stable", divergent_head)],
+        "main",
+        &[
+            ("main", divergent_head),
+            ("stable", public_fixture.release_commit),
+        ],
         &[(
             "1.0.0",
             public_fixture.release_tag,

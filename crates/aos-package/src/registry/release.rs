@@ -2283,8 +2283,8 @@ mod tests {
             .initial_head("master");
         let repository = Repository::init_opts(path, &options)?;
 
-        // The authoring manifest names the local registry; the transaction
-        // separately carries its qualified signing identity, andyl/main.
+        // The committed manifest carries the local authoring name; only the
+        // release transaction uses the canonical `SCOPE/NAME` identity.
         fs::write(path.join("registry.toml"), b"[registry]\nname = \"main\"\n")?;
         assert_eq!(crate::registry_ops::local_registry_name(path)?, "main");
 
