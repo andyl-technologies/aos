@@ -1678,7 +1678,7 @@ pub(super) fn cli_run_workflow_supports_virtual_time_budget() -> Result<(), Box<
 
     assert_eq!(plan.terminal_condition, RunTerminalCondition::VirtualTime);
     assert_eq!(plan.max_virtual_time.as_deref(), Some("10ms"));
-    assert_eq!(plan.max_virtual_time_ticks, Some(10_000_000));
+    assert_eq!(plan.max_virtual_time_ticks, Some(10_000_000_000));
     assert_eq!(
         plan.startup_commands,
         vec![SessionCommandKind::Start, SessionCommandKind::Continue]
