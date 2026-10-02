@@ -87,18 +87,22 @@ fn native_directory_refuses_unclaimed_paths_and_replacement_inodes() {
         call(&handler, "observe", &invocation)["status"],
         "indeterminate"
     );
-    assert!(handler
-        .handle("apply", &serde_json::to_vec(&invocation).unwrap())
-        .is_err());
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
     fs::remove_dir(&path).unwrap();
     call(&handler, "apply", &invocation);
     fs::rename(&path, temporary.path().join("original")).unwrap();
     fs::create_dir(&path).unwrap();
 
     invocation.action = Action::Remove;
-    assert!(handler
-        .handle("remove", &serde_json::to_vec(&invocation).unwrap())
-        .is_err());
+    assert!(
+        handler
+            .handle("remove", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
     assert!(path.exists());
 }
 
@@ -145,9 +149,11 @@ fn native_file_copies_bounded_source_and_observes_content_drift() {
         "retry-safe"
     );
     fs::write(&source, b"too many bytes").unwrap();
-    assert!(handler
-        .handle("apply", &serde_json::to_vec(&invocation).unwrap())
-        .is_err());
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
     assert_eq!(fs::read(&destination).unwrap(), b"other");
 }
 
@@ -186,9 +192,11 @@ fn parent_ordering_alone_does_not_authorize_nested_allocation() {
     child.id = "child".into();
     child.effect.dependencies = vec![parent.id.clone()];
 
-    assert!(handler
-        .handle("apply", &serde_json::to_vec(&child).unwrap())
-        .is_err());
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&child).unwrap())
+            .is_err()
+    );
     child.input["parentResource"] = json!(parent.id);
     call(&handler, "apply", &child);
     assert!(parent_path.join("child").is_dir());
@@ -207,9 +215,11 @@ fn nested_allocation_rejects_replaced_parent_inode() {
     fs::rename(&path, temporary.path().join("original")).unwrap();
     fs::create_dir(&path).unwrap();
 
-    assert!(handler
-        .handle("apply", &serde_json::to_vec(&child).unwrap())
-        .is_err());
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&child).unwrap())
+            .is_err()
+    );
     assert!(!path.join("child").exists());
 }
 
@@ -290,9 +300,11 @@ fn production_policy_realizes_var_and_gc_entries_without_adopting_existing_paths
 
         fs::create_dir(&path).unwrap();
         invocation.action = Action::Apply;
-        assert!(handler
-            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
-            .is_err());
+        assert!(
+            handler
+                .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+                .is_err()
+        );
         assert!(path.exists());
         fs::remove_dir(&path).unwrap();
     }
@@ -300,8 +312,10 @@ fn production_policy_realizes_var_and_gc_entries_without_adopting_existing_paths
     let link = relocated(Path::new("/var/etc/redirect"));
     std::os::unix::fs::symlink(temporary.path(), &link).unwrap();
     let invocation = invocation(&link.join("unowned"));
-    assert!(handler
-        .handle("apply", &serde_json::to_vec(&invocation).unwrap())
-        .is_err());
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
     assert!(!temporary.path().join("unowned").exists());
 }
