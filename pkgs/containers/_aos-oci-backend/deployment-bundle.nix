@@ -250,6 +250,14 @@ in
     (pkgs.runCommand "aos-${lib.concatStringsSep "-" scope}-deployment" {
         passthru = metadata;
       } ''
+        # Validate the complete composed transaction at the same boundary used
+        # by runtime activation, before publishing a bootable bundle.
+        ${buildPackages.jq}/bin/jq -n \
+          --slurpfile packages ${packagesFile}/packages.json \
+          --slurpfile transaction ${transactionFile}/transaction.json \
+          '{packages: $packages[0], transaction: $transaction[0]}' > check-input.json
+        ${buildPackages.aos-deployment-check}/bin/aos-deployment-check < check-input.json
+
         mkdir -p "$out"
         ln -s ${transactionFile}/transaction.json "$out/transaction.json"
         ln -s ${packagesFile}/packages.json "$out/packages.json"
