@@ -15,7 +15,9 @@ pkgs.mkDerivation {
       name = "retain-host-evaluation-input";
       script = ''
         mkdir -p "$out"
-        cp ${evaluationInput} "$out/evaluation.json"
+        # Retain the canonical descriptor without scanning its inert catalog
+        # locators again in this package's compiler-backed build environment.
+        ln -s ${evaluationInput} "$out/evaluation.json"
       '';
     }
   ];
