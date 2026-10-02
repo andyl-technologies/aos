@@ -308,6 +308,9 @@ exact_user_pins = true
     };
     for _ in 0..iterations {
         let mut invocation = fixture.service_command(None);
+        // Retain the existing authenticated runtime/boot diagnostics when a
+        // discovery deadline expires, without changing its modeled outcome.
+        invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
         invocation
             .arg("--qemu")
             .arg(required_path("CRUCIBLE_FLIGHT_QEMU")?)
@@ -334,6 +337,7 @@ exact_user_pins = true
         } else {
             execute_initial_discovery(
                 &fixture,
+                &packaged,
                 &head,
                 &json_string(&compiled, "genesis_artifact")?,
                 mode,
@@ -366,6 +370,7 @@ exact_user_pins = true
 
 fn execute_initial_discovery(
     fixture: &FlightFixture,
+    service: &CampaignServiceChild,
     head: &Value,
     genesis: &str,
     mode: PackagedFlight,
@@ -441,7 +446,7 @@ fn execute_initial_discovery(
         ]),
         "explain stalled initial discovery",
     );
-    Err(format!("running packaged campaign produced no initial discovery observation within 30s: {head}; snapshot={snapshot}; attempt={explanation:?}").into())
+    Err(format!("running packaged campaign produced no initial discovery observation within 30s: {head}; snapshot={snapshot}; attempt={explanation:?}; bounded service stderr={}", service.stderr_tail()).into())
 }
 
 fn begin_initial_discovery(
