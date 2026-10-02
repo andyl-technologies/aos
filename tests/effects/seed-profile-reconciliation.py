@@ -13,6 +13,7 @@ import unittest
 BASH, SOURCE, COREUTILS, JQ = sys.argv[1:5]
 del sys.argv[1:5]
 metadata_path = sys.argv.pop(1) if len(sys.argv) > 1 else None
+descriptor_path = sys.argv.pop(1) if len(sys.argv) > 1 else None
 source = Path(SOURCE).read_text()
 library_metadata = (
     json.loads(Path(metadata_path).read_text())
@@ -39,6 +40,8 @@ FUNCTIONS = "\n".join(
         "update_running_image_state",
         "repair_image_retention",
         "validate_module_library_identity",
+        "validate_nix_store_root",
+        "validate_rooted_evaluation_descriptor",
     )
 )
 
@@ -282,6 +285,91 @@ class SeedReconciliation(unittest.TestCase):
                 )
 
                 self.assertNotEqual(result.returncode, 0)
+
+    def descriptor_fixture(self):
+        root = self.root / "sysroot"
+        descriptor = (
+            descriptor_path
+            if descriptor_path is not None
+            else "/nix/store/" + "0" * 32 + "-host-deployment/evaluation.json"
+        )
+        target = (
+            os.readlink(descriptor)
+            if descriptor_path is not None
+            else "/nix/store/" + "1" * 32 + "-native-evaluation-inputs"
+        )
+        physical = root / descriptor.lstrip("/")
+        physical.parent.mkdir(parents=True)
+        physical.symlink_to(target)
+        rooted_target = root / target.lstrip("/")
+        contents = (
+            Path(descriptor).read_bytes()
+            if descriptor_path
+            else b'{"library":"retained"}'
+        )
+        rooted_target.write_bytes(contents)
+        return root, descriptor, physical, target, rooted_target
+
+    def check_descriptor(self, root, descriptor):
+        return self.run_helpers(
+            "validate_rooted_evaluation_descriptor "
+            + shlex.quote(str(root))
+            + " "
+            + shlex.quote(descriptor)
+        )
+
+    def test_retained_absolute_descriptor_leaf_resolves_in_host_namespace(self):
+        root, descriptor, physical, target, rooted_target = self.descriptor_fixture()
+
+        result = self.check_descriptor(root, descriptor)
+
+        self.assert_success(result)
+        self.assertEqual(os.readlink(physical), target)
+        self.assertTrue(rooted_target.is_file())
+
+    def test_direct_regular_descriptor_member_is_accepted(self):
+        root, descriptor, physical, _, _ = self.descriptor_fixture()
+        physical.unlink()
+        physical.write_text('{"library":"retained"}')
+
+        self.assert_success(self.check_descriptor(root, descriptor))
+
+    def test_descriptor_target_must_be_one_regular_store_root_file(self):
+        root, descriptor, physical, _, rooted_target = self.descriptor_fixture()
+        rooted_target.unlink()
+
+        self.assertNotEqual(self.check_descriptor(root, descriptor).returncode, 0)
+        rooted_target.symlink_to("/nix/store/" + "2" * 32 + "-another-target")
+        self.assertNotEqual(self.check_descriptor(root, descriptor).returncode, 0)
+        rooted_target.unlink()
+        rooted_target.mkdir()
+        self.assertNotEqual(self.check_descriptor(root, descriptor).returncode, 0)
+
+        for target in ("../relative", "/etc/passwd", "/nix/store/invalid", descriptor):
+            with self.subTest(target=target):
+                physical.unlink()
+                physical.symlink_to(target)
+
+                self.assertNotEqual(self.check_descriptor(root, descriptor).returncode, 0)
+
+    def test_descriptor_member_must_be_normalized_and_confined(self):
+        root, descriptor, physical, _, _ = self.descriptor_fixture()
+        invalid_paths = (
+            descriptor.replace("/evaluation.json", "/../evaluation.json"),
+            descriptor.replace("/evaluation.json", "//evaluation.json"),
+            descriptor.replace("/evaluation.json", "/./evaluation.json"),
+            "/nix/store/invalid/evaluation.json",
+            "/etc/evaluation.json",
+        )
+        for candidate in invalid_paths:
+            with self.subTest(candidate=candidate):
+                self.assertNotEqual(self.check_descriptor(root, candidate).returncode, 0)
+
+        physical.unlink()
+        physical.parent.rmdir()
+        physical.parent.symlink_to(self.image)
+
+        self.assertNotEqual(self.check_descriptor(root, descriptor).returncode, 0)
 
 
 if __name__ == "__main__":
