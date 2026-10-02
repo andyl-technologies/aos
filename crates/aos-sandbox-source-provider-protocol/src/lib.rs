@@ -81,6 +81,8 @@ pub use codec::{
     encode_release_response, encode_response_status, validate_message_descriptor_contract,
 };
 pub use crypto::{
+    PreparedSourceExportLeaseDataV5, PreparedSourceProviderReceiptDataV5,
+    PreparedSourceProviderStatusDataV5,
     SignedSourceExportLeaseV1, SignedSourceProviderHelloV1, SignedSourceProviderInventoryV1,
     SignedSourceProviderReceiptV1, SignedSourceProviderRequestV1, SignedSourceProviderStatusV1,
     SignedSourceReleaseReceiptV1, SourceProviderKeyUsageV1, SourceProviderSignature,

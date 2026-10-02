@@ -65,6 +65,23 @@ pub(super) struct OriginalStorageOfferV5 {
 }
 
 impl OriginalStorageOfferV5 {
+    pub(super) fn is_prepared(&self) -> bool {
+        self.stage == OfferStageV5::Prepared && self.failure.is_none()
+    }
+
+    pub(super) fn physical(&self) -> Result<&ProviderPhysicalSourceRootV1, ProviderLedgerError> {
+        self.physical.as_ref().and_then(|physical| physical.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)
+    }
+
+    pub(super) fn reply(&self) -> Result<&StorageNativeAcquireReplyV3, ProviderLedgerError> {
+        self.reply.as_ref().ok_or(ProviderLedgerError::Unavailable)
+    }
+
+    pub(super) fn verified(&self) -> Result<&VerifiedStorageNativeAcquireV3, ProviderLedgerError> {
+        self.verified.as_ref().ok_or(ProviderLedgerError::Unavailable)
+    }
+
     fn pending() -> Self {
         Self {
             stage: OfferStageV5::StagePackets,
@@ -277,7 +294,7 @@ impl FixedProviderOwnerV1 {
         })
     }
 
-    fn original_offer_v5(&self) -> Result<&OriginalStorageOfferV5, ProviderLedgerError> {
+    pub(super) fn original_offer_v5(&self) -> Result<&OriginalStorageOfferV5, ProviderLedgerError> {
         self.original_source_producer_v5()?.storage_offer.as_ref().ok_or(ProviderLedgerError::Unavailable)
     }
 
@@ -489,7 +506,7 @@ impl FixedProviderOwnerV1 {
 
 // The two projections are bounded DATA, never historical-prefix caches. Reserve
 // their entries and park each empty row before fallible key/value retention.
-fn retain_projection(
+pub(super) fn retain_projection(
     target: &mut Vec<(Vec<u8>, Vec<u8>)>,
     rows: &SourceCapacityStateV5,
     replacement: Option<(&[u8], &[u8])>,

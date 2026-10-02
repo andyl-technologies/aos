@@ -455,6 +455,31 @@ response_plan!(AcquireStatusCompletionPlanV1, false);
 pub struct AcquireCompletionPlanV1(CompletionMutationPlanV1);
 
 impl AcquireCompletionPlanV1 {
+    /// Derives the exact six-row completion for a bounded native-held graph.
+    ///
+    /// The signed artifacts are comparison DATA; this grants no live custody,
+    /// challenge spend, signing, protected append or descriptor send authority.
+    ///
+    /// # Errors
+    ///
+    /// Rejects oversized/noncanonical held rows or a substituted completion join.
+    pub fn finalize_native_held<'record>(
+        self,
+        current_records: impl IntoIterator<Item = (&'record [u8], &'record [u8])>,
+        next: &crate::ledger::native_held_completion::SourceNativeHeldCompletionRecordV1,
+        canonical_response: Vec<u8>,
+        signed_lease: SignedSourceExportLeaseV1,
+        completed_at_seconds: i64,
+    ) -> Result<FinalizedCompletionV1, LedgerFormatErrorV1> {
+        let current = crate::collect_bounded_records(current_records)?;
+        crate::ledger::native_held_completion::validate_native_held_records_v1(
+            current.iter().map(|(key, value)| (key.as_slice(), value.as_slice())),
+        )?;
+        finalize_native_held_complete(
+            &current, self, next, canonical_response, signed_lease, completed_at_seconds,
+        )
+    }
+
     /// Adds the exact native Active marker to the same sealed completion cut.
     ///
     /// This is pure planning, not challenge-spend or descriptor authority. The

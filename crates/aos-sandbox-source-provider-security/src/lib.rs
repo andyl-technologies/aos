@@ -80,7 +80,7 @@ pub use execution::{
     ProviderExecutionDeathKindV2,
 };
 pub use handshake::{
-    OriginalNativeSigningErrorV5,
+    OriginalNativeSigningErrorV5, OriginalProviderCompletionSignaturesV5,
     AcquireReceiptFactsV1, AuthenticatedRootMountCatalogCurrentnessV1,
     AuthenticatedRootMountNativeRecoveryUnavailableV1, AuthenticatedRootMountRecoveryObservationV2,
     AuthenticatedRootMountRecoveryUnavailableV1, AuthorizedMountAcquireVerificationFloorV2,

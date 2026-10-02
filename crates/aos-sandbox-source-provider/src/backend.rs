@@ -73,6 +73,11 @@ impl ProviderPhysicalSourceRootV1 {
         &self.observation
     }
 
+    /// Returns the original observation time, never a fresh currentness sample.
+    pub(crate) const fn original_observed_seconds(&self) -> i64 {
+        self.observed_seconds
+    }
+
     /// Duplicates custody of the same mount, never reopening an equivalent path.
     pub(crate) fn retain_original(&self) -> Result<Self, crate::ProviderLedgerError> {
         self.revalidate()?;

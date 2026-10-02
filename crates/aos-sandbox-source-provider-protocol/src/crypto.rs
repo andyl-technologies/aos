@@ -344,6 +344,140 @@ signed_accessors!(
     SourceProviderInventoryV1
 );
 
+// These three fixed DATA envelopes expose the sole canonical message builder.
+// They do not sign, validate custody, or grant any operation authority.
+macro_rules! prepared_outcome_data {
+    ($prepared:ident, $subject:ty, $signed:ident, $field:ident) => {
+        /// Retains one canonical outcome signing message as unverified DATA.
+        ///
+        /// Preparation and detached-signature attachment confer no custody,
+        /// currentness, persistence, effect, or send authority.
+        pub struct $prepared {
+            subject: $subject,
+            signer: SourceProviderSigningKeyV1,
+            message: Vec<u8>,
+        }
+
+        impl $prepared {
+            /// Borrows the exact subject retained during preparation.
+            #[must_use]
+            pub const fn subject(&self) -> &$subject {
+                &self.subject
+            }
+
+            /// Borrows the canonical domain-separated signing message.
+            #[must_use]
+            pub fn signing_message(&self) -> &[u8] {
+                &self.message
+            }
+
+            /// Attaches detached bytes without verifying their signature.
+            ///
+            /// The result remains unverified DATA until the caller performs
+            /// the existing cryptographic and genuine-owner checks.
+            #[must_use]
+            pub fn attach_signature(self, signature: [u8; 64]) -> $signed {
+                $signed {
+                    $field: self.subject,
+                    signer: self.signer,
+                    signature: SourceProviderSignature::from_bytes(signature),
+                }
+            }
+        }
+    };
+}
+
+prepared_outcome_data!(
+    PreparedSourceExportLeaseDataV5,
+    SourceExportLeaseV1,
+    SignedSourceExportLeaseV1,
+    lease
+);
+prepared_outcome_data!(
+    PreparedSourceProviderReceiptDataV5,
+    SourceProviderReceiptV1,
+    SignedSourceProviderReceiptV1,
+    receipt
+);
+prepared_outcome_data!(
+    PreparedSourceProviderStatusDataV5,
+    SourceProviderResponseStatusV1,
+    SignedSourceProviderStatusV1,
+    status
+);
+
+impl PreparedSourceExportLeaseDataV5 {
+    /// Prepares the fixed export-lease message without performing crypto.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing signature error for wrong usage, authority, or
+    /// public-key fingerprint. A caller-supplied public key is DATA only.
+    pub fn prepare(
+        subject: SourceExportLeaseV1,
+        signer: SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<Self, SourceProviderSignatureError> {
+        require_usage(&signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
+        if !lease_authority_matches(&subject, &signer) {
+            return Err(SourceProviderSignatureError::SignerMismatch);
+        }
+        let encoded = encode_export_lease(&subject);
+        require_key_fingerprint(&signer, public_key)?;
+        let message = signing_message(LEASE_SIGNATURE_DOMAIN, 1, &encoded, &signer);
+        Ok(Self { subject, signer, message })
+    }
+}
+
+impl PreparedSourceProviderReceiptDataV5 {
+    /// Prepares the fixed receipt message and its existing nested-lease joins.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing signature error for malformed or mismatched lease
+    /// bytes, wrong usage or authority, or public-key fingerprint mismatch.
+    pub fn prepare(
+        subject: SourceProviderReceiptV1,
+        signer: SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<Self, SourceProviderSignatureError> {
+        require_usage(&signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
+        let nested_lease = receipt_lease(&subject)?;
+        if !provider_matches(nested_lease.subject().provider(), &signer) {
+            return Err(SourceProviderSignatureError::SignerMismatch);
+        }
+        let encoded = encode_provider_receipt(&subject);
+        require_key_fingerprint(&signer, public_key)?;
+        let message = signing_message(RECEIPT_SIGNATURE_DOMAIN, 2, &encoded, &signer);
+        Ok(Self { subject, signer, message })
+    }
+}
+
+impl PreparedSourceProviderStatusDataV5 {
+    /// Prepares the fixed method-bound response-status message without crypto.
+    ///
+    /// # Errors
+    ///
+    /// Returns the existing signature error for wrong usage or public-key
+    /// fingerprint mismatch.
+    pub fn prepare(
+        subject: SourceProviderResponseStatusV1,
+        signer: SourceProviderSigningKeyV1,
+        public_key: &[u8; 32],
+    ) -> Result<Self, SourceProviderSignatureError> {
+        require_usage(&signer, SourceProviderKeyUsageV1::ProviderOutcome)?;
+        let encoded = encode_response_status(&subject);
+        require_key_fingerprint(&signer, public_key)?;
+        let message = signing_message(
+            STATUS_SIGNATURE_DOMAIN,
+            subject.method() as u8,
+            &encoded,
+            &signer,
+        );
+        Ok(Self { subject, signer, message })
+    }
+}
+
 impl SignedSourceProviderRequestV1 {
     /// Returns the exact signed request method.
     #[must_use]
@@ -1400,5 +1534,83 @@ impl SignedSourceProviderRequestV1 {
             signer,
             signature,
         })
+    }
+}
+
+#[cfg(test)]
+mod original_prepared_data_tests {
+    //! UNRUN crypto DATA vectors, not original Session or protected-owner fixtures.
+
+    use super::*;
+    use ed25519_dalek::Signer as _;
+
+    fn status() -> SourceProviderResponseStatusV1 {
+        SourceProviderResponseStatusV1::new(
+            SourceProviderMethod::Acquire,
+            [1; 16],
+            ObjectDigest::from_bytes([2; 32]),
+            crate::SourceProviderStatus::Complete,
+            [3; 16],
+            ObjectDigest::from_bytes([4; 32]),
+            1,
+            ObjectDigest::from_bytes([5; 32]),
+            ObjectDigest::from_bytes([6; 32]),
+        ).unwrap()
+    }
+
+    fn signer(key: &SigningKey, usage: SourceProviderKeyUsageV1) -> SourceProviderSigningKeyV1 {
+        SourceProviderSigningKeyV1::for_signing_key(
+            [7; 16],
+            1,
+            ObjectDigest::from_bytes([8; 32]),
+            [9; 16],
+            1,
+            usage,
+            key,
+        ).unwrap()
+    }
+
+    #[test]
+    fn prepared_status_has_the_exact_ordinary_signing_message() {
+        let key = SigningKey::from_bytes(&[10; 32]);
+        let signer = signer(&key, SourceProviderKeyUsageV1::ProviderOutcome);
+        let subject = status();
+        let ordinary = sign_response_status(subject.clone(), signer.clone(), &key).unwrap();
+        let prepared = PreparedSourceProviderStatusDataV5::prepare(
+            subject,
+            signer,
+            &key.verifying_key().to_bytes(),
+        ).unwrap();
+
+        let detached = key.sign(prepared.signing_message()).to_bytes();
+        let attached = prepared.attach_signature(detached);
+
+        assert_eq!(attached.to_canonical_bytes(), ordinary.to_canonical_bytes());
+        verify_response_status(&attached, &key.verifying_key().to_bytes()).unwrap();
+    }
+
+    #[test]
+    fn prepared_status_preserves_wrong_usage_before_fingerprint_error() {
+        let key = SigningKey::from_bytes(&[10; 32]);
+        let signer = signer(&key, SourceProviderKeyUsageV1::RootMountRecord);
+
+        let result = PreparedSourceProviderStatusDataV5::prepare(status(), signer, &[0; 32]);
+
+        assert!(matches!(result, Err(SourceProviderSignatureError::SignerMismatch)));
+    }
+
+    #[test]
+    fn detached_attachment_does_not_verify_or_grant_authentication() {
+        let key = SigningKey::from_bytes(&[10; 32]);
+        let signer = signer(&key, SourceProviderKeyUsageV1::ProviderOutcome);
+        let prepared = PreparedSourceProviderStatusDataV5::prepare(
+            status(),
+            signer,
+            &key.verifying_key().to_bytes(),
+        ).unwrap();
+
+        let attached = prepared.attach_signature([0; 64]);
+
+        assert!(verify_response_status(&attached, &key.verifying_key().to_bytes()).is_err());
     }
 }

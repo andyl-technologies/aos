@@ -20,7 +20,8 @@ use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_source_provider::{
     FixedProviderCatalogProgressV1, FixedProviderIngressProgressV1, FixedProviderOpenReportV1,
     FixedProviderOwnerStatusV1, FixedProviderOwnerV1,
-    FixedProviderOriginalStorageOfferProgressV5, ProviderLedgerError,
+    FixedProviderOriginalStorageOfferProgressV5, FixedProviderOriginalCompletionProgressV5,
+    ProviderLedgerError,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FileType, Mode, OFlags, Stat, fstat, open, openat};
@@ -254,6 +255,32 @@ impl ProductionSourceProviderIngressV1 {
             self.listener.validate_current()?;
             let (publication, rows) = self.read_current_catalog_manifest()?;
             let progress = owner.advance_original_storage_offer_v5(&publication, &rows);
+            self.listener.validate_current()?;
+            Ok(progress)
+        })();
+        if result.is_err() {
+            owner.close_original_storage_offer_after_failure_v5();
+        }
+        result
+    }
+
+    /// Advances the SAME original pair through resident native Complete readback.
+    ///
+    /// This does not deliver Complete, Provider3, SourceRoot or a relay. The
+    /// original owner and the caller's first outer cause must remain resident.
+    ///
+    /// # Errors
+    ///
+    /// Rejects listener/catalog drift and closes the original writer before
+    /// returning its actual cause. No replacement Session or retry is admitted.
+    pub fn advance_original_native_completion(
+        &self,
+        owner: &mut FixedProviderOwnerV1,
+    ) -> Result<FixedProviderOriginalCompletionProgressV5, ProductionSourceProviderIngressErrorV1> {
+        let result = (|| {
+            self.listener.validate_current()?;
+            let (publication, rows) = self.read_current_catalog_manifest()?;
+            let progress = owner.advance_original_native_completion_v5(&publication, &rows);
             self.listener.validate_current()?;
             Ok(progress)
         })();

@@ -76,6 +76,7 @@ pub struct OriginalSourceProtectedReadbackV5 {
     transaction: JournalTransaction,
     validated: bool,
     original_native_signing_attempted: std::cell::Cell<bool>,
+    original_completion_signing: std::cell::Cell<u8>,
 }
 
 /// Binds prospective archive metadata to one held append without proving commit.
@@ -213,6 +214,169 @@ impl Journal {
 }
 
 impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
+    /// Checks the remaining envelope on the actual phase-two cut before spend.
+    ///
+    /// This derives symbolic codec bounds, not future Spent rows, signatures,
+    /// transactions or a portable capacity permit.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a changed readback, missing original Issued history, an ambiguous
+    /// Source5 floor or insufficient opened all-eight/NEXT headroom.
+    pub fn require_original_completion_headroom_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+    ) -> Result<(), JournalError> {
+        self.validate_readback(readback)?;
+        let journal = &self.authority.journal;
+        let key = aos_sandbox_source_provider_ledger::ledger::native_completion::
+            native_completion_key_v2(acquisition);
+        let bytes = readback.rows.get(&(RecordNamespace::SourceProviderAuthority, key.clone()))
+            .ok_or(invalid("original Source phase2 readback missing"))?;
+        let held = SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
+            .map_err(|_| invalid("original Source phase2 readback codec"))?;
+        if held.suffix().phase() != 2 {
+            return Err(invalid("original Source completion headroom requires phase2"));
+        }
+
+        // The same parser validated this actual phase-one edge against Issued.
+        // Compare its real historical checkpoint to the current last value;
+        // never reconstruct Issued from Spent or duplicate the challenge codec.
+        let checkpoints = self.challenges.retained_rows()?;
+        let mut issued = None;
+        for cut in journal.source_original_replay.cuts() {
+            let Some(bytes) = cut.after_rows().get(&(
+                RecordNamespace::SourceProviderAuthority, key.clone(),
+            )) else { continue; };
+            let record = SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
+                .map_err(|_| invalid("original Source Issued cut codec"))?;
+            if record.suffix().phase() == 1
+                && record.original().canonical_request == held.original().canonical_request
+                && let Some(index) = cut.challenge_checkpoint()
+            {
+                let checkpoint = checkpoints.get(index)
+                    .ok_or(invalid("original Source Issued physical checkpoint missing"))?;
+                if issued.replace(checkpoint).is_some() {
+                    return Err(invalid("original Source Issued physical checkpoint ambiguous"));
+                }
+            }
+        }
+        let issued = issued.ok_or(invalid("original Source Issued physical checkpoint absent"))?;
+        if checkpoints.iter().rev().find(|row| row.key() == issued.key())
+            .is_none_or(|row| row.value() != issued.value())
+        {
+            return Err(invalid("original Source challenge already advanced"));
+        }
+
+        let origin = journal.source_original_replay.origins().iter()
+            .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
+            .ok_or(invalid("original Source completion origin missing"))?;
+        let mut selected = None;
+        for family in super::super::capacity_reservation::family::canonical_reservations(&journal.state)? {
+            if let super::super::capacity_reservation::family::CanonicalCapacityFamily::OriginalSource5(floor) = family
+                && floor.original_provenance().claims().claims.provider_acquisition().1 == acquisition
+                && selected.replace(floor).is_some()
+            {
+                return Err(invalid("original Source completion floor ambiguous"));
+            }
+        }
+        let floor = selected.ok_or(invalid("original Source completion floor absent"))?;
+        let continuations = derive_original_source_continuations_v5(
+            journal.state.iter()
+                .filter(|((namespace, _), _)| *namespace == RecordNamespace::SourceProviderAuthority)
+                .map(|((_, key), value)| (key.as_slice(), value.as_slice())),
+            Some(origin.admission_comparison()), floor.original_provenance(),
+            floor.original_provenance().claims().configuration,
+        ).map_err(|_| invalid("original Source completion continuations"))?;
+        if continuations.prefix() != aos_sandbox_source_provider_ledger::ledger::native_held_completion::
+            OriginalSourceContinuationPrefixV5::Held(2)
+        {
+            return Err(invalid("original Source completion continuation phase"));
+        }
+        derive_original_source_geometry_v5(journal, &floor, &continuations, None)?;
+        self.validate_readback(readback)
+    }
+
+    /// Borrows the original admission from the actual durable Spent phase.
+    ///
+    /// # Errors
+    ///
+    /// Rejects changed physical rows/history, a foreign original request or any
+    /// cut other than the same current phase-three readback.
+    pub fn original_completion_signing_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        self.validate_readback(readback)?;
+        let key = aos_sandbox_source_provider_ledger::ledger::native_completion::
+            native_completion_key_v2(acquisition);
+        let bytes = readback.rows.get(&(RecordNamespace::SourceProviderAuthority, key.clone()))
+            .ok_or(invalid("original Source phase3 readback missing"))?;
+        let record = SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
+            .map_err(|_| invalid("original Source phase3 readback codec"))?;
+        let origin = self.authority.journal.source_original_replay.origins().iter()
+            .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
+            .ok_or(invalid("original Source phase3 origin missing"))?;
+        let provenance = origin.initial_floor().original_provenance().claims();
+        if record.suffix().phase() != 3
+            || record.original().canonical_request.as_ref().map(|request| request.request().claims())
+                != Some(&provenance.claims)
+            || record.suffix().controls().first() != Some(&provenance.root_prepared)
+        {
+            return Err(invalid("original Source phase3 signing association"));
+        }
+        Ok(origin)
+    }
+
+    /// Claims the once-only lease purpose on the real phase-three readback.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale phase-three custody or an out-of-order/repeated purpose.
+    pub fn claim_original_completion_lease_v5(
+        &self, readback: &OriginalSourceProtectedReadbackV5, acquisition: ObjectDigest,
+    ) -> Result<(), JournalError> {
+        self.claim_original_completion_purpose(readback, acquisition, 0, 1)
+    }
+
+    /// Claims receipt only after this readback's actual lease attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale custody or an out-of-order/repeated purpose.
+    pub fn claim_original_completion_receipt_v5(
+        &self, readback: &OriginalSourceProtectedReadbackV5, acquisition: ObjectDigest,
+    ) -> Result<(), JournalError> {
+        self.claim_original_completion_purpose(readback, acquisition, 1, 2)
+    }
+
+    /// Claims status only after this readback's actual receipt attempt.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale custody or an out-of-order/repeated purpose.
+    pub fn claim_original_completion_status_v5(
+        &self, readback: &OriginalSourceProtectedReadbackV5, acquisition: ObjectDigest,
+    ) -> Result<(), JournalError> {
+        self.claim_original_completion_purpose(readback, acquisition, 2, 3)
+    }
+
+    fn claim_original_completion_purpose(
+        &self, readback: &OriginalSourceProtectedReadbackV5, acquisition: ObjectDigest,
+        expected: u8, next: u8,
+    ) -> Result<(), JournalError> {
+        self.original_completion_signing_basis_v5(readback, acquisition)?;
+        // An invalid claim also ends this resident latch; revalidation cannot reset it.
+        let actual = readback.original_completion_signing.replace(u8::MAX);
+        if actual != expected {
+            return Err(invalid("original Source completion signing purpose already attempted"));
+        }
+        readback.original_completion_signing.set(next);
+        Ok(())
+    }
+
     /// Derives initial Source5 DATA from the actual before cut and exact quartet.
     ///
     /// This measures the sole reducer's complete continuation envelope before
@@ -637,6 +801,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 transaction: prepared.owners.clone(),
                 validated: false,
                 original_native_signing_attempted: std::cell::Cell::new(false),
+                original_completion_signing: std::cell::Cell::new(0),
             });
 
             self.authority.journal.complete_source_original_replay_v5(self.challenges)?;

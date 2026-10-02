@@ -94,6 +94,8 @@ pub(in crate::owner) enum OriginalProducerAppendV5 {
     Requested,
     ChallengeIssued,
     StoragePrepared,
+    ChallengeSpent,
+    CompletionCommitted,
 }
 
 impl OriginalProducerAppendV5 {
@@ -103,6 +105,8 @@ impl OriginalProducerAppendV5 {
             Self::Requested => 1,
             Self::ChallengeIssued => 2,
             Self::StoragePrepared => 3,
+            Self::ChallengeSpent => 4,
+            Self::CompletionCommitted => 5,
         }
     }
 }
@@ -125,13 +129,23 @@ pub(super) struct OriginalSourceProducerV5 {
     pub(super) signed: Option<SignedStorageNativeAcquireRequestV2>,
     provenance: Option<OriginalSourceProvenanceV5>,
     pub(super) staged: Option<StagedZfsHoldChallengeV1>,
-    appends: [Option<PreparedSourceOriginalV5>; 4],
+    appends: [Option<PreparedSourceOriginalV5>; 6],
     checkpoint: OriginalProducerCheckpointV5,
     pub(super) physical_plan: Option<crate::backend::AcquirePlanV1>,
     pub(super) storage_offer: Option<super::storage_offer::OriginalStorageOfferV5>,
+    pub(super) original_completion: Option<super::completion::OriginalSourceCompletionV5>,
 }
 
 impl OriginalSourceProducerV5 {
+    pub(super) fn completion_signing_parts_v5(
+        &mut self,
+    ) -> Result<(&OriginalSourceProtectedReadbackV5, &mut super::completion::OriginalSourceCompletionV5), ProviderLedgerError> {
+        let readback = self.appends[OriginalProducerAppendV5::ChallengeSpent.index()].as_ref()
+            .and_then(|append| append.readback.as_ref()).ok_or(ProviderLedgerError::Unavailable)?;
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((readback, completion))
+    }
+
     pub(super) fn append_mut(
         &mut self,
         step: OriginalProducerAppendV5,
@@ -357,7 +371,9 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), OriginalProducerErrorV5> {
-        if step == OriginalProducerAppendV5::StoragePrepared {
+        if matches!(step, OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted) {
+            self.require_original_completion_current_v5()
+        } else if step == OriginalProducerAppendV5::StoragePrepared {
             self.require_original_offer_current_v5()
         } else {
             // The original first three crossings retain their literal check.
@@ -757,7 +773,8 @@ impl FixedProviderOwnerV1 {
                 )?;
                 SourceNativeHeldCompletionRecordV1::new(original, suffix)?
             }
-            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared => {
+            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
+            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };
@@ -789,7 +806,8 @@ impl FixedProviderOwnerV1 {
                     Some(issued),
                 )?;
             }
-            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared => {
+            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
+            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         }
@@ -797,7 +815,8 @@ impl FixedProviderOwnerV1 {
         let purpose: &[u8] = match step {
             OriginalProducerAppendV5::Requested => b"original-source-requested-v5",
             OriginalProducerAppendV5::ChallengeIssued => b"original-source-challenge-issued-v5",
-            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared => {
+            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared
+            | OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };

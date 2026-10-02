@@ -50,6 +50,7 @@ use crate::zfs_hold_verifier::ProtectedStorageZfsHoldVerifierV1;
 
 pub(super) mod producer;
 mod storage_offer;
+mod completion;
 use producer::{OriginalProducerAppendV5, OriginalSourceProducerV5};
 
 #[derive(Default)]

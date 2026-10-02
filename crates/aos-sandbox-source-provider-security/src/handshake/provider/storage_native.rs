@@ -340,15 +340,15 @@ fn validate_native_signing_basis(
 }
 
 /// Borrows either closed caller's already authenticated signing bindings.
-struct NativeSigningScope<'a> {
-    provider: &'a aos_sandbox_source_provider_protocol::SourceProviderAuthorityV1,
-    holder: &'a aos_sandbox_source_provider_protocol::SourceProviderAuthorityV1,
-    attempt: aos_sandbox_core::ObjectDigest,
-    session: aos_sandbox_core::ObjectDigest,
-    intent: aos_sandbox_core::ObjectDigest,
+pub(super) struct NativeSigningScope<'a> {
+    pub(super) provider: &'a aos_sandbox_source_provider_protocol::SourceProviderAuthorityV1,
+    pub(super) holder: &'a aos_sandbox_source_provider_protocol::SourceProviderAuthorityV1,
+    pub(super) attempt: aos_sandbox_core::ObjectDigest,
+    pub(super) session: aos_sandbox_core::ObjectDigest,
+    pub(super) intent: aos_sandbox_core::ObjectDigest,
 }
 
-fn require_native_reserved_rows(
+pub(super) fn require_native_reserved_rows(
     acquisition: &aos_sandbox_source_provider_ledger::ledger::model::AcquisitionRecordV1,
     attempt: &aos_sandbox_source_provider_ledger::ledger::model::AttemptRecordV1,
     scope: NativeSigningScope<'_>,
