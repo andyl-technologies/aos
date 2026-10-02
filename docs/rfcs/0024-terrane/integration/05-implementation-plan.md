@@ -424,6 +424,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   three exact owning-codec groups for independent entry metadata and root
   properties;
   it fails explicitly until the independent generator and model inputs exist.
+  The separate `attribute-reference-models` auxiliary likewise reserves three
+  exact groups for complete registered value models, record fields and opaque
+  signature/preimage formats, and independently reconstructed negative wires.
+  Its actual hermetic request fails explicitly while the independent inputs
+  are absent; mandatory formatting passes. These reserved checks establish no
+  format or runtime conformance.
   The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
