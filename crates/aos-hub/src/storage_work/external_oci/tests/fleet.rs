@@ -45,9 +45,21 @@ struct ReleaseFiles {
     qualification_keys_file: PathBuf,
 }
 
+// This optional role selects only an independently measured Direct artifact.
+// It cannot be supplied by the OCI candidate, Copy/List contracts or issuer keys.
+#[derive(Clone, Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct DirectFiles {
+    acceptance_file: PathBuf,
+    review_keys_file: PathBuf,
+    guard_key_file: PathBuf,
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct Files {
+    #[serde(default)]
+    direct: Option<DirectFiles>,
     database_url_file: PathBuf,
     jwt_secret_file: PathBuf,
     seal_key_file: PathBuf,
@@ -312,6 +324,46 @@ async fn selected_profile(
     Ok(())
 }
 
+// The normal production loader verifies the reviewer and all current measured
+// facts. Parsing the already authenticated record below only correlates the
+// selected source and audience; it grants no additional acceptance.
+fn direct_factory(
+    input: &Input,
+    work_key: &[u8],
+) -> Result<Option<Arc<dyn crate::direct_upload::DirectUploadTransportFactory>>> {
+    use crate::direct_upload::authority::{
+        NativeDirectUploadAcceptances, NativeDirectUploadRuntime,
+    };
+
+    let Some(files) = &input.files.direct else {
+        return Ok(None);
+    };
+    let original = private_bytes(&files.acceptance_file, MAX_INPUT_BYTES)?;
+    let acceptances =
+        NativeDirectUploadAcceptances::from_files(&files.acceptance_file, &files.review_keys_file)?;
+    let artifact: aos_hub_core::direct_upload::DirectWorkerQualificationArtifact =
+        serde_json::from_slice(&original)?;
+    ensure!(
+        artifact.deployment_id == input.deployment_id
+            && artifact.public_origin == input.public_origin
+            && artifact.source_digest == input.worker_source_digest
+            && artifact.script_version == input.worker_script_version
+            && *private_bytes(&files.acceptance_file, MAX_INPUT_BYTES)? == *original,
+        "Direct acceptance differs from this helper's exact selected Worker"
+    );
+    let guard_key = private_bytes(&files.guard_key_file, 8192)?;
+    // This constructor keeps the production role separation, clock policy and
+    // current acceptance checks. TLS uses the existing configured CA bundle.
+    let runtime = NativeDirectUploadRuntime::new(
+        &input.public_origin,
+        &input.deployment_id,
+        work_key,
+        &guard_key,
+        acceptances,
+    )?;
+    Ok(Some(Arc::new(runtime)))
+}
+
 async fn app_state(db: Arc<Database>, input: &Input) -> Result<crate::server::AppState> {
     let files = &input.files;
     let mut state = crate::server::AppState::new(db.clone(), input.public_origin.clone()).await;
@@ -506,12 +558,14 @@ async fn actual_external_oci_fleet_origin() -> Result<()> {
     let ingress = Arc::new(aos_hub_core::hybrid_ingress::HybridIngressKey::new(
         &ingress,
     )?);
+    let direct = direct_factory(&input, &work_key)?;
     let state = Arc::new(app_state(db, &input).await?);
-    let router = crate::server::router_with_hybrid_ingress(
+    let router = crate::server::router_with_hybrid_ingress_and_direct(
         state,
         ingress,
         input.deployment_id.clone(),
         work,
+        direct,
     )
     .await;
     let latest = aos_hub_core::clock::now_unix_secs()
@@ -600,6 +654,7 @@ fn test_input() -> Input {
         terminal_file: Path::new(FIXTURE_ROOT).join(&run).join("terminal.json"),
         shutdown_file: Path::new(FIXTURE_ROOT).join(&run).join("shutdown.json"),
         files: Files {
+            direct: None,
             database_url_file: file.clone(),
             jwt_secret_file: file.clone(),
             seal_key_file: file.clone(),
@@ -795,4 +850,53 @@ async fn unsigned_business_request_is_rejected_before_body_consumption() {
     let reply = router.oneshot(request).await.unwrap();
     assert_eq!(reply.status(), axum::http::StatusCode::UNAUTHORIZED);
     assert_eq!(polls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn optional_direct_role_requires_the_closed_complete_private_triplet() {
+    let fields = json!({
+        "acceptanceFile": "/private/direct/acceptance.json",
+        "reviewKeysFile": "/private/direct/reviewers.json",
+        "guardKeyFile": "/private/direct/guard.key"
+    });
+    serde_json::from_value::<DirectFiles>(fields.clone()).unwrap();
+    for name in ["acceptanceFile", "reviewKeysFile", "guardKeyFile"] {
+        let mut missing = fields.clone();
+        missing.as_object_mut().unwrap().remove(name);
+        assert!(serde_json::from_value::<DirectFiles>(missing).is_err());
+    }
+    let mut widened = fields;
+    widened["copyContract"] = json!({});
+    assert!(serde_json::from_value::<DirectFiles>(widened).is_err());
+}
+
+#[test]
+fn omitted_direct_role_does_not_load_files_or_grant_a_factory() {
+    // The predecessor has no Direct role; its deliberately absent private paths
+    // must remain unused when the optional triplet is omitted.
+    assert!(direct_factory(&test_input(), b"unused").unwrap().is_none());
+}
+
+#[test]
+fn direct_factory_refuses_an_oci_candidate_instead_of_measured_acceptance() {
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let artifact = root.path().join("oci-candidate.json");
+    let reviewers = root.path().join("reviewers.json");
+    let guard = root.path().join("guard.key");
+    write_private(
+        &artifact,
+        &json!({"version":1,"profile_digest":"0".repeat(64)}),
+    )
+    .unwrap();
+    write_private(&reviewers, &json!({})).unwrap();
+    let mut input = test_input();
+    input.files.direct = Some(DirectFiles {
+        acceptance_file: artifact,
+        review_keys_file: reviewers,
+        guard_key_file: guard,
+    });
+    // The unchanged production loader refuses before the absent guard is read,
+    // a business router is constructed, or any provider exchange can begin.
+    assert!(direct_factory(&input, b"unused").is_err());
 }
