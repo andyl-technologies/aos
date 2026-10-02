@@ -13,8 +13,8 @@ fi
 case " $* " in
   *'nix-config.nix text '*)
     printf '%s\n' \
-      'extra-substituters = https://cdn.aos.andyl.org/andyl/testing/' \
-      'extra-trusted-public-keys = andyl-testing-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To=' \
+      'extra-substituters = https://cdn.aos.andyl.org/andyl/experimental/' \
+      'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To=' \
       'fallback = true'
     ;;
   *' category packages '*' crossSystem x86_64-darwin '*) printf 'alpha\nbeta\ndarwin-runtimes' ;;
@@ -74,7 +74,7 @@ mkdir -p "$scratch/cli/bin"
 cat > "$scratch/cli/bin/aos" <<'MOCK'
 #!@BASH@
 [[ ${NIX_CONFIG:-} == *'fallback = true'* ]] || exit 1
-[[ ${NIX_CONFIG:-} == *'https://cdn.aos.andyl.org/andyl/testing/'* ]] || exit 1
+[[ ${NIX_CONFIG:-} == *'https://cdn.aos.andyl.org/andyl/experimental/'* ]] || exit 1
 printf '%s\n' "$*" >> "$AOS_DEV_TEST_RELEASE_LOG"
 printf '%s\n' "${0##*/}" >> "$AOS_DEV_TEST_TOOL_LOG"
 printf '<%s>' "$@" >> "$AOS_DEV_TEST_TOOL_ARGS_LOG"
@@ -147,8 +147,8 @@ if grep -Eq 'shared(Go|Bazel|Rust|Accache)|extra-sandbox-paths' "$AOS_DEV_TEST_L
   exit 1
 fi
 grep -Fxq 'keep-outputs = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
-grep -Fxq 'extra-substituters = https://cdn.aos.andyl.org/andyl/testing/' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
-grep -Fxq 'extra-trusted-public-keys = andyl-testing-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To=' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
+grep -Fxq 'extra-substituters = https://cdn.aos.andyl.org/andyl/experimental/' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
+grep -Fxq 'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To=' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
 grep -Fxq 'fallback = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
 
 : > "$AOS_DEV_TEST_LOG"

@@ -9,36 +9,36 @@
 //! ```json
 //! {
 //!   "schema_version": "aos.release.file-signer-config/v1",
-//!   "provider_revision": "andyl-testing-file-signer-v1",
-//!   "registries": ["andyl/testing"],
+//!   "provider_revision": "andyl-experimental-file-signer-v1",
+//!   "registries": ["andyl/experimental"],
 //!   "tools": {
 //!     "openssl": "/nix/store/...-openssl-3.5.0/bin/openssl",
 //!     "sbsign": "/nix/store/...-sbsigntools-0.9.5/bin/sbsign"
 //!   },
 //!   "keys": [
 //!     {
-//!       "key_id": "andyl-testing-release-evidence-v1",
+//!       "key_id": "andyl-experimental-release-evidence-v1",
 //!       "roles": ["release-evidence"],
-//!       "verification_identity": "andyl-testing-release-evidence-v1",
+//!       "verification_identity": "andyl-experimental-release-evidence-v1",
 //!       "material": {
 //!         "kind": "ed25519-pkcs8-pem",
 //!         "private_key": "/var/lib/aos-release/keys/release-evidence.pem"
 //!       }
 //!     },
 //!     {
-//!       "key_id": "testing-v1",
+//!       "key_id": "experimental-v1",
 //!       "roles": ["registry"],
-//!       "verification_identity": "testing-v1",
+//!       "verification_identity": "experimental-v1",
 //!       "material": {
 //!         "kind": "openssh-ed25519",
-//!         "private_key": "/var/lib/aos-release/keys/testing-v1",
-//!         "trust_line": "andyl-testing:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI..."
+//!         "private_key": "/var/lib/aos-release/keys/experimental-v1",
+//!         "trust_line": "andyl-experimental:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAI..."
 //!       }
 //!     },
 //!     {
-//!       "key_id": "andyl-testing-secure-boot-db-v1",
+//!       "key_id": "andyl-experimental-secure-boot-db-v1",
 //!       "roles": ["secure-boot-db"],
-//!       "verification_identity": "andyl-testing-secure-boot-db-v1",
+//!       "verification_identity": "andyl-experimental-secure-boot-db-v1",
 //!       "material": {
 //!         "kind": "rsa-x509",
 //!         "private_key": "/var/lib/aos-release/keys/db.key",
@@ -46,9 +46,9 @@
 //!       }
 //!     },
 //!     {
-//!       "key_id": "andyl-testing-pcr-policy-v1",
+//!       "key_id": "andyl-experimental-pcr-policy-v1",
 //!       "roles": ["pcr-policy"],
-//!       "verification_identity": "andyl-testing-pcr-policy-v1",
+//!       "verification_identity": "andyl-experimental-pcr-policy-v1",
 //!       "material": {
 //!         "kind": "rsa-public-pem",
 //!         "private_key": "/var/lib/aos-release/keys/pcr.key",
@@ -317,7 +317,7 @@ mod tests {
         SignerConfigV1 {
             schema_version: CONFIG_SCHEMA_V1.into(),
             provider_revision: "test-provider-v1".into(),
-            registries: vec!["andyl/testing".into()],
+            registries: vec!["andyl/experimental".into()],
             tools: ToolPaths::default(),
             keys: vec![KeyEntry {
                 key_id: "evidence-v1".into(),
