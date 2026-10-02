@@ -12,6 +12,10 @@
   ...
 }: let
   cfg = config.aos.profiles.development;
+  developmentPolicy = builtins.path {
+    path = ./_development-enable.nix;
+    name = "aos-development-policy.nix";
+  };
 
   tools = [
     pkgs.autoconf
@@ -132,6 +136,7 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    aos.activation.stages.host.configuration = [developmentPolicy];
     environment.systemPackages = tools ++ allLibraries ++ cfg.extraPackages;
 
     environment.etc."shells".text = ''
