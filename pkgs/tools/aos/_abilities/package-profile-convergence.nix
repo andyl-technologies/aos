@@ -1,7 +1,15 @@
 ##! Converges signed install-at-boot selections after the native host profile commits.
-{config, lib, package, ...}: let
+{
+  config,
+  lib,
+  package,
+  ...
+}: let
   cfg = config.aos.packageRuntime.packageProfile;
-  hostStage = (config.aos.boot.stage or "host") == "host";
+  hostStage =
+    (config.aos.boot.stage or "host")
+    == "host"
+    && builtins.head config.aos.activation.scope != "container";
   specification = config.aos.abilities.configuration.operations.file.effects.package-profile-specification;
   service = {
     policy.hardening = {
@@ -46,13 +54,15 @@
       environment_files = [];
       condition = [];
       pre_start = [];
-      start = [{
-        executable = {
-          path = "${package.outputs.apm}/bin/apm";
-          arguments = ["install" "--system" "--from" specification.output.path "--yes"];
-        };
-        ignore_failure = false;
-      }];
+      start = [
+        {
+          executable = {
+            path = "${package.outputs.apm}/bin/apm";
+            arguments = ["install" "--system" "--from" specification.output.path "--yes"];
+          };
+          ignore_failure = false;
+        }
+      ];
       post_start = [];
       stop = [];
       post_stop = [];

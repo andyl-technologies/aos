@@ -7,7 +7,12 @@
 }: let
   database = config.aos.abilities.nixStoreDatabase.operations.converge;
   cfg = config.aos.nixStore;
-  hostRuntime = cfg.enable && (config.aos.boot.stage or "host") == "host";
+  # Containers register their baked store in their entry point. The host's
+  # persistent profile bridge belongs only to host activation.
+  hostRuntime =
+    cfg.enable
+    && (config.aos.boot.stage or "host") == "host"
+    && builtins.head config.aos.activation.scope != "container";
   configuration = config.aos.abilities.configuration.operations.file.effects.nix-store;
   profiles = config.aos.abilities.filesystem.operations.persistentAllocate.effects.nix-profiles;
   roots = config.aos.abilities.filesystem.operations.directory.effects.nix-profile-gcroots;

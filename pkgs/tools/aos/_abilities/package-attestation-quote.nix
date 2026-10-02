@@ -6,7 +6,11 @@
   ...
 }: let
   cfg = config.aos.packageRuntime.packageAttestationQuote;
-  hostStage = (config.aos.boot.stage or "host") == "host";
+  # The quote service measures a booted host, not a daemonless CLI container.
+  hostStage =
+    (config.aos.boot.stage or "host")
+    == "host"
+    && builtins.head config.aos.activation.scope != "container";
   command = {
     executable = {
       path = "${package.outputs.packageRuntime}/libexec/aos-package-attestation-provider";

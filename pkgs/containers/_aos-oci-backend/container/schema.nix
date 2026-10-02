@@ -161,6 +161,12 @@ in {
       description = "Exact package outputs retained as the image's baked roots.";
     };
 
+    packageModules = mkOption {
+      type = types.listOf package;
+      default = config.packageRoots;
+      description = "Package module seeds admitted for native evaluation independently of baked payload roots.";
+    };
+
     layers = mkOption {
       type = types.listOf layerType;
       description = "Ordered, explicitly named closure layer plan.";

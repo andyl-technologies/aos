@@ -7,7 +7,10 @@
   ...
 }: let
   cfg = config.aos.packageRuntime.configurationEvaluation;
-  hostStage = (config.aos.boot.stage or "host") == "host";
+  hostStage =
+    (config.aos.boot.stage or "host")
+    == "host"
+    && builtins.head config.aos.activation.scope != "container";
   registrySynchronization = {
     policy.hardening = {
       allow_privilege_escalation = false;
