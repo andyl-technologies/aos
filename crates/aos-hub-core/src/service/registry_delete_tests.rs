@@ -38,6 +38,7 @@ impl SurfaceFetch for EmptyProvider {
 
     async fn list_page(
         &self,
+        _prefix: &str,
         _cursor: Option<&str>,
         _limit: usize,
     ) -> anyhow::Result<SurfaceListPage> {
