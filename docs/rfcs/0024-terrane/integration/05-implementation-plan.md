@@ -796,6 +796,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   original-authority, consumed-control and retention regressions. It remains
   on its task branch; existing regressions do not qualify the 19 required
   disclosure boundary cases or the unfinished publication producer.
+  Its ancestor-first complete-history draft also passes 17 selected native
+  regressions; dedicated issuance and paired publication remain closed.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -859,7 +861,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   rustdoc with warnings and missing documentation denied, plus both mandatory
   formatting commands. The original-authority fallback now has an isolated
   single-traversal candidate, whose native build and formatting pass; its
-  final regression sequence remains in progress.
+  ten focused native regressions pass, including a genuine original-reference
+  fallback with unchanged trusted configuration. Its full final regression
+  sequence remains in progress.
   This candidate is unmerged and does not qualify the task.
   Pure core view, endpoint, exposure
   and schema vocabulary is integrated as an SDK prerequisite. View parsing
@@ -895,6 +899,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   regression passes with unchanged scope and admission checks. The actual feature
   matrix still fails on six backend compatibility cases and the cancellation
   waiter; the trunk aggregate fails the index-generation retirement assertion.
+  The shared `checks.terrane.integration.local-workflow-ext4` registration now
+  exists and an actual request fails explicitly as pending. The concrete
+  hermetic ext4 VM workflow and its successful artifact remain unimplemented;
+  registration does not qualify local workflow or store conformance.
   Both mandatory formatting commands pass. Complete workflow and package
   qualification remain pending; native I/O
   batching preserves every required observation and fence.

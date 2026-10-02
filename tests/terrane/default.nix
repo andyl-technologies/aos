@@ -181,4 +181,5 @@ in {
   package = pkgs.terrane;
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
+  integration.local-workflow-ext4 = import ./local-workflow-ext4.nix {inherit pkgs lib;};
 }
