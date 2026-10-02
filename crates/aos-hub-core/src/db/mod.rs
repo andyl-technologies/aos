@@ -597,10 +597,12 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 1 | `schema.sql` | Production baseline. |
 /// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
 /// | 3 | `staged_releases.sql` | Private release drafts, retention roots, and public catalog selections. |
+/// | 4 | `oci_registry_retirement.sql` | Reviewed OCI catalog retirement flag on GC runs. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
     include_str!("staged_releases.sql"),
+    include_str!("oci_registry_retirement.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -5096,6 +5098,9 @@ impl Database {
                 )
                 .expecting(1),
             ]);
+        }
+        if has_container_admin_projections && self.oci_catalog_retired(registry_id).await? {
+            bail!("registry OCI catalog is retired; container releases cannot be re-projected");
         }
         for release in &snapshot.release_artifact_snapshots {
             if let Some(root) = &release.container_release {
@@ -14434,6 +14439,28 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT 1 FROM oci_release_roots WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some())
+    }
+
+    /// Reports whether a reviewed catalog retirement has started for the registry.
+    ///
+    /// Once a retiring GC run is applying or complete, signed-release roots
+    /// must not be re-projected by indexing: the roots were deliberately
+    /// retired and the collector relies on them staying absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn oci_catalog_retired(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_gc_runs
+                 WHERE registry_id = ?1 AND retire_registry = 1
+                   AND state IN('applying', 'complete') LIMIT 1",
                 &vals![registry_id],
             )
             .await?
@@ -27254,8 +27281,8 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            3,
-            "production baseline, channel ledger, and private release drafts"
+            4,
+            "production baseline, channel ledger, private release drafts, and catalog retirement"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

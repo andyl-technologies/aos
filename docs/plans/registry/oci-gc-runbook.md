@@ -122,6 +122,50 @@ inventory and verify the object no longer appears in the untracked list. Only a
 fresh, post-repair inventory may satisfy registry-purge checks. Never reuse the
 pre-repair inventory generation as proof that the provider namespace is empty.
 
+## Catalog retirement before registry deletion
+
+Signed releases and tags are permanent hard roots of ordinary collection, so a
+registry with a published container catalog can never become empty through
+normal GC. Retirement is a reviewed GC mode that treats the catalog-owned
+roots (signed releases, tags, and retained tag history) as retired and collects
+without grace. Every physical deletion still flows through the ordinary
+inventory, capability, conditional-delete, and finalization fences.
+
+Retirement fails closed while any enabled route serves the registry's OCI
+surface, both at planning and again inside the apply transaction, so nothing a
+client can still resolve is deleted. Disable or remove every OCI-capable route
+first, then run rounds of retiring plans:
+
+```sh
+aos hub registry container gc plan REGISTRY \
+  --if-version RETENTION_POLICY_VERSION \
+  --retire-registry \
+  --idempotency-key RETIRE_PLAN_ID
+
+aos hub registry container gc apply \
+  --plan-id RETIRE_PLAN_ID \
+  --confirm-hash SHA256_CONFIRMATION \
+  --idempotency-key RETIRE_APPLY_ID \
+  --yes
+```
+
+Each round collects one bounded reverse-topological frontier: referrers and
+indexes first, then platform manifests, then configs and layers. The apply
+transaction retires the tag, release-root, provenance, evidence, layer, and
+projection rows of each candidate before the ordinary candidate guards run,
+and writes no tag history because the repositories are deleted with the
+registry. Once a retiring run is applying or complete, indexing refuses to
+re-project container-release roots for that registry; the retirement is the
+reviewed intent and a re-index must not resurrect roots underneath the
+collector. Repeat plan/apply until a plan reports no candidates and the
+catalog is empty, delete the now-empty repositories, then continue with the
+purge fence below.
+
+On the Cloudflare deployment the deployment bucket is deleted through the
+Worker binding with a fenced head-then-delete rather than a provider-atomic
+conditional delete. The capability probe exercises that fence like every other
+backend, and a plan still fails closed without a valid observation.
+
 ## Registry purge fence and final deletion
 
 Final registry deletion requires a reviewed writer fence; the Hub never creates
