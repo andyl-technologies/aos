@@ -4,14 +4,6 @@
 
   aos.profiles.experimentalRelease.enable = true;
 
-  # Arm's normal UKI and both recovery UKIs each embed the uncompressed kernel
-  # and the complete runtime initrd. Retain the full recovery payload in the
-  # ESP with filesystem headroom.
-  aos.image.budgets.maxEspMiB =
-    if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-    then 768
-    else 384;
-
   # The converted disk formats exceed the compressed raw image budget.
   # Arm exports carry the full recovery ESP and the larger root payload.
   aos.image.budgets.maxConvertedDownloadMiB =
