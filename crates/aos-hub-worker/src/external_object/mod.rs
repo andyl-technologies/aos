@@ -9,6 +9,9 @@
 
 mod config;
 mod copy;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use copy::{execute_scan_read, fetch_control as fetch_copy, fetch_metadata as fetch_copy_metadata};
 mod delete_config;
 mod deletion;
 mod observation;

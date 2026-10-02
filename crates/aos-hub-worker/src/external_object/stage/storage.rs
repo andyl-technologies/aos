@@ -600,6 +600,7 @@ fn initialize(object: &ObjectConfig, config: &config::Config, intent: &Intent) -
         receipts: LeaseInteger::new(0)?,
         incarnation: WireInteger::new(0),
         stage: None,
+        copy: None,
     })
 }
 
@@ -845,7 +846,8 @@ pub(in crate::external_object) async fn verify_observable_destination(
     object: &ObjectConfig,
 ) -> Result<()> {
     ensure!(
-        head.pending.is_none() && head.stage.is_none() && head.observation.is_none(),
+        head.pending.is_none() && head.stage.is_none() && head.observation.is_none()
+            && head.copy.is_none(),
         "active physical turn blocks observation"
     );
     let visible = head

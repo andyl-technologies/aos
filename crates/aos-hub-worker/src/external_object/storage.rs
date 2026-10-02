@@ -81,6 +81,15 @@ impl DurableObject for ExternalObjectGuard {
         if request.url()?.path() == "/stage-turn" {
             return self.stage_fetch(&mut request).await;
         }
+        if path == "/copy-read-floor" {
+            return self.copy_read_floor_fetch(&mut request).await;
+        }
+        if path == "/copy-original" {
+            return self.copy_original_fetch(&mut request).await;
+        }
+        if path == "/copy-turn" {
+            return self.copy_fetch(&mut request).await;
+        }
 
         match self.handle(&mut request).await {
             Ok(reply) => {

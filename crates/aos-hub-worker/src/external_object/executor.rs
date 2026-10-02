@@ -714,6 +714,9 @@ pub(super) fn select_cohort<'a>(
                         "read",
                         aos_hub_core::storage_authority::lease::LeasePurpose::Read
                     ) | (
+                        "list",
+                        aos_hub_core::storage_authority::lease::LeasePurpose::List
+                    ) | (
                         "write",
                         aos_hub_core::storage_authority::lease::LeasePurpose::Write
                     ) | (

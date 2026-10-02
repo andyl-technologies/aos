@@ -503,6 +503,7 @@ pub(super) fn begin(
     ensure!(
         head.pending.is_none()
             && head.observation.is_none()
+            && head.copy.is_none()
             && head.receipts.get() < MAX_RECEIPTS
             && digest_string(&nonce),
         "prior object effect or journal capacity blocks stage"

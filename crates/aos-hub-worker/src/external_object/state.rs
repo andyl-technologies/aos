@@ -41,6 +41,8 @@ pub(super) struct Head {
     #[serde(default)]
     // Heap ownership bounds the compact head layout; serde keeps the existing JSON.
     pub stage: Option<Box<super::stage::state::Session>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub copy: Option<super::copy::state::Owner>,
 }
 
 /// One current positive publication pointer; receipts remain immutable KV records.
@@ -92,6 +94,7 @@ impl Head {
         ensure!(
             self.pending.is_none()
                 && self.observation.is_none()
+                && self.copy.is_none()
                 && self
                     .stage
                     .as_ref()
@@ -103,20 +106,32 @@ impl Head {
 
     pub(super) fn initialize(config: &Config, intent: &Intent, clock: LeaseClock) -> Result<Self> {
         let cohort = config.cohort(&intent.cohort_digest)?;
-        ensure!(
-            intent.scope == config.scope(cohort, intent.scope.full_key.clone())?,
-            "configured scope mismatch"
-        );
+        Self::initialize_floor(config, &intent.scope, cohort, clock)
+    }
+
+    /// Creates only a permanent floor for an actual independently configured cohort.
+    ///
+    /// # Errors
+    /// Refuses a different physical scope, uninstalled cohort or unqualified clock.
+    pub(super) fn initialize_floor(
+        config: &Config,
+        scope: &StorageAuthorityObjectScope,
+        cohort: &aos_hub_core::storage_authority::lease::LeaseCohort,
+        clock: LeaseClock,
+    ) -> Result<Self> {
+        ensure!(config.cohort(&digest(cohort)?)? == cohort
+            && *scope == config.scope(cohort, scope.full_key.clone())?,
+            "configured scope mismatch");
         let floor = EpochLeaseFloor::initialize_fresh_guard(
             cohort.authority.clone(),
             config.executor_identity.clone(),
-            intent.scope.full_key.clone(),
+            scope.full_key.clone(),
             &config.timing_profile,
             clock,
         )?;
         Ok(Self {
             version: 1,
-            scope: intent.scope.clone(),
+            scope: scope.clone(),
             configuration: digest(config)?,
             floor,
             pending: None,
@@ -125,6 +140,7 @@ impl Head {
             receipts: LeaseInteger::new(0)?,
             incarnation: aos_hub_core::direct_upload::WireInteger::new(0),
             stage: None,
+            copy: None,
         })
     }
 
@@ -162,6 +178,11 @@ impl Head {
         if let Some(stage) = &self.stage {
             stage.validate_shape(self)?;
         }
+        if let Some(copy) = &self.copy {
+            copy.validate()?;
+            ensure!(self.pending.is_none() && self.stage.is_none() && self.observation.is_none(),
+                "copy owner overlaps another physical workflow");
+        }
         // The foundational floor's validator is private; new dispatch still
         // uses its full validation. Parsed terminal/replay state also rejects
         // incomplete/fork-shaped retained commitments rather than ignoring them.
@@ -198,6 +219,7 @@ impl Head {
                     && slot.stamp.incarnation.as_str() == self.incarnation.get().to_string()
                     && self.pending.is_none()
                     && self.stage.is_none()
+                    && self.copy.is_none()
                     && self.visible_receipt.is_some(),
                 "corrupt observation slot"
             );
@@ -247,7 +269,8 @@ impl Head {
             "object incarnation capacity exhausted"
         );
         ensure!(
-            self.pending.is_none() && self.stage.is_none() && self.observation.is_none(),
+            self.pending.is_none() && self.stage.is_none() && self.observation.is_none()
+                && self.copy.is_none(),
             "unknown object turn blocks dispatch"
         );
         ensure!(

@@ -73,6 +73,32 @@ fn unknown_create_survives_restart_and_cannot_reissue_or_abort() {
 }
 
 #[test]
+fn private_continuation_requires_exact_retained_part_and_abort_requires_positive_create() {
+    let original = original();
+    let mut session = CopySession::initialize(original.clone()).unwrap();
+    assert!(session.abort_action().is_err());
+    let created = create(&mut session);
+    assert!(session.source_continuation_for(&created.turn).is_err());
+    assert_eq!(session.abort_action().unwrap(), CopyAction::Abort {
+        upload_id: "provider-original-upload".into()
+    });
+
+    let receipt = part(&mut session);
+    assert_eq!(session.source_continuation_for(&receipt.turn).unwrap(), OciSha256State::initial());
+    let restarted = reload(&session);
+    assert_eq!(restarted.source_continuation_for(&receipt.turn).unwrap(), OciSha256State::initial());
+    assert!(restarted.abort_action().is_err());
+
+    let mut changed = receipt.turn.clone();
+    changed.dispatch_nonce = "e".repeat(64);
+    assert!(restarted.source_continuation_for(&changed).is_err());
+    if let CopyAction::Part { source_state_digest, .. } = &mut changed.action {
+        *source_state_digest = "f".repeat(64);
+    }
+    assert!(restarted.source_continuation_for(&changed).is_err());
+}
+
+#[test]
 fn positive_create_and_part_close_once_after_actual_conditional_read() {
     let original = original();
     let mut session = CopySession::initialize(original.clone()).unwrap();

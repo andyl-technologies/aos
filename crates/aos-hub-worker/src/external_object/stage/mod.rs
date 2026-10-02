@@ -19,7 +19,7 @@ pub(crate) use inspection::{admit_stage_read, read_stage_metadata};
 #[cfg(target_arch = "wasm32")]
 mod executor;
 #[cfg(target_arch = "wasm32")]
-mod planning;
+pub(in crate::external_object) mod planning;
 #[cfg(target_arch = "wasm32")]
 mod profiles;
 #[cfg(target_arch = "wasm32")]

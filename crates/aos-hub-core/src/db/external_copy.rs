@@ -8,9 +8,30 @@ use anyhow::{ensure, Context, Result};
 
 use crate::storage_authority::{external_object::copy::control::CopyClaim, lease::LeaseInteger};
 
-use super::{Database, TopologyOperationRecord};
+use super::{BindingRecord, ConsumerScopeGrantRecord, Database, GrantResource, TopologyOperationRecord};
 
 impl Database {
+    /// Loads one active binding grant for the copy surface's exact owner scope.
+    ///
+    /// This bounded lookup replaces enumerating every consumer of a shared
+    /// binding. Its immutable generation and resource version remain pinned
+    /// across remote awaits; it supplies no actor or dispatch permission.
+    ///
+    /// # Errors
+    /// Refuses absent/revoked grants, invalid binding identity or database failure.
+    pub async fn placement_copy_consumer_grant(
+        &self,
+        binding: &BindingRecord,
+        owner_scope: &str,
+    ) -> Result<ConsumerScopeGrantRecord> {
+        ensure!(binding.id > 0 && !binding.stable_id.is_empty() && !owner_scope.is_empty(),
+            "invalid copy binding grant selector");
+        self.load_consumer_scope_grant(GrantResource::Binding {
+            id: binding.id, stable_id: &binding.stable_id }, owner_scope).await?
+            .filter(|grant| grant.state == "active")
+            .context("copy surface no longer has an active binding consumer grant")
+    }
+
     /// Loads only the live claim owned by an exact running copy operation.
     ///
     /// This method changes no SQL state and creates no replacement claim. A

@@ -425,6 +425,7 @@ impl Fixture {
             receipts: integer(0),
             incarnation: WireInteger::new(0),
             stage: None,
+            copy: None,
         }
     }
 

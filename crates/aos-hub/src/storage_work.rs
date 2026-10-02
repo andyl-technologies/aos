@@ -55,6 +55,7 @@ pub use authority::StorageAuthorityControlSynchronization;
 mod control;
 mod external_delete;
 mod external_observation;
+mod external_copy;
 mod frozen;
 mod frozen_head;
 mod mirror_guard;
@@ -2316,7 +2317,9 @@ impl SurfaceFetch for HybridSurfaceFetch {
             (1..=1000).contains(&limit),
             "hybrid listing page limit is invalid"
         );
-        let mut page_limit = limit;
+        // The canonical Native scan can ask for 1,000 entries. Its remote
+        // executor is a Worker, whose signed metadata page ceiling is lower.
+        let mut page_limit = limit.min(aos_hub_core::fetch::WORKER_MAX_SURFACE_LIST_PAGE_OBJECTS);
         let result = loop {
             let plan = self.work.plan_for_placement(
                 &self.placement,
@@ -2499,6 +2502,24 @@ impl HybridSurfaceWrites {
 
 #[async_trait]
 impl SurfaceWriteProvider for HybridSurfaceWrites {
+    async fn copy_placement_object_claimed(
+        &self,
+        operation: &aos_hub_core::db::TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+    ) -> Result<Option<u64>> {
+        let binding = self.db.binding(destination.binding_id).await?
+            .context("copy destination binding disappeared")?;
+        if binding.kind == "deployment_r2" && binding.is_instance_default {
+            return self.copy_placement_object(source, destination, path, listed_source).await;
+        }
+        self.copy_external_claimed(operation, claim_token, source, destination,
+            path, listed_source).await
+    }
+
     async fn copy_placement_object(
         &self,
         source: &SurfacePlacementRecord,

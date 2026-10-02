@@ -76,6 +76,7 @@ pub(crate) async fn execute_external_storage_work(
     env: &Env,
     plan: &StorageWorkPlan,
     publication: &StorageBindingPublication,
+    signal: &worker::web_sys::AbortSignal,
 ) -> Result<Option<StorageWorkResult>> {
     if matches!(plan.operation, StorageWorkOperation::DeleteIfMatches { .. }) {
         return crate::external_object::execute_delete_plan(env, plan, publication)
@@ -94,6 +95,9 @@ pub(crate) async fn execute_external_storage_work(
         return crate::external_object::execute_probe_plan(env, plan, publication)
             .await
             .map(Some);
+    }
+    if let Some(result) = crate::external_object::execute_scan_read(env, plan, publication, signal).await? {
+        return Ok(Some(result));
     }
     crate::external_object::deny_legacy(env, &publication.snapshot)?;
     let now = aos_hub_core::clock::now_unix_secs();

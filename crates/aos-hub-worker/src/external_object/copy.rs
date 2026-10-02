@@ -5,6 +5,41 @@
 
 mod bytes;
 
+mod config;
+
+mod protocol;
+
+mod discovery;
+
+mod read_control;
+
+mod list_cursor;
+
+mod provider_receipt;
+
+pub(in crate::external_object) mod state;
+
+#[cfg(target_arch = "wasm32")]
+mod storage;
+
+#[cfg(target_arch = "wasm32")]
+mod executor;
+
+#[cfg(target_arch = "wasm32")]
+mod metadata;
+
+#[cfg(target_arch = "wasm32")]
+mod reads;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use reads::execute as execute_scan_read;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use executor::fetch as fetch_control;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use metadata::fetch as fetch_metadata;
+
 #[cfg(target_arch = "wasm32")]
 mod stream;
 

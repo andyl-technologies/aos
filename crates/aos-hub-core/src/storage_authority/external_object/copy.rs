@@ -28,6 +28,12 @@ pub mod session;
 /// Fresh metadata-only application controls and compact retained progress.
 pub mod control;
 
+/// Read-only selectors for discovering an already retained copy original.
+pub mod original_lookup;
+
+/// Bounded installed-profile and retained-owner queries under a live SQL claim.
+pub mod metadata;
+
 /// Maximum encoded immutable original retained in the physical guard.
 pub const MAX_EXTERNAL_COPY_ORIGINAL_BYTES: usize = 16 * 1024;
 
@@ -372,12 +378,7 @@ impl ExternalCopyOriginal {
     /// Returns an error for an invalid original or failed serialization.
     pub fn copy_id(&self) -> Result<String> {
         self.validate()?;
-        canonical_digest(&(
-            "aos.external-placement-copy-owner.v1",
-            &self.topology.operation_id,
-            &self.topology.destination.stable_id,
-            &self.path,
-        ))
+        original_lookup::CopyOriginalSelector::from_original(self)?.copy_id()
     }
 
     /// Returns the exact count of conditional source ranges, including zero.

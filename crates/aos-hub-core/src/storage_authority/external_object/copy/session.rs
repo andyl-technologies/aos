@@ -206,6 +206,45 @@ impl CopySession {
         self.destination.as_ref()
     }
 
+    /// Returns the private continuation for one exact retained pending part.
+    ///
+    /// The guard authenticates this value separately from public copy controls.
+    /// It establishes the starting hash state only; actual conditional reads
+    /// and a positive provider part receipt must still establish the new bytes.
+    ///
+    /// # Errors
+    /// Refuses another turn, a non-part action or a changed continuation digest.
+    pub fn source_continuation_for(&self, turn: &CopyTurn) -> Result<OciSha256State> {
+        self.validate(&self.original)?;
+        ensure!(
+            self.pending.as_ref() == Some(turn),
+            "copy continuation requires exact retained pending turn"
+        );
+        let CopyAction::Part { source_state_digest, .. } = &turn.action else {
+            anyhow::bail!("copy continuation requires an ordered part");
+        };
+        ensure!(
+            *source_state_digest == canonical_digest(&self.source_state)?,
+            "copy continuation commitment changed"
+        );
+        Ok(self.source_state.clone())
+    }
+
+    /// Selects Abort only for a settled, positively created incomplete upload.
+    ///
+    /// # Errors
+    /// Refuses a creating, unknown or terminal session without guessing an ID.
+    pub fn abort_action(&self) -> Result<CopyAction> {
+        self.validate(&self.original)?;
+        ensure!(
+            self.phase == CopyPhase::Active && self.pending.is_none(),
+            "copy Abort requires settled original upload"
+        );
+        let upload_id = self.upload_id.clone()
+            .ok_or_else(|| anyhow::anyhow!("copy positive upload identity absent"))?;
+        Ok(CopyAction::Abort { upload_id })
+    }
+
     /// Checks durable state before a guard exposes or changes it.
     ///
     /// # Errors
