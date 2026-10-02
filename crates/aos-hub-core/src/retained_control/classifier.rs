@@ -1905,14 +1905,16 @@ mod tests {
             .map(str::to_owned)
             .collect(),
         };
-        assert!(
-            validate_complete_method_manifest(&[method.clone()], &[descriptor.clone()]).is_empty()
-        );
+        assert!(validate_complete_method_manifest(
+            std::slice::from_ref(&method),
+            std::slice::from_ref(&descriptor),
+        )
+        .is_empty());
 
         let mut widened = descriptor;
         widened.request_fields.push("retire_registry".into());
         assert!(
-            validate_complete_method_manifest(&[method.clone()], &[widened])
+            validate_complete_method_manifest(std::slice::from_ref(&method), &[widened])
                 .iter()
                 .any(|violation| violation.reason.contains("GC run cancellation must bind"))
         );
