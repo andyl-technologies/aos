@@ -26,6 +26,18 @@ in {
       package = pkgs.aos-ebpf-lsm-policy;
       enable = true;
     };
+    audit = {
+      package = pkgs.audit;
+      enable = true;
+    };
+    nftables = {
+      package = pkgs.nftables;
+      enable = true;
+    };
+    aos-network-ruleset-provider = {
+      package = pkgs.aos-network-ruleset-provider;
+      enable = true;
+    };
     dbus = {
       package = pkgs.dbus;
       bundle = true;
@@ -39,6 +51,6 @@ in {
 
   # Optional daemons and workload tools are selected by host policy or APM.
   # APM, the kernel, system manager and boot storage add their own core roots.
-  environment.systemPackages = portableShellPackages ++ [pkgs.util-linux pkgs.e2fsprogs];
+  environment.systemPackages = portableShellPackages ++ [pkgs.glibc-tools pkgs.util-linux pkgs.kmod pkgs.e2fsprogs pkgs.less];
   aos.containers.systemPackageSlice = portableShellPackages;
 }

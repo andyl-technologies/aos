@@ -91,9 +91,16 @@
     # skipped under "repart"; the guest agent arrives via the
     # `aos-test-agent` package instead.
     varProvisioning ? "baked",
+    # A baked /var is already committed out of band. Its source must match
+    # the provisioning input attached by the harness on the first boot.
+    provisioningSource ? "fallback",
   }: let
     systemPackages = system.config.environment.systemPackages;
-    bakeVar = varProvisioning == "baked";
+    checkedProvisioningSource =
+      if builtins.elem provisioningSource ["operator" "fallback"]
+      then provisioningSource
+      else throw "mkTestDisk provisioningSource must be operator or fallback";
+    bakeVar = builtins.seq checkedProvisioningSource (varProvisioning == "baked");
 
     # rootfsPost — shell fragment spliced into the shared rootfs
     # helper's populate phase after tree population, before mkfs.
@@ -375,7 +382,7 @@
     };
   in
     pkgs.mkDerivation {
-      pname = "vm-disk-${name}";
+      pname = builtins.seq checkedProvisioningSource "vm-disk-${name}";
       version = "0";
       src = null;
 
@@ -463,7 +470,7 @@
               echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-a"
               echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"
               echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
-              ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-fallback-v1"''}
+              ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-${checkedProvisioningSource}-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
             } > ptable.sfdisk
             sfdisk disk.img < ptable.sfdisk

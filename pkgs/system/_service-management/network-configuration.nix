@@ -9,7 +9,7 @@
       value = lib.mkOption {
         type = lib.types.str;
         default = "";
-        description = "Exact link name or MAC address when required.";
+        description = "Exact link name or MAC address; Ethernet selectors optionally restrict names with a trailing wildcard.";
       };
     };
   };
@@ -29,6 +29,21 @@
         type = lib.types.bool;
         default = false;
         description = "Acquire addresses through DHCP.";
+      };
+      dhcp_use_dns = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Use DHCPv4 DNS servers, or null to retain the manager default.";
+      };
+      dhcp_use_ntp = lib.mkOption {
+        type = lib.types.nullOr lib.types.bool;
+        default = null;
+        description = "Use DHCPv4 NTP servers, or null to retain the manager default.";
+      };
+      dhcp_use_domains = lib.mkOption {
+        type = lib.types.nullOr (lib.types.enum ["yes" "no" "route"]);
+        default = null;
+        description = "Use DHCPv4 search or routing domains, or null to retain the manager default.";
       };
       addresses = lib.mkOption {
         type = lib.types.listOf lib.types.str;

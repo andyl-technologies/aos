@@ -54,9 +54,15 @@
   defaultLinks = lib.optional (cfg.useDHCP && cfg.interfaces == {}) {
     kind = "ethernet";
     name = "default-dhcp";
-    selector.kind = "ethernet";
+    selector = {
+      kind = "ethernet";
+      value = "en*";
+    };
     addressing = {
       dhcp = true;
+      dhcp_use_dns = true;
+      dhcp_use_ntp = true;
+      dhcp_use_domains = "yes";
       addresses = [];
       dns = [];
     };

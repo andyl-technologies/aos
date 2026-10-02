@@ -306,6 +306,12 @@
             disk = vmLib.mkTestDisk {
               system = effectiveSystem;
               inherit (m) extraClosures varSizeMiB varProvisioning;
+              # The aos-metadata transport obtains operator input only from
+              # host.nix; facts and signatures alone still select fallback.
+              provisioningSource =
+                if m.metadata ? "host.nix"
+                then "operator"
+                else "fallback";
             };
           }
         )
