@@ -16,7 +16,7 @@ fn buffered_tx_preserves_an_unchanged_native_instruction_sample()
     state.on_network_tx(20, b"timer-frame")?;
     state.on_network_tx(20, b"second-frame")?;
     state.complete_idle_advance(TimeAdvanceCompletion::from_qemu(0, 1_500))?;
-    assert!(state.preserve_network_output_stop(20)?);
+    assert!(state.preserve_network_output_stop(20, "test")?);
 
     assert_eq!(fixture.outbound.write_index(), 2);
     assert_eq!(fixture.outbound_entries[0].payload()?, b"timer-frame");
@@ -28,13 +28,13 @@ fn buffered_tx_preserves_an_unchanged_native_instruction_sample()
         first.ok_or("missing first frame")?.payload()?,
         b"timer-frame"
     );
-    assert!(state.preserve_network_output_stop(20)?);
+    assert!(state.preserve_network_output_stop(20, "test")?);
     let second = fixture.outbound.dequeue(&fixture.outbound_entries)?;
     assert_eq!(
         second.ok_or("missing second frame")?.payload()?,
         b"second-frame"
     );
-    assert!(!state.preserve_network_output_stop(20)?);
+    assert!(!state.preserve_network_output_stop(20, "test")?);
     TEST_ICOUNT_RAW.set(0);
     Ok(())
 }

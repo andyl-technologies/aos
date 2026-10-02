@@ -1465,7 +1465,7 @@ impl LiveVcpuTimeCallbackState {
         // forbidden there; the host requests a BQL-held control boundary after
         // accepting the paused quantum and samples that exact coordinate.
         self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-idle")?;
-        if self.preserve_network_output_stop(raw_icount)? {
+        if self.preserve_network_output_stop(raw_icount, "vcpu-idle")? {
             return Ok(());
         }
         let current_icount = self.last_icount.load(Ordering::Acquire);
@@ -1650,7 +1650,7 @@ impl LiveVcpuTimeCallbackState {
         if self.publish_pause_for_boundary(raw_icount, true, false, None, "vcpu-resume")? {
             return Ok(());
         }
-        if self.preserve_network_output_stop(raw_icount)? {
+        if self.preserve_network_output_stop(raw_icount, "vcpu-resume")? {
             return Ok(());
         }
         let control_boundary_requested =
@@ -1752,7 +1752,7 @@ impl LiveVcpuTimeCallbackState {
             "control-boundary",
         )?;
         if !paused {
-            self.preserve_network_output_stop(raw_icount)?;
+            self.preserve_network_output_stop(raw_icount, "control-boundary")?;
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
             let (ceiling_icount, _) = self.scheduler_advance()?;
             if current_icount > ceiling_icount {
@@ -1810,7 +1810,7 @@ impl LiveVcpuTimeCallbackState {
         if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, None, boundary)? {
             return Ok(());
         }
-        if self.preserve_network_output_stop(raw_icount)? {
+        if self.preserve_network_output_stop(raw_icount, boundary)? {
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
@@ -1916,7 +1916,18 @@ impl LiveVcpuTimeCallbackState {
         &self,
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.request_checkpoint_vmstop_observed(boundary, None)
+    }
+
+    fn request_checkpoint_vmstop_observed(
+        &self,
+        boundary: &'static str,
+        original: Option<network_output_stop::RetainedNetworkOutputStop>,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
         let status = (self.request_vmstop)();
+        if let Some(original) = original {
+            original.observe_admission(status);
+        }
         // Multiple exact callbacks can observe the same level-triggered pause
         // before QEMU's main loop consumes the first admitted stop request.
         // QEMU reports that race as -EALREADY; the required stop is already
@@ -2158,6 +2169,7 @@ impl LiveVcpuTimeCallbackState {
             Some(self.begin_network_output_stop(
                 target_icount,
                 self.last_raw_icount.load(Ordering::Acquire),
+                "idle-advance-completion",
             )?)
         } else {
             None
@@ -2202,13 +2214,14 @@ impl LiveVcpuTimeCallbackState {
         // would let that wake re-enter QEMU while this callback still considered
         // the queued idle advance pending.
         if let Some(mut output_stop) = output_stop.take() {
-            self.finish_network_output_stop(
+            let original = self.finish_network_output_stop(
                 &mut output_stop,
                 target_icount,
                 self.last_raw_icount.load(Ordering::Acquire),
+                network_output_stop::ArmOrigin::IdleAdvanceCompletion,
             )?;
             drop(output_stop);
-            self.request_network_output_stop()?;
+            self.request_network_output_stop(original)?;
         } else {
             PluginShmemOrdering::publish_reached_icount(self.slot.get(), target_icount)
                 .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
@@ -2235,8 +2248,11 @@ impl LiveVcpuTimeCallbackState {
         let _active = NetworkTxActiveGuard(&network.tx_callback_active);
         let mut pending_slot = self.try_pending_idle_advance()?;
         if let Some(pending) = pending_slot.as_mut() {
-            let _output_stop =
-                self.begin_network_output_stop(pending.target_icount, raw_emit_icount)?;
+            let _output_stop = self.begin_network_output_stop(
+                pending.target_icount,
+                raw_emit_icount,
+                "network-tx-pending",
+            )?;
 
             // Timer TX belongs to this immutable idle request. Preserve a
             // differing native sample as a refusal before buffering or output.
@@ -2282,7 +2298,8 @@ impl LiveVcpuTimeCallbackState {
                 current_icount,
             });
         }
-        let mut output_stop = self.begin_network_output_stop(current_icount, raw_emit_icount)?;
+        let mut output_stop =
+            self.begin_network_output_stop(current_icount, raw_emit_icount, "network-tx-direct")?;
         {
             let mut outbound = network.outbound.outbound();
             network
@@ -2291,14 +2308,22 @@ impl LiveVcpuTimeCallbackState {
                 .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
         }
 
-        self.finish_network_output_stop(&mut output_stop, current_icount, raw_emit_icount)?;
+        let original = self.finish_network_output_stop(
+            &mut output_stop,
+            current_icount,
+            raw_emit_icount,
+            network_output_stop::ArmOrigin::DirectTx,
+        )?;
         drop(output_stop);
-        self.request_network_output_stop()
+        self.request_network_output_stop(original)
     }
 
     /// Fences the exact output coordinate before native dispatch can continue.
-    fn request_network_output_stop(&self) -> Result<(), LiveVcpuTimeCallbackError> {
-        let admission = self.request_checkpoint_vmstop("network-output");
+    fn request_network_output_stop(
+        &self,
+        original: network_output_stop::RetainedNetworkOutputStop,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        let admission = self.request_checkpoint_vmstop_observed("network-output", Some(original));
         if let Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { status, .. }) = &admission
         {
             self.retain_network_output_stop_refusal(*status);
@@ -2451,7 +2476,11 @@ impl LiveVcpuTimeCallbackState {
         // QEMU clock regression.
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
         let raw_icount = (self.icount_raw)();
-        self.publish_callback_icount_without_pause(raw_icount_at_entry, raw_icount)
+        self.publish_callback_icount_without_pause(
+            raw_icount_at_entry,
+            raw_icount,
+            "device-current",
+        )
     }
 
     /// Publishes a device coordinate supplied atomically by QEMU.
@@ -2465,13 +2494,18 @@ impl LiveVcpuTimeCallbackState {
         raw_icount: u64,
     ) -> Result<u64, LiveVcpuTimeCallbackError> {
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
-        self.publish_callback_icount_without_pause(raw_icount_at_entry, raw_icount)
+        self.publish_callback_icount_without_pause(
+            raw_icount_at_entry,
+            raw_icount,
+            "network-tx-direct",
+        )
     }
 
     fn publish_callback_icount_without_pause(
         &self,
         raw_icount_at_entry: u64,
         raw_icount: u64,
+        phase: &'static str,
     ) -> Result<u64, LiveVcpuTimeCallbackError> {
         // Device callbacks run before the two-pass control boundary. They need
         // the restored offset to interpret raw QEMU time, but acknowledging the
@@ -2483,7 +2517,7 @@ impl LiveVcpuTimeCallbackState {
         {
             return self.logical_icount_for_raw(latest_raw_icount);
         }
-        if self.preserve_network_output_stop(raw_icount)? {
+        if self.preserve_network_output_stop(raw_icount, phase)? {
             return Ok(self.last_icount.load(Ordering::Acquire));
         }
         let current_icount = self.logical_icount_for_raw(raw_icount)?;

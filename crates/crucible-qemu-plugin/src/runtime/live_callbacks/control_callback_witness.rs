@@ -44,12 +44,16 @@ impl ControlCallbackWitness {
         Self::new(value == Some(std::ffi::OsStr::new("1")))
     }
 
-    fn new(enabled: bool) -> Self {
+    pub(super) fn new(enabled: bool) -> Self {
         Self {
             enabled,
             process_id: AtomicU32::new(if enabled { std::process::id() } else { 0 }),
             token_and_events: AtomicU64::new(0),
         }
+    }
+
+    pub(in crate::runtime) fn is_enabled(&self) -> bool {
+        self.enabled
     }
 
     fn entry_record(&self, raw_icount: u64) -> Option<Record> {
