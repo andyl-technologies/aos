@@ -28,7 +28,7 @@
     ] {};
   defaultHomes = homes {};
   invalidHomes = homes {aos.homes.directory = "/home";};
-  nss = evaluate [
+  nssModules = [
     ../../modules/base/nsswitch.nix
     {
       options.environment.etc = lib.mkOption {
@@ -36,7 +36,21 @@
         default = {};
       };
     }
-  ] {};
+  ];
+  nss = evaluate nssModules {};
+  systemdNss = evaluate (nssModules ++ [../../pkgs/system/_systemd-abilities/platform/nsswitch.nix]) {};
+  extendedNss = evaluate (nssModules
+    ++ [
+      ../../pkgs/system/_systemd-abilities/platform/nsswitch.nix
+      {
+        aos.nsswitch.sources.supplemental-group = {
+          database = "group";
+          source = "ldap";
+          order = 250;
+          actions = [];
+        };
+      }
+    ]) {};
   pam =
     evaluate [
       ../../pkgs/security/_linux-pam/module.nix
@@ -81,6 +95,11 @@ in
   assert pass defaultHomes && !pass invalidHomes;
   assert lib.hasInfix "hosts: files dns" nss.config.environment.etc."nsswitch.conf".text;
   assert !lib.hasInfix "mymachines" nss.config.environment.etc."nsswitch.conf".text;
+  # NSS actions apply to the immediately preceding source. Files must merge
+  # successful local groups before consulting the selected provider.
+  assert builtins.elem "group: files [SUCCESS=merge] systemd" (lib.splitString "\n" systemdNss.config.environment.etc."nsswitch.conf".text);
+  assert systemdNss.config.aos.nsswitch.sources.systemd-group.actions == [];
+  assert builtins.elem "group: files [SUCCESS=merge] systemd ldap" (lib.splitString "\n" extendedNss.config.environment.etc."nsswitch.conf".text);
   assert lib.hasInfix "pam_keyinit.so force revoke" pam.config.aos.pam.files."pam.d/sshd".text;
   assert builtins.elem "spl.spl_kmem_cache_obj_per_slab=1" parameters;
   assert builtins.elem "zfs.zfs_arc_max=${toString (8 * 1073741824 * 70 / 100)}" parameters;

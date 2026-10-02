@@ -231,7 +231,7 @@ in
           while IFS= read -r line; do
             [ -z "$line" ] && continue
             [ "''${line#\#}" != "$line" ] && continue
-            error=$($out/sbin/auditctl $line 2>&1 >/dev/null) && status=0 || status=$?
+            error=$(@auditctl@ $line 2>&1 >/dev/null) && status=0 || status=$?
             if [ "$status" -eq 0 ]; then
               loaded=$((loaded + 1))
             else
@@ -241,10 +241,20 @@ in
           done < "$rules"
           echo "audit-rules: loaded $loaded rule(s), rejected $failed"
           EOF
+          # Pin the installed executable without expanding runtime shell variables.
+          sed -i "s|@auditctl@|$out/sbin/auditctl|g" $out/libexec/aos-audit-rules
           chmod 0755 $out/libexec/aos-audit-rules
         '';
       }
     ];
+
+    checks = {
+      self,
+      pkgs,
+      ...
+    }: {
+      rules-helper = import ./_audit/helper-check.nix {inherit self pkgs;};
+    };
 
     meta = {
       description = "Linux Audit — userspace auditing framework";
