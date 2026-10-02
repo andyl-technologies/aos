@@ -226,8 +226,7 @@ async fn run_inner(
 
     // Base-provided roots need no profile entry, but must not skip other requested packages.
     let provided = partition_base_provided_closures(&mut closures, |closure| {
-        let (name, version) =
-            crate::sysroot::check_sysroot_containment(&closure.root.references, config)?;
+        let (name, version) = crate::sysroot::check_sysroot_containment(&closure.root, config)?;
         if !json_mode {
             printer.info(&format!(
                 "{} {} already provided by sysroot {} {}",
