@@ -354,7 +354,9 @@ impl<
             let owner = commit_authority.clone();
             Box::pin(async move {
                 if baseline.authority() == &owner {
-                    guard.bind_original_commit_at(baseline, view, held).await
+                    guard
+                        .bind_local_or_import_at(&owner, baseline, view, held)
+                        .await
                 } else {
                     guard
                         .bind_imported_commit_at(&owner, baseline, view, held)
@@ -687,7 +689,8 @@ impl<S, C> Guard<S, C> {
         baseline: &RetainedBootstrap,
         view: AssociationView<'_>,
     ) -> Result<OriginalCommitContext, StoreFailure> {
-        self.check_original_commit_at(baseline, view, None).await
+        self.check_original_commit_at(baseline, view, None, false)
+            .await
     }
 
     /// Checks protected association bytes under an actual writable held backend.
@@ -707,7 +710,30 @@ impl<S, C> Guard<S, C> {
         if !held.writable() {
             return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
         }
-        self.check_original_commit_at(baseline, view, Some(held))
+        self.check_original_commit_at(baseline, view, Some(held), false)
+            .await
+    }
+
+    /// Installs a fully checked protected import during an explicit held transition.
+    ///
+    /// A same-original supplement may add retained trust only when the original
+    /// commit, complete baseline and actual retention owner remain unchanged.
+    /// Ordinary original checks retain exact context mismatch refusal.
+    ///
+    /// # Errors
+    /// Rejects read-only or unrelated holders, invalid protected import or local
+    /// originals, conflicting contexts and unavailable synchronization.
+    #[cfg(unix)]
+    pub(in crate::guard::original) async fn check_original_import_held<'a>(
+        &self,
+        baseline: &'a RetainedBootstrap,
+        view: AssociationView<'a>,
+        held: &'a HeldIdentity<'a>,
+    ) -> Result<OriginalCommitContext, StoreFailure> {
+        if !held.writable() {
+            return Err(StoreFailure::new(StoreErrorKind::ReadOnly));
+        }
+        self.check_original_commit_at(baseline, view, Some(held), true)
             .await
     }
 
@@ -716,14 +742,28 @@ impl<S, C> Guard<S, C> {
         baseline: &'a RetainedBootstrap,
         view: AssociationView<'a>,
         held: Option<&'a HeldIdentity<'a>>,
+        allow_local_supplement: bool,
     ) -> Result<OriginalCommitContext, StoreFailure> {
         let verifier = self.original_verifier()?;
         let checked = (verifier.commit)(baseline, view, held).await?;
         let mut installed = self.original_commits.write().map_err(|_| unavailable())?;
-        if installed
-            .get(&checked.commit)
-            .is_some_and(|old| old != &checked)
-        {
+        if installed.get(&checked.commit).is_some_and(|old| {
+            #[cfg(unix)]
+            let supplements_local = old.imported.is_none()
+                && checked
+                    .imported
+                    .as_ref()
+                    .is_some_and(|imported| imported.supplements_local);
+            #[cfg(not(unix))]
+            let supplements_local = false;
+
+            old != &checked
+                && !(allow_local_supplement
+                    && supplements_local
+                    && old.commit == checked.commit
+                    && old.baseline == checked.baseline
+                    && old.retention_owner == checked.retention_owner)
+        }) {
             return Err(invalid());
         }
         installed.insert(checked.commit, checked.clone());

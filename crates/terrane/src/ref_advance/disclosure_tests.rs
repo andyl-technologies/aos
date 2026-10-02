@@ -315,3 +315,223 @@ async fn disclosure_role_is_dedicated_and_missing_seed_is_not_repaired() {
     );
     assert_eq!(source.guard().configured_disclosure_roles().unwrap(), roles);
 }
+
+/// Stages negative administrative fixtures from an actual checked local factory.
+///
+/// This helper supplies no publication capability and does not stand in for the
+/// paired producer. Its records preserve genuine original and dedicated-role
+/// coordinates so each negative isolates the intended protected-context check.
+#[cfg(unix)]
+async fn stage_same_local_import(
+    source: &NativeFixture<TokioLocalFs>,
+    original: &crate::guard::OriginalCommitContext,
+) -> crate::repository::local_authority::retention::ImportRecord {
+    use crate::bucket::held::SingleHeld;
+    use crate::repository::local_authority::{
+        disclosure,
+        import_binding::ImportBindingRecord,
+        public_trust::PublicTrustRecord,
+        retention::{self, Record},
+    };
+    use crate::store::Clock;
+
+    let authority = source.guard().configured_original_authority().unwrap();
+    assert_eq!(original.baseline().authority(), &authority);
+    let import = original.retained_import_record().unwrap();
+    let binding = ImportBindingRecord {
+        commit: *original.commit(),
+        source_authority: *authority.id(),
+        destination_authority: *authority.id(),
+        import_digest: *blake3::hash(&import.encode().unwrap()).as_bytes(),
+    };
+    let holder = SingleHeld::acquire(source.store()).await.unwrap();
+    let held = holder.destination();
+    let identity = held.identity_proof();
+    let mut controls = source
+        .guard()
+        .hold_original_registration(&authority, &identity)
+        .await
+        .unwrap();
+    let now = source
+        .guard()
+        .clock()
+        .now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let signer = disclosure::load(source.guard(), &authority, &mut controls, now)
+        .await
+        .unwrap();
+    let trust = PublicTrustRecord {
+        import_digest: binding.import_digest,
+        source_authority: binding.source_authority,
+        destination_authority: binding.destination_authority,
+        issuer_keys: source.guard().keys().to_vec(),
+        disclosure_roles: vec![signer.role().clone()],
+    };
+    let owner = source.store().publication_operator_uid().unwrap();
+
+    retention::retain(
+        source.store().fs(),
+        authority.control(),
+        owner,
+        &import.selector(),
+        &import,
+        true,
+    )
+    .await
+    .unwrap();
+    retention::retain(
+        source.store().fs(),
+        authority.control(),
+        owner,
+        &binding.selector().unwrap(),
+        &binding,
+        true,
+    )
+    .await
+    .unwrap();
+    retention::retain(
+        source.store().fs(),
+        authority.control(),
+        owner,
+        &trust.selector().unwrap(),
+        &trust,
+        true,
+    )
+    .await
+    .unwrap();
+    controls.revalidate().await.unwrap();
+    import
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_same_local_import_cannot_replace_missing_original_records() {
+    use crate::bucket::held::SingleHeld;
+    use crate::repository::local_authority::retention::Record;
+    use crate::store::LocalFs;
+
+    for missing_bootstrap in [true, false] {
+        let source = fixture().await;
+        let reference = "refs/heads/_/main";
+        let mut session = source.begin(reference, &token(), "sdk").await.unwrap();
+        let head = source
+            .advance(&mut session, request(Vec::new()))
+            .await
+            .unwrap();
+        let original = source.guard().original_commit(&head.commit).unwrap();
+        let import = stage_same_local_import(&source, &original).await;
+        let authority = source.guard().configured_original_authority().unwrap();
+        let selector = if missing_bootstrap {
+            import.baseline.selector().unwrap()
+        } else {
+            import.association.selector()
+        };
+        let missing = authority.control().join(selector);
+
+        source.store().fs().remove_file(&missing).await.unwrap();
+        let holder = SingleHeld::acquire(source.store()).await.unwrap();
+        let held = holder.destination();
+        let identity = held.identity_proof();
+        assert!(
+            source
+                .guard()
+                .load_original_import_held(&authority, &import, &identity)
+                .await
+                .is_err()
+        );
+        assert!(
+            source
+                .store()
+                .fs()
+                .symlink_metadata(&missing)
+                .await
+                .is_err()
+        );
+        assert!(
+            source
+                .store()
+                .fs()
+                .symlink_metadata(&authority.control().join(import.selector()))
+                .await
+                .is_ok()
+        );
+    }
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_ordinary_original_check_refuses_new_local_supplement() {
+    use crate::bucket::held::SingleHeld;
+    use crate::guard::{ConsumedResolver, HistoryObservation};
+    use terrane_core::gc::publication::evidence::ControlKind;
+
+    let source = fixture().await;
+    let reference = "refs/heads/_/main";
+    let mut session = source.begin(reference, &token(), "sdk").await.unwrap();
+    let head = source
+        .advance(&mut session, request(Vec::new()))
+        .await
+        .unwrap();
+    let original = source.guard().original_commit(&head.commit).unwrap();
+    let import = stage_same_local_import(&source, &original).await;
+    let authority = source.guard().configured_original_authority().unwrap();
+    let holder = SingleHeld::acquire(source.store()).await.unwrap();
+    let held = holder.destination();
+    let identity = held.identity_proof();
+    let observation = HistoryObservation::held(&identity);
+
+    assert!(
+        source
+            .guard()
+            .revalidate_original_context(&original, observation)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        source.guard().original_commit(&head.commit).unwrap(),
+        original
+    );
+    let supplement = source
+        .guard()
+        .load_original_import_held(&authority, &import, &identity)
+        .await
+        .unwrap();
+    assert_eq!(supplement.baseline(), original.baseline());
+    assert_eq!(supplement.commit(), original.commit());
+    source
+        .guard()
+        .revalidate_original_context(&supplement, observation)
+        .await
+        .unwrap();
+    assert!(
+        source
+            .guard()
+            .revalidate_original_context(&original, observation)
+            .await
+            .is_err()
+    );
+
+    let consumed = ConsumedResolver::new(source.guard(), &authority).unwrap();
+    consumed.original(&supplement).unwrap();
+    let inputs = consumed.finish().unwrap();
+    let kinds = inputs
+        .controls
+        .iter()
+        .map(|pin| pin.kind)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        kinds,
+        [
+            ControlKind::Registration,
+            ControlKind::Bootstrap,
+            ControlKind::Association,
+            ControlKind::Import,
+            ControlKind::ImportBinding,
+            ControlKind::ImportTrust,
+        ]
+        .into_iter()
+        .collect()
+    );
+}
