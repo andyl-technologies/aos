@@ -3,6 +3,94 @@
 use super::*;
 
 #[test]
+fn prov_history_union_preserves_completed_disclosure_boundaries() {
+    let fixture = fixture(file());
+    let (finished, _) = disclosed_candidate(
+        &fixture.destination,
+        fixture.target.commit,
+        &[authority()],
+        defaults(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let mut merged = VerifiedHistory::new(MIN_CHUNK);
+    merged.append_verified(&finished).unwrap();
+
+    assert_eq!(merged.disclosure_boundaries, finished.disclosure_boundaries);
+    assert_eq!(merged.disclosure_parents, finished.disclosure_parents);
+    assert_eq!(
+        merged.disclosure_verified_views,
+        finished.disclosure_verified_views
+    );
+    assert_eq!(merged.root_scopes, finished.root_scopes);
+    assert_eq!(merged.bootstrap_policies, finished.bootstrap_policies);
+    assert_eq!(
+        merged.introducing_commit(&fixture.target),
+        Ok(fixture.target.commit)
+    );
+    assert!(merged.commit(&fixture.source_commit.identity()).is_none());
+    assert!(
+        merged
+            .require_verified_context(fixture.target.commit)
+            .is_ok()
+    );
+    let before = TrustContext::new(
+        &finished,
+        fixture.target.commit,
+        Selector::preset(Preset::Strict),
+        PUBLIC,
+        Some("baseline"),
+    )
+    .unwrap();
+    let after = TrustContext::new(
+        &merged,
+        fixture.target.commit,
+        Selector::preset(Preset::Strict),
+        PUBLIC,
+        Some("baseline"),
+    )
+    .unwrap();
+
+    assert_eq!(after.canonical_context(), before.canonical_context());
+    assert!(!after.accepts_path(b"file"));
+}
+
+#[test]
+fn prov_disclosure_history_import_rejects_unfinished_or_provisional_dependencies() {
+    let fixture = fixture(file());
+    let (finished, _) = disclosed_candidate(
+        &fixture.destination,
+        fixture.target.commit,
+        &[authority()],
+        defaults(),
+    )
+    .unwrap()
+    .finish()
+    .unwrap();
+    let mut unfinished = finished.clone();
+    unfinished.root_scopes.remove(&fixture.target.commit);
+    let mut provisional = finished.clone();
+    provisional.provisional_scopes.insert(fixture.target.commit);
+
+    for dependency in [unfinished, provisional] {
+        let mut candidate = disclosed_candidate(
+            &fixture.destination,
+            fixture.target.commit,
+            &[authority()],
+            defaults(),
+        )
+        .unwrap();
+        assert!(candidate.insert_history(&dependency).is_err());
+        let (history, _) = candidate.finish().unwrap();
+        assert_eq!(
+            history.introducing_commit(&fixture.target),
+            Ok(fixture.target.commit)
+        );
+    }
+}
+
+#[test]
 fn prov_disclosure_fresh_boundary_requires_independently_retained_bootstrap_even_empty_acl() {
     let fixture = fixture(file());
     let candidate = DisclosureCandidate::new(

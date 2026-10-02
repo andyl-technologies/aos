@@ -53,6 +53,17 @@ in {
     ${runTest "prov_property_wrappers_resolve_inheritance_and_graft_overrides"}
     ${runTest "prov_external_sources_preserve_producers_without_granting_acceptance"}
     ${runTest "prov_attribute_producer_rejects_equal_value_inherited_on_changed_content"}
+    ${runTest "history_merge::prov_history_union_preserves_completed_scopes_and_is_idempotent"}
+    ${runTest "history_merge::prov_history_union_rejects_unfinished_contexts_on_either_side"}
+    ${runTest "history_merge::prov_history_union_rejects_provisional_contexts_on_either_side"}
+    ${runTest "history_merge::prov_history_union_rejects_different_original_verification_contexts"}
+    ${runTest "history_merge::prov_history_union_rejects_different_profile_limits"}
+    ${runTest "history_merge::prov_history_union_rejects_conflicting_tree_interpretations"}
+    ${runTest "history_merge::prov_history_union_rejects_conflicting_retained_bootstrap_associations"}
+    ${runTest "disclosure::boundaries::prov_history_union_preserves_completed_disclosure_boundaries"}
+    ${runTest "disclosure::boundaries::prov_disclosure_history_import_rejects_unfinished_or_provisional_dependencies"}
+    ${runTest "side_attributes::prov_history_union_preserves_selected_side_record_contexts"}
+    ${runTest "side_attributes::prov_history_union_rejects_conflicting_selected_side_records_atomically"}
     printf 'PASS: closed trust presets and verified entry preservation\n' > "$out/result"
   '';
 }

@@ -503,7 +503,7 @@ pub fn verify_diagnostic(
         .verify_diagnostic(keys, now)
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct Effective {
     grants: Vec<Grant>,
     not_after: u64,
@@ -528,7 +528,7 @@ impl Effective {
 }
 
 /// Holds a cryptographically authenticated subject and effective restrictions.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedToken {
     authority: Authority,
     effective: Effective,

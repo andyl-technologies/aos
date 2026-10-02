@@ -55,7 +55,9 @@ impl core::error::Error for Diagnostic {}
 ///
 /// Construction is restricted to verification. Repository guards must still
 /// enforce current ACLs before accepting a ref update (AUTH-26, PROV-4).
-#[derive(Clone, Debug)]
+/// Equality includes the original verification context and effective token
+/// restrictions, rather than comparing only the immutable record identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedCommit {
     commit: Commit,
     identity: Digest,

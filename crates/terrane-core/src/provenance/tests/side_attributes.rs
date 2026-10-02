@@ -175,6 +175,68 @@ fn attribute_selector(inner: &[u8]) -> Selector {
 }
 
 #[test]
+fn prov_history_union_preserves_selected_side_record_contexts() {
+    let (mut source, producer, _, location) = fixture();
+    let evidence = verify_record_producer(&record(&producer), &source, &location).unwrap();
+    source
+        .insert_side_attribute(evidence, binding(location.commit, b"file"))
+        .unwrap();
+    let selector = attribute_selector(Selector::preset(Preset::Strict).encode());
+    let expected = TrustContext::new(
+        &source,
+        location.commit,
+        selector.clone(),
+        DOMAIN,
+        Some("baseline"),
+    )
+    .unwrap();
+    assert!(expected.accepts_path(b"file"));
+    let mut destination = VerifiedHistory::new(MIN_CHUNK);
+
+    destination.append_verified(&source).unwrap();
+
+    assert_eq!(destination.side_attributes, source.side_attributes);
+    let context = TrustContext::new(
+        &destination,
+        location.commit,
+        selector,
+        DOMAIN,
+        Some("baseline"),
+    )
+    .unwrap();
+    assert_eq!(context.canonical_context(), expected.canonical_context());
+    assert!(context.accepts_path(b"file"));
+    assert!(destination.entry(&location).unwrap().attrs.is_empty());
+}
+
+#[test]
+fn prov_history_union_rejects_conflicting_selected_side_records_atomically() {
+    let (history, producer, other_producer, location) = fixture();
+    let mut first = history.clone();
+    let evidence = verify_record_producer(&record(&producer), &first, &location).unwrap();
+    first
+        .insert_side_attribute(evidence, binding(location.commit, b"file"))
+        .unwrap();
+    let mut second = history;
+    let other_location = EntryLocation {
+        commit: other_producer.identity(),
+        ..location.clone()
+    };
+    let evidence =
+        verify_record_producer(&record(&other_producer), &second, &other_location).unwrap();
+    second
+        .insert_side_attribute(evidence, binding(location.commit, b"file"))
+        .unwrap();
+    assert_ne!(first.side_attributes, second.side_attributes);
+
+    for (mut destination, source) in [(first.clone(), second.clone()), (second, first)] {
+        let before = alloc::format!("{destination:?}");
+        assert!(destination.append_verified(&source).is_err());
+        assert_eq!(alloc::format!("{destination:?}"), before);
+    }
+}
+
+#[test]
 fn prov_side_attribute_authenticates_producer_without_inventing_inline_acceptance() {
     let (mut history, producer, _, location) = fixture();
     let evidence = verify_record_producer(&record(&producer), &history, &location).unwrap();

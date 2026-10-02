@@ -16,6 +16,8 @@ use alloc::{
     vec::Vec,
 };
 
+mod merge;
+
 /// Names an entry in the immutable tree evidence of a signed commit.
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct EntryLocation {
@@ -517,82 +519,6 @@ impl VerifiedHistory {
         {
             return Err(Rejected);
         }
-        Ok(())
-    }
-
-    pub(super) fn append_evidence(&mut self, other: &Self) -> Result<(), Rejected> {
-        if self.min_chunk_size != other.min_chunk_size {
-            return Err(Rejected);
-        }
-        let mut candidate = self.clone();
-        for commit in other.commits.values() {
-            candidate.insert_commit(commit.clone())?;
-        }
-        for (identity, bytes) in &other.nodes {
-            if candidate
-                .nodes
-                .get(identity)
-                .is_some_and(|previous| previous != bytes)
-            {
-                return Err(Rejected);
-            }
-            candidate.nodes.insert(*identity, bytes.clone());
-        }
-        for (root, children) in &other.roots {
-            if candidate
-                .roots
-                .get(root)
-                .is_some_and(|previous| previous != children)
-                || candidate
-                    .usage
-                    .get(root)
-                    .is_some_and(|usage| other.usage.get(root) != Some(usage))
-            {
-                return Err(Rejected);
-            }
-            candidate.roots.insert(*root, children.clone());
-            candidate
-                .usage
-                .insert(*root, *other.usage.get(root).ok_or(Rejected)?);
-        }
-        for (location, boundary) in &other.disclosure_boundaries {
-            if candidate
-                .disclosure_boundaries
-                .get(location)
-                .is_some_and(|previous| previous != boundary)
-            {
-                return Err(Rejected);
-            }
-            candidate
-                .disclosure_boundaries
-                .insert(location.clone(), boundary.clone());
-        }
-        candidate
-            .disclosure_parents
-            .extend(other.disclosure_parents.iter().copied());
-        candidate
-            .disclosure_verified_views
-            .extend(other.disclosure_verified_views.iter().copied());
-        for (identity, scope) in &other.root_scopes {
-            let scope = match candidate.root_scopes.get(identity) {
-                Some(previous) => previous.merge_checked(scope)?,
-                None => scope.clone(),
-            };
-            candidate.root_scopes.insert(*identity, scope);
-        }
-        for (key, baseline) in &other.bootstrap_policies {
-            if candidate
-                .bootstrap_policies
-                .get(key)
-                .is_some_and(|previous| previous != baseline)
-            {
-                return Err(Rejected);
-            }
-            candidate
-                .bootstrap_policies
-                .insert(key.clone(), baseline.clone());
-        }
-        *self = candidate;
         Ok(())
     }
 

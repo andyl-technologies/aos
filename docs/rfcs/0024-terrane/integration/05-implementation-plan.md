@@ -823,6 +823,25 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   core. Current-ACL commit guarding and durable disclosure certificate
   verification/publication are joint with T-REF-2 and T-DOM-1; merge admission
   with T-ALG-2; wire and command error translation with their runtime tasks.
+  A shared `VerifiedHistory::append_verified` prerequisite now preserves
+  completed disclosure boundaries, original root/bootstrap scopes and selected
+  side records across history unions. Both public inputs must have completed
+  contexts; private disclosure candidates may import only completed dependency
+  histories. Provisional inputs, differing original authentication evidence,
+  incompatible profile limits, tree interpretations and retained associations
+  fail without changing the receiver. Eleven new exact regressions pass,
+  including genuine signed-record verification with different issuer retirement
+  bounds, completed disclosure and selected side-record context preservation.
+  All 469 core tests, strict all-target core Clippy and rustdoc pass, together
+  with the actual 32-case selector gate and `core-no-std`. The actual aggregate
+  remains red at the absent `format_properties` task target; this prerequisite
+  does not supply the parked historical-bootstrap selectors or qualify native
+  disclosure/collection. On its isolated branch the native producer now passes
+  a public-source factory/erasure/reopen test and the first required private-cut
+  case: distinct original public author, private current discloser and public
+  destination; private sibling/history absence; both upstream namespaces and
+  credentials erased; destination-only authorized reopen/read. The other
+  eighteen required disclosure cases and paired recovery remain pending.
   The reopened pure PROV-13 correction now propagates content and attribute
   acceptance errors only for predicates requiring that ancestry.
   Introduction-only Any, issuer and eligible Strict selectors keep independent
