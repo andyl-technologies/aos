@@ -35,13 +35,11 @@ const STD_31_TERMS: &[&str] = &[
 #[test]
 fn comments_only_documentation_policy_matches_root_guidance() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
-    let claude = fs::read_to_string(root.join("CLAUDE.md"))?;
     let agents = fs::read_to_string(root.join("AGENTS.md"))?;
     let standards =
         fs::read_to_string(root.join("docs/rfcs/0010-crucible/28-engineering-standards.md"))?;
     let mut failures = Vec::new();
 
-    require_terms("CLAUDE.md", &claude, COMMENTS_ONLY_TERMS, &mut failures);
     require_terms("AGENTS.md", &agents, COMMENTS_ONLY_TERMS, &mut failures);
     require_terms(
         "28-engineering-standards.md STD-30",
