@@ -864,8 +864,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   ten focused native regressions pass, including a genuine original-reference
   fallback with unchanged trusted configuration. Its final full native run
   passes 356 of 363 tests with the same seven failures and no timeouts; all
-  116 portable tests and strict native rustdoc also pass. Final Nix gate
-  qualification remains in progress.
+  116 portable tests and strict native rustdoc also pass. Its final Nix feature
+  matrix passes both 439-case core runs and 73 portable cases, then fails with
+  355 of 362 native passes and the same seven failures. The actual aggregate
+  fails `prov-commit-verify` because the 19 required disclosure cases remain
+  unqualified; the named repository and surface architecture checks also fail
+  explicitly as pending. Both mandatory formatting commands pass.
   This candidate is unmerged and does not qualify the task.
   Pure core view, endpoint, exposure
   and schema vocabulary is integrated as an SDK prerequisite. View parsing
