@@ -8,6 +8,7 @@ The raw BLAKE3 helper supplies only registered target-binding relationships.
 import argparse
 from copy import deepcopy
 from pathlib import Path
+import re
 import textwrap
 
 from collection_vectors import encode, self_check as check_cbor
@@ -248,6 +249,20 @@ def models(binary):
     return result
 
 
+def check_section(original, expected):
+    """Compares one contiguous section, ignoring only LF boundary newlines."""
+    headings = list(re.finditer(r"^## .*?$", original, re.MULTILINE))
+    matches = [index for index, match in enumerate(headings) if match[0] == HEADING]
+    if len(matches) != 1:
+        raise ValueError("expected one selector/evidence reference section")
+
+    index = matches[0]
+    start = headings[index].start()
+    end = headings[index + 1].start() if index + 1 < len(headings) else len(original)
+    if original[start:end].rstrip("\n") != expected.rstrip("\n"):
+        raise ValueError("selector/evidence fields or bytes differ")
+
+
 def self_check(binary):
     """Checks fixed primitive bytes and precise projection relationships."""
     check_cbor()
@@ -274,6 +289,25 @@ def self_check(binary):
     assert evidence(True)[6] != evidence(True)[7][0]
     assert evidence(False)[6] == evidence(False)[7][0]
     assert context(1, None)[0] == 1 and context(2, None)[0] == 2
+
+    section = render(binary)
+    check_section(section, section)
+    check_section(section.rstrip("\n"), section)
+    check_section("## Earlier\ntext\n" + section + "\n## Later\ntext\n", section)
+    for invalid in [
+        "",
+        section + section,
+        section.replace("```hex\n", "```hex\n00", 1),
+        section.replace("### selector-issuer", "## Interrupted", 1),
+        section.replace("\n", "\r\n"),
+        section[:-1] + " \n",
+        "prefix " + section,
+    ]:
+        try:
+            check_section(invalid, section)
+        except ValueError:
+            continue
+        raise ValueError("missing, duplicate, tampered or interrupted section was accepted")
     print("PASS: fixed CBOR oracles and 86 selector/evidence witnesses (32 negatives)")
 
 
@@ -310,12 +344,10 @@ def main():
     if arguments.emit:
         print(section, end="")
         return
-    reference = arguments.check.read_text(encoding="utf-8")
-    if reference.count(HEADING + "\n") != 1:
-        raise SystemExit("expected one selector/evidence reference section")
-    existing = reference.split(HEADING + "\n", 1)[1].split("\n## ", 1)[0]
-    if (HEADING + "\n" + existing).rstrip() != section.rstrip():
-        raise SystemExit("selector/evidence fields or bytes differ")
+    try:
+        check_section(arguments.check.read_bytes().decode("utf-8"), section)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     print("PASS: independent selector/evidence reference section matches")
 
 
