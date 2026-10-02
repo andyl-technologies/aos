@@ -218,10 +218,16 @@ async fn session_allows_read(svc: &RpcService, headers: &HeaderMap, scope: &Scop
     };
     let allowed = iam::allow(&grants, Permission::Read, &context);
     crate::hybrid_ingress::observation::record_existing_outcome(
-        "browse_session_read", allowed, &(
-            auth.user_id, &auth.owner_incarnation, &auth.session_id_hash, scope.as_str(),
+        "browse_session_read",
+        allowed,
+        &(
+            auth.user_id,
+            &auth.owner_incarnation,
+            &auth.session_id_hash,
+            scope.as_str(),
             crate::hybrid_ingress::observation::grant_projection(&grants),
-        ));
+        ),
+    );
     allowed
 }
 
@@ -295,10 +301,16 @@ async fn can_read_registry(
 
 fn observe_registry_read_policy(registry: &RegistryRecord, allowed: bool) {
     crate::hybrid_ingress::observation::record_existing_outcome(
-        "browse_registry_read_policy", allowed, &(
-            registry.id, &registry.stable_id, &registry.scope_key,
-            registry.org_id, &registry.visibility,
-        ));
+        "browse_registry_read_policy",
+        allowed,
+        &(
+            registry.id,
+            &registry.stable_id,
+            &registry.scope_key,
+            registry.org_id,
+            &registry.visibility,
+        ),
+    );
 }
 
 /// Load a registry by slug, enforcing visibility, plus its index status.

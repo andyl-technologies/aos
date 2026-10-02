@@ -544,10 +544,16 @@ impl RpcService {
             && (registry.visibility == "public" || registry.org_id.is_none())
         {
             crate::hybrid_ingress::observation::record_existing_check(
-                "oci_public_pull_policy", &(
-                    registry.id, &registry.stable_id, registry.org_id,
-                    &registry.visibility, authority, repository,
-                ));
+                "oci_public_pull_policy",
+                &(
+                    registry.id,
+                    &registry.stable_id,
+                    registry.org_id,
+                    &registry.visibility,
+                    authority,
+                    repository,
+                ),
+            );
             return Ok(());
         }
         let header = authorization
@@ -572,7 +578,9 @@ impl RpcService {
         }
         if required_action == "pull" {
             crate::hybrid_ingress::observation::record_existing_check(
-                "oci_repository_grant", &claims);
+                "oci_repository_grant",
+                &claims,
+            );
         }
         Ok(())
     }

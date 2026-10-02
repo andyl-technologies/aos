@@ -305,9 +305,17 @@ impl RpcService {
         {
             return Err(direct_unauthorized());
         }
-        crate::hybrid_ingress::observation::record_existing_check("oci_actor_current", &(
-            &actor, &auth.token_id, claims.exp, registry.id, &registry.stable_id, repository,
-        ));
+        crate::hybrid_ingress::observation::record_existing_check(
+            "oci_actor_current",
+            &(
+                &actor,
+                &auth.token_id,
+                claims.exp,
+                registry.id,
+                &registry.stable_id,
+                repository,
+            ),
+        );
         Ok((actor, auth.token_id, claims.exp))
     }
 }

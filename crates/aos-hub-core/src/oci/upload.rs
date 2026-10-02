@@ -889,12 +889,19 @@ impl RpcService {
         {
             Ok(upload) => {
                 crate::hybrid_ingress::observation::record_existing_check(
-                    "oci_chunk_catalog_current", &(
-                        &upload.id, upload.resource_version, upload.uploaded_size,
-                        admission.placement_id, admission.placement_resource_version,
-                        admission.binding_id, admission.binding_write_revision,
-                        &admission.staging_object_key, &request.chunk_sha256,
-                    ));
+                    "oci_chunk_catalog_current",
+                    &(
+                        &upload.id,
+                        upload.resource_version,
+                        upload.uploaded_size,
+                        admission.placement_id,
+                        admission.placement_resource_version,
+                        admission.binding_id,
+                        admission.binding_write_revision,
+                        &admission.staging_object_key,
+                        &request.chunk_sha256,
+                    ),
+                );
                 upload_progress_response(
                     StatusCode::ACCEPTED,
                     repository,
@@ -902,7 +909,7 @@ impl RpcService {
                     upload.uploaded_size,
                     false,
                 )
-            },
+            }
             Err(_) => upload_error(
                 StatusCode::CONFLICT,
                 DistributionErrorCode::BlobUploadInvalid,
