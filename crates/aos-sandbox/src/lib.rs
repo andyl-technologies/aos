@@ -279,6 +279,11 @@ pub use journal::{
     SourceOriginalChallengeHistoryViewV5, SourceOriginalNativeJournalAuthorityV5,
     SourceOriginalPhysicalCutV5, SourceOriginalReplayViewV5,
 };
+#[cfg(target_os = "linux")]
+pub use journal::{
+    StorageNativeIssuanceEdgeDataV1, StorageNativeIssuanceHistoryCursorV1,
+    StorageNativeIssuanceHistoryDataV1, StorageNativeIssuanceHistoryErrorV1,
+};
 pub use lifecycle_authority::{
     AtomicStorageLifecyclePublicationErrorV1, compile_atomic_storage_lifecycle_template_v1,
     compile_storage_create_preparation_template_v1,

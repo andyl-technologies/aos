@@ -48,6 +48,13 @@ mod runtime_deployment_history;
 #[cfg(target_os = "linux")]
 mod runtime_deployment_sidecar_history;
 #[cfg(target_os = "linux")]
+mod storage_native_issuance_history;
+#[cfg(target_os = "linux")]
+pub use storage_native_issuance_history::{
+    StorageNativeIssuanceEdgeDataV1, StorageNativeIssuanceHistoryCursorV1,
+    StorageNativeIssuanceHistoryDataV1, StorageNativeIssuanceHistoryErrorV1,
+};
+#[cfg(target_os = "linux")]
 pub use runtime_deployment_sidecar_history::RuntimeDeploymentNativeTransactionDataV1;
 #[cfg(target_os = "linux")]
 pub(crate) use runtime_deployment_sidecar_history::RetainedDeploymentNativeHistoryV1;
@@ -4826,11 +4833,12 @@ fn replay_sidecar_observed<R: Read + Seek + Borrow<File>>(
     replay_original_observed(file, limits, None, Some(DeploymentHistoryObserverV1::Sidecar(history)))
 }
 
-/// Selects only the two original deployment observers, never caller callbacks.
+/// Selects closed original-history observers, never caller callbacks.
 #[cfg(target_os = "linux")]
 enum DeploymentHistoryObserverV1<'observer, 'data> {
     Main(&'observer mut runtime_deployment_history::HistoryAuditV1<'data>),
     Sidecar(&'observer mut runtime_deployment_sidecar_history::SidecarHistoryAuditV1),
+    Storage(&'observer mut storage_native_issuance_history::StorageHistoryObserverV1),
 }
 
 #[cfg(target_os = "linux")]
@@ -4840,15 +4848,20 @@ impl DeploymentHistoryObserverV1<'_, '_> {
         transaction: &JournalTransaction,
         begin_sequence: u64,
         commit_sequence: u64,
+        begin_offset: u64,
+        end_offset: u64,
     ) -> Result<(), JournalError> {
         match self {
             Self::Main(history) => history.observe(transaction, begin_sequence, commit_sequence),
             Self::Sidecar(history) => history.observe(transaction, begin_sequence, commit_sequence),
+            Self::Storage(history) => history.observe(
+                transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+            ),
         }
     }
 }
 
-// The closed deployment observers use the original parser and actual File.
+// The closed history observers use the original parser and actual File.
 // A private read-at cursor changes no append-description offset or identity.
 fn replay_original_observed<R: Read + Seek + Borrow<File>>(
     file: &mut R,
@@ -4953,7 +4966,9 @@ fn replay_original_observed<R: Read + Seek + Borrow<File>>(
 
                 #[cfg(target_os = "linux")]
                 if let Some(history) = deployment_history.as_mut() {
-                    history.observe(&replay_transaction, begin_sequence, frame.sequence)?;
+                    history.observe(
+                        &replay_transaction, begin_sequence, frame.sequence, begin_offset, offset,
+                    )?;
                 }
 
                 let mut query_edge = None;
