@@ -675,6 +675,45 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remain absent or unqualified. The failing aggregate is retained separately
   from the passing 586-test core qualification. No task branch merges or
   milestone exit follows either narrower result.
+  The D-96 consumer now passes all six exact published-input auxiliary groups,
+  strict consumer Clippy and both mandatory formatters. Its full reference
+  output matches the normative whole file; all nine reviewed input blobs remain
+  unchanged across the rebase. A separate `lineage-reference-models` auxiliary
+  reserves complete ordinary control-pin alternatives, consumed root layers
+  and repeated occurrences, view domains/order, complete used-input summaries,
+  whole source records and independently malformed wire inputs. It fails
+  explicitly while those input templates are absent. These pure formats grant
+  no checked lineage, trusted policy, current authority or native permission.
+  The combined candidate now includes both reviewed D-95/D-96 owning consumers.
+  Its full core build, all 595 Nextest tests with zero skips (run
+  `f54485a1-e9f7-48f0-982c-88d8b1e8bdbc`), strict all-target Clippy,
+  warnings/missing-docs rustdoc and both mandatory formatters pass. All 34
+  temporary inputs were byte-compared after every original stage terminated,
+  then removed or restored exactly. Complete golden and native qualification
+  remain open; this core result advances no task or milestone.
+  Both D-95/D-96 auxiliaries also pass on that clean combined candidate:
+  three and six exact owning-codec groups plus strict consumer Clippy. Each
+  output reference matches all 994,692 bytes of the normative golden file.
+  These combined format results do not qualify the still-incomplete aggregate.
+  A published-input closure audit also identifies the original chunk/gear/CDC
+  and node-boundary rows, standalone inline entry, and two unsigned token
+  preimages as needing explicit normative consumers. A separate
+  `prefix-reference-models` auxiliary reserves six exact groups for these
+  witnesses and fails explicitly while their templates are absent. Its private
+  test imports expose pure encoders and profile parameters only; token keys
+  and signatures remain ordinary opaque fields, without signing, verification
+  or authority construction. Nonempty outer recipe context and the actual
+  `golden-vectors` dependency/coverage inventory also remain open.
+  Full review of the six consumed-lineage inputs covers 36 complete positive
+  models and 155 independently assembled negative wires. Its isolated build,
+  all 493 core Nextest tests with zero skips (run
+  `9ed8f506-949a-4cd5-88c3-575668b2932c`), strict Clippy/rustdoc, six exact
+  auxiliary groups and mandatory formatting pass. ROOT independently reproduced
+  all 191 unique wires and the four embedded Commit digest claims. D-97 publishes
+  those reviewed bytes while preserving every previous reference byte; the
+  shared harness now requires the normative whole file. Published-input and
+  combined qualification remain pending. The isolated aggregate still fails
+  on missing `format_properties`; no authority, task or milestone is qualified.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1345,6 +1384,25 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   in one case. Serial qualification preserves all existing lease and test
   deadlines; it does not establish concurrent reliability or qualify the
   fourteen remaining required boundary contracts.
+  Subsequent full reviews qualify the limited directory/raw-symlink contract
+  and complete sibling/private-attribute/unanchored-parent refusal. Both have
+  isolated passing native evidence and mandatory formatting; seven of nineteen
+  boundary contracts now have reviewed passing evidence. The first/second-parent
+  candidate additionally verifies actual independent source references, exact
+  signed input order, uncovered private second-parent attributes, refusal before
+  transfer and source-erased destination-only reopening. Its final isolated case
+  passes run `c62e1db1-31e9-4ea7-96b1-a1b926824be7`. The same exact case also
+  passes on the combined candidate (run
+  `bdccdd05-6605-4ed4-b735-9d281b512666`); eight of nineteen boundary contracts
+  now have reviewed passing evidence. Full native gates remain required.
+  The nested/repeated-root fixture passes homogeneous source and destination
+  publication, exact source tuples and private-cut Tree refusal. Review keeps
+  case 12 scoped until a discriminating nested effective-domain witness exists.
+  PROV-31/PROP-5 permit the current single-domain backend to refuse unsupported
+  placement. No specification contradiction or mixed-domain acceptance claim
+  follows that limitation. A legal closing graft-override refusal must still
+  distinguish actual occurrence-policy resolution under PROP-1/PROP-2 from
+  substitution of the configured label; no production policy change is made.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
