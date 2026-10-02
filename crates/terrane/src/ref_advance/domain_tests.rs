@@ -17,6 +17,209 @@ use terrane_core::tree_format::{Property, TreeUse};
 type Bucket = FileBucket<TokioLocalFs, TokioClock, Validator>;
 
 #[tokio::test]
+async fn copied_fork_root_widening_requires_destination_bootstrap_admin() {
+    let (coordinator, source_record) = bootstrap_fork_source(true).await;
+    let source = "refs/heads/_/source";
+    let destination = "refs/heads/_/destination";
+    let mut candidate = request(Vec::new());
+    candidate.uploads.clear();
+
+    for (reference, verb) in [(source, Verb::Fork), (destination, Verb::Commit)] {
+        coordinator
+            .guard()
+            .authorize(reference, &token(), verb, &[], "sdk")
+            .await
+            .unwrap();
+    }
+    assert!(
+        coordinator
+            .guard()
+            .authorize(destination, &token(), Verb::Admin, &[], "sdk")
+            .await
+            .is_err()
+    );
+
+    let failure = coordinator
+        .guard()
+        .admit_fork(source, destination, 1, candidate)
+        .await
+        .err()
+        .unwrap();
+    assert!(matches!(
+        failure.kind(),
+        crate::store::StoreErrorKind::Denied { verb: "admin", .. }
+    ));
+    let mut publication = request(Vec::new());
+    publication.uploads.clear();
+    assert!(
+        coordinator
+            .fork(source, destination, publication)
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        coordinator.store().ref_get(destination).await.unwrap(),
+        None
+    );
+    assert_eq!(
+        coordinator.store().ref_get(source).await.unwrap(),
+        Some(source_record)
+    );
+
+    tokio::fs::remove_dir_all(coordinator.store().root())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn copied_fork_root_retaining_bootstrap_needs_only_destination_commit() {
+    use terrane_core::auth::{Attenuation, Grant, Token, Verbs};
+
+    let (coordinator, source_record) = bootstrap_fork_source(false).await;
+    let destination = "refs/heads/_/destination";
+    let mut candidate = request(Vec::new());
+    candidate.uploads.clear();
+    let terminal = [0x64; 32];
+    candidate.token = Token::decode(&token())
+        .unwrap()
+        .attenuate(
+            Attenuation {
+                not_after: None,
+                not_before: None,
+                grants: Some(vec![
+                    Grant::new(
+                        "refs/heads/_/source".into(),
+                        Verbs::new(Verb::Fork as u8).unwrap(),
+                    )
+                    .unwrap(),
+                    Grant::new(destination.into(), Verbs::new(4).unwrap()).unwrap(),
+                ]),
+                caveats: Vec::new(),
+            },
+            &secret(),
+            terrane_core::auth::public_key_from_secret(&terminal),
+        )
+        .unwrap()
+        .encode();
+    candidate.terminal_secret = terminal;
+
+    assert!(
+        coordinator
+            .guard()
+            .authorize(destination, &candidate.token, Verb::Admin, &[], "sdk")
+            .await
+            .is_err()
+    );
+    let copied = coordinator
+        .fork("refs/heads/_/source", destination, candidate)
+        .await
+        .unwrap();
+    assert_eq!(copied.seq, 1);
+    assert_ne!(copied.commit, source_record.commit);
+
+    tokio::fs::remove_dir_all(coordinator.store().root())
+        .await
+        .unwrap();
+}
+
+// The source ACL widens through its independently authorized operator. The
+// destination remains governed by its original Commit/Fork writer bootstrap.
+async fn bootstrap_fork_source(
+    widen: bool,
+) -> (NativeFixture<TokioLocalFs>, terrane_core::refs::RefRecord) {
+    let original = raw_fixture().await;
+    let mut policy = original.guard().config().clone();
+    policy.initial_acl = vec![
+        ("operator".into(), 31),
+        ("writer".into(), Verb::Commit as u8 | Verb::Fork as u8),
+    ];
+    let coordinator = Coordinator::new(
+        Guard::new(
+            original.store().clone(),
+            TokioClock,
+            original.guard().keys().to_vec(),
+            policy,
+        ),
+        CommitTiming::new(
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        )
+        .unwrap(),
+        TokioLocalFs,
+    );
+    let coordinator = NativeFixture::initialize(coordinator).await;
+    let reference = "refs/heads/_/source";
+    let mut session = coordinator.begin(reference, &token(), "sdk").await.unwrap();
+    let first = coordinator
+        .advance(
+            &mut session,
+            propose(&bootstrap_fork_tree(false), Vec::new()),
+        )
+        .await
+        .unwrap();
+    if !widen {
+        return (coordinator, first);
+    }
+
+    let mut candidate = propose(&bootstrap_fork_tree(true), vec![first.commit]);
+    candidate.token = bootstrap_operator_token();
+    let mut operator = coordinator
+        .begin(reference, &candidate.token, "sdk")
+        .await
+        .unwrap();
+    let changed = coordinator.advance(&mut operator, candidate).await.unwrap();
+    (coordinator, changed)
+}
+
+fn bootstrap_fork_tree(widen: bool) -> Tree<'static> {
+    let acl: &[u8] = if widen {
+        b"\x82\x82\x68operator\x18\x1f\x82\x66writer\x18\x1f"
+    } else {
+        b"\x82\x82\x68operator\x18\x1f\x82\x66writer\x06"
+    };
+    Tree::build(
+        Vec::new(),
+        Some(vec![
+            Property {
+                name: "acl",
+                value: acl,
+            },
+            Property {
+                name: "domain",
+                value: b"\x66public",
+            },
+        ]),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap()
+}
+
+fn bootstrap_operator_token() -> Vec<u8> {
+    use terrane_core::auth::{Authority, Grant, PrincipalKind, Token, Verbs};
+
+    Token::issue(
+        Authority {
+            issuer: "test".into(),
+            key_id: "key".into(),
+            subject: "operator".into(),
+            kind: PrincipalKind::Human,
+            groups: Vec::new(),
+            not_after: u64::MAX,
+            not_before: None,
+            token_id: [2; 16],
+            grants: vec![Grant::new("refs/**".into(), Verbs::new(31).unwrap()).unwrap()],
+            workload: None,
+        },
+        &secret(),
+        terrane_core::auth::public_key_from_secret(&secret()),
+    )
+    .unwrap()
+    .encode()
+}
+
+#[tokio::test]
 async fn initial_commit_grant_narrows_bootstrap_admin_without_extra_admin() {
     use terrane_core::auth::{Attenuation, Grant, Token, Verbs};
 

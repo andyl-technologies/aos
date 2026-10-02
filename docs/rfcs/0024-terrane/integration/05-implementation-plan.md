@@ -274,8 +274,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   collection/retirement formats and complete corpus/fuzz qualification
   remain required before T1's encoding freeze; `golden-vectors` stays pending.
   Mandatory repository formatting passes. The actual trunk aggregate remains
-  red on the existing retirement-compatibility assertion in
-  `index-generation-manifest`; no task checkbox or milestone is advanced.
+  red: its latest run refuses the absent original-bootstrap regressions in
+  `prov-commit-signature`. The earlier retirement-compatibility assertion in
+  `index-generation-manifest` remains unresolved; no task or milestone advances.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -810,8 +811,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   unchangedness skipped the destination's independent original bootstrap
   comparison. The signature gate now requires eight exact historical bootstrap
   regressions; the implementation remains on its task branch and absent
-  selectors fail the trunk check. Current admission is being checked separately;
-  current credentials cannot repair missing original Admin authorization.
+  selectors fail the trunk check. Current admission now compares the actual
+  fresh destination's bootstrap before unchanged-source reuse and retains any
+  required Admin check for final publication. The actual hermetic `commit-order`
+  gate passes all fourteen exact cases, including widening denial and a genuine
+  retained fork with source Fork and destination Commit-only token grants.
+  Standalone Nextest also passes all three focused bootstrap cases. Native
+  compilation, strict rustdoc and Clippy remain under verification; current
+  credentials cannot repair missing original Admin.
+  The actual aggregate exits with failure after the first new historical
+  bootstrap selector executes zero tests; the exact-test guard refuses this
+  result. This failure does not resolve retirement compatibility or any of
+  the nineteen still-unqualified native disclosure boundary cases.
   Reviewed annotated-tag signing and verification now bind the exact REF-20
   preimage, terminal key, expected tag/commit and source Tag/Admin scope.
   Earlier snapshot-only qualification passed all 303 trunk core tests and its

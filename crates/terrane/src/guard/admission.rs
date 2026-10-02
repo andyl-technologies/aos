@@ -509,6 +509,25 @@ impl<S: Store, C: Clock> Guard<S, C> {
         })
     }
 
+    /// Compares candidate Commit/Admin grants against trusted initial authority.
+    pub(super) fn bootstrap_acl_widens(&self, grants: &[(&str, u8)]) -> bool {
+        grants.iter().any(|(principal, mask)| {
+            let initial = self
+                .config()
+                .initial_acl
+                .iter()
+                .filter(|(name, _)| name == principal)
+                .fold(0u8, |mask, (_, grant)| mask | grant);
+            let authority_bits = |mask| if mask & 16 != 0 { 20 } else { mask & 4 };
+            authority_bits(*mask) & !authority_bits(initial) != 0
+        })
+    }
+
+    /// Checks candidate roots against current authority and admission policy.
+    ///
+    /// # Errors
+    /// Returns current-policy, bootstrap Admin, tree, attribute, domain, quota
+    /// or storage failures before immutable publication may begin.
     pub(super) async fn validate_candidate(
         &self,
         reference: &str,
@@ -516,6 +535,9 @@ impl<S: Store, C: Clock> Guard<S, C> {
         candidate: &TreeEvidence,
         previous: Option<&TreeEvidence>,
     ) -> Result<CandidateValidation, StoreFailure> {
+        // A copied source is a content baseline, not the prior authority of
+        // a new destination view. Bootstrap checks follow its actual head.
+        let initial_view = self.store().ref_get(reference).await?.is_none();
         let requirements = self.requirement_evidence(&request).await?;
         let mut admin_checks = Vec::new();
         let derived = requirements
@@ -580,6 +602,24 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     != Some(&Value::Text(&self.config().store_name))
             {
                 return Err(denied(reference, Verb::Commit));
+            }
+            if initial_view && occurrence.path == b"/" {
+                let Some(Value::Grants(grants)) = effective.get(PropertyName::Acl) else {
+                    return Err(denied(reference, Verb::Commit));
+                };
+                if self.bootstrap_acl_widens(grants) {
+                    self.authorize(
+                        reference,
+                        request.token,
+                        Verb::Admin,
+                        std::slice::from_ref(&occurrence.path),
+                        request.surface,
+                    )
+                    .await?;
+                    admin_checks.push(AdminCheck {
+                        alternatives: vec![occurrence.path.clone()],
+                    });
+                }
             }
             let old_occurrence = old_occurrences
                 .iter()
@@ -679,28 +719,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 })
                 .map(|item| (&item.entry, &effective))
                 .collect::<Vec<_>>();
-            // Bootstrap policy governs the fresh view root. Descendant grafts
-            // use their independently resolved ancestor policy below.
             let mut admin_required = false;
-            if old_effective.is_none() && occurrence.path == b"/" {
-                let Some(Value::Grants(grants)) = effective.get(PropertyName::Acl) else {
-                    return Err(denied(reference, Verb::Commit));
-                };
-                let widened = grants.iter().any(|(principal, mask)| {
-                    let initial = self
-                        .config()
-                        .initial_acl
-                        .iter()
-                        .filter(|(name, _)| name == principal)
-                        .fold(0u8, |mask, (_, grant)| mask | grant);
-                    let authority_bits = |mask| if mask & 16 != 0 { 20 } else { mask & 4 };
-                    authority_bits(*mask) & !authority_bits(initial) != 0
-                });
-                if widened && !administrator {
-                    return Err(denied(reference, Verb::Admin));
-                }
-                admin_required |= widened;
-            }
             let acl_changed = old_effective
                 .as_ref()
                 .is_some_and(|old| old.get(PropertyName::Acl) != effective.get(PropertyName::Acl));

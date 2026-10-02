@@ -71,6 +71,8 @@ in {
     run_ref_test ref_advance::domain_tests::initial_domain_caveats_use_physical_scope_and_actual_candidate_domain
     run_ref_test ref_advance::domain_tests::unsupported_effective_store_is_rejected_before_any_publication
     run_ref_test ref_advance::domain_tests::initial_commit_grant_narrows_bootstrap_admin_without_extra_admin
+    run_ref_test ref_advance::domain_tests::copied_fork_root_widening_requires_destination_bootstrap_admin
+    run_ref_test ref_advance::domain_tests::copied_fork_root_retaining_bootstrap_needs_only_destination_commit
     run_ref_test ref_advance::domain_tests::introduced_child_delegation_uses_its_actual_ancestor_acl
     run_ref_test ref_advance::read_tests::child_acl_change_accepts_current_admin_on_its_actual_ancestor
     run_ref_test ref_advance::join_tests::keep_conflict_admits_verified_base_and_both_candidate_references
