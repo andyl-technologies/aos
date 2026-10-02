@@ -176,7 +176,7 @@ machine-wide commands above without that account setup.
 
 ## Apply a complete package set from a file
 
-For repeatable provisioning, `reconcile` applies a complete desired package
+For repeatable provisioning, `apply` sets the complete desired package
 set from a TOML file. This is optional; use `install` for everyday additions.
 
 For example, save this as `desired.toml`:
@@ -189,8 +189,8 @@ Preview and apply it as an administrator:
 
 ```sh
 apm update --system
-apm reconcile --system --from ./desired.toml --dry-run
-apm reconcile --system --from ./desired.toml
+apm apply --system --from ./desired.toml --dry-run
+apm apply --system --from ./desired.toml
 ```
 
 The file is the complete set of explicitly requested machine-wide packages.

@@ -489,7 +489,7 @@ systemctl status acme-health-agent.service
 ```
 
 For repeatable provisioning, include the package in a complete desired file
-and apply it with `apm reconcile --system --from desired.toml`. See
+and apply it with `apm apply --system --from desired.toml`. See
 [Manage packages](packages.md#apply-a-complete-package-set-from-a-file) for the
 file's removal semantics.
 

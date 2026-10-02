@@ -105,7 +105,7 @@ apm list --system --installed
 ```
 
 Use package names for everyday installation. For repeatable provisioning,
-`apm reconcile --system --from desired.toml` applies a complete package set
+`apm apply --system --from desired.toml` applies a complete package set
 from a file. See [Manage packages](packages.md) for upgrades, removal, and
 rollback, and [Configure package registries](registries.md) for sources and
 trust policy.
