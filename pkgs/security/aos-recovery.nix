@@ -2,6 +2,8 @@
 {
   lib,
   mkDerivation,
+  buildPackages,
+  jq,
   rust,
   stdenv,
 }: let
@@ -14,6 +16,10 @@
     if stdenv.isCross
     then rust.passthru.buildTool
     else rust;
+  buildJq =
+    if stdenv.isCross
+    then buildPackages.jq
+    else jq;
   rustcCommand =
     if stdenv.isCross
     then "${buildRust}/bin/rustc --target ${stdenv.hostPlatform.config} -C linker=${stdenv.cc}/bin/cc"
@@ -21,8 +27,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -80,7 +97,7 @@ in
     version = "0.1.0";
     src = recoverySource;
 
-    buildDeps = [buildRust];
+    buildDeps = [buildRust buildJq];
     runtimeDeps = [];
     propagatedDeps = [];
 
@@ -108,6 +125,9 @@ in
             --extern aos_boot_identity=libaos_boot_identity.rlib \
             -o aos-recovery-tests
           ./aos-recovery-tests
+          AOS_RECOVERY_TEST_JQ=${buildJq}/bin/jq ./aos-recovery-tests \
+            restore::tests::native_manifest_filter_accepts_current_producer_and_rejects_legacy_or_malformed_abi \
+            --ignored --exact
         '';
       }
       {

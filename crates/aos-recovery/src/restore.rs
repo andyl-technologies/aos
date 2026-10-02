@@ -31,7 +31,7 @@ const WORK_DIR: &str = "/run/aos-recovery";
 const MAX_COMPONENTS: usize = 10;
 
 const MANIFEST_FILTER: &str = r#"
-  def exact_keys($keys): (keys | sort) == ($keys | sort);
+  def exact_keys($expected_keys): (keys | sort) == ($expected_keys | sort);
   def digest: type == "string" and test("^[0-9a-f]{64}$");
   def positive_integer: type == "number" and floor == . and . > 0;
   def expected: {
@@ -42,12 +42,12 @@ const MANIFEST_FILTER: &str = r#"
     "recovery-entry-b": "recovery-b.conf", "image-metadata": "image-info.json"
   };
   if (. | exact_keys(["schema", "release", "architecture", "platform",
-                       "module_abi", "recovery_abi", "components"]))
+                       "recovery_abi", "components"]))
      and .schema == "aos.recovery-bundle/v1"
      and (.release | type == "string" and test("^[A-Za-z0-9._+-]+$") and length <= 128)
      and (.architecture | type == "string" and test("^[A-Za-z0-9_-]+$") and length <= 64)
      and (.platform | type == "string" and test("^[A-Za-z0-9._-]+$") and length <= 128)
-     and (.module_abi | positive_integer) and (.recovery_abi | positive_integer)
+     and (.recovery_abi | positive_integer)
      and (.components | type == "array" and length == 10)
      and ([.components[].id] | unique | length) == 10
      and all(.components[];
@@ -56,8 +56,7 @@ const MANIFEST_FILTER: &str = r#"
        and (.byte_size | positive_integer)
        and (.sha256 | digest))
      and ([.components[].id] | sort) == (expected | keys | sort)
-  then ([.release, .architecture, .platform, (.module_abi | tostring),
-         (.recovery_abi | tostring)] | @tsv),
+  then ([.release, .architecture, .platform, (.recovery_abi | tostring)] | @tsv),
        (.components[] | [.id, .path, (.byte_size | tostring), .sha256] | @tsv)
   else error("invalid recovery bundle manifest")
   end
@@ -235,35 +234,42 @@ fn verify_manifest_signature() -> Result<(), RestoreError> {
 }
 
 fn parse_manifest() -> Result<(String, BTreeMap<String, Component>), RestoreError> {
-    let output = Command::new("/bin/jq")
-        .args(["-er", MANIFEST_FILTER, MANIFEST])
+    let text = project_manifest(Path::new("/bin/jq"), Path::new(MANIFEST))?;
+    let os_release = fs::read_to_string("/etc/os-release")?;
+    parse_manifest_projection(&text, &os_release, std::env::consts::ARCH)
+}
+
+fn project_manifest(jq: &Path, manifest: &Path) -> Result<String, RestoreError> {
+    let output = Command::new(jq)
+        .args(["-er", MANIFEST_FILTER])
+        .arg(manifest)
         .output()?;
     if !output.status.success() {
         return Err(RestoreError::Manifest(stderr_reason(&output)));
     }
-    let text = String::from_utf8(output.stdout)
-        .map_err(|error| RestoreError::Manifest(error.to_string()))?;
+    String::from_utf8(output.stdout).map_err(|error| RestoreError::Manifest(error.to_string()))
+}
+
+fn parse_manifest_projection(
+    text: &str,
+    os_release: &str,
+    architecture: &str,
+) -> Result<(String, BTreeMap<String, Component>), RestoreError> {
     let mut lines = text.lines();
     let header = lines
         .next()
         .ok_or_else(|| RestoreError::Manifest("manifest projection is empty".into()))?;
     let header = header.split('\t').collect::<Vec<_>>();
-    if header.len() != 5 {
+    if header.len() != 4 {
         return Err(RestoreError::Manifest(
             "manifest identity projection is malformed".into(),
         ));
     }
-    let os_release = fs::read_to_string("/etc/os-release")?;
-    let platform = unique_os_release(&os_release, "AOS_PLATFORM")?;
-    let module_abi = unique_os_release(&os_release, "AOS_MODULE_ABI")?;
-    let recovery_abi = unique_os_release(&os_release, "AOS_RECOVERY_ABI")?;
-    if header[1] != std::env::consts::ARCH
-        || header[2] != platform
-        || header[3] != module_abi
-        || header[4] != recovery_abi
-    {
+    let platform = unique_os_release(os_release, "AOS_PLATFORM")?;
+    let recovery_abi = unique_os_release(os_release, "AOS_RECOVERY_ABI")?;
+    if header[1] != architecture || header[2] != platform || header[3] != recovery_abi {
         return Err(RestoreError::Manifest(
-            "bundle architecture, platform, module ABI, or recovery ABI is incompatible".into(),
+            "bundle architecture, platform, or recovery ABI is incompatible".into(),
         ));
     }
     let release = header[0].to_string();
@@ -1010,9 +1016,120 @@ mod tests {
 
     use super::{
         CleanupBoundary, Component, PublicationBoundary, RestoreError, StorageBoundary,
-        cleanup_disabled_slot_ukis_with, disarm_slot_ukis_with, publish_boot_artifacts_with,
-        slot_suffix, write_slot_storage_with,
+        cleanup_disabled_slot_ukis_with, disarm_slot_ukis_with, parse_manifest_projection,
+        project_manifest, publish_boot_artifacts_with, slot_suffix, write_slot_storage_with,
     };
+
+    const NATIVE_OS_RELEASE: &str = "ID=aos\nAOS_PLATFORM=x86_64-linux\nAOS_RECOVERY_ABI=1\n";
+
+    const BUNDLE_COMPONENTS: [(&str, &str); 10] = [
+        ("root-image", "root.img"),
+        ("root-verity", "root.verity"),
+        ("root-hash", "root.roothash"),
+        ("normal-uki-a", "uki-a.efi"),
+        ("normal-uki-b", "uki-b.efi"),
+        ("recovery-uki-a", "recovery-a.efi"),
+        ("recovery-uki-b", "recovery-b.efi"),
+        ("recovery-entry-a", "recovery-a.conf"),
+        ("recovery-entry-b", "recovery-b.conf"),
+        ("image-metadata", "image-info.json"),
+    ];
+
+    fn native_projection(header: &str) -> String {
+        let components = BUNDLE_COMPONENTS
+            .map(|(id, path)| format!("{id}\t{path}\t1\t{}", "a".repeat(64)))
+            .join("\n");
+        format!("{header}\n{components}\n")
+    }
+
+    #[test]
+    fn native_manifest_projection_matches_recovery_identity_without_module_abi() {
+        let text = native_projection("release-1\tx86_64\tx86_64-linux\t1");
+        let (release, components) =
+            parse_manifest_projection(&text, NATIVE_OS_RELEASE, "x86_64").unwrap();
+
+        assert_eq!(release, "release-1");
+        assert_eq!(components.len(), 10);
+        assert_eq!(
+            components["root-image"].path,
+            Path::new(super::BUNDLE_DIR).join("root.img")
+        );
+    }
+
+    #[test]
+    fn native_manifest_projection_requires_exact_header_columns() {
+        for header in [
+            "release-1\tx86_64\tx86_64-linux",
+            "release-1\tx86_64\tx86_64-linux\t7\t1",
+        ] {
+            assert!(
+                parse_manifest_projection(&native_projection(header), NATIVE_OS_RELEASE, "x86_64")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn native_manifest_projection_preserves_platform_architecture_and_recovery_abi() {
+        for header in [
+            "release-1\taarch64\tx86_64-linux\t1",
+            "release-1\tx86_64\taarch64-linux\t1",
+            "release-1\tx86_64\tx86_64-linux\t2",
+        ] {
+            assert!(
+                parse_manifest_projection(&native_projection(header), NATIVE_OS_RELEASE, "x86_64")
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires AOS_RECOVERY_TEST_JQ selecting the source-built jq executable"]
+    fn native_manifest_filter_accepts_current_producer_and_rejects_legacy_or_malformed_abi() {
+        let jq =
+            PathBuf::from(std::env::var_os("AOS_RECOVERY_TEST_JQ").expect("select AOS-built jq"));
+        assert!(jq.is_absolute());
+        let root = temporary_root("native-manifest");
+        fs::create_dir_all(&root).unwrap();
+        let manifest = root.join("recovery-bundle.json");
+        let components = BUNDLE_COMPONENTS
+            .map(|(id, path)| {
+                format!(
+                    r#"{{"id":"{id}","path":"{path}","byte_size":1,"sha256":"{}"}}"#,
+                    "a".repeat(64)
+                )
+            })
+            .join(",");
+        let document = format!(
+            r#"{{"schema":"aos.recovery-bundle/v1","release":"release-1","architecture":"x86_64","platform":"x86_64-linux","recovery_abi":1,"components":[{components}]}}"#
+        );
+        fs::write(&manifest, &document).unwrap();
+
+        let projection = project_manifest(&jq, &manifest).unwrap();
+        let (release, records) =
+            parse_manifest_projection(&projection, NATIVE_OS_RELEASE, "x86_64").unwrap();
+        assert_eq!(release, "release-1");
+        assert_eq!(records.len(), 10);
+        assert_eq!(
+            projection.lines().next().unwrap(),
+            "release-1\tx86_64\tx86_64-linux\t1"
+        );
+
+        let legacy = document.replacen("{", r#"{"module_abi":7,"#, 1);
+        for rejected in [legacy, document.replace(r#""recovery_abi":1,"#, "")] {
+            fs::write(&manifest, rejected).unwrap();
+            assert!(project_manifest(&jq, &manifest).is_err());
+        }
+        for value in ["0", "-1", "1.5", r#""1""#, "null"] {
+            fs::write(
+                &manifest,
+                document.replace(r#""recovery_abi":1"#, &format!(r#""recovery_abi":{value}"#)),
+            )
+            .unwrap();
+            assert!(project_manifest(&jq, &manifest).is_err());
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
 
     fn temporary_root(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
