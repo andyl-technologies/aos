@@ -8,7 +8,7 @@
   nixConfig = {
     extra-substituters = ["https://cdn.aos.andyl.org/andyl/experimental/"];
     extra-trusted-public-keys = [
-      "andyl-experimental-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To="
+      "andyl-experimental-nix-cache-v1:1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I="
     ];
     fallback = true;
   };

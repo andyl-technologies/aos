@@ -14,7 +14,7 @@ case " $* " in
   *'nix-config.nix text '*)
     printf '%s\n' \
       'extra-substituters = https://cdn.aos.andyl.org/andyl/experimental/' \
-      'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To=' \
+      'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I=' \
       'fallback = true'
     ;;
   *' category packages '*' crossSystem x86_64-darwin '*) printf 'alpha\nbeta\ndarwin-runtimes' ;;
@@ -148,7 +148,7 @@ if grep -Eq 'shared(Go|Bazel|Rust|Accache)|extra-sandbox-paths' "$AOS_DEV_TEST_L
 fi
 grep -Fxq 'keep-outputs = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
 grep -Fxq 'extra-substituters = https://cdn.aos.andyl.org/andyl/experimental/' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
-grep -Fxq 'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To=' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
+grep -Fxq 'extra-trusted-public-keys = andyl-experimental-nix-cache-v1:1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I=' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
 grep -Fxq 'fallback = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
 
 : > "$AOS_DEV_TEST_LOG"

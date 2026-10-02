@@ -14,7 +14,7 @@ never enter this repository.
 | `enrollment/db.auth` | Signed db variable, signed by KEK | offline KEK |
 
 The three signature lists carry owner GUID
-`2fcfa16d-d7b1-5321-9915-ba7d74b47648` and a fixed signing timestamp, so
+`823182ae-4dfe-55ad-997f-d9670aacf234` and a fixed signing timestamp, so
 regenerating them from the same certificates reproduces identical bytes.
 Initial enrollment happens in Setup Mode, which does not enforce timestamp
 monotonicity.
