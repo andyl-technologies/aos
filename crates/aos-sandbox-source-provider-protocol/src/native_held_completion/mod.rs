@@ -27,11 +27,16 @@ pub mod frame;
 mod kind;
 pub mod recovery;
 mod scope;
+mod selected_execution;
 pub mod suffix;
 pub mod witness;
 
 pub use kind::{NativeHeldControlKindV1, NativeHeldOwnerV1, NativeHeldSectionTagV1};
 pub use scope::{NativeHeldScopeV1, native_held_flight_digest_v1};
+pub use selected_execution::{
+    SOURCE_SELECTED_NATIVE_EXECUTION_INPUT_BYTES_V1, SourceSelectedNativeExecutionInputDataV1,
+    SourceSelectedNativeExecutionInputFieldsV1,
+};
 
 /// Bounds one complete signed control, including nested copies and signature.
 pub const MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1: usize = 8_192;

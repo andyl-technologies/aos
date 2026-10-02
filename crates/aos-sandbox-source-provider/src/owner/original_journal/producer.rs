@@ -24,6 +24,7 @@ use aos_sandbox_source_provider_protocol::{
     StorageZfsHoldTransportRequestV1, SourceProviderMethod,
     native_held_completion::{
         NativeHeldCompletionErrorV1, NativeHeldOwnerV1,
+        SourceSelectedNativeExecutionInputDataV1,
         suffix::NativeHeldCompletionSuffixV1,
         witness::{
             NativeHeldByteWitnessV1, NativeHeldRecordFamilyV1,
@@ -128,10 +129,23 @@ pub(super) struct OriginalSourceProducerV5 {
     appends: [Option<PreparedSourceOriginalV5>; 4],
     checkpoint: OriginalProducerCheckpointV5,
     pub(super) physical_plan: Option<crate::backend::AcquirePlanV1>,
+    pub(super) selected_execution: Option<SourceSelectedNativeExecutionInputDataV1>,
+    pub(super) selected_backend_enrollment: Option<[u8; 928]>,
+    pub(super) selected_dedicated_enrollment: Option<[u8; 160]>,
     pub(super) storage_offer: Option<super::storage_offer::OriginalStorageOfferV5>,
 }
 
 impl OriginalSourceProducerV5 {
+    /// Borrows the original full Applying transaction, not a reconstructed seed.
+    pub(super) fn applying_transaction_v5(
+        &self,
+    ) -> Result<&JournalTransaction, ProviderLedgerError> {
+        self.appends[OriginalProducerAppendV5::Applying.index()]
+            .as_ref()
+            .and_then(|append| append.owners.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)
+    }
+
     pub(super) fn append_mut(
         &mut self,
         step: OriginalProducerAppendV5,
@@ -221,7 +235,8 @@ impl FixedProviderOwnerV1 {
         }
         match self.original_source_producer_v5() {
             Ok(producer)
-                if producer.checkpoint == OriginalProducerCheckpointV5::ChallengeIssuedReadBack =>
+                if producer.checkpoint == OriginalProducerCheckpointV5::ChallengeIssuedReadBack
+                    && producer.selected_execution.is_some() =>
             {
                 match producer.signed.as_ref() {
                     Some(signed) => OriginalProducerObservationV5::Ready(signed),
@@ -290,6 +305,9 @@ impl FixedProviderOwnerV1 {
         &mut self,
         rows: &[u8],
     ) -> Result<(), OriginalProducerErrorV5> {
+        if self.original_ingress.borrowed_catalog_v1()? != rows {
+            return Err(ProviderLedgerError::Equivocation.into());
+        }
         self.original_ingress.retain_original_clock_v5()?;
         self.retain_first_original_runtime_v5()?;
         self.observe_original_journal_v5()?;
@@ -336,6 +354,7 @@ impl FixedProviderOwnerV1 {
 
         self.require_original_producer_current_v5()?;
         self.require_original_producer_readback_v5()?;
+        self.retain_selected_execution_input_v1()?;
         Ok(())
     }
 
@@ -816,7 +835,7 @@ impl FixedProviderOwnerV1 {
         Ok(())
     }
 
-    fn require_original_producer_readback_v5(&mut self) -> Result<(), OriginalProducerErrorV5> {
+    pub(super) fn require_original_producer_readback_v5(&mut self) -> Result<(), OriginalProducerErrorV5> {
         let producer = self.original_source_producer_v5()?;
         let signed = producer.signed.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
         let readback = producer.readback(OriginalProducerAppendV5::ChallengeIssued)?;

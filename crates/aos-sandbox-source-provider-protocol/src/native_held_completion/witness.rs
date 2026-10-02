@@ -330,11 +330,14 @@ pub struct ProviderNativeHeldWitnessV1 {
     pub head_commitment: ObjectDigest,
     /// Commits the entire original signed publication bytes.
     pub publication: ObjectDigest,
-    /// Commits the actual original selected-execution manifest.
+    /// Commits Source's original AOSNEM01 selected native execution inputs.
+    ///
+    /// This Source-local assertion does not carry Root's Mount plan or lease,
+    /// and its authentication does not independently verify Source file origin.
     pub selected_manifest: ObjectDigest,
-    /// Commits the actual original backend manifest.
+    /// Uses SHA-256 of the exact original 928-byte AOSSPBV1 enrollment.
     pub backend_manifest: ObjectDigest,
-    /// Commits the separately owned dedicated verifier manifest.
+    /// Uses SHA-256 of the exact separately owned 160-byte AOSZHV01 enrollment.
     pub verifier_manifest: ObjectDigest,
     /// Lists the six Source owner records and separate challenge in fixed order.
     pub records: [NativeHeldByteWitnessV1; 7],
