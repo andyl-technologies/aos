@@ -47,10 +47,9 @@ in
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/recipe_context_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
-    python3 ../tests/terrane/recipe_context_vectors.py --emit \
-      --blake3-bin "$reference_binary" > ../tests/terrane/recipe-context-reference.md
-    python3 ../tests/terrane/recipe_context_vectors.py --check ../tests/terrane/recipe-context-reference.md \
+    python3 ../tests/terrane/recipe_context_vectors.py --check ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md \
       --blake3-bin "$reference_binary" >> "$out/reference-result"
+    cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/recipe-context-reference.md
     cp ../tests/terrane/recipe-context-reference.md "$out/reference.md"
     cargo fmt --all -- --check
     ${builtins.concatStringsSep "\n" (map runTest tests)}

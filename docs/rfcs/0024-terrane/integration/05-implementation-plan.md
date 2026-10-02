@@ -740,6 +740,25 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Its actual ROOT build now fails on the absent attribute-model template through
   a mandatory owning dependency. That concrete failure replaces the old generic
   pending gate; it does not qualify either the complete corpus or the aggregate.
+  The stable gate registry passes after that wiring change. The actual ROOT
+  aggregate still fails on the absent `format_properties` integration target.
+  On the clean combined candidate, the complete aggregate instead reaches the
+  mandatory original-prefix consumer and fails because its templates are not
+  yet included. Both original aggregate outcomes are retained; neither the
+  first failure nor the passing 601-test core suite qualifies remaining gates.
+  Full review of the five outer-recipe consumer inputs covers 13 complete
+  positive recipes and 62 independently assembled structural negatives. Its
+  isolated build, all 491 Nextest tests with zero skips (run
+  `9c556593-25fa-4a84-859d-549bce25b2c0`), strict Clippy/rustdoc, four exact
+  auxiliary groups and both mandatory formatters pass. ROOT independently
+  reproduces all 75 unique wires and 13 memo identities. D-98 publishes those
+  reviewed bytes while preserving every prior reference byte; the shared
+  harness now requires the normative whole file and the reviewed inventory
+  assigns the new section to its mandatory owning suite. Complete decoded
+  models remain unauthenticated, without evaluators or a runtime fold filter.
+  Generic canonical configuration retention does not claim registered profile
+  execution, verified context binding or fold re-evaluation. Published-input
+  and combined qualification remain pending; no task or milestone advances.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1448,6 +1467,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `bc4e7509-9f93-4008-805f-a95ec7d547d8`, followed by both mandatory formatters.
   Ten of nineteen boundary contracts now have reviewed passing evidence;
   complete native qualification and formal task merge remain open.
+  The public-introducer/ancestry fixture also passes full review: separately
+  initialized real group claims and signing keys distinguish public baseline
+  and direct selectors from private attestation. An ordinary public descendant
+  retains its introducing commit, accepted-by evidence and provenance walk;
+  destination-only reopening after source erasure preserves the public boundary.
+  Its exact combined case passes run `d7bec2fe-111d-49ba-8bcf-91db322d0c4a`,
+  followed by both mandatory formatters. Eleven of nineteen boundary contracts
+  now have reviewed passing evidence. Complete native gates remain required.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,

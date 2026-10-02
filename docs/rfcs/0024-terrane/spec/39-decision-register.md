@@ -1783,6 +1783,29 @@ is added rather than editing history.
     additive correction precedes T1's initial encoding freeze and does not
     qualify the complete corpus or native operations.
 
+- **[D-98] Publish complete outer recipe domain and trust field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 13 complete positive recipes and 62 independently
+    assembled negative wire inputs. Cover nonempty sorted domain pairs,
+    complete selectors, evaluator versions, canonical configuration, accepted
+    identities, timestamp boundaries and represented context/fold fields.
+    Preserve every prior reference byte. Only complete positive enclosing
+    recipes receive identities under the existing registered memo domain.
+  - **Rationale:** TEST-2 requires published witnesses for implemented formats.
+    Independent CBOR primitives reproduce exact wires and malformed inputs;
+    separately constructed private test models compare every decoded field.
+    Recipe trust key 3 remains canonical data under its existing CDDL `any`
+    schema. Retention of registered path configuration bytes does not qualify
+    executable profile validation or fold re-evaluation. Domain and trust
+    models remain unauthenticated, with no evaluators or runtime fold filter.
+    Neither accepted identities nor context bytes establish verified policy,
+    resolved ownership or permission for native effects.
+  - **Affects:** TEST-1 to TEST-3, the ordinary format prerequisites of
+    ALG-29, ALG-37 and ALG-38, and the golden-vector reference. Requirement
+    IDs, schemas, identity domains and existing bytes remain unchanged. This
+    additive correction precedes T1's initial encoding freeze and does not
+    qualify the complete corpus, materialization or native operations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

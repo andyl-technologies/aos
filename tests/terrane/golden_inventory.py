@@ -45,6 +45,8 @@ SECTIONS = {
     "Publication and original-control alternative witnesses":
         ((125, 0, 125), ("control",)),
     "Consumed-lineage record field witnesses": ((0, 191, 191), ("lineage",)),
+    "Outer recipe domain and trust field witnesses":
+        ((0, 75, 75), ("recipe-context",)),
 }
 
 # These two sections contain only fixture metadata and reproduction instructions.
