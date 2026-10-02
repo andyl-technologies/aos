@@ -730,7 +730,7 @@ in
           cat > "$out/bin/aos-service-handler" << EOF
           #!${bash}/bin/bash
           export PYTHONPATH="${aos-configuration-provider}/libexec"
-          exec "${python3}/bin/python3" "$out/libexec/aos-service-handler.py" \\
+          exec "${python3}/bin/python3" -B "$out/libexec/aos-service-handler.py" \\
             --systemctl "$out/bin/systemctl" \\
             --true-executable "${coreutils}/bin/true" \\
             --flock-executable "${util-linux}/bin/flock" \\

@@ -16,6 +16,7 @@ from unittest.mock import patch
 handler_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_systemd-abilities/service-handler.py"
 configuration_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_aos-configuration-provider/aos_configuration.py"
 configuration_entrypoint = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else configuration_path.parent / "handler.py"
+configuration_wrapper = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
 configuration_module = importlib.util.module_from_spec(configuration_spec)
 sys.modules["aos_configuration"] = configuration_module
@@ -347,7 +348,7 @@ class NativeHandlerTests(unittest.TestCase):
 
             def run(action):
                 result = subprocess.run(
-                    [sys.executable, str(executable), "--state-directory", str(state), action],
+                    [sys.executable, "-B", str(executable), "--state-directory", str(state), action],
                     input=json.dumps(document), capture_output=True, text=True,
                     env={}, check=True,
                 )
@@ -361,6 +362,35 @@ class NativeHandlerTests(unittest.TestCase):
             path.write_text("portable")
             self.assertEqual(run("remove"), {})
             self.assertFalse(path.exists())
+
+    @unittest.skipIf(configuration_wrapper is None, "requires the source-built provider wrapper")
+    def test_installed_wrapper_keeps_writable_provider_payload_unchanged(self):
+        with tempfile.TemporaryDirectory() as root:
+            payload = Path(root) / "provider"
+            library = payload / "libexec"
+            library.mkdir(parents=True)
+            installed_root = configuration_wrapper.parent.parent
+            for name in ("handler.py", "aos_configuration.py"):
+                (library / name).write_bytes((installed_root / "libexec" / name).read_bytes())
+            wrapper = payload / "provider"
+            # Relocate only the payload path to reproduce the writable initrd
+            # store. Keep the installed wrapper's Python command and flags.
+            wrapper.write_text(configuration_wrapper.read_text().replace(str(installed_root), str(payload)))
+            wrapper.chmod(0o700)
+            before = {path.name: path.read_bytes() for path in library.iterdir()}
+            document = invocation("configuration", "file", {
+                "path": str(Path(root) / "configuration"), "content": "portable", "mode": "0600",
+            })
+
+            subprocess.run(
+                [str(wrapper), "--state-directory", str(Path(root) / "state"), "apply"],
+                input=json.dumps(document), capture_output=True, text=True, env={}, check=True,
+            )
+
+            after = {path.name: path.read_bytes() for path in library.iterdir() if path.is_file()}
+            self.assertEqual(after, before)
+            self.assertEqual(sorted(path.name for path in library.iterdir()), sorted(before))
+            self.assertFalse((library / "__pycache__").exists())
 
     def test_configuration_views_are_not_interpreted_as_environment_files(self):
         value = service()
