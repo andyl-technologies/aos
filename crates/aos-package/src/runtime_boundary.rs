@@ -115,7 +115,7 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 /// runtime classification before the crate compiles.
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
-        PackageCommand::Image { .. } | PackageCommand::Reconcile { .. } => true,
+        PackageCommand::Image { .. } | PackageCommand::Apply { .. } => true,
         PackageCommand::Install { system, .. }
         | PackageCommand::Remove { system, .. }
         | PackageCommand::Autoremove { system }
@@ -178,7 +178,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
 fn is_read_only(command: &PackageCommand) -> bool {
     match command {
         PackageCommand::Image { command } => matches!(command, ImageCommand::List),
-        PackageCommand::Reconcile { .. } => false,
+        PackageCommand::Apply { .. } => false,
         PackageCommand::Search { .. }
         | PackageCommand::Show { .. }
         | PackageCommand::List { .. }
@@ -488,7 +488,7 @@ mod tests {
             &["source", "nginx", "--system"][..],
             &["rollback", "--system"][..],
             &["gc", "--system"][..],
-            &["reconcile", "--system", "--from", "desired.toml"][..],
+            &["apply", "--system", "--from", "desired.toml"][..],
             &["image", "install", "aos"][..],
             &["image", "upgrade"][..],
             &["image", "rollback"][..],

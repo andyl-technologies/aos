@@ -304,7 +304,7 @@ in {
           cat > /run/runtime-module-desired.toml <<'EOF'
           packages = ["nginx", "envoy", "k3s-worker"]
           EOF
-          HOME=/tmp USER=root {APM} reconcile --system \
+          HOME=/tmp USER=root {APM} apply --system \
             --from /run/runtime-module-desired.toml --yes
 
       """), timeout=1200)

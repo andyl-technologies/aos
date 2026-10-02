@@ -19,7 +19,7 @@
 //!   special privileges are required.
 //! - **System** — selected by `--system` on package commands. Runtime packages
 //!   have an independent profile at `/var/lib/profiles/system-packages/`.
-//!   `reconcile --system --from` applies a complete desired set; name-based
+//!   `apply --system --from` applies a complete desired set; name-based
 //!   install preserves other packages. `image` owns immutable A/B images and
 //!   boot transitions, while `config rollback` restores configuration generations.
 //!
@@ -232,7 +232,7 @@ pub enum PackageCommand {
         ignore_sysroot_lock: Option<String>,
     },
     /// Apply a complete desired machine-wide package set
-    Reconcile {
+    Apply {
         /// Desired-package TOML file (omitted packages are removed)
         #[arg(long = "from")]
         from: PathBuf,
@@ -1328,7 +1328,7 @@ impl PackageCommand {
                 command: RuntimeConfigCommand::Rollback { .. },
             } => AosRoot,
             PackageCommand::Install { .. }
-            | PackageCommand::Reconcile { .. }
+            | PackageCommand::Apply { .. }
             | PackageCommand::Image { .. }
             | PackageCommand::Remove { .. }
             | PackageCommand::Autoremove { .. }
@@ -1379,7 +1379,7 @@ impl PackageCommand {
                 command: ImageCommand::Download { system, .. },
             } => *system,
             PackageCommand::Image { .. } => true,
-            PackageCommand::Reconcile { system, .. }
+            PackageCommand::Apply { system, .. }
             | PackageCommand::Remove { system, .. }
             | PackageCommand::Autoremove { system }
             | PackageCommand::Reinstall { system, .. }
@@ -3981,7 +3981,7 @@ pub async fn run(
             )
             .await
         }
-        PackageCommand::Reconcile { from, .. } => {
+        PackageCommand::Apply { from, .. } => {
             desired::reconcile_from_file(&config, from, dry_run, yes, printer).await
         }
         PackageCommand::Image { command } => match command {
