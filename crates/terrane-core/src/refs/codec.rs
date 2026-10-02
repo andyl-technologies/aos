@@ -550,9 +550,9 @@ impl ProfilePair {
         for _ in 2..count {
             match read_key(decoder, &mut previous, 8)? {
                 3 => {
-                    let bytes = read_raw_value(decoder)?.to_vec();
-                    validate_recipe(&bytes)?;
-                    recipe = Some(bytes);
+                    let bytes = read_raw_value(decoder)?;
+                    validate_recipe(bytes)?;
+                    recipe = Some(bytes.to_vec());
                 }
                 4 => conflicted = Some(read_bool(decoder)?),
                 5 => {
@@ -628,6 +628,12 @@ fn validate_recipe(bytes: &[u8]) -> Result<(), RecordError> {
         validate_text_map(arguments)?;
     }
     decoder.finish()?;
+
+    // Complete the borrowed canonical/bounds scan before the algebra decoder
+    // owns any operands. Other registered operations retain their generic map.
+    if matches!(operation, "graft" | "overlay" | "merge") {
+        crate::algebra::Recipe::decode(bytes).map_err(|_| RecordError::Schema)?;
+    }
     Ok(())
 }
 
@@ -671,6 +677,9 @@ fn require_key(
         Err(RecordError::Schema)
     }
 }
+
+#[cfg(test)]
+mod recipe_tests;
 
 #[cfg(test)]
 #[allow(
@@ -763,7 +772,9 @@ mod tests {
         let mut recipe = Vec::new();
         cbor::write_map(&mut recipe, 3);
         cbor::write_uint(&mut recipe, 1);
-        cbor::write_text(&mut recipe, "overlay");
+        // Generic map recipes retain arbitrary registered arguments; overlay
+        // instead has a closed operation-specific argument schema (ALG-36).
+        cbor::write_text(&mut recipe, "map");
         cbor::write_uint(&mut recipe, 2);
         cbor::write_array(&mut recipe, 257);
         for _ in 0..257 {
