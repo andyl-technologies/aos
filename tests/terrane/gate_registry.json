@@ -47,12 +47,12 @@
   {
     "name": "derived-attr-record",
     "owner": "10",
-    "requirements": "DRV-1"
+    "requirements": "DRV-1, DRV-28"
   },
   {
     "name": "derivation-memo",
     "owner": "10",
-    "requirements": "DRV-21"
+    "requirements": "DRV-21, DRV-26"
   },
   {
     "name": "descriptor-strict",
@@ -77,7 +77,7 @@
   {
     "name": "index-tree-maintenance",
     "owner": "10",
-    "requirements": "DRV-12, DRV-24"
+    "requirements": "DRV-12, DRV-24 to DRV-28, PROP-29"
   },
   {
     "name": "no-duplicate-tiers",
@@ -107,12 +107,12 @@
   {
     "name": "property-required-attrs",
     "owner": "08",
-    "requirements": "PROP-21"
+    "requirements": "PROP-21, DRV-27"
   },
   {
     "name": "property-resolution",
     "owner": "08",
-    "requirements": "PROP-1"
+    "requirements": "PROP-1, PROP-29"
   },
   {
     "name": "publisher-sole-writer",

@@ -194,6 +194,23 @@ hash algorithm, a secondary index, a classification) without a format change.
   narrow the parent's domain under DOM-2; an explicit graft override may
   supply that narrowing. A graft MUST NOT widen its effective domain.
 
+## Owner-local index bindings
+
+- **[PROP-29]** The registered `index-roots` property MUST occur only on
+  an owning root node, in the exact wrapper
+  `{"inherit": false, "value": {attribute: node-hex, ...}}`. Each key MUST
+  be a registered attribute name and each value MUST be exactly 64
+  lowercase hexadecimal characters encoding a Node identity. A bare
+  binding, `inherit=true`, malformed identity or binding on a graft-entry
+  override MUST be rejected. Bindings MUST NOT propagate to descendant
+  roots or be substituted from another occurrence. A root MAY bind extra
+  registered attributes to support different inherited `index` sets at
+  different graft occurrences. An absent required binding is an index
+  coverage gap under DRV-27, not permission to use an ancestor's index.
+  PROP-25 still permits immediate installation of requirements on existing
+  entries. A binding MUST NOT grant authority or replace index verification.
+  *Gate:* `gate:property-resolution`, `gate:index-tree-maintenance`.
+
 ## Property summary
 
 Every property named anywhere in this specification is listed here with its
@@ -236,6 +253,7 @@ unregistered (CONV-3).
 | `hashes` | requirement | set of digest names (`sha256`, `sha512`, `git-blob-sha1`, `git-blob-sha256`) | empty | 10 |
 | `classify` | requirement | set of classifier names | empty | 10 |
 | `index` | requirement | set of attribute names | empty | 10 |
+| `index-roots` | requirement, owner-local binding | attribute-to-Node lowercase-hex map, exact noninherited wrapper | empty | 08, 10 |
 | `strict-attrs` | requirement | boolean | `false` | 06 |
 
 - **[PROP-28]** The registry MUST contain every property in the table above

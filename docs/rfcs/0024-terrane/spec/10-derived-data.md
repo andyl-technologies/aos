@@ -126,13 +126,31 @@ recomputation.
   either recompute required derived attributes itself or mark the supplied
   records as untrusted provenance, so that a trust selector can exclude
   them ([`23-provenance-and-trust.md`](23-provenance-and-trust.md)).
-- **[DRV-11]** For entries that exist before a requirement property is set,
+- **[DRV-11] (withdrawn)** For entries that exist before a requirement
+  property is set,
   a backfill tree job ([`32-tree-jobs.md`](32-tree-jobs.md)) MUST iterate
   the root with the filter `missing(attribute)`, skip objects that already
   have a side-table record, compute the missing records, and checkpoint as
   commits. Completeness ([`08-properties.md`](08-properties.md)) MUST reach
   100% when the job completes with no concurrent commits that omit the
   attribute, which PROP-21 forbids.
+  Replaced by DRV-28 under D-101: an existing side record avoids computation
+  but does not fill a missing inline index input.
+
+- **[DRV-28]** For entries that exist before a requirement property is set,
+  a backfill tree job MUST visit entries missing the required attribute or
+  an applicable inline index input under DRV-27, and checkpoint changes as
+  commits. It MUST skip computation when a checked existing side record
+  supplies the required function/version and value, but MUST still
+  materialize a missing inline index input from that record. Copying its
+  checked value MUST NOT read content merely to recompute it. Inline and
+  selected side values MUST agree under DRV-4, and producer attribution
+  MUST remain independently verified. With no concurrent writes omitting
+  applicable required attributes, successful backfill MUST reach 100%
+  completeness. Unavailable or invalid evidence MUST leave an explicit gap,
+  not count as completed work. PROP-25's initial property installation
+  MUST still perform no content read. *Gate:* `gate:derived-attr-record`,
+  `gate:index-tree-maintenance`.
 
 ## Derivations
 
@@ -165,9 +183,12 @@ recomputation.
   4 096-byte limit; a commit whose indexed value cannot fit MUST be rejected
   before publication. *Gate:*
   `gate:index-tree-maintenance`.
-- **[DRV-13]** An index tree MUST be referenced from the root's property map
+- **[DRV-13] (withdrawn)** An index tree MUST be referenced from the root's
+  property map
   by attribute name and MUST carry a recipe `index(root hash, attribute)`.
   Its root hash is therefore verifiable by rebuilding from the root.
+  Replaced by DRV-25 and DRV-26 under D-101: the association is detached
+  so that index bytes do not depend on their own containing root's digest.
 - **[DRV-14]** A writer MUST update each index tree of a root in the same
   commit that changes the root, applying only the changes in
   `diff(old root, new root)`. The cost MUST be O(delta × log n).
@@ -181,6 +202,84 @@ recomputation.
 - **[DRV-17]** Index trees are derived data: they MUST NOT be a source of
   truth for any decision that the root itself can answer, and their loss
   MUST be recoverable by rebuild.
+
+#### Owner binding and executable recipe
+
+- **[DRV-25]** For each required attribute, an owning root MUST bind its
+  index's Node identity by attribute name in `index-roots` (PROP-29), or
+  report the missing binding as incomplete under DRV-27. The binding MUST
+  be validated against the registered recipe's independently rebuilt
+  result before the index is accepted as verified. Index nodes MUST NOT
+  encode a back-reference to the owner, recipe or memo. A recipe or memo
+  association MUST be detached from the owner and index bytes. An
+  implementation MUST NOT substitute optional memos or `refs/derived/`
+  for the owner binding.
+  Rebuilding a divergent binding MUST produce a corrected owner in a new
+  commit; it MUST NOT mutate an immutable root. DRV-14's same-commit
+  incremental maintenance remains required. *Gate:*
+  `gate:index-tree-maintenance`.
+- **[DRV-26]** The registered `terrane-index/v1` evaluation profile MUST
+  accept exactly the `index-evaluation-recipe` CDDL: operation `index`,
+  one completed owner-root operand and arguments `attribute` and `profile`.
+  The attribute MUST be registered and the profile MUST be
+  `terrane-index/v1`. Evaluation MUST derive DRV-12's value-plus-object
+  keys from canonical inline values in the owner's regular-file entries,
+  including entries reached through namespace grafts, without incorporating
+  `index-roots` or other structural bindings into the indexed data. Each
+  resulting row MUST carry exactly the object named in its key. The
+  completed owner MUST bind that result before a verified index is served.
+  Memoization, when used, MUST use the unchanged DRV-21 memo form and MUST
+  NOT affect the result. Generic retained `index` recipes MUST preserve
+  their existing encoding and MUST NOT become executable solely by having
+  the `index` operation string. *Gate:* `gate:derivation-memo`,
+  `gate:index-tree-maintenance`.
+- **[DRV-27]** For each effective `index` attribute applicable to an added
+  or modified regular-file entry, a writer MUST supply its canonical value
+  inline, even when a side record already exists. This does not replace
+  the required content/attribute-producer verification. A missing applicable
+  inline value, missing owner binding, unavailable evidence or unsupported
+  occurrence coverage MUST be reported as incomplete; absence MUST NOT be
+  taken as proof that a value differs from the lookup argument. Conditional
+  `class.elf` and `class.shebang` applicability MUST follow PROP-19 and the
+  registered classifier rules. Proven nonapplicability MAY count as covered
+  only with independently checked immutable applicability evidence; an
+  implementation MUST NOT invent a sentinel value. Unless relevant gaps
+  are closed or independently excluded by the reader's current policy,
+  lookup MUST return a typed incomplete result, or an explicitly partial
+  and incomplete response, rather than a definitive complete or empty set.
+  Existing untouched entries MAY remain incomplete under PROP-22/25.
+  Reporting incompleteness MUST NOT permit discarding an existing valid
+  required binding or replace DRV-14's same-commit maintenance. Missing
+  binding allowances apply to initial requirement installation, preserved
+  pre-existing gaps or unavailable read evidence, not deliberate omission
+  of an otherwise required maintained index.
+  The indexed rows MUST exactly represent all present canonical inline
+  values for the named attribute, independent of current policy, producer
+  evidence availability or classifier applicability. Applicability determines
+  missing-value coverage and admission, not omission of a present row.
+  Verifying those rows alone MUST NOT establish complete coverage. Reporting
+  coverage and gaps MUST obey current authority. *Gate:*
+  `gate:index-tree-maintenance`, `gate:property-required-attrs`.
+
+Construction is acyclic: build the index `I` from candidate entries, bind
+`I` to complete the owner `R`, then form the recipe `Q` and optional memo.
+The recipe hash is the memo lookup key; it is distinct from the immutable
+identity of the encoded memo itself.
+
+```text
+Q = {1: "index", 2: [R],
+     3: {"attribute": A, "profile": "terrane-index/v1"}}
+q = BLAKE3("terrane-memo-v1\0" || canonical-CBOR(Q))
+M = {1: q, 2: I}                     # optional existing memo form
+entries -> I -> R -> Q/q -> optional M
+```
+
+The recipe's data inputs are immutable beneath `R`. Mutable side-table
+selection is not an implicit extra recipe input. Side records remain useful
+for computation reuse and producer evidence; indexed values are materialized
+inline so that re-evaluation does not select a different function or value
+from a changed catalog. Lookup still checks the actual current occurrence,
+its content and value, producer evidence, authority and trust under DRV-24.
 
 #### Lookup by secondary hash
 
@@ -197,7 +296,8 @@ for it.
   bound the work of rejecting independently governed occurrences.
 
 - **[DRV-24]** A store whose roots list `sha256` in `hashes` and
-  `hash.sha256` in `index` MUST answer `lookup(root, hash.sha256, value)`
+  `hash.sha256` in `index` MUST, when relevant coverage is complete under
+  DRV-27, answer `lookup(root, hash.sha256, value)`
   with exactly the deduplicated set of matching object hashes having a
   currently authorized and trusted occurrence in that view. With a
   validated index of size `n`, discovery of the equality-range candidate
@@ -207,8 +307,9 @@ for it.
   the additional `W` work of occurrence-tree traversal, path resolution,
   current-policy checks and provenance verification. Total lookup work
   MUST be reported in these terms, O(log n + C + P + W), rather than
-  claiming a bound in the size of the filtered answer alone. Index
-  validation or rebuilding work MUST be reported separately when needed.
+  claiming a bound in the size of the filtered answer alone. Coverage gaps
+  MUST instead yield DRV-27's incomplete response. Index validation or
+  rebuilding work MUST be reported separately when needed.
   Before returning an object, the implementation MUST verify the actual
   occurrence's content identity and attribute value, the reader's current
   authority, independently required attribute-producer evidence, and the

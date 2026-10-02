@@ -1,8 +1,8 @@
 # Terrane Specification
 
-- **Version:** 1.0-draft-2
+- **Version:** 1.0-draft-3
 - **Status:** Draft
-- **Date:** 2026-09-29
+- **Date:** 2026-10-02
 
 Terrane is a content-addressed chunk store with a filesystem namespace that
 composes like a version-control branch. This document set is the normative

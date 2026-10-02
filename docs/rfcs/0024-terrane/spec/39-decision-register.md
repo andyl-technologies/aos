@@ -1863,6 +1863,58 @@ is added rather than editing history.
     correction precedes the initial format freeze. Registration does not
     qualify an index implementation, native disclosure or the cost bound.
 
+- **[D-101] Bind indexes without cycles and make root-only recipes reproducible.**
+  - **Status:** Decided
+  - **Decision:** Register owner-local `index-roots` as an exact noninherited
+    property binding from attribute names to lowercase-hex Node identities.
+    Withdraw DRV-13 and replace it with DRV-25/26: construct the index before
+    the owner, then form the detached one-root `terrane-index/v1` recipe and
+    optional unchanged memo. Preserve generic retained index recipes.
+    DRV-27 requires applicable indexed values inline on added or modified
+    files and separates present indexed rows from independently established
+    completeness. Withdraw DRV-11 and replace it with DRV-28: reuse checked
+    side values without recomputation, but still materialize missing inline
+    index inputs during backfill. Keep conditional classifier applicability,
+    current policy, independent producers and PROP-25's immediate incomplete
+    requirement installation.
+  - **Rationale:** The registered `index` property contains attribute names,
+    not root pointers. Generic property values cannot carry byte-string
+    digests, so a registered text carrier is needed. Root properties are
+    hashed; embedding the owner or recipe inside its index creates a digest
+    cycle. Detached recipes remove that cycle. A root-only recipe also cannot
+    select a mutable side-table function/version/value implicitly: changing
+    the catalog could change the result without changing its recipe identity.
+    Existing selected-side evidence belongs to a consuming view/trust context,
+    includes a Commit identity and is not an immutable root-bound recipe input.
+    Inline indexed values give the recipe immutable data while side records
+    retain their computation-reuse and independently checked producer roles.
+    A missing value is not evidence that it differs from a query. A checked
+    nonmatching classifier can establish a conditional value's nonapplicability;
+    unknown or unavailable evidence remains a gap rather than a sentinel.
+  - **Alternatives considered:** Put digests into the existing `index` list
+    (rejected: changes its declared type); use inherited owner pointers or
+    optional derived refs (rejected: wrong owner or loss of correctness);
+    include the current owner/Commit in index bytes (rejected: hash cycle);
+    select mutable side data invisibly (rejected: nonreproducible memo key);
+    define an explicit extra immutable side-input recipe (possible later,
+    but requires a separate registered input format). No interpretation of
+    reachability, memo data or a decoded pointer grants current authority.
+  - **Compatibility:** Advance the unreleased specification to 1.0-draft-3
+    under README's pre-freeze correction exception. Register only the new
+    property and executable specialization; preserve every existing encoded
+    field, identity domain, generic recipe and golden byte. The published
+    generic two-operand/no-arguments `index` Commit witness remains valid.
+    Affected indexed admission/backfill semantics are changed explicitly;
+    the generic AttrRecord and its side-only uses remain unchanged. The format
+    freeze has not begun. No implementation is qualified by this decision.
+  - **Affects:** PROP-29, DRV-11/13 (withdrawn), DRV-24's explicit
+    incomplete-coverage response, DRV-25 to DRV-28,
+    PROP-22/25, the property registry and executable recipe specialization.
+    Same-commit O(delta × log n) maintenance, index verification/rebuild,
+    typed non-graft occurrence evidence and the positive native index case
+    remain required. This decision supplies no occurrence carrier or runtime
+    dispatch; those remain pre-freeze implementation prerequisites.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

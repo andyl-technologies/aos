@@ -243,7 +243,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   tests); mandatory formatting passes. The requirement remains open.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
-- [x] **T-PROP-1** Property resolution, types, boundary properties,
+- [ ] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name
   validation. Boundary validation compares AUTH-22's implied verbs and
   preserves inherited administrator rights under AUTH-25 before applying
@@ -256,8 +256,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   retention, and durability with the corresponding store, domain, GC,
   redundancy, and topology tasks; attribute production with T-DRV-1 and
   T-DRV-2. Host realizers enforce hints and wipe policy. Backfill execution
-  belongs to T-JOB-1; this task reports gaps without starting jobs. —
-  satisfies TREE-14, PROP-1 to PROP-28;
+  belongs to T-JOB-1; this task reports gaps without starting jobs.
+  D-101 reopens completion for the new owner-local `index-roots` binding.
+  Its pure validation is joint with T-DRV-3; actual verified index admission
+  remains joint with T-DRV-2. Previous property behavior stays qualified,
+  but does not qualify PROP-29. — satisfies TREE-14, PROP-1 to PROP-29;
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
@@ -295,7 +298,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `index-generation-manifest`. Object-reachability collection under DRV-3 and
   joint T-JOB-1 backfill under DRV-11 remain incomplete; a passing attribute
   gate does not qualify those operations.
-  — satisfies DRV-1 to DRV-11; `checks.terrane.gates.derived-attr-record`.
+  — satisfies DRV-1 to DRV-10, DRV-28 (DRV-11 withdrawn);
+  `checks.terrane.gates.derived-attr-record`.
 - [ ] **T-DRV-2** Derivations, the common memo form, index trees with
   same-commit O(delta × log n) maintenance, `verify_index`, `rebuild_index`,
   attribute-value lookup and SHA-256 index continuity. AD-11 moves this
@@ -304,14 +308,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Implement memoization and verification for the recipe kinds available in
   T1; T-ALG-3 and T-RULE-1 extend the same mechanism for their later kinds.
   D-100 replaces the withdrawn DRV-18 filtered-output bound with DRV-24's
-  explicit candidate, occurrence and current-check accounting. The registered
-  acyclic owner/index binding and executable recipe profile remain unresolved
-  pre-freeze prerequisites; an invented property or optional derived ref
-  cannot substitute for them. Positive native safe-index materialization,
+  explicit candidate, occurrence and current-check accounting. D-101 now
+  registers the acyclic owner/index binding and executable recipe profile;
+  their pure codecs belong to T-DRV-3. The occurrence carrier and typed
+  non-graft reachability remain pre-freeze prerequisites. An invented
+  property or optional derived ref cannot substitute for the owner binding.
+  Positive native safe-index materialization,
   independent current attribute-producer checks and genuine divergent-index
   refusal/rebuild remain required. Neither this ordering correction nor
   passing opaque-index codecs completes the task. — satisfies DRV-12 to
-  DRV-17, DRV-19 to DRV-24 (DRV-18 withdrawn);
+  DRV-17, DRV-19 to DRV-28 (DRV-13/18 withdrawn);
   `checks.terrane.gates.derivation-memo`,
   `checks.terrane.gates.index-tree-maintenance`.
   D-100/AD-11's actual `registry-complete` derivation and both mandatory
@@ -319,6 +325,27 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   its index row now names DRV-24 explicitly. The index implementation checks
   remain pending and fail when requested. No task checkbox or milestone
   status is advanced by this correction.
+- [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
+  `index-roots` value/binding validation, closed executable index-recipe
+  codec and value-plus-object opaque keys. Preserve generic retained recipe
+  validity and all existing identities. D-101 registers these formats before
+  T1's freeze; this task implements ordinary data without giving it current
+  authority. Root/occurrence loading, producer verification, incremental
+  maintenance, complete coverage and native dispatch remain T-DRV-2.
+  Publish independently assembled format witnesses jointly with T-TEST-1.
+  The shared property gate now requires the exact owning-root binding case;
+  its absence must fail rather than qualify the new registry entry from old
+  property tests. — satisfies the format portions of PROP-29, DRV-12,
+  DRV-25, DRV-26, TEST-1 to TEST-3;
+  `checks.terrane.integration.index-format`,
+  `checks.terrane.gates.property-resolution`,
+  `checks.terrane.gates.core-no-std`.
+  D-101's shared prerequisite exposes the module and exact pure check
+  inventory before task branches start. The actual `registry-complete`
+  and `core-no-std` checks pass, as do both mandatory formatters. The actual
+  augmented property gate and index-format check fail on the absent exact
+  owner-binding case (zero selected tests), confirming no old suite can
+  qualify the new format. Runtime index gates remain explicitly pending.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
@@ -2317,7 +2344,7 @@ the MVP conformance claim (PLAN-3) says so explicitly.
 | 07 tree algebra | T1, B-derive | T-ALG-1, T-ALG-2, T-ALG-3 |
 | 08 properties | T1 | T-PROP-1 |
 | 09 refs and commits | T1 | T-REF-1, T-REF-2 |
-| 10 derived data | T1, B-derive, B-jobs | T-DRV-1, T-DRV-2, T-JOB-1 |
+| 10 derived data | T1, B-derive, B-jobs | T-DRV-1, T-DRV-2, T-DRV-3, T-JOB-1 |
 | 11 store trait | T1, T2, T3 | T-STORE-1, T-STORE-3, T-STORE-2 |
 | 12 pack format | T1, B-bandwidth | T-PACK-1, T-PACK-2, T-PACK-3 |
 | 13 bucket layout | T1, T2, T3 | T-BKT-1, T-HOST-1, T-BKT-2, T-BKT-3, T-RISK-1 |

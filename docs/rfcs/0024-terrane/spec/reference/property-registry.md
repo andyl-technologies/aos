@@ -14,7 +14,8 @@ governs the name.
 ## Properties
 
 Copied from [`../08-properties.md`](../08-properties.md) §Property summary
-(PROP-28) with encoding and inheritance added. Every property inherits from
+(PROP-28) with encoding and inheritance added. Unless its registration
+requires an owner-local binding (PROP-29), every property inherits from
 the nearest ancestor root unless overridden (PROP-2); `acl` additionally
 may only narrow `commit` and `admin` in a descendant (PROP-16). Values are
 encoded as `property-value` in
@@ -24,6 +25,8 @@ Each property binding MAY instead use the exact text-keyed wrapper
 `{"inherit": bool, "value": property-value}` (PROP-1). The bare encoding
 means inheritance is enabled. The wrapper is reserved for this binding
 purpose and its `value` is checked against the registered type below.
+`index-roots` is the exception: PROP-29 requires that exact wrapper with
+`inherit=false` on the owner root only; its default is an absent empty binding.
 
 | Property | Class | CBOR type and values | Default | Owner |
 | --- | --- | --- | --- | --- |
@@ -59,6 +62,7 @@ purpose and its `value` is checked against the registered type below.
 | `hashes` | requirement | `[* tstr]` from §hash names | `[]` | 10 |
 | `classify` | requirement | `[* tstr]` from §classifiers | `[]` | 10 |
 | `index` | requirement | `[* name]`: attribute names to index | `[]` | 10 |
+| `index-roots` | requirement, owner-local binding | `index-roots-value` in the CDDL; exact wrapper with `inherit=false` required | `{}` | 08, 10 |
 | `strict-attrs` | requirement | `bool` | `false` | 06 |
 
 Boundary properties (`store`, `domain`, `acl`) mark a root that `flatten`
@@ -142,6 +146,17 @@ it additionally requires `class.elf` or `class.shebang` (PROP-19).
 A `content_magic` matcher ([`../31-routing-rulesets.md`](../31-routing-rulesets.md)
 RULE-6) names one of these values; an absent attribute is treated as
 `other` at `on_realize`.
+
+## Index evaluation profiles
+
+| Name | Operation | Schema | Owner |
+| --- | --- | --- | --- |
+| `terrane-index/v1` | `index` | `index-evaluation-recipe` in the CDDL; one completed owner root and one registered attribute | 10 |
+
+These are executable recipe profiles, not identity or chunk profiles. The
+closed parser does not replace the generic retained `other-recipe` schema.
+DRV-26 and DRV-27 define immutable inline inputs and incomplete coverage;
+DRV-24 still requires current occurrence, producer, authority and trust checks.
 
 ## Adapter and writer-supplied attributes
 
