@@ -1365,6 +1365,7 @@ in rec {
     rust = {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos;
+      aos-test-targets = pkgs.aos.passthru.testTargets;
       crucible-controller = pkgs.crucible-controller;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
