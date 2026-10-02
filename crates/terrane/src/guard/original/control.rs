@@ -294,23 +294,9 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
     /// Rejects directory replacement, symlink ancestors, owner or mode changes,
     /// replaced coordination, and unavailable filesystem observations.
     pub(crate) async fn revalidate(&mut self) -> Result<(), StoreFailure> {
-        let mut ancestor = PathBuf::new();
-        for part in self.directory.components() {
-            ancestor.push(part);
-            let metadata = self
-                .fs
-                .symlink_metadata(&ancestor)
-                .await
-                .map_err(io_failure)?;
-            let protected_sticky = metadata.uid() == 0 && metadata.mode() & 0o1000 != 0;
-            if !metadata.is_dir()
-                || metadata.file_type().is_symlink()
-                || metadata.uid() != 0 && metadata.uid() != self.owner
-                || metadata.mode() & 0o022 != 0 && !protected_sticky
-            {
-                return Err(invalid());
-            }
-        }
+        // Keep every fresh ancestor observation in its original path order;
+        // batching avoids a separate filesystem dispatch for each ancestor.
+        self.capture_ancestors().await?;
 
         let metadata = self
             .fs

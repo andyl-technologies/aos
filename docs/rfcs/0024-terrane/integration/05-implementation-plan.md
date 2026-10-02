@@ -603,6 +603,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   cancellation-release failure. The full aggregate again fails the known
   retirement assertion in `index-generation-manifest`. Mandatory formatting
   passes; source receipts and the complete disclosure path remain unqualified.
+  Original-control revalidation now reuses its existing ordered ancestor
+  batch, retaining every fresh path result and the separate fresh directory
+  and lock checks. Independent source review, the native build and eight
+  focused original/consumed regressions pass. The ninth focused development
+  case still misses cancellation's unchanged two-second arrival limit. The
+  actual hermetic ordering gate passes all 17 exact selectors, including that
+  cancellation case with unchanged assertions. The full aggregate remains red
+  on the 19 unqualified disclosure cases; isolated optimized execution does
+  not establish reliable timing or complete task qualification. Both mandatory
+  formatting commands pass.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
