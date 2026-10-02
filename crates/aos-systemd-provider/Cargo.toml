@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+systemd-parser-tests = []
+
 [dependencies]
 anyhow.workspace = true
 aos-ability-runtime.workspace = true
