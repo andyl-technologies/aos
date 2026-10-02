@@ -165,6 +165,7 @@ in {
     enable = lib.mkOption {
       type = lib.types.bool;
       default = false;
+      extensible = true;
       description = "Enable at least one registry-server workload.";
     };
     restartToken = lib.mkOption {

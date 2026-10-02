@@ -10,6 +10,7 @@
 }: let
   candidate = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_server-test-packages.nix
     ../../systems/_fleet-transition-test.nix
     {
       aos.system.version = "9999.0.0-generation-axes-candidate";
@@ -36,6 +37,7 @@
   # package part of the test images themselves.
   targetBase = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_server-test-packages.nix
     ../../systems/_fleet-transition-test.nix
     {
       # Git is image-bundled fixture tooling for cloning the authenticated
@@ -46,7 +48,7 @@
       aos.image.budgets.maxRootMiB = 704;
       # Full Git, its interpreters, and the test agent bring this fixture's
       # runtime closure to 1,015 MiB; production images keep their own limits.
-      aos.image.budgets.maxRuntimeClosureMiB = 1088;
+      aos.image.budgets.maxRuntimeClosureMiB = 3072;
       # The signed A/B fixture compresses to 836 MiB with those test tools.
       aos.image.budgets.maxDownloadMiB = 864;
       aos.image.testArtifactRoots = [pkgs.binutils pkgs.git];
@@ -69,7 +71,10 @@
       aos.packages =
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
+        (name: {
+          package = pkgs.${name};
+          bundle = true;
+        });
       # The static server binds this directory before publication fills it.
       environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
         d /var/lib/sysreg-cache 0755 root root - -

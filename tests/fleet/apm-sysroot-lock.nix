@@ -70,6 +70,7 @@
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_server-test-packages.nix
     {
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [

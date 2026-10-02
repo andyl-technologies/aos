@@ -108,6 +108,7 @@
     modules =
       [
         ../../systems/server-verity.nix
+        ../../systems/_server-test-packages.nix
         initrdControlFallback
         rolloutPolicy.module
         bootFaultModule
@@ -183,6 +184,7 @@
   targetModules =
     [
       ../../systems/server-verity.nix
+      ../../systems/_server-test-packages.nix
       initrdControlFallback
       rolloutPolicy.module
       bootFaultModule

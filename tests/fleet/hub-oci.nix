@@ -268,8 +268,15 @@
     "${pkgs.kmod}/bin"
     "${pkgs.kmod}/sbin"
   ];
+  certificateAdmission = {
+    aos.packages.hub-oci-qualification-ca = {
+      package = tlsCa;
+      bundle = true;
+    };
+  };
   consumerSystem = mkSystem [
     ../../systems/server-test.nix
+    certificateAdmission
     {
       environment.systemPackages = [
         pkgs.aos
@@ -311,6 +318,7 @@
   ];
 
   hubOciModule = {
+    imports = [certificateAdmission];
     aos.firewall.allowedTCP = [8443];
     aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
     aos.registry-hub.credentials.deliveryAttestationKey = "hub-oci-delivery-attestation-key";
@@ -377,6 +385,7 @@
     };
   };
   publisherPkiModule = {
+    imports = [certificateAdmission];
     aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
   };
 

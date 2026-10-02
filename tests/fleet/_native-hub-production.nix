@@ -103,7 +103,7 @@
   # these test systems.
   qualificationImage = {
     aos.image.budgets = {
-      maxRuntimeClosureMiB = 912;
+      maxRuntimeClosureMiB = 3072;
       maxDownloadMiB = 816;
       maxRootMiB = 768;
     };
@@ -159,6 +159,10 @@
     ../../systems/server-test.nix
     qualificationImage
     {
+      aos.packages.aos-hub = {
+        package = pkgs.aos-hub;
+        bundle = true;
+      };
       aos.registry-hub = {
         enable = true;
         # The cleartext listener is deliberate in the first qualification

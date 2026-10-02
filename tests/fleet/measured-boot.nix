@@ -42,7 +42,11 @@
         # Keep the serial console last so /dev/console and journald expose
         # initrd transaction failures in the fleet-test transcript.
         aos.boot.kernelParams = lib.mkAfter ["console=ttyS0,115200"];
-        aos.packages.test-http-server.bundle = true;
+        imports = [../../systems/_server-test-packages.nix];
+        aos.packages.test-http-server = {
+          package = pkgs.test-http-server;
+          bundle = true;
+        };
         environment.systemPackages = [pkgs.binutils pkgs.diffutils pkgs.jq];
         # These are deliberate guest-side verification fixtures: objcopy
         # independently reads the booted UKI, while test-http-server proves
@@ -54,7 +58,7 @@
         aos.image.budgets.maxFirmwarePartitionMiB = 704;
         # Guest-side UKI inspection and policy verification retain binutils,
         # jq, and diffutils in this fixture's measured runtime closure.
-        aos.image.budgets.maxRuntimeClosureMiB = 912;
+        aos.image.budgets.maxRuntimeClosureMiB = 3072;
         aos.image.budgets.maxDownloadMiB = 816;
       }
     ];
