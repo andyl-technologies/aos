@@ -55,7 +55,7 @@ where
     C: Clock,
     D: Clock,
 {
-    let principal = source.requests.first().ok_or_else(invalid)?.subject();
+    let principal = source.requests.first().ok_or_else(invalid)?;
     let authority = concrete.configured_original_authority()?;
     let plans = import_plans(source, &authority)?;
     let before = ConsumedResolver::new(destination, &authority)?;
@@ -70,7 +70,7 @@ where
             HistoryObservation::held(observed.identity()).tracked(&before),
         )
         .await?;
-    if current.subject() != principal || current.record() != request.expected {
+    if !current.same_principal(principal) || current.record() != request.expected {
         return Err(invalid());
     }
     before.operation(&current)?;
@@ -151,7 +151,7 @@ where
             HistoryObservation::held(observed.identity()).tracked(&after),
         )
         .await?;
-    if refreshed.subject() != principal || refreshed.record() != request.expected {
+    if !refreshed.same_principal(principal) || refreshed.record() != request.expected {
         return Err(invalid());
     }
     after.operation(&refreshed)?;
