@@ -22,6 +22,8 @@ mod conflicts;
 #[cfg(unix)]
 mod coverage;
 #[cfg(unix)]
+mod current_authority;
+#[cfg(unix)]
 mod dictionaries;
 #[cfg(unix)]
 mod domain_scope;
@@ -44,6 +46,12 @@ mod parents;
 mod producers;
 #[cfg(unix)]
 mod raw_kinds;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_current_authority_rechecks_both_whole_heads_tokens_epochs_and_root_acls() {
+    current_authority::recheck_current_authority().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
