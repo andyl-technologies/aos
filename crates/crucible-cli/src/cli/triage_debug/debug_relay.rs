@@ -54,15 +54,28 @@ pub(crate) fn plan_debug_invocation(
             "--guest-idle-timeout is available only with debug exec, pty, or ssh",
         ));
     }
-    let guest_idle_timeout = parse_run_duration_budget_ticks(
+    let guest_idle_ticks = parse_run_duration_budget_ticks(
         args.guest_idle_timeout.as_deref().unwrap_or("30s"),
     )
-    .map(Duration::from_nanos)
     .ok_or_else(|| {
         usage_error(
             "--guest-idle-timeout must be a positive duration using ticks, ns, us, ms, or s",
         )
     })?;
+
+    // Host timers cannot represent fractional nanoseconds. Preserve physical
+    // units and reject exact tick spans that would lose phase in this projection.
+    let guest_idle_nanos = crucible::SimDuration {
+        ticks: guest_idle_ticks,
+    }
+    .nanoseconds_exact()
+    .map_err(|error| {
+        usage_error(format!(
+            "--guest-idle-timeout cannot be represented by a host timer: {error}; use a whole-nanosecond duration",
+        ))
+    })?;
+    let guest_idle_timeout = Duration::from_nanos(guest_idle_nanos);
+
     if (explicit_fork || guest_shell) && !args.allow_mutate {
         return Err(usage_error(
             "the selected fork-debug or guest exec/PTY/SSH operation requires --allow-mutate authorization",
