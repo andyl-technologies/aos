@@ -33,9 +33,17 @@ mod multiple;
 #[cfg(unix)]
 mod occurrences;
 #[cfg(unix)]
+mod original_acl;
+#[cfg(unix)]
 mod parents;
 #[cfg(unix)]
 mod producers;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_original_acl_verification_survives_destination_only_reopen() {
+    original_acl::retain_original_authorization().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
