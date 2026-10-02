@@ -862,8 +862,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   formatting commands. The original-authority fallback now has an isolated
   single-traversal candidate, whose native build and formatting pass; its
   ten focused native regressions pass, including a genuine original-reference
-  fallback with unchanged trusted configuration. Its full final regression
-  sequence remains in progress.
+  fallback with unchanged trusted configuration. Its final full native run
+  passes 356 of 363 tests with the same seven failures and no timeouts; all
+  116 portable tests and strict native rustdoc also pass. Final Nix gate
+  qualification remains in progress.
   This candidate is unmerged and does not qualify the task.
   Pure core view, endpoint, exposure
   and schema vocabulary is integrated as an SDK prerequisite. View parsing
@@ -892,8 +894,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   diagnostics; the latest shared correction adds none. The cancellation-only
   native-read fixture candidate remains an unmerged WIP: its latest full run
   passes 353 of 360 tests, with six backend failures and the unchanged
-  two-second cancellation-barrier arrival failure. No Terrane ext4
-  workflow artifact is present in the current tracked gate or workflow sources;
+  two-second cancellation-barrier arrival failure. No successful Terrane ext4
+  workflow qualification artifact is present;
   the earlier claim of registration does not establish qualification. The scoped
   descendant-only policy diff correction is integrated; its real protected-factory
   regression passes with unchanged scope and admission checks. The actual feature
