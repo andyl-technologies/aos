@@ -329,6 +329,46 @@ pub async fn fetch_narinfo_closure(
     parallel: u32,
     printer: &Printer,
 ) -> Result<Vec<ResolvedDownload>> {
+    fetch_narinfo_closure_with_filter(
+        engine,
+        requests,
+        parallel,
+        printer,
+        filter_missing_download_requests,
+    )
+    .await
+}
+
+/// Fetches complete reference metadata, including paths already valid locally.
+///
+/// Admission needs every dependency's signed realization before checking its
+/// pins. Local validity alone supplies neither those facts nor release authority.
+///
+/// # Errors
+/// Rejects unavailable narinfos, malformed responses, or reference cycles.
+pub(crate) async fn fetch_complete_narinfo_closure(
+    engine: Arc<TransferEngine>,
+    requests: &[DownloadRequest],
+    parallel: u32,
+    printer: &Printer,
+) -> Result<Vec<ResolvedDownload>> {
+    fetch_narinfo_closure_with_filter(engine, requests, parallel, printer, |requests| {
+        std::future::ready(Ok(requests))
+    })
+    .await
+}
+
+async fn fetch_narinfo_closure_with_filter<Filter, Future>(
+    engine: Arc<TransferEngine>,
+    requests: &[DownloadRequest],
+    parallel: u32,
+    printer: &Printer,
+    mut filter_references: Filter,
+) -> Result<Vec<ResolvedDownload>>
+where
+    Filter: FnMut(Vec<DownloadRequest>) -> Future,
+    Future: std::future::Future<Output = Result<Vec<DownloadRequest>>>,
+{
     if requests.is_empty() {
         return Ok(Vec::new());
     }
@@ -370,7 +410,7 @@ pub async fn fetch_narinfo_closure(
             fetched.insert(hash, item);
         }
 
-        pending = filter_missing_download_requests(candidates).await?;
+        pending = filter_references(candidates).await?;
     }
 
     order_narinfo_closure(requests, &fetched)
@@ -934,6 +974,62 @@ mod tests {
                 "/aos/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-app-1.0",
             ),
             "/nix/store/cccccccccccccccccccccccccccccccc-lib-2.0",
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_metadata_preserves_references_skipped_by_missing_downloads() {
+        let cache = tempfile::tempdir().unwrap();
+        let root = "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-root-1.0";
+        let dependency = "/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-dependency-1.0";
+        for item in [
+            resolved_download(root, &[dependency]),
+            resolved_download(dependency, &[]),
+        ] {
+            std::fs::write(
+                cache.path().join(format!(
+                    "{}.narinfo",
+                    narinfo::store_hash(&item.narinfo.store_path)
+                )),
+                narinfo::format(&item.narinfo),
+            )
+            .unwrap();
+        }
+        let requests = [DownloadRequest {
+            store_path: root.into(),
+            mirror_url: format!("file://{}", cache.path().display()),
+            fallback_mirrors: vec![],
+        }];
+        let printer = Printer::new(0, true, false);
+
+        // The boundary models the default downloader's locally-valid check
+        // without mutating process-global store configuration in parallel tests.
+        let missing = fetch_narinfo_closure_with_filter(
+            Arc::new(default_engine()),
+            &requests,
+            2,
+            &printer,
+            |candidates| {
+                std::future::ready(Ok(candidates
+                    .into_iter()
+                    .filter(|request| request.store_path != dependency)
+                    .collect()))
+            },
+        )
+        .await
+        .unwrap();
+        let complete =
+            fetch_complete_narinfo_closure(Arc::new(default_engine()), &requests, 2, &printer)
+                .await
+                .unwrap();
+
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0].narinfo.store_path, root);
+        assert_eq!(complete.len(), 2);
+        assert_eq!(complete[0].narinfo.store_path, dependency);
+        assert_eq!(
+            narinfo::format(&complete[1].narinfo),
+            narinfo::format(&missing[0].narinfo)
         );
     }
 
