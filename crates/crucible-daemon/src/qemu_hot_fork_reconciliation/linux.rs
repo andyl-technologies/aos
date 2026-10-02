@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod diagnostics;
 mod reconciliation;
 
 /// Production backend failure while retaining source and target authorities.
@@ -574,6 +575,7 @@ where
     identity: ProductionVmNodeGeneration,
     reconciliation: Option<LinuxQemuHotForkWorldReconciliation<G>>,
     completed: LinuxQemuHotForkWorldReconciliationSet<G>,
+    diagnostics_reported: bool,
 }
 
 impl<G> Drop for LinuxQemuHotForkWorldNodeLease<G>
@@ -626,7 +628,14 @@ where
         };
         for _ in 0..32 {
             // crucible-lint: allow host-nondeterminism-state -- Reconciliation polls source-owned process cleanup only; the result cannot alter modeled execution.
-            match reconciliation.reconcile_step().map_err(|error| {
+            let step = reconciliation.reconcile_step();
+            report_reconciled_child_diagnostics_once(
+                reconciliation,
+                &step,
+                &mut self.diagnostics_reported,
+                |backend, complete| backend.report_child_diagnostics(&self.identity, complete),
+            );
+            match step.map_err(|error| {
                 hot_fork_adoption_error(format!(
                     "reconcile reaped adopted child `{}`: {error}",
                     self.identity.node().name
@@ -729,8 +738,36 @@ where
             identity: identity.clone(),
             reconciliation: Some(self),
             completed,
+            diagnostics_reported: false,
         };
         ProductionVmHotForkNodeAdoption::new(identity, node, lease, run_directory)
+    }
+}
+
+/// Reports after private-resource finalization, before target storage release.
+///
+/// Failed reconciliation exposes only bytes already owned by the backend. The
+/// observer cannot change the original step, cleanup authority, or error.
+pub(super) fn report_reconciled_child_diagnostics_once<B>(
+    reconciliation: &QemuHotForkAttemptReconciliation<B>,
+    step: &Result<QemuHotForkReconciliationStep, QemuHotForkAttemptReconciliationError<B::Error>>,
+    reported: &mut bool,
+    report: impl FnOnce(&B, bool),
+) where
+    B: QemuHotForkReconciliationBackend,
+{
+    let complete = matches!(
+        step,
+        Ok(QemuHotForkReconciliationStep::Advanced(
+            QemuHotForkReconciliationPhase::ChildResourcesReleased
+        ))
+    );
+    if *reported || (!complete && step.is_ok()) {
+        return;
+    }
+    if let Some(backend) = reconciliation.backend.as_ref() {
+        *reported = true;
+        report(backend, complete);
     }
 }
 

@@ -33,6 +33,9 @@ mod image_launch;
 mod materialization;
 mod run_directory;
 
+pub(crate) use control_delivery_trace::valid_control_delivery_row;
+pub(crate) use run_directory::valid_rr_control_boundary_row;
+
 use image_launch::{GuardedLaunchImagePins, GuardedSetupProbeCommand, guarded_launch_args};
 pub(crate) use materialization::QemuProductionExactRestoreSource;
 pub(crate) use materialization::SealedAtomicExactRestoreInputs;
