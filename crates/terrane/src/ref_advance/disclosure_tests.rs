@@ -13,6 +13,13 @@ use terrane_core::identity::{IdentityKind, TERRANE_V1};
 use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
+mod multiple;
+
+#[tokio::test]
+async fn disclosure_boundary_manifest_and_multiple_source_certificates() {
+    multiple::publish_independent_manifests().await;
+}
+
 /// Creates real independently generated signing credentials and protected state.
 async fn independent_factory(
     domain: &str,

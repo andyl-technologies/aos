@@ -47,6 +47,14 @@ struct PairedSource<'operation, 'held> {
     controls: crate::guard::RetainedControls,
 }
 
+/// Groups the operation's exact consumed evidence and selected handoff state.
+struct CandidateInputs<'operation, 'held> {
+    consumed: &'operation ConsumedResolver,
+    session: &'operation mut crate::ref_advance::WriterSession,
+    publication: &'operation mut crate::ref_advance::RetainedPublication,
+    paired: Option<PairedSource<'operation, 'held>>,
+}
+
 /// Retains local control exclusion with exact data consumed by a held operation.
 pub(crate) struct LocalControlInputs<'guard, F: LocalFs> {
     exclusion: crate::guard::ControlExclusion<'guard, F>,
@@ -198,10 +206,12 @@ where
         authority,
         coordinator,
         observed,
-        consumed,
-        session,
-        publication,
-        None,
+        CandidateInputs {
+            consumed,
+            session,
+            publication,
+            paired: None,
+        },
     )
     .await
 }
@@ -211,10 +221,7 @@ async fn publish_candidate_inner<'held, F, B, V, C, R, D>(
     authority: &OriginalAuthority,
     coordinator: &'held crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
     observed: &SelectedObservation<'held>,
-    consumed: &ConsumedResolver,
-    session: &mut crate::ref_advance::WriterSession,
-    publication: &mut crate::ref_advance::RetainedPublication,
-    paired: Option<PairedSource<'_, 'held>>,
+    inputs: CandidateInputs<'_, 'held>,
 ) -> Result<terrane_core::refs::RefRecord, crate::ref_advance::AdvanceError>
 where
     F: LocalFs + BucketBinding,
@@ -226,6 +233,13 @@ where
     use terrane_core::gc::publication::evidence::CheckedLineage;
     use terrane_core::gc::publication::{CommittedSelection, SourceLineage};
     use terrane_core::refs::{RefClass, RefName};
+
+    let CandidateInputs {
+        consumed,
+        session,
+        publication,
+        paired,
+    } = inputs;
 
     let crate::ref_advance::RetainedPublication {
         admitted,

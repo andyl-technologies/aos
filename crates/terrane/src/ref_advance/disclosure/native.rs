@@ -24,6 +24,36 @@ pub(crate) struct PreloadedSelection {
     pub(crate) uploads: Vec<StagedUpload>,
 }
 
+impl<F, B, V, C> crate::repository::Repository<FileBucket<F, B, V>, C, F>
+where
+    F: LocalFs + BucketBinding + Sync,
+    B: Clock + BucketBinding + Sync,
+    V: ContentValidator + BucketBinding + Sync,
+    C: Clock + Sync,
+{
+    /// Publishes selected source entries through independently checked native factories.
+    ///
+    /// The source repository supplies current Read authority and dedicated
+    /// disclosure signing. The destination supplies current Commit authority;
+    /// original authoring context stays independently bound to retained controls.
+    ///
+    /// # Errors
+    /// Preserves invalid provenance or payload, stale heads and epochs, denied
+    /// current authority, conflicting retained controls, unsupported projections,
+    /// expired operation timing and indeterminate selected-publication failures.
+    pub async fn commit_disclosure<D: Clock + Sync>(
+        &self,
+        source: &crate::repository::Repository<FileBucket<F, B, V>, D, F>,
+        session: &mut WriterSession,
+        request: DisclosureCommitRequest,
+    ) -> Result<terrane_core::refs::RefRecord, crate::repository::Error> {
+        self.coordinator()
+            .advance_disclosure(source.coordinator().guard(), session, request)
+            .await
+            .map_err(crate::repository::Error::Advance)
+    }
+}
+
 impl<F, B, V, C> Coordinator<FileBucket<F, B, V>, C, F>
 where
     F: LocalFs + BucketBinding + Sync,
