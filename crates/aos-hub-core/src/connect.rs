@@ -2860,6 +2860,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.ContainerService/CancelContainerGcRun",
+        cancel_container_gc_run
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.ContainerService/GetContainerGcRun",
         get_container_gc_run
     );
