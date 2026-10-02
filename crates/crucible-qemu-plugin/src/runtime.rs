@@ -406,6 +406,7 @@ impl OwnedCallbackRuntimeState {
 
     fn control_teardown_handle(
         &self,
+        process_generation: u64,
     ) -> Result<LiveControlTeardownHandle, crucible_shmem::MappedSetupRegionAccessError> {
         let slot = self.setup.mapped_region().node_slot(self.slot_index)?;
         Ok(LiveControlTeardownHandle {
@@ -413,6 +414,13 @@ impl OwnedCallbackRuntimeState {
             header_address: std::ptr::from_ref(self.setup.mapped_region().header()) as usize,
             slot_address: std::ptr::from_ref(slot) as usize,
             wake_fd: self.setup.wake_fd().as_raw_fd(),
+            control_callback_witness: self
+                .live_vcpu_time
+                .as_ref()
+                .map(|live| Arc::clone(&live.control_callback_witness)),
+            region_identity: self.setup.mapped_region().backing_identity(),
+            slot_index: self.slot_index,
+            process_generation,
         })
     }
 
@@ -530,7 +538,7 @@ impl OwnedCallbackRuntimeState {
         }
 
         let teardown_handle = self
-            .control_teardown_handle()
+            .control_teardown_handle(binding.child_process_generation)
             .map_err(|source| HotForkChildRuntimeError::TeardownSlot { source })?;
         let request_shutdown = self.request_shutdown;
         let teardown_workers = Arc::clone(&self.workers);
@@ -1115,7 +1123,7 @@ impl RequiredOwnedCallbacksRegistered {
         let state = self.state.as_ref().get_ref();
         debug_assert_eq!(slot_index, state.slot_index);
         state
-            .control_teardown_handle()
+            .control_teardown_handle(state.process_generation)
             .map_err(|source| PluginRuntimeInstallError::TeardownSlot { source })
     }
 
@@ -1154,6 +1162,10 @@ struct LiveControlTeardownHandle {
     header_address: usize,
     slot_address: usize,
     wake_fd: i32,
+    control_callback_witness: Option<Arc<live_callbacks::ControlCallbackWitness>>,
+    region_identity: crucible_shmem::SetupRegionBackingIdentity,
+    slot_index: u32,
+    process_generation: u64,
 }
 
 #[cfg(unix)]
@@ -1183,6 +1195,22 @@ impl LiveControlTeardownHandle {
         // SAFETY: construction validated this slot in the same mapping whose
         // owner is retained until after the worker joins.
         unsafe { &*(self.slot_address as *const NodeSlot) }
+    }
+
+    fn report_final_control_callback(&self, teardown: &'static str) {
+        if let Some(witness) = &self.control_callback_witness
+            && witness.is_enabled()
+        {
+            // crucible-lint: allow direct-diagnostic -- This fixed final witness is advisory and uses the original joined teardown owner.
+            let _result = witness.write_final_to(
+                &mut std::io::stderr().lock(),
+                self.region_identity,
+                self.slot_index,
+                self.process_generation,
+                teardown,
+                self.slot().control_boundary_token(),
+            );
+        }
     }
 }
 
@@ -1242,6 +1270,12 @@ fn complete_live_teardown(
     request_shutdown: QemuRequestShutdownFn,
 ) {
     let slot = teardown_handle.quiesce();
+    let teardown_class = match &trigger {
+        LiveRuntimeTeardownTrigger::HostQuit(_) => "host-quit",
+        LiveRuntimeTeardownTrigger::SharedShutdown(_) => "shared-shutdown",
+        LiveRuntimeTeardownTrigger::RunControlFault { .. } => "run-control-fault",
+    };
+    teardown_handle.report_final_control_callback(teardown_class);
     let mut teardown = PluginTeardown::new();
     let failure = matches!(trigger, LiveRuntimeTeardownTrigger::RunControlFault { .. });
     if let LiveRuntimeTeardownTrigger::RunControlFault { diagnostic } = &trigger {
