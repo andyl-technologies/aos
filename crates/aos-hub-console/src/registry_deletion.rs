@@ -104,6 +104,8 @@ pub(crate) fn blocker_rows(readiness: &RegistryDeletionReadiness) -> Vec<Blocker
         snapshot_references,
         abandonable_gc_runs,
         unavailable_placements,
+        enabled_oci_namespaces,
+        instance_oci_route_defaults,
     } = blockers;
     let blocking = BlockerSeverity::Blocking;
     let automatic = BlockerSeverity::Automatic;
@@ -119,6 +121,8 @@ pub(crate) fn blocker_rows(readiness: &RegistryDeletionReadiness) -> Vec<Blocker
         ("Untracked-object repairs", active_untracked_repairs, blocking),
         ("Snapshot references", snapshot_references, blocking),
         ("Unavailable placements", unavailable_placements, blocking),
+        ("Enabled OCI namespace", enabled_oci_namespaces, blocking),
+        ("Instance OCI route defaults", instance_oci_route_defaults, blocking),
         ("Tracked provider objects", tracked_provider_objects, provider_severity),
         ("Untracked provider objects", untracked_provider_objects, provider_severity),
         ("Placements needing an inventory", placements_needing_inventory, automatic),
