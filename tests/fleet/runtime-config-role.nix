@@ -23,11 +23,37 @@
         # agent as test infrastructure. Keep the runtime-closure audit strict
         # for every other artifact while admitting that explicit fixture.
         aos.image.allowTestArtifacts = true;
+        # Admit role modules without enabling their services in the golden image.
+        aos.packages.chrony = {
+          package = pkgs.chrony;
+          enable = true;
+        };
+        aos.packages.openssh = {
+          package = pkgs.openssh;
+          enable = true;
+        };
+        aos.packages.audit = {
+          package = pkgs.audit;
+          enable = true;
+        };
+        aos.packages.aos-network-ruleset-provider = {
+          package = pkgs.aos-network-ruleset-provider;
+          enable = true;
+        };
+        aos.packages.nftables = {
+          package = pkgs.nftables;
+          enable = true;
+        };
+        aos.image.hostConfigClosures = [pkgs.chrony pkgs.openssh pkgs.audit pkgs.nftables pkgs.aos-network-ruleset-provider];
         # Host-selectable OpenSSH/chrony closures plus the control agent make
         # this acceptance image larger than the production golden-image gate.
         # The measured fixture root occupies 666 MiB; retain the separate
         # production publication contract.
-        aos.image.budgets.maxRootMiB = 704;
+        aos.image.budgets = {
+          maxRootMiB = 704;
+          maxRuntimeClosureMiB = 3072;
+          maxDevelopmentPayloadMiB = 80;
+        };
         aos.image.erofsCompressionLevel = 1;
       }
     ];
