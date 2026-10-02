@@ -790,7 +790,9 @@ fn run_retained_controller(
     complete!(Pins);
 
     begin!(Diagnostic);
-    parent.diagnostic_std = Some(checked!(bind_diagnostic_socket(&configuration)));
+    parent.diagnostic_registration = Some(tokio::net::UnixListenerRegistrationAttempt::new(
+        checked!(bind_diagnostic_socket(&configuration)),
+    ));
     complete!(Diagnostic);
 
     begin!(Sessions);
@@ -890,21 +892,40 @@ fn run_retained_controller(
     complete!(ControllerStartup);
 
     begin!(AsyncDiagnostic);
-    // Returned-to-consuming Tokio registration remains a FUNCTIONAL provider
-    // seam: an error can consume the original std listener, not restore it.
-    parent.diagnostic = Some(checked!(required!(parent.runtime.as_ref()).block_on(
-        into_async_diagnostic_listener(required!(parent.diagnostic_std.take())),
-    )));
+    {
+        let ControllerParentCustodyV1 {
+            runtime,
+            diagnostic_registration,
+            diagnostic,
+            ..
+        } = &mut parent;
+        let runtime = required!(runtime.as_ref());
+        let attempt = required!(diagnostic_registration.as_mut());
+        runtime.block_on(async {
+            register_retained_diagnostic(attempt, diagnostic, worker.as_ref());
+        });
+    }
     complete!(AsyncDiagnostic);
 
     begin!(Public);
-    parent.public = Some(if configuration.public_api {
-        Some(checked!(required!(parent.runtime.as_ref()).block_on(
-            public_api::bind(configuration.uid),
-        )))
+    if configuration.public_api {
+        let ControllerParentCustodyV1 {
+            runtime,
+            public_startup,
+            public,
+            ..
+        } = &mut parent;
+        required!(runtime.as_ref()).block_on(async {
+            public_api::bind_retained(
+                configuration.uid,
+                public_startup,
+                public,
+                worker.as_ref(),
+            );
+        });
     } else {
-        None
-    });
+        parent.public = Some(None);
+    }
     complete!(Public);
 
     begin!(Capabilities);
@@ -1307,8 +1328,9 @@ struct ControllerParentCustodyV1 {
     stage: ControllerParentStageV1,
     launch: Option<Option<crate::production_startup::Pid1LaunchImageV1>>,
     runtime: Option<tokio::runtime::Runtime>,
-    diagnostic_std: Option<std::os::unix::net::UnixListener>,
+    diagnostic_registration: Option<tokio::net::UnixListenerRegistrationAttempt>,
     diagnostic: Option<AuthenticatedDiagnosticListener>,
+    public_startup: public_api::PublicListenerStartupV1,
     public: Option<Option<public_api::PublicListener>>,
     host: Option<Option<aos_sandbox::runtime_scope::HostServiceIdentity>>,
     mount: Option<Option<aos_sandbox::mount_preparation::MountServiceIdentity>>,
@@ -1336,8 +1358,9 @@ impl ControllerParentCustodyV1 {
             stage: ControllerParentStageV1::Prepared,
             launch: Some(launch),
             runtime: None,
-            diagnostic_std: None,
+            diagnostic_registration: None,
             diagnostic: None,
+            public_startup: public_api::PublicListenerStartupV1::new(),
             public: None,
             host: None,
             mount: None,
@@ -1414,6 +1437,29 @@ async fn serve_until_worker_failure(
             }
         }
     }
+}
+
+// Called inside the existing runtime with only loans of the parent's fields.
+// Neither a returned error nor a registered listener crosses that runtime
+// return boundary before entering the same parent's resident destination.
+fn register_retained_diagnostic(
+    attempt: &mut tokio::net::UnixListenerRegistrationAttempt,
+    destination: &mut Option<AuthenticatedDiagnosticListener>,
+    terminal: &ControllerWorkerCustodyV1,
+) {
+    if destination.is_some() {
+        terminal.terminate(ControllerResidentCauseV1::Closed(
+            "Controller diagnostic destination occupied",
+        ));
+    }
+
+    let listener = match attempt.register() {
+        Ok(listener) => listener,
+        Err(cause) => terminal.terminate(ControllerResidentCauseV1::Runtime(
+            ControllerRuntimeError::DiagnosticSocketRuntime(cause),
+        )),
+    };
+    *destination = Some(AuthenticatedDiagnosticListener::new(listener, 0));
 }
 
 async fn into_async_diagnostic_listener(
