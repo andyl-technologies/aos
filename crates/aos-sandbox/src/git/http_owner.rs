@@ -869,6 +869,12 @@ impl GitHttpRequestV1<'_> {
     }
 
     async fn recheck_original(&mut self) -> Result<(), GitHttpErrorV1> {
+        self.require_ready_original()?;
+        poll_fn(|context| self.poll_original_reset(context)).await?;
+        require_current(self.peer, self.status, self.cut)
+    }
+
+    fn require_ready_original(&self) -> Result<(), GitHttpErrorV1> {
         require_current(self.peer, self.status, self.cut)?;
         if !matches!(self.status.phase, OriginalHttpPhaseV1::Ready | OriginalHttpPhaseV1::ResponseQueued)
             || self.original.incoming.stream_id() != self.facts.stream_id
@@ -877,28 +883,57 @@ impl GitHttpRequestV1<'_> {
             return Err(GitHttpErrorV1::Closed);
         }
 
-        poll_fn(|context| {
-            if let Err(cause) = require_current(self.peer, self.status, self.cut) {
-                return Poll::Ready(Err(cause));
+        Ok(())
+    }
+
+    fn poll_original_reset(&mut self, context: &mut Context<'_>) -> Poll<Result<(), GitHttpErrorV1>> {
+        if let Err(cause) = require_current(self.peer, self.status, self.cut) {
+            return Poll::Ready(Err(cause));
+        }
+        if let Poll::Ready(cause) = poll_connection(self.connection, context) {
+            return Poll::Ready(Err(cause));
+        }
+        let reset = match (&mut self.original.response, &mut self.original.outgoing) {
+            (Some(response), _) => response.poll_reset(context),
+            (None, Some(outgoing)) => match outgoing.stream.as_mut() {
+                Some(stream) => stream.poll_reset(context),
+                None => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
+            },
+            _ => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
+        };
+        match reset {
+            Poll::Pending => Poll::Ready(Ok(())),
+            Poll::Ready(Ok(reason)) => Poll::Ready(Err(GitHttpErrorV1::Reset(reason))),
+            Poll::Ready(Err(cause)) => Poll::Ready(Err(GitHttpErrorV1::Transport(cause))),
+        }
+    }
+
+    /// Polls the same original checks and installs connection/reset wakers.
+    /// Successful observation returns Pending, never a fresh Ready token.
+    /// The existing Ready view must remain owned by its driving future so its
+    /// Drop, and this prearmed local guard on panic, end the same transport.
+    pub(crate) fn poll_while_child_parked(
+        &mut self,
+        context: &mut Context<'_>,
+    ) -> Poll<Result<std::convert::Infallible, GitHttpErrorV1>> {
+        let mut attempt = RequestAttemptV1 { request: self, armed: true };
+        let result = (|| {
+            attempt.request.require_ready_original()?;
+            match attempt.request.poll_original_reset(context) {
+                Poll::Ready(result) => result?,
+                Poll::Pending => {}
             }
-            if let Poll::Ready(cause) = poll_connection(self.connection, context) {
-                return Poll::Ready(Err(cause));
-            }
-            let reset = match (&mut self.original.response, &mut self.original.outgoing) {
-                (Some(response), _) => response.poll_reset(context),
-                (None, Some(outgoing)) => match outgoing.stream.as_mut() {
-                    Some(stream) => stream.poll_reset(context),
-                    None => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
-                },
-                _ => return Poll::Ready(Err(GitHttpErrorV1::Closed)),
-            };
-            match reset {
-                Poll::Pending => Poll::Ready(Ok(())),
-                Poll::Ready(Ok(reason)) => Poll::Ready(Err(GitHttpErrorV1::Reset(reason))),
-                Poll::Ready(Err(cause)) => Poll::Ready(Err(GitHttpErrorV1::Transport(cause))),
-            }
-        }).await?;
-        require_current(self.peer, self.status, self.cut)
+            require_current(attempt.request.peer, attempt.request.status, attempt.request.cut)
+        })();
+        match attempt.finish(result) {
+            Ok(()) => Poll::Pending,
+            Err(cause) => Poll::Ready(Err(cause)),
+        }
+    }
+
+    /// Projects the captured original exclusive endpoint as nonauthorizing DATA.
+    pub(crate) const fn original_deadline_boottime(&self) -> u64 {
+        self.cut.deadline_boottime
     }
 
     /// Moves one complete output into original custody before validation or send.

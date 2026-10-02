@@ -34,6 +34,10 @@ pub use session::{
     run_fixed_process_session_from_executable_descriptor,
     run_fixed_process_session_from_executable_descriptor_retained_v1,
     run_fixed_process_session_from_nix_offline_executable_descriptor_retained_v1,
+    FixedProcessBoottimeCutV1, FixedProcessDrivenCauseV1, FixedProcessDrivenDebtV1,
+    FixedProcessDrivenInputsV1, FixedProcessDrivenPartsV1, FixedProcessDrivenProgressV1, FixedProcessDrivenSessionV1,
+    FixedProcessDrivingLoanV1, FixedProcessPreparedInvocationV1, FixedProcessWaitViewV1,
+    prepare_fixed_process_driven_invocation_v1,
 };
 
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
@@ -205,7 +209,11 @@ struct PreparedInvocation {
 enum SpawnExecution<'a> {
     Path,
     Descriptor(BorrowedFd<'a>),
-    PendingDescriptor(BorrowedFd<'a>, uapi::FixedDescriptorExecRecipeV1),
+    PendingDescriptor(
+        BorrowedFd<'a>,
+        uapi::FixedDescriptorExecRecipeV1,
+        Option<FixedProcessBoottimeCutV1>,
+    ),
 }
 
 impl PreparedInvocation {
@@ -259,6 +267,23 @@ impl PreparedInvocation {
             SpawnExecution::PendingDescriptor(
                 executable,
                 uapi::FixedDescriptorExecRecipeV1::LockedNorootV1,
+                None,
+            ),
+        )
+    }
+
+    fn begin_from_executable_descriptor_at_cut(
+        &self,
+        executable: BorrowedFd<'_>,
+        stdin: Option<BorrowedFd<'_>>,
+        inherited: &[BorrowedFd<'_>],
+        cut: FixedProcessBoottimeCutV1,
+    ) -> Result<SpawnedProcess> {
+        self.spawn_internal(
+            stdin,
+            inherited,
+            SpawnExecution::PendingDescriptor(
+                executable, uapi::FixedDescriptorExecRecipeV1::LockedNorootV1, Some(cut),
             ),
         )
     }
@@ -275,6 +300,7 @@ impl PreparedInvocation {
             SpawnExecution::PendingDescriptor(
                 executable,
                 uapi::FixedDescriptorExecRecipeV1::NixOfflineNnpV1,
+                None,
             ),
         )
     }
@@ -307,7 +333,7 @@ impl PreparedInvocation {
         let executable_descriptor = match execution {
             SpawnExecution::Path => None,
             SpawnExecution::Descriptor(descriptor)
-            | SpawnExecution::PendingDescriptor(descriptor, _) => {
+            | SpawnExecution::PendingDescriptor(descriptor, _, _) => {
                 Some(duplicate_high(descriptor)?)
             }
         };
@@ -320,7 +346,13 @@ impl PreparedInvocation {
             .collect::<Vec<_>>();
 
         let (mut guard, exec_status) = match (execution, executable_descriptor.as_ref()) {
-            (SpawnExecution::PendingDescriptor(_, recipe), Some(executable)) => {
+            (SpawnExecution::PendingDescriptor(_, recipe, cut), Some(executable)) => {
+                // Selected driving checks again after high-FD setup and before
+                // entering the unchanged raw recipe/pipe/fork engine. Ordinary
+                // and Nix callers carry None and make no extra clock syscall.
+                if let Some(cut) = cut {
+                    cut.check()?;
+                }
                 let pending = uapi::begin_fixed_execveat_with_recipe(
                     executable.as_fd(),
                     &self.argument_zero,
@@ -535,13 +567,22 @@ fn wait_blocking(pid: rustix::process::Pid) -> Result<ProcessStatus> {
 
 fn wait_status_blocking(pid: rustix::process::Pid) -> Result<rustix::process::WaitStatus> {
     loop {
-        match rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty()) {
-            Ok(Some((_, status))) => return Ok(status),
+        match wait_status_once(pid, rustix::process::WaitOptions::empty()) {
+            Ok(Some(status)) => return Ok(status),
             Ok(None) => continue,
             Err(rustix::io::Errno::INTR) => {}
             Err(error) => return Err(kernel_error("reap fixed process", error)),
         }
     }
+}
+
+/// Sole exact-child syscall adapter; no option selects another child or reaper.
+fn wait_status_once(
+    pid: rustix::process::Pid,
+    options: rustix::process::WaitOptions,
+) -> rustix::io::Result<Option<rustix::process::WaitStatus>> {
+    rustix::process::waitpid(Some(pid), options)
+        .map(|observation| observation.map(|(_, status)| status))
 }
 
 fn decode_status(status: rustix::process::WaitStatus) -> Result<ProcessStatus> {
