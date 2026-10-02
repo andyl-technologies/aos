@@ -16,10 +16,7 @@
   config = system.config;
   receivedInitrdPaths = config.aos.boot.stageInputPaths.receivedInitrd;
   receivedInitrdBundleDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.bundle);
-  hostStagePaths = config.aos.boot.stageInputPaths.host;
-  hostStageBundleDestination = lib.escapeShellArg ("rootfs" + hostStagePaths.bundle);
   receivedInitrdBundleParent = lib.escapeShellArg ("rootfs" + builtins.dirOf receivedInitrdPaths.bundle);
-  hostStageBundleParent = lib.escapeShellArg ("rootfs" + builtins.dirOf hostStagePaths.bundle);
   sb = config.aos.boot.secureBoot;
   externalFinalization = sb.externalFinalization.enable;
   localSecureBootSigning = sb.enable && !externalFinalization;
@@ -83,9 +80,10 @@
           cp ${config.system.build.bootMetadataBinding}/binding.json rootfs/usr/lib/aos/boot-metadata-binding.json
         ''}
         ${lib.optionalString config.aos.boot.initrd.abilityHandoff.enable ''
-          mkdir -p ${receivedInitrdBundleParent} ${hostStageBundleParent}
+          # The rootfs builder already copies the host bundle; only the
+          # received initrd bundle needs a separate handoff attachment.
+          mkdir -p ${receivedInitrdBundleParent}
           ln -s ${config.system.build.initrdDeploymentBundle} ${receivedInitrdBundleDestination}
-          ln -s ${config.system.build.hostDeploymentBundle} ${hostStageBundleDestination}
         ''}
 
         ${lib.optionalString sb.enable ''
