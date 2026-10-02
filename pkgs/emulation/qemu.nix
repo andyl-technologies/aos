@@ -1639,6 +1639,53 @@ in
                 procfd-flags.result
               grep -Fxq 'PROCFD_DIRECT_PASS: retained O_DIRECT; real copy/adoption, aligned read' \
                 procfd-flags.result
+              # Exercise the production TX-stop and lifecycle projection bodies
+              # with the compiler and headers that built the complete system API.
+              ${python3}/bin/python3 - <<'PYTHON'
+              import json
+              import os
+              from pathlib import Path
+              import shlex
+              import subprocess
+              import sys
+
+              source_root = Path.cwd()
+              commands = json.loads((source_root / "build/compile_commands.json").read_text())
+              api_commands = [
+                  entry for entry in commands
+                  if entry["file"].endswith("/plugins/api-system.c")
+              ]
+              if len(api_commands) != 1:
+                  raise SystemExit("expected exactly one configured system API compile command")
+
+              entry = api_commands[0]
+              command = shlex.split(entry["command"])
+              flags = []
+              arguments = iter(command[1:])
+              for argument in arguments:
+                  if argument in ("-MQ", "-MF", "-o", "-c"):
+                      next(arguments)
+                  elif argument not in ("-MD", "-MMD", "-MP"):
+                      flags.append(argument)
+
+              environment = os.environ.copy()
+              environment["CC"] = command[0]
+              environment["CFLAGS"] = shlex.join(flags)
+              environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
+              for name in ("net-output-stop", "lifecycle-projection"):
+                  with (source_root / f"{name}.result").open("w") as result:
+                      subprocess.run([
+                          sys.executable,
+                          str(source_root / f"tests/unit/test-crucible-{name}.py"),
+                          "--output-dir", str(source_root / f"{name}-proof"),
+                      ], cwd=entry["directory"], env=environment,
+                         stdout=result, check=True)
+              PYTHON
+              cat net-output-stop.result lifecycle-projection.result
+              grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
+                net-output-stop.result
+              grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
+                lifecycle-projection.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -3999,6 +4046,12 @@ in
                 "$out/share/aos/crucible/procfd-flags.result"
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
+              for name in net-output-stop lifecycle-projection; do
+                install -m 644 "$name.result" \
+                  "$out/share/aos/crucible/$name.result"
+                install -m 644 "$name-proof/compile-command.json" \
+                  "$out/share/aos/crucible/$name.compile-command.json"
+              done
               install -m 644 acpi-fingerprint-tests.tap \
                 "$out/share/aos/crucible/acpi-fingerprint-tests.tap"
               install -m 644 vga-fingerprint-tests.tap \

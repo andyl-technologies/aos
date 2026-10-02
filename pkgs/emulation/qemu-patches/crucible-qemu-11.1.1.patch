@@ -1,21 +1,16 @@
-From 3c39c485fe9776032844e5d0883bcf0f1d0e9404 Mon Sep 17 00:00:00 2001
+From 4b8794b1c88723546e4c0547921deec837c490c9 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 2 Oct 2026 00:48:50 -0700
-Subject: [PATCH] crucible: retain native runtime and descriptor-safe child
- files
+Date: Fri, 2 Oct 2026 04:28:31 -0700
+Subject: [PATCH] crucible: preserve deterministic stop and child continuation
+ state
 
-Retain deterministic runtime admission and authenticated native graph,
-block, descriptor, and barrier handling. Carry child-private file plan
-errors into the existing hot-fork QMP refusal while preserving generic
-context, EIO status, and successful preparation.
+Retain native runtime custody and descriptor-safe child snapshot state. Admit
+deterministic network output stops at their committed coordinate while fencing
+new clock advances until explicit resume and preserving admitted device work.
 
-Reopen validated native descriptors independently through generated procfd
-links while retaining access, direct-I/O, and status semantics. Exclude only
-the original O_NOFOLLOW pathname policy from these internal reopens and
-adoption comparisons; keep source identity, custody, and lock checks.
-
-Keep production-body diagnostic and Linux descriptor regressions alongside
-the existing runtime tests. Native Error ownership ends on every QMP return.
+Separate canonical lifecycle fault state from process custody with the current
+v3 fingerprint projection. Preserve full VMState bytes and generation admission,
+and include focused production-body regressions for both corrected contracts.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -58291,7 +58286,7 @@ index 890497b0d22ede109c03bcc24fbc3aa24b09e59c..8211411ebe9bd9345eab9a18844852e3
  
  int monitor_puts(Monitor *mon, const char *str);
 diff --git a/include/plugins/qemu-plugin.h b/include/plugins/qemu-plugin.h
-index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..917c87649c7f986927f52ec8d37bcd95dc3352cd 100644
+index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..3ccf8615b0e87c58b038b7b9e4ea9872d9164145 100644
 --- a/include/plugins/qemu-plugin.h
 +++ b/include/plugins/qemu-plugin.h
 @@ -198,6 +198,326 @@ typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
@@ -58621,7 +58616,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..917c87649c7f986927f52ec8d37bcd95
  /**
   * qemu_plugin_uninstall() - Uninstall a plugin
   * @id: this plugin's opaque ID
-@@ -826,6 +1146,761 @@ const void *qemu_plugin_request_time_control(void);
+@@ -826,6 +1146,770 @@ const void *qemu_plugin_request_time_control(void);
  QEMU_PLUGIN_API
  void qemu_plugin_update_ns(const void *handle, int64_t time);
  
@@ -58675,7 +58670,11 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..917c87649c7f986927f52ec8d37bcd95
 + *
 + * Returns: zero when queued, -EINVAL for a negative target, -EPERM outside
 + * sim RR, -ENODEV without time control or a completion callback, and -EBUSY
-+ * for overlap. A regressing target fails through the completion callback.
++ * for overlap or an admitted VM stop. A synchronous -EBUSY reserves no work
++ * and produces no completion; the caller may retry after explicit resume.
++ * If a VM stop wins after reservation but before clock mutation, the queued
++ * advance completes with -EBUSY and releases its reservation without advancing
++ * time. A regressing target fails through the completion callback.
 + */
 +QEMU_PLUGIN_API
 +int qemu_plugin_advance_time_ticks(int64_t target_tick);
@@ -59361,6 +59360,11 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..917c87649c7f986927f52ec8d37bcd95
 + * Called synchronously from QEMU's network transmit path before the frame is
 + * handed to the upstream backend. Returns 0 when the plugin accepted the frame
 + * for deterministic routing and nonzero on fail-loud rejection.
++ * In precise single-threaded sim RR, the callback owns an exact boundary at
++ * @emit_icount and may call qemu_plugin_request_vmstop(). The device finishes
++ * its admitted synchronous batch at that coordinate before RR parks; further
++ * guest execution requires explicit resume. Other execution contexts fail
++ * closed while deterministic TX interception is registered.
 + */
 +typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *data,
 +                                       size_t len,
@@ -59383,7 +59387,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..917c87649c7f986927f52ec8d37bcd95
  /**
   * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
   * @vcpu_index: the executing vCPU
-@@ -1178,6 +2253,59 @@ QEMU_PLUGIN_API
+@@ -1178,6 +2262,59 @@ QEMU_PLUGIN_API
  bool qemu_plugin_read_memory_vaddr(uint64_t addr,
                                     GByteArray *data, size_t len);
  
@@ -59443,7 +59447,7 @@ index 3e913cd89ce62f9f65b9837d086afb19fa86fa05..917c87649c7f986927f52ec8d37bcd95
  /**
   * qemu_plugin_write_memory_vaddr() - write to memory using a virtual address
   *
-@@ -1292,6 +2420,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
+@@ -1292,6 +2429,666 @@ qemu_plugin_write_memory_hwaddr(uint64_t addr, GByteArray *data);
  QEMU_PLUGIN_API
  bool qemu_plugin_translate_vaddr(uint64_t vaddr, uint64_t *hwaddr);
  
@@ -74256,7 +74260,7 @@ index 427da24097f2ec0897f69ba4ec5c9d7dbe6e9a52..0497d6cec2f466ee4ca1a1b606613746
  }
  
 diff --git a/net/net.c b/net/net.c
-index 0a30579ca4a7440f38aaa376265e991142cb5aa8..c17bc08625c8c0bc0067eabdcc870bd92ea774b8 100644
+index 0a30579ca4a7440f38aaa376265e991142cb5aa8..85fe933d5261809993f60ad4629b07750dd0c971 100644
 --- a/net/net.c
 +++ b/net/net.c
 @@ -23,6 +23,7 @@
@@ -74267,10 +74271,11 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..c17bc08625c8c0bc0067eabdcc870bd9
  
  #include "net/net.h"
  #include "clients.h"
-@@ -48,9 +49,12 @@
+@@ -48,9 +49,13 @@
  #include "qemu/iov.h"
  #include "qemu/qemu-print.h"
  #include "qemu/main-loop.h"
++#include "qemu/plugin.h"
 +#include "qemu/crucible-hot-fork-plugin.h"
 +#include "plugins/qemu-plugin.h"
  #include "qemu/option.h"
@@ -74280,7 +74285,7 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..c17bc08625c8c0bc0067eabdcc870bd9
  #include "qapi/opts-visitor.h"
  #include "system/runstate.h"
  #include "net/colo-compare.h"
-@@ -78,6 +82,46 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
+@@ -78,6 +83,55 @@ typedef QSIMPLEQ_HEAD(, NetdevQueueEntry) NetdevQueue;
  static NetdevQueue nd_queue = QSIMPLEQ_HEAD_INITIALIZER(nd_queue);
  
  static GHashTable *nic_model_help;
@@ -74308,26 +74313,35 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..c17bc08625c8c0bc0067eabdcc870bd9
 +
 +static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)
 +{
++#ifdef CONFIG_PLUGIN
++    qemu_plugin_net_tx_cb_t callback = crucible_net_tx_cb;
 +    int64_t emit_icount;
-+    ssize_t submitted_len;
++    int status;
 +
-+    if (data == NULL || len == 0 || len > SSIZE_MAX) {
++    if (!callback || data == NULL || len == 0 || len > SSIZE_MAX ||
++        !bql_locked() || icount_enabled() != ICOUNT_PRECISE ||
++        !qemu_plugin_crucible_single_threaded_rr()) {
 +        return -1;
 +    }
-+    submitted_len = (ssize_t)len;
 +    emit_icount = icount_get_raw();
-+    if (emit_icount < 0 ||
-+        crucible_net_tx_cb(data, len, (uint64_t)emit_icount,
-+                           crucible_net_tx_userdata) != 0) {
++    if (emit_icount < 0) {
 +        return -1;
 +    }
 +
-+    return submitted_len;
++    /* Finish this device batch at the committed coordinate before RR parks. */
++    qemu_plugin_crucible_exact_boundary_enter();
++    status = callback(data, len, (uint64_t)emit_icount,
++                       crucible_net_tx_userdata);
++    qemu_plugin_crucible_exact_boundary_leave();
++    return status == 0 ? (ssize_t)len : -1;
++#else
++    return -1;
++#endif
 +}
  
  static int nb_nics;
  static NICInfo nd_table[MAX_NICS];
-@@ -742,6 +786,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
+@@ -742,6 +796,9 @@ static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,
      if (sender->link_down || !sender->peer) {
          return size;
      }
@@ -74337,15 +74351,36 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..c17bc08625c8c0bc0067eabdcc870bd9
  
      /* Let filters handle the packet first */
      ret = filter_receive(sender, NET_FILTER_DIRECTION_TX,
-@@ -889,11 +936,26 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
-     size_t size = iov_size(iov, iovcnt);
+@@ -886,16 +943,47 @@ ssize_t qemu_sendv_packet_async(NetClientState *sender,
+                                 NetPacketSent *sent_cb)
+ {
+     NetQueue *queue;
+-    size_t size = iov_size(iov, iovcnt);
++    size_t size = 0;
++    bool intercepted = crucible_net_tx_callback_ready(sender);
      int ret;
  
 -    if (size > NET_BUFSIZE) {
-+    if (sender->link_down || !sender->peer) {
+-        return size;
++    if (intercepted) {
++        if (!iov || iovcnt <= 0) {
++            return -1;
++        }
++        for (int index = 0; index < iovcnt; index++) {
++            if ((iov[index].iov_len && !iov[index].iov_base) ||
++                iov[index].iov_len > NET_BUFSIZE - size) {
++                return -1;
++            }
++            size += iov[index].iov_len;
++        }
++    } else {
++        size = iov_size(iov, iovcnt);
+     }
+ 
+     if (sender->link_down || !sender->peer) {
          return size;
      }
-+    if (crucible_net_tx_callback_ready(sender)) {
++    if (intercepted) {
 +        if (size == 0 || size > NET_BUFSIZE) {
 +            return -1;
 +        }
@@ -74360,12 +74395,13 @@ index 0a30579ca4a7440f38aaa376265e991142cb5aa8..c17bc08625c8c0bc0067eabdcc870bd9
 +            return crucible_net_tx_submit(buf, size);
 +        }
 +    }
- 
--    if (sender->link_down || !sender->peer) {
++
 +    if (size > NET_BUFSIZE) {
-         return size;
-     }
++        return size;
++    }
  
+     /* Let filters handle the packet first */
+     ret = filter_receive_iov(sender, NET_FILTER_DIRECTION_TX, sender,
 diff --git a/net/slirp-time.h b/net/slirp-time.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..4041c045068c2a5f943b3a87b5441cad46b3380c
@@ -74460,7 +74496,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6121c1045cd74b8bc211eb0a08ac2b38a9992357 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..88f210131097cbd3fdf43025a36d4ebf66619f65 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -75397,7 +75433,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6121c1045cd74b8bc211eb0a08ac2b38
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1026,1574 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1026,1580 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -75472,6 +75508,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6121c1045cd74b8bc211eb0a08ac2b38
 +                          QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY);
 +    if (!has_control) {
 +        status = -ENODEV;
++    } else if (qemu_plugin_crucible_vmstop_pending()) {
++        /* An output stop can win after the host reserved this advance. */
++        status = -EBUSY;
 +    } else {
 +        rr_crucible_sim_trace_idle_stage("bh-before-advance", target_tick);
 +        status = icount_advance_virtual_time_to_tick(target_tick);
@@ -75865,6 +75904,9 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..6121c1045cd74b8bc211eb0a08ac2b38
 +    }
 +    if (!has_control || !qemu_plugin_time_advance_cb) {
 +        return -ENODEV;
++    }
++    if (qemu_plugin_crucible_vmstop_pending()) {
++        return -EBUSY;
 +    }
 +    if (qatomic_cmpxchg(&qemu_plugin_time_advance_pending, 0,
 +                        QEMU_PLUGIN_TIME_ADVANCE_RESERVED) != 0) {
@@ -92690,10 +92732,10 @@ index 0000000000000000000000000000000000000000..956059d73495bbe1aacf19550ebe19b1
 +}
 diff --git a/plugins/crucible-fault-lifecycle.c b/plugins/crucible-fault-lifecycle.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..66402d42118e82b56b6755b8aaf929ade2f7d6fd
+index 0000000000000000000000000000000000000000..86710650697f08f69254251b9bd8f41b30facaef
 --- /dev/null
 +++ b/plugins/crucible-fault-lifecycle.c
-@@ -0,0 +1,2741 @@
+@@ -0,0 +1,2764 @@
 +/*
 + * Crucible deterministic node lifecycle and hang faults
 + *
@@ -94881,7 +94923,13 @@ index 0000000000000000000000000000000000000000..66402d42118e82b56b6755b8aaf929ad
 +    return qemu_crucible_fault_event_reservation_remaining(reservation);
 +}
 +
-+static int crucible_lifecycle_vmstate_save(GByteArray *payload)
++typedef enum CrucibleLifecycleEncoding {
++    CRUCIBLE_LIFECYCLE_ENCODING_VMSTATE,
++    CRUCIBLE_LIFECYCLE_ENCODING_FINGERPRINT,
++} CrucibleLifecycleEncoding;
++
++static int crucible_lifecycle_encode(GByteArray *payload,
++                                     CrucibleLifecycleEncoding encoding)
 +{
 +    CrucibleLifecyclePendingReset *pending =
 +        &crucible_lifecycle_pending_reset;
@@ -94910,9 +94958,14 @@ index 0000000000000000000000000000000000000000..66402d42118e82b56b6755b8aaf929ad
 +         crucible_lifecycle_terminal_exit_requested)) {
 +        return -EINVAL;
 +    }
-+    qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCLVS2", 8);
-+    qemu_crucible_fault_vmstate_put_u64(
-+        payload, crucible_lifecycle_process_generation);
++    if (encoding == CRUCIBLE_LIFECYCLE_ENCODING_VMSTATE) {
++        qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCLVS2", 8);
++        qemu_crucible_fault_vmstate_put_u64(
++            payload, crucible_lifecycle_process_generation);
++    } else {
++        /* Process custody changes on fork; the guest fault frontier does not. */
++        qemu_crucible_fault_vmstate_put_bytes(payload, "CRUCLFP1", 8);
++    }
 +    qemu_crucible_fault_vmstate_put_u64(
 +        payload, crucible_lifecycle_next_watchdog_tick);
 +    qemu_crucible_fault_vmstate_put_u32(
@@ -95016,6 +95069,18 @@ index 0000000000000000000000000000000000000000..66402d42118e82b56b6755b8aaf929ad
 +        qemu_crucible_fault_vmstate_put_u16(payload, 0);
 +    }
 +    return 0;
++}
++
++static int crucible_lifecycle_vmstate_save(GByteArray *payload)
++{
++    return crucible_lifecycle_encode(payload,
++                                    CRUCIBLE_LIFECYCLE_ENCODING_VMSTATE);
++}
++
++static int crucible_lifecycle_fingerprint_projection(GByteArray *payload)
++{
++    return crucible_lifecycle_encode(payload,
++                                    CRUCIBLE_LIFECYCLE_ENCODING_FINGERPRINT);
 +}
 +
 +static void crucible_lifecycle_vmstate_free(void *opaque)
@@ -95406,7 +95471,7 @@ index 0000000000000000000000000000000000000000..66402d42118e82b56b6755b8aaf929ad
 +    .name = "lifecycle",
 +    .version = 3,
 +    .save = crucible_lifecycle_vmstate_save,
-+    .fingerprint_projection = crucible_lifecycle_vmstate_save,
++    .fingerprint_projection = crucible_lifecycle_fingerprint_projection,
 +    .prepare = crucible_lifecycle_vmstate_prepare,
 +    .commit = crucible_lifecycle_vmstate_commit,
 +    .free_staged = crucible_lifecycle_vmstate_free,
@@ -112887,7 +112952,7 @@ index 0000000000000000000000000000000000000000..2460175df1e5e74a5f3807e2d9f203d2
 +type_init(crucible_vcpu_service_register)
 diff --git a/plugins/crucible-fault-vmstate.c b/plugins/crucible-fault-vmstate.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..612b880234fc1a4e49fb360c361063ba5149d08b
+index 0000000000000000000000000000000000000000..d035f6c68a7d8e4bff25b4d76130f01fab66d164
 --- /dev/null
 +++ b/plugins/crucible-fault-vmstate.c
 @@ -0,0 +1,783 @@
@@ -113370,7 +113435,7 @@ index 0000000000000000000000000000000000000000..612b880234fc1a4e49fb360c361063ba
 +                                                  const void *opaque,
 +                                                  Error **errp)
 +{
-+    static const uint8_t magic[] = "CRUCFPFAULT2";
++    static const uint8_t magic[] = "CRUCFPFAULT3";
 +    g_autoptr(GPtrArray) payloads =
 +        g_ptr_array_new_with_free_func((GDestroyNotify)g_byte_array_unref);
 +    uint32_t profile = crucible_fault_vmstate_profile();
@@ -113439,8 +113504,8 @@ index 0000000000000000000000000000000000000000..612b880234fc1a4e49fb360c361063ba
 +}
 +
 +static const CrucibleFingerprintProjection crucible_fault_fingerprint = {
-+    .schema = "crucible.qemu.fault-continuation.v2",
-+    .version = 2,
++    .schema = "crucible.qemu.fault-continuation.v3",
++    .version = 3,
 +    .save = crucible_fault_fingerprint_projection,
 +};
 +
@@ -162139,6 +162204,336 @@ index 0000000000000000000000000000000000000000..ee2bb16e87d73feab53496231bcb3f46
 +                    test_rr_timer_notify_queues_work_only_while_parked);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-lifecycle-projection.py b/tests/unit/test-crucible-lifecycle-projection.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..44a597e40e108dd747f6b15429cf7b58581d484e
+--- /dev/null
++++ b/tests/unit/test-crucible-lifecycle-projection.py
+@@ -0,0 +1,324 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise actual lifecycle encoders and custody rebind with bounded state.
++
++Rule references and reservation custody are deterministic external fixtures.
++The current full save is compared with a selected-parent production golden vector.
++The unchanged loader, full fault registry, and a linked guest are not executed.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++LIFECYCLE = "plugins/crucible-fault-lifecycle.c"
++
++# Produced by the selected-parent full save with the exact bounded state below.
++BASELINE_FULL_HEX = (
++    "435255434c565332000000000000000700000000000059d800000000000000010000000101000100"
++    "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000000000000000000001010105000000000400000000000000"
++    "1100000002000000030000000100000000000000000000002a0000000000005dc000000000000000"
++    "04000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000001100000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000000000000000000000000000000000000000000000000000"
++    "00000000000000000000000000000000007265616479090807060102030000000000000000000000"
++    "00000000000000000000000000000000000001020300000000000000000000000000000000000000"
++    "000000000000000000000000000000000011000000000000426800000000000059d8000000000000"
++    "00010000000101000000"
++)
++
++
++def definition(source, signature, is_type=False):
++    """Extract one complete production definition for direct compilation."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                end = source.index(";", index) if is_type else index
++                return source[start:end + 1]
++    raise AssertionError(f"unterminated definition: {signature}")
++
++
++PRELUDE = r"""
++#include "qemu/osdep.h"
++#include "qemu/bswap.h"
++
++#define ICOUNT_PRECISE 1
++#define CRUCIBLE_LIFECYCLE_EVIDENCE_BYTES 304
++#define CRUCIBLE_LIFECYCLE_VMSTATE_MAX_PRESERVED_BYTES (48 * 1024 * 1024)
++
++typedef struct { uint8_t binding[32]; } QemuCrucibleFaultRule;
++typedef struct { size_t remaining; } QemuCrucibleFaultEventReservation;
++typedef struct {
++    const char *name;
++    uint32_t version;
++    int (*save)(GByteArray *);
++    int (*fingerprint_projection)(GByteArray *);
++    int (*prepare)(const uint8_t *, size_t, void **);
++    void (*commit)(void *);
++    void (*free_staged)(void *);
++} QemuCrucibleFaultVmstateSection;
++
++static const char *accel = "sim";
++static int precision = ICOUNT_PRECISE;
++static bool marker_pending;
++
++static const char *current_accel_name(void) { return accel; }
++static int icount_enabled(void) { return precision; }
++static bool qemu_crucible_fault_lifecycle_ready_marker_pending(void)
++{
++    return marker_pending;
++}
++
++static size_t qemu_crucible_fault_event_reservation_remaining(
++    QemuCrucibleFaultEventReservation *reservation)
++{
++    return reservation ? reservation->remaining : 0;
++}
++
++static void qemu_crucible_fault_rule_vmstate_save(
++    GByteArray *payload, const QemuCrucibleFaultRule *rule)
++{
++    g_byte_array_append(payload, rule->binding, sizeof(rule->binding));
++}
++
++static void qemu_crucible_fault_rule_reference_vmstate_save(
++    GByteArray *payload, const QemuCrucibleFaultRule *rule)
++{
++    qemu_crucible_fault_rule_vmstate_save(payload, rule);
++}
++
++/* Registration binds these unchanged callbacks; this test does not execute them. */
++static int crucible_lifecycle_vmstate_prepare(const uint8_t *bytes, size_t len,
++                                              void **staged)
++{
++    g_assert_not_reached();
++}
++
++static void crucible_lifecycle_vmstate_commit(void *staged)
++{
++    g_assert_not_reached();
++}
++
++static void crucible_lifecycle_vmstate_free(void *staged)
++{
++    g_assert_not_reached();
++}
++"""
++
++
++GLOBALS = r"""
++static CrucibleLifecyclePendingReset crucible_lifecycle_pending_reset;
++static GPtrArray *crucible_lifecycle_hangs;
++static GArray *crucible_lifecycle_vcpu_hung;
++static uint64_t crucible_lifecycle_next_watchdog_tick = UINT64_MAX;
++static uint64_t crucible_lifecycle_process_generation = 7;
++static uint32_t crucible_lifecycle_terminal_transition;
++static bool crucible_lifecycle_node_hung;
++static bool crucible_lifecycle_terminal_exit_requested;
++static bool crucible_lifecycle_watchdog_transition_active;
++static uint8_t crucible_lifecycle_terminal_action_sha256[32];
++static uint8_t crucible_lifecycle_terminal_evidence_sha256[32];
++"""
++
++
++TESTS = r"""
++static const uint8_t golden_full[] = {
++    @GOLDEN_FULL_BYTES@
++};
++
++static GByteArray *encode(int (*save)(GByteArray *))
++{
++    GByteArray *bytes = g_byte_array_new();
++
++    g_assert_cmpint(save(bytes), ==, 0);
++    return bytes;
++}
++
++static void assert_equal(const GByteArray *left, const GByteArray *right)
++{
++    g_assert_cmpmem(left->data, left->len, right->data, right->len);
++}
++
++static void assert_changed(const GByteArray *left, const GByteArray *right)
++{
++    g_assert_cmpuint(left->len, ==, right->len);
++    g_assert_cmpint(memcmp(left->data, right->data, left->len), !=, 0);
++}
++
++int main(void)
++{
++    QemuCrucibleFaultRule rule = {{1, 2, 3}};
++    QemuCrucibleFaultEventReservation pending = {.remaining = 4};
++    QemuCrucibleFaultEventReservation watchdog = {.remaining = 1};
++    QemuCrucibleFaultEventReservation recovery = {.remaining = 1};
++    uint8_t preserved[] = {9, 8, 7, 6};
++    CrucibleHangState hang = {
++        .rule = &rule,
++        .watchdog_reservation = &watchdog,
++        .recovery_reservation = &recovery,
++        .entered_icount = 17,
++        .entered_tick = 17000,
++        .watchdog_deadline_tick = 23000,
++        .watchdog_enabled = true,
++    };
++    bool hung = true;
++    g_autoptr(GByteArray) parent_full = NULL, baseline_full = NULL;
++    g_autoptr(GByteArray) parent_projection = NULL, child_full = NULL;
++    g_autoptr(GByteArray) child_projection = NULL, changed = NULL;
++    g_autoptr(GByteArray) scratch = g_byte_array_new();
++
++    crucible_lifecycle_pending_reset = (CrucibleLifecyclePendingReset){
++        .rule = &rule,
++        .reservation = &pending,
++        .observed_icount = 17,
++        .preserved_state = preserved,
++        .preserved_state_len = sizeof(preserved),
++        .complete_deferred = true,
++        .ready_marker = (char *)"ready",
++        .boot_policy = 2,
++        .maximum_attempts = 3,
++        .attempt = 1,
++        .retry_delay = 42,
++        .ready_deadline_tick = 24000,
++        .waiting_ready = true,
++    };
++    stq_le_p(crucible_lifecycle_pending_reset.evidence + 24, 17);
++    crucible_lifecycle_hangs = g_ptr_array_new();
++    g_ptr_array_add(crucible_lifecycle_hangs, &hang);
++    crucible_lifecycle_vcpu_hung = g_array_new(false, false, sizeof(bool));
++    g_array_append_val(crucible_lifecycle_vcpu_hung, hung);
++    crucible_lifecycle_node_hung = true;
++    crucible_lifecycle_next_watchdog_tick = 23000;
++
++    parent_full = encode(crucible_lifecycle_vmstate_section.save);
++    baseline_full = g_byte_array_new();
++    g_byte_array_append(baseline_full, golden_full, sizeof(golden_full));
++    assert_equal(parent_full, baseline_full);
++    g_assert_cmpuint(crucible_lifecycle_vmstate_section.version, ==, 3);
++    g_assert_cmpmem(parent_full->data, 8, "CRUCLVS2", 8);
++    g_assert_cmpuint(ldq_be_p(parent_full->data + 8), ==, 7);
++    parent_projection = encode(crucible_lifecycle_vmstate_section.fingerprint_projection);
++
++    g_assert_cmpint(qemu_crucible_fault_lifecycle_rebind_process_generation(7, 8), ==, 0);
++    child_full = encode(crucible_lifecycle_vmstate_section.save);
++    child_projection = encode(crucible_lifecycle_vmstate_section.fingerprint_projection);
++    assert_equal(parent_projection, child_projection);
++    g_assert_cmpmem(parent_projection->data, 8, "CRUCLFP1", 8);
++    g_assert_cmpuint(parent_projection->len + 8, ==, parent_full->len);
++    g_assert_cmpuint(ldq_be_p(child_full->data + 8), ==, 8);
++    g_assert_cmpmem(parent_full->data, 8, child_full->data, 8);
++    g_assert_cmpmem(parent_full->data + 16, parent_full->len - 16,
++                    child_full->data + 16, child_full->len - 16);
++
++    crucible_lifecycle_pending_reset.observed_icount++;
++    changed = encode(crucible_lifecycle_vmstate_section.fingerprint_projection);
++    assert_changed(child_projection, changed);
++    g_clear_pointer(&changed, g_byte_array_unref);
++    crucible_lifecycle_pending_reset.observed_icount--;
++    stq_le_p(crucible_lifecycle_pending_reset.evidence + 24, 18);
++    changed = encode(crucible_lifecycle_vmstate_section.fingerprint_projection);
++    assert_changed(child_projection, changed);
++    g_clear_pointer(&changed, g_byte_array_unref);
++    stq_le_p(crucible_lifecycle_pending_reset.evidence + 24, 17);
++    hang.watchdog_deadline_tick++;
++    changed = encode(crucible_lifecycle_vmstate_section.fingerprint_projection);
++    assert_changed(child_projection, changed);
++
++    g_assert_cmpint(qemu_crucible_fault_lifecycle_rebind_process_generation(7, 8), ==, -EPROTO);
++    g_assert_cmpint(qemu_crucible_fault_lifecycle_rebind_process_generation(8, 10), ==, -EINVAL);
++    g_assert_cmpint(qemu_crucible_fault_lifecycle_rebind_process_generation(0, 1), ==, -EINVAL);
++    g_assert_cmpint(qemu_crucible_fault_lifecycle_rebind_process_generation(UINT64_MAX, 0), ==, -EINVAL);
++    crucible_lifecycle_terminal_transition = 2;
++    g_assert_cmpint(qemu_crucible_fault_lifecycle_rebind_process_generation(8, 9), ==, -EPROTO);
++    crucible_lifecycle_terminal_transition = 0;
++    precision = 0;
++    g_assert_cmpint(qemu_crucible_fault_lifecycle_rebind_process_generation(8, 9), ==, -EINVAL);
++    precision = ICOUNT_PRECISE;
++    g_assert_cmpuint(crucible_lifecycle_process_generation, ==, 8);
++    marker_pending = true;
++    g_assert_cmpint(crucible_lifecycle_fingerprint_projection(scratch), ==, -EBUSY);
++    marker_pending = false;
++    crucible_lifecycle_process_generation = 0;
++    g_assert_cmpint(crucible_lifecycle_fingerprint_projection(scratch), ==, -EINVAL);
++
++    g_array_unref(crucible_lifecycle_vcpu_hung);
++    g_ptr_array_unref(crucible_lifecycle_hangs);
++    puts("PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["old-projection", "full-generation"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    source = (ROOT / LIFECYCLE).read_text()
++    vmstate = (ROOT / "plugins/crucible-fault-vmstate.c").read_text()
++    assert '"CRUCFPFAULT3"' in definition(vmstate, "static bool crucible_fault_fingerprint_projection(")
++    descriptor = definition(vmstate, "static const CrucibleFingerprintProjection crucible_fault_fingerprint =", True)
++    assert '"crucible.qemu.fault-continuation.v3"' in descriptor
++    assert ".version = 3," in descriptor
++
++    types = "\n\n".join(definition(source, signature, True) for signature in [
++        "typedef struct CrucibleLifecyclePendingReset {",
++        "typedef struct CrucibleHangState {",
++        "typedef enum CrucibleLifecycleEncoding {",
++    ])
++    writers = "\n\n".join(definition(vmstate, f"void qemu_crucible_fault_vmstate_put_{kind}(")
++                             for kind in ["u8", "u16", "u32", "u64", "bytes"])
++    bodies = "\n\n".join(definition(source, signature) for signature in [
++        "static bool crucible_lifecycle_mode(void)",
++        "int qemu_crucible_fault_lifecycle_rebind_process_generation(",
++        "static size_t crucible_lifecycle_vmstate_reservation_remaining(",
++        "static int crucible_lifecycle_encode(",
++        "static int crucible_lifecycle_vmstate_save(",
++        "static int crucible_lifecycle_fingerprint_projection(",
++    ])
++    registration = definition(source,
++        "static const QemuCrucibleFaultVmstateSection\ncrucible_lifecycle_vmstate_section =", True)
++    if arguments.negative_control == "old-projection":
++        registration = registration.replace(
++            ".fingerprint_projection = crucible_lifecycle_fingerprint_projection,",
++            ".fingerprint_projection = crucible_lifecycle_vmstate_save,")
++    elif arguments.negative_control == "full-generation":
++        generation = """        qemu_crucible_fault_vmstate_put_u64(
++            payload, crucible_lifecycle_process_generation);
++"""
++        assert bodies.count(generation) == 1
++        bodies = bodies.replace(generation, "")
++    generated = arguments.output_dir / "lifecycle-projection.c"
++    golden_bytes = ", ".join(f"0x{byte:02x}" for byte in bytes.fromhex(BASELINE_FULL_HEX))
++    tests = TESTS.replace("@GOLDEN_FULL_BYTES@", golden_bytes)
++    generated.write_text("\n\n".join([PRELUDE, types, GLOBALS, writers, bodies,
++                                         registration, tests]))
++    binary = arguments.output_dir / "lifecycle-projection"
++    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++               "-Wno-missing-prototypes", "-Wno-unused-function", str(generated),
++               "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-loongarch-timer-wide-clock.c b/tests/unit/test-crucible-loongarch-timer-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..436e6345e44c12abd74c89804c07c18bfed1d910
@@ -164367,6 +164762,637 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +                    test_timer_ns_projection);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..ab7dc8d035938212e21640b08043ea9db52cdc64
+--- /dev/null
++++ b/tests/unit/test-crucible-net-output-stop.py
+@@ -0,0 +1,625 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
++
++The fixture supplies CPU/device topology and serialized event-loop scheduling.
++It does not substitute the production admission, send, clock mutation,
++completion, or parking logic. A linked running-guest test is still required to
++prove translated execution and a real NIC descriptor batch.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def definition(source, signature):
++    """Extract one complete production function definition."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                return source[start:index + 1]
++    raise AssertionError(f"unterminated definition: {signature}")
++
++
++PRELUDE = r"""
++#include "qemu/osdep.h"
++#include "qemu/atomic.h"
++#include "qemu/iov.h"
++
++#ifndef CONFIG_PLUGIN
++#define CONFIG_PLUGIN
++#endif
++#define error_report(...) g_error(__VA_ARGS__)
++
++#define NET_BUFSIZE (4096 + 65536)
++#define NET_CLIENT_DRIVER_NIC 1
++#define NET_FILTER_DIRECTION_TX 0
++#define NET_FILTER_DIRECTION_RX 1
++#define QEMU_NET_PACKET_FLAG_NONE 0
++#define ICOUNT_PRECISE 1
++#define QEMU_CLOCK_VIRTUAL 1
++#define QEMU_PLUGIN_WAKE_EVENT_DRAINED 1
++#define CRUCIBLE_SIM_TICKS_PER_INSTRUCTION 1000
++#define QEMU_PLUGIN_TIME_ADVANCE_RESERVED 1
++#define QEMU_PLUGIN_TIME_ADVANCE_ARMED 2
++#define QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY 0
++#define QEMU_PLUGIN_TIME_ADVANCE_TIMERS_WAITING 1
++#define QEMU_PLUGIN_TIME_ADVANCE_TIMERS_COMPLETING 2
++#define QEMU_PLUGIN_TIME_ADVANCE_TIMERS_SETTLE_READY 3
++#define CPU_FOREACH(cpu) for ((cpu) = first_cpu; (cpu); (cpu) = (cpu)->next)
++
++typedef struct CPUState {
++    struct CPUState *next;
++    int cpu_index, exception_index;
++    bool running, stop, stopped, unplug, exit_request;
++    void *halt_cond;
++} CPUState;
++typedef union { unsigned long host_ulong; } run_on_cpu_data;
++typedef void (*run_on_cpu_func)(CPUState *, run_on_cpu_data);
++#define RUN_ON_CPU_NULL ((run_on_cpu_data){0})
++#define RUN_ON_CPU_HOST_ULONG(value) ((run_on_cpu_data){.host_ulong = (value)})
++struct QEMUBH { void (*callback)(void *); void *opaque; };
++typedef int NetQueue;
++typedef void NetPacketSent;
++typedef struct { int type; } NetClientInfo;
++typedef struct NetClientState {
++    NetClientInfo *info;
++    struct NetClientState *peer;
++    bool link_down;
++    NetQueue *incoming_queue;
++} NetClientState;
++typedef int RunState;
++enum { RUN_STATE_RUNNING, RUN_STATE_PAUSED, RUN_STATE_SUSPENDED };
++enum {
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED,
++    QEMU_PLUGIN_CRUCIBLE_VMSTOP_RESUME_PENDING,
++};
++typedef int (*qemu_plugin_net_tx_cb_t)(const uint8_t *, size_t, uint64_t, void *);
++typedef void (*qemu_plugin_time_advance_cb_t)(int, int64_t, void *);
++typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int, uint64_t, void *);
++
++static CPUState cpu, *first_cpu = &cpu, *current_cpu;
++static bool locked = true, self = true, has_control = true, mttcg;
++static int count_mode = ICOUNT_PRECISE;
++static const char *accel = "sim";
++static RunState runstate = RUN_STATE_RUNNING;
++static bool vm_was_suspended;
++static unsigned requests, kicks, drains, flushes, stop_events, resumes;
++static unsigned ticks, timer_calls, notifications, completion_calls;
++static unsigned waits, parked, control_calls, pause_delay, wake_publications;
++static unsigned device_effects;
++static bool device_event_scheduled;
++static uint64_t raw_icount = 17;
++static int64_t stopped_tick;
++static int observed_completion_status, control_advance_status;
++static int64_t observed_completion_target;
++static bool stop_in_completion, stop_in_timer, retry_on_resume;
++static QEMUBH events[32];
++static unsigned event_read, event_write;
++
++static qemu_plugin_net_tx_cb_t crucible_net_tx_cb;
++static void *crucible_net_tx_userdata;
++static unsigned qemu_plugin_crucible_exact_boundary_depth;
++static unsigned qemu_plugin_crucible_control_boundary_depth;
++static int qemu_plugin_crucible_vmstop_state;
++static int qemu_plugin_crucible_vmstop_flush_result;
++static uint64_t qemu_plugin_crucible_vmstop_generation_value;
++static bool qemu_plugin_crucible_vmstop_cold_admitted;
++static uint64_t qemu_plugin_crucible_vmstop_cold_generation;
++static int qemu_plugin_time_advance_pending, qemu_plugin_time_advance_status;
++static int qemu_plugin_time_advance_timer_state;
++static int64_t qemu_plugin_time_advance_target;
++static uintptr_t qemu_plugin_time_advance_barrier;
++static bool qemu_plugin_time_advance_callback_active;
++static qemu_plugin_time_advance_cb_t qemu_plugin_time_advance_cb;
++static void *qemu_plugin_time_advance_userdata;
++static qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
++static void *qemu_plugin_control_boundary_userdata;
++static uintptr_t qemu_plugin_control_boundary_schedule_sequence;
++static uintptr_t qemu_plugin_control_boundary_scheduled;
++static uint64_t qemu_plugin_control_boundary_generation;
++static uint64_t qemu_plugin_rr_control_request_generation;
++static uint64_t qemu_plugin_rr_control_ack_generation;
++static uint64_t qemu_plugin_rr_control_complete_generation;
++static uintptr_t qemu_plugin_rr_control_schedule_token;
++static int qemu_plugin_wake_notifiers;
++static struct {
++    int vm_clock_seqlock, vm_clock_lock;
++    int64_t qemu_icount, crucible_sim_tick_bias;
++} timers_state = {.qemu_icount = 17};
++
++bool qemu_plugin_crucible_vmstop_pending(void);
++void qemu_plugin_crucible_vmstop_request_stopped(int status);
++void qemu_plugin_crucible_vmstop_request_complete(void);
++int qemu_plugin_request_vmstop(void);
++int qemu_plugin_advance_time_ticks(int64_t target);
++void qemu_plugin_fire_control_boundary_cb(CPUState *target);
++static void qemu_plugin_time_advance_barrier_bh(void *opaque);
++static void qemu_plugin_time_advance_complete_bh(void *opaque);
++static void qemu_plugin_control_boundary_barrier_bh(void *opaque);
++static void qemu_plugin_control_boundary_complete_bh(void *opaque);
++static uintptr_t qemu_plugin_schedule_control_boundary(void);
++static void emit_batch(void);
++static void finish_stop(void);
++static void service_events(void);
++static void timer_device_bh(void *opaque)
++{
++    device_effects++;
++}
++
++static bool bql_locked(void) { return locked; }
++static int icount_enabled(void) { return count_mode; }
++static int64_t icount_get_raw(void) { return raw_icount; }
++static uint64_t qemu_plugin_icount_raw(void) { return raw_icount; }
++static const char *current_accel_name(void) { return accel; }
++static bool qemu_tcg_mttcg_enabled(void) { return mttcg; }
++static bool qemu_cpu_is_self(CPUState *target) { return self; }
++static bool qemu_in_vcpu_thread(void) { return current_cpu != NULL; }
++static void cpu_exit(CPUState *target) { target->exit_request = true; }
++static void qemu_cpu_kick(CPUState *target) { kicks++; }
++static void qemu_system_vmstop_request_prepare(void) { }
++static void qemu_system_vmstop_request(RunState state) { requests++; }
++static bool qemu_crucible_cold_stop_transaction_active(void) { return false; }
++static void qemu_crucible_cold_stop_competing_stop(void) { g_assert_not_reached(); }
++static RunState runstate_get(void) { return runstate; }
++static bool runstate_is_live(RunState state) { return state == RUN_STATE_RUNNING; }
++static bool runstate_is_running(void) { return runstate == RUN_STATE_RUNNING; }
++static void runstate_set(RunState state) { runstate = state; }
++static void cpu_disable_ticks(void) { }
++static void pause_all_vcpus(void) { cpu.stop = true; cpu.stopped = true; }
++static int vm_state_notify(int running, RunState state) { return 0; }
++static void qapi_event_send_stop(void) { stop_events++; }
++static void bdrv_drain_all(void) { drains++; }
++static int bdrv_flush_all(void) { flushes++; return 0; }
++static void trace_vm_stop_flush_all(int status) { }
++static void qemu_clock_run_timers(int clock)
++{
++    timer_calls++;
++    if (timers_state.crucible_sim_tick_bias == 2000 && !device_event_scheduled) {
++        device_event_scheduled = true;
++        g_assert_cmpuint(event_write, <, G_N_ELEMENTS(events));
++        events[event_write++] = (QEMUBH){timer_device_bh, NULL};
++    }
++    if (stop_in_timer) {
++        stop_in_timer = false;
++        emit_batch();
++    }
++}
++static void qemu_clock_notify(int clock) { notifications++; }
++static int64_t icount_get_executed(CPUState *target) { return 0; }
++static int64_t icount_get_raw_locked(void) { return raw_icount; }
++static int64_t icount_get_bias_ps_locked(void) { return 0; }
++static int64_t icount_crucible_sim_tick_locked(int64_t raw)
++{
++    return raw * CRUCIBLE_SIM_TICKS_PER_INSTRUCTION +
++           timers_state.crucible_sim_tick_bias;
++}
++static bool icount_crucible_sim_mode(void) { return strcmp(accel, "sim") == 0; }
++static bool crucible_sim_shmem_dispatch_registered(void) { return false; }
++static uint64_t crucible_sim_shmem_logical_ceiling(void) { return UINT64_MAX; }
++static void seqlock_write_lock(int *sequence, int *mutex) { }
++static void seqlock_write_unlock(int *sequence, int *mutex) { }
++static void trace_crucible_sim_idle_prefix(int64_t a, int64_t b, int64_t c,
++                                          uint64_t d, int e) { }
++static void rr_crucible_sim_trace_idle_stage(const char *stage, int64_t target) { }
++static void rr_crucible_sim_trace_idle_advance(const char *stage, int64_t target) { }
++static void rr_crucible_sim_trace_control_boundary(const char *stage,
++    uint64_t request, uint64_t ack, uint64_t complete, uintptr_t token) { }
++static void qemu_crucible_fault_lifecycle_ready_marker_cancel(void) { }
++static void qemu_crucible_fault_lifecycle_ready_marker_control_boundary(uint64_t n) { }
++static void rr_crucible_sim_notify_dispatch_ceiling(void) { }
++static void qemu_cond_broadcast(void *condition) { }
++static bool rr_crucible_sim_control_boundary_needs_rearm(uint64_t request,
++    uint64_t ack, uint64_t complete, bool scheduled) { return false; }
++static void rr_crucible_sim_publish_time_advance_wake(void)
++{
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==,
++                    QEMU_PLUGIN_TIME_ADVANCE_ARMED);
++    g_assert_cmpuint(completion_calls, ==, 1);
++    g_assert_cmpint(qemu_plugin_time_advance_timer_state, ==,
++                    QEMU_PLUGIN_TIME_ADVANCE_TIMERS_COMPLETING);
++    wake_publications++;
++}
++static void rr_crucible_sim_signal_time_advance_wake(void) { }
++static void notifier_list_notify(int *list, void *event) { }
++static void *qemu_get_aio_context(void) { return NULL; }
++static void aio_bh_schedule_oneshot(void *context, void (*cb)(void *), void *opaque)
++{
++    g_assert_cmpuint(event_write, <, G_N_ELEMENTS(events));
++    events[event_write++] = (QEMUBH){cb, opaque};
++}
++static QEMUBH *qemu_bh_new(void (*cb)(void *), void *opaque)
++{
++    QEMUBH *bh = g_new(QEMUBH, 1);
++    *bh = (QEMUBH){cb, opaque};
++    return bh;
++}
++static void qemu_bh_schedule(QEMUBH *bh)
++{
++    aio_bh_schedule_oneshot(NULL, bh->callback, bh->opaque);
++}
++static void run_on_cpu(CPUState *target, run_on_cpu_func cb, run_on_cpu_data data)
++{
++    bool saved = self;
++    self = true;
++    cb(target, data);
++    self = saved;
++}
++static void replay_mutex_unlock(void) { }
++static void replay_mutex_lock(void) { }
++static void bql_unlock(void) { locked = false; }
++static void bql_lock(void) { locked = true; }
++static int filter_receive(NetClientState *sender, int direction,
++    NetClientState *source, unsigned flags, const uint8_t *data, int length,
++    NetPacketSent *cb) { g_assert_not_reached(); }
++static int filter_receive_iov(NetClientState *sender, int direction,
++    NetClientState *source, unsigned flags, const struct iovec *iov, int count,
++    NetPacketSent *cb) { g_assert_not_reached(); }
++static ssize_t qemu_net_queue_send(NetQueue *queue, NetClientState *sender,
++    unsigned flags, const uint8_t *data, int size, NetPacketSent *cb)
++{ g_assert_not_reached(); }
++static ssize_t qemu_net_queue_send_iov(NetQueue *queue, NetClientState *sender,
++    unsigned flags, const struct iovec *iov, int count, NetPacketSent *cb)
++{ g_assert_not_reached(); }
++static void rr_hot_fork_note_parked(void) { parked++; }
++static bool rr_crucible_sim_stop_or_unplug_pending(void) { return false; }
++static bool rr_crucible_sim_vcpu_work_pending(void) { return false; }
++static void rr_crucible_sim_drain_vcpu_work(void) { finish_stop(); }
++static void qemu_plugin_maybe_fire_vcpu_resume_cb(CPUState *target)
++{
++    g_assert_false(qemu_plugin_crucible_vmstop_pending());
++    resumes++;
++    if (retry_on_resume) {
++        retry_on_resume = false;
++        g_assert_cmpint(qemu_plugin_advance_time_ticks(19000), ==, 0);
++    }
++}
++static void qemu_cond_timedwait_bql(void *condition, int milliseconds)
++{
++    waits++;
++    g_assert_cmpuint(waits, <=, 8);
++    g_assert_cmpuint(raw_icount, ==, 17);
++    g_assert_cmpint(icount_crucible_sim_tick_locked(raw_icount), ==,
++                    stopped_tick);
++    service_events();
++    if (waits == 5) {
++        /* The fixture issues explicit resume only after four host delays. */
++        qemu_plugin_crucible_vmstop_request_complete();
++        cpu.stop = cpu.stopped = false;
++    }
++}
++"""
++
++
++TESTS = r"""
++static unsigned frames, stop_requests;
++static uint64_t first_output_icount;
++static int64_t first_output_tick;
++static NetClientInfo nic_info = {.type = NET_CLIENT_DRIVER_NIC};
++static NetClientState peer;
++static NetClientState sender = {.info = &nic_info, .peer = &peer};
++
++static int output_callback(const uint8_t *data, size_t size, uint64_t coordinate,
++                            void *userdata)
++{
++    g_assert_cmpuint(size, ==, 3);
++    g_assert_cmpmem(data, size, "abc", 3);
++    g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, >, 0);
++    if (frames++ == 0) {
++        first_output_icount = coordinate;
++        first_output_tick = icount_crucible_sim_tick_locked(raw_icount);
++        g_assert_cmpint(qemu_plugin_request_vmstop(), ==, 0);
++        stop_requests++;
++    } else {
++        g_assert_cmpuint(coordinate, ==, first_output_icount);
++        g_assert_cmpint(icount_crucible_sim_tick_locked(raw_icount), ==,
++                        first_output_tick);
++        g_assert_cmpint(qemu_plugin_request_vmstop(), ==, -EALREADY);
++    }
++    return 0;
++}
++
++static void emit_batch(void)
++{
++    unsigned int initial_depth = qemu_plugin_crucible_exact_boundary_depth;
++    char first[] = "a", second[] = "bc", frame[] = "abc";
++    struct iovec iov[] = {{.iov_base = first, .iov_len = 1},
++                          {.iov_base = second, .iov_len = 2}};
++
++    g_assert_cmpint(qemu_send_packet_async_with_flags(&sender, 0,
++                    (const uint8_t *)"abc", 3, NULL), ==, 3);
++    g_assert_cmpint(qemu_sendv_packet_async(&sender, iov, 2, NULL), ==, 3);
++    iov[0] = (struct iovec){.iov_base = frame, .iov_len = 3};
++    g_assert_cmpint(qemu_sendv_packet_async(&sender, iov, 1, NULL), ==, 3);
++    g_assert_cmpuint(frames, ==, 3);
++    g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, ==, initial_depth);
++}
++
++static void finish_stop(void)
++{
++    if (qemu_plugin_crucible_vmstop_state == QEMU_PLUGIN_CRUCIBLE_VMSTOP_ADMITTED &&
++        ++pause_delay == 3) {
++        g_assert_cmpint(do_vm_stop(RUN_STATE_PAUSED, true), ==, 0);
++    }
++}
++
++static void completion_callback(int status, int64_t target, void *userdata)
++{
++    completion_calls++;
++    observed_completion_status = status;
++    observed_completion_target = target;
++    g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, ==, 1);
++    if (status == 0) {
++        g_assert_cmpuint(device_effects, ==, 1);
++    }
++    if (stop_in_completion) {
++        stop_in_completion = false;
++        emit_batch();
++    }
++}
++
++static void control_callback(unsigned int index, uint64_t coordinate,
++                              void *userdata)
++{
++    control_calls++;
++    g_assert_cmpuint(coordinate, ==, first_output_icount);
++    control_advance_status = qemu_plugin_advance_time_ticks(19000);
++    g_assert_cmpint(control_advance_status, ==, -EBUSY);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    retry_on_resume = true;
++}
++
++static void service_events(void)
++{
++    while (event_write) {
++        QEMUBH slice[G_N_ELEMENTS(events)];
++        unsigned count = event_write;
++
++        memcpy(slice, events, count * sizeof(*slice));
++        event_write = 0;
++        /* AioContext captures a slice; head insertions run on a later pass. */
++        while (count) {
++            QEMUBH bh = slice[--count];
++            bh.callback(bh.opaque);
++        }
++    }
++    event_read = event_write = 0;
++    if (qemu_plugin_time_advance_settle_is_pending()) {
++        /* Production RR settles committed completion before VM-stop parking. */
++        qemu_plugin_time_advance_settle_at_rr_idle();
++    }
++}
++
++static void reset(void)
++{
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    g_assert_cmpuint(event_write, ==, 0);
++    cpu = (CPUState){0};
++    current_cpu = &cpu;
++    self = locked = true;
++    accel = "sim";
++    count_mode = ICOUNT_PRECISE;
++    mttcg = false;
++    runstate = RUN_STATE_RUNNING;
++    qemu_plugin_crucible_vmstop_state = QEMU_PLUGIN_CRUCIBLE_VMSTOP_IDLE;
++    qemu_plugin_crucible_vmstop_flush_result = 0;
++    timers_state.crucible_sim_tick_bias = 0;
++    frames = stop_requests = waits = pause_delay = control_calls = 0;
++    completion_calls = wake_publications = 0;
++    device_effects = 0;
++    device_event_scheduled = false;
++    stop_in_completion = stop_in_timer = retry_on_resume = false;
++    crucible_net_tx_cb = output_callback;
++    qemu_plugin_time_advance_cb = completion_callback;
++    qemu_plugin_control_boundary_cb = control_callback;
++}
++
++int main(void)
++{
++    char frame[] = "abc";
++    struct iovec invalid = {.iov_base = NULL, .iov_len = 3};
++    uint64_t generation;
++
++    reset();
++    generation = qemu_plugin_crucible_vmstop_generation_value;
++    g_assert_cmpint(qemu_plugin_request_vmstop(), ==, -EPERM);
++    g_assert_cmpint(qemu_sendv_packet_async(&sender, NULL, 1, NULL), ==, -1);
++    g_assert_cmpint(qemu_sendv_packet_async(&sender, &invalid, 1, NULL), ==, -1);
++    invalid = (struct iovec){.iov_base = frame, .iov_len = NET_BUFSIZE + 1};
++    g_assert_cmpint(qemu_sendv_packet_async(&sender, &invalid, 1, NULL), ==, -1);
++    locked = false;
++    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, -1);
++    locked = true;
++    mttcg = true;
++    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, -1);
++    mttcg = false;
++    count_mode = 0;
++    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, -1);
++    count_mode = ICOUNT_PRECISE;
++    g_assert_cmpuint(frames, ==, 0);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, generation);
++
++    emit_batch();
++    g_assert_true(cpu.stop && cpu.exit_request);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==, generation + 1);
++    g_assert_cmpint(qemu_plugin_advance_time_ticks(19000), ==, -EBUSY);
++    finish_stop();
++    finish_stop();
++    finish_stop();
++    current_cpu = NULL;
++    qemu_plugin_schedule_control_boundary();
++    stopped_tick = icount_crucible_sim_tick_locked(raw_icount);
++    rr_crucible_sim_park_vmstop();
++    g_assert_cmpuint(waits, ==, 5);
++    g_assert_cmpuint(control_calls, ==, 1);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, QEMU_PLUGIN_TIME_ADVANCE_ARMED);
++    service_events();
++    g_assert_cmpint(observed_completion_status, ==, 0);
++    g_assert_cmpint(observed_completion_target, ==, 19000);
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 2000);
++
++    reset();
++    g_assert_cmpint(qemu_plugin_advance_time_ticks(19000), ==, 0);
++    emit_batch();
++    service_events();
++    g_assert_cmpint(observed_completion_status, ==, -EBUSY);
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 0);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    g_assert_cmpuint(completion_calls, ==, 1);
++    g_assert_cmpuint(wake_publications, ==, 1);
++
++    reset();
++    stop_in_completion = true;
++    g_assert_cmpint(qemu_plugin_advance_time_ticks(19000), ==, 0);
++    service_events();
++    g_assert_cmpint(observed_completion_status, ==, 0);
++    g_assert_cmpuint(first_output_icount, ==, 17);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    g_assert_cmpuint(wake_publications, ==, 1);
++    g_assert_true(qemu_plugin_crucible_vmstop_pending());
++    stopped_tick = icount_crucible_sim_tick_locked(raw_icount);
++    rr_crucible_sim_park_vmstop();
++    g_assert_cmpint(timers_state.crucible_sim_tick_bias, ==, 2000);
++
++    reset();
++    stop_in_timer = true;
++    g_assert_cmpint(qemu_plugin_advance_time_ticks(19000), ==, 0);
++    service_events();
++    g_assert_cmpint(observed_completion_status, ==, 0);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    g_assert_cmpuint(wake_publications, ==, 1);
++    g_assert_cmpuint(frames, ==, 3);
++
++    reset();
++    current_cpu = NULL;
++    qemu_plugin_crucible_control_boundary_depth++;
++    qemu_plugin_crucible_exact_boundary_enter();
++    g_assert_cmpint(crucible_net_tx_submit((const uint8_t *)"abc", 3), ==, 3);
++    qemu_plugin_crucible_exact_boundary_leave();
++    qemu_plugin_crucible_control_boundary_depth--;
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_state, ==, QEMU_PLUGIN_CRUCIBLE_VMSTOP_STOPPED);
++    g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, ==, 0);
++    g_free((void *)qemu_plugin_time_advance_barrier);
++    puts("PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["callback-scope",
++                        "queued-advance-guard", "reservation-guard"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++
++    selections = {
++        "system/cpus.c": [
++            "void cpu_stop_current(void)",
++            "static int do_vm_stop(RunState state, bool send_stop)",
++            "int vm_stop(RunState state)",
++        ],
++        "plugins/api-system.c": [
++            "int qemu_plugin_crucible_single_threaded_rr(void)",
++            "static int qemu_plugin_crucible_vmstop_begin(void)",
++            "int qemu_plugin_crucible_vmstop_admit_internal(void)",
++            "static int qemu_plugin_crucible_vmstop_at_control_boundary(void)",
++            "int qemu_plugin_request_vmstop(void)",
++            "void qemu_plugin_crucible_exact_boundary_enter(void)",
++            "void qemu_plugin_crucible_exact_boundary_leave(void)",
++            "bool qemu_plugin_crucible_vmstop_pending(void)",
++            "void qemu_plugin_crucible_vmstop_request_stopped(int flush_status)",
++            "void qemu_plugin_crucible_vmstop_request_complete(void)",
++            "bool qemu_plugin_crucible_vmstop_resume_consume(void)",
++        ],
++        "accel/tcg/icount-common.c": [
++            "int icount_advance_virtual_time_to_tick(uint64_t target_tick)",
++        ],
++        "net/net.c": [
++            "static bool crucible_net_tx_callback_ready(NetClientState *sender)",
++            "static ssize_t crucible_net_tx_submit(const uint8_t *data, size_t len)",
++            "static ssize_t qemu_send_packet_async_with_flags(NetClientState *sender,",
++            "ssize_t qemu_sendv_packet_async(NetClientState *sender,",
++        ],
++    }
++    sources = {path: (ROOT / path).read_text() for path in selections}
++    bodies = [definition(sources[path], signature)
++              for path, signatures in selections.items() for signature in signatures]
++    iov = (ROOT / "util/iov.c").read_text()
++    bodies.extend(definition(iov, signature) for signature in [
++        "size_t iov_to_buf_full(const struct iovec *iov,",
++        "size_t iov_size(const struct iovec *iov,",
++    ])
++    api = sources["plugins/api-system.c"]
++    bodies.extend(definition(api, signature) for signature in [
++        "static void qemu_plugin_time_advance_run_on_rr(run_on_cpu_func func)",
++        "static void qemu_plugin_time_advance_service_timers_on_cpu(",
++        "static void qemu_plugin_time_advance_arm_on_cpu(CPUState *cpu,",
++        "static void qemu_plugin_advance_time_bh(void *opaque)",
++        "static bool qemu_plugin_time_advance_claim_timer_barrier(void)",
++        "static void qemu_plugin_time_advance_barrier_bh(void *opaque)\n{",
++        "bool qemu_plugin_time_advance_settle_is_pending(void)",
++        "void qemu_plugin_time_advance_settle_at_rr_idle(void)",
++        "static void qemu_plugin_time_advance_complete_bh(void *opaque)\n{",
++        "int qemu_plugin_advance_time_ticks(int64_t target_tick)",
++        "static bool qemu_plugin_release_control_boundary_schedule(",
++        "static void qemu_plugin_trace_rr_control_boundary_state(const char *phase)",
++        "void qemu_plugin_crucible_rr_control_boundary_cancel(void)",
++        "void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)",
++        "static void qemu_plugin_control_boundary_complete_bh(void *opaque)\n{",
++        "static void qemu_plugin_control_boundary_barrier_bh(void *opaque)\n{",
++        "static uintptr_t qemu_plugin_schedule_control_boundary(void)\n{",
++    ])
++    bodies.append(definition((ROOT / "accel/tcg/tcg-accel-ops-rr.c").read_text(),
++                             "static void rr_crucible_sim_park_vmstop(void)"))
++    production = "\n\n".join(bodies)
++    if arguments.negative_control == "callback-scope":
++        scoped = definition(sources["net/net.c"],
++                            "static ssize_t crucible_net_tx_submit(")
++        unscoped = scoped.replace("    qemu_plugin_crucible_exact_boundary_enter();\n", "")
++        unscoped = unscoped.replace("    qemu_plugin_crucible_exact_boundary_leave();\n", "")
++        production = production.replace(scoped, unscoped)
++    elif arguments.negative_control == "queued-advance-guard":
++        guard = """    } else if (qemu_plugin_crucible_vmstop_pending()) {
++        /* An output stop can win after the host reserved this advance. */
++        status = -EBUSY;
++"""
++        assert production.count(guard) == 1
++        production = production.replace(guard, "")
++    elif arguments.negative_control == "reservation-guard":
++        guard = """    if (qemu_plugin_crucible_vmstop_pending()) {
++        return -EBUSY;
++    }
++"""
++        assert production.count(guard) == 1
++        production = production.replace(guard, "")
++    generated = arguments.output_dir / "net-output-stop.c"
++    generated.write_text(PRELUDE + production + TESTS)
++    binary = arguments.output_dir / "net-output-stop"
++    command = [os.environ.get("CC", "cc"), *shlex.split(os.environ.get("CFLAGS", "")),
++               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps({"cwd": os.getcwd(), "argv": command}, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-nvme-phase.c b/tests/unit/test-crucible-nvme-phase.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..bb46211d9641f0d43e0ff04304d92725417e8d35
