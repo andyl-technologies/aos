@@ -1724,8 +1724,8 @@ pub mod hub_rpc {
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;
         UpdateRegistry: ApplyRegistryMutationRequest => RegistryResponse;
-        PlanDeleteRegistry: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DeleteRegistry: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
+        PlanDeleteRegistry: PlanDeleteTopologyResourceRequest => RegistryDeletePlanResponse;
+        DeleteRegistry: ApplyDeleteTopologyResourceRequest => OperationResponse;
         ListOrganizations: ListOrganizationsRequest => ListOrganizationsResponse;
         GetOrganization: GetOrganizationRequest => OrganizationResponse;
         PlanCreateOrganization: PlanCreateOrganizationRequest => TopologyPlanResponse;

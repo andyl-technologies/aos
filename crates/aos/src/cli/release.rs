@@ -73,6 +73,18 @@ pub struct ReleaseNewArgs {
     #[arg(long = "override", value_name = "DIR")]
     pub override_dir: Option<PathBuf>,
 
+    /// Plan a registry's first release from its root commit; staging must hold no publication
+    #[arg(long, requires = "source_registry")]
+    pub first_release: bool,
+
+    /// Clean single-commit authoring clone whose root commit is the first release's base
+    #[arg(long, value_name = "DIR", requires = "first_release")]
+    pub source_registry: Option<PathBuf>,
+
+    /// Derive and write request.json, then stop before planning
+    #[arg(long)]
+    pub request_only: bool,
+
     /// Work directory [default: <work_root>/<release-id>]
     #[arg(long)]
     pub work: Option<PathBuf>,

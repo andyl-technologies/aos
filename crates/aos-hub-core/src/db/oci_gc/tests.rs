@@ -4448,6 +4448,144 @@ async fn expired_plans_stop_blocking_while_applying_work_still_blocks() {
 }
 
 #[tokio::test]
+async fn registry_deletion_abandons_plans_and_ignores_their_frozen_actions() {
+    use crate::db::{
+        PrepareRegistryDeletion, RegistryDeletionCommit, RegistryDeletionOutcome,
+        RegistryDeletionVerdict,
+    };
+
+    let database = Database::open_in_memory().await.unwrap();
+    seed_registry(&database).await;
+    let now = crate::db::unix_now();
+    let registry = database.registry_by_id(1).await.unwrap().unwrap();
+    seed_run(&database, "expired", "planned", 2).await;
+    seed_run_action(&database, "expired", "planned").await;
+    seed_run(&database, "fresh", "planned", now + 600).await;
+    seed_run(&database, "aborted", "aborted", 2).await;
+    seed_run_action(&database, "aborted", "planned").await;
+
+    // Unapplied plans never need an operator: deletion abandons every planned
+    // run, expired or not, and the actions they froze are not GC work.
+    let readiness = database
+        .registry_deletion_readiness(1, now)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(readiness.verdict(), RegistryDeletionVerdict::Automatic);
+    assert_eq!(readiness.blockers.abandonable_gc_runs, 2);
+    assert_eq!(readiness.blockers.pending_gc_actions, 0);
+    assert_eq!(readiness.blockers.applying_gc_runs, 0);
+
+    let prepared = database
+        .prepare_registry_deletion(&PrepareRegistryDeletion {
+            registry_id: 1,
+            expected_version: registry.resource_version,
+            operation_id: "registry-deletion-operation",
+            actor_id: "operator",
+            now,
+        })
+        .await
+        .unwrap();
+    assert_eq!(prepared.abandoned_gc_runs, ["expired", "fresh"]);
+    assert!(prepared.fence_acquired);
+    assert_eq!(gc_work(&database, now).await, 0);
+
+    let outcome = database
+        .commit_registry_deletion(&RegistryDeletionCommit {
+            registry_id: 1,
+            expected_version: registry.resource_version,
+            change_id: "registry-deletion-change",
+            actor_kind: "user",
+            actor_id: None,
+            actor_label: "operator",
+            operation: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(outcome, RegistryDeletionOutcome::Deleted);
+    assert!(database.registry_by_id(1).await.unwrap().is_none());
+}
+
+#[tokio::test]
+async fn registry_deletion_retires_delivery_setup_workflows() {
+    use crate::db::{
+        PrepareRegistryDeletion, RegistryDeletionCommit, RegistryDeletionOutcome, SurfaceTarget,
+    };
+
+    let database = Database::open_in_memory().await.unwrap();
+    seed_registry(&database).await;
+    let now = crate::db::unix_now();
+    let registry = database.registry_by_id(1).await.unwrap().unwrap();
+
+    // A delivery setup workflow only records progress toward instance
+    // endpoints and gateways. It does not cascade from the registry row, so
+    // deletion must retire it explicitly instead of failing on the reference.
+    database
+        .create_delivery_workflow(
+            "workflow:testing-cdn",
+            &registry.scope_key,
+            SurfaceTarget::Registry(1),
+            "{}",
+            "{}",
+        )
+        .await
+        .unwrap();
+
+    database
+        .prepare_registry_deletion(&PrepareRegistryDeletion {
+            registry_id: 1,
+            expected_version: registry.resource_version,
+            operation_id: "registry-deletion-operation",
+            actor_id: "operator",
+            now,
+        })
+        .await
+        .unwrap();
+    let outcome = database
+        .commit_registry_deletion(&RegistryDeletionCommit {
+            registry_id: 1,
+            expected_version: registry.resource_version,
+            change_id: "registry-deletion-change",
+            actor_kind: "user",
+            actor_id: None,
+            actor_label: "operator",
+            operation: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RegistryDeletionOutcome::Deleted);
+    assert!(database.registry_by_id(1).await.unwrap().is_none());
+    assert!(database
+        .delivery_workflow("workflow:testing-cdn")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+async fn registry_deletion_is_blocked_by_applying_runs_and_their_actions() {
+    use crate::db::RegistryDeletionVerdict;
+
+    let database = Database::open_in_memory().await.unwrap();
+    seed_registry(&database).await;
+    let now = crate::db::unix_now();
+    seed_run(&database, "applying", "applying", 2).await;
+    seed_run_action(&database, "applying", "deleting").await;
+
+    let readiness = database
+        .registry_deletion_readiness(1, now)
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(readiness.verdict(), RegistryDeletionVerdict::Blocked);
+    assert_eq!(readiness.blockers.applying_gc_runs, 1);
+    assert_eq!(readiness.blockers.pending_gc_actions, 1);
+    assert!(readiness.failure_message().contains("OCI GC runs are applying"));
+}
+
+#[tokio::test]
 async fn cancellation_fails_closed_for_applying_stale_and_unknown_runs() {
     let database = Database::open_in_memory().await.unwrap();
     seed_registry(&database).await;

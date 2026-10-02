@@ -18,8 +18,13 @@ use crate::qualification::{
     QualificationRequirement, QualificationScope,
 };
 
-/// Requirement exercised by predecessor transition tests; snapshots have no predecessor.
-const UPDATE_RECOVERY: &str = "image-update-recovery";
+/// Identifies transition obligations that require a frozen prior release.
+pub(super) fn requires_predecessor(requirement_id: &str) -> bool {
+    matches!(
+        requirement_id,
+        "image-update-recovery" | super::NATIVE_ADAPTER_MATRIX_REQUIREMENT
+    )
+}
 
 /// Obligations, gate identities, and time bounds for one case expansion.
 pub(super) struct Selection<'a> {
@@ -60,6 +65,8 @@ impl Selection<'_> {
 /// equal the soak and rings the plan froze for the destination; the plan is
 /// the authority, and the argument only cross-checks a separately verified
 /// override.
+/// Non-publishable qualification snapshots omit transition obligations and
+/// their dependent claims because they have no predecessor to exercise.
 pub(super) fn select<'a>(
     plan: &'a ReleasePlan,
     destination: Option<&str>,
@@ -71,12 +78,12 @@ pub(super) fn select<'a>(
     if plan.is_qualification_snapshot() {
         selection
             .requirements
-            .retain(|requirement| requirement.id != UPDATE_RECOVERY);
+            .retain(|requirement| !requires_predecessor(&requirement.id));
         selection.claims.retain(|claim| {
             !claim
                 .requirements
                 .iter()
-                .any(|requirement| requirement == UPDATE_RECOVERY)
+                .any(|requirement| requires_predecessor(requirement))
         });
     }
     Ok(selection)

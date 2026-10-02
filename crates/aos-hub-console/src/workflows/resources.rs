@@ -16,6 +16,7 @@ use crate::transport::ApiClient;
 use crate::workflows::infrastructure::InfrastructureWorkflow;
 
 use super::organization_scope::organization_authorization_scope;
+use super::registry_delete::RegistryDelete;
 use super::registry_metadata::RegistryMetadata;
 
 /// Renders the typed resource adapter owned by the current canonical page.
@@ -1557,7 +1558,7 @@ fn RegistryDanger(client: ApiClient, slug: String) -> impl IntoView {
                 .await
         }
     });
-    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading deletion preconditions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.registry.clone() { Some(registry) => view! { <TopologyDelete client=client kind="registry" stable_id=registry.stable_id resource_version=registry.resource_version plan_path=aos_proto_types::REGISTRY_SERVICE_PLAN_DELETE_REGISTRY_PATH apply_path=aos_proto_types::REGISTRY_SERVICE_DELETE_REGISTRY_PATH return_path=format!("/-/org/{}/registries", registry.slug.split('/').next().unwrap_or_default())/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the registry.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
+    view! { <Suspense fallback=move || view! { <p class="loading-row">"Loading deletion preconditions…"</p> }>{move || { let client = client.clone(); Suspend::new(async move { match resource.await.as_ref() { Ok(response) => match response.registry.clone() { Some(registry) => view! { <RegistryDelete client=client stable_id=registry.stable_id resource_version=registry.resource_version return_path=format!("/-/org/{}/registries", registry.slug.split('/').next().unwrap_or_default())/> }.into_any(), None => view! { <InlineError detail="The Hub omitted the registry.".to_string()/> }.into_any() }, Err(failure) => view! { <InlineError detail=failure.to_string()/> }.into_any() } }) }}</Suspense> }
 }
 
 #[component]
