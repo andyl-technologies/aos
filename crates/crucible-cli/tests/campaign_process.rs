@@ -143,7 +143,7 @@ fn public_default_run_executes_through_an_authenticated_campaign() -> Result<(),
     assert!(
         watch_campaigns
             .first()
-            .is_some_and(|campaign| campaign.starts_with("campaign-run-"))
+            .is_some_and(|campaign| campaign.starts_with("guarded-campaign-run-"))
     );
     assert!(watch_summaries.iter().all(|summary| {
         summary.contains("\towner=campaign\t")
