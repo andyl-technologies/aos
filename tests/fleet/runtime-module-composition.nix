@@ -1,597 +1,408 @@
-##! Runtime module-set and package configuration acceptance.
-##!
-##! This suite deliberately keeps the cloud-delivered platform host module
-##! small, then applies two independently authored runtime fragments. The
-##! fragments select and configure package-owned nginx, Envoy, and k3s
-##! interfaces through the production on-host evaluator. The test also proves
-##! that failed candidates do not disturb the current generation and that a
-##! reboot consumes the retained immutable module set rather than the dirty
-##! authoring worktree.
+##! Exercises ordinary native package modules, reload, and durable recovery.
 {
   lib,
   mkSystem,
   pkgs,
-  systems,
+  qualificationImage ? false,
+  forwardObserverToCrucible ? false,
+  extraRuntimeModules ? [],
+  extraHostModule ? "",
+  additionalClosures ? [],
   ...
 }: let
-  runtimeSystem = mkSystem [
-    ../../systems/server-test.nix
-    {
-      aos.packages = {
-        nginx = {
-          package = pkgs.nginx;
-          bundle = true;
-          preset = false;
-        };
-        envoy = {
-          package = pkgs.envoy;
-          bundle = true;
-          preset = false;
-        };
-        k3s-worker = {
-          package = pkgs.k3s-worker;
-          bundle = true;
-          preset = false;
-        };
-      };
+  observer = import ./_ability-execution-observer.nix {
+    inherit lib pkgs;
+    forwardToCrucible = forwardObserverToCrucible;
+  };
+  extraSource = builtins.toFile "runtime-module-extra-policy.nix" ''
+    { lib, ... }: {
+      ${extraHostModule}
     }
-  ];
+  '';
+  selectedFixture = import ./_native-fixture-selection.nix {inherit lib;} {
+    inherit runtimeSystem;
+    scenarioSources = [observer.source] ++ lib.optional (extraHostModule != "") extraSource;
+  };
+  runtimeSystem = mkSystem ([
+      ../../systems/server-test.nix
+      {
+        aos.packages = {
+          nginx = {
+            package = pkgs.nginx;
+            bundle = true;
+          };
+          envoy = {
+            package = pkgs.envoy;
+            bundle = true;
+          };
+          k3s-worker = {
+            package = pkgs.k3s-worker;
+            bundle = true;
+          };
+          aos-ability-boundary-observer = {
+            package = observer.package;
+            bundle = true;
+          };
+        };
+      }
+    ]
+    ++ extraRuntimeModules
+    ++ [
+      {
+        aos.activation.stages.host.configuration = selectedFixture.sources;
+      }
+    ]);
+  payloads = [pkgs.nginx pkgs.envoy pkgs.k3s-worker observer.package];
+  companions = lib.concatMap (package: [package.deploymentArtifact package.documentationArtifact]) payloads;
 in {
   name = "runtime-module-composition";
-  timeout = 1800;
-  # The full fleet umbrella boots many KVM guests concurrently. Initial host
-  # evaluation can legitimately exceed the generic 180-second readiness
-  # deadline under that load, before this test's own bounded apply steps begin.
+  timeout = 2400;
   bootTimeout = 600;
   systemReadyTimeout = 0;
-
+  qualification =
+    selectedFixture.qualification
+    // {
+      extraClosures =
+        selectedFixture.qualification.extraClosures
+        ++ payloads
+        ++ companions
+        ++ additionalClosures
+        ++ [
+          pkgs.aos.testSupport
+          pkgs.coreutils
+          pkgs.curl
+          pkgs.grep
+          pkgs.jq
+          pkgs.nix
+          pkgs.util-linux
+        ];
+    };
   machines.runtime = {
     system = runtimeSystem;
     memoryMiB = 4096;
-    varSizeMiB = 2048;
-    packages = [
-      "aos-test-agent"
-      "envoy"
-      "k3s-worker"
-    ];
-    extraClosures = [
-      pkgs.aos.apr
-      pkgs.curl
-      pkgs.diffutils
-      pkgs.gawk
-      pkgs.git
-      pkgs.grep
-      pkgs.jq
-      pkgs.nix
-    ];
+    varSizeMiB = 4096;
+    extraClosures =
+      payloads
+      ++ companions
+      ++ additionalClosures
+      ++ [
+        pkgs.aos
+        pkgs.aos.apm
+        pkgs.coreutils
+        pkgs.curl
+        pkgs.grep
+        pkgs.jq
+        pkgs.nix
+        pkgs.util-linux
+      ];
+    packages = ["aos-test-agent" "envoy" "k3s-worker"];
     metadata."host.nix" = ''
-      {
+      { lib, ... }: {
+        ${observer.hostModule}
+        ${extraHostModule}
         aos.networking.hostName = "runtime-modules";
-
-        environment.etc."runtime-modules/platform.conf" = {
-          text = "authority=platform\n";
-          mode = "0644";
-        };
-
-        # This fixture deliberately installs nginx through APM. Its signed
-        # service manifest requests host networking and a bounded capability,
-        # so exercise the production admission path with an explicit host
-        # policy rather than bypassing permission checks.
-        environment.etc."aos/policy.toml" = {
-          text = "tier = \"privileged\"\n";
-          mode = "0644";
-        };
       }
     '';
   };
-
   testScript =
     # python
     ''
       import base64
+      import hashlib
       import json
-      import textwrap
+      import shlex
 
-      APM = "${pkgs.aos.apm}/bin/apm"
-      APR = "${pkgs.aos.apr}/bin/apr"
+      APM = ${
+        if qualificationImage
+        then ''runtime.guest_tool("apm")''
+        else builtins.toJSON "${pkgs.aos.apm}/bin/apm"
+      }
+      AOS = ${
+        if qualificationImage
+        then ''runtime.guest_tool("aos")''
+        else builtins.toJSON "${pkgs.aos}/bin/aos"
+      }
+      COREUTILS = "${pkgs.coreutils}/bin"
       CURL = "${pkgs.curl}/bin/curl"
       JQ = "${pkgs.jq}/bin/jq"
       NIX_STORE = "${pkgs.nix}/bin/nix-store"
-      SHA256SUM = "${pkgs.coreutils}/bin/sha256sum"
-      XDG_CACHE_HOME = "/var/cache/aos-runtime-module-test"
+      SYSTEMCTL = "${pkgs.systemd}/bin/systemctl"
+      SYSTEMD_RUN = "${pkgs.systemd}/bin/systemd-run"
+      OBSERVER_CONTROLLER = "${observer.controller}/bin/aos-ability-boundary-controller"
+      PROFILE = "/var/lib/profiles/system"
+      JOURNAL = f"{PROFILE}/deployment/effects.journal"
+      WORKTREE = "/var/lib/aos/runtime-module-worktree"
+      BOUNDARY_ROOT = "${observer.settings.stateRoot}"
+      TARGET = f"{BOUNDARY_ROOT}/target.json"
+      HELD_EVENT = f"{BOUNDARY_ROOT}/held-event.json"
+      RESUMED_EVENT = f"{BOUNDARY_ROOT}/resumed-event.json"
+      CONTINUE = f"{BOUNDARY_ROOT}/continue.json"
+      EVENTS = f"{BOUNDARY_ROOT}/events.jsonl"
+      RECOVERY_FINDINGS = {}
+      EXTRA_MODULE = ${builtins.toJSON extraHostModule}
+      NATIVE_IDENTITY_FIELDS = ("transaction", "effect", "revision", "action", "journal_sequence")
 
+      def read_json(path):
+          return json.loads(runtime.succeed(f"{COREUTILS}/cat {shlex.quote(path)}"))
 
-      def wait_for_activation():
-          runtime.wait_until_succeeds(
-              "test -s /run/aos/manifest.json "
-              "&& test -s /run/aos/graph.json "
-              "&& test -s /run/aos/activation.json",
-              timeout=300,
-          )
-          runtime.wait_until_succeeds(
-              "systemctl is-active --quiet aos-config.target", timeout=300
-          )
+      def write_file(path, content):
+          encoded = base64.b64encode(content.encode()).decode()
+          runtime.succeed(f"printf '%s' {shlex.quote(encoded)} | {COREUTILS}/base64 -d > {shlex.quote(path)}")
+          runtime.succeed(f"{COREUTILS}/chmod 0600 {shlex.quote(path)}")
 
+      def write_canonical(path, value):
+          payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+          runtime.succeed(f"{OBSERVER_CONTROLLER} write-canonical {shlex.quote(path)} {payload.hex()}")
 
       def current_generation():
-          return int(runtime.succeed(
-              f"{JQ} -er '.current' /var/lib/profiles/system/state.json"
-          ).strip())
+          selected = runtime.succeed(f"{COREUTILS}/readlink {PROFILE}/current").strip()
+          return int(selected.rsplit("gen-", 1)[1])
 
+      def diagnostic():
+          document = json.loads(runtime.succeed(
+              f"{AOS} ability diagnostic {PROFILE} {current_generation()} --audience deployment"
+          ))
+          assert document["liveStateVerified"] is False, document
+          return document
 
-      def write_file(path, contents):
-          encoded = base64.b64encode(contents.encode()).decode()
+      def inspection():
+          document = json.loads(runtime.succeed(f"{AOS} ability journal {JOURNAL} --format json"))
+          assert document["schema"] == "aos.activation.inspection", document
+          assert document["liveStateVerified"] is False, document
+          assert document["incompleteTailBytes"] == 0, document
+          return document
+
+      def graph():
+          document = diagnostic()["desired"]["graph"]
+          assert document["schema"] == "aos.activation.graph", document
+          return document
+
+      def effect_id(ability, operation, instance):
+          matches = [key for key, node in graph()["nodes"].items()
+              if node["identity"][-3:] == [ability, operation, instance]]
+          assert len(matches) == 1, (ability, operation, instance, matches)
+          return matches[0]
+
+      def apply(label, dry_run=False):
+          flag = " --dry-run" if dry_run else ""
           runtime.succeed(
-              f"printf '%s' '{encoded}' | base64 -d > '{path}'"
+              f"{APM} switch --worktree {WORKTREE} --eval-root /var/lib/aos/runtime-evaluations/{label}{flag}",
+              timeout=1200,
           )
 
+      def route():
+          return runtime.succeed(f"{CURL} --fail --silent http://127.0.0.1:18080/health")
 
-      def apply_worktree(eval_root, dry_run=False):
-          dry_run_flag = " --dry-run" if dry_run else ""
-          runtime.succeed(
-              f"XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} config apply{dry_run_flag} "
-              f"--eval-root '{eval_root}'",
-              timeout=600,
-          )
+      def check_services(expected):
+          runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet nginx.service", timeout=180)
+          runtime.wait_until_succeeds(f"{SYSTEMCTL} is-active --quiet envoy.main.service", timeout=180)
+          assert route() == expected
+          assert runtime.succeed(f"{CURL} --fail --silent http://127.0.0.1:18081/health") == "envoy-runtime"
+          runtime.fail(f"{SYSTEMCTL} is-active --quiet k3s.service")
+          assert runtime.succeed(f"{COREUTILS}/cat /etc/runtime-modules/operator.conf").strip() == "authority=runtime"
 
-
-      def wait_for_service(unit):
-          try:
-              runtime.wait_until_succeeds(
-                  f"systemctl is-active --quiet {unit}", timeout=120
-              )
-          except Exception:
-              print(runtime.succeed(
-                  f"systemctl status --no-pager --full {unit} || true; "
-                  f"journalctl --no-pager -u {unit} -n 100 || true"
-              ))
-              raise
-
-
-      def assert_package_configuration():
-          runtime.succeed(
-              "test \"$(cat /etc/runtime-modules/platform.conf)\" = authority=platform"
-          )
-          runtime.succeed(
-              "test \"$(cat /etc/runtime-modules/operator.conf)\" = authority=runtime"
-          )
-
-          wait_for_service("nginx.service")
-          nginx_body = runtime.succeed(
-              f"{CURL} --fail --silent http://127.0.0.1:18080/health"
-          )
-          assert nginx_body == "nginx-runtime", nginx_body
-          runtime.succeed("grep -q 'listen 18080;' /etc/nginx/nginx.conf")
-
-          wait_for_service("envoy.service")
-          envoy_body = runtime.succeed(
-              f"{CURL} --fail --silent http://127.0.0.1:18081/health"
-          )
-          assert envoy_body == "envoy-runtime", envoy_body
-          runtime.succeed(
-              f"{JQ} -e '.static_resources.listeners | length == 1' "
-              "/etc/aos/packages/envoy/bootstrap.json"
-          )
-
-          # A worker without a real control plane is intentionally disabled;
-          # its package target and fully rendered typed configuration still
-          # exercise the k3s module/expose boundary without asserting a false
-          # readiness signal.
-          runtime.succeed(
-              "systemctl is-active --quiet aos-pkg-k3s-worker.target"
-          )
-          runtime.fail("systemctl is-active --quiet k3s.service")
-          runtime.succeed(
-              "grep -qx 'K3S_ENABLED=false' "
-              "/etc/aos/packages/k3s-worker/k3s.env"
-          )
-          runtime.succeed(
-              "grep -qx 'K3S_NODE_NAME=runtime-worker' "
-              "/etc/aos/packages/k3s-worker/k3s.env"
-          )
-          runtime.succeed(
-              "grep -qx 'K3S_FLANNEL_BACKEND=wireguard-native' "
-              "/etc/aos/packages/k3s-worker/k3s.env"
-          )
-
-
-      def payload_nar_hash(path):
-          return runtime.succeed(
-              f"{NIX_STORE} --dump '{path}' | {SHA256SUM}"
-          ).split()[0]
-
+      def payload_hash(path):
+          return runtime.succeed(f"{NIX_STORE} --dump {shlex.quote(path)} | {COREUTILS}/sha256sum").split()[0]
 
       def assert_payloads_immutable():
-          assert payload_nar_hash("${pkgs.nginx}") == payload_hashes["nginx"]
-          assert payload_nar_hash("${pkgs.envoy}") == payload_hashes["envoy"]
+          for name, path in PAYLOADS.items():
+              assert payload_hash(path) == PAYLOAD_HASHES[name], name
 
+      def wait_selection(path, sequence):
+          runtime.wait_until_succeeds(
+              f"{JQ} -e --arg sequence {shlex.quote(sequence)} '.sequence == $sequence' {shlex.quote(path)}",
+              timeout=600,
+          )
+          selected = read_json(path)
+          assert selected["event"]["schema"] == "aos.activation.boundary", selected
+          return selected
 
-      wait_for_activation()
-      runtime.succeed("systemctl is-active --quiet multi-user.target")
-      runtime.succeed(f"install -d -m 0700 {XDG_CACHE_HOME}")
-      platform_hash = runtime.succeed(
-          f"{SHA256SUM} /run/aos-metadata/host.nix"
-      ).split()[0]
-      initial = current_generation()
-      initial_manifest = json.loads(runtime.succeed(
-          f"cat /var/lib/profiles/system/gen-{initial}/manifest.json"
-      ))
-      platform_host_input = initial_manifest["inputs"]["host_nix"]
-      platform_facts_input = initial_manifest["inputs"]["instance_facts"]
-      payload_hashes = {
-          "nginx": payload_nar_hash("${pkgs.nginx}"),
-          "envoy": payload_nar_hash("${pkgs.envoy}"),
-      }
+      def start_candidate(unit):
+          runtime.succeed(f"{SYSTEMCTL} reset-failed {unit} 2>/dev/null || true")
+          runtime.succeed(
+              f"{SYSTEMD_RUN} --quiet --unit={unit} --property=Type=exec "
+              f"{APM} switch --worktree {WORKTREE} --eval-root /var/lib/aos/runtime-evaluations/{unit}",
+              timeout=180,
+          )
 
-      status = runtime.succeed(f"{APM} config status 2>&1")
-      assert "active runtime modules: empty" in status, status
+      def retain_recovery(sequence, held, resumed, before, after, previous_response, response):
+          for field in NATIVE_IDENTITY_FIELDS:
+              assert resumed["event"][field] == held["event"][field], (field, held, resumed)
+          assert resumed["event"]["boundary"] == "observation-returned", resumed
+          records = [record for record in after["records"]
+              if record.get("dispatch") and record["transaction"] == held["event"]["transaction"]
+              and record["dispatch"]["effect"] == held["event"]["effect"]
+              and record["dispatch"]["revision"] == held["event"]["revision"]
+              and record["dispatch"]["journalSequence"] == held["event"]["journal_sequence"]]
+          assert [record["event"] for record in records] == ["started", "finished"], records
+          assert records[0]["sequence"] == held["event"]["journal_sequence"], records
+          assert after["pending"] is None and after["completed"] is not None, after
+          assert route() == response
+          observed = [json.loads(line) for line in runtime.succeed(f"{COREUTILS}/cat {EVENTS}").splitlines()]
+          matching = [event for event in observed if all(event[field] == held["event"][field] for field in NATIVE_IDENTITY_FIELDS)]
+          assert [event["boundary"] for event in matching].count("dispatch-returned") == 1, matching
+          RECOVERY_FINDINGS[sequence] = {
+              "held": held, "resumed": resumed, "before": before,
+              "after": after, "records": records, "boundaries": matching,
+              "substrate": {"beforeResponse": previous_response, "afterResponse": route()},
+          }
 
-      # Nginx is bundled in the immutable image but deliberately absent from
-      # the seeded package profile. Publish its package/expose pair into a
-      # local authenticated registry and select it through public APM before
-      # supplying any operator configuration module.
-      runtime.fail(
-          f"HOME=/tmp USER=root {APM} list --system --installed "
-          "2>&1 | grep -q '^nginx'"
-      )
-      runtime.succeed(textwrap.dedent(f"""
-          set -eu
-          export HOME=/tmp/runtime-publisher
-          export USER=root
-          export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
-          export GIT_AUTHOR_NAME=Test
-          export GIT_AUTHOR_EMAIL=test@test
-          export GIT_COMMITTER_NAME=Test
-          export GIT_COMMITTER_EMAIL=test@test
-          export NIX_REMOTE=""
-          export NIX_CONF_DIR=/tmp/runtime-nix-conf
-          mkdir -p "$NIX_CONF_DIR"
-          printf 'experimental-features = nix-command\\nsandbox = false\\n' \
-            > "$NIX_CONF_DIR/nix.conf"
+      def interrupted_update(sequence, response, power_loss=False):
+          previous_response = route()
+          selected_effect = effect_id("configuration", "file", "nginx")
+          select_response(response)
+          runtime.succeed(f"{COREUTILS}/rm -f {HELD_EVENT} {RESUMED_EVENT} {CONTINUE}")
+          write_canonical(TARGET, {
+              "action": "disconnect", "boundary": "dispatch-returned",
+              "effect": selected_effect, "invocation_action": "apply", "sequence": sequence,
+          })
+          unit = "aos-native-" + sequence
+          prior_generation = current_generation()
+          start_candidate(unit)
+          held = wait_selection(HELD_EVENT, sequence)
+          assert held["event"]["effect"] == selected_effect, held
+          assert held["event"]["boundary"] == "dispatch-returned", held
+          assert current_generation() == prior_generation
+          assert response in runtime.succeed(f"{COREUTILS}/cat /etc/nginx/nginx.conf")
+          assert route() == previous_response
 
-          {APR} keys generate release --registry runtime-reg \
-            > /tmp/runtime-keygen.out 2>&1
-          PUBKEY=$(awk '/Public key:/ {{print $NF; exit}}' /tmp/runtime-keygen.out)
-          KEY=$HOME/.config/apm/keys/runtime-reg-release.key
-          {APR} create runtime-reg \
-            --trust-key "$PUBKEY" \
-            --trust-key-id release \
-            --key "$KEY"
-          mkdir -p "$HOME/.config/apm/registries.d"
-          cat > "$HOME/.config/apm/registries.d/runtime-reg.toml" <<EOF
-          [registry]
-          name = "runtime-reg"
-          url = "file://$HOME/.local/share/apm/registries/runtime-reg"
+          if power_loss:
+              boot_id = runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip()
+              # Recovery may finish while the machine reconnects. The controller
+              # still retains its exact returned observation before acknowledging.
+              write_canonical(CONTINUE, {"sequence": sequence})
+              runtime.power_cycle(timeout=600)
+              assert runtime.succeed(f"{COREUTILS}/cat /proc/sys/kernel/random/boot_id").strip() != boot_id
+              resumed = wait_selection(RESUMED_EVENT, sequence)
+              before = None
+          else:
+              runtime.succeed(f"{SYSTEMCTL} kill --signal=KILL --kill-whom=all {unit}")
+              runtime.wait_until_succeeds(f"! {SYSTEMCTL} is-active --quiet {unit}", timeout=180)
+              before = inspection()
+              assert before["pending"]["effect"] == selected_effect, before
+              assert before["pending"]["journalSequence"] == held["event"]["journal_sequence"], before
+              start_candidate(unit)
+              resumed = wait_selection(RESUMED_EVENT, sequence)
+              write_canonical(CONTINUE, {"sequence": sequence})
+              runtime.wait_until_succeeds(
+                  f"test \"$({SYSTEMCTL} show --property=Result --value {unit})\" = success "
+                  f"&& ! {SYSTEMCTL} is-active --quiet {unit}", timeout=1200,
+              )
+          runtime.wait_until_succeeds(f"{CURL} --fail --silent http://127.0.0.1:18080/health | {pkgs.grep}/bin/grep -Fx {shlex.quote(response)}", timeout=300)
+          after = inspection()
+          retain_recovery(sequence, held, resumed, before, after, previous_response, response)
+          runtime.succeed(f"{COREUTILS}/rm -f {TARGET}")
+          check_services(response)
+          assert_payloads_immutable()
 
-          [registry.signing_keys]
-          release = "$KEY"
-
-          [registry.signing]
-          root_owner_signers = ["release"]
-          EOF
-
-          {APR} publish '${pkgs.nginx}' \
-            --name nginx \
-            --version '${pkgs.nginx.version}' \
-            --description ${lib.escapeShellArg pkgs.nginx.meta.description} \
-            --license BSD-2-Clause \
-            --maintainer test \
-            --expose-manifest '${pkgs.nginx.expose}/manifest.json' \
-            --config-module '${pkgs.nginx.config}' \
-            --config-base-lib '${runtimeSystem.config.aos.config.evalAtBoot.baseLib}' \
-            --registry runtime-reg \
-            --key-id release
-
-          REG_DIR=$HOME/.local/share/apm/registries/runtime-reg
-          mkdir -p /var/lib/runtime-module-registry-cache
-          {APR} release '${pkgs.nginx.version}' \
-            --registry runtime-reg \
-            --key-id release \
-            --cache-url file:///var/lib/runtime-module-registry-cache \
-            --upload-url file:///var/lib/runtime-module-registry-cache
-
-          HOME=/tmp USER=root {APM} registry --system add \
-            "file://$REG_DIR" \
-            --name runtime-reg \
-            --version '=${pkgs.nginx.version}' \
-            --trust-key "$PUBKEY" \
-            --no-clone
-          printf 'root_owner_signers = ["release"]\\n' \
-            >> /var/lib/apm/config/registries.d/runtime-reg.toml
-          HOME=/tmp USER=root {APM} update \
-            --system --registry runtime-reg
-
-          cat > /run/runtime-module-desired.toml <<'EOF'
-          packages = ["nginx", "envoy", "k3s-worker"]
-          EOF
-          HOME=/tmp USER=root {APM} install --system \
-            --from /run/runtime-module-desired.toml --yes
-
-      """), timeout=1200)
-      installed = runtime.succeed(
-          f"HOME=/tmp USER=root {APM} list --system --installed 2>&1"
-      )
-      assert "nginx" in installed, installed
-
-      runtime.succeed("install -d -m 0700 /run/runtime-module-fixtures")
-      packages_module = """{
-        aos.apm.desiredPackages = [ "nginx" "envoy" "k3s-worker" ];
-        environment.etc."runtime-modules/operator.conf" = {
-          text = "authority=runtime\\n";
-          mode = "0644";
+      runtime.wait_for_unit("aos-activate.service", timeout=600)
+      runtime.wait_for_unit("aos-ability-boundary-controller.service", timeout=180)
+      runtime.succeed("test -S /run/aos-instrumentation/controller.sock")
+      PAYLOADS = ${builtins.toJSON {
+        nginx = toString pkgs.nginx;
+        envoy = toString pkgs.envoy;
+      }}
+      PAYLOAD_HASHES = {name: payload_hash(path) for name, path in PAYLOADS.items()}
+      runtime.succeed(f"{COREUTILS}/install -d -m 0700 {WORKTREE}")
+      packages_source = """{ config, ... }: {
+        aos.abilities.configuration.operations.file.effects.runtime-operator.input = {
+          path = "/etc/runtime-modules/operator.conf";
+          content = "authority=runtime\\n";
+          mode = "0444";
         };
-      }
-      """
-      services_module = """{
-        nginx = {
+      }"""
+      services_source = """{
+        aos.services.nginx = {
           enable = true;
           virtualHosts.runtime = {
-            listen = [ 18080 ];
-            serverNames = [ "localhost" ];
-            locations."/health"."return" = {
-              code = 200;
-              body = "nginx-runtime";
-            };
+            listen = [18080];
+            serverNames = ["localhost"];
+            locations."/health"."return" = {code = 200; body = "nginx-runtime";};
           };
         };
-
-        envoy = {
+        aos.envoy = {
           enable = true;
           listeners.runtime = {
             address = "127.0.0.1";
             port = 18081;
             filterChains.http.virtualHosts.runtime = {
-              domains = [ "*" ];
+              domains = ["*"];
               routes.health = {
                 match.path = "/health";
                 match.prefix = null;
-                directResponse = {
-                  status = 200;
-                  body = "envoy-runtime";
-                };
+                directResponse = {status = 200; body = "envoy-runtime";};
               };
             };
           };
         };
-
-        k3s = {
-          enable = false;
-          node.name = "runtime-worker";
-          networking.flannelBackend = "wireguard-native";
-        };
-      }
-      """
-      write_file(
-          "/run/runtime-module-fixtures/10-packages.nix", packages_module
-      )
-      write_file(
-          "/run/runtime-module-fixtures/20-services.nix", services_module
-      )
-      runtime.fail(
-          f"{APM} config add /run/runtime-module-fixtures/10-packages.nix "
-          "--name 'bad;name.nix'"
-      )
-      runtime.fail(
-          "test -e '/var/lib/aos/config/modules.d/bad;name.nix'"
-      )
-      runtime.succeed(f"""
-          {APM} config add /run/runtime-module-fixtures/10-packages.nix
-          {APM} config add /run/runtime-module-fixtures/20-services.nix
-      """)
-      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
-      assert listed == ["10-packages.nix", "20-services.nix"], listed
-      status = runtime.succeed(f"{APM} config status 2>&1")
-      assert "worktree: /var/lib/aos/config/modules.d (2 entrypoints)" in status, status
-
-      # `diff` and `apply --dry-run` use the same full fixpoint as activation
-      # but must leave both the current pointer and live files untouched.
-      runtime.succeed(
-          f"XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} config diff "
-          "--eval-root /run/runtime-module-composition-diff",
-          timeout=600,
-      )
-      apply_worktree("/run/runtime-module-composition-dry-run", dry_run=True)
-      assert current_generation() == initial
+        aos.k3s.enable = false;
+      }"""
+      write_file(f"{WORKTREE}/10-packages.nix", packages_source)
+      write_file(f"{WORKTREE}/20-services.nix", services_source)
+      if EXTRA_MODULE:
+          write_file(f"{WORKTREE}/30-instrumentation.nix", "{lib, ...}: {" + EXTRA_MODULE + "}")
+      initial_generation = current_generation()
+      apply("preview", dry_run=True)
+      assert current_generation() == initial_generation
       runtime.fail("test -e /etc/runtime-modules/operator.conf")
-
-      apply_worktree("/run/runtime-module-composition-switch")
-      configured = current_generation()
-      assert configured != initial, (initial, configured)
-      assert_package_configuration()
+      apply("configured")
+      check_services("nginx-runtime")
       assert_payloads_immutable()
 
-      manifest = json.loads(runtime.succeed(
-          f"cat /var/lib/profiles/system/gen-{configured}/manifest.json"
-      ))
-      assert manifest["schema"] == "aos.config-manifest/v2", manifest["schema"]
-      runtime_input = manifest["inputs"]["runtime_modules"]
-      assert runtime_input["schema"] == "aos.runtime-module-set/v1", runtime_input
-      assert runtime_input["trust_mode"] == "local-root", runtime_input
-      assert runtime_input["store_path"].startswith("/nix/store/"), runtime_input
-      assert runtime_input["entrypoints"] == [
-          "10-packages.nix",
-          "20-services.nix",
-      ], runtime_input
-      status = runtime.succeed(f"{APM} config status 2>&1")
-      assert runtime_input["store_path"] in status, status
-      assert "active runtime modules:" in status, status
-      assert "(2 entrypoints," in status, status
-      assert manifest["inputs"]["host_nix"]["store_path"].startswith(
-          "/nix/store/"
-      )
-      assert manifest["inputs"]["host_nix"] == platform_host_input
-      assert manifest["inputs"]["instance_facts"] == platform_facts_input
-      assert runtime.succeed(
-          f"{SHA256SUM} /run/aos-metadata/host.nix"
-      ).split()[0] == platform_hash
+      def select_response(response):
+          write_file(f"{WORKTREE}/20-services.nix", services_source.replace('body = "nginx-runtime";', 'body = ' + json.dumps(response) + ';'))
 
-      # Ordinary switch porcelain defaults to the active retained runtime set,
-      # rather than silently dropping supplemental modules. Inspect the new
-      # no-op generation to prove all three input identities survive.
-      previous_configured = configured
-      runtime.succeed(
-          f"XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} switch "
-          "--eval-root /run/runtime-module-composition-no-op",
-          timeout=600,
-      )
-      configured = current_generation()
-      assert configured != previous_configured, (previous_configured, configured)
-      switch_manifest = json.loads(runtime.succeed(
-          f"cat /var/lib/profiles/system/gen-{configured}/manifest.json"
-      ))
-      assert switch_manifest["inputs"]["runtime_modules"] == runtime_input
-      assert switch_manifest["inputs"]["host_nix"] == platform_host_input
-      assert switch_manifest["inputs"]["instance_facts"] == platform_facts_input
-      assert (
-          switch_manifest["inputs"]["expected_current_generation"]
-          == previous_configured
-      )
-      assert_package_configuration()
+      process_id = runtime.succeed(f"{SYSTEMCTL} show --property=MainPID --value nginx.service").strip()
+      invocation_id = runtime.succeed(f"{SYSTEMCTL} show --property=InvocationID --value nginx.service").strip()
+      select_response("nginx-runtime-reloaded")
+      apply("reloaded")
+      check_services("nginx-runtime-reloaded")
+      assert runtime.succeed(f"{SYSTEMCTL} show --property=MainPID --value nginx.service").strip() == process_id
+      assert runtime.succeed(f"{SYSTEMCTL} show --property=InvocationID --value nginx.service").strip() == invocation_id
+
+      # Admission rejects an invalid ordinary module before publishing a new
+      # generation or mutating the running service and its configuration.
+      prior_generation = current_generation()
+      write_file(f"{WORKTREE}/99-invalid.nix", '{ aos.services.nginx.virtualHosts.runtime.listen = [70000]; }')
+      runtime.fail(f"{APM} switch --worktree {WORKTREE} --eval-root /var/lib/aos/runtime-evaluations/rejected", timeout=600)
+      assert current_generation() == prior_generation
+      check_services("nginx-runtime-reloaded")
+      runtime.succeed(f"{COREUTILS}/rm {WORKTREE}/99-invalid.nix")
+
+      interrupted_update("process-loss", "nginx-runtime-process-loss")
+      interrupted_update("power-loss", "nginx-runtime-power-loss", power_loss=True)
+
+      # Replay uses admitted immutable module sources, not dirty operator files.
+      committed = current_generation()
+      committed_descriptor = runtime.succeed(f"{COREUTILS}/readlink -f {PROFILE}/current/evaluation.json").strip()
+      select_response("dirty-worktree-must-not-run")
+      runtime.reboot(timeout=600)
+      runtime.wait_for_unit("aos-activate.service", timeout=600)
+      check_services("nginx-runtime-power-loss")
+      assert runtime.succeed(f"{COREUTILS}/readlink -f {PROFILE}/current/evaluation.json").strip() == committed_descriptor
+      assert current_generation() >= committed
       assert_payloads_immutable()
 
-      # A bad supplemental fragment must fail before activation and preserve
-      # both the durable pointer and live package state.
-      invalid_module = """{
-        aos.apm.desiredPackages = [ "nginx" "envoy" "k3s-worker" ];
-        aos.runtimeModules.thisOptionDoesNotExist = true;
-      }
-      """
-      write_file(
-          "/run/runtime-module-fixtures/invalid.nix", invalid_module
-      )
-      runtime.succeed(
-          f"{APM} config replace 20-services.nix "
-          "/run/runtime-module-fixtures/invalid.nix"
-      )
-      runtime.succeed(textwrap.dedent(f"""
-          set -eu
-          if XDG_CACHE_HOME={XDG_CACHE_HOME} {APM} config apply \\
-            --eval-root /run/runtime-module-composition-invalid \\
-            >/run/runtime-module-composition-invalid.out 2>&1; then
-            echo 'invalid runtime module candidate unexpectedly succeeded' >&2
-            exit 1
-          fi
-      """), timeout=600)
-      assert current_generation() == configured
-      assert_package_configuration()
-      assert_payloads_immutable()
-      runtime.succeed(f"{APM} config discard")
-      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
-      assert listed == ["10-packages.nix", "20-services.nix"], listed
+      # A manager reload may partially mutate before returning failure. The
+      # generic service observer cannot prove the daemon state from process
+      # identity alone, so clearing the fault still leaves this intent unknown.
+      prior_generation = current_generation()
+      runtime.succeed(f"{COREUTILS}/install -d -m 0755 /run/systemd/system/nginx.service.d")
+      write_file("/run/systemd/system/nginx.service.d/99-fail-reload.conf", "[Service]\nExecReload=\nExecReload=${pkgs.coreutils}/bin/false\n")
+      runtime.succeed(f"{SYSTEMCTL} daemon-reload")
+      select_response("nginx-runtime-failed-reload")
+      runtime.fail(f"{APM} switch --worktree {WORKTREE} --eval-root /var/lib/aos/runtime-evaluations/failed-reload", timeout=1200)
+      assert current_generation() == prior_generation
+      assert route() == "nginx-runtime-power-loss"
+      assert "nginx-runtime-failed-reload" in runtime.succeed(f"{COREUTILS}/cat /etc/nginx/nginx.conf")
+      failed = inspection()
+      assert failed["pending"] is not None, failed
+      runtime.succeed(f"{COREUTILS}/rm /run/systemd/system/nginx.service.d/99-fail-reload.conf")
+      runtime.succeed(f"{SYSTEMCTL} daemon-reload")
+      runtime.fail(f"{APM} switch --worktree {WORKTREE} --eval-root /var/lib/aos/runtime-evaluations/retry-unknown-reload", timeout=1200)
+      assert inspection()["pending"] == failed["pending"]
+      assert current_generation() == prior_generation
+      assert route() == "nginx-runtime-power-loss"
 
-      # Deliberately replace the mutable worktree with valid but hostile
-      # content. Boot authority must remain the retained generation snapshot.
-      dirty_module = """{
-        environment.etc."runtime-modules/operator.conf".text = "DIRTY\\n";
-        nginx.enable = false;
-        envoy.enable = false;
-      }
-      """
-      write_file(
-          "/run/runtime-module-fixtures/dirty.nix", dirty_module
-      )
-      runtime.succeed(f"{APM} config replace 10-packages.nix /run/runtime-module-fixtures/dirty.nix")
-      runtime.succeed(f"{APM} config remove 20-services.nix")
-      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
-      assert listed == ["10-packages.nix"], listed
-      status = runtime.succeed(f"{APM} config status 2>&1")
-      assert runtime_input["store_path"] in status, status
-      assert "worktree: /var/lib/aos/config/modules.d (1 entrypoints)" in status, status
-
-      runtime.reboot_without_metadata()
-      wait_for_activation()
-      rebooted = current_generation()
-      assert rebooted != configured, (configured, rebooted)
-      assert_package_configuration()
-      assert_payloads_immutable()
-      reboot_manifest = json.loads(runtime.succeed(
-          "cat /run/aos/manifest.json"
-      ))
-      assert reboot_manifest["inputs"]["runtime_modules"] == runtime_input
-      assert reboot_manifest["inputs"]["host_nix"] == platform_host_input
-      assert reboot_manifest["inputs"]["instance_facts"] == platform_facts_input
-      assert reboot_manifest["inputs"]["expected_current_generation"] == configured
-      configured = rebooted
-      assert runtime.succeed(
-          f"{SHA256SUM} /var/lib/aos-provisioning/current/host.nix"
-      ).split()[0] == platform_hash
-      runtime.succeed(f"{APM} config discard")
-      listed = runtime.succeed(f"{APM} config list 2>&1").splitlines()
-      assert listed == ["10-packages.nix", "20-services.nix"], listed
-
-      # Removing the final entrypoint is itself an ordinary compare-and-switch
-      # candidate. It must durably record the absence of runtime input rather
-      # than falling back to the previous retained set on the next boot.
-      runtime.succeed(f"{APM} config remove 10-packages.nix")
-      runtime.succeed(f"{APM} config remove 20-services.nix")
-      assert runtime.succeed(f"{APM} config list 2>&1") == ""
-      apply_worktree("/run/runtime-module-composition-clear")
-      cleared = current_generation()
-      assert cleared != configured, (configured, cleared)
-      cleared_manifest = json.loads(runtime.succeed(
-          f"cat /var/lib/profiles/system/gen-{cleared}/manifest.json"
-      ))
-      cleared_runtime_input = cleared_manifest["inputs"]["runtime_modules"]
-      assert cleared_runtime_input["schema"] == "aos.runtime-module-set/v1"
-      assert cleared_runtime_input["trust_mode"] == "local-root"
-      assert cleared_runtime_input["store_path"].startswith("/nix/store/")
-      assert cleared_runtime_input["entrypoints"] == []
-      assert cleared_manifest["inputs"]["expected_current_generation"] == configured
-      status = runtime.succeed(f"{APM} config status 2>&1")
-      assert cleared_runtime_input["store_path"] in status, status
-      assert "(0 entrypoints," in status, status
-      assert "worktree: /var/lib/aos/config/modules.d (0 entrypoints)" in status, status
-      runtime.fail("test -e /etc/runtime-modules/operator.conf")
-      runtime.wait_until_succeeds(
-          "! systemctl is-active --quiet nginx.service", timeout=120
-      )
-      runtime.wait_until_succeeds(
-          "! systemctl is-active --quiet envoy.service", timeout=120
-      )
-
-      runtime.reboot_without_metadata()
-      wait_for_activation()
-      rebooted_cleared = current_generation()
-      assert rebooted_cleared != cleared, (cleared, rebooted_cleared)
-      status = runtime.succeed(f"{APM} config status 2>&1")
-      assert cleared_runtime_input["store_path"] in status, status
-      assert "(0 entrypoints," in status, status
-      assert runtime.succeed(f"{APM} config list 2>&1") == ""
-      reboot_manifest = json.loads(runtime.succeed("cat /run/aos/manifest.json"))
-      assert (
-          reboot_manifest["inputs"]["runtime_modules"]
-          == cleared_runtime_input
-      )
-      assert reboot_manifest["inputs"]["host_nix"] == platform_host_input
-      assert reboot_manifest["inputs"]["instance_facts"] == platform_facts_input
-      assert reboot_manifest["inputs"]["expected_current_generation"] == cleared
-      cleared = rebooted_cleared
-      runtime.fail("test -e /etc/runtime-modules/operator.conf")
-      runtime.fail("systemctl is-active --quiet nginx.service")
-      runtime.fail("systemctl is-active --quiet envoy.service")
-      assert runtime.succeed(
-          f"{SHA256SUM} /var/lib/aos-provisioning/current/host.nix"
-      ).split()[0] == platform_hash
-
-      # Same-ABI rollback must reactivate the selected generation's immutable
-      # runtime module set, not the currently empty authoring worktree or the
-      # runtime descriptor from the generation being left behind.
-      runtime.succeed(
-          f"{APM} rollback --system --generation {configured}", timeout=600
-      )
-      assert current_generation() == configured
-      rollback_manifest = json.loads(runtime.succeed(
-          f"cat /var/lib/profiles/system/gen-{configured}/manifest.json"
-      ))
-      assert rollback_manifest["inputs"]["runtime_modules"] == runtime_input
-      assert rollback_manifest["inputs"]["host_nix"] == platform_host_input
-      assert rollback_manifest["inputs"]["instance_facts"] == platform_facts_input
-      status = runtime.succeed(f"{APM} config status 2>&1")
-      assert runtime_input["store_path"] in status, status
-      assert "(2 entrypoints," in status, status
-      assert "worktree: /var/lib/aos/config/modules.d (0 entrypoints)" in status, status
-      assert runtime.succeed(f"{APM} config list 2>&1") == ""
-      assert_package_configuration()
-      assert_payloads_immutable()
     '';
 }

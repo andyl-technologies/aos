@@ -24,6 +24,7 @@ use aos_core::output::{OutputMode, Printer};
 /// lock) or its metadata cannot be updated.
 pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
+    let _profile_guard = profile.lock_mutation()?;
     let (hash, installed) = find_installed_by_name(&profile, package)?;
 
     let profile = Profile::open(config.scope)?;
@@ -46,6 +47,7 @@ pub async fn run_hold(config: &ApmConfig, package: &str, printer: &Printer) -> R
 /// profile cannot be opened for writing or its metadata cannot be updated.
 pub async fn run_unhold(config: &ApmConfig, package: &str, printer: &Printer) -> Result<()> {
     let profile = Profile::open_readonly(config.scope);
+    let _profile_guard = profile.lock_mutation()?;
     let (hash, installed) = find_installed_by_name(&profile, package)?;
 
     let profile = Profile::open(config.scope)?;
@@ -214,12 +216,9 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
-                documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }

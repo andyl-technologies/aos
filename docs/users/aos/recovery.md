@@ -178,21 +178,12 @@ service failure.
 
 ## Recover from a failed first boot
 
-Inspect the provisioning chain:
+Inspect the checked initrd stage controller. Its journal records the exact
+package-owned operation and selected provider that failed:
 
 ```sh
-systemctl status \
-  aos-metadata-detect.service \
-  aos-metadata-fetch.service \
-  aos-metadata-authorize.service \
-  aos-provisioning-eval.service \
-  aos-repart.service
-journalctl -b \
-  -u aos-metadata-detect.service \
-  -u aos-metadata-fetch.service \
-  -u aos-metadata-authorize.service \
-  -u aos-provisioning-eval.service \
-  -u aos-repart.service
+systemctl status aos-ability-initrd-controller.service
+journalctl -b -u aos-ability-initrd-controller.service
 ```
 
 Verify the metadata label and payload, trust mode, detached signature, target
@@ -207,7 +198,7 @@ to make it agree with an unintended layout.
 ## Recover a failed configuration activation
 
 An error can occur during evaluation, package fetch/render, secret resolution,
-EROFS materialization, `/etc` replacement, or unit reconciliation. First
+EROFS materialization, `/etc` replacement, or provider convergence. First
 determine the active pointer and transaction-bound activation result:
 
 ```sh
@@ -227,6 +218,11 @@ Preview rollback, then switch to the intended generation:
 apm rollback --system --dry-run
 apm rollback --system
 ```
+
+The preview is an authenticated read-only activatability check. Resolve every
+structured blocked reason before applying rollback; historical authorization
+and a retained profile entry do not make revoked credentials or unavailable
+providers current again.
 
 Configuration rollback under the same module ABI reactivates the retained
 generation directly. Across an ABI boundary, APM re-evaluates its retained
@@ -251,13 +247,12 @@ image or generation according to a procedure tested for that release.
 
 ## Recover an application package
 
-Inspect installed package generations and the package target. This example
+Inspect installed package generations and the selected service unit. This example
 uses the `acme-agent` package from the [configuration guide](configuration.md);
 replace it with the affected package and unit:
 
 ```sh
 apm list --installed --system
-systemctl status aos-pkg-acme-agent.target
 systemctl status acme-agent.service
 journalctl -u acme-agent.service -b
 ```

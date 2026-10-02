@@ -1,5 +1,6 @@
 ##! pkgs/networking/ipset.nix — IP set framework userspace tool
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -9,7 +10,63 @@
   version = "7.24";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "ipset";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "IpSet documents IPv4 and IPv6 hash entries and their create options.";
+        "files" = {};
+        "input" = "The built-in help request for the hash:ip set type.";
+        "operation" = "Translate the request and inspect its type-specific grammar offline.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/sbin/ipset-translate\", \"help\", \"hash:ip\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"hash:ip type specific options\" in result.stdout and \"family inet|inet6\" in result.stdout, (result.returncode, result.stdout, result.stderr)\nprint(\"ipset operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "ipset operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "IpSet rejects the unknown type without contacting the kernel.";
+        "files" = {};
+        "input" = "A help request naming an unknown set type.";
+        "operation" = "Resolve the nonexistent set type through the translator.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/sbin/ipset-translate\", \"help\", \"unknown:type\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unknown\" in result.stderr.lower(), (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"ipset rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "ipset rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

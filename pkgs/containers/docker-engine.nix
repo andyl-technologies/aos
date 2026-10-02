@@ -1,16 +1,19 @@
 ##! docker-engine — Docker container daemon
 {
+  lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   buildPackages,
   gnumake,
   bash,
   pkg-config,
   btrfs-progs,
+  aos-filesystem-provider,
   containerd,
   e2fsprogs,
   fuse-overlayfs,
-  git,
+  git-minimal,
   iproute2,
   iptables,
   libseccomp,
@@ -22,6 +25,7 @@
   slirp4netns,
   sqlite,
   systemd,
+  service-management,
   tini,
   util-linux,
   xfsprogs,
@@ -33,7 +37,7 @@
   runtimePath = builtins.concatStringsSep ":" (map (package: "${package}/bin:${package}/sbin") [
     e2fsprogs
     fuse-overlayfs
-    git
+    git-minimal
     iproute2
     iptables
     nftables
@@ -46,7 +50,78 @@
   ]);
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "docker-engine";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Dockerd accepts the complete JSON configuration and exits after validation.";
+        "files" = {
+          "daemon.json" = "{\n  \"data-root\": \"/var/lib/aos-qualification-docker\",\n  \"exec-root\": \"/run/aos-qualification-docker\",\n  \"debug\": false\n}\n";
+        };
+        "input" = "A daemon configuration selecting fixed local state directories.";
+        "operation" = "Validate the configuration without starting the daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/dockerd\", \"--validate\", \"--config-file\", \"daemon.json\"], capture_output=True, text=True)\nassert result.returncode == 0, result.stderr\nassert \"configuration OK\" in result.stdout\nprint(\"docker-engine operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "docker-engine operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Dockerd rejects the unknown directive.";
+        "files" = {
+          "daemon.json" = "{\"aos-unknown-setting\": true}\n";
+        };
+        "input" = "A daemon configuration containing an unknown directive.";
+        "operation" = "Validate the malformed configuration without starting the daemon.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([\"@out@/bin/dockerd\", \"--validate\", \"--config-file\", \"daemon.json\"], capture_output=True)\nif result.returncode == 0:\n    raise SystemExit(2)\nsys.stderr.write(\"docker-engine rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "docker-engine rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -61,7 +136,7 @@ in
       containerd
       e2fsprogs
       fuse-overlayfs
-      git
+      git-minimal
       iproute2
       iptables
       libseccomp
@@ -80,6 +155,9 @@ in
     ];
     propagatedDeps = [];
     disallowedReferences = [buildPackages.go];
+
+    module = ./_docker-engine;
+    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider];
 
     phases = [
       {

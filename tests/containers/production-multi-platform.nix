@@ -14,8 +14,7 @@
   publicationInputs,
   publicationInputsRepeat,
   schedulerSystem,
-  armExecution,
-  amdExecution,
+  targetExecution,
   platformChecks,
 }:
 pkgs.mkDerivation {
@@ -28,6 +27,7 @@ pkgs.mkDerivation {
       pkgs.diffutils
       pkgs.findutils
       pkgs.jq
+      pkgs.aos-deployment-check
       pkgs.tar
       primaryIndex
       repeatIndex
@@ -81,6 +81,26 @@ pkgs.mkDerivation {
           ' ${primaryIndex}/layout/index.json >/dev/null \
           || fail "production root descriptor annotations diverge from the signed index"
 
+        ${builtins.readFile ../../pkgs/containers/_aos-oci-backend/oci/deployment-validation.sh}
+        validate_deployment_artifact ${primaryIndex}/deployment.json \
+          ${pkgs.aos-deployment-check}/bin/aos-deployment-check ${pkgs.jq}/bin/jq
+        deployment_digest=$(sha256sum ${primaryIndex}/deployment.json | cut -d ' ' -f 1)
+        jq -e '
+          .schema == "aos.artifact.deployment/v1"
+          and .artifactClass == "container"
+          and .executionStage == null
+          and [.platforms[].platform] == [
+            {architecture: "amd64", os: "linux"},
+            {architecture: "arm64", os: "linux"}
+          ]
+        ' ${primaryIndex}/deployment.json >/dev/null \
+          || fail "production deployment is not the canonical two-platform transaction set"
+        jq -e \
+          --arg digest "sha256:$deployment_digest" '
+            .annotations."dev.andyl.aos.deployment.digest" == $digest
+          ' ${primaryIndex}/image-index.json >/dev/null \
+          || fail "production index does not bind its native deployment"
+
         jq -e \
           --slurpfile descriptor ${primaryIndex}/index-descriptor.json \
           --slurpfile index ${primaryIndex}/image-index.json '
@@ -88,6 +108,8 @@ pkgs.mkDerivation {
             and .oci.index == $descriptor[0]
             and .oci.platformManifests == $index[0].manifests
             and (.oci.platformManifests | length) == 2
+            and .evidence.deployment.artifactType
+              == "application/vnd.aos.artifact.deployment.v1+json"
             and .qualification.readyForVerifiedPublication == true
           ' ${evidence}/signature-input.json >/dev/null \
           || fail "signature input does not bind the coordinated production index"
@@ -98,6 +120,8 @@ pkgs.mkDerivation {
             and .qualified == true
             and .unsignedRelease.oci == $input[0].oci
             and .requiredOutput.finalSidecarPath == "containers/v1/index.json"
+            and .requiredOutput.finalSidecarMediaType
+              == "application/vnd.aos.container-release.v1+json"
             and .constraints.privateMaterialPermittedInNixBuild == false
             and .constraints.exactInputBytesRequired == true
           ' ${evidence}/signing-request.json >/dev/null \
@@ -131,8 +155,7 @@ pkgs.mkDerivation {
           --arg evidenceArchiveSha256 "$(sha256sum ${evidence}/evidence.oci.tar | cut -d ' ' -f 1)" \
           --arg signatureInputSha256 "$(sha256sum ${evidence}/signature-input.json | cut -d ' ' -f 1)" \
           --arg schedulerSystem ${lib.escapeShellArg schedulerSystem} \
-          --arg armExecution ${lib.escapeShellArg armExecution} \
-          --arg amdExecution ${lib.escapeShellArg amdExecution} '
+          --argjson targetExecution ${lib.escapeShellArg (builtins.toJSON targetExecution)} '
             {
               schema: $schema,
               systems: ["aarch64-linux", "x86_64-linux"],
@@ -143,16 +166,11 @@ pkgs.mkDerivation {
               builderRequirement: {
                 schedulerSystem: $schedulerSystem,
                 targetSystems: ["aarch64-linux", "x86_64-linux"],
-                targetExecution: {
-                  "aarch64-linux": $armExecution,
-                  "x86_64-linux": $amdExecution
-                },
+                targetExecution: $targetExecution,
                 requiresConfiguredBinfmt: (
-                  [
-                    {system: "aarch64-linux", mode: $armExecution},
-                    {system: "x86_64-linux", mode: $amdExecution}
-                  ]
-                  | map(select(.mode == "qemu-binfmt") | .system)
+                  $targetExecution
+                  | to_entries
+                  | map(select(.value == "qemu-binfmt") | .key)
                 ),
                 nativeTargetBuilderRequired: false
               },

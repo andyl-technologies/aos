@@ -69,6 +69,31 @@ struct LiveWhiteboxRegisters {
     length: Option<*mut QemuPluginRegister>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LiveWhiteboxRegisterRole {
+    Pointer,
+    Length,
+}
+
+fn whitebox_register_role(
+    architecture: QemuPluginTargetArchitecture,
+    raw_name: &[u8],
+) -> Option<LiveWhiteboxRegisterRole> {
+    let name = raw_name
+        .strip_prefix(b"%")
+        .or_else(|| raw_name.strip_prefix(b"$"))
+        .unwrap_or(raw_name);
+    // Multiboot guests expose eax/ecx through the GDB description even when
+    // the system-emulation target is x86_64; OUT consumes those low halves.
+    match (architecture, name) {
+        (QemuPluginTargetArchitecture::X86_64, b"rax" | b"eax")
+        | (QemuPluginTargetArchitecture::Aarch64, b"x0") => Some(LiveWhiteboxRegisterRole::Pointer),
+        (QemuPluginTargetArchitecture::X86_64, b"rcx" | b"ecx")
+        | (QemuPluginTargetArchitecture::Aarch64, b"x1") => Some(LiveWhiteboxRegisterRole::Length),
+        _ => None,
+    }
+}
+
 impl LiveWhiteboxRegisters {
     fn observe(
         &mut self,
@@ -76,13 +101,11 @@ impl LiveWhiteboxRegisters {
         name: &[u8],
         handle: *mut QemuPluginRegister,
     ) {
-        match (architecture, name) {
-            (QemuPluginTargetArchitecture::X86_64, b"rax")
-            | (QemuPluginTargetArchitecture::Aarch64, b"x0") => {
+        match whitebox_register_role(architecture, name) {
+            Some(LiveWhiteboxRegisterRole::Pointer) => {
                 self.pointer = Some(handle);
             }
-            (QemuPluginTargetArchitecture::X86_64, b"rcx")
-            | (QemuPluginTargetArchitecture::Aarch64, b"x1") => {
+            Some(LiveWhiteboxRegisterRole::Length) => {
                 self.length = Some(handle);
             }
             _ => {}
@@ -293,8 +316,7 @@ impl LiveWhiteboxState {
             // SAFETY: QEMU documents descriptor names as valid NUL-terminated
             // strings retained for the plugin lifetime.
             let raw_name = unsafe { CStr::from_ptr(descriptor.name) }.to_bytes();
-            let name = raw_name.strip_prefix(b"%").unwrap_or(raw_name);
-            registers.observe(self.architecture, name, descriptor.handle);
+            registers.observe(self.architecture, raw_name, descriptor.handle);
         }
         (self.apis.g_array_free)(array.as_ptr(), true);
         if !registers.complete(self.architecture) {
@@ -575,6 +597,43 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_whitebox_vcpu_init_cb(
     let state = unsafe { state.as_mut() };
     if let Err(error) = state.initialize_vcpu(vcpu_index as usize) {
         state.fail_loud(&error);
+    }
+}
+
+#[cfg(test)]
+mod register_descriptor_tests {
+    use super::*;
+
+    #[test]
+    fn x86_descriptor_aliases_and_debugger_prefixes_map_to_frozen_roles() {
+        for name in [b"rax".as_slice(), b"eax", b"%rax", b"$eax"] {
+            assert_eq!(
+                whitebox_register_role(QemuPluginTargetArchitecture::X86_64, name),
+                Some(LiveWhiteboxRegisterRole::Pointer)
+            );
+        }
+        for name in [b"rcx".as_slice(), b"ecx", b"%rcx", b"$ecx"] {
+            assert_eq!(
+                whitebox_register_role(QemuPluginTargetArchitecture::X86_64, name),
+                Some(LiveWhiteboxRegisterRole::Length)
+            );
+        }
+        assert_eq!(
+            whitebox_register_role(QemuPluginTargetArchitecture::X86_64, b"rdx"),
+            None
+        );
+    }
+
+    #[test]
+    fn aarch64_descriptor_pair_remains_exact() {
+        assert_eq!(
+            whitebox_register_role(QemuPluginTargetArchitecture::Aarch64, b"$x0"),
+            Some(LiveWhiteboxRegisterRole::Pointer)
+        );
+        assert_eq!(
+            whitebox_register_role(QemuPluginTargetArchitecture::Aarch64, b"%x1"),
+            Some(LiveWhiteboxRegisterRole::Length)
+        );
     }
 }
 

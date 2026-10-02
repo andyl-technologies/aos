@@ -52,12 +52,33 @@ impl FakeState {
     }
 }
 
+/// Creates one fake manager and its independently inspectable state.
+pub fn fake_systemd() -> (FakeSystemd, FakeState) {
+    let state = FakeState::new();
+    (
+        FakeSystemd {
+            state: state.clone(),
+        },
+        state,
+    )
+}
+
 pub struct FakeSystemd {
     state: FakeState,
 }
 
+pub const UNIT_PATH: &str = "/org/freedesktop/systemd1/unit/example_2eservice";
+
 #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
 impl FakeSystemd {
+    async fn get_unit(&self, _name: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(UNIT_PATH).expect("synthetic unit path is valid")
+    }
+
+    async fn load_unit(&self, _name: &str) -> OwnedObjectPath {
+        OwnedObjectPath::try_from(UNIT_PATH).expect("synthetic unit path is valid")
+    }
+
     async fn subscribe(&self) {
         self.record("subscribe");
         self.state.subscribed.store(true, Ordering::SeqCst);
@@ -181,16 +202,13 @@ pub struct Harness {
     server_conn: Mutex<Option<zbus::Connection>>,
 }
 
-const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
+pub const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
 
 impl Harness {
     pub async fn new() -> Self {
         let guid = zbus::Guid::generate();
         let (server_sock, client_sock) = tokio::net::UnixStream::pair().unwrap();
-        let state = FakeState::new();
-        let fake = FakeSystemd {
-            state: state.clone(),
-        };
+        let (fake, state) = fake_systemd();
 
         let server_builder = zbus::connection::Builder::unix_stream(server_sock)
             .server(guid)

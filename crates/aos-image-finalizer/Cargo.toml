@@ -8,6 +8,7 @@ description = "External final-byte assembly and verification for AOS release ima
 [dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
+aos-package = { workspace = true }
 aos-release = { workspace = true }
 base64 = { workspace = true }
 serde = { workspace = true }
@@ -19,3 +20,7 @@ tokio = { workspace = true }
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "aos-image-metadata"
+path = "src/bin/image_metadata.rs"

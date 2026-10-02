@@ -1,5 +1,6 @@
 ##! Target-executable PE section inspection without the full binutils runtime.
 {
+  lib,
   mkDerivation,
   binutils,
   fetchurl,
@@ -7,8 +8,78 @@
 }:
 assert builtins.elem (binutils.version or "") ["2.41" "2.41.0"];
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "pe-tools";
     version = "2.41";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The target-hosted objcopy executable's nonempty text section.";
+        operation = "Extract its text section into a raw binary file.";
+        expected = "The runtime inspector executes and returns section bytes.";
+        files = {};
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import pathlib
+                import subprocess
+
+                executable = "@out@/bin/objcopy"
+                subprocess.run([
+                    executable, "-O", "binary", "--only-section=.text",
+                    executable, "text.bin",
+                ], check=True, capture_output=True)
+                assert pathlib.Path("text.bin").stat().st_size > 0
+                print("pe-tools section extraction passed")
+              ''
+            ];
+            exit_code = 0;
+            stdout.exact = "pe-tools section extraction passed\n";
+            stderr.exact = "";
+          }
+        ];
+        artifacts = [];
+      };
+      badInput = {
+        input = "A text file that is not an executable object.";
+        operation = "Attempt to extract a section from the malformed input.";
+        expected = "The inspector rejects the unrecognized object format.";
+        files."invalid.bin" = "not an executable object\n";
+        steps = [
+          {
+            argv = [
+              "@python@"
+              "-c"
+              ''
+                import subprocess
+                import sys
+
+                result = subprocess.run([
+                    "@out@/bin/objcopy", "-O", "binary", "--only-section=.text",
+                    "invalid.bin", "invalid-output.bin",
+                ], capture_output=True)
+                assert result.returncode != 0
+                assert b"file format not recognized" in result.stderr
+                sys.stderr.write("pe-tools rejected invalid object\n")
+                raise SystemExit(7)
+              ''
+            ];
+            exit_code = 7;
+            stdout.exact = "";
+            stderr.exact = "pe-tools rejected invalid object\n";
+            observes_rejection = true;
+          }
+        ];
+        artifacts = [];
+      };
+    };
     src = fetchurl {
       urls = ["https://mirrors.kernel.org/gnu/binutils/binutils-2.41.tar.xz"];
       hash = "sha256-rppXieI0WeWWBuZxRyPy0//DHAMXQZHvDQFb3wYAdFA=";

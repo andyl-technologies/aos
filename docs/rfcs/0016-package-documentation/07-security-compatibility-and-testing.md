@@ -146,14 +146,15 @@ not become required semantics.
 
 - two isolated builds of the same inputs produce byte-identical canonical JSON,
   store path, NAR hash, document digest, and semantic digest;
-- prose-only changes change the document identity but not semantic digest,
-  runtime measurement, unit fingerprint, or activation action;
-- type/ownership/runtime changes change semantic digest and comparison output;
+- prose-only changes change the documentation bytes but not executable
+  interface, guarantee, or provider identities;
+- option or ability semantic changes change the corresponding checked identity
+  and comparison output;
 - unsafe defaults, secret material, store context, exact store-path/hash
   references, mismatched declaration paths, and unbounded fields fail
   publication;
-- packages with and without config/expose artifacts produce valid appropriate
-  documents.
+- packages with and without public options or ability implementations produce
+  valid appropriate documents.
 
 ### Publication and indexing
 
@@ -184,8 +185,8 @@ not become required semantics.
   caches, or deep links;
 - API golden fixtures cover JSON, Connect, ETag, immutable/mutable cache policy,
   pagination, and error contracts;
-- no-JavaScript search, package, option, services, compare, and integrity pages
-  contain complete useful content;
+- no-JavaScript search, package, option, ability, deployment, compare, and
+  integrity pages contain complete useful content;
 - enhanced UI passes keyboard, screen-reader, zoom, reduced-motion, contrast,
   responsive, focus, CSP, and content-injection tests;
 - configuration drafts/credential refs never enter URLs, logs, telemetry, or
@@ -207,8 +208,10 @@ not become required semantics.
 ### Documentation migration
 
 - every public package option has generated description/type/ownership;
-- generated runtime pages cover all signed units, artifacts, paths, credentials,
-  ports, and capabilities;
+- package pages exactly cover signed options and package-owned ability
+  declarations;
+- deployment pages expose only checked plans, resources, and provider
+  observations available in the shared inspection graph;
 - each handwritten package guide is compared against the generated result and
   unique conceptual content is migrated before deletion;
 - repository lint prevents reintroducing package option/reference tables outside

@@ -20,12 +20,17 @@
 ##!
 ##! Auto-registers as systems.server-test.
 {pkgs, ...}: {
-  imports = [./server.nix];
+  imports = [./server.nix ./_server-test-packages.nix];
 
   # Runtime policy is deliberately absent from the production golden image.
   # This fixture opts into a server role and local recovery console just as a
   # test host.nix would.
-  aos.roles.server.enable = true;
+  aos.activation.stages.host.configuration = [
+    (builtins.path {
+      path = ./_server-test-policy.nix;
+      name = "aos-server-test-policy.nix";
+    })
+  ];
   aos.profiles.debug = {
     enable = true;
     autologin = true;
@@ -34,30 +39,28 @@
   # Preserve the production EROFS format and all boot semantics while avoiding
   # zstd-19 recompression on every iterative fleet-test image rebuild.
   aos.image.erofsCompressionLevel = 1;
+  # The former full-service activation fixture measured 1407.945 MiB. Keep its
+  # artifact allowance separate from production compression, with A/B slot
+  # headroom and bounded delivery space for the root, firmware, and verity.
+  aos.image.rootPartitionMiB = 2048;
+  aos.image.budgets = {
+    maxRootMiB = 1536;
+    maxDownloadMiB = 2048;
+  };
+
+  # Test artifact admission remains explicit under every size allowance.
   aos.image.allowTestArtifacts = true;
   aos.image.testArtifactRoots = [pkgs.binutils];
-  # The test agent, debug profile, and guest-side diagnostic tools are an
-  # intentional test-image payload. The complete runtime occupies up to 675 MiB
-  # of EROFS; keep its larger allowance local to this dedicated fixture.
-  aos.image.budgets = {
-    maxRootMiB = 704;
-
-    # Diagnostic raw images reach 769 MiB on x86_64 and 772 MiB on AArch64.
-    maxDownloadMiB = 800;
-
-    # Diagnostic VHDs reach 825 MiB on x86_64 and 879 MiB on AArch64.
-    maxConvertedDownloadMiB =
-      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 896
-      else 832;
-  };
 
   # Guest agent for image machines (baked machines also get it from
   # their /var seed; the extra bundled copy is inert there). See
   # lib/testing/fleet.nix `mkMachinesWithIndex`. Bundling this exposed package
   # is safe on TPM-less test machines because aos-attest.service skips cleanly
   # without a TPM (modules/base/apm.nix) rather than failing the reconcile.
-  aos.packages.aos-test-agent.bundle = true;
+  aos.packages.aos-test-agent = {
+    package = pkgs.aos-test-agent;
+    bundle = true;
+  };
 
   # CLI tools fleet scripts run in-guest by bare name; image slimming dropped
   # these from the server profile's PATH.

@@ -1,6 +1,8 @@
 ##! tailscale — Mesh VPN client and coordination daemon
 {
+  lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   fetchGoModules,
   buildPackages,
@@ -8,6 +10,7 @@
   iproute2,
   iptables,
   procps-ng,
+  service-management,
 }: let
   # Newer releases require a Go patch release newer than the self-hosted AOS
   # compiler. Keep the newest release whose declared toolchain floor is met.
@@ -22,8 +25,81 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "tailscale";
-    inherit version src;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The client reports a nonempty semantic release version and its Go toolchain.";
+        "files" = {};
+        "input" = "The installed Tailscale client build metadata.";
+        "operation" = "Read the client, long, and Go version tuple without contacting tailscaled.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/tailscale\", \"version\"], capture_output=True, text=True)\nassert result.returncode == 0 and \"long version:\" in result.stdout and \"go version:\" in result.stdout\nprint(\"tailscale operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "tailscale operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The Tailscale client rejects the malformed boolean value.";
+        "files" = {};
+        "input" = "A status request with an invalid boolean value for JSON output.";
+        "operation" = "Parse the status flags before connecting to the daemon socket.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/tailscale\", \"--socket\", \"missing.sock\", \"status\", \"--json=qualification-invalid\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"invalid boolean value\" in result.stderr\n\nsys.stderr.write(\"tailscale rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "tailscale rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    inherit src;
+    # A major-only range also admits odd-minor unstable releases.
+    # https://tailscale.com/docs/reference/tailscale-client-versions
+    version = "=${version}";
+
+    module = ./_tailscale;
+    moduleDeps = [aos-runtime-checks service-management];
 
     buildDeps = [buildPackages.go];
     runtimeDeps = [getent iproute2 iptables procps-ng];

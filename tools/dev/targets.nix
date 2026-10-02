@@ -7,17 +7,6 @@
   names = builtins.attrNames;
   join = builtins.concatStringsSep "\n";
   isDerivation = value: builtins.isAttrs value && (value.type or null) == "derivation";
-  checkNames = builtins.concatMap (
-    group: let
-      kind = builtins.tryEval (aos.checks.${group}.type or null);
-      children = builtins.tryEval (names aos.checks.${group});
-    in
-      if kind.success && kind.value == "derivation"
-      then [group]
-      else if children.success
-      then map (name: "${group}.${name}") children.value
-      else [group]
-  ) (names aos.checks);
   imageNames = builtins.concatMap (
     variant:
       if aos.systems.${variant}.build ? image
@@ -49,7 +38,7 @@
     containers = containerNames;
     checks =
       if scope == ""
-      then checkNames
+      then names aos.checks
       else let
         target =
           builtins.foldl' (attrs: name:

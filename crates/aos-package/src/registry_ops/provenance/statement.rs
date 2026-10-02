@@ -6,7 +6,7 @@ use crate::registry_ops::provenance::{
     PACKAGE_PROVENANCE_STATEMENT_TYPE, PackageProvenanceTransparencyLogBody,
     PackageProvenanceTransparencyLogEntry,
 };
-use crate::registry_ops::uki::sha256_hex;
+use crate::registry_ops::sha256_hex;
 use anyhow::{Context, Result, bail};
 use serde_json::Value;
 use std::path::Path;
@@ -126,25 +126,23 @@ pub(in crate::registry_ops) fn validate_package_provenance_transparency_statemen
         "package subject digest",
     )?;
 
-    let manifest_subject_name = format!(
-        "aos:permissions-manifest:{}:{}:{}",
+    let binding_subject_name = format!(
+        "aos:package-runtime-binding:{}:{}:{}",
         entry.body.package, entry.body.version, entry.body.platform
     );
-    let manifest_subject = provenance_statement_named_object(
-        json_array(statement, "subject")?,
-        &manifest_subject_name,
-    )
-    .with_context(|| {
-        format!(
-            "locating permissions manifest subject '{}' for transparency log entry {}",
-            manifest_subject_name, entry.body.sequence
-        )
-    })?;
-    let manifest_digest = sha256_digest_from_statement_digest(
-        manifest_subject.get("digest").with_context(|| {
-            format!("permissions manifest subject '{manifest_subject_name}' missing digest")
+    let binding_subject =
+        provenance_statement_named_object(json_array(statement, "subject")?, &binding_subject_name)
+            .with_context(|| {
+                format!(
+                    "locating runtime binding subject '{}' for transparency log entry {}",
+                    binding_subject_name, entry.body.sequence
+                )
+            })?;
+    let binding_digest = sha256_digest_from_statement_digest(
+        binding_subject.get("digest").with_context(|| {
+            format!("runtime binding subject '{binding_subject_name}' missing digest")
         })?,
-        "permissions manifest subject digest",
+        "runtime binding subject digest",
     )?;
     let expected_measurement = crate::package_attestation::package_measurement_digest(
         &entry.body.package,
@@ -155,11 +153,11 @@ pub(in crate::registry_ops) fn validate_package_provenance_transparency_statemen
             .as_deref()
             .or(entry.body.root_hash.as_deref())
             .context("package transparency entry missing root_digest")?,
-        &manifest_digest,
+        &binding_digest,
     );
     if expected_measurement != entry.body.measurement {
         bail!(
-            "package transparency log entry {} measurement does not match permissions manifest digest",
+            "package transparency log entry {} measurement does not match runtime binding digest",
             entry.body.sequence
         );
     }

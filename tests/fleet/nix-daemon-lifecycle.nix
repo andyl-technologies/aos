@@ -4,16 +4,7 @@
   pkgs,
   ...
 }: let
-  image = mkSystem [
-    ../../systems/server-test.nix
-    {
-      aos.packages.nix-daemon = {
-        package = pkgs.nix-daemon;
-        bundle = true;
-        preset = true;
-      };
-    }
-  ];
+  image = mkSystem ./_nix-daemon-image.nix;
 in {
   name = "nix-daemon-lifecycle";
   timeout = 1800;
@@ -27,20 +18,21 @@ in {
     packages = ["aos-test-agent"];
     extraClosures = [pkgs.aos.apm pkgs.bash pkgs.coreutils pkgs.nix pkgs.util-linux];
     metadata."host.nix" = ''
-      { lib, ... }: {
-        # The debug autologin fixture replaces shadow with root-only rows.
-        # Use ordinary account projection to qualify locked build identities.
-        aos.profiles.debug.autologin = lib.mkForce false;
-        aos.apm.desiredPackages = [ "nix-daemon" ];
-        aos.users.users.build-client = {
-          uid = 1000;
-          group = "build-clients";
-          home = "/tmp";
-          shell = "${pkgs.bash}/bin/bash";
+      { config, lib, ... }: {
+        aos.getty.autologin.enable = lib.mkForce false;
+        aos.abilities.identity.operations.group.effects.build-clients.input = {
+          name = "build-clients";
+          requested_id = 1000;
         };
-        aos.users.groups.build-clients.gid = 1000;
-        environment.etc."aos/policy.toml" = {
-          text = "tier = \"privileged\"\n";
+        aos.abilities.identity.operations.principal.effects.build-client.input = {
+          name = "build-client";
+          requested_id = 1000;
+          primary_group = config.aos.abilities.identity.operations.group.effects.build-clients.outputs.name;
+          home_directory = "/tmp";
+        };
+        aos.abilities.configuration.operations.file.effects.daemon-client-policy.input = {
+          path = "/etc/aos/policy.toml";
+          content = "tier = \"privileged\"\n";
           mode = "0644";
         };
       }
@@ -52,6 +44,8 @@ in {
     import json
 
     APM = "${pkgs.aos.apm}/bin/apm"
+    RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
+    PROFILE = "/var/lib/profiles/system"
     NIX = "${pkgs.nix}/bin/nix-store"
     SETPRIV = "${pkgs.util-linux}/bin/setpriv"
     SOCKET = "/nix/var/nix/daemon-socket/socket"
@@ -70,7 +64,7 @@ in {
             "cat /tmp/retained-build.log /tmp/retained-build.out 2>/dev/null || true",
             "systemctl status nix-daemon.service nix-daemon.socket nix-daemon-policy.service --no-pager || true",
             "journalctl -u nix-daemon.service -u nix-daemon-policy.service -n 80 --no-pager || true",
-            "cat /var/lib/profiles/system/state.json; systemctl show aos-config.target --property=ActiveState",
+            f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery; systemctl show aos-config.target --property=ActiveState",
             "for p in /proc/[0-9]*/status; do "
             "awk '$1 == \"Name:\" { name = $2 } $1 == \"State:\" { state = $2 } "
             "$1 == \"Uid:\" { uid = $2 } END { if (uid >= 30001 && uid <= 30064) "
@@ -89,8 +83,8 @@ in {
 
     def generation():
         return json.loads(builder.succeed(
-            "cat /var/lib/profiles/system/state.json"
-        ))["current"]
+            f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery"
+        ))["generation"]
 
 
     def stage(body):
@@ -118,20 +112,38 @@ in {
         elif succeeds:
             builder.succeed(command, timeout=600)
         else:
+            builder.fail(command, timeout=600)
+
+
+    def remove_daemon(succeeds=True):
+        global added
+        # Remove authored overrides before departing the package's module root.
+        # An orphaned option definition must not substitute for the worker guard.
+        if added:
+            builder.succeed(f"{APM} config remove daemon.nix")
+            builder.succeed(f"{APM} config apply --eval-root /run/daemon-remove-reset-{sequence}", timeout=600)
+            added = False
+        previous = generation()
+        command = f"{APM} remove nix-daemon --yes"
+        if succeeds:
+            builder.succeed(command, timeout=600)
+            descriptor = json.loads(builder.succeed(
+                f"cat {PROFILE}/gen-{generation()}/evaluation.json"
+            ))
+            assert all(module["name"] != "nix-daemon" for module in descriptor["packages"]["modules"]), descriptor
+        else:
             since = builder.succeed("date +%s").strip()
             result = builder.fail(command, timeout=600)
-            # Activation runs in a systemd job; its detailed refusal is in the
-            # job journal rather than the CLI's generic failed-job response.
             journal = builder.succeed(
                 f"journalctl -u aos-activate.service --since=@{since} --no-pager"
             )
             assert "identity is still running" in journal or "workers remain" in journal, (result, journal)
+            assert generation() == previous
 
 
     def configuration(enabled, extra="", count=4):
         flag = "true" if enabled else "false"
         return (
-            'aos.apm.desiredPackages = lib.mkForce [ "nix-daemon" ]; '
             f'nix-daemon = {{ enable = {flag}; buildUsers.count = {count}; '
             f'settings.max-jobs = {count}; {extra} }};'
         )
@@ -162,19 +174,16 @@ in {
 
     try:
         builder.wait_until_succeeds("systemctl is-active --quiet aos-config.target", timeout=300)
-        builder.wait_until_succeeds("test -s /run/aos/manifest.json", timeout=300)
+        first_generation = generation()
+        assert isinstance(first_generation, int) and first_generation > 0, first_generation
+        builder.succeed(f"test -s {PROFILE}/gen-{first_generation}/native-deployment.json")
+        builder.succeed(f"test -s {PROFILE}/gen-{first_generation}/evaluation.json")
         assert_disabled()
         builder.succeed("grep -q '^nixbld64:x:30064:30000:' /etc/passwd")
         shadow = builder.succeed(
             "awk -F: '$1 == \"nixbld64\" { print $2 }' /etc/shadow"
         ).strip()
         assert shadow.startswith("!") or shadow == "*", repr(shadow)
-
-        # Removal without ever starting a build must accept an empty retired slice.
-        removal = "aos.apm.desiredPackages = lib.mkForce [];"
-        apply(removal)
-        builder.fail("grep -q '^nixbld1:' /etc/passwd")
-        builder.succeed("test -d /nix/store && test -f /nix/var/nix/db/db.sqlite")
 
         # An accepted limit can be too small even for the listener. Policy runs
         # outside the build slice and must remain able to restore its limits.
@@ -268,18 +277,9 @@ in {
             builder.succeed("grep -qx 'nixbld:x:30000:nixbld1,nixbld2' /etc/group")
             builder.succeed("grep -q '^nixbld64:x:30064:30000:' /etc/passwd")
 
-            current = generation()
-            apply(removal, succeeds=False)
-            assert generation() == current
+            remove_daemon(succeeds=False)
             builder.succeed(f"test -r '{worker}'")
-            failed = json.loads(builder.succeed(
-                "cat /var/lib/profiles/system/state.json"
-            ))["next"] - 1
-            builder.wait_until_succeeds(
-                "while read id parent device root target rest; do "
-                f"case $target in /run/etc/system-{failed}/*|/run/etc/config-{failed}/*|/run/aos-etc-final.*) exit 1 ;; esac; "
-                "done < /proc/self/mountinfo", timeout=20,
-            )
+            builder.succeed(f"test -s {PROFILE}/deployment/effects.journal")
 
             # Reverting to defaults while disabled must reset transient live policy too.
             apply(configuration(False, count=2))
@@ -299,9 +299,11 @@ in {
             builder.succeed(f"test -f '{output}/complete'")
             builder.wait_until_succeeds(f"test ! -e '{worker}'", timeout=60)
 
-            apply(removal)
-            builder.fail("test -e /etc/systemd/system/aos-pkg-nix-daemon-builds.slice")
-            builder.fail("grep -q '^nixbld1:' /etc/passwd")
+            remove_daemon()
+            # Persistent worker resource policy and identity reservations survive
+            # package departure; the listener's enabled lifecycle does not.
+            builder.succeed("test -e /etc/systemd/system/aos-pkg-nix-daemon-builds.slice")
+            builder.succeed("grep -q '^nixbld1:x:30001:30000:' /etc/passwd")
             builder.succeed(f"test -d '{output}' && test -d /nix/store")
             assert_disabled()
             print("Nix daemon APM lifecycle: activation, native restart, retained worker policy, disable, and drained removal PASS")

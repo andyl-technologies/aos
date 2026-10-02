@@ -1,0 +1,2 @@
+Retained payload bytes for source-only native graph fixtures.
+These fixtures inspect declarations and never dispatch this payload.

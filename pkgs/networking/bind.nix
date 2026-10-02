@@ -1,8 +1,9 @@
 ##! bind — Authoritative DNS server, recursive resolver, and DNS utilities
 {
-  mkDerivation,
-  fetchurl,
   lib,
+  mkDerivation,
+  aos-runtime-checks,
+  fetchurl,
   stdenv,
   gnumake,
   perl,
@@ -27,12 +28,81 @@
   readline,
   tzdata,
   buildPackages,
+  service-management,
+  aos-filesystem-provider,
+  nftables,
 }: let
   version = "9.20.27";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "bind";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "BIND accepts the zone and its serial and record relationships.";
+        "files" = {
+          "example.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (\n  1 3600 600 86400 60\n)\n@   IN NS ns.example.test.\nns  IN A  192.0.2.53\nwww IN A  192.0.2.42\n";
+        };
+        "input" = "A complete authoritative DNS zone with SOA, NS, and address records.";
+        "operation" = "Load and validate the zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "example.zone"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "BIND rejects the invalid address with status 1.";
+        "files" = {
+          "invalid.zone" = "$ORIGIN example.test.\n@ 3600 IN SOA ns.example.test. hostmaster.example.test. (1 3600 600 86400 60)\n@  IN NS ns.example.test.\nns IN A 999.0.2.53\n";
+        };
+        "input" = "A DNS zone containing an IPv4 octet outside the valid range.";
+        "operation" = "Load the malformed zone with named-checkzone.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/named-checkzone"
+              "example.test"
+              "invalid.zone"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # ISC preserves compatibility within the 9.20 stable branch.
+    # https://kb.isc.org/docs/aa-00896
+    version = "~${version}";
     outputs = ["out" "dnsutils"];
 
     src = fetchurl {
@@ -66,6 +136,9 @@ in
         readline
       ];
     propagatedDeps = [];
+
+    module = ./_bind;
+    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider nftables];
 
     phases = [
       {
@@ -186,8 +259,12 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
+    }: let
+      nativeTests = import ./_bind/native-tests.nix {inherit lib self pkgs;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
+    in {
       link = testing.mkLinkCheck {
         pname = "lib-bind-dns";
         library = self;
@@ -212,6 +289,14 @@ in
         tool = self.dnsutils;
         command = "dig -v && nslookup -version";
       };
+      native-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "bind-native-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the BIND native ability contract check failed";
     };
 
     meta = {

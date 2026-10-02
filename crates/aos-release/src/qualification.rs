@@ -44,10 +44,10 @@ pub use profiles::{
 };
 
 /// Schema of the qualification contract.
-pub const QUALIFICATION_CONTRACT: &str = "aos.release.qualification-contract/v1";
+pub const QUALIFICATION_CONTRACT: &str = "aos.release.qualification-contract/v2";
 
 /// Reviewed identity every qualification contract carries.
-pub const QUALIFICATION_CONTRACT_ID: &str = "aos-system";
+pub const QUALIFICATION_CONTRACT_ID: &str = "aos-system-v2";
 
 /// Digest domain for requirement and claim gate policies.
 pub const GATE_POLICY_DOMAIN: &str = "aos.release.gate-policy/v1";
@@ -158,7 +158,8 @@ pub enum K3sTopology {
 
 impl K3sTopology {
     /// Returns the complete package population exercised by this topology.
-    pub fn packages(self) -> [&'static str; 3] {
+    #[must_use]
+    pub const fn packages(self) -> [&'static str; 3] {
         match self {
             Self::CombinedWorker => ["k3s", "k3s-combined", "k3s-worker"],
             Self::ControlPlaneWorker => ["k3s", "k3s-control-plane", "k3s-worker"],
@@ -168,6 +169,7 @@ impl K3sTopology {
 
 impl PackageExecution {
     /// Returns the system image variant required by this execution environment.
+    #[must_use]
     pub fn system_variant(&self) -> &str {
         match self {
             Self::RecoveryImage { system_variant } | Self::K3sFleet { system_variant, .. } => {
@@ -198,6 +200,13 @@ pub struct PackageRule {
 pub struct QualificationRequirement {
     /// Stable requirement identity across destinations.
     pub id: String,
+    /// Exact evaluated native-adapter matrix for the matrix requirement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_operation_spec:
+        Option<crate::qualification_evidence::NativeOperationQualificationSpec>,
+    /// Restricts a native ability obligation to production-tier destinations.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub production_only: bool,
     /// Hold point that requires the result.
     pub phase: QualificationPhase,
     /// Subject population, expanded from the signed artifact matrix.
@@ -229,7 +238,7 @@ pub struct QualificationContract {
     pub exclusions: Vec<String>,
     /// Required reference environments.
     pub targets: Vec<QualificationTarget>,
-    /// Classification of every package eligible on at least one platform.
+    /// Complete package classification, independent of platform eligibility.
     pub package_rules: Vec<PackageRule>,
     /// Shared gate catalog.
     pub requirements: Vec<QualificationRequirement>,
@@ -281,6 +290,27 @@ impl QualificationContract {
         for gate in &self.requirements {
             nonempty_strings(&gate.checks, "acceptance conditions")?;
             claims::merge_measurements(&mut BTreeMap::new(), &gate.measurements)?;
+            if gate.id == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT {
+                let spec = gate.native_operation_spec.as_ref().ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "native adapter matrix requirement lacks its exact specification"
+                    )
+                })?;
+                crate::qualification_evidence::validate_native_operation_qualification_spec(spec)?;
+                if gate
+                    .checks
+                    .iter()
+                    .filter(|check| {
+                        check.as_str() == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK
+                    })
+                    .count()
+                    != 1
+                {
+                    bail!("native adapter matrix requirement lacks its stable acceptance check");
+                }
+            } else if gate.native_operation_spec.is_some() {
+                bail!("non-matrix qualification requirement carries a native adapter matrix");
+            }
             for identity in ["subject", "policy", "executor", "environment"] {
                 if !gate.invalidated_by.iter().any(|value| value == identity) {
                     bail!("requirement {} omits invalidation by {identity}", gate.id);
@@ -529,6 +559,10 @@ impl QualificationContract {
             .requirements
             .iter()
             .filter(|requirement| profile.requires(&requirement.id))
+            .filter(|requirement| {
+                !requirement.production_only
+                    || destination.registry_tier == RegistryTier::Production
+            })
             .map(|requirement| self.requirement_gate(requirement))
             .collect::<Result<Vec<_>>>()?;
         for claim in &self.claims {
@@ -583,14 +617,6 @@ impl QualificationContract {
         let packages: BTreeSet<_> = plan
             .packages
             .iter()
-            .filter(|package| {
-                package.platforms.iter().any(|cell| {
-                    !matches!(
-                        cell.decision,
-                        crate::platform::MatrixCell::NotApplicable { .. }
-                    )
-                })
-            })
             .map(|package| package.name.as_str())
             .collect();
         let rules: BTreeSet<_> = self
@@ -599,9 +625,7 @@ impl QualificationContract {
             .map(|rule| rule.name.as_str())
             .collect();
         if packages != rules {
-            bail!(
-                "qualification classification differs from the publication-eligible package inventory"
-            );
+            bail!("qualification classification differs from the complete package inventory");
         }
         if plan.images.is_empty() {
             bail!("server qualification requires the Linux image matrix");
@@ -706,4 +730,8 @@ fn unique<'a>(values: impl Iterator<Item = &'a str>, label: &str) -> Result<()> 
         }
     }
     Ok(())
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }

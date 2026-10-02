@@ -4,6 +4,11 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[features]
+# Enables the native fleet fixture and runtime audit binaries in the
+# separately retained testSupport output.
+release-fleet-fixture = []
+
 [[bin]]
 name = "aos"
 path = "src/main.rs"
@@ -21,14 +26,36 @@ name = "aos-package-runtime"
 path = "src/package_runtime.rs"
 
 [[bin]]
+name = "aos-boot-configuration"
+path = "src/boot_configuration.rs"
+
+[[bin]]
+name = "aos-provisioning-configuration-evaluator"
+path = "src/provisioning_configuration_evaluator.rs"
+
+[[bin]]
 name = "aos-release-fleet-fixture"
 path = "tests/support/release_fleet_fixture.rs"
+required-features = ["release-fleet-fixture"]
+
+[[bin]]
+name = "aos-ability-interruption-audit"
+path = "tests/support/ability_interruption_audit.rs"
+required-features = ["release-fleet-fixture"]
+
+[[bin]]
+name = "aos-ability-authority-audit"
+path = "tests/support/ability_authority_audit.rs"
+required-features = ["release-fleet-fixture"]
 
 [dependencies]
 rustix = { workspace = true, features = ["process"] }
 aos-contract = { workspace = true }
+aos-ability-model = { workspace = true }
+aos-ability-plan = { workspace = true }
+aos-ability-runtime = { workspace = true }
 aos-core = { workspace = true }
-aos-net = { workspace = true }
+aos-net = { workspace = true, features = ["transfer"] }
 aos-oci = { workspace = true }
 aos-oci-types = { workspace = true }
 aos-server = { workspace = true }
@@ -82,6 +109,8 @@ ratatui = { workspace = true }
 crossterm = { workspace = true }
 
 [dev-dependencies]
+aos-ability-plan.workspace = true
+aos-ability-model = { workspace = true }
 aos-hub = { workspace = true }
 aos-hub-core = { workspace = true, features = ["test-fixtures"] }
 flate2 = { workspace = true }

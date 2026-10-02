@@ -50,6 +50,7 @@
 }: let
   sbSystem = mkSystem [
     ../../systems/server-measured-boot.nix
+    ../../systems/_server-test-packages.nix
     {
       # The consumer boots the default 0.1.0 fixture. A distinct release is
       # required for `apm upgrade --system` to evaluate the candidate policy
@@ -58,11 +59,11 @@
     }
   ];
   sbTop = sbSystem.config.system.build.toplevel;
-  sbUki = sbSystem.config.system.build.uki;
+  sbUki = sbSystem.config.system.build.initialBootExecutable;
   sbImage = sbSystem.config.system.build.image.raw;
   sbImageDisk = sbSystem.config.system.build.imageArtifacts.raw.disk;
   sbImageInfo = sbSystem.config.system.build.imageArtifacts.raw.info;
-  publicationClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  publicationClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       sbTop
       sbUki
@@ -86,7 +87,10 @@
       aos.packages =
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
+        (name: {
+          package = pkgs.${name};
+          bundle = true;
+        });
       # The static server binds this directory before publication fills it.
       environment.etc."tmpfiles.d/fleet-registry-cache.conf".text = ''
         d /var/lib/sysreg-cache 0755 root root - -

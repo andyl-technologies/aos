@@ -30,6 +30,7 @@
     # multi-user (see tests/fleet/secure-boot.nix).
     target = {
       system = systems.server-secureboot-lockdown;
+      extraModules = [../../systems/_server-test-packages.nix];
       bootMode = "image";
       imageDiskMiB = 16384;
       packages = ["aos-test-agent"];

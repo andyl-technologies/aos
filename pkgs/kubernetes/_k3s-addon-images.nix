@@ -1,6 +1,8 @@
 ##! Builds digest-addressed images for every default K3s addon from AOS sources.
 {
   lib,
+  runCommand,
+  writeTextFile,
   callPackage,
   buildPackages,
   stdenv,
@@ -12,6 +14,7 @@
   jq,
   iptables,
   ca-certificates,
+  ociTools,
 }: let
   programs = callPackage ./_k3s-addon-programs.nix {};
   traefik = callPackage ./_k3s-traefik.nix {};
@@ -21,10 +24,6 @@
     pkgs = {
       inherit mkDerivation fetchurl bash coreutils grep jq iptables;
     };
-  };
-  oci = import ../../lib/build/oci {
-    inherit lib;
-    inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
   };
   architecture =
     if stdenv.hostPlatform.isAarch64
@@ -44,11 +43,11 @@
   }: let
     reference = "aos.invalid/k3s/${name}";
     imageRoots = lib.unique (roots ++ [ca-certificates]);
-    payload = oci.mkClosureLayer {
+    payload = ociTools.mkClosureLayer {
       roots = imageRoots;
       pname = "k3s-${name}-payload";
     };
-    metadata = oci.mkRootMetadataLayer {
+    metadata = ociTools.mkRootMetadataLayer {
       pname = "k3s-${name}-metadata";
       storeLayers = [payload];
       directories =
@@ -76,11 +75,21 @@
         }
       ];
     };
-    runtimeAudit = import ../../lib/build/runtime-closure-audit.nix {
-      inherit lib name maxClosureMiB;
+    runtimeAudit = lib.build.runtimeClosureAudit {
+      inherit name maxClosureMiB;
       pkgs = buildPackages;
       roots = imageRoots;
       maxDevelopmentPayloadMiB = 1;
+    };
+    deploymentArtifact = ociTools.mkDeploymentArtifact {
+      pkgs = {inherit buildPackages runCommand writeTextFile;};
+      pname = "k3s-${name}-deployment";
+      platform = {
+        os = "linux";
+        inherit architecture;
+      };
+      packages = imageRoots;
+      scope = ["container" "k3s" name];
     };
   in {
     inherit reference;
@@ -93,14 +102,10 @@
       then root.src
       else [root.src])
     imageRoots);
-    image = oci.mkImageLayout {
+    image = ociTools.mkImageLayout {
       pname = "k3s-${name}-image";
       layers = [payload metadata];
-      inherit runtimeAudit;
-      platform = {
-        os = "linux";
-        inherit architecture;
-      };
+      inherit runtimeAudit deploymentArtifact;
       referenceName = "${reference}:${version}";
       config = {
         inherit entrypoint user;

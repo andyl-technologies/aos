@@ -23,6 +23,10 @@
 //! - no subcommand: a native qualification executor reading one request on
 //!   stdin.
 
+mod artifact_consumption_fixture;
+mod initrd_contract_fixture;
+mod native_deployment_fixture;
+
 use std::env;
 use std::fs::{self, File};
 use std::io::{BufReader, Read, Write};
@@ -36,6 +40,7 @@ use aos_core::nar::cache::{
 };
 use aos_release::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
+    ImageArtifactIdentity,
 };
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
@@ -44,6 +49,7 @@ use aos_release::evidence::{
     QualificationExecutorResponse,
 };
 use aos_release::fitness::{FITNESS_REPORT, FitnessReport, LiveBindings, signer_roster_digest};
+use aos_release::inventory::PackageInventoryV1;
 use aos_release::inventory::PackagePublicationMetadata;
 use aos_release::manifest::{
     FinalArtifactSet, MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1, ManifestSignature,
@@ -108,6 +114,18 @@ async fn main() -> Result<()> {
     match arguments.first().map(String::as_str) {
         Some("contract") => write_contract(&arguments[1..]),
         Some("prepare") => prepare(&arguments[1..]),
+        Some("adopt-native-fixture") => native_deployment_fixture::adopt(&arguments[1..]),
+        Some("artifact-consumption-evidence") => {
+            artifact_consumption_fixture::generate(&arguments[1..])
+        }
+        Some("initrd-contract") => initrd_contract_fixture::verify(&arguments[1..]),
+        Some("image-assembly-contract") => {
+            initrd_contract_fixture::verify_assembly(&arguments[1..])
+        }
+        Some("image-assembly-attachments") => {
+            initrd_contract_fixture::verify_assembly_attachments(&arguments[1..])
+        }
+        Some("validate-package-inventory") => validate_package_inventory(&arguments[1..]),
         Some("bootstrap-intent") => bootstrap_intent(&arguments[1..]),
         Some("sign-exchange-v1") => signer_exchange(),
         Some("review") => review(&arguments[1..]),
@@ -116,6 +134,25 @@ async fn main() -> Result<()> {
         None => qualification_executor().await,
         Some(command) => bail!("unknown release fleet fixture command: {command}"),
     }
+}
+
+fn validate_package_inventory(arguments: &[String]) -> Result<()> {
+    if arguments.len() < 2 {
+        bail!("usage: aos-release-fleet-fixture validate-package-inventory INVENTORY PLATFORM...");
+    }
+
+    let path = Path::new(&arguments[0]);
+    let bytes = fs::read(path)
+        .with_context(|| format!("reading release package inventory {}", path.display()))?;
+    let inventory: PackageInventoryV1 = serde_json::from_slice(&bytes)
+        .with_context(|| format!("decoding release package inventory {}", path.display()))?;
+    let platforms = arguments[1..]
+        .iter()
+        .map(|value| value.parse::<Platform>())
+        .collect::<Result<Vec<_>>>()?;
+    inventory.validate_for_platforms(&platforms)?;
+
+    Ok(())
 }
 
 /// Writes the contract the fixture plans with, as `new` would export it.
@@ -131,10 +168,7 @@ fn write_contract(arguments: &[String]) -> Result<()> {
 
 /// Returns the shared contract with the fleet package as its only catalog rule.
 fn fleet_contract() -> Result<aos_release::qualification::QualificationContract> {
-    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
-        include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
-        "fixture contract",
-    )?;
+    let mut contract = qualification_fixture::contract()?;
     contract.package_rules = vec![aos_release::qualification::PackageRule {
         name: "fleet-package".into(),
         role: aos_release::qualification::PackageRole::GeneralCatalog,
@@ -214,7 +248,6 @@ fn prepare(arguments: &[String]) -> Result<()> {
             platform: *platform,
             decision: MatrixCell::Artifact {
                 artifact: PlannedArtifactSet {
-                    configuration: None,
                     artifacts: vec![PlannedArtifact {
                         id: package_id(*platform),
                         derivation: None,
@@ -268,46 +301,80 @@ fn prepare(arguments: &[String]) -> Result<()> {
         });
         artifacts.push(package);
     }
-    for (id, kind, platform) in Platform::LINUX
-        .into_iter()
-        .flat_map(|platform| {
-            [
-                (
-                    format!("image/server/{platform}"),
-                    ArtifactKind::RawImage,
-                    Some(platform),
-                ),
-                (
-                    format!("image/server/{platform}/metadata"),
-                    ArtifactKind::ImageMetadata,
-                    Some(platform),
-                ),
-                (
-                    format!("oci/{platform}"),
-                    ArtifactKind::OciManifest,
-                    Some(platform),
-                ),
-            ]
-        })
-        .chain([(String::from("oci/index"), ArtifactKind::OciIndex, None)])
-    {
-        let path = if kind == ArtifactKind::RawImage {
-            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}/raw")
-        } else {
-            format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}")
-        };
-        let bytes = if kind == ArtifactKind::ImageMetadata {
-            canonical::canonical_json(&qualification_fixture::metadata()?)?
-        } else {
-            format!("synthetic release protocol fixture: {id}\n").into_bytes()
-        };
-        write_new(output.join(&path), &bytes)?;
-        let mut artifact = record(id, kind, platform, &path, &bytes)?;
-        if matches!(kind, ArtifactKind::RawImage | ArtifactKind::ImageMetadata) {
+    for platform in Platform::LINUX {
+        let contract_id = format!("provenance/image/server/{platform}/provider-contract");
+        let contract_path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/{contract_id}");
+        let contract_bytes =
+            format!("synthetic image provider contract: {platform}\n").into_bytes();
+        write_new(output.join(&contract_path), &contract_bytes)?;
+        artifacts.push(record(
+            contract_id.clone(),
+            ArtifactKind::Provenance,
+            Some(platform),
+            &contract_path,
+            &contract_bytes,
+        )?);
+
+        for (suffix, role, bytes) in [
+            (
+                "payload",
+                "aos.test.image-artifact.payload/v1",
+                format!("synthetic release protocol fixture: image/server/{platform}\n")
+                    .into_bytes(),
+            ),
+            (
+                "metadata",
+                "aos.test.image-artifact.metadata/v1",
+                canonical::canonical_json(&qualification_fixture::metadata()?)?,
+            ),
+        ] {
+            let id = if suffix == "payload" {
+                format!("image/server/{platform}")
+            } else {
+                format!("image/server/{platform}/{suffix}")
+            };
+            // Payload and metadata are siblings even though the payload's
+            // logical artifact id names the image itself.
+            let path = format!(
+                "releases/candidate/{RELEASE_VERSION}/fixtures/image/server/{platform}/{suffix}"
+            );
+            write_new(output.join(&path), &bytes)?;
+            let mut artifact = record(id, ArtifactKind::Image, Some(platform), &path, &bytes)?;
             artifact.system_variant = Some("server".into());
+            artifact.image = Some(ImageArtifactIdentity {
+                contract_schema: "aos.test.image-provider/v1".into(),
+                contract_artifact: contract_id.clone(),
+                role: role.into(),
+            });
+            artifact.relationships.push(ArtifactRelationship {
+                relation: ArtifactRelation::Documents,
+                target: contract_id.clone(),
+            });
+            artifacts.push(artifact);
         }
-        artifacts.push(artifact);
+
+        let id = format!("oci/{platform}");
+        let path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/{id}");
+        let bytes = format!("synthetic release protocol fixture: {id}\n").into_bytes();
+        write_new(output.join(&path), &bytes)?;
+        artifacts.push(record(
+            id,
+            ArtifactKind::OciManifest,
+            Some(platform),
+            &path,
+            &bytes,
+        )?);
     }
+    let index_path = format!("releases/candidate/{RELEASE_VERSION}/fixtures/oci/index");
+    let index_bytes = b"synthetic release protocol fixture: oci/index\n";
+    write_new(output.join(&index_path), index_bytes)?;
+    artifacts.push(record(
+        "oci/index".into(),
+        ArtifactKind::OciIndex,
+        None,
+        &index_path,
+        index_bytes,
+    )?);
     let gate_report = canonical::to_vec(&json!({
         "schema_version": "aos.release.fleet-gate-report/v1",
         "result": "passed"
@@ -341,7 +408,6 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform: cell.platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
-                            configuration: None,
                             artifact_ids: vec![package_id(cell.platform)],
                         },
                     },
@@ -356,7 +422,6 @@ fn prepare(arguments: &[String]) -> Result<()> {
                     platform,
                     decision: MatrixCell::Artifact {
                         artifact: FinalArtifactSet {
-                            configuration: None,
                             artifact_ids: vec![
                                 format!("image/server/{platform}"),
                                 format!("image/server/{platform}/metadata"),
@@ -590,7 +655,6 @@ fn release_plan(
                     platform,
                     decision: MatrixCell::Artifact {
                         artifact: PlannedArtifactSet {
-                            configuration: None,
                             artifacts: [
                                 format!("image/server/{platform}"),
                                 format!("image/server/{platform}/metadata"),
@@ -726,6 +790,7 @@ fn record(
         kind,
         platform,
         system_variant: None,
+        image: None,
         path: BundlePath::parse(path)?,
         size_bytes: u64::try_from(bytes.len())?,
         sha256: Sha256Digest::of_bytes(bytes),
@@ -860,7 +925,7 @@ fn signer_exchange() -> Result<()> {
     Ok(())
 }
 
-#[path = "../../../aos-release/tests/support/qualification.rs"]
+#[path = "../../../aos-release/src/test_support/qualification/mod.rs"]
 mod qualification_fixture;
 
 async fn qualification_executor() -> Result<()> {
@@ -933,6 +998,7 @@ fn fixture_evidence(
     finish: &str,
 ) -> Result<EvidenceRecord> {
     use aos_release::qualification_evidence::{CheckObservation, QualificationObservation};
+
     let seconds = if case.phase == aos_release::qualification::QualificationPhase::Complete {
         14 * 24 * 60 * 60
     } else {
@@ -946,33 +1012,36 @@ fn fixture_evidence(
         .map(|environment| environment.digest())
         .transpose()?
         .unwrap_or(digest("synthetic-protocol-environment"));
+    let checks = case
+        .checks
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                CheckObservation {
+                    passed: true,
+                    detail: "Synthetic protocol fixture; no OS qualification claim".into(),
+                },
+            )
+        })
+        .collect();
+    let operations = if case.target.is_some() {
+        qualification_fixture::measurements()
+    } else {
+        std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
+    };
     Ok(EvidenceRecord {
         qualification: Some(QualificationObservation {
             environment,
             capabilities,
             assessment: qualification_fixture::assessment(case)?,
+            native_adapter_matrix: None,
             case_digest: case.digest()?,
             executor_digest: digest("synthetic-protocol-executor"),
             environment_digest,
-            checks: case
-                .checks
-                .iter()
-                .map(|id| {
-                    (
-                        id.clone(),
-                        CheckObservation {
-                            passed: true,
-                            detail: "Synthetic protocol fixture; no OS qualification claim".into(),
-                        },
-                    )
-                })
-                .collect(),
+            checks,
             observed_seconds: seconds,
-            operations: if case.target.is_some() {
-                qualification_fixture::measurements()
-            } else {
-                std::collections::BTreeMap::from([("synthetic-requests".into(), 1)])
-            },
+            operations,
             predecessor: case.predecessor.clone(),
         }),
         id: format!("qualification/{}", case.id),
@@ -1454,6 +1523,30 @@ mod tests {
     }
 
     #[test]
+    fn first_release_request_retains_native_policy_and_rejects_other_intent() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let path = temporary.path().join("request.json");
+        let mut request = first_release_request_fixture(&"a".repeat(64))?;
+        fs::write(&path, canonical::to_vec(&request)?)?;
+
+        let retained = first_release_request(&path)?;
+        assert_eq!(retained, request);
+        assert!(fleet_contract()?.requirements.iter().any(|requirement| {
+            requirement.native_operation_spec.is_some()
+        }));
+
+        request.public_evidence_policy_digest = digest("different-policy");
+        fs::write(&path, canonical::to_vec(&request)?)?;
+        assert!(first_release_request(&path).is_err());
+
+        request.public_evidence_policy_digest = fleet_contract()?.digest()?;
+        request.first_release = false;
+        fs::write(&path, canonical::to_vec(&request)?)?;
+        assert!(first_release_request(&path).is_err());
+        Ok(())
+    }
+
+    #[test]
     fn prepared_four_platform_surface_verifies_offline() -> Result<()> {
         let prepared = prepared()?;
         let Prepared {
@@ -1554,11 +1647,25 @@ mod tests {
             ids
         };
 
-        // Staging: delivery, four package cells, and the two Linux disk and
-        // container functional claims. The disk claims update from the
-        // predecessor, so the fleet passes --predecessor-bundle here.
+        // Staging retains five native obligations, delivery, four package
+        // cells, and four Linux disk/container claims. The native matrix and
+        // disk update claims bind the frozen predecessor bundle.
         let staging = cases(QualificationPhase::Staging)?;
-        assert_eq!(staging.len(), 9);
+        assert_eq!(staging.len(), 14);
+        let native_requirements: Vec<_> = requirements(&staging)
+            .into_iter()
+            .filter(|id| id.starts_with("ability-"))
+            .collect();
+        assert_eq!(
+            native_requirements,
+            [
+                "ability-crucible-baseline",
+                "ability-native-activation",
+                "ability-native-adapter-matrix",
+                "ability-native-kubernetes",
+                "ability-native-recovery",
+            ]
+        );
         assert_eq!(
             staging
                 .iter()
@@ -1571,7 +1678,7 @@ mod tests {
                 .iter()
                 .filter(|case| case.predecessor.is_some())
                 .count(),
-            2
+            3
         );
         assert_eq!(
             staging

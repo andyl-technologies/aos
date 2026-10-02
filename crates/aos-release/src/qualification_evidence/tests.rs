@@ -43,12 +43,14 @@ fn shared_contract_has_exact_package_image_and_release_cases() -> anyhow::Result
             .platform
             .is_none()
     );
-    // Recovery exercises moved to fitness kinds; they are no longer cases.
-    assert!(
-        !cases
-            .iter()
-            .any(|case| case.requirement_id.ends_with("-recovery") && case.target.is_none())
-    );
+    // Native recovery remains a release obligation; operational recovery
+    // exercises are admitted separately through the fitness requirements.
+    let release_recovery: Vec<_> = cases
+        .iter()
+        .filter(|case| case.requirement_id.ends_with("-recovery") && case.target.is_none())
+        .map(|case| case.requirement_id.as_str())
+        .collect();
+    assert_eq!(release_recovery, ["ability-native-recovery"]);
     let policy = &plan.qualification;
     assert!(
         policy
@@ -279,7 +281,6 @@ fn recovery_package_case_binds_the_matching_image_and_predecessor() -> anyhow::R
 #[test]
 fn qualification_classifies_eligible_and_blocked_packages() -> anyhow::Result<()> {
     let (mut plan, _) = qualification_fixture()?;
-    let contract = plan.qualification.clone();
     let mut excluded = plan.packages[0].clone();
     excluded.name = "excluded-source-component".into();
     for cell in &mut excluded.platforms {
@@ -290,26 +291,49 @@ fn qualification_classifies_eligible_and_blocked_packages() -> anyhow::Result<()
     }
     plan.packages.push(excluded);
 
-    contract.validate_plan(&plan)?;
+    // Classification covers the full inventory, including source-only roots.
+    assert!(
+        plan.qualification
+            .validate_plan(&plan)
+            .unwrap_err()
+            .to_string()
+            .contains("complete package inventory")
+    );
+    let mut classification = plan.qualification.package_rules[0].clone();
+    classification.name = "excluded-source-component".into();
+    plan.qualification.package_rules.push(classification);
+    rebind(&mut plan)?;
+    plan.qualification.validate_plan(&plan)?;
 
+    // A classified blocked target still fails this profile's completeness floor.
     let added = plan.packages.last_mut().unwrap();
     added.platforms[0].decision = MatrixCell::Blocked {
         required_work: "Complete target support.".into(),
         failure_evidence: crate::digest::Sha256Digest::of_bytes(b"blocked"),
     };
     assert!(
-        contract
+        plan.qualification
             .validate_plan(&plan)
             .unwrap_err()
             .to_string()
-            .contains("publication-eligible package inventory")
+            .contains("complete package matrix")
     );
 
     plan.packages.pop();
+    plan.qualification
+        .package_rules
+        .retain(|rule| rule.name != "excluded-source-component");
+    rebind(&mut plan)?;
     let mut unclassified = plan.packages[0].clone();
     unclassified.name = "unclassified-published-package".into();
     plan.packages.push(unclassified);
-    assert!(contract.validate_plan(&plan).is_err());
+    assert!(
+        plan.qualification
+            .validate_plan(&plan)
+            .unwrap_err()
+            .to_string()
+            .contains("complete package inventory")
+    );
     Ok(())
 }
 
@@ -790,6 +814,33 @@ fn observations_cannot_be_replayed_for_changed_bytes_with_the_same_artifact_ids(
 fn qualification_snapshot_uses_current_build_policy_but_cannot_be_published() -> anyhow::Result<()>
 {
     let (mut snapshot, manifest) = qualification_fixture()?;
+    let transition_requirements = [
+        "image-update-recovery",
+        super::NATIVE_ADAPTER_MATRIX_REQUIREMENT,
+    ];
+    let candidate_cases = cases(&snapshot, &manifest, None, QualificationPhase::Staging)?;
+    let matrix_cases: Vec<_> = candidate_cases
+        .iter()
+        .filter(|case| case.requirement_id == super::NATIVE_ADAPTER_MATRIX_REQUIREMENT)
+        .collect();
+    assert!(!matrix_cases.is_empty());
+    assert!(matrix_cases.iter().all(|case| case.predecessor.is_some()));
+
+    let recovery_cases: Vec<_> = candidate_cases
+        .iter()
+        .filter(|case| {
+            case.claim.as_ref().is_some_and(|claim| {
+                claim.minimum_assurance >= crate::qualification::claims::AssuranceLevel::A2
+                    && claim
+                        .requirements
+                        .iter()
+                        .any(|id| id == "image-update-recovery")
+            })
+        })
+        .collect();
+    assert!(!recovery_cases.is_empty());
+    assert!(recovery_cases.iter().all(|case| case.predecessor.is_some()));
+
     snapshot.qualification_predecessor = None;
     snapshot.release_id = format!(
         "{}{}",
@@ -808,7 +859,14 @@ fn qualification_snapshot_uses_current_build_policy_but_cannot_be_published() ->
     let staging_cases = cases(&snapshot, &manifest, None, QualificationPhase::Staging)?;
     assert!(!staging_cases.is_empty());
     assert!(staging_cases.iter().all(|case| {
-        case.requirement_id != "image-update-recovery" && case.predecessor.is_none()
+        !transition_requirements.contains(&case.requirement_id.as_str())
+            && case.predecessor.is_none()
+            && case.claim.as_ref().is_none_or(|claim| {
+                claim
+                    .requirements
+                    .iter()
+                    .all(|id| !transition_requirements.contains(&id.as_str()))
+            })
     }));
     assert!(
         cases(

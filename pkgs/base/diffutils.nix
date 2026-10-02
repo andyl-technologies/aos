@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   stdenv,
@@ -15,7 +16,70 @@
 in
   mkDerivation (
     {
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [];
+        role = "public-package";
+      };
       pname = "diffutils";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "Cmp confirms equality with a silent success.";
+          "files" = {
+            "left.txt" = "same bytes\n";
+            "right.txt" = "same bytes\n";
+          };
+          "input" = "Two files with identical bytes.";
+          "operation" = "Compare the files byte for byte.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/cmp"
+                "@work@/primary/left.txt"
+                "@work@/primary/right.txt"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "Cmp reports inequality through status 1.";
+          "files" = {
+            "left.txt" = "alpha\n";
+            "right.txt" = "alpHa\n";
+          };
+          "input" = "Two files differing in one byte.";
+          "operation" = "Compare the unequal files in silent mode.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/cmp"
+                "--silent"
+                "@work@/bad-input/left.txt"
+                "@work@/bad-input/right.txt"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+      };
+
       inherit version;
 
       src = fetchurl {

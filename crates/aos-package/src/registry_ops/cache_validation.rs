@@ -409,7 +409,10 @@ fn collect_cache_validation_entries_from_package(
                 nar_hashes,
             });
             if let Some(named_outputs) = entry.get("named_outputs").and_then(|v| v.as_table()) {
-                for named_store_path in named_outputs.values().filter_map(|v| v.as_str()) {
+                for named_store_path in named_outputs
+                    .values()
+                    .filter_map(|v| v.get("store_path").and_then(|path| path.as_str()))
+                {
                     let nar_hashes = store_graph
                         .blessed_nars(extract_hash(named_store_path))
                         .iter()

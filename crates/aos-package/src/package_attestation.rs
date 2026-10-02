@@ -24,7 +24,9 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::types::{ApmMeta, ConfigModuleMeta, InstalledMeta, PackageMeta};
+use crate::types::PackageMeta;
+#[cfg(test)]
+use crate::types::{ApmMeta, InstalledMeta};
 
 const AOS_PACKAGE_CEL_REL: &str = "run/log/aos-packages.cel";
 const PCR_EXTEND_ENV: &str = "AOS_SYSTEMD_PCREXTEND";
@@ -49,21 +51,6 @@ const PCR_BASELINE_EVENT_TYPE: &str = "aos-pcr-baseline";
 const PACKAGE_EVENT_TYPE: &str = "aos-package";
 const PACKAGE_SET_EVENT_TYPE: &str = "aos-package-set";
 const GENERATION_EVENT_TYPE: &str = "aos-generation-attestation";
-
-/// Measures the activated exposed package set into PCR 15.
-///
-/// The event log is rooted at `root` so tests and image construction can
-/// exercise the same code against an alternate filesystem. PCR extension runs
-/// only for the live `/` root; non-live roots still get deterministic event
-/// log contents.
-///
-/// # Errors
-///
-/// Returns an error if package metadata cannot be converted into measurement
-/// events, the event log cannot be written, or live PCR extension fails.
-pub(crate) fn measure_activated_packages(root: &Path, installed: &[InstalledMeta]) -> Result<()> {
-    measure_activated_packages_inner(root, installed, root == Path::new("/"), None)
-}
 
 /// Measures a canonical generation-attestation record into the shared AOS
 /// application-PCR event stream.
@@ -249,49 +236,6 @@ pub(crate) fn tpm_available() -> Result<bool> {
     Ok(tpm2_tcti()?.is_some())
 }
 
-fn measure_activated_packages_inner(
-    root: &Path,
-    installed: &[InstalledMeta],
-    live_root: bool,
-    pcrextend_override: Option<&Path>,
-) -> Result<()> {
-    let events = measurement_events(root, installed)?;
-    // PCR 15 measurement requires a TPM. On systems without one — most VMs,
-    // TPM-less hardware — the live baseline read and PCR extension are skipped:
-    // the package event log is still written deterministically, but there is no
-    // PCR to anchor it to, so the seed/activation path degrades gracefully
-    // rather than failing the whole reconcile. Measured-boot systems (TPM
-    // present) keep the full read-then-extend path. `tpm2_tcti` already encodes
-    // presence detection (the `AOS_TPM2_TCTI` override, then `/dev/tpmrm0` /
-    // `/dev/tpm0`). An explicit `pcrextend_override` forces the live path so
-    // unit tests can exercise extension/rollback without a TPM.
-    let measure_pcr = live_root && (pcrextend_override.is_some() || tpm2_tcti()?.is_some());
-    let needs_baseline = measure_pcr && !event_log_has_records(root)?;
-    let mut logged_events = Vec::with_capacity(events.len() + usize::from(measure_pcr));
-    if needs_baseline {
-        let pcr15 = read_current_pcr15()
-            .context("reading current PCR 15 before first live package measurement")?;
-        logged_events.push(pcr_baseline_event(&pcr15));
-    }
-    logged_events.extend(events.iter().cloned());
-    let append = append_event_log(root, &logged_events)?;
-    if measure_pcr {
-        let pcrextend = match pcrextend_override {
-            Some(path) => path.to_path_buf(),
-            None => trusted_systemd_pcrextend_path()?,
-        };
-        if let Err(err) = extend_pcr15(&pcrextend, &events) {
-            if let Err(rollback_err) = rollback_event_log_append(&append) {
-                bail!(
-                    "extending PCR 15 failed and rolling back the package event log also failed: {err:#}; rollback: {rollback_err:#}"
-                );
-            }
-            return Err(err);
-        }
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct MeasurementEvent {
     event_type: &'static str,
@@ -448,7 +392,7 @@ pub(crate) struct PackageMeasurementCatalogEntry {
 
 /// Files produced by the local TPM quote agent primitive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct PackageQuoteArtifacts {
+pub struct PackageQuoteArtifacts {
     /// Verifier-supplied nonce, normalized to lowercase hex.
     pub nonce: String,
     /// PCR bank and selection quoted by the TPM.
@@ -483,7 +427,7 @@ pub(crate) struct PackageQuoteArtifacts {
 /// SHA-256 fingerprints of the quote bundle's AK/EK identity artifacts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PackageQuoteIdentityDigests {
+pub struct PackageQuoteIdentityDigests {
     /// Digest of `ek.pub`.
     pub ek_public_sha256: String,
     /// Digest of `ek.name`.
@@ -590,13 +534,14 @@ struct PendingPackageSet {
     next_digest: usize,
 }
 
+#[cfg(test)]
 fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<MeasurementEvent>> {
     let mut packages = Vec::new();
     for entry in installed {
         let Some(apm) = entry.apm.as_ref() else {
             continue;
         };
-        if !apm.explicit || apm.expose.is_none() {
+        if !apm.explicit || apm.deployment.is_none() {
             continue;
         }
         packages.push(measured_package(root, entry, apm)?);
@@ -618,9 +563,14 @@ fn measurement_events(root: &Path, installed: &[InstalledMeta]) -> Result<Vec<Me
     Ok(events)
 }
 
-fn measured_package(root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result<MeasuredPackage> {
-    let root_digest = package_root_digest(entry, apm);
-    let manifest_digest = package_manifest_digest(root, apm)?;
+#[cfg(test)]
+fn measured_package(
+    _root: &Path,
+    _entry: &InstalledMeta,
+    apm: &ApmMeta,
+) -> Result<MeasuredPackage> {
+    let root_digest = package_root_digest(apm)?;
+    let manifest_digest = package_manifest_digest(apm)?;
     let package = MeasuredPackage {
         name: apm.name.clone(),
         version: apm.version.clone(),
@@ -647,62 +597,57 @@ fn measured_package(root: &Path, entry: &InstalledMeta, apm: &ApmMeta) -> Result
     Ok(package)
 }
 
-fn package_root_digest(entry: &InstalledMeta, apm: &ApmMeta) -> String {
-    if let Some(root_digest) = &apm.attestation.root_digest {
-        return canonical_digest(root_digest);
-    }
-
-    if let Some(root_hash) = &apm.attestation.root_hash {
-        return canonical_digest(root_hash);
-    }
-
-    if let Some(expose) = &apm.expose
-        && let Some(root_hash) = expose
-            .images
-            .iter()
-            .find(|image| image.root_hash_sig.is_some())
-            .and_then(|image| image.root_hash.as_deref())
-    {
-        return canonical_digest(root_hash);
-    }
-
-    package_store_path_root_digest(&entry.store_path)
+#[cfg(test)]
+fn package_root_digest(apm: &ApmMeta) -> Result<String> {
+    let root = apm.attestation.root_digest.as_ref().with_context(|| {
+        format!(
+            "package '{}' has no authenticated payload root digest",
+            apm.name
+        )
+    })?;
+    Ok(aos_contract::Sha256Digest::parse(root)?.to_string())
 }
 
-fn package_store_path_root_digest(store_path: &str) -> String {
-    format!("sha256:{}", digest_hex(store_path.as_bytes()))
+#[cfg(test)]
+fn package_manifest_digest(apm: &ApmMeta) -> Result<String> {
+    let deployment = apm.deployment.as_ref().with_context(|| {
+        format!(
+            "package '{}' has no authenticated native deployment envelope",
+            apm.name
+        )
+    })?;
+    native_package_binding_digest(
+        deployment,
+        apm.module_documentation.as_ref(),
+        apm.qualification.as_ref(),
+    )
 }
 
-fn package_manifest_digest(root: &Path, apm: &ApmMeta) -> Result<String> {
-    let mut expose_manifest_digest = None;
-    if let Some(artifact) = &apm.expose_artifact {
-        let manifest = Path::new(&artifact.store_path).join("manifest.json");
-        if manifest.is_file() {
-            let bytes = fs::read(&manifest)
-                .with_context(|| format!("reading expose manifest {}", manifest.display()))?;
-            expose_manifest_digest = Some(package_manifest_digest_bytes(&bytes));
-        } else if root == Path::new("/") {
-            bail!(
-                "exposed package '{}' is missing signed manifest at {}",
-                apm.name,
-                manifest.display()
-            );
-        }
+/// Commits to the exact native companions used in a package measurement.
+///
+/// # Errors
+/// Rejects invalid native locators or failed canonical document encoding.
+pub(crate) fn native_package_binding_digest(
+    deployment: &crate::types::NativeArtifactMeta,
+    documentation: Option<&crate::types::NativeArtifactMeta>,
+    qualification: Option<&crate::types::NativeArtifactMeta>,
+) -> Result<String> {
+    deployment.validate()?;
+    for companion in [documentation, qualification].into_iter().flatten() {
+        companion.validate()?;
+    }
+    if documentation.is_none() && qualification.is_none() {
+        return Ok(deployment.document_sha256.clone());
     }
 
-    if let Some(module) = &apm.config_module
-        && module.evaluation_base_lib.is_some()
-    {
-        return config_module_binding_digest(module, expose_manifest_digest.as_deref());
-    }
-
-    if let Some(digest) = expose_manifest_digest {
-        return Ok(digest);
-    }
-
-    let bytes = serde_json::to_vec(&apm.permissions)
-        .with_context(|| format!("serializing permissions for package '{}'", apm.name))?;
-    Ok(package_manifest_digest_bytes(&bytes))
+    // Optional authenticated companions participate in the package identity;
+    // their locators retain exact NAR and document commitments independently.
+    let canonical = aos_contract::canonical::to_vec(&serde_json::json!({
+        "deployment": deployment,
+        "documentation": documentation,
+        "qualification": qualification,
+    }))?;
+    Ok(aos_contract::Sha256Digest::of_bytes(&canonical).to_string())
 }
 
 /// Returns the RFC-0001 golden package measurement tuple digest.
@@ -722,40 +667,9 @@ pub(crate) fn package_measurement_digest(
 }
 
 /// Returns the manifest digest format used in package measurement events.
+#[cfg(test)]
 pub(crate) fn package_manifest_digest_bytes(bytes: &[u8]) -> String {
     format!("sha256:{}", digest_hex(bytes))
-}
-
-/// Returns the digest binding a package configuration module to its evaluator
-/// ABI, metadata, and optional expose manifest.
-///
-/// # Errors
-///
-/// Returns an error when the module has no authenticated evaluation base
-/// library or its metadata cannot be serialized canonically.
-pub(crate) fn config_module_binding_digest(
-    module: &ConfigModuleMeta,
-    expose_manifest_digest: Option<&str>,
-) -> Result<String> {
-    let base_lib = module
-        .evaluation_base_lib
-        .as_ref()
-        .context("published config module is missing its evaluation base-lib binding")?;
-    let metadata = serde_json::to_vec(module)
-        .context("serializing derived config-module metadata for provenance binding")?;
-    Ok(format!(
-        "sha256:{}",
-        digest_hex(
-            format!(
-                "config={}\nbase-lib={}\nmetadata=sha256:{}\nexpose={}\n",
-                module.config_output.nar_hash,
-                base_lib.nar_hash,
-                digest_hex(&metadata),
-                expose_manifest_digest.unwrap_or("")
-            )
-            .as_bytes()
-        )
-    ))
 }
 
 /// Replays and verifies the package event log against a quoted PCR 15 value
@@ -920,12 +834,18 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                     serde_json::from_str(&record.event).with_context(|| {
                         format!("parsing generation attestation event on line {}", index + 1)
                     })?;
+                let sequence = value.get("sequence").and_then(serde_json::Value::as_u64);
+                let content = value.get("content").and_then(serde_json::Value::as_str);
+                let expected_generation = match (sequence, content) {
+                    (Some(sequence), Some(content)) if sequence > 0 => {
+                        aos_contract::Sha256Digest::parse(content)?;
+                        Some(format!("{sequence}:{content}"))
+                    }
+                    _ => None,
+                };
                 if value.get("schema").and_then(serde_json::Value::as_str)
-                    != Some("aos.gen-attestation/v1")
-                    || value
-                        .get("generation_id")
-                        .and_then(serde_json::Value::as_str)
-                        != Some(generation_id)
+                    != Some(crate::attestation::native::GENERATION_SCHEMA)
+                    || expected_generation.as_deref() != Some(generation_id)
                     || value
                         .get("activation_id")
                         .and_then(serde_json::Value::as_str)
@@ -936,11 +856,9 @@ pub(crate) fn verify_package_event_log_against_measurement_catalog(
                         index + 1
                     );
                 }
-                // `GenAttestation.quote` skips serialization while empty, so
-                // the measured pre-quote record normally omits the field. An
-                // explicit empty string is accepted for older CEL producers;
-                // any non-empty or non-string value would measure quote bytes
-                // into the record they are meant to authenticate.
+                // Native evidence measures the record before attaching quote
+                // bytes. A nonempty quote would authenticate itself and must
+                // never enter the generation's measured CEL record.
                 if value
                     .get("quote")
                     .is_some_and(|quote| quote.as_str() != Some(""))
@@ -1302,26 +1220,6 @@ pub(crate) fn current_pcr11() -> Result<String> {
     current_pcr_value(11)
 }
 
-/// Reads the live SHA-256 PCR 12 boot-input value.
-///
-/// # Errors
-///
-/// Returns an error when the trusted TPM reader cannot run or its output does
-/// not contain a canonical PCR 12 value.
-pub(crate) fn current_pcr12() -> Result<String> {
-    current_pcr_value(12)
-}
-
-/// Reads the live SHA-256 PCR 7 Secure Boot policy value.
-///
-/// # Errors
-///
-/// Returns an error when the trusted TPM reader cannot run or its output does
-/// not contain a canonical PCR 7 value.
-pub(crate) fn current_pcr7() -> Result<String> {
-    current_pcr_value(7)
-}
-
 fn current_pcr_value(index: u8) -> Result<String> {
     let pcrread = trusted_tpm2_tool_path(TPM2_PCRREAD_ENV, "tpm2_pcrread")?;
     let tcti = tpm2_tcti()?;
@@ -1386,6 +1284,7 @@ fn replay_package_event_log_pcr15(event_log: &str) -> Result<String> {
     Ok(hex::encode(pcr))
 }
 
+#[cfg(test)]
 fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
     let word = package_tuple_word(&package);
     let digest = format!("sha256:{}", digest_for_word(&word));
@@ -1402,6 +1301,7 @@ fn package_event(package: MeasuredPackage) -> Result<MeasurementEvent> {
     })
 }
 
+#[cfg(test)]
 fn package_set_event(package_events: &[MeasurementEvent]) -> MeasurementEvent {
     let digests = package_events
         .iter()
@@ -2395,31 +2295,17 @@ fn event_log_has_records(root: &Path) -> Result<bool> {
     }
 }
 
-#[derive(Debug, Clone)]
-struct EventLogAppend {
-    path: PathBuf,
-    previous_len: u64,
-    created_file: bool,
-}
-
-fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<EventLogAppend> {
+fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<()> {
     let path = rooted_absolute_path(root, Path::new("/").join(AOS_PACKAGE_CEL_REL).as_path())?;
-    let (existing_lines, needs_separator, previous_len, created_file) =
-        match fs::read_to_string(&path) {
-            Ok(log) => {
-                let previous_len = fs::metadata(&path)
-                    .with_context(|| format!("reading metadata for {}", path.display()))?
-                    .len();
-                (
-                    log.lines().count(),
-                    !log.is_empty() && !log.ends_with('\n'),
-                    previous_len,
-                    false,
-                )
-            }
-            Err(err) if err.kind() == ErrorKind::NotFound => (0, false, 0, true),
-            Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
-        };
+    let (existing_lines, needs_separator, created_file) = match fs::read_to_string(&path) {
+        Ok(log) => (
+            log.lines().count(),
+            !log.is_empty() && !log.ends_with('\n'),
+            false,
+        ),
+        Err(err) if err.kind() == ErrorKind::NotFound => (0, false, true),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
+    };
     let parent = path
         .parent()
         .with_context(|| format!("event log path has no parent: {}", path.display()))?;
@@ -2444,29 +2330,7 @@ fn append_event_log(root: &Path, events: &[MeasurementEvent]) -> Result<EventLog
             .sync_all()
             .with_context(|| format!("syncing {}", parent.display()))?;
     }
-    Ok(EventLogAppend {
-        path,
-        previous_len,
-        created_file,
-    })
-}
-
-fn rollback_event_log_append(append: &EventLogAppend) -> Result<()> {
-    if append.created_file && append.previous_len == 0 {
-        match fs::remove_file(&append.path) {
-            Ok(()) => return Ok(()),
-            Err(err) if err.kind() == ErrorKind::NotFound => return Ok(()),
-            Err(err) => {
-                return Err(err).with_context(|| format!("removing {}", append.path.display()));
-            }
-        }
-    }
-    let file = OpenOptions::new()
-        .write(true)
-        .open(&append.path)
-        .with_context(|| format!("opening {}", append.path.display()))?;
-    file.set_len(append.previous_len)
-        .with_context(|| format!("truncating {}", append.path.display()))
+    Ok(())
 }
 
 fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<String> {
@@ -2499,7 +2363,12 @@ fn event_log_line(sequence_number: usize, event: &MeasurementEvent) -> Result<St
 }
 
 fn trusted_systemd_pcrextend_path() -> Result<PathBuf> {
-    if let Ok(path) = std::env::var(PCR_EXTEND_ENV) {
+    if let Ok(path) = std::env::var(PCR_EXTEND_ENV).or_else(|error| match error {
+        std::env::VarError::NotPresent => option_env!("AOS_SYSTEMD_PCREXTEND")
+            .map(str::to_owned)
+            .ok_or(std::env::VarError::NotPresent),
+        error => Err(error),
+    }) {
         if path.is_empty() {
             bail!("{PCR_EXTEND_ENV} must not be empty");
         }
@@ -2523,10 +2392,26 @@ fn trusted_systemd_pcrextend_path() -> Result<PathBuf> {
 }
 
 fn trusted_tpm2_tool_path(env_name: &str, bin_name: &str) -> Result<PathBuf> {
-    let path = std::env::var(env_name).with_context(|| {
-        format!("{env_name} is not configured for package attestation quote production")
-    })?;
+    let path = std::env::var(env_name)
+        .ok()
+        .or_else(|| compiled_tpm2_tool_path(env_name).map(str::to_owned))
+        .with_context(|| {
+            format!("{env_name} is not configured for package attestation quote production")
+        })?;
     validate_trusted_tpm2_tool_path(env_name, bin_name, &path)
+}
+
+fn compiled_tpm2_tool_path(env_name: &str) -> Option<&'static str> {
+    match env_name {
+        TPM2_CREATEEK_ENV => option_env!("AOS_TPM2_CREATEEK"),
+        TPM2_CREATEAK_ENV => option_env!("AOS_TPM2_CREATEAK"),
+        TPM2_READPUBLIC_ENV => option_env!("AOS_TPM2_READPUBLIC"),
+        TPM2_QUOTE_ENV => option_env!("AOS_TPM2_QUOTE"),
+        TPM2_PCRREAD_ENV => option_env!("AOS_TPM2_PCRREAD"),
+        TPM2_CHECKQUOTE_ENV => option_env!("AOS_TPM2_CHECKQUOTE"),
+        TPM2_FLUSHCONTEXT_ENV => option_env!("AOS_TPM2_FLUSHCONTEXT"),
+        _ => None,
+    }
 }
 
 fn tpm2_tcti() -> Result<Option<String>> {
@@ -2764,16 +2649,21 @@ fn digest_hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::types::{
-        ApmMeta, AttestationMeta, ConfigModuleMeta, ConfigOutputMeta, ExposeArtifactMeta,
-        ExposeMeta, HostPathMode, HostPathPermission, InstalledMeta, ModuleAbiCompat,
-        NetworkPermission, PACKAGE_META_FORMAT, PackageMeta, PermissionsMeta, SysrootImageEntry,
+        ApmMeta, AttestationMeta, InstalledMeta, NativeArtifactMeta, PACKAGE_META_FORMAT,
+        PackageMeta,
     };
     use tempfile::TempDir;
 
-    fn installed_fixture(tmp: &TempDir, manifest: &[u8]) -> InstalledMeta {
-        let artifact = tmp.path().join("artifact");
-        fs::create_dir_all(artifact.join("units")).expect("artifact units");
-        fs::write(artifact.join("manifest.json"), manifest).expect("manifest");
+    fn installed_fixture(manifest: &[u8]) -> InstalledMeta {
+        let document_digest = package_manifest_digest_bytes(manifest);
+        let deployment = NativeArtifactMeta {
+            store_path: format!("/nix/store/{}-web-deployment", "0".repeat(32)),
+            nar_hash: format!("sha256:{}", "a".repeat(64)),
+            nar_size: manifest.len() as u64,
+            document_sha256: document_digest,
+            document_size: manifest.len() as u64,
+            references: Vec::new(),
+        };
         InstalledMeta {
             store_path: "/nix/store/hash-web-1.0".into(),
             pushed_at: 1,
@@ -2791,51 +2681,13 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: "sha256:nar".into(),
-                expose: Some(ExposeMeta {
-                    target: "aos-pkg-web.target".into(),
-                    units: vec!["web.service".into()],
-                    images: vec![SysrootImageEntry {
-                        format: "ext4-verity".into(),
-                        store_path: "/nix/store/image-web".into(),
-                        nar_hash: "sha256:image".into(),
-                        nar_size: 1,
-                        delivery: crate::types::test_image_delivery("raw"),
-                        sb_signer_cert_sha256: None,
-                        sbat: Vec::new(),
-                        expected_pcr11: None,
-                        ukis: Vec::new(),
-                        recovery_ukis: Vec::new(),
-                        recovery_bundle: None,
-                        root_image: Some("root.img".into()),
-                        root_verity: Some("root.verity".into()),
-                        root_hash: Some(
-                            "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-                                .into(),
-                        ),
-                        root_hash_sig: Some("root.roothash.p7s".into()),
-                    }],
-                    requires: Vec::new(),
-                    config: Default::default(),
-                    provides: Vec::new(),
-                    uses: Vec::new(),
-                }),
-                expose_artifact: Some(ExposeArtifactMeta {
-                    store_path: artifact.display().to_string(),
-                    nar_hash: "sha256:artifact".into(),
-                    nar_size: manifest.len() as u64,
-                }),
-                config_module: None,
-            documentation: None,
-                permissions: PermissionsMeta {
-                    network: Some(NetworkPermission::Private),
-                    host_paths: vec![HostPathPermission {
-                        path: "/var/lib/web".into(),
-                        mode: HostPathMode::Rw,
-                    }],
+                deployment: Some(deployment),
+                module_documentation: None,
+                qualification: None,
+                attestation: AttestationMeta {
+                    root_digest: Some(format!("sha256:{}", "a".repeat(64))),
                     ..Default::default()
                 },
-                bpf_lsm: None,
-                attestation: Default::default(),
             }),
         }
     }
@@ -2850,6 +2702,10 @@ mod tests {
 
     fn catalog_meta(root_hash: &str, measurement: &str) -> PackageMeta {
         PackageMeta {
+            named_outputs: Default::default(),
+            version_requirement: None,
+            os_version: None,
+            module_dependencies: Vec::new(),
             name: "web".into(),
             version: "1.0".into(),
             description: "Web package".into(),
@@ -2869,12 +2725,9 @@ mod tests {
             images: Vec::new(),
             min_format: Some(PACKAGE_META_FORMAT),
             requires_features: vec!["attestation-v1".into()],
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: PermissionsMeta::default(),
-            bpf_lsm: None,
+            deployment: None,
+            module_documentation: None,
+            qualification: None,
             attestation: AttestationMeta {
                 root_digest: Some(root_hash.into()),
                 root_hash: Some(root_hash.into()),
@@ -2886,15 +2739,19 @@ mod tests {
     }
 
     fn measured_fixture_log(tmp: &TempDir, manifest: &[u8]) -> (String, String, String) {
-        let installed = installed_fixture(tmp, manifest);
+        let installed = installed_fixture(manifest);
         let apm = installed.apm.as_ref().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement =
-            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure packages");
+            package_measurement_digest(&apm.name, &apm.version, &root_hash, &manifest_digest);
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[installed]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
-        (log, root_hash.into(), measurement)
+        (log, root_hash, measurement)
     }
 
     fn legacy_event_log_without_pcr_event_fields(log: &str) -> String {
@@ -2960,7 +2817,10 @@ mod tests {
     #[test]
     fn package_measurement_includes_root_and_manifest_digests() {
         let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
+        let expected_root_digest =
+            package_root_digest(installed.apm.as_ref().expect("apm metadata"))
+                .expect("package root digest");
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -2968,35 +2828,32 @@ mod tests {
         assert_eq!(events[0].event_type, PACKAGE_SET_EVENT_TYPE);
         let package = events[1].package.as_ref().expect("package event");
         assert_eq!(package.name, "web");
-        assert_eq!(
-            package.root_digest,
-            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        );
+        assert_eq!(package.root_digest, expected_root_digest);
         assert_eq!(
             package.manifest_digest,
             format!(
                 "sha256:{}",
-                digest_hex(br#"{"permissions":{"network":"private"}}"#)
+                digest_hex(br#"{"package":"web","network":"private"}"#)
             )
         );
         assert!(events[1].word.contains("name=3:web"));
     }
 
     #[test]
-    fn package_measurement_uses_store_path_digest_without_signed_root() {
+    fn package_measurement_uses_authenticated_payload_root_digest() {
         let tmp = TempDir::new().expect("tempdir");
-        let mut installed = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
-        let expected_root_digest = package_store_path_root_digest(&installed.store_path);
-        let apm = installed.apm.as_mut().expect("apm metadata");
-        let image = apm
-            .expose
+        let mut installed = installed_fixture(br#"{"package":"web","network":"private"}"#);
+        installed
+            .apm
             .as_mut()
-            .expect("expose metadata")
-            .images
-            .first_mut()
-            .expect("image metadata");
-        image.root_hash = None;
-        image.root_hash_sig = None;
+            .unwrap()
+            .deployment
+            .as_mut()
+            .unwrap()
+            .nar_hash = format!("sha256:{}", "b".repeat(64));
+        let expected_root_digest =
+            package_root_digest(installed.apm.as_ref().expect("apm metadata"))
+                .expect("package root digest");
 
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
@@ -3005,16 +2862,50 @@ mod tests {
         assert_eq!(events[0].package_count, Some(1));
         let package = events[1].package.as_ref().expect("package event");
         assert_eq!(package.root_digest, expected_root_digest);
+        assert_eq!(package.root_digest, format!("sha256:{}", "a".repeat(64)));
+    }
+
+    #[test]
+    fn native_companion_commitments_change_package_measurements() {
+        let baseline = installed_fixture(br#"{"package":"web"}"#);
+        let baseline_apm = baseline.apm.as_ref().unwrap();
+        let original = package_manifest_digest(baseline_apm).unwrap();
+        let companion = NativeArtifactMeta {
+            store_path: format!("/nix/store/{}-web-companion", "1".repeat(32)),
+            nar_hash: format!("sha256:{}", "c".repeat(64)),
+            nar_size: 100,
+            document_sha256: format!("sha256:{}", "d".repeat(64)),
+            document_size: 50,
+            references: Vec::new(),
+        };
+
+        let mut with_docs = baseline_apm.clone();
+        with_docs.module_documentation = Some(companion.clone());
+        let mut with_qualification = baseline_apm.clone();
+        with_qualification.qualification = Some(companion);
+
+        let docs_digest = package_manifest_digest(&with_docs).unwrap();
+        let qualification_digest = package_manifest_digest(&with_qualification).unwrap();
+        assert_ne!(original, docs_digest);
+        assert_ne!(original, qualification_digest);
+        assert_ne!(docs_digest, qualification_digest);
+
+        with_qualification
+            .qualification
+            .as_mut()
+            .unwrap()
+            .document_sha256 = "invalid".into();
+        assert!(package_manifest_digest(&with_qualification).is_err());
     }
 
     #[test]
     fn package_measurement_changes_when_manifest_changes() {
         let tmp = TempDir::new().expect("tempdir");
-        let first = installed_fixture(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let first = installed_fixture(br#"{"package":"web","network":"private"}"#);
         let first_digest = measurement_events(tmp.path(), &[first]).expect("first")[1]
             .digest
             .clone();
-        let second = installed_fixture(&tmp, br#"{"permissions":{"network":"host"}}"#);
+        let second = installed_fixture(br#"{"package":"web","network":"host"}"#);
         let second_digest = measurement_events(tmp.path(), &[second]).expect("second")[1]
             .digest
             .clone();
@@ -3025,20 +2916,20 @@ mod tests {
     #[test]
     fn package_measurement_accepts_matching_registry_measurement() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
-        let mut installed = installed_fixture(&tmp, manifest);
+        let manifest = br#"{"package":"web","network":"private"}"#;
+        let mut installed = installed_fixture(manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         apm.attestation = AttestationMeta {
-            root_digest: Some(root_hash.into()),
-            root_hash: Some(root_hash.into()),
+            root_digest: Some(root_hash.clone()),
+            root_hash: Some(root_hash.clone()),
             root_hash_sig: Some("root.roothash.p7s".into()),
             provenance: None,
             measurement: Some(package_measurement_digest(
                 &apm.name,
                 &apm.version,
-                root_hash,
+                &root_hash,
                 &manifest_digest,
             )),
         };
@@ -3047,80 +2938,10 @@ mod tests {
     }
 
     #[test]
-    fn package_measurement_selects_authenticated_config_module_binding() {
-        let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
-        let mut installed = installed_fixture(&tmp, manifest);
-        let apm = installed.apm.as_mut().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
-        let module = ConfigModuleMeta {
-            config_output: ConfigOutputMeta {
-                store_path: "/nix/store/config-module".into(),
-                nar_hash: "sha256:config".into(),
-                nar_size: 1,
-                references: Vec::new(),
-            },
-            evaluation_base_lib: Some(ConfigOutputMeta {
-                store_path: "/nix/store/base-lib".into(),
-                nar_hash: "sha256:base-lib".into(),
-                nar_size: 1,
-                references: Vec::new(),
-            }),
-            dependency_outputs: BTreeMap::new(),
-            module_abi_compat: ModuleAbiCompat { min: 1, max: 2 },
-            declares: vec!["web.enable".into()],
-            declaration_schema: Vec::new(),
-            requires: Vec::new(),
-            owns_roots: Vec::new(),
-            contributes: Vec::new(),
-            artifacts: Default::default(),
-            provides_capabilities: Vec::new(),
-        };
-        let manifest_digest = package_manifest_digest_bytes(manifest);
-
-        let mut image_seed = installed_fixture(&tmp, manifest);
-        let seed_apm = image_seed.apm.as_mut().expect("seed APM metadata");
-        let mut unbound_module = module.clone();
-        unbound_module.evaluation_base_lib = None;
-        seed_apm.config_module = Some(unbound_module);
-        seed_apm.attestation = AttestationMeta {
-            root_digest: Some(root_hash.into()),
-            root_hash: Some(root_hash.into()),
-            root_hash_sig: Some("root.roothash.p7s".into()),
-            provenance: None,
-            measurement: Some(package_measurement_digest(
-                &seed_apm.name,
-                &seed_apm.version,
-                root_hash,
-                &manifest_digest,
-            )),
-        };
-        measurement_events(tmp.path(), &[image_seed]).expect("image-seed measurement");
-
-        let binding_digest =
-            config_module_binding_digest(&module, Some(&manifest_digest)).expect("binding digest");
-        apm.config_module = Some(module);
-        apm.attestation = AttestationMeta {
-            root_digest: Some(root_hash.into()),
-            root_hash: Some(root_hash.into()),
-            root_hash_sig: Some("root.roothash.p7s".into()),
-            provenance: None,
-            measurement: Some(package_measurement_digest(
-                &apm.name,
-                &apm.version,
-                root_hash,
-                &binding_digest,
-            )),
-        };
-
-        measurement_events(tmp.path(), &[installed]).expect("config binding measurement");
-    }
-
-    #[test]
     fn package_measurement_rejects_mismatched_registry_measurement() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
-        let mut installed = installed_fixture(&tmp, manifest);
+        let manifest = br#"{"package":"web","network":"private"}"#;
+        let mut installed = installed_fixture(manifest);
         let apm = installed.apm.as_mut().expect("apm metadata");
         apm.attestation = AttestationMeta {
             root_digest: Some(
@@ -3141,84 +2962,10 @@ mod tests {
     }
 
     #[test]
-    fn measure_activated_packages_writes_event_log_under_root() {
-        let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
-
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure");
-
-        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
-        assert!(log.contains("\"format\":\"aos-package-cel-v1\""));
-        assert!(log.contains("\"sequence_number\":1"));
-        assert!(log.contains("\"pcr_index\":15"));
-        assert!(log.contains("\"digests\":[{\"algorithm\":\"sha256\""));
-        assert!(log.contains("\"event_size\":"));
-        assert!(log.contains("\"event_type\":\"aos-package-set\""));
-        assert!(log.contains("\"event_type\":\"aos-package\""));
-        assert!(log.contains("\"package\":\"web\""));
-
-        let first: serde_json::Value =
-            serde_json::from_str(log.lines().next().expect("first log line")).expect("json");
-        assert_eq!(first["sequence_number"], serde_json::Value::from(1));
-        assert_eq!(first["pcr_index"], serde_json::Value::from(PCR_INDEX));
-        assert_eq!(first["digests"][0]["algorithm"], PCR_BANK);
-        assert_eq!(first["digests"][0]["digest"], first["digest"]);
-        assert_eq!(
-            first["event_size"],
-            serde_json::Value::from(first["event"].as_str().expect("event").len())
-        );
-    }
-
-    #[test]
-    fn measure_activated_packages_rolls_back_log_when_live_pcr_extend_fails() {
-        let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
-        let log_path = tmp.path().join(AOS_PACKAGE_CEL_REL);
-        fs::create_dir_all(log_path.parent().expect("log parent")).expect("log parent");
-        fs::write(&log_path, "existing\n").expect("existing log");
-        let failing_pcrextend = tmp.path().join("systemd-pcrextend");
-        fs::write(&failing_pcrextend, "").expect("failing pcrextend");
-
-        let err = measure_activated_packages_inner(
-            tmp.path(),
-            &[installed],
-            true,
-            Some(&failing_pcrextend),
-        )
-        .unwrap_err();
-
-        assert!(format!("{err:#}").contains("systemd-pcrextend"));
-        assert_eq!(
-            fs::read_to_string(&log_path).expect("log after rollback"),
-            "existing\n"
-        );
-    }
-
-    #[test]
-    fn measure_activated_packages_skips_pcr_when_no_tpm() {
-        // A live root with no TPM and no forced pcrextend must not fail: the
-        // package event log is still written, but no baseline event is added
-        // and no PCR extension is attempted. Self-skip on the rare build host
-        // that exposes a real TPM, where the live path would (correctly) run.
-        if tpm2_tcti().ok().flatten().is_some() {
-            return;
-        }
-        let tmp = TempDir::new().expect("tempdir");
-        let installed = installed_fixture(&tmp, br#"{"permissions":{}}"#);
-
-        measure_activated_packages_inner(tmp.path(), &[installed], true, None)
-            .expect("measure without a tpm succeeds");
-
-        let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
-        assert!(log.contains("\"event_type\":\"aos-package\""));
-        assert!(!log.contains(PCR_BASELINE_EVENT_TYPE));
-    }
-
-    #[test]
     fn package_event_log_verifier_accepts_catalog_match() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
 
@@ -3240,7 +2987,7 @@ mod tests {
     #[test]
     fn package_event_log_decoder_accepts_jsonl_bytes() {
         let tmp = TempDir::new().expect("tempdir");
-        let (log, _, _) = measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let (log, _, _) = measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
 
         let decoded = decode_package_event_log_bytes(log.as_bytes()).expect("jsonl decode");
 
@@ -3251,7 +2998,7 @@ mod tests {
     fn package_event_log_decoder_accepts_tcg_pcr_event2_binary_profile() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
         let binary = tcg_pcr_event2_log_from_jsonl(&log);
@@ -3268,7 +3015,7 @@ mod tests {
     #[test]
     fn package_event_log_decoder_rejects_unsupported_tcg_digest_count() {
         let tmp = TempDir::new().expect("tempdir");
-        let (log, _, _) = measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+        let (log, _, _) = measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let mut binary = tcg_pcr_event2_log_from_jsonl(&log);
         binary[8..12].copy_from_slice(&2u32.to_le_bytes());
 
@@ -3281,7 +3028,7 @@ mod tests {
     fn package_event_log_verifier_accepts_legacy_record_shape() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let legacy_log = legacy_event_log_without_pcr_event_fields(&log);
         let pcr15 = replay_package_event_log_pcr15(&legacy_log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
@@ -3296,22 +3043,24 @@ mod tests {
     #[test]
     fn package_event_log_verifier_replays_from_pcr_baseline() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
-        let installed = installed_fixture(&tmp, manifest);
+        let manifest = br#"{"package":"web","network":"private"}"#;
+        let installed = installed_fixture(manifest);
         let apm = installed.apm.as_ref().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement =
-            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
+            package_measurement_digest(&apm.name, &apm.version, &root_hash, &manifest_digest);
         let baseline = format!("sha256:{}", "11".repeat(32));
         let mut events = vec![pcr_baseline_event(&baseline)];
         events.extend(measurement_events(tmp.path(), &[installed]).expect("events"));
         append_event_log(tmp.path(), &events).expect("append log");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
-        let catalog =
-            package_measurement_catalog_from_package_meta(&[catalog_meta(root_hash, &measurement)])
-                .expect("catalog");
+        let catalog = package_measurement_catalog_from_package_meta(&[catalog_meta(
+            &root_hash,
+            &measurement,
+        )])
+        .expect("catalog");
 
         let verified = verify_package_event_log_against_measurement_catalog(
             &log,
@@ -3332,8 +3081,8 @@ mod tests {
     #[test]
     fn append_event_log_continues_sequence_numbers() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
-        let installed = installed_fixture(&tmp, manifest);
+        let manifest = br#"{"package":"web","network":"private"}"#;
+        let installed = installed_fixture(manifest);
         let events = measurement_events(tmp.path(), &[installed]).expect("events");
 
         append_event_log(tmp.path(), &events[..1]).expect("append first event");
@@ -3353,21 +3102,27 @@ mod tests {
     #[test]
     fn generation_attestation_event_is_replayable_and_identity_bound() {
         let tmp = TempDir::new().expect("tempdir");
+        let generation_id = format!("1:sha256:{}", "c".repeat(64));
         let record = serde_json::json!({
-            "schema": "aos.gen-attestation/v1",
+            "schema": crate::attestation::native::GENERATION_SCHEMA,
             "activation_id": format!("sha256:{}", "a".repeat(64)),
-            "generation_id": "sha256:generation",
-            "manifest_hash": "sha256:manifest",
+            "sequence": 1,
+            "profile_generation": 1,
+            "content": format!("sha256:{}", "c".repeat(64)),
+            "evaluation_sha256": "sha256:manifest",
             "inputs": {},
             "eval_mode": "pure-eval",
             "quote_status": "quoted"
         });
-        let canonical = crate::graph_compile::reproject::canonical_json(&record);
+        let canonical = String::from_utf8(
+            aos_contract::canonical::canonical_json(&record).expect("canonical record"),
+        )
+        .expect("canonical JSON is UTF-8");
         let activation_a = format!("sha256:{}", "a".repeat(64));
         assert!(
             !measure_generation_attestation(
                 tmp.path(),
-                "sha256:generation",
+                &generation_id,
                 &activation_a,
                 canonical.as_bytes(),
             )
@@ -3376,7 +3131,7 @@ mod tests {
         assert!(
             !measure_generation_attestation(
                 tmp.path(),
-                "sha256:generation",
+                &generation_id,
                 &activation_a,
                 canonical.as_bytes(),
             )
@@ -3396,7 +3151,7 @@ mod tests {
             pcr_value: None,
             package: None,
             package_count: None,
-            generation_id: Some("sha256:generation".to_string()),
+            generation_id: Some(generation_id.clone()),
             activation_id: Some(activation_a.clone()),
         };
         let recovery = generation_measurement_recovery(tmp.path(), &recovery_event)
@@ -3420,7 +3175,7 @@ mod tests {
         let conflicting = canonical.replace("sha256:manifest", "sha256:other");
         let error = measure_generation_attestation(
             tmp.path(),
-            "sha256:generation",
+            &generation_id,
             &activation_a,
             conflicting.as_bytes(),
         )
@@ -3432,7 +3187,7 @@ mod tests {
         assert!(
             !measure_generation_attestation(
                 tmp.path(),
-                "sha256:generation",
+                &generation_id,
                 &activation_b,
                 second.as_bytes(),
             )
@@ -3457,21 +3212,25 @@ mod tests {
     #[test]
     fn package_measurement_catalog_entries_round_trip_through_json() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
-        let mut installed = installed_fixture(&tmp, manifest);
-        let apm = installed.apm.as_mut().expect("apm metadata");
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest = br#"{"package":"web","network":"private"}"#;
+        let installed = installed_fixture(manifest);
+        let apm = installed.apm.as_ref().expect("apm metadata");
+        let root_hash = package_root_digest(apm).expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
         let measurement =
-            package_measurement_digest(&apm.name, &apm.version, root_hash, &manifest_digest);
+            package_measurement_digest(&apm.name, &apm.version, &root_hash, &manifest_digest);
 
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[installed]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let json = serde_json::to_string(&vec![PackageMeasurementCatalogEntry {
             name: "web".into(),
             version: "1.0".into(),
-            root_digest: root_hash.into(),
+            root_digest: root_hash,
             measurement,
         }])
         .expect("serialize catalog");
@@ -3535,7 +3294,7 @@ mod tests {
     fn package_event_log_verifier_rejects_pcr_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
         let wrong_pcr = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -3548,7 +3307,7 @@ mod tests {
     fn package_event_log_verifier_rejects_digest_list_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package: serde_json::Value = serde_json::from_str(lines[1]).expect("package event");
@@ -3569,7 +3328,7 @@ mod tests {
     fn package_event_log_verifier_rejects_partial_pcr_event_shape() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
@@ -3592,7 +3351,7 @@ mod tests {
     fn package_event_log_verifier_rejects_null_pcr_event_field() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
@@ -3612,7 +3371,7 @@ mod tests {
     fn package_event_log_verifier_rejects_sequence_number_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
@@ -3632,7 +3391,7 @@ mod tests {
     fn package_event_log_verifier_rejects_catalog_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, _) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(
             &root_hash,
@@ -3659,7 +3418,11 @@ mod tests {
     #[test]
     fn package_event_log_verifier_accepts_empty_package_set_event() {
         let tmp = TempDir::new().expect("tempdir");
-        measure_activated_packages(tmp.path(), &[]).expect("measure empty package set");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
 
@@ -3673,13 +3436,22 @@ mod tests {
     #[test]
     fn package_event_log_verifier_reports_latest_package_set() {
         let tmp = TempDir::new().expect("tempdir");
-        let manifest = br#"{"permissions":{"network":"private"}}"#;
-        let installed = installed_fixture(&tmp, manifest);
-        let root_hash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let manifest = br#"{"package":"web","network":"private"}"#;
+        let installed = installed_fixture(manifest);
+        let root_hash = package_root_digest(installed.apm.as_ref().expect("apm metadata"))
+            .expect("package root digest");
         let manifest_digest = package_manifest_digest_bytes(manifest);
-        let measurement = package_measurement_digest("web", "1.0", root_hash, &manifest_digest);
-        measure_activated_packages(tmp.path(), &[installed]).expect("measure package set");
-        measure_activated_packages(tmp.path(), &[]).expect("measure empty package set");
+        let measurement = package_measurement_digest("web", "1.0", &root_hash, &manifest_digest);
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[installed]).expect("events"),
+        )
+        .expect("write events");
+        append_event_log(
+            tmp.path(),
+            &measurement_events(tmp.path(), &[]).expect("events"),
+        )
+        .expect("write events");
         let log = fs::read_to_string(tmp.path().join(AOS_PACKAGE_CEL_REL)).expect("log");
         let pcr15 = replay_package_event_log_pcr15(&log).expect("pcr replay");
         let catalog = vec![catalog_meta(&root_hash, &measurement)];
@@ -3695,7 +3467,7 @@ mod tests {
     fn package_event_log_verifier_rejects_package_set_digest_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
         let wrong_digest =
@@ -3727,7 +3499,7 @@ mod tests {
     fn package_event_log_verifier_rejects_package_set_count_mismatch() {
         let tmp = TempDir::new().expect("tempdir");
         let (log, root_hash, measurement) =
-            measured_fixture_log(&tmp, br#"{"permissions":{"network":"private"}}"#);
+            measured_fixture_log(&tmp, br#"{"package":"web","network":"private"}"#);
         let mut lines = log.lines().collect::<Vec<_>>();
         let mut package_set: serde_json::Value = serde_json::from_str(lines[0]).expect("set event");
         package_set["package_count"] = serde_json::Value::from(0);

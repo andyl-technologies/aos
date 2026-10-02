@@ -6,6 +6,7 @@
 ##! Apple's open-source distributions.  This derivation installs only those
 ##! source/data inputs; it does not contain or extract an Xcode SDK.
 {
+  lib,
   mkDerivation,
   fetchurl,
   buildPackages,
@@ -780,7 +781,63 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "darwin-sdk";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The SDK exports FILE declarations and an install-name for libSystem.";
+        "files" = {};
+        "input" = "The assembled Darwin C headers and text-based libSystem stub.";
+        "operation" = "Inspect the public stdio declarations and parse the TAPI library document.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nstdio = pathlib.Path(\"@out@/usr/include/stdio.h\").read_text(errors=\"replace\")\ntapi = pathlib.Path(\"@out@/usr/lib/libSystem.tbd\").read_text()\nassert \"FILE\" in stdio and \"printf\" in stdio\nassert \"install-name:\" in tapi and \"libSystem\" in tapi\nprint(\"darwin-sdk data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "darwin-sdk data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The SDK lookup rejects the missing framework surface.";
+        "files" = {};
+        "input" = "A request for a framework header that the assembled SDK does not provide.";
+        "operation" = "Resolve the nonexistent framework header beneath the SDK root.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/System/Library/Frameworks/AosMissing.framework/Headers/AosMissing.h\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"darwin-sdk rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "darwin-sdk rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     passBuildScriptAsFile = true;
 

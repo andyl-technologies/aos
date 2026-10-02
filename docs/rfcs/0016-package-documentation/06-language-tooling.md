@@ -20,13 +20,14 @@ the existing `aos-doc` crate. The language server and Hub never depend on that
 crate's native repository walker, `NixRunner`, mtime cache, Markdown parser, or
 ratatui TUI.
 
-The server resolves schemas in this order:
+The server resolves the signed package reference in this order:
 
 1. exact documentation objects retained by the selected/installed APM
    generation;
 2. exact objects in the verified local documentation cache;
 3. an explicitly configured Hub/registry using the documentation API;
-4. summary-only legacy metadata, which provides no option validation.
+4. summary-only legacy metadata, which provides no checked reference and no
+   option or method validation.
 
 Workspace settings can pin registry, release/channel, version, platform,
 module ABI, and desired package set. Every diagnostic/hover response records the
@@ -97,16 +98,21 @@ Nix module merge algorithm and label that approximation authoritative.
 - `textDocument/documentLink` links package/option references to immutable docs.
 - code actions replace deprecated paths, insert a package into the desired set,
   create an opaque credential-reference skeleton, and invoke `apm config diff`.
-- workspace symbols search visible option paths, packages, services, and
-  capabilities.
+- workspace symbols search visible option paths, packages, interfaces,
+  implementations, requirements, and guarantees.
 - semantic tokens may distinguish package roots and option paths, but are not
   required for correctness.
 
 ## Schema/hint API
 
 The Hub `DocumentationService` is the language-tooling API; a second bespoke LSP
-database is not introduced. `apm schema` provides the same model locally. The
-API supports:
+database is not introduced. `apm schema <package>`,
+`GetPackageDocumentationSchema`, and `aos/packageDocumentation/schema` return
+the same `aos.package-reference/v1` value. That value contains the canonical
+package metadata and checked `PackageAbilityReference`; the LSP derives option
+and method schemas from the latter. The LSP neither joins independent objects
+nor maintains a handwritten method catalog. The API
+supports:
 
 - exact package or resolved desired-set schemas;
 - option prefix listing and single-option retrieval;
@@ -128,7 +134,7 @@ completion endpoint in `apm`/`aos`, backed by the same local/remote schema:
 
 - package, registry, version, platform, release, and channel names;
 - option paths and enum values;
-- sections and service names;
+- interface, implementation, requirement, and guarantee aliases;
 - credential handle names (never secret values).
 
 Completion is fast, timeout-bounded, side-effect free, and returns no results

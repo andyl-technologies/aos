@@ -1,103 +1,12 @@
 //! Tests for package publication orchestration and its exclusive authoring-clone lock.
 
 use super::{
-    apply_publish_sb_policy, required_publish_metadata, validate_release_publish_metadata,
+    required_publish_metadata, validate_release_publish_metadata,
     validate_release_publish_signing_identity,
 };
 use crate::config::ApmConfig;
-use crate::registry::parse::ImageVerificationState;
-use crate::registry::sb_certs::{RevokedSbCert, SbCert, SbCertsToml};
 use crate::registry_ops::release::ReleaseStorePublish;
-use crate::registry_ops::test_support::{inspect_test_image, write_direct_image_output};
 use crate::types::{ApmSettings, ProfileScope};
-use tempfile::TempDir;
-
-#[test]
-fn secure_boot_publish_policy_distinguishes_unverified_active_and_revoked() {
-    let temp = TempDir::new().unwrap();
-    let store = write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-    let mut image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
-    let signer = "e".repeat(64);
-    image.sb.signer_cert_sha256 = Some(signer.clone());
-    image.delivery.uki.verification = ImageVerificationState::SignedUnverified;
-
-    apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, false).unwrap();
-    assert_eq!(
-        image.delivery.uki.verification,
-        ImageVerificationState::SignedUnverified
-    );
-
-    let active = SbCertsToml {
-        active: vec![SbCert {
-            id: "current".into(),
-            cert_sha256: signer.clone(),
-        }],
-        ..SbCertsToml::default()
-    };
-    assert!(
-        apply_publish_sb_policy(
-            std::slice::from_mut(&mut image),
-            Some(&active),
-            false,
-            false
-        )
-        .is_err()
-    );
-    apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, false).unwrap();
-    assert_eq!(
-        image.delivery.uki.verification,
-        ImageVerificationState::PolicyVerified
-    );
-
-    let revoked = SbCertsToml {
-        active: active.active,
-        revoked: vec![RevokedSbCert {
-            id: "current".into(),
-            reason: Some("rotated".into()),
-        }],
-        ..SbCertsToml::default()
-    };
-    assert!(
-        apply_publish_sb_policy(
-            std::slice::from_mut(&mut image),
-            Some(&revoked),
-            true,
-            false
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn secure_boot_publish_policy_enforces_opt_in_signed_uki_gate() {
-    let temp = TempDir::new().unwrap();
-    let store = write_direct_image_output(temp.path(), "raw", serde_json::json!(["bare-metal"]));
-    let mut image = inspect_test_image("raw", store, "2026.08", "x86_64-linux").unwrap();
-
-    let error =
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), None, false, true).unwrap_err();
-    assert!(error.to_string().contains("refuses unsigned UKIs"));
-
-    let signer = "e".repeat(64);
-    image.sb.signer_cert_sha256 = Some(signer.clone());
-    let active = SbCertsToml {
-        active: vec![SbCert {
-            id: "staging".into(),
-            cert_sha256: signer,
-        }],
-        ..SbCertsToml::default()
-    };
-    assert!(apply_publish_sb_policy(std::slice::from_mut(&mut image), None, true, true).is_err());
-    assert!(
-        apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), false, true)
-            .is_err()
-    );
-    apply_publish_sb_policy(std::slice::from_mut(&mut image), Some(&active), true, true).unwrap();
-    assert_eq!(
-        image.delivery.uki.verification,
-        ImageVerificationState::PolicyVerified
-    );
-}
 
 #[test]
 fn publish_distribution_metadata_rejects_missing_empty_and_legacy_values() {
@@ -162,7 +71,7 @@ fn release_store_path_requires_and_preserves_roster_identity() {
         image_disk_paths: Vec::new(),
         image_info_paths: Vec::new(),
         image_formats: Vec::new(),
-        image_uki_paths: Vec::new(),
+        image_contract_schemas: Vec::new(),
         bless: false,
         message: None,
         registry: "production".into(),
@@ -170,4 +79,52 @@ fn release_store_path_requires_and_preserves_roster_identity() {
     };
     assert_eq!(publish.signing_key_id.as_deref(), Some("initial"));
     assert_eq!(publish.publish_signing_args(), (None, Some("initial")));
+}
+
+#[tokio::test]
+async fn native_release_publication_requires_an_active_committed_signer() {
+    use crate::registry_ops::test_support::{
+        init_authoring_clone, test_provenance_signer, write_test_roster,
+    };
+
+    let registry = tempfile::tempdir().unwrap();
+    init_authoring_clone(registry.path());
+    let mut signer = test_provenance_signer();
+    write_test_roster(
+        registry.path(),
+        signer.signer.key_id.as_str(),
+        &signer.trusted_key,
+        &[signer.signer.key_id.as_str()],
+    )
+    .unwrap();
+    crate::testutil::git(registry.path(), &["add", "keys.toml"]);
+    crate::testutil::git(registry.path(), &["commit", "-m", "revoke publisher"]);
+    let config = ApmConfig {
+        settings: ApmSettings::default(),
+        registries: Vec::new(),
+        scope: ProfileScope::User,
+    };
+
+    let error = super::publish_canonical_release_entry(
+        &config,
+        registry.path(),
+        "test",
+        "/nix/store/00000000000000000000000000000000-example",
+        "example",
+        "1",
+        "x86_64-linux",
+        "Native package",
+        None,
+        "Apache-2.0",
+        "AOS test",
+        &mut signer.signer,
+        &aos_core::output::Printer::new(0, true, false),
+    )
+    .await
+    .unwrap_err();
+
+    assert!(
+        format!("{error:#}").contains("revoked in keys.toml"),
+        "{error:#}"
+    );
 }

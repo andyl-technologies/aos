@@ -49,7 +49,7 @@ in {
       then throw ("Invalid qualification policy: " + lib.concatStringsSep "; " (map (check: check.message) failures))
       else
         data {
-          schema_version = "aos.release.qualification-contract/v1";
+          schema_version = "aos.release.qualification-contract/v2";
           inherit (cfg) id promises exclusions;
           targets = named "id" (builtins.mapAttrs (_: target:
             target
@@ -57,7 +57,12 @@ in {
               environment = types.environments.export target.environment;
             })
           cfg.targets);
-          requirements = named "id" cfg.requirements;
+          requirements = named "id" (builtins.mapAttrs (_: requirement:
+            removeAttrs requirement (
+              lib.optional (requirement.native_operation_spec == null) "native_operation_spec"
+              ++ lib.optional (!requirement.production_only) "production_only"
+            ))
+          cfg.requirements);
           package_rules = named "name" (builtins.mapAttrs (
               _: rule:
                 if rule.execution == null

@@ -156,6 +156,15 @@ aos_dev_all_builds() {
   done <<< "$entries"
 }
 
+aos_dev_cargo() {
+  # Resolve only the Cargo shell. Flake command lookup enumerates the much
+  # larger package output set before reaching devShells on this repository.
+  AOS_DEV_ROOT="$aos_dev_root" AOS_DEV_SYSTEM="$aos_dev_system" \
+    nix develop --impure --expr \
+      'let root = builtins.toPath (builtins.getEnv "AOS_DEV_ROOT"); system = builtins.getEnv "AOS_DEV_SYSTEM"; in ((import (root + "/flake.nix")).outputs {}).devShells.${system}.cargo' \
+      -c cargo "$@"
+}
+
 aos_dev_fmt() {
   aos_dev_configure_nix
 
@@ -202,7 +211,7 @@ _aos_dev_complete() {
   elif (( COMP_CWORD == 2 )); then
     COMPREPLY=( $(compgen -W 'aos apm apr package image container check build eval packages images containers checks builds evals ci format nix rust go bazel all init doctor verify-mount status usage entries intermediates builds prune compact clear' -- "$current") )
   elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == build || ${COMP_WORDS[1]} == run ]]; then
-    COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" 2>/dev/null)" -- "$current") )
+    COMPREPLY=( $(compgen -W "$(aos-dev list "${COMP_WORDS[2]}" "$current" 2>/dev/null)" -- "$current") )
   fi
 }
 complete -F _aos_dev_complete aos-dev
@@ -257,6 +266,7 @@ aos_dev_main() {
     list) aos_dev_list "$@" ;;
     build) aos_dev_build "$@" ;;
     run) aos_dev_run "$@" ;;
+    cargo) aos_dev_cargo "$@" ;;
     all) aos_dev_all "$@" ;;
     fmt) aos_dev_fmt "$@" ;;
     release) aos_dev_release "$@" ;;

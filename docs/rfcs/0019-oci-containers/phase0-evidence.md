@@ -17,13 +17,13 @@ The derivation performs all of the following with AOS-built packages:
 1. builds the fixed layer fixture twice after changing source mtimes;
 2. compares the tar and gzip bytes;
 3. verifies the frozen DiffID and compressed-blob SHA-256 vectors;
-4. obtains the golden roots directly from
-   `systems.server.config.environment.systemPackages`;
+4. obtains the baked roots directly from
+   `systems.server.config.aos.containers.definitions.aos.packageRoots`;
 5. verifies that `pkgs.aos` is one of those roots;
 6. copies the structured closure into an isolated `local?root=` Nix store;
 7. initializes the database and loads the generated registration stream;
 8. creates baked-root symlinks and runs Nix garbage collection;
-9. verifies every golden root remains physically present and DB-valid;
+9. verifies every baked root remains physically present and DB-valid;
 10. runs `aos --version`, `apm --help`, and `apr --help` with the isolated local
     store and no daemon.
 

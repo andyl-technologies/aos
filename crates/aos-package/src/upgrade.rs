@@ -5,6 +5,11 @@
 //! hash (a new version or a rebuild). Held packages and `--exclude`d names
 //! are reported as held back instead of upgraded.
 //!
+//! Selected explicit packages also refresh compatible ranged interface
+//! dependencies while retaining their original signed payload envelopes.
+//! Held, excluded, and unselected owners preserve their exact dependency
+//! choices. An unchanged selected closure does not create a generation.
+//!
 //! The upgrade itself follows the same pipeline as install: resolve the new
 //! closures, enforce the sysroot lock, download/verify/import only the
 //! missing NARs, then create a new profile generation that carries forward
@@ -23,26 +28,21 @@ use super::download::{
     DownloadRequest, ResolvedDownload, default_engine, download_nars, fetch_narinfo_closure,
     resolve_mirror_chain, resolved_downloads_json, split_mirror_chain,
 };
-use super::exposed_units::{
-    rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
-    reconcile_system_profile, validate_generation_exposed_units,
-};
 use super::platform::native_platform;
-use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
-use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
-};
+use super::profile::meta::{delete_meta, list_meta, write_meta};
 use super::registry::{RegistrySet, store_path_hash};
 use super::remove::retained_installed_indexes;
 use super::resolve::resolve_multiple;
 use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
-use super::types::{ApmMeta, ExposeMeta, InstalledMeta, PackageMeta, SysrootImageEntry};
+use super::types::{ApmMeta, InstalledMeta, PackageMeta};
 use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::output::{OutputMode, Printer};
+
+mod module_upgrade;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SecondaryArtifactDownload {
@@ -57,7 +57,7 @@ struct SecondaryArtifactDownload {
 // Public types
 // ---------------------------------------------------------------------------
 
-/// An upgrade candidate: a package with newer root or expose-artifact metadata.
+/// An upgrade candidate: a package with a newer root.
 pub struct UpgradeCandidate {
     /// Package name.
     pub name: String,
@@ -81,6 +81,7 @@ pub struct UpgradeCandidate {
 ///
 /// Compares installed packages against the registry to find upgradable ones,
 /// then downloads, verifies, imports, and switches to a new generation.
+/// Compatible interface dependencies may change even when payloads do not.
 ///
 /// With `packages` non-empty, only those names are considered; `exclude`
 /// names are held back; `dry_run` stops after printing the plan; `yes`
@@ -107,6 +108,14 @@ pub async fn run(
     // Step 1: Inspect profile and load installed metadata.
     printer.step(1, 7, "Loading installed packages...");
     let inspect_profile = Profile::open_readonly(config.scope);
+    let _profile_guard = if !dry_run {
+        Some(inspect_profile.lock_mutation()?)
+    } else {
+        None
+    };
+    if !dry_run {
+        crate::install::native::recover(&inspect_profile)?;
+    }
     let installed = list_meta(&inspect_profile)?;
 
     // Step 2: Load registries from cache.
@@ -118,8 +127,64 @@ pub async fn run(
 
     // Step 4: Filter held and excluded packages.
     let (to_upgrade, held_back) = filter_held_and_excluded(candidates, &installed, exclude);
+    let allowed_names = module_upgrade::refresh_names(&installed, packages, exclude);
 
     if to_upgrade.is_empty() {
+        let prepared = crate::install::native::prepare_module_upgrade(
+            config,
+            &inspect_profile,
+            &registries,
+            &installed,
+            &allowed_names,
+            printer,
+        )
+        .await?;
+        if let Some(prepared) = prepared {
+            if !held_back.is_empty() {
+                print_held_back(&held_back, printer);
+            }
+            printer.info("Compatible interface dependency upgrades are available.");
+            let generation = if dry_run {
+                None
+            } else {
+                if !yes && !config.settings.assume_yes {
+                    confirm(printer)?;
+                }
+                let profile = Profile::open(config.scope)?;
+                Some(module_upgrade::commit(&profile, &installed, prepared, printer)?.number)
+            };
+            if json_mode {
+                let mut result = upgrade_result_json(
+                    if dry_run { "planned" } else { "upgraded" },
+                    packages,
+                    exclude,
+                    &to_upgrade,
+                    &held_back,
+                    dry_run,
+                    generation,
+                    &[],
+                    0,
+                    0,
+                );
+                // Companion discovery has its own download accounting; this
+                // branch must not report zero downloads as an observed count.
+                result
+                    .as_object_mut()
+                    .context("upgrade result is not an object")?
+                    .remove("downloads");
+                result["interface_dependencies_changed"] = true.into();
+                result["interface_refresh_scope"] = serde_json::to_value(&allowed_names)?;
+                printer.json(&result);
+            }
+            if let Some(generation) = generation {
+                printer.success(&format!(
+                    "Upgraded interface dependencies in generation {generation}."
+                ));
+            } else {
+                printer.info("Dry run -- no changes made.");
+            }
+            return Ok(());
+        }
         if !held_back.is_empty() {
             print_held_back(&held_back, printer);
         }
@@ -153,6 +218,7 @@ pub async fn run(
     printer.step(3, 7, "Resolving dependencies...");
     let mut all_new_metas: Vec<PackageMeta> = Vec::new();
     let mut upgrade_closures: Vec<(String, Vec<PackageMeta>)> = Vec::new();
+    let mut native_closures = Vec::new();
 
     for candidate in &to_upgrade {
         let closures = resolve_multiple(
@@ -161,7 +227,6 @@ pub async fn run(
             Some(&candidate.registry),
         )
         .with_context(|| format!("resolving upgrade for '{}'", candidate.name))?;
-        admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
         for closure in closures {
             for meta in &closure.closure {
                 let hash = store_path_hash(&meta.store_path).to_string();
@@ -172,7 +237,8 @@ pub async fn run(
                     all_new_metas.push(meta.clone());
                 }
             }
-            upgrade_closures.push((closure.registry_name, closure.closure));
+            upgrade_closures.push((closure.registry_name.clone(), closure.closure.clone()));
+            native_closures.push(closure);
         }
     }
     super::install::verify_package_provenance_entries_from_cache_with_policy(
@@ -187,15 +253,15 @@ pub async fn run(
         .await
         .context("computing post-upgrade profile roots")?;
     let obsolete_hashes = obsolete_installed_hashes(&installed, &needed_hashes);
-    let mut expose_artifacts = collect_expose_artifacts(&to_upgrade)?;
-    collect_documentation_artifacts(&upgrade_closures, &mut expose_artifacts)?;
+    let mut secondary_artifacts = Vec::new();
+    collect_closure_secondary_artifacts(&upgrade_closures, &mut secondary_artifacts)?;
 
     // Sysroot-lock check for upgraded packages.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
         if let Some((sysroot_refs, sys_name, sys_version)) =
-            sysroot_lock::get_sysroot_references(config)
+            sysroot_lock::get_sysroot_references(config)?
         {
-            let lookup = sysroot_lock::build_registry_lookup(config);
+            let lookup = sysroot_lock::build_registry_lookup(config)?;
             for (_reg_name, closure_metas) in &upgrade_closures {
                 let pkg_refs: Vec<String> = closure_metas
                     .iter()
@@ -224,7 +290,7 @@ pub async fn run(
         .iter()
         .map(|c| (c.registry.as_str(), store_path_hash(&c.new_meta.store_path)))
         .chain(
-            expose_artifacts
+            secondary_artifacts
                 .iter()
                 .filter(|artifact| artifact.trust_graph_root)
                 .map(|artifact| {
@@ -241,10 +307,20 @@ pub async fn run(
     // Filter to only missing store paths.
     let mut store_paths: Vec<String> = all_new_metas.iter().map(|m| m.store_path.clone()).collect();
     store_paths.extend(
-        expose_artifacts
+        secondary_artifacts
             .iter()
             .map(|artifact| artifact.store_path.clone()),
     );
+    let mut temporary_roots = if !dry_run {
+        let mut lease = crate::store::temp_roots::TemporaryRoots::open(
+            &crate::install::native::packaged_path("AOS_NIX_STORE")?,
+            &Default::default(),
+        )?;
+        lease.retain(store_paths.iter().cloned(), &Default::default())?;
+        Some(lease)
+    } else {
+        None
+    };
     let missing = filter_missing(&store_paths).await?;
     let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
     let to_download: Vec<&PackageMeta> = all_new_metas
@@ -253,9 +329,9 @@ pub async fn run(
         .collect();
 
     let mut requests = build_download_requests(&upgrade_closures, &to_download, config)?;
-    requests.extend(build_expose_artifact_download_requests(
+    requests.extend(build_secondary_artifact_download_requests(
         &registries,
-        &expose_artifacts,
+        &secondary_artifacts,
         &missing,
         config,
     )?);
@@ -317,10 +393,16 @@ pub async fn run(
         // (RFC-0005); totality was already enforced above.
         printer.step(5, 7, "Verifying downloads...");
         verify_downloads(&results, &trust_ctx, printer)?;
-        verify_secondary_artifact_downloads(&results, &expose_artifacts)?;
+        verify_secondary_artifact_downloads(&results, &secondary_artifacts)?;
 
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
+        if let Some(lease) = temporary_roots.as_mut() {
+            lease.retain(
+                results.iter().map(|result| result.store_path.clone()),
+                &Default::default(),
+            )?;
+        }
         for result in &results {
             crate::store::import_nar_with_compression(
                 &result.local_path,
@@ -337,11 +419,45 @@ pub async fn run(
         printer.info("All packages already in store, skipping download.");
     }
 
+    let mut realized_modules = crate::install::native::realize_modules(
+        config,
+        &registries,
+        &native_closures,
+        printer,
+        false,
+        &mut temporary_roots,
+    )
+    .await?;
+    realized_modules.extend(
+        crate::install::native::realize_module_upgrades(
+            config,
+            &inspect_profile,
+            &registries,
+            &installed,
+            &allowed_names,
+            printer,
+            false,
+            &mut temporary_roots,
+        )
+        .await?,
+    );
+
     // Step 8: Create new generation.
     printer.step(6, 7, "Updating profile...");
     let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
+    let native = crate::install::native::prepare(
+        config,
+        &profile,
+        &registries,
+        &installed,
+        &native_closures,
+        &realized_modules,
+        &obsolete_hashes,
+        Some(&allowed_names),
+    )?;
     let new_gen = profile.new_generation()?;
+    all_new_metas.extend(native.additional.iter().map(|(_, meta)| meta.clone()));
 
     // Copy existing roots from the previous generation.
     if let Some(ref prev) = prev_gen {
@@ -358,6 +474,19 @@ pub async fn run(
     };
     create_gc_roots(&new_gen.path, &unique_for_roots)?;
 
+    let metadata_profile = {
+        let selected = native.selected_paths();
+        for (hash, path) in new_gen.roots()? {
+            if !selected.contains(path.to_str().context("profile root is not UTF-8")?) {
+                std::fs::remove_file(new_gen.path.join("usr").join(hash))?;
+            }
+        }
+        Profile {
+            path: new_gen.path.clone(),
+            scope: profile.scope,
+        }
+    };
+
     // Write metadata for upgraded packages.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -368,67 +497,66 @@ pub async fn run(
 
     // Carry forward metadata for non-upgraded packages.
     for hash in &obsolete_hashes {
-        delete_meta(&profile, hash)?;
+        delete_meta(&metadata_profile, hash)?;
     }
     for meta in &installed {
         let hash = store_path_hash(&meta.store_path).to_string();
-        if obsolete_hashes.contains(&hash) {
+        if obsolete_hashes.contains(&hash)
+            || !native.selected_paths().contains(meta.store_path.as_str())
+        {
             continue;
         }
-        write_meta(&profile, &hash, meta)?;
+        write_meta(&metadata_profile, &hash, meta)?;
     }
 
     // Write new metadata for upgraded packages.
-    for (registry_name, closure) in &upgrade_closures {
-        for meta in closure {
-            let hash = store_path_hash(&meta.store_path).to_string();
-            let flags = installed_flags
-                .get(meta.name.as_str())
-                .copied()
-                .unwrap_or_default();
+    let entries = upgrade_closures
+        .iter()
+        .flat_map(|(registry, closure)| closure.iter().map(move |meta| (registry.as_str(), meta)))
+        .chain(
+            native
+                .additional
+                .iter()
+                .map(|(registry, meta)| (registry.as_str(), meta)),
+        );
+    for (registry_name, meta) in entries {
+        let hash = store_path_hash(&meta.store_path).to_string();
+        let flags = installed_flags
+            .get(meta.name.as_str())
+            .copied()
+            .unwrap_or_default();
 
-            let installed_meta = InstalledMeta {
-                store_path: meta.store_path.clone(),
-                pushed_at: now,
-                pushed_by: "apm".into(),
-                expires_at: None,
-                is_root: true,
-                last_accessed: now,
-                access_count: 0,
-                apm: Some(ApmMeta {
-                    name: meta.name.clone(),
-                    version: meta.version.clone(),
-                    explicit: flags.explicit,
-                    registry: registry_name.clone(),
-                    installed_at: now_iso.clone(),
-                    held: flags.held,
-                    source_drv: meta.source_drv.clone(),
-                    source_nar_hash: meta.source_nar_hash.clone(),
-                    expose: meta.expose.clone(),
-                    expose_artifact: meta.expose_artifact.clone(),
-                    config_module: meta.config_module.clone(),
-                    documentation: meta.documentation.clone(),
-                    permissions: meta.permissions.clone(),
-                    bpf_lsm: meta.bpf_lsm.clone(),
-                    attestation: meta.attestation.clone(),
-                }),
-            };
+        let installed_meta = InstalledMeta {
+            store_path: meta.store_path.clone(),
+            pushed_at: now,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: now,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: meta.name.clone(),
+                version: meta.version.clone(),
+                explicit: flags.explicit,
+                registry: registry_name.to_owned(),
+                installed_at: now_iso.clone(),
+                held: flags.held,
+                source_drv: meta.source_drv.clone(),
+                source_nar_hash: meta.source_nar_hash.clone(),
+                deployment: meta.deployment.clone(),
+                module_documentation: meta.module_documentation.clone(),
+                qualification: meta.qualification.clone(),
+                attestation: meta.attestation.clone(),
+            }),
+        };
 
-            write_meta(&profile, &hash, &installed_meta)?;
-        }
+        write_meta(&metadata_profile, &hash, &installed_meta)?;
     }
-    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
-    let future_installed = list_meta(&profile)?;
-    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
-    rebuild_generation_expose_image_roots(&new_gen, &future_installed)?;
-    validate_generation_exposed_units(&new_gen, &future_installed)?;
-
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
-    profile.switch_to(&new_gen)?;
-    reconcile_system_profile(config, printer).await?;
+    native.commit(&profile, &new_gen)?;
 
     printer.step(7, 7, "Done!");
     printer.success(&format!(
@@ -492,22 +620,9 @@ pub fn find_upgradable(
         };
 
         // Compare store path hashes -- different hash means new version/rebuild.
-        // Expose artifacts and images are separate store paths, so renderer or
-        // image-only changes must also force a metadata rewrite and attach
-        // reconciliation.
         let old_hash = store_path_hash(&meta.store_path);
         let new_hash = store_path_hash(&reg_meta.store_path);
-        let old_artifact_hash = apm
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| store_path_hash(&artifact.store_path));
-        let new_artifact_hash = reg_meta
-            .expose_artifact
-            .as_ref()
-            .map(|artifact| store_path_hash(&artifact.store_path));
-        let images_changed = expose_images_changed(apm.expose.as_ref(), reg_meta.expose.as_ref());
-
-        if old_hash != new_hash || old_artifact_hash != new_artifact_hash || images_changed {
+        if old_hash != new_hash {
             candidates.push(UpgradeCandidate {
                 name: apm.name.clone(),
                 old_version: apm.version.clone(),
@@ -519,15 +634,6 @@ pub fn find_upgradable(
         }
     }
     candidates
-}
-
-fn expose_images_changed(old: Option<&ExposeMeta>, new: Option<&ExposeMeta>) -> bool {
-    let old_images: &[SysrootImageEntry] =
-        old.map(|expose| expose.images.as_slice()).unwrap_or(&[]);
-    let new_images: &[SysrootImageEntry] =
-        new.map(|expose| expose.images.as_slice()).unwrap_or(&[]);
-
-    old_images != new_images
 }
 
 /// The per-package flags carried forward across an upgrade.
@@ -609,9 +715,7 @@ fn hashes_for_installed_names(
         .collect()
 }
 
-/// Hashes of installed entries (and their source derivations) not in the
-/// needed set — their GC roots and metadata are dropped from the new
-/// generation.
+/// Hashes of every root owned by installed entries absent from the needed set.
 fn obsolete_installed_hashes(
     installed: &[InstalledMeta],
     needed_hashes: &HashSet<String>,
@@ -724,7 +828,7 @@ fn upgrade_candidate_json(candidate: &UpgradeCandidate) -> serde_json::Value {
 /// Load registries from the config's cache directory.
 fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
 /// Prompt for confirmation. Returns `Err(UserCancelled)` on "n".
@@ -862,49 +966,7 @@ fn build_download_requests(
     Ok(requests)
 }
 
-/// Collect rendered expose artifacts and images needed for upgraded explicit roots.
-fn collect_expose_artifacts(
-    candidates: &[UpgradeCandidate],
-) -> Result<Vec<SecondaryArtifactDownload>> {
-    let mut artifacts = Vec::new();
-    let mut seen = HashMap::<String, usize>::new();
-
-    for candidate in candidates {
-        let Some(expose) = candidate.new_meta.expose.as_ref() else {
-            continue;
-        };
-        let Some(artifact) = candidate.new_meta.expose_artifact.as_ref() else {
-            anyhow::bail!(
-                "package '{}' exposes systemd units but does not record an expose artifact",
-                candidate.name
-            );
-        };
-        push_secondary_artifact(
-            &mut artifacts,
-            &mut seen,
-            &candidate.registry,
-            &artifact.store_path,
-            &artifact.nar_hash,
-            true,
-            false,
-        )?;
-        for image in &expose.images {
-            push_secondary_artifact(
-                &mut artifacts,
-                &mut seen,
-                &candidate.registry,
-                &image.store_path,
-                &image.nar_hash,
-                false,
-                true,
-            )?;
-        }
-    }
-
-    Ok(artifacts)
-}
-
-fn collect_documentation_artifacts(
+fn collect_closure_secondary_artifacts(
     closures: &[(String, Vec<PackageMeta>)],
     artifacts: &mut Vec<SecondaryArtifactDownload>,
 ) -> Result<()> {
@@ -915,18 +977,20 @@ fn collect_documentation_artifacts(
         .collect::<HashMap<_, _>>();
     for (registry_name, packages) in closures {
         for package in packages {
-            let Some(documentation) = &package.documentation else {
-                continue;
-            };
-            push_secondary_artifact(
-                artifacts,
-                &mut seen,
-                registry_name,
-                &documentation.store_path,
-                &documentation.nar_hash,
-                true,
-                true,
-            )?;
+            for artifact in [&package.deployment, &package.module_documentation]
+                .into_iter()
+                .flatten()
+            {
+                push_secondary_artifact(
+                    artifacts,
+                    &mut seen,
+                    registry_name,
+                    &artifact.store_path,
+                    &artifact.nar_hash,
+                    true,
+                    false,
+                )?;
+            }
         }
     }
     Ok(())
@@ -1000,8 +1064,8 @@ fn verify_secondary_artifact_downloads(
     Ok(())
 }
 
-/// Build NAR download requests for missing expose artifacts and images.
-fn build_expose_artifact_download_requests(
+/// Build NAR download requests for missing package contract artifacts.
+fn build_secondary_artifact_download_requests(
     registries: &RegistrySet,
     artifacts: &[SecondaryArtifactDownload],
     missing_store_paths: &[String],
@@ -1082,7 +1146,7 @@ mod tests {
 
     use crate::registry::parse::CURL_TOML;
     use crate::registry::{Registry, RegistrySet};
-    use crate::types::{ApmMeta, ExposeArtifactMeta, InstalledMeta, PackageMeta, RegistryConfig};
+    use crate::types::{ApmMeta, InstalledMeta, PackageMeta, RegistryConfig};
 
     /// Helper: create a registry in a temp directory from TOML test fixtures.
     fn make_registry(
@@ -1132,7 +1196,7 @@ mod tests {
         sample_installed_with_flags(name, version, hash, registry, true, held)
     }
 
-    fn sample_installed_with_flags(
+    pub(super) fn sample_installed_with_flags(
         name: &str,
         version: &str,
         hash: &str,
@@ -1157,176 +1221,12 @@ mod tests {
                 held,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
-                documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }
-    }
-
-    fn sample_package_meta(name: &str, version: &str, store_path: &str) -> PackageMeta {
-        PackageMeta {
-            name: name.to_string(),
-            version: version.to_string(),
-            description: String::new(),
-            homepage: None,
-            license: "MIT".to_string(),
-            maintainer: "test".to_string(),
-            platform: "x86_64-linux".to_string(),
-            store_path: store_path.to_string(),
-            nar_hash: "sha256:root".to_string(),
-            nar_size: 1,
-            references: Vec::new(),
-            source_drv: String::new(),
-            source_nar_hash: String::new(),
-            closure_size: 1,
-            sysroot: false,
-            previous: None,
-            images: Vec::new(),
-            min_format: None,
-            requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: Default::default(),
-            bpf_lsm: None,
-            attestation: Default::default(),
-        }
-    }
-
-    fn sample_expose_image(store_path: &str, nar_hash: &str) -> SysrootImageEntry {
-        SysrootImageEntry {
-            format: "dir".to_string(),
-            store_path: store_path.to_string(),
-            nar_hash: nar_hash.to_string(),
-            nar_size: 1,
-            delivery: crate::types::test_image_delivery("raw"),
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: None,
-            root_verity: None,
-            root_hash: None,
-            root_hash_sig: None,
-        }
-    }
-
-    #[test]
-    fn collect_expose_artifacts_includes_expose_images() {
-        let mut new_meta = sample_package_meta("web", "2.0.0", "/var/lib/store/root-web");
-        new_meta.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: vec![sample_expose_image(
-                "/var/lib/store/image-web",
-                "sha256:image",
-            )],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        new_meta.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/expose-web".to_string(),
-            nar_hash: "sha256:expose".to_string(),
-            nar_size: 1,
-        });
-        let candidate = UpgradeCandidate {
-            name: "web".to_string(),
-            old_version: "1.0.0".to_string(),
-            new_version: "2.0.0".to_string(),
-            old_store_hash: "oldweb".to_string(),
-            new_meta,
-            registry: "test-reg".to_string(),
-        };
-
-        let artifacts = collect_expose_artifacts(&[candidate]).expect("collect expose artifacts");
-
-        assert_eq!(
-            artifacts,
-            vec![
-                SecondaryArtifactDownload {
-                    registry_name: "test-reg".to_string(),
-                    store_path: "/var/lib/store/expose-web".to_string(),
-                    nar_hash: "sha256:expose".to_string(),
-                    trust_graph_root: true,
-                    requires_empty_references: false,
-                },
-                SecondaryArtifactDownload {
-                    registry_name: "test-reg".to_string(),
-                    store_path: "/var/lib/store/image-web".to_string(),
-                    nar_hash: "sha256:image".to_string(),
-                    trust_graph_root: false,
-                    requires_empty_references: true,
-                },
-            ]
-        );
-    }
-
-    #[test]
-    fn collect_expose_artifacts_rejects_incompatible_duplicate_roles() {
-        let shared_path = "/var/lib/store/shared-secondary";
-        let mut image_meta = sample_package_meta("web", "2.0.0", "/var/lib/store/root-web");
-        image_meta.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: vec![sample_expose_image(shared_path, "sha256:shared")],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        image_meta.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/expose-web".to_string(),
-            nar_hash: "sha256:web-expose".to_string(),
-            nar_size: 1,
-        });
-        let mut artifact_meta = sample_package_meta("api", "2.0.0", "/var/lib/store/root-api");
-        artifact_meta.expose = Some(ExposeMeta {
-            target: "api.target".to_string(),
-            units: vec!["api.service".to_string()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        artifact_meta.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: shared_path.to_string(),
-            nar_hash: "sha256:shared".to_string(),
-            nar_size: 1,
-        });
-        let candidates = vec![
-            UpgradeCandidate {
-                name: "web".to_string(),
-                old_version: "1.0.0".to_string(),
-                new_version: "2.0.0".to_string(),
-                old_store_hash: "oldweb".to_string(),
-                new_meta: image_meta,
-                registry: "test-reg".to_string(),
-            },
-            UpgradeCandidate {
-                name: "api".to_string(),
-                old_version: "1.0.0".to_string(),
-                new_version: "2.0.0".to_string(),
-                old_store_hash: "oldapi".to_string(),
-                new_meta: artifact_meta,
-                registry: "test-reg".to_string(),
-            },
-        ];
-
-        let err = collect_expose_artifacts(&candidates)
-            .expect_err("duplicate image/artifact path should be rejected");
-
-        assert!(err.to_string().contains("incompatible roles"));
     }
 
     #[test]
@@ -1349,7 +1249,7 @@ mod tests {
         };
 
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
-            .expect_err("referenced expose image should be rejected");
+            .expect_err("secondary artifact with references should be rejected");
 
         assert!(err.to_string().contains("empty reference set"));
     }
@@ -1374,86 +1274,6 @@ closure_size = 53000000
 source_drv = "/var/lib/store/newsrc-curl-8.6.0.drv"
 source_nar_hash = "sha256:newsrc"
 references = []
-"#;
-
-    const CURL_TOML_REFRESHED_EXPOSE_ARTIFACT: &str = r#"
-[package]
-name = "curl"
-description = "Command-line tool and library for URL transfers"
-homepage = "https://curl.se"
-license = "MIT"
-maintainer = "aos-team"
-
-[[versions]]
-version = "8.5.0"
-
-[versions.platforms.x86_64-linux]
-store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
-nar_hash = "sha256:oldnar"
-nar_size = 3100000
-closure_size = 52000000
-source_drv = "/var/lib/store/oldsrc-curl-8.5.0.drv"
-source_nar_hash = "sha256:oldsrc"
-root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-provenance = "attestation/curl.provenance.jsonl"
-measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "expose-v1", "expose-artifact-v1", "network-policy-v1"]
-
-[versions.platforms.x86_64-linux.expose]
-target = "aos-pkg-curl.target"
-units = ["curl.service"]
-
-[versions.platforms.x86_64-linux.expose_artifact]
-store_path = "/var/lib/store/newartifacthash-curl-expose"
-nar_hash = "sha256:newartifact"
-nar_size = 42
-"#;
-
-    const CURL_TOML_REFRESHED_EXPOSE_IMAGE: &str = r#"
-[package]
-name = "curl"
-description = "Command-line tool and library for URL transfers"
-homepage = "https://curl.se"
-license = "MIT"
-maintainer = "aos-team"
-
-[[versions]]
-version = "8.5.0"
-
-[versions.platforms.x86_64-linux]
-store_path = "/var/lib/store/h7j3k8l2m9n4-curl-8.5.0"
-nar_hash = "sha256:oldnar"
-nar_size = 3100000
-closure_size = 52000000
-source_drv = "/var/lib/store/oldsrc-curl-8.5.0.drv"
-source_nar_hash = "sha256:oldsrc"
-root_digest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-provenance = "attestation/curl.provenance.jsonl"
-measurement = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-
-[versions.platforms.x86_64-linux.references]
-hashes = []
-min-format = 1
-requires-features = ["attestation-v1", "expose-v1", "expose-artifact-v1", "network-policy-v1"]
-
-[versions.platforms.x86_64-linux.expose]
-target = "aos-pkg-curl.target"
-units = ["curl.service"]
-
-[[versions.platforms.x86_64-linux.expose.images]]
-format = "dir"
-store_path = "/var/lib/store/newimagehash-curl-rootfs"
-nar_hash = "sha256:newimage"
-nar_size = 42
-
-[versions.platforms.x86_64-linux.expose_artifact]
-store_path = "/var/lib/store/artifacthash111-curl-expose"
-nar_hash = "sha256:artifact"
-nar_size = 42
 "#;
 
     // 1. find_upgradable detects newer version in registry (different hash).
@@ -1499,105 +1319,6 @@ nar_size = 42
         let candidates = find_upgradable(&installed, &set, &[]);
         assert!(candidates.is_empty());
     }
-
-    #[test]
-    fn find_upgradable_detects_expose_artifact_refresh() {
-        let tmp = TempDir::new().unwrap();
-        let core = make_registry(
-            &tmp,
-            "aos-core",
-            500,
-            &[("curl", CURL_TOML_REFRESHED_EXPOSE_ARTIFACT)],
-        );
-        let set = RegistrySet::new(vec![core]);
-
-        let mut installed = vec![sample_installed(
-            "curl",
-            "8.5.0",
-            "h7j3k8l2m9n4",
-            "aos-core",
-            false,
-        )];
-        let apm = installed[0].apm.as_mut().unwrap();
-        apm.expose = Some(ExposeMeta {
-            target: "aos-pkg-curl.target".into(),
-            units: vec!["curl.service".into()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        apm.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/oldartifacthash-curl-expose".into(),
-            nar_hash: "sha256:oldartifact".into(),
-            nar_size: 42,
-        });
-
-        let candidates = find_upgradable(&installed, &set, &[]);
-
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].name, "curl");
-        assert_eq!(candidates[0].old_store_hash, "h7j3k8l2m9n4");
-        assert_eq!(
-            candidates[0]
-                .new_meta
-                .expose_artifact
-                .as_ref()
-                .unwrap()
-                .store_path,
-            "/var/lib/store/newartifacthash-curl-expose"
-        );
-    }
-
-    #[test]
-    fn find_upgradable_detects_expose_image_refresh() {
-        let tmp = TempDir::new().unwrap();
-        let core = make_registry(
-            &tmp,
-            "aos-core",
-            500,
-            &[("curl", CURL_TOML_REFRESHED_EXPOSE_IMAGE)],
-        );
-        let set = RegistrySet::new(vec![core]);
-
-        let mut installed = vec![sample_installed(
-            "curl",
-            "8.5.0",
-            "h7j3k8l2m9n4",
-            "aos-core",
-            false,
-        )];
-        let apm = installed[0].apm.as_mut().unwrap();
-        apm.expose = Some(ExposeMeta {
-            target: "aos-pkg-curl.target".into(),
-            units: vec!["curl.service".into()],
-            images: vec![sample_expose_image(
-                "/var/lib/store/oldimagehash-curl-rootfs",
-                "sha256:oldimage",
-            )],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        apm.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/artifacthash111-curl-expose".into(),
-            nar_hash: "sha256:artifact".into(),
-            nar_size: 42,
-        });
-
-        let candidates = find_upgradable(&installed, &set, &[]);
-
-        assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].name, "curl");
-        assert_eq!(candidates[0].old_store_hash, "h7j3k8l2m9n4");
-        assert_eq!(
-            candidates[0].new_meta.expose.as_ref().unwrap().images[0].store_path,
-            "/var/lib/store/newimagehash-curl-rootfs"
-        );
-    }
-
     // 3. find_upgradable with filter only checks named packages.
     #[test]
     fn find_upgradable_with_filter() {
@@ -1775,18 +1496,19 @@ nar_size = 42
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
+                    version_requirement: None,
+                    os_version: None,
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    expose: None,
-                    expose_artifact: None,
-                    config_module: None,
-                    documentation: None,
-                    permissions: Default::default(),
-                    bpf_lsm: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1810,18 +1532,19 @@ nar_size = 42
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
+                    version_requirement: None,
+                    os_version: None,
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    expose: None,
-                    expose_artifact: None,
-                    config_module: None,
-                    documentation: None,
-                    permissions: Default::default(),
-                    bpf_lsm: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1863,18 +1586,19 @@ nar_size = 42
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
+                    version_requirement: None,
+                    os_version: None,
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    expose: None,
-                    expose_artifact: None,
-                    config_module: None,
-                    documentation: None,
-                    permissions: Default::default(),
-                    bpf_lsm: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1898,18 +1622,19 @@ nar_size = 42
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
+                    version_requirement: None,
+                    os_version: None,
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    expose: None,
-                    expose_artifact: None,
-                    config_module: None,
-                    documentation: None,
-                    permissions: Default::default(),
-                    bpf_lsm: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1952,18 +1677,19 @@ nar_size = 42
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
+                    version_requirement: None,
+                    os_version: None,
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    expose: None,
-                    expose_artifact: None,
-                    config_module: None,
-                    documentation: None,
-                    permissions: Default::default(),
-                    bpf_lsm: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),
@@ -1987,18 +1713,19 @@ nar_size = 42
                     references: vec![],
                     source_drv: String::new(),
                     source_nar_hash: String::new(),
+                    named_outputs: std::collections::BTreeMap::new(),
+                    version_requirement: None,
+                    os_version: None,
+                    module_dependencies: Vec::new(),
                     closure_size: 0,
                     sysroot: false,
                     previous: None,
                     images: vec![],
                     min_format: None,
                     requires_features: Vec::new(),
-                    expose: None,
-                    expose_artifact: None,
-                    config_module: None,
-                    documentation: None,
-                    permissions: Default::default(),
-                    bpf_lsm: None,
+                    deployment: None,
+                    module_documentation: None,
+                    qualification: None,
                     attestation: Default::default(),
                 },
                 registry: "aos-core".into(),

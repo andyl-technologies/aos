@@ -1,6 +1,11 @@
 ##! systemd — System and service manager
 {
+  lib,
+  service-management,
+  aos-configuration-provider,
+  aos-host-policy,
   mkDerivation,
+  stdenv,
   fetchurl,
   gnumake,
   pkg-config,
@@ -12,6 +17,7 @@
   xz,
   lz4,
   zstd,
+  zfs,
   openssl,
   perl,
   meson,
@@ -32,11 +38,33 @@
   linux-pam,
   tpm2-tss,
   coreutils,
+  cpio,
+  binutils,
+  dosfstools,
+  e2fsprogs,
+  erofs-utils,
+  fakeroot,
+  findutils,
+  gcc-libs,
+  gptfdisk,
+  grep,
+  iproute2,
+  jq,
+  less,
+  mtools,
+  sbsigntools,
+  sed,
+  tar,
   bash,
   bzip2,
   python3-pefile,
   python3-pyelftools,
+  aos-recovery,
+  aos-systemd-provider,
+  pe-tools,
 }: let
+  identityShells = import ./_systemd-abilities/identity-shells.nix {inherit bash util-linux;};
+
   version = "261.2";
 
   # PYTHONPATH that makes `import pefile` / `import elftools` succeed
@@ -46,6 +74,25 @@
 
   systemdRuntimeDeps = [
     bash
+    python3
+    coreutils
+    cpio
+    dosfstools
+    e2fsprogs
+    erofs-utils
+    fakeroot
+    findutils
+    gcc-libs
+    gawk
+    gptfdisk
+    grep
+    iproute2
+    jq
+    less
+    mtools
+    sbsigntools
+    sed
+    tar
     bzip2
     util-linux
     kmod
@@ -53,6 +100,7 @@
     xz
     lz4
     zstd
+    zfs
     openssl
     libcap
     libxcrypt
@@ -66,14 +114,82 @@
     elfutils
     linux-pam
     tpm2-tss
+    aos-recovery
+    pe-tools
   ];
   systemdRuntimeLibraryPath = builtins.concatStringsSep ":" (
     map (dependency: "${dependency}/lib") systemdRuntimeDeps
   );
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "systemd";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "systemd-escape emits the canonical escaped path.";
+        "files" = {};
+        "input" = "An absolute filesystem path.";
+        "operation" = "Escape the path as a systemd unit-name component.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/systemd-escape"
+              "--path"
+              "/var/lib/aos"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "var-lib-aos\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "systemd-escape rejects the relative path.";
+        "files" = {};
+        "input" = "A relative path, which is outside --path's accepted input domain.";
+        "operation" = "Attempt to escape the relative value as an absolute path.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/systemd-escape"
+              "--path"
+              "relative/path"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
+    module = ./_systemd-abilities;
+    moduleDeps = [service-management aos-configuration-provider aos-host-policy linux-pam];
 
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need
@@ -114,6 +230,7 @@ in
     ];
 
     buildDeps = [
+      binutils
       gnumake
       pkg-config
       gawk
@@ -131,7 +248,10 @@ in
     # Installed helpers and the cryptsetup/ukify wrappers execute the target
     # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
     # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
-    runtimeDeps = systemdRuntimeDeps;
+    # Image assembly pins its build-platform tools independently. The ukify
+    # wrapper retains binutils only in `tools`, while these native providers
+    # are executed by wrappers installed in the runtime output.
+    runtimeDeps = systemdRuntimeDeps ++ [aos-systemd-provider aos-configuration-provider];
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
@@ -144,7 +264,7 @@ in
     # The ukify wrapper installed into $tools/bin references python3 +
     # the pefile / pyelftools site-packages. Listed in nukeRefsKeep so
     # scrubPhase preserves the hashes only inside the tools output.
-    nukeRefsKeep = [python3 python3-pefile python3-pyelftools];
+    nukeRefsKeep = [binutils python3 python3-pefile python3-pyelftools];
 
     phases = [
       {
@@ -259,7 +379,7 @@ in
                   meson setup .. \
                     $mesonFlags \
                     --prefix=$out \
-                    --sysconfdir=$out/etc \
+                    --sysconfdir=/etc \
                     -Dwerror=false \
                     --buildtype=release \
                     -Dmode=release \
@@ -403,6 +523,11 @@ in
         script = ''
           DESTDIR=/ ninja install
 
+          # This target realizes the provider-neutral boot-integrity-failure
+          # milestone for the selected systemd boot platform.
+          cp ${./aos-boot-integrity-failure.target} \
+            "$out/lib/systemd/system/aos-boot-integrity-failure.target"
+
           # Source generators must run with native Python during the cross
           # build. Retarget installed scripts to the AArch64 interpreter.
           nativePythonRoot=$(dirname "$(dirname "$(command -v python3)")")
@@ -429,6 +554,19 @@ in
           done
           sed -i "1c #!${python3}/bin/python3" \
             "$out/lib/kernel/install.d/60-ukify.install"
+
+          mkdir -p "$out/libexec"
+          sed 's|@bash@|${bash}|g' \
+            ${./aos-systemd-verity-root-setup.sh.in} \
+            > "$out/libexec/aos-systemd-verity-root-setup"
+          chmod 0555 "$out/libexec/aos-systemd-verity-root-setup"
+
+          sed \
+            -e 's|@bash@|${bash}|g' \
+            -e "s|@systemd_creds@|$out/bin/systemd-creds|g" \
+            ${./aos-systemd-boot-credential-seal.sh.in} \
+            > "$out/libexec/aos-boot-credential-seal"
+          chmod 0555 "$out/libexec/aos-boot-credential-seal"
         '';
       }
       {
@@ -493,6 +631,7 @@ in
               "$tools/bin/.ukify-unwrapped"
             cat > "$tools/bin/ukify" << EOF
           #!${bash}/bin/bash
+          export PATH="${binutils}/bin:\$PATH"
           export PYTHONPATH="${ukifyPythonPath}\''${PYTHONPATH:+:\$PYTHONPATH}"
           exec "${python3}/bin/python3" "$tools/bin/.ukify-unwrapped" "\$@"
           EOF
@@ -515,6 +654,144 @@ in
           exec "${python3}/bin/python3" "$ukify_hook.unwrapped" "\$@"
           EOF
           chmod +x "$ukify_hook"
+        '';
+      }
+      {
+        name = "install-native-platform-tools";
+        script = ''
+          mkdir -p "$out/bin"
+          cat > "$out/bin/aos-systemd-credential-encrypt" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-credential-encrypt" \\
+            --systemd-creds "$out/bin/systemd-creds" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-credential-encrypt"
+
+          cat > "$out/bin/aos-systemd-boot-platform" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-boot-platform" \\
+            --bootctl "$out/bin/bootctl" \\
+            --bless-boot "$out/lib/systemd/systemd-bless-boot" \\
+            --mount "${util-linux}/bin/mount" \\
+            --systemctl "$out/bin/systemctl" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-boot-platform"
+
+          cat > "$out/bin/aos-systemd-image-evidence" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-image-evidence" \\
+            --openssl "${openssl}/bin/openssl" \\
+            --objcopy "${pe-tools}/bin/objcopy" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-image-evidence"
+
+        '';
+      }
+      {
+        name = "install-native-image-stage";
+        script = ''
+          mkdir -p "$out/bin"
+          cat > "$out/bin/aos-systemd-image-stage" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-image-stage" \\
+            --mount "${util-linux}/bin/mount" \\
+            --umount "${util-linux}/bin/umount" \\
+            --blkid "${util-linux}/bin/blkid" \\
+            --objcopy "${pe-tools}/bin/objcopy" \\
+            --veritysetup "${cryptsetup}/bin/veritysetup" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-image-stage"
+        '';
+      }
+      {
+        name = "install-native-network-handler";
+        script = ''
+          mkdir -p "$out/libexec" "$out/bin"
+          cp ${./_systemd-abilities/network-handler.py} "$out/libexec/aos-network-handler.py"
+          cat > "$out/bin/aos-network-handler" << EOF
+          #!${bash}/bin/bash
+          exec "${python3}/bin/python3" "$out/libexec/aos-network-handler.py" \\
+            --systemctl "$out/bin/systemctl" \\
+            --wait-online "$out/lib/systemd/systemd-networkd-wait-online" \\
+            --unit-directory "$out/lib/systemd/system" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-network-handler"
+        '';
+      }
+      {
+        name = "install-native-service-handler";
+        script = ''
+          mkdir -p "$out/libexec" "$out/bin"
+          cp ${./_systemd-abilities/service-handler.py} "$out/libexec/aos-service-handler.py"
+          cat > "$out/bin/aos-service-handler" << EOF
+          #!${bash}/bin/bash
+          export PYTHONPATH="${aos-configuration-provider}/libexec"
+          exec "${python3}/bin/python3" -B "$out/libexec/aos-service-handler.py" \\
+            --systemctl "$out/bin/systemctl" \\
+            --true-executable "${coreutils}/bin/true" \\
+            --flock-executable "${util-linux}/bin/flock" \\
+            --mac-condition-executable "$out/bin/aos-service-handler" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-service-handler"
+        '';
+      }
+      {
+        name = "install-native-resource-handler";
+        script = ''
+          cat > "$out/bin/aos-systemd-native-resources" << EOF
+          #!${bash}/bin/bash
+          exec "${aos-systemd-provider}/bin/aos-systemd-native-resource-provider" \\
+            --systemd-creds "$out/bin/systemd-creds" \\
+            --login-shell "${identityShells.login}" \\
+            --nologin-shell "${identityShells.nologin}" \\
+            "\$@"
+          EOF
+          chmod +x "$out/bin/aos-systemd-native-resources"
+        '';
+      }
+      {
+        name = "verify-runtime-configuration-paths";
+        script = ''
+          # Administrator state belongs to the live /etc overlay. Compiling
+          # the output path into systemd would let runtime tools mutate the
+          # package through the writable /nix overlay.
+          grep -F '/etc/profile.d/70-systemd-shell-extra.sh' \
+            "$out/lib/tmpfiles.d/20-systemd-shell-extra.conf" >/dev/null
+          grep -F '/etc/profile.d/80-systemd-osc-context.sh' \
+            "$out/lib/tmpfiles.d/20-systemd-osc-context.conf" >/dev/null
+          if grep -F "$out/etc/profile.d" \
+            "$out/lib/tmpfiles.d/20-systemd-shell-extra.conf" \
+            "$out/lib/tmpfiles.d/20-systemd-osc-context.conf" >/dev/null; then
+            echo "systemd tmpfiles targets its immutable output" >&2
+            exit 1
+          fi
+
+          test ! -e "$out/etc"
+
+          ${
+            if stdenv.isCross
+            then ''
+              echo "skipping target systemd path execution while cross-compiling"
+            ''
+            else ''
+              test "$($out/bin/systemd-path system-configuration)" = /etc
+
+              unitPaths="$($out/bin/systemd-analyze unit-paths)"
+              printf '%s\n' "$unitPaths" \
+                | grep -Fx /etc/systemd/system >/dev/null
+              if printf '%s\n' "$unitPaths" \
+                | grep -Fx "$out/etc/systemd/system" >/dev/null; then
+                echo "systemd runtime unit lookup includes its immutable output" >&2
+                exit 1
+              fi
+            ''
+          }
         '';
       }
     ];

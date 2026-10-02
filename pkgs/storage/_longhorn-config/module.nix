@@ -1,63 +1,67 @@
-##! Typed Longhorn contribution to the versioned Kubernetes add-on interface.
+##! Longhorn configuration and provider-neutral Kubernetes requirements.
 {
   config,
   lib,
-  outputs,
+  packageVersion,
   ...
 }: let
-  inherit (lib) mkIf mkOption types;
-  # Runtime output names are authenticated configuration data. Their contents
-  # remain unavailable until activation, after pure evaluation has completed.
-  packageName = builtins.baseNameOf outputs.self;
-  versionMatch = builtins.match "[0-9a-z]{32}-longhorn-manager-(.+)" packageName;
-  version =
-    if versionMatch != null
-    then builtins.head versionMatch
-    else throw "Longhorn received an invalid authenticated runtime output name: ${packageName}";
-  cfg = config.longhorn;
-  values = ''
-    defaultSettings:
-      defaultReplicaCount: "${toString cfg.defaultReplicaCount}"
-    persistence:
-      defaultClassReplicaCount: ${toString cfg.defaultReplicaCount}
-  '';
+  inherit (lib) mkOption;
+
+  cfg = config.aos.longhorn;
+  chartObject = {
+    apiVersion = "helm.cattle.io/v1";
+    kind = "HelmChart";
+    metadata = {
+      name = "longhorn";
+      namespace = "kube-system";
+    };
+    spec = {
+      chart = "longhorn";
+      repo = "https://charts.longhorn.io";
+      targetNamespace = "longhorn-system";
+      version = packageVersion;
+      valuesContent = builtins.toJSON {
+        defaultSettings.defaultReplicaCount = builtins.toString cfg.defaultReplicaCount;
+        persistence.defaultClassReplicaCount = cfg.defaultReplicaCount;
+      };
+    };
+  };
 in {
-  options.longhorn = {
+  options.aos.longhorn = {
     enable = mkOption {
-      type = types.bool;
+      type = lib.types.bool;
       default = false;
       description = "Contribute the Longhorn storage add-on to the selected Kubernetes owner.";
     };
     defaultReplicaCount = mkOption {
-      type = types.addCheck types.int (value: value >= 1 && value <= 20);
+      type = lib.types.ints.between 1 20;
       default = 3;
       description = "Default number of replicas for Longhorn volumes.";
     };
     nodeLabel = mkOption {
-      type = types.strMatching "[A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?";
+      type = lib.types.addCheck lib.types.str (value:
+        builtins.stringLength value
+        <= 253
+        && builtins.match "([A-Za-z0-9]([-A-Za-z0-9_.]*[A-Za-z0-9])?)?" value != null);
       default = "true";
       description = "Value of the package-owned Longhorn scheduling node label.";
     };
   };
 
-  config.k3s.integrations.csi.longhorn = mkIf cfg.enable {
-    nodeLabels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
-  };
-  config.k3s.integrations.resources.longhorn = mkIf cfg.enable {
-    priority = 200;
-    content = ''
-      apiVersion: helm.cattle.io/v1
-      kind: HelmChart
-      metadata:
-        name: longhorn
-        namespace: kube-system
-      spec:
-        chart: longhorn
-        repo: https://charts.longhorn.io
-        targetNamespace: longhorn-system
-        version: ${version}
-        valuesContent: |-
-      ${lib.concatMapStringsSep "\n" (line: "      ${line}") (lib.splitString "\n" values)}
-    '';
+  config = lib.mkIf cfg.enable {
+    aos.kubernetes.objectSets.longhorn = {
+      enable = true;
+      objects = [
+        {
+          key = "longhorn";
+          api_version = chartObject.apiVersion;
+          kind = chartObject.kind;
+          namespace = chartObject.metadata.namespace;
+          name = chartObject.metadata.name;
+          content = builtins.toJSON chartObject;
+        }
+      ];
+    };
+    aos.k3s.integrations.longhorn.node_labels."node.longhorn.io/create-default-disk" = cfg.nodeLabel;
   };
 }

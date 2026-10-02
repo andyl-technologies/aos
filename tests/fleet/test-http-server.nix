@@ -1,5 +1,6 @@
 {
   mkSystem,
+  pkgs,
   systems,
   ...
 }: let
@@ -8,7 +9,12 @@
   # additionally re-bundles test-http-server so the fleet seed can activate it.
   serverWithHttp = mkSystem [
     ../../systems/server-test.nix
-    {aos.packages.test-http-server.bundle = true;}
+    {
+      aos.packages.test-http-server = {
+        package = pkgs.test-http-server;
+        bundle = true;
+      };
+    }
   ];
 in {
   name = "test-http-server-pair";

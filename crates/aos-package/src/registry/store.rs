@@ -153,6 +153,36 @@ impl StoreMap {
         })
     }
 
+    /// Reconstructs a closed graph retained from an authenticated release.
+    ///
+    /// Authentication of the supplied records belongs to the caller. This
+    /// constructor checks canonical identities and requires every dependency
+    /// edge to name a retained record; it never loads a mutable registry view.
+    ///
+    /// # Errors
+    /// Returns an error for invalid hashes, empty records, or missing edges.
+    pub(crate) fn from_authenticated_entries(
+        entries: BTreeMap<String, StoreEntry>,
+    ) -> Result<Self> {
+        for (hash, entry) in &entries {
+            shard(hash)?;
+            anyhow::ensure!(
+                !entry.realisations.is_empty(),
+                "retained store record is empty"
+            );
+            for dependency in entry.dep_ias() {
+                anyhow::ensure!(
+                    entries.contains_key(&dependency),
+                    "retained store graph is not closed"
+                );
+            }
+        }
+        Ok(Self {
+            entries,
+            present: true,
+        })
+    }
+
     /// Whether the registry publishes a `store/` graph at all.
     pub fn is_present(&self) -> bool {
         self.present
@@ -241,9 +271,9 @@ impl StoreMap {
                 members.insert(ia, serialize_entry(entry));
             }
         }
-        Ok(crate::graph_compile::reproject::hash_cjson(
+        crate::canonical_json_digest(
             &serde_json::to_value(members).context("serializing signed store subset")?,
-        ))
+        )
     }
 }
 

@@ -68,6 +68,11 @@ authoring belongs to `apr`; neither requires an AOS source checkout.
 
 ## Build and inspect source
 
+`aos show` includes the native deployment envelope and generated module
+documentation in JSON, with payload, dependency, option, and operation summaries
+in text. These are local evaluated declarations; they do not authenticate a
+release or prove that a handler ran. `aos graph` shows the built payload closure.
+
 Common repository workflows are:
 
 ```sh
@@ -92,6 +97,13 @@ aos doc
 
 `aos build zlib` builds `pkgs.zlib`; it does not install a package on the
 running host. Use `apm install zlib` for that operation.
+
+`aos ability` inspects and compares checked portable plans, previews typed
+reverse-use removal effects, builds bounded private deployment views, and reads
+retained native execution or realized artifact-consumption evidence. It does
+not activate a plan or authenticate a deployment connection.
+See [Inspect ability plans and retained execution](ability-inspection.md) for
+the current commands, provenance limits, and disclosure rules.
 
 The flake output `packages.<system>.all` is the remote-build equivalent of
 `aos build --all`: build it when one submitted derivation must realize every
@@ -361,3 +373,23 @@ before automating system upgrades.
 Continue with [Manage packages](packages.md) for `apm`, or
 [Operate an AOS package registry](../registry/) for producer-side `apr`
 workflows.
+
+## Inspect native runtime documentation
+
+`aos docs` is an alias for `aos doc`. Native artifact inspection works without
+Nix, a checkout, or a network connection:
+
+```sh
+aos docs runtime options.json
+aos docs runtime transaction.json --format json
+aos docs runtime transaction.json --format html --output execution.html
+```
+
+The input must be an `aos.module.documentation` reference or an
+`aos.package.transaction`. Output defaults to text; global `--json` selects JSON
+unless `--format` is explicit. `--output` writes a file. Runtime mode does not
+accept installed-package, registry, search, or Hub selectors.
+
+See [runtime abilities](runtime-abilities.md) for artifact generation and example
+execution paths. Existing `doc package`, `doc hub`, and `ability` consumers have
+not yet migrated to these native formats.

@@ -4,12 +4,68 @@
   fetchurl,
   buildPackages,
   stdenv,
+  lib,
 }: let
   version = "1.0.16";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "fribidi";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "A line containing left-to-right Latin and right-to-left Hebrew text.";
+        operation = "Render the logical line in visual order with a left-to-right base direction.";
+        expected = "The Hebrew run is reversed while the Latin run remains in order.";
+        files."mixed.txt" = "abc אבג\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/fribidi" "--ltr" "--nopad" "--charset" "UTF-8" "@work@/mixed.txt"];
+            exit_code = 0;
+            stdout.exact = "abc גבא\n";
+            stderr.exact = "";
+          }
+        ];
+      };
+      badInput = {
+        input = "An unknown character set name.";
+        operation = "Request visual ordering with an unsupported character set.";
+        expected = "The command rejects the character set before processing input.";
+        files."plain.txt" = "abc\n";
+        artifacts = [];
+        steps = [
+          {
+            argv = ["@out@/bin/fribidi" "--charset" "AOS-INVALID" "@work@/plain.txt"];
+            exit_code = 255;
+            observes_rejection = true;
+            stdout.exact = "";
+          }
+        ];
+      };
+    };
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
     src = fetchurl {
       urls = ["https://github.com/fribidi/fribidi/releases/download/v${version}/fribidi-${version}.tar.xz"];
       hash = "0p50krd2mn244y5fqw5li9623qq9lf40wbxyj6g4fh2x4ddxw70v";

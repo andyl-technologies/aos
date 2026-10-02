@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aos_hub::surface::object::{
-    encode_loose, encode_tree, hash_object, ObjectKind, Oid, TreeEntry,
+    ObjectKind, Oid, TreeEntry, encode_loose, encode_tree, hash_object,
 };
 use aos_hub::surface::sshsig;
 use aos_hub::surface::tag::render_tag_payload;
@@ -810,9 +810,9 @@ pub fn standard_registry_with_commit_message(
 #[allow(dead_code)]
 pub fn system_image_registry(root: &Path) -> SystemImageFixture {
     use aos_registry_surface::manifest::{
-        immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-        ImageDelivery, ImageEntry, ImageInfoReference, ImageTarget, ImageUkiIdentity,
-        ImageVerificationState,
+        ImageArtifactContractDocumentReference, ImageArtifactContractReference, ImageCompression,
+        ImageDelivery, ImageEntry, ImageTarget, immutable_image_contract_object_key,
+        immutable_image_object_key,
     };
     use sha2::Digest as _;
 
@@ -832,19 +832,10 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
     let qcow2_info_sha = hex::encode(sha2::Sha256::digest(&qcow2_info));
     let raw_key = immutable_image_object_key(&raw_transfer_sha, "aos-1.0.0-x86_64.img.zst");
     let qcow2_key = immutable_image_object_key(&qcow2_sha, "aos-1.0.0-x86_64.qcow2");
-    let raw_info_key = immutable_image_info_object_key(&raw_transfer_sha, &raw_info_sha);
-    let qcow2_info_key = immutable_image_info_object_key(&qcow2_sha, &qcow2_info_sha);
-    let uki = ImageUkiIdentity {
-        filename: "aos.efi".to_string(),
-        esp_path: "EFI/Linux/aos.efi".to_string(),
-        byte_size: 8,
-        sha256: "e".repeat(64),
-        verification: ImageVerificationState::Unsigned,
-        signer_cert_sha256: None,
-        sbat: Vec::new(),
-        measured: false,
-        expected_pcr11: None,
-    };
+    let raw_info_key =
+        immutable_image_contract_object_key(&raw_transfer_sha, &raw_info_sha, "image-info.json");
+    let qcow2_info_key =
+        immutable_image_contract_object_key(&qcow2_sha, &qcow2_info_sha, "image-info.json");
     let make_image = |format: &str,
                       filename: &str,
                       bytes: &[u8],
@@ -874,7 +865,6 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                 architecture: "x86_64".to_string(),
                 logical_image_id: "d".repeat(64),
                 logical_disk_sha256: raw_sha.clone(),
-                rootfs_sha256: "f".repeat(64),
                 filename: filename.to_string(),
                 object_key: object_key.to_string(),
                 media_type: media_type.to_string(),
@@ -886,29 +876,21 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                 byte_size: bytes.len() as u64,
                 sha256: sha256.to_string(),
                 compatible_targets: targets,
-                uki: uki.clone(),
-                image_info: ImageInfoReference {
-                    filename: "image-info.json".to_string(),
-                    object_key: info_key.to_string(),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".to_string(),
-                    byte_size: info.len() as u64,
-                    sha256: info_sha256.to_string(),
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.test.boot-artifacts/v1".to_string(),
+                    document: ImageArtifactContractDocumentReference {
+                        filename: "image-info.json".to_string(),
+                        object_key: info_key.to_string(),
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".to_string(),
+                        byte_size: info.len() as u64,
+                        sha256: info_sha256.to_string(),
+                    },
+                    artifacts: None,
                 },
-                update_payload: None,
             },
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: None,
-            root_verity: None,
-            root_hash: None,
-            root_hash_sig: None,
         }
     };
     let images = vec![
@@ -950,7 +932,7 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
         fixture.trust_key,
     ));
     let mut package: toml::Value = toml::from_str(
-        "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\nreferences = []\n",
+        "[package]\nname = \"aos-system\"\ndescription = \"AOS system image\"\nlicense = \"MIT\"\nmaintainer = \"aos\"\nsysroot = true\n\n[[versions]]\nversion = \"1.0.0\"\n\n[versions.platforms.x86_64-linux]\nstore_path = \"/var/lib/store/aos-system-1.0.0\"\nnar_hash = \"sha256:aa\"\nnar_size = 10\nclosure_size = 20\nsource_drv = \"/var/lib/store/aos-system-1.0.0.drv\"\nsource_nar_hash = \"sha256:bb\"\n\n[versions.platforms.x86_64-linux.references]\nhashes = []\nmin-format = 1\nrequires-features = [\"image-artifact-contract-v1\"]\n",
     )
     .unwrap();
     package["versions"][0]["platforms"][platform]
@@ -1021,10 +1003,10 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                     "sha256": image.delivery.sha256.as_str(),
                 }),
                 serde_json::json!({
-                    "key": image.delivery.image_info.object_key.as_str(),
+                    "key": image.delivery.artifact_contract.document.object_key.as_str(),
                     "role": "image-info",
-                    "byteSize": image.delivery.image_info.byte_size,
-                    "sha256": image.delivery.image_info.sha256.as_str(),
+                    "byteSize": image.delivery.artifact_contract.document.byte_size,
+                    "sha256": image.delivery.artifact_contract.document.sha256.as_str(),
                 }),
             ]
         })
@@ -1040,10 +1022,15 @@ pub fn system_image_registry(root: &Path) -> SystemImageFixture {
                     image.delivery.sha256.as_str(),
                 ),
                 (
-                    image.delivery.image_info.object_key.as_str(),
+                    image
+                        .delivery
+                        .artifact_contract
+                        .document
+                        .object_key
+                        .as_str(),
                     "image-info",
-                    image.delivery.image_info.byte_size,
-                    image.delivery.image_info.sha256.as_str(),
+                    image.delivery.artifact_contract.document.byte_size,
+                    image.delivery.artifact_contract.document.sha256.as_str(),
                 ),
             ]
         }),

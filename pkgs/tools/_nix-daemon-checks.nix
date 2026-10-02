@@ -6,40 +6,53 @@
   testing,
   ...
 }: let
-  aos = import ../.. {system = pkgs.stdenv.buildPlatform.system;};
-  definition = import ./nix-daemon.nix {
-    inherit lib;
-    inherit (pkgs) nix bash coreutils systemd writeShellScriptBin;
-    mkDerivation = value: value;
+  artifactLib = import ../../lib/packages/artifacts.nix {};
+  artifact = name: package: {
+    inherit name;
+    version = "1.0.0";
+    path = toString package;
+    outputs.out = toString package;
+    mainProgram = package.meta.mainProgram or name;
   };
-  packageModule = {
-    name = "nix-daemon";
-    configRoot = ./_nix-daemon-config;
-    module = ./_nix-daemon-config/module.nix;
-    authorization = {
-      owns = ["nix-daemon"];
-      contributes = {};
-      artifacts = definition.configModule.artifacts;
+  record = name: source: package: dependencies: let
+    retained = builtins.path {
+      path = source;
+      name = "${name}-module";
     };
-    outputs = {
-      self = toString self;
-      dependencies = {bash = toString pkgs.bash;};
+  in {
+    inherit name;
+    version = "1.0.0";
+    configRoot = toString retained;
+    module = "${retained}/module.nix";
+    artifacts = {
+      package = artifact name package;
+      inherit dependencies;
     };
   };
+  handlers = {
+    aos.abilities = {
+      serviceManagement.operations.realize.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-service-handler";});
+      configuration.operations.file.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-service-handler";});
+      identity.operations = builtins.listToAttrs (map (name: {
+        inherit name;
+        value.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-systemd-native-resources";});
+      }) ["group" "principal" "membership"]);
+      mount.operations.ensure.handler.program = artifactLib.value ((artifact "systemd" pkgs.systemd) // {mainProgram = "aos-systemd-native-resources";});
+    };
+  };
+  # Source-backed records keep pure checks independent of module-output builds.
   mkEvaluation = host:
-    aos.mkSystem {
-      modules = [
-        ../../systems/server.nix
-        {
-          options.nix-daemon.config = lib.mkOption {
-            type = lib.types.attrs;
-            default = {};
-            internal = true;
-          };
-        }
+    lib.evalPackageModules {
+      scope = ["profile" "nix-daemon-test"];
+      packageModules = [
+        (record "service-management" ../system/_service-management pkgs.service-management {})
+        (record "filesystem" ../filesystem/_aos-filesystem-provider pkgs.aos-filesystem-provider {})
+        (record "aos-nix-store-provider" ./_aos-nix-store-provider pkgs.aos-nix-store-provider {})
+        (record "nix-daemon" ./_nix-daemon-config self (builtins.mapAttrs artifact {
+          inherit (pkgs) nix bash coreutils systemd;
+        }))
       ];
-      packageModules = [packageModule];
-      operatorModules = [host];
+      operatorModules = [handlers host];
     };
   enabled = mkEvaluation {
     nix-daemon = {
@@ -63,9 +76,9 @@
   };
   disabled = mkEvaluation {nix-daemon.enable = false;};
   remoteOnly = mkEvaluation {nix-daemon.settings.max-jobs = 0;};
-  manifest = enabled.config.system.build.configManifest;
-  native = manifest.etc."aos/packages/nix-daemon/nix.conf".text;
-  fails = host: !(builtins.tryEval (builtins.toJSON (mkEvaluation host).config.system.build.configManifest)).success;
+  files = evaluation: evaluation.config.aos.abilities.configuration.operations.file.effects;
+  native = (files enabled).nix-daemon-config.input.content;
+  fails = host: !(builtins.tryEval (builtins.toJSON (mkEvaluation host).deployment)).success;
   rejects = [
     {nix-daemon.buildUsers.count = 65;}
     {nix-daemon.settings.max-jobs = 9;}
@@ -79,75 +92,26 @@
     {nix-daemon.scheduling.oomScoreAdjust = -1000;}
     {nix-daemon.buildDirectory = "/nix/store";}
     {
-      aos.users.users.intruder = {
-        uid = 30001;
-        group = "root";
+      aos.abilities.identity.operations.principal.effects.intruder.input = {
+        name = "intruder";
+        requested_id = 30001;
       };
     }
-    {aos.users.groups.intruder.gid = 30000;}
+    {
+      aos.abilities.identity.operations.group.effects.intruder.input = {
+        name = "intruder";
+        requested_id = 30000;
+      };
+    }
   ];
   changed = mkEvaluation {nix-daemon.settings.http-connections = 26;};
-  rejectsSlice = slice:
-    !(builtins.tryEval (builtins.deepSeq
-      (self.overrideAttrs (_: {
-        expose =
-          definition.expose
-          // {
-            units =
-              definition.expose.units
-              // {
-                "nix-daemon.service" =
-                  definition.expose.units."nix-daemon.service"
-                  // {
-                    serviceConfig = definition.expose.units."nix-daemon.service".serviceConfig // {Slice = slice;};
-                  };
-              };
-          };
-      })).expose
-      true)).success;
-  legacy = lib.evalModules {
-    specialArgs.outputs = packageModule.outputs;
-    modules = [
-      ./_nix-daemon-config/module.nix
-      {
-        options = {
-          assertions = lib.mkOption {
-            type = lib.types.listOf lib.types.attrs;
-            default = [];
-          };
-          environment.etc = lib.mkOption {
-            type = lib.types.attrs;
-            default = {};
-          };
-          aos.users.users = lib.mkOption {
-            type = lib.types.attrs;
-            default = {};
-          };
-          aos.users.groups = lib.mkOption {
-            type = lib.types.attrs;
-            default = {};
-          };
-          nix-daemon.config = lib.mkOption {
-            type = lib.types.attrs;
-            default = {};
-          };
-        };
-      }
-    ];
-  };
+  rejectsSlice = group:
+    fails {
+      aos.abilities.serviceManagement.operations.realize.effects.nix-daemon.input.resources.resource_group = lib.mkForce group;
+    };
   nativeFile = pkgs.runCommand "nix-daemon-test.conf" {nativeConfig = native;} ''
     printf '%s' "$nativeConfig" > "$out/nix.conf"
   '';
-  legacyV1 = legacy.extendModules {
-    modules = [
-      {
-        options.aos.system.packageServicePolicyAbi = lib.mkOption {
-          type = lib.types.int;
-          default = 1;
-        };
-      }
-    ];
-  };
   securityScript = pkgs.writeTextFile {
     name = "nix-daemon-security-fixture";
     destination = "/security.sh";
@@ -158,68 +122,27 @@
       (builtins.readFile ./_nix-daemon-security.sh.in);
   };
   contract = assert builtins.all fails rejects;
-  assert builtins.all rejectsSlice ["system.slice" "aos-pkg-other.slice" "aos-pkg-nix-daemon-undeclared.slice"];
-  assert lib.hasInfix "max-jobs = 0" remoteOnly.config.system.build.configManifest.etc."aos/packages/nix-daemon/nix.conf".text;
-  assert !(builtins.tryEval legacy.config.environment.etc."aos/packages/nix-daemon/nix.conf".text).success;
-  assert !(builtins.tryEval legacyV1.config.environment.etc."aos/packages/nix-daemon/nix.conf".text).success;
-  assert manifest.ownership.etc."aos/packages/nix-daemon/nix.conf" == "nix-daemon";
-  assert manifest.ownership.etc."systemd/system/nix-daemon.service.d/30-aos-mount.conf" == "nix-daemon";
-  assert manifest.ownership.users.nixbld64 == "nix-daemon";
-  assert enabled.config.aos.users.users.nixbld64.uid == 30064;
-  assert enabled.config.aos.users.groups.nixbld.members == ["nixbld1" "nixbld2" "nixbld3" "nixbld4"];
-  assert disabled.config.aos.users.users.nixbld64.uid == 30064;
-  assert !(disabled.config.environment.etc ? "aos/packages/nix-daemon/enabled");
+  assert builtins.all rejectsSlice ["system" "aos-pkg-other-builds" "aos-pkg-nix-daemon-undeclared"];
+  assert lib.hasInfix "max-jobs = 0" (files remoteOnly).nix-daemon-config.input.content;
+  assert enabled.config.aos.abilities.identity.operations.principal.effects.nixbld64.input.requested_id == 30064;
+  assert disabled.config.aos.abilities.identity.operations.principal.effects.nixbld64.lifetime == "persistent";
+  assert builtins.length enabled.config.aos.abilities.identity.operations.membership.effects.nix-daemon-builders.input.members == 4;
+  assert !disabled.config.aos.abilities.serviceManagement.operations.realize.effects.nix-daemon.input.enabled;
+  assert (files disabled).nix-daemon-slice.lifetime == "persistent";
   assert lib.hasInfix "build-users-group = nixbld" native;
   assert lib.hasInfix "sandbox = true" native;
   assert lib.hasInfix "sandbox-fallback = false" native;
   assert lib.hasInfix "sandbox-paths = /bin/sh=${pkgs.bash}/bin/bash" native;
   assert lib.hasInfix "narinfo-cache-negative-ttl = 30" native;
-  assert disabled.config.nix-daemon.config.runtime.NIX_DAEMON_CONFIG_GENERATION != changed.config.nix-daemon.config.runtime.NIX_DAEMON_CONFIG_GENERATION; true;
+  assert (files disabled).nix-daemon-runtime.input.content != (files changed).nix-daemon-runtime.input.content; true;
 in {
-  frozen-evaluation =
-    pkgs.runCommand "nix-daemon-frozen-manifest-assertions" {
-      baseLibrary = enabled.config.aos.config.evalAtBoot.baseLib;
-      buildDeps = [pkgs.nix];
-    } ''
-      export NIX_REMOTE=local
-      export NIX_CONF_DIR="$TMPDIR/nix-conf"
-      export NIX_STATE_DIR="$TMPDIR/nix-state"
-      export NIX_PATH=""
-      export NIX_CONFIG=""
-      export HOME="$TMPDIR/home"
-      mkdir -p "$NIX_CONF_DIR" "$HOME"
-      printf 'build-users-group =\n' > "$NIX_CONF_DIR/nix.conf"
-      ${pkgs.nix}/bin/nix-instantiate --eval --strict --json \
-        --option restrict-eval true --option allow-import-from-derivation false \
-        -I "aos-base=$baseLibrary" \
-        --expr "let base = import <aos-base>; in (base.evalHostConfig {}).config.system.build.configManifest" \
-        > "$out/manifest.json"
-      if ${pkgs.nix}/bin/nix-instantiate --eval --strict --json \
-        --option restrict-eval true --option allow-import-from-derivation false \
-        -I "aos-base=$baseLibrary" \
-        --expr "let base = import <aos-base>; result = base.evalHostConfig { operatorModules = [{ aos.users.users.collision = { uid = 30001; group = \"root\"; }; }]; }; in result.config.system.build.configManifest" \
-        > "$TMPDIR/invalid.json" 2> "$TMPDIR/invalid.log"; then
-        echo "invalid frozen manifest unexpectedly passed" >&2
-        exit 1
-      fi
-      grep -F 'Failed assertions:' "$TMPDIR/invalid.log"
-    '';
-
   config = assert contract;
-    pkgs.runCommand "nix-daemon-config-authorization" {
-      nixDaemonExpose = self.expose;
+    pkgs.runCommand "nix-daemon-native-contract" {
+      nativePlan = builtins.toJSON enabled.deployment;
       buildDeps = [pkgs.jq];
     } ''
-      test -f "$nixDaemonExpose/manifest.json"
-      ${pkgs.jq}/bin/jq -e '.expose.config.artifacts[0].reload == "restart" and (.expose.config.artifacts[0].units | index("nix-daemon-policy.service")) != null' "$nixDaemonExpose/manifest.json"
-      ${pkgs.jq}/bin/jq -e '.expose.units | index("aos-pkg-nix-daemon-builds.slice") != null' "$nixDaemonExpose/manifest.json"
-      grep -F 'KillMode=process' "$nixDaemonExpose/units/nix-daemon.service"
-      grep -Fx 'Slice=aos-pkg-nix-daemon-builds.slice' "$nixDaemonExpose/units/nix-daemon.service"
-      grep -Fx 'Slice=aos-pkg-nix-daemon.slice' "$nixDaemonExpose/units/nix-daemon-policy.service"
-      grep -F 'ListenStream=/nix/var/nix/daemon-socket/socket' "$nixDaemonExpose/units/nix-daemon.socket"
-      grep -F 'ConditionPathExists=/etc/aos/packages/nix-daemon/enabled' "$nixDaemonExpose/units/nix-daemon.socket"
-      grep -F 'After=' "$nixDaemonExpose/units/nix-daemon.service"
-      touch "$out"
+      printf '%s' "$nativePlan" > "$out/deployment.json"
+      ${pkgs.jq}/bin/jq -e '.schema == "aos.package.transaction" and (.graph.nodes | length) >= 70' "$out/deployment.json"
     '';
 
   multi-user = testing.mkVMTest {

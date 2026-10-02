@@ -2,8 +2,7 @@
 #
 # The image is the stock server-test variant with homes disabled. Metadata
 # host.nix enables `aos.homes`, declares an interactive account, and seeds a
-# skeleton file, all through the production aos-eval -> aos-graph-compile ->
-# aos-activate transaction. The test then proves the account's home is created
+# skeleton file through native package evaluation and committed activation. The test then proves the account's home is created
 # on the state volume with the right ownership, that data written through
 # /home and /root lands on /var, and that both survive a reboot.
 {
@@ -24,7 +23,7 @@
     metadata."host.nix" = ''
       {
         aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        aos.apm.desiredPackages = [ "aos-test-agent" ];
+        "aos-test-agent".enable = true;
 
         aos.homes.enable = true;
         aos.homes.skel.".bashrc".text = "export AOS_HOMES_SKEL=seeded\n";
@@ -43,15 +42,26 @@
   testScript =
     # python
     ''
+      import json
+
+      RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
+      PROFILE = "/var/lib/profiles/system"
+
       def wait_for_activation(machine):
-          machine.succeed(
-              "timeout --kill-after=2s 300s bash -c '"
-              "until test -s /run/aos/manifest.json "
-              "&& test -s /run/aos/graph.json "
-              "&& test -s /run/aos/activation.json; "
-              "do sleep 1; done'",
-              timeout=310,
+          machine.wait_until_succeeds(
+              "systemctl is-active --quiet aos-activate.service", timeout=300
           )
+          generation = json.loads(machine.succeed(
+              f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery"
+          ))["generation"]
+          assert isinstance(generation, int) and generation > 0, generation
+          directory = f"{PROFILE}/gen-{generation}"
+          marker = json.loads(machine.succeed(f"cat {directory}/native-deployment.json"))
+          descriptor = json.loads(machine.succeed(f"cat {directory}/evaluation.json"))
+          assert marker["profile_generation"] == generation, marker
+          assert descriptor["schema"] == "aos.package.evaluation-input", descriptor
+          machine.succeed(f"test -s {PROFILE}/deployment/generations.journal")
+          machine.succeed(f"test -s {PROFILE}/deployment/effects.journal")
           machine.wait_for_unit("multi-user.target", timeout=300)
 
 
@@ -60,7 +70,7 @@
               "systemctl --failed --no-legend --no-pager; "
               "cat /proc/mounts; "
               "ls -la /var/home /var/roothome /home /root 2>&1; "
-              "journalctl -u home.mount -u root.mount -u systemd-tmpfiles-setup.service "
+              "journalctl -u home.mount -u root.mount -u aos-homes.service "
               "--no-pager --output=cat 2>&1 | tail -n 40"
           )
 
@@ -96,16 +106,16 @@
       workstation.succeed("echo root-note > /root/note")
       workstation.succeed("test \"$(cat /var/roothome/note)\" = root-note")
 
-      # Root's apm authoring tree is created by tmpfiles on the state volume.
+      # The native seed service prepares root's authoring tree on the state volume.
       workstation.succeed("test -d /root/.config/apm/registries.d")
 
-      # A user's edit to a skeleton-seeded file must survive activation
-      # reruns of tmpfiles: the copy rule only fires for a missing file.
+      # A user's edits survive rerunning the native seed service; existing files
+      # are retained while missing skeleton files are copied into the home.
       workstation.succeed(
           "systemd-run --wait --quiet --uid=alice --gid=alice "
           "bash -c 'echo \"export EDITED=yes\" >> \"$HOME/.bashrc\"'"
       )
-      workstation.succeed("systemd-tmpfiles --create /etc/tmpfiles.d/aos-homes.conf")
+      workstation.succeed("systemctl restart aos-homes.service")
       workstation.succeed("grep -q EDITED /home/alice/.bashrc")
 
       workstation.reboot(timeout=600)

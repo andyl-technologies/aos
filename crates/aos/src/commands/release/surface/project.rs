@@ -398,6 +398,7 @@ mod tests {
             kind,
             platform: None,
             system_variant: None,
+            image: None,
             path: BundlePath::parse(path).unwrap_or_else(|error| panic!("{error}")),
             size_bytes: bytes.len() as u64,
             sha256: Sha256Digest::of_bytes(bytes),

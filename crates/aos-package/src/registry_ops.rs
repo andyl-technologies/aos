@@ -48,38 +48,41 @@ mod attestation;
 mod cache_validation;
 mod channels;
 mod config;
-mod config_modules;
 mod distribution;
-mod documentation;
 mod git;
 mod images;
+mod inventory_publish;
 mod lifecycle;
-mod mac;
 mod metadata;
+mod native_artifacts;
+mod output_evidence;
+pub(crate) use output_evidence::publish_output_evidence;
 mod provenance;
+mod publication_inventory;
 mod publish;
 mod query;
 mod release;
-mod staging;
-mod sb_certs;
 mod signing;
+mod staging;
 mod store_commands;
 mod store_paths;
 mod tags;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 mod trust;
-mod uki;
 mod workflow;
 
 pub use cache_validation::validate;
 pub use channels::run_channel;
 pub use config::{local_registry_name, resolve_mirrors, resolve_mirrors_for_registry};
 pub use distribution::{run_cache, run_origin, run_web};
-pub(crate) use git::{refresh_registry_object_store, semver_tag_versions, validate_canonical_release_registry_index};
+pub(crate) use git::{
+    refresh_registry_object_store, semver_tag_versions, validate_canonical_release_registry_index,
+};
 pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
-#[cfg(test)]
 pub(crate) use metadata::record_named_output;
+pub(crate) use native_artifacts::publish_native_documents;
+
 pub(crate) use provenance::require_active_registry_key;
 pub use publish::publish;
 pub(crate) use publish::{publish_canonical_named_output, publish_canonical_release_entry};
@@ -88,11 +91,15 @@ pub use release::{
     ContainerReleaseAttachment, ReleaseReport, ReleaseStorePublish, ReleaseTreeOptions,
     load_container_release_attachment, release, release_registry_tree,
 };
-pub use sb_certs::run_sb_certs;
-pub use store_commands::run_store;
 pub use staging::run_stage;
+pub use store_commands::run_store;
 pub(crate) use tags::release_commit;
 pub use tags::{sign, tag};
 pub use trust::{run_keys, run_trust};
-pub(crate) use uki::{extract_expected_pcr11, pe_section, verify_detached_db_signature};
+
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    hex::encode(Sha256::digest(bytes))
+}
 pub use workflow::{commit_changes, diff, log, merge, pull, push, run_branch, run_change, status};

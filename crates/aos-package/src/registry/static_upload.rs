@@ -259,8 +259,9 @@ fn add_receipt_image_objects(
         if object.byte_size == 0 || !seen.insert(object.key.clone()) {
             bail!("image publication receipt contains an invalid or repeated object");
         }
-        let path_digest = image_sha256(&object.key)?
-            .context("image publication receipt contains a non-canonical object key")?;
+        let path_digest =
+            aos_registry_surface::manifest::immutable_image_object_sha256(&object.key)?
+                .context("image publication receipt contains a non-canonical object key")?;
         if path_digest != object.sha256 {
             bail!("image publication receipt object key and SHA-256 disagree");
         }
@@ -1053,28 +1054,10 @@ fn content_type(relative_path: &str) -> &'static str {
     }
 }
 
-fn image_sha256(relative_path: &str) -> Result<Option<String>> {
-    let Some(rest) = relative_path.strip_prefix("images/sha256/") else {
-        return Ok(None);
-    };
-    let parts = rest.split('/').collect::<Vec<_>>();
-    let digest = match parts.as_slice() {
-        [image, _filename] => *image,
-        [_image, "metadata", info, "image-info.json"] => *info,
-        _ => bail!("non-canonical immutable image object path '{relative_path}'"),
-    };
-    if digest.len() != 64
-        || !digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-    {
-        bail!("invalid SHA-256 in immutable image object path '{relative_path}'");
-    }
-    Ok(Some(digest.to_string()))
-}
-
 fn static_sha256(relative_path: &str, source: &Path) -> Result<Option<String>> {
-    if let Some(digest) = image_sha256(relative_path)? {
+    if let Some(digest) =
+        aos_registry_surface::manifest::immutable_image_object_sha256(relative_path)?
+    {
         return Ok(Some(digest));
     }
     if relative_path.starts_with("publication-receipts/") {
@@ -1791,10 +1774,6 @@ mod tests {
         let info_bytes = b"{}";
         let image_sha = hex::encode(Sha256::digest(disk_bytes));
         let info_sha = hex::encode(Sha256::digest(info_bytes));
-        std::fs::create_dir_all(root.join(format!(
-            "aos-image-staging/images/sha256/{image_sha}/metadata/{info_sha}"
-        )))
-        .unwrap();
         std::fs::write(root.join("info/refs"), b"refs\n").unwrap();
         std::fs::write(root.join("objects/aa/object"), b"object").unwrap();
         std::fs::write(root.join(TEST_LOOSE_OBJECT_PATH), b"canonical-object").unwrap();
@@ -1815,22 +1794,23 @@ mod tests {
             b"P pack-demo.pack\n",
         )
         .unwrap();
-        std::fs::write(
-            root.join(format!(
-                "aos-image-staging/images/sha256/{image_sha}/aos-test.qcow2"
-            )),
-            disk_bytes,
-        )
-        .unwrap();
-        std::fs::write(
-            root.join(format!(
-                "aos-image-staging/images/sha256/{image_sha}/metadata/{info_sha}/image-info.json"
-            )),
-            info_bytes,
-        )
-        .unwrap();
-        let disk_key = format!("images/sha256/{image_sha}/aos-test.qcow2");
-        let info_key = format!("images/sha256/{image_sha}/metadata/{info_sha}/image-info.json");
+        let disk_key = aos_registry_surface::manifest::immutable_image_object_key(
+            &image_sha,
+            "aos-test.qcow2",
+        );
+        let info_key = aos_registry_surface::manifest::immutable_image_contract_object_key(
+            &image_sha,
+            &info_sha,
+            "image-info.json",
+        );
+        for (key, bytes) in [
+            (&disk_key, disk_bytes.as_slice()),
+            (&info_key, info_bytes.as_slice()),
+        ] {
+            let path = root.join("aos-image-staging").join(key);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
         let objects = serde_json::json!([
             {
                 "key": disk_key.as_str(),

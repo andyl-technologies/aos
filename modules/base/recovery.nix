@@ -13,22 +13,6 @@
   cfg = config.aos.boot.recovery;
 in {
   options.aos.boot.recovery = {
-    enable = lib.mkOption {
-      type = lib.types.bool;
-      default = config.aos.boot.secureBoot.enable && config.aos.security.verity.enable;
-      defaultText = "aos.boot.secureBoot.enable && aos.security.verity.enable";
-      description = ''
-        Build paired, signed recovery UKIs with a dedicated initrd. Enabled by
-        default for Secure Boot images with authenticated immutable roots.
-      '';
-    };
-
-    abi = lib.mkOption {
-      type = lib.types.enum [1];
-      default = 1;
-      description = "Recovery interface and artifact compatibility ABI (currently version 1).";
-    };
-
     extraPackages = lib.mkOption {
       type = lib.types.listOf lib.types.package;
       default = [];

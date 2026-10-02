@@ -14,20 +14,82 @@
   libnetfilter_cttimeout,
   libnetfilter_queue,
   libtirpc,
-  writeShellScriptBin,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "1.4.9";
-  control = writeShellScriptBin "conntrackd-control" ''
-    set -eu
-    case "''${1:-}" in
-      enabled) test "''${CONNTRACKD_ENABLED:-false}" = true ;;
-      *) echo "usage: conntrackd-control enabled" >&2; exit 64 ;;
-    esac
-  '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "conntrack-tools";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Conntrack returns success and reports its userspace version.";
+        "files" = {};
+        "input" = "The packaged connection-tracking client's release identity.";
+        "operation" = "Request its version without opening a netfilter socket.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([str(next(path for path in __import__(\"pathlib\").Path(\"@out@\").rglob(\"conntrack\") if path.is_file())), \"--version\"]\n, capture_output=True, text=True)\nassert result.returncode == 0 and \"conntrack\" in (result.stdout + result.stderr).lower(), (result.returncode, result.stdout, result.stderr)\nprint(\"conntrack-tools operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "conntrack-tools operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Conntrack rejects the unsupported option.";
+        "files" = {};
+        "input" = "A conntrack invocation containing an unknown option.";
+        "operation" = "Parse the invalid option without modifying kernel state.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess, sys\nresult = subprocess.run([str(next(path for path in __import__(\"pathlib\").Path(\"@out@\").rglob(\"conntrack\") if path.is_file())), \"--aos-invalid-option\"]\n, capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write(\"conntrack-tools rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "conntrack-tools rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = [
@@ -50,104 +112,11 @@ in
       libnetfilter_cttimeout
       libnetfilter_queue
       libtirpc
-      control
     ];
     propagatedDeps = [];
 
-    expose = {
-      units."conntrackd.service" = {
-        description = "Connection tracking state daemon";
-        after = ["network-online.target"];
-        wants = ["network-online.target"];
-        restartIfChanged = true;
-        stopOnRemoval = true;
-        serviceConfig = {
-          Type = "notify";
-          EnvironmentFile = "/etc/aos/packages/conntrackd/runtime.env";
-          ExecCondition = "/bin/conntrackd-control enabled";
-          ExecStart = "/sbin/conntrackd -C /etc/aos/packages/conntrackd/conntrackd.conf -d";
-          ExecReload = "/sbin/conntrackd -C /etc/aos/packages/conntrackd/conntrackd.conf -R";
-          RuntimeDirectory = "aos-pkg-conntrackd";
-          RuntimeDirectoryMode = "0750";
-          LogsDirectory = "conntrackd";
-          LogsDirectoryMode = "0750";
-          Restart = "on-failure";
-          UMask = "0027";
-        };
-      };
-      config.artifacts = [
-        {
-          name = "runtime";
-          path = "/etc/aos/packages/conntrackd/runtime.env";
-          format = "env";
-          required = ["CONNTRACKD_ENABLED"];
-          units = ["conntrackd.service"];
-          reload = "restart";
-        }
-      ];
-      permissions = {
-        network = "host";
-        capabilities = ["CAP_NET_ADMIN" "CAP_NET_RAW"];
-        devices = [];
-        host-paths = [
-          {
-            path = "/etc/aos/packages/conntrackd/conntrackd.conf";
-            mode = "read-only";
-          }
-        ];
-        syscalls = "system-service";
-        security-label = "aos-pkg-conntrackd";
-      };
-    };
-
-    configModule = {
-      src = ./_conntrackd-config;
-      moduleAbiCompat = {
-        min = 1;
-        max = 2;
-      };
-      declares = [
-        "conntrackd.enable"
-        "conntrackd.hashLimit"
-        "conntrackd.hashSize"
-        "conntrackd.logConnections"
-        "conntrackd.mode"
-        "conntrackd.netlinkBufferSize"
-        "conntrackd.netlinkBufferSizeMaxGrowth"
-        "conntrackd.pollSeconds"
-        "conntrackd.sync.ackWindowSize"
-        "conntrackd.sync.checksum"
-        "conntrackd.sync.interface"
-        "conntrackd.sync.localAddress"
-        "conntrackd.sync.peerAddress"
-        "conntrackd.sync.port"
-        "conntrackd.sync.resendQueueSize"
-      ];
-      ownsRoots = [
-        {
-          root = "conntrackd";
-          interfaceAbi = 1;
-          contributable = [];
-        }
-      ];
-      artifacts = {
-        etc = ["aos/packages/conntrackd/conntrackd.conf"];
-        units = [];
-        users = [];
-        groups = [];
-      };
-      documentation = {
-        summary = "conntrack-tools — connection tracking userspace tools for netfilter";
-        sections = {
-          modes = lib.aosDoc.section "Operation modes" [
-            (lib.aosDoc.paragraph "Choose a local statistics/cache mode or declare a complete synchronization channel. Buffer, hash, polling, and connection logging controls are validated before reload.")
-          ];
-          lifecycle = lib.aosDoc.section "Runtime lifecycle" [
-            (lib.aosDoc.paragraph "conntrackd reloads a validated configuration in place while its socket and log paths remain systemd-managed.")
-          ];
-        };
-      };
-    };
+    module = ./_conntrackd;
+    moduleDeps = [service-management aos-filesystem-provider];
 
     phases = [
       {
@@ -190,49 +159,38 @@ in
       testing,
       self,
       pkgs,
+      ...
     }: let
-      evaluated = lib.evalModules {
-        inherit lib;
-        modules = [
-          ({lib, ...}: {
-            options = {
-              assertions = lib.mkOption {
-                type = lib.types.listOf lib.types.attrs;
-                default = [];
-              };
-              conntrackd.config = lib.mkOption {
-                type = lib.types.attrsOf (lib.types.attrsOf lib.types.anything);
-                default = {};
-              };
-              environment.etc = lib.mkOption {
-                type = lib.types.attrsOf lib.types.attrs;
-                default = {};
-              };
-            };
-          })
-          ./_conntrackd-config/module.nix
-          {
-            conntrackd = {
-              enable = true;
-              mode = "sync";
-              sync = {
-                interface = "eth1";
-                localAddress = "192.0.2.10";
-                peerAddress = "192.0.2.11";
-              };
-            };
-          }
-        ];
+      evaluate = settings:
+        lib.evalPackageModules {
+          scope = ["package-check" "conntrackd"];
+          packages = [self];
+          operatorModules = [{aos.conntrackd = settings;}];
+        };
+      evaluated = evaluate {
+        enable = true;
+        mode = "sync";
+        sync = {
+          interface = "eth1";
+          localAddress = "192.0.2.10";
+          peerAddress = "192.0.2.11";
+        };
       };
+      disabled = evaluate {};
+      invalidHashRange = evaluate {
+        hashSize = 8192;
+        hashLimit = 4096;
+      };
+      nativeTests = import ./_conntrackd/native-tests.nix {inherit lib evaluated disabled invalidHashRange;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
     in {
-      config = pkgs.runCommand "conntrackd-config-module" {} ''
-        config=${builtins.toFile "conntrackd.conf" evaluated.config.environment.etc."aos/packages/conntrackd/conntrackd.conf".text}
-        grep -F 'Mode FTFW' "$config"
-        grep -F 'IPv4_address 192.0.2.10' "$config"
-        grep -F 'IPv4_Destination_Address 192.0.2.11' "$config"
-        test '${toString evaluated.config.conntrackd.config.runtime.CONNTRACKD_ENABLED}' = '1'
-        test -x ${self}/sbin/conntrackd
-        touch "$out"
-      '';
+      config =
+        if contractHolds
+        then
+          pkgs.runCommand "conntrackd-native-module" {} ''
+            test -x ${self}/sbin/conntrackd
+            touch "$out"
+          ''
+        else throw "the conntrackd native module contract checks failed";
     };
   }

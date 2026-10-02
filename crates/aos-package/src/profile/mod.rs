@@ -20,8 +20,12 @@
 //! next-generation counters. Submodules: [`meta`] for per-package metadata,
 //! [`merge`] for the merged `bin/`, `lib/`, ... symlink tree.
 
+pub mod deployment;
+mod lock;
 pub mod merge;
 pub mod meta;
+
+pub use lock::ProfileMutationGuard;
 
 use std::path::{Path, PathBuf};
 
@@ -100,7 +104,7 @@ impl Profile {
     /// Returns an error if the directories or the initial `state.json`
     /// cannot be created (typically a permission failure).
     pub fn open(scope: ProfileScope) -> Result<Self> {
-        Self::open_at(scope.package_profile_path(), scope)
+        Self::open_at(scope.profile_path(), scope)
     }
 
     /// Reference an existing profile for read-only inspection without touching
@@ -130,7 +134,7 @@ impl Profile {
     /// ```
     pub fn open_readonly(scope: ProfileScope) -> Self {
         Self {
-            path: scope.package_profile_path(),
+            path: scope.profile_path(),
             scope,
         }
     }
@@ -255,13 +259,16 @@ impl Profile {
     pub fn new_generation(&self) -> Result<Generation> {
         let mut state = self.state()?;
         let gen_number = state.next_generation;
+        let next_generation = gen_number
+            .checked_add(1)
+            .context("profile generation counter is exhausted")?;
         let gen_name = format!("gen-{gen_number}");
         let gen_path = self.path.join(&gen_name);
 
-        std::fs::create_dir_all(&gen_path)
+        std::fs::create_dir(&gen_path)
             .with_context(|| format!("creating generation directory {}", gen_path.display()))?;
 
-        state.next_generation += 1;
+        state.next_generation = next_generation;
         self.save_state(&state)?;
 
         Ok(Generation {
@@ -320,6 +327,7 @@ impl Profile {
     /// Returns an error if the generations cannot be listed or a generation
     /// directory cannot be deleted.
     pub fn prune_generations(&self, keep: u32) -> Result<Vec<Generation>> {
+        crate::install::native::recover(self)?;
         let all = self.list_generations()?;
         let current = self.current_generation()?;
         let current_number = current.map(|g| g.number);
@@ -336,6 +344,9 @@ impl Profile {
             // Never remove the current generation.
             if Some(g.number) == current_number {
                 continue;
+            }
+            if g.path.join("native-deployment.json").is_file() {
+                crate::install::native::prune(self, g)?;
             }
             std::fs::remove_dir_all(&g.path).with_context(|| {
                 format!("removing generation {} at {}", g.number, g.path.display())
@@ -437,7 +448,7 @@ fn read_root_dir(dir: &Path) -> Result<Vec<(String, PathBuf)>> {
 }
 
 /// Write data to a file atomically via a temp file and rename.
-fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
+pub(crate) fn atomic_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path.parent().context("path has no parent directory")?;
     let file_name = path
         .file_name()
@@ -518,6 +529,33 @@ mod tests {
 
         let state = profile.state().unwrap();
         assert_eq!(state.next_generation, 3);
+    }
+
+    #[test]
+    fn stale_counter_cannot_reuse_an_existing_generation() {
+        let temporary = TempDir::new().unwrap();
+        let profile = test_profile(&temporary);
+        let generation = profile.new_generation().unwrap();
+        let sentinel = generation.path.join("retained-evidence");
+        std::fs::write(&sentinel, b"must survive").unwrap();
+        let mut state = profile.state().unwrap();
+        state.next_generation = generation.number;
+        profile.save_state(&state).unwrap();
+
+        assert!(profile.new_generation().is_err());
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"must survive");
+    }
+
+    #[test]
+    fn exhausted_counter_does_not_create_a_generation() {
+        let temporary = TempDir::new().unwrap();
+        let profile = test_profile(&temporary);
+        let mut state = profile.state().unwrap();
+        state.next_generation = u32::MAX;
+        profile.save_state(&state).unwrap();
+
+        assert!(profile.new_generation().is_err());
+        assert!(!profile.path.join(format!("gen-{}", u32::MAX)).exists());
     }
 
     // 5. switch_to creates current symlink pointing to gen-N

@@ -1,4 +1,4 @@
-//! Regression coverage for staged K3s companion, image, and OCI case bindings.
+//! Regression coverage for staged K3s native package, image, and OCI case bindings.
 
 use anyhow::Result;
 
@@ -44,33 +44,6 @@ fn fixture(topology: K3sTopology) -> Result<(ReleasePlan, ReleaseManifestV1)> {
                     *id = record.id.clone();
                     manifest.artifacts.push(record);
                 }
-                if name != "k3s" {
-                    let runtime = manifest
-                        .artifacts
-                        .iter()
-                        .find(|record| record.id == artifact.artifact_ids[0])
-                        .unwrap()
-                        .clone();
-                    let module_id = format!("k3s-fixture/{name}/{}/config", cell.platform);
-                    let base_id =
-                        format!("k3s-fixture/{name}/{}/configuration-base", cell.platform);
-                    for (id, output) in [(&module_id, "config"), (&base_id, "out")] {
-                        let mut record = runtime.clone();
-                        record.id = id.clone();
-                        record.output = Some(output.into());
-                        record.store_path = Some(format!(
-                            "/nix/store/00000000000000000000000000000000-{name}-{}-{output}",
-                            cell.platform,
-                        ));
-                        artifact.artifact_ids.push(record.id.clone());
-                        manifest.artifacts.push(record);
-                    }
-                    artifact.configuration = Some(crate::plan::PackageConfigurationBinding {
-                        module_artifact: module_id,
-                        evaluation_base_artifact: base_id,
-                        dependency_outputs: Default::default(),
-                    });
-                }
             }
         }
         manifest.packages.push(package);
@@ -105,7 +78,7 @@ fn fleet_case(plan: &ReleasePlan, manifest: &ReleaseManifestV1) -> Result<Qualif
 }
 
 #[test]
-fn k3s_case_binds_native_companions_image_and_container() -> Result<()> {
+fn k3s_case_binds_native_packages_image_and_container() -> Result<()> {
     for topology in [K3sTopology::CombinedWorker, K3sTopology::ControlPlaneWorker] {
         let (plan, manifest) = fixture(topology)?;
         let case = fleet_case(&plan, &manifest)?;
@@ -129,13 +102,11 @@ fn k3s_case_binds_native_companions_image_and_container() -> Result<()> {
             manifest
                 .artifacts
                 .iter()
-                .any(|record| record.id == *id && record.kind == ArtifactKind::LogicalDisk)
+                .any(|record| record.id == *id && record.kind == ArtifactKind::Image)
         }));
 
         for id in [
             "k3s-fixture/k3s-worker/x86_64-linux",
-            "k3s-fixture/k3s-worker/x86_64-linux/config",
-            "k3s-fixture/k3s-worker/x86_64-linux/configuration-base",
             "oci/index",
             "oci/x86_64-linux",
         ] {
@@ -162,24 +133,11 @@ fn k3s_missing_or_ambiguous_inputs_fail_closed() -> Result<()> {
         .retain(|package| package.name != "k3s-worker");
     assert!(fleet_case(&plan, &missing_companion).is_err());
 
-    let mut missing_configuration = manifest.clone();
-    let package = missing_configuration
-        .packages
-        .iter_mut()
-        .find(|package| package.name == "k3s-worker")
-        .unwrap();
-    for cell in &mut package.platforms {
-        if let MatrixCell::Artifact { artifact } = &mut cell.decision {
-            artifact.configuration = None;
-        }
-    }
-    assert!(fleet_case(&plan, &missing_configuration).is_err());
-
-    let mut missing_module = manifest.clone();
-    missing_module
+    let mut missing_payload = manifest.clone();
+    missing_payload
         .artifacts
-        .retain(|record| record.id != "k3s-fixture/k3s-worker/x86_64-linux/config");
-    assert!(fleet_case(&plan, &missing_module).is_err());
+        .retain(|record| record.id != "k3s-fixture/k3s-worker/x86_64-linux");
+    assert!(fleet_case(&plan, &missing_payload).is_err());
 
     let mut missing_image = manifest.clone();
     missing_image

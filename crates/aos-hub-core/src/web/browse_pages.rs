@@ -37,15 +37,15 @@ use crate::db::{
 use crate::db::{PlatformDetail, VersionDetail};
 use crate::stack::StackNode;
 use crate::web::console_render::{
-    ago, live_table, page_with_session, table_raw_headers, urlencode, Pager, SessionIndicator,
-    StateLine,
+    Pager, SessionIndicator, StateLine, ago, live_table, page_with_session, table_raw_headers,
+    urlencode,
 };
 use crate::web::host_delivery::{HostDelivery, HostRoutes};
 use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{
     escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
 };
-use aos_registry_surface::manifest::{ImageCompression, ImageTarget, ImageVerificationState};
+use aos_registry_surface::manifest::{ImageCompression, ImageTarget};
 
 /// Glyph palette for the partition grid: one glyph per release, assigned
 /// in frontier-first order, so the encoding survives without color.
@@ -92,6 +92,7 @@ pub(crate) fn registry_nav_at_release(slug: &str, active: &str, release: Option<
         ("overview", format!("/{slug}/"), "Overview"),
         ("releases", format!("/{slug}/-/releases"), "Releases"),
         ("packages", format!("/{slug}/-/packages"), "Packages"),
+        ("abilities", format!("/{slug}/-/abilities"), "Abilities"),
         ("docs", format!("/{slug}/-/docs"), "Docs"),
         ("images", format!("/{slug}/-/images"), "Images"),
         ("containers", format!("/{slug}/-/containers"), "Containers"),
@@ -101,8 +102,10 @@ pub(crate) fn registry_nav_at_release(slug: &str, active: &str, release: Option<
     let mut nav = String::from("<nav aria-label=\"registry\" class=\"local-nav\">");
     for (key, href, label) in items {
         let release = release.filter(|value| {
-            matches!(key, "packages" | "docs" | "images" | "containers")
-                && (*value != "all" || matches!(key, "images" | "containers"))
+            matches!(
+                key,
+                "packages" | "abilities" | "docs" | "images" | "containers"
+            ) && (*value != "all" || matches!(key, "images" | "containers"))
         });
         let href = release
             .map(|value| format!("{href}?release={}", urlencode(value)))
@@ -574,7 +577,12 @@ pub fn registry_home(
 /// Carries the selected ordering through independent filter and snapshot forms.
 fn package_sort_inputs(body: &mut String, sort: Option<(SortColumn, SortDir)>) {
     if let Some((column, direction)) = sort {
-        let _ = write!(body, "<input type=\"hidden\" name=\"sort\" value=\"{}\"><input type=\"hidden\" name=\"dir\" value=\"{}\">", column.token(), direction.token());
+        let _ = write!(
+            body,
+            "<input type=\"hidden\" name=\"sort\" value=\"{}\"><input type=\"hidden\" name=\"dir\" value=\"{}\">",
+            column.token(),
+            direction.token()
+        );
     }
 }
 
@@ -587,7 +595,12 @@ pub fn package_snapshot_unavailable(
     session: &SessionIndicator,
 ) -> String {
     let mut body = registry_nav(&registry.slug, "packages");
-    let _ = write!(body, "<h1>Package snapshot unavailable</h1><p>No complete, verified package snapshot is available for <code>{}</code>. The release may not exist or its index may still be incomplete.</p><p><a href=\"/{}/-/releases\">Browse published releases</a></p>", escape(selection), escape(&registry.slug));
+    let _ = write!(
+        body,
+        "<h1>Package snapshot unavailable</h1><p>No complete, verified package snapshot is available for <code>{}</code>. The release may not exist or its index may still be incomplete.</p><p><a href=\"/{}/-/releases\">Browse published releases</a></p>",
+        escape(selection),
+        escape(&registry.slug)
+    );
     page_with_session(
         "Package snapshot unavailable",
         &registry_crumbs(&registry.slug, &[]),
@@ -1129,19 +1142,6 @@ pub struct PackageClosure {
     pub reverse_total: usize,
 }
 
-/// Canonical documentation rendered beside one package selection.
-#[derive(Debug, Clone)]
-pub struct PackageDocumentationPanel {
-    /// Reverified closed-schema document.
-    pub document: aos_doc_model::PackageDocumentation,
-    /// Exact signed Nix store object carrying the JSON bytes.
-    pub store_path: String,
-    /// Exact canonical document digest.
-    pub document_sha256: String,
-    /// NAR identity of the store object.
-    pub nar_hash: String,
-}
-
 /// Signed indexed documentation reference, without loading the document bytes.
 #[derive(Debug, Clone)]
 pub struct PackageDocumentationReference {
@@ -1157,19 +1157,6 @@ pub struct PackageDocumentationReference {
     pub document_sha256: String,
     /// Signed NAR identity of the referenced object.
     pub nar_hash: String,
-}
-
-impl From<crate::db::PackageDocumentationLocator> for PackageDocumentationReference {
-    fn from(locator: crate::db::PackageDocumentationLocator) -> Self {
-        Self {
-            package: locator.package_name,
-            version: locator.package_version,
-            platform: locator.platform,
-            store_path: locator.artifact.store_path,
-            document_sha256: locator.artifact.document_sha256,
-            nar_hash: locator.artifact.nar_hash,
-        }
-    }
 }
 
 /// Renders package metadata, artifacts, documentation, and dependency neighborhoods.
@@ -1192,6 +1179,8 @@ pub fn package_page(
     context: &ReleaseContext,
     documentation: Option<&PackageDocumentationReference>,
     documentation_unavailable: bool,
+    ability_reference: Option<&aos_doc_model::runtime::RuntimeDocument>,
+    ability_reference_unavailable: bool,
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
@@ -1219,7 +1208,7 @@ pub fn package_page(
         );
     }
     body.push_str(
-        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#install\">Install</a><a href=\"#versions\">Versions</a><a href=\"#configure\">Documentation</a><a href=\"#dependencies\">Dependencies</a><a href=\"#integrity\">Integrity</a></nav>",
+        "<nav class=\"package-section-nav\" aria-label=\"Package documentation sections\"><a href=\"#overview\">Overview</a><a href=\"#install\">Install</a><a href=\"#versions\">Versions</a><a href=\"#configure\">Documentation</a><a href=\"#abilities\">Abilities</a><a href=\"#dependencies\">Dependencies</a><a href=\"#integrity\">Integrity</a></nav>",
     );
 
     // The union of every version's platforms, as chips near the top.
@@ -1367,6 +1356,18 @@ pub fn package_page(
     } else {
         body.push_str(
             "<p class=\"dim\">No documentation was published for this package in this release.</p>",
+        );
+    }
+    body.push_str("</section>");
+
+    body.push_str("<section id=\"abilities\"><h2>Abilities</h2>");
+    if let Some(reference) = ability_reference {
+        body.push_str(&reference.render_html());
+    } else if ability_reference_unavailable {
+        body.push_str("<p class=\"warn\">Native reference is temporarily unavailable.</p>");
+    } else {
+        body.push_str(
+            "<p class=\"dim\">No native module reference was published for this package.</p>",
         );
     }
     body.push_str("</section>");
@@ -1522,164 +1523,7 @@ pub fn package_page(
     )
 }
 
-/// Renders the searchable package-documentation index.
-pub fn documentation_index_page(
-    registry: &RegistryRecord,
-    status: Option<&IndexStatus>,
-    results: &[crate::db::PackageDocumentationSearchResult],
-    query: Option<&str>,
-    kind: Option<&str>,
-    page_number: usize,
-    total_results: usize,
-    started: Instant,
-    session: &SessionIndicator,
-) -> String {
-    let slug = &registry.slug;
-    let mut body = registry_nav(slug, "docs");
-    let _ = write!(
-        body,
-        "<form method=\"get\" class=\"docs-search\" role=\"search\">\
-         <label><span>Search documentation</span><input autofocus type=\"search\" name=\"q\" value=\"{}\" placeholder=\"TLS, listen port, restart, credential…\"></label>\
-         <label><span>Kind</span><select name=\"kind\">",
-        escape(query.unwrap_or("")),
-    );
-    for (value, label) in [
-        ("", "Everything"),
-        ("package", "Packages"),
-        ("option", "Options"),
-        ("service", "Services"),
-        ("credential", "Credentials"),
-        ("capability", "Capabilities"),
-    ] {
-        let selected = (kind == Some(value)).then_some(" selected").unwrap_or("");
-        let _ = write!(
-            body,
-            "<option value=\"{}\"{}>{}</option>",
-            value, selected, label
-        );
-    }
-    body.push_str("</select></label><button>Search</button></form>");
 
-    if query.is_some_and(|query| !query.trim().is_empty()) {
-        let _ = write!(
-            body,
-            "<p class=\"dim\">{} ranked result{} for <strong>{}</strong></p>",
-            total_results,
-            if total_results == 1 { "" } else { "s" },
-            escape(query.unwrap_or_default()),
-        );
-    } else if results.is_empty() {
-        body.push_str("<p class=\"dim\">No indexed package documentation is available.</p>");
-    } else {
-        let _ = write!(
-            body,
-            "<p class=\"dim\">Browse {} indexed documentation entr{}.</p>",
-            total_results,
-            if total_results == 1 { "y" } else { "ies" },
-        );
-    }
-
-    let mut params = Vec::new();
-    if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
-        params.push(format!("q={}", urlencode(query)));
-    }
-    if let Some(kind) = kind {
-        params.push(format!("kind={}", urlencode(kind)));
-    }
-    let pager = Pager::new(page_number, PACKAGES_PER_PAGE, total_results);
-    let navigation = pager.nav(&format!("/{slug}/-/docs"), &params.join("&"));
-    body.push_str(&navigation);
-
-    if !results.is_empty() {
-        body.push_str("<ol class=\"docs-results\">");
-        for result in results {
-            let _ = write!(
-                body,
-                "<li><a href=\"/{}/-/docs/{}/{}/{}#{}\"><span class=\"doc-kind\">{}</span><strong>{}</strong><span>{}</span><code>{} {} · {}</code></a></li>",
-                escape(slug),
-                escape(&result.package_name),
-                escape(&result.package_version),
-                escape(&result.platform),
-                aos_doc_model::documentation_anchor(&result.kind, &result.key),
-                escape(&result.kind),
-                escape(&result.title),
-                escape(&result.summary),
-                escape(&result.package_name),
-                escape(&result.package_version),
-                escape(&result.platform),
-            );
-        }
-        body.push_str("</ol>");
-    }
-    body.push_str(&navigation);
-    let _ = write!(
-        body,
-        "<p class=\"docs-tools\"><a href=\"/{}/-/api/docs/schema\">JSON Schema</a> · <code>apm docs search &lt;query&gt;</code> · editor completion via <code>apm docs lsp</code></p>",
-        escape(slug),
-    );
-    page_with_session(
-        "Package documentation",
-        &registry_crumbs(slug, &[(format!("/{slug}/-/docs"), "documentation".into())]),
-        &body,
-        &state_line(status, started),
-        session,
-    )
-}
-
-/// Renders one permanent exact package/version/platform documentation page.
-pub fn documentation_page(
-    registry: &RegistryRecord,
-    status: Option<&IndexStatus>,
-    documentation: &PackageDocumentationPanel,
-    started: Instant,
-    session: &SessionIndicator,
-) -> String {
-    let slug = &registry.slug;
-    let document = &documentation.document;
-    let mut body = registry_nav(slug, "docs");
-    body.push_str("<div class=\"docs-detail-toolbar\">");
-    let _ = write!(
-        body,
-        "<a href=\"/{}/-/docs\">← Search documentation</a><span><a href=\"/{}/-/api/v1/documentation/{}\">Canonical JSON</a> · <a href=\"/{}/-/api/docs/schema\">JSON Schema</a></span>",
-        escape(slug),
-        escape(slug),
-        escape(&documentation.document_sha256),
-        escape(slug),
-    );
-    body.push_str("</div>");
-    let _ = write!(
-        body,
-        "<div class=\"docs-provenance-card\"><div><span>Version</span><strong>{}</strong></div><div><span>Platform</span><strong>{}</strong></div><div><span>Document</span>{}</div><div><span>Semantic schema</span>{}</div><details><summary>Signed Nix object</summary><code>{}</code><p>NAR {}</p></details></div>",
-        escape(&document.package.version),
-        escape(&document.package.platform),
-        hash_value(&documentation.document_sha256),
-        hash_value(&document.identity.semantic_schema_sha256),
-        escape(&documentation.store_path),
-        hash_value(&documentation.nar_hash),
-    );
-    body.push_str(&document.render_html_fragment());
-    body.push_str("<section class=\"docs-offline\"><h2>Use offline</h2><p>This same object is retained with the installed package profile.</p><pre>");
-    let _ = write!(
-        body,
-        "apm docs show {}\napm docs show {} --format man\napm docs schema",
-        escape(&document.package.name),
-        escape(&document.package.name),
-    );
-    body.push_str("</pre></section>");
-    page_with_session(
-        &format!("{} documentation", document.package.name),
-        &registry_crumbs(
-            slug,
-            &[
-                (format!("/{slug}/-/docs"), "documentation".into()),
-                (String::new(), document.package.name.clone()),
-            ],
-        ),
-        &body,
-        &state_line(status, started),
-        session,
-    )
-}
 
 /// Assign a grid glyph index to each release a channel targets,
 /// frontier-first, so the newest release is always glyph `0` (`■`).
@@ -2041,7 +1885,7 @@ pub fn channel_page(
     started: Instant,
     session: &SessionIndicator,
 ) -> String {
-    use crate::web::release_pages::{rollout_distribution, rollout_shares, ROLLOUT_PALETTE};
+    use crate::web::release_pages::{ROLLOUT_PALETTE, rollout_distribution, rollout_shares};
     let slug = &registry.slug;
     let release_link = |release: &str| {
         format!(
@@ -2105,7 +1949,8 @@ pub fn channel_page(
         let _ = write!(
             body,
             "<p>No release is assigned to this channel yet. <a href=\"/{}/-/releases\">Browse signed releases</a> or <a href=\"/{}/-/images\">available images</a>.</p>",
-            escape(slug), escape(slug),
+            escape(slug),
+            escape(slug),
         );
     }
 
@@ -2239,7 +2084,8 @@ pub fn channels_index(
         let _ = write!(
             body,
             "<p>No channels are published yet. <a href=\"/{}/-/releases\">Browse signed releases</a> for an immutable version, or <a href=\"/{}/-/images\">view available images</a>.</p>",
-            escape(slug), escape(slug),
+            escape(slug),
+            escape(slug),
         );
     } else {
         body.push_str(&table(
@@ -2274,28 +2120,6 @@ fn image_target_token(target: ImageTarget) -> &'static str {
         ImageTarget::Openstack => "openstack",
         ImageTarget::Vmware => "vmware",
         ImageTarget::HyperV => "hyper-v",
-    }
-}
-
-fn image_verification_label(
-    state: ImageVerificationState,
-) -> (&'static str, &'static str, &'static str) {
-    match state {
-        ImageVerificationState::Unsigned => (
-            "UKI unsigned",
-            "warn",
-            "The unified kernel image has no Authenticode signature.",
-        ),
-        ImageVerificationState::SignedUnverified => (
-            "UKI signed, policy unverified",
-            "warn",
-            "The unified kernel image is signed, but no committed active-certificate policy verified its signer.",
-        ),
-        ImageVerificationState::PolicyVerified => (
-            "UKI policy verified",
-            "ok",
-            "The unified kernel image signer was verified against committed Secure Boot certificate policy.",
-        ),
     }
 }
 
@@ -2376,7 +2200,9 @@ fn shell_argument(value: &str) -> String {
 fn copy_command(label: &str, command: &str) -> String {
     format!(
         "<div class=\"copy-row\"><code class=\"merge-cmd\">{}</code><button type=\"button\" class=\"hash-copy copy-btn\" data-copy-value=\"{}\" aria-label=\"Copy {} command\">copy</button></div>",
-        escape(command), escape(command), escape(label),
+        escape(command),
+        escape(command),
+        escape(label),
     )
 }
 
@@ -2402,8 +2228,12 @@ fn image_download_commands(
     }
     let mut body = copy_command("image download", &hub_command);
     if let Some(command) = apm_command {
-        let _ = write!(body, "<details><summary>Download with APM</summary><p>Pins this release. Run on a host matching <code>{}</code>.</p>{}</details>",
-            escape(&image.platform), copy_command("APM image download", &command));
+        let _ = write!(
+            body,
+            "<details><summary>Download with APM</summary><p>Pins this release. Run on a host matching <code>{}</code>.</p>{}</details>",
+            escape(&image.platform),
+            copy_command("APM image download", &command)
+        );
     }
     body
 }
@@ -2511,8 +2341,6 @@ pub fn images_page(
         {
             continue;
         }
-        let (boot_verification, boot_class, boot_explanation) =
-            image_verification_label(image.delivery.uki.verification);
         let channel_cell = if channel_names.is_empty() {
             "—".to_string()
         } else {
@@ -2563,24 +2391,18 @@ pub fn images_page(
             )
         };
         let verification = format!(
-            "<span class=\"ok\">release verified</span> · \
-             <span class=\"{boot_class}\" title=\"{boot_explanation}\">{boot_verification}</span>"
+            "<span class=\"ok\">release verified</span> · provider contract <code>{}</code>",
+            escape(&image.delivery.artifact_contract.schema),
         );
         let encoding = format!(
             "{} · {}",
             escape(&image.delivery.media_type),
             image_compression_label(image.delivery.compression),
         );
-        let uki = format!(
-            "{} · <code>{}</code> · {}",
-            escape(&image.delivery.uki.filename),
-            escape(&image.delivery.uki.esp_path),
-            human_size(image.delivery.uki.byte_size),
-        );
         let image_info = format!(
             "{} · {}",
-            escape(&image.delivery.image_info.filename),
-            hash_value(&image.delivery.image_info.sha256),
+            escape(&image.delivery.artifact_contract.document.filename),
+            hash_value(&image.delivery.artifact_contract.document.sha256),
         );
         rows.push((image.release.clone(), format!(
             "<tbody class=\"image-artifact\">\
@@ -2591,9 +2413,9 @@ pub fn images_page(
              <tr><th scope=\"row\">targets</th><td>{targets}</td><th scope=\"row\">verification</th><td>{verification}</td></tr>\
              <tr><th scope=\"row\">file</th><td>{filename}</td><th scope=\"row\">encoding</th><td>{encoding}</td></tr>\
              <tr><th scope=\"row\">file SHA-256</th><td>{checksum}</td><th scope=\"row\">logical disk</th><td>{logical_checksum}</td></tr>\
-             <tr><th scope=\"row\">rootfs SHA-256</th><td>{rootfs_checksum}</td><th scope=\"row\">UKI SHA-256</th><td>{uki_checksum}</td></tr>\
+             <tr><th scope=\"row\">artifact contract</th><td>{contract_schema}</td><th scope=\"row\">contract document SHA-256</th><td>{contract_checksum}</td></tr>\
              <tr><th scope=\"row\">store path</th><td>{store_path}</td><th scope=\"row\">NAR</th><td>{nar_identity}</td></tr>\
-             <tr><th scope=\"row\">UKI</th><td>{uki}</td><th scope=\"row\">image info</th><td>{image_info}</td></tr>\
+             <tr><th scope=\"row\">contract document</th><td>{image_info}</td><th scope=\"row\">logical image</th><td>{logical_image}</td></tr>\
              </tbody></table></details></td></tr></tbody>\n",
             release = format!(
                 "<a href=\"/{}/-/releases/{}\">{}</a>",
@@ -2609,8 +2431,9 @@ pub fn images_page(
             targets = escape(&targets),
             checksum = hash_value(&image.delivery.sha256),
             logical_checksum = hash_value(&image.delivery.logical_disk_sha256),
-            rootfs_checksum = hash_value(&image.delivery.rootfs_sha256),
-            uki_checksum = hash_value(&image.delivery.uki.sha256),
+            contract_schema = escape(&image.delivery.artifact_contract.schema),
+            contract_checksum = hash_value(&image.delivery.artifact_contract.document.sha256),
+            logical_image = escape(&image.delivery.logical_image_id),
             filename = escape(&image.delivery.filename),
         )));
     }
@@ -2674,7 +2497,13 @@ pub fn images_page(
         escape(browse.query.unwrap_or("")),
         escape(slug),
         urlencode(context.query_value().unwrap_or("")),
-        catalog_select("channel", "Channel", "All channels", &channel_options, channel),
+        catalog_select(
+            "channel",
+            "Channel",
+            "All channels",
+            &channel_options,
+            channel
+        ),
         catalog_select(
             "architecture",
             "Architecture",
@@ -2702,8 +2531,12 @@ pub fn images_page(
         let mut previous_release = None;
         for (release, row) in pager.slice(&rows) {
             if context.is_all() && previous_release != Some(release) {
-                let _ = write!(body, "<tbody class=\"release-group\"><tr><th colspan=\"6\"><a href=\"{}\">Release {}</a></th></tr></tbody>",
-                    escape(&crate::web::release_browse::release_href(slug, release)), escape(release));
+                let _ = write!(
+                    body,
+                    "<tbody class=\"release-group\"><tr><th colspan=\"6\"><a href=\"{}\">Release {}</a></th></tr></tbody>",
+                    escape(&crate::web::release_browse::release_href(slug, release)),
+                    escape(release)
+                );
                 previous_release = Some(release);
             }
             body.push_str(row);
@@ -3023,34 +2856,11 @@ mod tests {
         RegistrySetup::new(registry, None, Some(url), caches)
     }
 
-    fn documentation_panel(summary: &str) -> PackageDocumentationPanel {
-        let mut document = aos_doc_model::PackageDocumentation {
-            schema: aos_doc_model::DOCUMENT_SCHEMA.into(),
-            package: aos_doc_model::DocumentedPackage {
-                name: "nginx".into(),
-                version: "1.30.4".into(),
-                platform: "x86_64-linux".into(),
-                summary: summary.into(),
-                homepage: Some("https://nginx.org/".into()),
-                license: "BSD-2-Clause".into(),
-            },
-            identity: aos_doc_model::DocumentationIdentity {
-                semantic_schema_sha256: format!("sha256:{}", "0".repeat(64)),
-                runtime_nar_hash: format!("sha256:{}", "1".repeat(64)),
-                config_module_nar_hash: None,
-                system_module_nar_hash: None,
-                expose_artifact_nar_hash: None,
-                source_nar_hash: format!("sha256:{}", "2".repeat(64)),
-            },
-            sections: Vec::new(),
-            options: Vec::new(),
-            runtime: aos_doc_model::RuntimeSurface::default(),
-        };
-        document.identity.semantic_schema_sha256 = document
-            .computed_semantic_schema_sha256()
-            .expect("semantic schema");
-        PackageDocumentationPanel {
-            document,
+    fn documentation_reference() -> PackageDocumentationReference {
+        PackageDocumentationReference {
+            package: "nginx".into(),
+            version: "1.30.4".into(),
+            platform: "x86_64-linux".into(),
             store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-nginx-docs.json".into(),
             document_sha256: format!("sha256:{}", "3".repeat(64)),
             nar_hash: format!("sha256:{}", "4".repeat(64)),
@@ -3059,8 +2869,9 @@ mod tests {
 
     fn indexed_image(format: &str, release: &str) -> IndexedSystemImage {
         use aos_registry_surface::manifest::{
-            immutable_image_info_object_key, immutable_image_object_key, ImageCompression,
-            ImageDelivery, ImageInfoReference, ImageUkiIdentity,
+            ImageArtifactContractDocumentReference, ImageArtifactContractReference,
+            ImageCompression, ImageDelivery, immutable_image_contract_object_key,
+            immutable_image_object_key,
         };
 
         let (sha256, extension, media_type, targets) = match format {
@@ -3095,7 +2906,6 @@ mod tests {
                 architecture: "x86_64".into(),
                 logical_image_id: "d".repeat(64),
                 logical_disk_sha256: "a".repeat(64),
-                rootfs_sha256: "e".repeat(64),
                 filename: filename.clone(),
                 object_key: immutable_image_object_key(&sha256, &filename),
                 media_type: media_type.into(),
@@ -3107,31 +2917,24 @@ mod tests {
                 byte_size: 4096,
                 sha256: sha256.clone(),
                 compatible_targets: targets,
-                uki: ImageUkiIdentity {
-                    filename: "aos.efi".into(),
-                    esp_path: "EFI/Linux/aos.efi".into(),
-                    byte_size: 1024,
-                    sha256: "f".repeat(64),
-                    verification: ImageVerificationState::PolicyVerified,
-                    signer_cert_sha256: Some("1".repeat(64)),
-                    sbat: vec![aos_registry_surface::manifest::SbatEntry {
-                        component: "aos".into(),
-                        generation: 1,
-                    }],
-                    measured: false,
-                    expected_pcr11: None,
+                artifact_contract: ImageArtifactContractReference {
+                    schema: "aos.test.boot-artifacts/v1".into(),
+                    document: ImageArtifactContractDocumentReference {
+                        filename: "image-info.json".into(),
+                        object_key: immutable_image_contract_object_key(
+                            &sha256,
+                            &info_sha256,
+                            "image-info.json",
+                        ),
+                        store_path: String::new(),
+                        nar_hash: String::new(),
+                        nar_size: 0,
+                        media_type: "application/vnd.aos.image-info+json".into(),
+                        byte_size: 512,
+                        sha256: info_sha256,
+                    },
+                    artifacts: None,
                 },
-                image_info: ImageInfoReference {
-                    filename: "image-info.json".into(),
-                    object_key: immutable_image_info_object_key(&sha256, &info_sha256),
-                    store_path: String::new(),
-                    nar_hash: String::new(),
-                    nar_size: 0,
-                    media_type: "application/vnd.aos.image-info+json".into(),
-                    byte_size: 512,
-                    sha256: info_sha256,
-                },
-                update_payload: None,
             },
         }
     }
@@ -3202,10 +3005,9 @@ mod tests {
         assert!(default.contains("class=\"image-summary\""));
         assert!(default.contains("class=\"image-facts\""));
         assert!(default.contains("<th scope=\"row\">file SHA-256</th>"));
-        assert!(default.contains("<th scope=\"row\">UKI SHA-256</th>"));
+        assert!(default.contains("<th scope=\"row\">artifact contract</th>"));
         assert!(default.contains("class=\"hash-control\""));
-        assert!(default.contains("UKI policy verified"));
-        assert!(!default.contains("boot verified"));
+        assert!(default.contains("aos.test.boot-artifacts/v1"));
         assert!(default.contains(&format!("data-copy-value=\"{}\"", "a".repeat(64))));
         assert!(default.contains("aos-2026.08.img.zst"));
         assert!(default.contains("aos-2026.09.qcow2"));
@@ -3234,13 +3036,10 @@ mod tests {
         assert!(!filtered.contains("aos-2026.09.qcow2"));
         assert!(filtered.contains("value=\"bare-metal\" selected"));
 
-        let mut unsigned = indexed_image("raw", "2026.10");
-        unsigned.delivery.uki.verification = ImageVerificationState::Unsigned;
-        unsigned.delivery.uki.signer_cert_sha256 = None;
-        let unsigned_html = images_page(
+        let provider_contract = images_page(
             &registry(),
             None,
-            &[unsigned],
+            &[indexed_image("raw", "2026.10")],
             &[],
             Some("https://download.example/demo"),
             "https://hub.example",
@@ -3249,9 +3048,7 @@ mod tests {
             Instant::now(),
             &anon(),
         );
-        assert!(unsigned_html.contains("UKI unsigned"));
-        assert!(unsigned_html.contains("has no Authenticode signature"));
-        assert!(!unsigned_html.contains("boot unsigned"));
+        assert!(provider_contract.contains("aos.test.boot-artifacts/v1"));
     }
 
     #[test]
@@ -3570,6 +3367,8 @@ mod tests {
             &release_context("1.0.0"),
             None,
             false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3587,6 +3386,8 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
             None,
             false,
             Instant::now(),
@@ -3642,6 +3443,8 @@ mod tests {
             std::slice::from_ref(&closure),
             &setup,
             &release_context("1.0.0"),
+            None,
+            false,
             None,
             false,
             Instant::now(),
@@ -3717,6 +3520,8 @@ mod tests {
             &release_context("1.0.0"),
             None,
             false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3754,6 +3559,8 @@ mod tests {
             &release_context("1.0.0"),
             None,
             false,
+            None,
+            false,
             Instant::now(),
             &anon(),
         );
@@ -3764,9 +3571,9 @@ mod tests {
     }
 
     #[test]
-    fn documentation_pages_render_verified_content_and_escape_search_rows() {
+    fn package_documentation_links_preserve_release_and_exact_digest() {
         let registry = registry();
-        let panel = documentation_panel("HTTP <proxy> service");
+        let reference = documentation_reference();
         let detail = PackageDetail {
             name: "nginx".into(),
             description: "HTTP server".into(),
@@ -3777,14 +3584,6 @@ mod tests {
             versions: Vec::new(),
         };
         let setup = setup(&registry, "https://hub.example/demo", &[]);
-        let reference = PackageDocumentationReference {
-            package: panel.document.package.name.clone(),
-            version: panel.document.package.version.clone(),
-            platform: panel.document.package.platform.clone(),
-            store_path: panel.store_path.clone(),
-            document_sha256: panel.document_sha256.clone(),
-            nar_hash: panel.nar_hash.clone(),
-        };
         let package_html = package_page(
             &registry,
             None,
@@ -3793,6 +3592,8 @@ mod tests {
             &setup,
             &release_context("1.0.0"),
             Some(&reference),
+            false,
+            None,
             false,
             Instant::now(),
             &anon(),
@@ -3812,82 +3613,6 @@ mod tests {
         assert!(package_html.contains("/-/docs/nginx/1.30.4/x86_64-linux?digest=sha256%3A"));
         assert!(!package_html.contains("/-/api/v1/documentation/sha256:"));
 
-        let detail_html = documentation_page(&registry, None, &panel, Instant::now(), &anon());
-        assert!(
-            detail_html.contains("Exact installable reference")
-                || detail_html.contains("Canonical JSON")
-        );
-        assert!(detail_html.contains("apm docs show nginx"));
-
-        let search_html = documentation_index_page(
-            &registry,
-            None,
-            &[crate::db::PackageDocumentationSearchResult {
-                package_name: "nginx".into(),
-                package_version: "1.30.4".into(),
-                platform: "x86_64-linux".into(),
-                kind: "option".into(),
-                key: "nginx.enable".into(),
-                title: "<script>option</script>".into(),
-                summary: "Enable & start".into(),
-                score: 100,
-            }],
-            Some("enable"),
-            Some("option"),
-            1,
-            1,
-            Instant::now(),
-            &anon(),
-        );
-        assert!(!search_html.contains("<script>option</script>"));
-        assert!(search_html.contains("&lt;script&gt;option&lt;/script&gt;"));
-        assert!(search_html.contains("Enable &amp; start"));
-        assert!(search_html.contains(&format!(
-            "href=\"/demo/-/docs/nginx/1.30.4/x86_64-linux#{}\"",
-            aos_doc_model::documentation_anchor("option", "nginx.enable"),
-        )));
-        assert!(!search_html.contains("Exact installable reference"));
-        assert!(!search_html.contains("<h1>Package documentation</h1>"));
-
-        let browse_html = documentation_index_page(
-            &registry,
-            None,
-            &[crate::db::PackageDocumentationSearchResult {
-                package_name: "nginx".into(),
-                package_version: "1.30.4".into(),
-                platform: "x86_64-linux".into(),
-                kind: "package".into(),
-                key: "nginx".into(),
-                title: "nginx".into(),
-                summary: "HTTP server".into(),
-                score: 0,
-            }],
-            Some(""),
-            None,
-            1,
-            1,
-            Instant::now(),
-            &anon(),
-        );
-        assert!(browse_html.contains("Browse 1 indexed documentation entry."));
-        assert!(browse_html.contains("HTTP server"));
-
-        let paged_html = documentation_index_page(
-            &registry,
-            None,
-            &[],
-            Some("tls proxy"),
-            Some("option"),
-            2,
-            150,
-            Instant::now(),
-            &anon(),
-        );
-        assert!(paged_html.contains("150 ranked results"));
-        assert!(paged_html.contains("page 2 of 2"));
-        assert!(paged_html.contains("q=tls+proxy"));
-        assert!(paged_html.contains("kind=option"));
-        assert!(paged_html.contains("page=1"));
     }
 
     #[tokio::test]
@@ -4088,7 +3813,9 @@ mod tests {
         assert!(html.contains("page 2 of 3"));
         // Pagination preserves the filter + sort across the prev/next links
         // (HTML-escaped in the href, with `page` appended last).
-        assert!(html.contains("filter=license+%3D%3D+MIT&amp;sort=closure&amp;dir=desc&amp;page=1"));
+        assert!(
+            html.contains("filter=license+%3D%3D+MIT&amp;sort=closure&amp;dir=desc&amp;page=1")
+        );
         assert!(html.contains("&amp;page=3"));
 
         // A single page in default order renders no pager and a clean count.

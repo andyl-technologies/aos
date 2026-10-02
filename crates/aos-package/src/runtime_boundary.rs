@@ -14,13 +14,13 @@ use crate::{
     ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
     CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand,
     OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand,
-    RuntimeConfigCommand, SbCertsCommand, StoreCommand, TrustCommand,
+    RuntimeConfigCommand, StoreCommand, TrustCommand,
 };
 
 const RUNTIME_ENV: &str = "AOS_RUNTIME";
 const READ_ONLY_ENV: &str = "AOS_CONTAINER_READ_ONLY";
 
-const CONTAINER_HOST_OPERATION_ERROR: &str = "AOS containers support only user-scope package management; --system and host boot, systemd, TPM, and activation operations are unavailable. Run this operation on an AOS machine or VM.";
+const CONTAINER_HOST_OPERATION_ERROR: &str = "AOS containers support only user-scope package management; --system and host boot, service-management, TPM, and activation operations are unavailable. Run this operation on an AOS machine or VM.";
 const READ_ONLY_MUTATION_ERROR: &str = "this AOS container is read-only; user-scope package mutations are unavailable. Restart it without the runtime's read-only-root option and mount writable APM and Nix state to modify packages.";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -115,6 +115,7 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 /// runtime classification before the crate compiles.
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
+        PackageCommand::Image { .. } => true,
         PackageCommand::Install {
             from,
             system,
@@ -158,11 +159,10 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         PackageCommand::Options { command } => options_require_host_runtime(command),
         PackageCommand::Schema { system, .. } => *system,
         PackageCommand::Attest { command } => match command {
-            AttestCommand::Quote { .. } | AttestCommand::VerifyBootCommit { .. } => true,
+            AttestCommand::Quote { .. } => true,
             AttestCommand::Verify { system, .. } | AttestCommand::Catalog { system, .. } => *system,
             AttestCommand::Enroll { .. } => false,
         },
-        PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
         PackageCommand::Remove { .. }
         | PackageCommand::Autoremove
         | PackageCommand::Reinstall { .. }
@@ -173,23 +173,12 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Verify { .. }
         | PackageCommand::Source { .. }
         | PackageCommand::Credential(_) => false,
-        PackageCommand::ActivatePreEtcSwap { .. }
-        | PackageCommand::ActivatePostEtcSwap { .. }
-        | PackageCommand::ActivateRestoreRoutedSources { .. }
-        | PackageCommand::RecoverCredentialTransactions
-        | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestReconcileExposedUnits { .. }
-        | PackageCommand::TestProducePackageAttestationQuote { .. }
-        | PackageCommand::LoadEbpfLsmPolicies { .. }
-        | PackageCommand::Eval { .. }
-        | PackageCommand::EvalRetained { .. }
-        | PackageCommand::Materialize { .. }
-        | PackageCommand::ActivateConfig { .. }
+        PackageCommand::ApplyDeployment(..)
+        | PackageCommand::VerifyDeployment(..)
+        | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentResult { .. }
         | PackageCommand::Switch { .. }
-        | PackageCommand::Config { .. }
-        | PackageCommand::Fetch { .. }
-        | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => true,
+        | PackageCommand::Config { .. } => true,
     }
 }
 
@@ -210,7 +199,9 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Held { .. }
         | PackageCommand::Orphans { .. }
         | PackageCommand::Verify { .. }
-        | PackageCommand::TestVerifyPackageAttestation { .. } => true,
+        | PackageCommand::VerifyDeployment(..)
+        | PackageCommand::DeploymentCurrent { .. }
+        | PackageCommand::DeploymentResult { .. } => true,
         PackageCommand::Docs { command } => documentation_is_read_only(command),
         PackageCommand::Options { .. } | PackageCommand::Schema { .. } => true,
         PackageCommand::Config { command } => runtime_config_is_read_only(command),
@@ -218,13 +209,13 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Rollback { list, .. } => *list,
         PackageCommand::Attest { command } => matches!(
             command,
-            AttestCommand::Verify { .. }
-                | AttestCommand::Catalog { .. }
-                | AttestCommand::VerifyBootCommit { .. }
+            AttestCommand::Verify { .. } | AttestCommand::Catalog { .. }
         ),
         PackageCommand::Credential(CredentialCommand::Encrypt { output, .. }) => output.is_none(),
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
         PackageCommand::Install { .. }
+        | PackageCommand::Image { .. }
+        | PackageCommand::ApplyDeployment(..)
         | PackageCommand::Remove { .. }
         | PackageCommand::Autoremove
         | PackageCommand::Reinstall { .. }
@@ -235,22 +226,7 @@ fn is_read_only(command: &PackageCommand) -> bool {
         | PackageCommand::Unhold { .. }
         | PackageCommand::Clean { .. }
         | PackageCommand::Gc
-        | PackageCommand::ActivatePreEtcSwap { .. }
-        | PackageCommand::ActivatePostEtcSwap { .. }
-        | PackageCommand::ActivateRestoreRoutedSources { .. }
-        | PackageCommand::RecoverCredentialTransactions
-        | PackageCommand::TestSystemdClient { .. }
-        | PackageCommand::TestReconcileExposedUnits { .. }
-        | PackageCommand::TestProducePackageAttestationQuote { .. }
-        | PackageCommand::LoadEbpfLsmPolicies { .. }
-        | PackageCommand::Eval { .. }
-        | PackageCommand::EvalRetained { .. }
-        | PackageCommand::Materialize { .. }
-        | PackageCommand::ActivateConfig { .. }
-        | PackageCommand::Switch { .. }
-        | PackageCommand::Fetch { .. }
-        | PackageCommand::RenderOne { .. }
-        | PackageCommand::GraphCompile { .. } => false,
+        | PackageCommand::Switch { .. } => false,
     }
 }
 
@@ -335,9 +311,6 @@ fn registry_is_read_only(command: &RegistryCommand) -> bool {
         | RegistryCommand::Keys {
             command: KeysCommand::List { .. },
         }
-        | RegistryCommand::SbCerts {
-            command: SbCertsCommand::List { .. },
-        }
         | RegistryCommand::Branch {
             command: BranchCommand::List { .. },
         }
@@ -392,7 +365,6 @@ fn registry_is_read_only(command: &RegistryCommand) -> bool {
         | RegistryCommand::Disable { .. }
         | RegistryCommand::Trust { .. }
         | RegistryCommand::Keys { .. }
-        | RegistryCommand::SbCerts { .. }
         | RegistryCommand::Publish { .. }
         | RegistryCommand::Unpublish { .. }
         | RegistryCommand::Commit { .. }
@@ -442,6 +414,64 @@ mod tests {
     }
 
     #[test]
+    fn image_prepare_requires_a_writable_host_and_system_scope() {
+        for arguments in [
+            &["image", "prepare", "server"][..],
+            &[
+                "image",
+                "prepare",
+                "server",
+                "--registry",
+                "trusted",
+                "--qualified",
+            ][..],
+        ] {
+            let command = command(arguments);
+            assert!(command.is_system());
+            assert_eq!(
+                command.runtime_requirement(),
+                crate::environment::RuntimeRequirement::LiveAos
+            );
+            RuntimeBoundary::default().validate(&command).unwrap();
+            assert!(
+                RuntimeBoundary {
+                    container: true,
+                    read_only: false
+                }
+                .validate(&command)
+                .is_err()
+            );
+            assert!(
+                RuntimeBoundary {
+                    container: false,
+                    read_only: true
+                }
+                .validate(&command)
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn image_prepare_parser_preserves_registry_and_admission_purpose() {
+        let parsed = command(&[
+            "image",
+            "prepare",
+            "server",
+            "--registry",
+            "trusted",
+            "--qualified",
+        ]);
+        assert!(matches!(parsed, PackageCommand::Image {
+            command: crate::ImageCommand::Prepare { package, registry: Some(registry), qualified: true }
+        } if package == "server" && registry == "trusted"));
+        assert!(TestCli::try_parse_from(["apm", "image", "prepare"]).is_err());
+        assert!(
+            TestCli::try_parse_from(["apm", "image", "prepare", "server", "--reboot"]).is_err()
+        );
+    }
+
+    #[test]
     fn detects_only_the_exact_runtime_markers() {
         assert_eq!(
             RuntimeBoundary::from_values(Some(OsStr::new("container")), Some(OsStr::new("1"))),
@@ -471,9 +501,9 @@ mod tests {
             .expect("unset marker preserves system behavior");
         boundary
             .validate(&command(&[
-                "_test-systemd-client",
-                "is-active",
-                "a.service",
+                "deployment-current",
+                "--profile",
+                "/tmp/profile",
             ]))
             .expect("unset marker preserves hidden behavior");
     }
@@ -499,9 +529,16 @@ mod tests {
             &["docs", "search", "hello", "--system"][..],
             &["install", "hello", "--image", "raw"][..],
             &["attest", "quote", "--nonce", "00", "--output-dir", "/tmp/q"][..],
-            &["_test-systemd-client", "is-active", "a.service"][..],
-            &["activate-post-etc-swap", "--plan", "/tmp/plan"][..],
-            &["activate-restore-routed-sources", "--plan", "/tmp/plan"][..],
+            &["deployment-current", "--profile", "/tmp/profile"][..],
+            &[
+                "deployment-result",
+                "--profile",
+                "/tmp/profile",
+                "--generation",
+                "1",
+                "--effect",
+                "effect",
+            ][..],
         ] {
             let error = boundary
                 .validate(&command(arguments))
@@ -538,7 +575,7 @@ mod tests {
             &["source", "hello"][..],
             &["docs", "search", "hello"][..],
             &["options", "show", "services.example.enable"][..],
-            &["schema"][..],
+            &["schema", "hello"][..],
             &["rollback", "--list"][..],
             &["registry", "list"][..],
         ] {

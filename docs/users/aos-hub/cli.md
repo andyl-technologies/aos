@@ -310,3 +310,86 @@ aos hub placement eviction run --plan-id <id> --confirm-hash <hash> \
 Package and registry producer commands use the same cache upload admission and
 multipart API as the Web console; direct storage capabilities never receive a
 Hub bearer.
+
+## Inspect native ability artifacts locally
+
+Use the same native reader as the Hub viewer without contacting a server:
+
+```sh
+aos docs runtime options.json
+aos docs runtime transaction.json --format html --output execution.html
+```
+
+This inspects exported artifacts through the same native reader used by
+installed-package documentation, release search, and package pages. See
+[runtime abilities](../aos/runtime-abilities.md) for code examples and
+[the viewer](web.md#inspect-native-runtime-ability-documents) for imported documents.
+
+## Read published native documentation
+
+Use `aos hub docs` with the registry's normal read credentials:
+
+```sh
+aos hub docs search enable --registry acme/packages --kind option
+aos hub docs package sample --registry acme/packages --version 1.0 --platform x86_64-linux
+aos hub docs option sample --registry acme/packages --version 1.0 --platform x86_64-linux --prefix aos.sample
+aos hub docs fetch sample --registry acme/packages --version 1.0 --platform x86_64-linux --output options.json
+aos hub docs open sample --registry acme/packages --version 1.0 --platform x86_64-linux
+aos hub docs compare sample --registry acme/packages --from 1.0 --to 2.0 --platform x86_64-linux
+```
+
+Search kinds are `package`, `option`, and `operation`. Results retain release,
+registry commit, and document digest alongside package/version/platform.
+`fetch` verifies exact bytes before writing them; `open` prints a browser URL
+pinned to the selected release and digest. Omitting version/platform requests
+Hub's deterministic default selection. The CLI package commands do not expose
+a release selector; use the documentation RPC when an explicit release pin is
+required.
+
+`package` renders the same native reference as the browser, including complete
+recursive input/result contracts and each operation's declaring, handling, and
+consuming owners. When declared, it also shows independent ability contract
+versions and requester-qualified module requirements. These requirements are
+source declarations, not a solver result. `option` lists typed native declarations,
+with optional owner, prefix, portable type JSON, and extensibility filters. Comparisons cover option
+types and mutability/extension policy, operation inputs/results, handler
+availability, configured instances, interface release versions/owners, and module
+requirements. They exclude prose and do not report live runtime state.
+
+
+## Inspect release operations and report a deployment
+
+```sh
+aos hub docs abilities --registry acme/packages --release 1.0.0 --platform x86_64-linux
+aos ability inspect transaction.json --format html
+aos ability compare before.json after.json
+aos ability removal-preview transaction.json --effect '<exact-effect-identity>'
+aos ability diagnostic /var/lib/apm/profiles/default 3
+aos ability journal activation.journal --format json
+```
+
+`abilities` verifies the exact native references in the selected completed
+release. Local inspection accepts native documentation and desired transactions;
+transaction comparison tracks semantic effect revisions. Removal preview bounds
+a traversal of desired dependencies. Diagnostic output separates a committed
+profile's desired graph from retained output values and does not verify live
+state. Its default audience redacts protected details. `journal` reads a
+bounded native activation journal through the checked replay reader, showing
+durable pending dispatch identities, completed transactions, and retained
+outputs without repairing or executing anything. Inspection requires the
+manager to release its exclusive journal lock.
+
+An already enrolled reporter can submit a checked desired transaction and
+optional named result assertions:
+
+```sh
+aos hub docs report --registry acme/packages --release 1.0.0 \
+  --package sample --version 1.0 --platform x86_64-linux \
+  --transaction transaction.json --outputs results.json \
+  --deployment sample-production --sequence 8 --reporter-resource-version 2
+```
+
+The next sequence must exceed the slot's current sequence. The report lifetime
+is at most 300 seconds. Hub checks the reference, native graph, and reported
+result types; receiving a report does not establish that its desired effects
+are running or its result assertions remain true.

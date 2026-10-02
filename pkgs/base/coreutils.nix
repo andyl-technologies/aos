@@ -1,4 +1,5 @@
 {
+  lib,
   mkDerivation,
   fetchurl,
   m4,
@@ -14,7 +15,61 @@
   version = "9.11";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "coreutils";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Printf emits the exact padded record.";
+        "files" = {};
+        "input" = "A string and integer for a padded format conversion.";
+        "operation" = "Format the values with GNU printf.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/printf"
+              "%s:%03d\\n"
+              "qualified"
+              "7"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "qualified:007\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "GNU printf diagnoses the invalid number and returns status 1.";
+        "files" = {};
+        "input" = "A character that is not a valid integer operand.";
+        "operation" = "Apply an integer conversion to the invalid operand.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/printf"
+              "%d\\n"
+              "x"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "0\n";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

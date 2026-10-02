@@ -4,7 +4,7 @@
 # provisioning test, the machine identity exercised here is not baked into the
 # image: literal metadata host.nix overrides the baked hostname and contributes
 # an /etc artifact, account, service, and desired package through the production
-# aos-eval -> aos-graph-compile -> aos-activate transaction.
+# native package evaluation and committed aos-activate transaction.
 {
   pkgs,
   systems,
@@ -49,41 +49,13 @@ in {
       pkgs.diffutils
       pkgs.grep
     ];
-    metadata."host.nix" = ''
-      {
-        aos.provisioning.storage.partitions.var.sizeMin = "2G";
-        aos.networking.hostName = "runtime-one";
-        aos.apm.desiredPackages = [ "aos-test-agent" ];
-
-        environment.etc."runtime-config/runtime.conf" = {
-          text = "generation=one\n";
-          mode = "0644";
-        };
-
-        aos.users.groups.runtime-config = {
-          gid = 976;
-          members = [];
-        };
-        aos.users.users.runtime-config = {
-          uid = 976;
-          group = "runtime-config";
-          home = "/var/lib/runtime-config";
-          shell = "/bin/bash";
-          description = "Runtime-configured host user";
-          extraGroups = [];
-        };
-
-        systemd.services.runtime-config-host = {
-          description = "Runtime-configured host service";
-          wantedBy = [ "multi-user.target" ];
-          serviceConfig = {
-            Type = "oneshot";
-            RemainAfterExit = true;
-          };
-          script = "printf one > /run/runtime-config-host-service";
-        };
-      }
-    '';
+    metadata."host.nix" = import ./_native-runtime-source.nix {
+      inherit pkgs;
+      hostname = "runtime-one";
+      value = "one";
+      account = true;
+      service = true;
+    };
   };
 
   # A separate no-metadata machine proves that the porcelain default follows
@@ -101,413 +73,172 @@ in {
       import base64
       import json
 
-      JQ = "${pkgs.jq}/bin/jq"
       APM = "${pkgs.aos.apm}/bin/apm"
-      PACKAGE_RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
-      CMP = "${pkgs.diffutils}/bin/cmp"
+      RUNTIME = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime"
+      PROFILE = "/var/lib/profiles/system"
       GREP = "${pkgs.grep}/bin/grep"
+      CMP = "${pkgs.diffutils}/bin/cmp"
 
 
-      def properties(unit, names):
-          output = runtime.succeed(
-              "systemctl show " + unit + " "
-              + " ".join(f"--property={name}" for name in names)
-          )
-          result = {}
-          for line in output.splitlines():
-              key, separator, value = line.partition("=")
-              assert separator, f"malformed systemctl property line: {line!r}"
-              result[key] = value
-          return result
-
-
-      def current_generation():
-          return int(runtime.succeed(
-              f"{JQ} -er '.current' /var/lib/profiles/system/state.json"
-          ).strip())
+      def current(machine):
+          value = json.loads(machine.succeed(
+              f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery"
+          ))["generation"]
+          assert isinstance(value, int) and value > 0, value
+          directory = f"{PROFILE}/gen-{value}"
+          marker = json.loads(machine.succeed(f"cat {directory}/native-deployment.json"))
+          descriptor = json.loads(machine.succeed(f"cat {directory}/evaluation.json"))
+          assert marker["profile_generation"] == value, marker
+          assert descriptor["schema"] == "aos.package.evaluation-input", descriptor
+          assert descriptor["scope"] == ["profile", "system"], descriptor
+          assert descriptor["library"].startswith("/nix/store/"), descriptor
+          machine.succeed(f"test -s {PROFILE}/deployment/generations.journal")
+          machine.succeed(f"test -s {PROFILE}/deployment/effects.journal")
+          for source in descriptor["configuration"] + descriptor["runtimeConfiguration"]:
+              assert source.startswith("/nix/store/"), source
+              machine.succeed(f"test -f {source}")
+          return value, marker, descriptor
 
 
       def wait_for_activation(machine):
-          try:
-              machine.succeed(
-                  "timeout --kill-after=2s 300s bash -c '"
-                  "until test -s /run/aos/manifest.json "
-                  "&& test -s /run/aos/graph.json "
-                  "&& test -s /run/aos/activation.json; "
-                  "do sleep 1; done'",
-                  timeout=310,
-              )
-          except Exception:
-              for unit in (
-                  "multi-user.target",
-                  "aos-provisioning-persist.service",
-                  "aos-firstboot-reeval.service",
-                  "aos-host-config-restore.service",
-                  "aos-nix-db.service",
-                  "aos-seed-baked-packages.service",
-                  "aos-eval.service",
-                  "aos-graph-compile.service",
-                  "aos-activate.service",
-              ):
-                  print(machine.succeed(
-                      f"systemctl status {unit} --no-pager 2>&1 || true"
-                  ))
-                  print(machine.succeed(
-                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
-                  ))
-              print(machine.succeed(
-                  "systemctl list-jobs --no-pager 2>&1 || true"
-              ))
-              for path in (
-                  "/run/aos/manifest.json",
-                  "/run/aos/graph.json",
-                  "/run/aos/activation.json",
-                  "/var/lib/profiles/system/state.json",
-              ):
-                  print(machine.succeed(f"cat {path} 2>&1 || true"))
-              raise
+          machine.wait_until_succeeds(
+              "systemctl is-active --quiet aos-activate.service", timeout=300
+          )
+          machine.succeed("systemctl is-active --quiet multi-user.target")
+          return current(machine)
 
 
       def assert_live(value):
-          try:
-              runtime.wait_until_succeeds(
-                  f"test \"$(cat /etc/hostname)\" = runtime-{value}", timeout=60
-              )
-          except Exception:
-              for unit in (
-                  "aos-eval.service",
-                  "aos-graph-compile.service",
-                  "aos-activate.service",
-                  "aos-image-boot-commit.service",
-              ):
-                  print(runtime.succeed(
-                      f"systemctl status {unit} --no-pager 2>&1 || true"
-                  ))
-                  print(runtime.succeed(
-                      f"journalctl -b -u {unit} --no-pager 2>&1 || true"
-                  ))
-              print(runtime.succeed(
-                  "cat /var/lib/profiles/system/state.json 2>&1 || true"
-              ))
-              print(runtime.succeed("cat /run/aos/manifest.json 2>&1 || true"))
-              print(runtime.succeed("cat /proc/mounts 2>&1 || true"))
-              raise
-          runtime.succeed(
-              f"test \"$(cat /etc/runtime-config/runtime.conf)\" = generation={value}"
+          runtime.wait_until_succeeds(
+              f'test "$(cat /etc/hostname)" = runtime-{value}', timeout=60
           )
-          runtime.succeed("test \"$(id -u runtime-config)\" = 976")
-          runtime.succeed("test \"$(id -g runtime-config)\" = 976")
+          runtime.succeed(f'test "$(cat /etc/runtime-config/runtime.conf)" = generation={value}')
+          runtime.succeed('test "$(id -u runtime-config)" = 976')
+          runtime.succeed('test "$(id -g runtime-config)" = 976')
           runtime.succeed("systemctl is-active --quiet runtime-config-host.service")
-          runtime.succeed(f"test \"$(cat /run/runtime-config-host-service)\" = {value}")
+          runtime.succeed(f'test "$(cat /run/runtime-config-host-service)" = {value}')
           runtime.succeed("systemctl is-active --quiet aos-test-agent.service")
 
 
+      def write_source(machine, directory, source):
+          encoded = base64.b64encode(source.encode()).decode()
+          machine.succeed(f"mkdir -p {directory}; printf '%s' {encoded} | base64 -d > {directory}/host.nix")
+
+
+      # An empty operator worktree still evaluates the retained authored baseline.
       wait_for_activation(image_default)
-      image_default.succeed("test ! -e /run/aos-metadata/host.nix")
-      default_preview = json.loads(image_default.succeed(f"""
-          {APM} --json switch --dry-run \
-            --eval-root /run/runtime-config-image-default-preview
-      """, timeout=300))
-      assert default_preview["etc_diff"] == [], default_preview
-      assert default_preview["unit_actions"] == [], default_preview
-      image_default.succeed(f"""
-          {APM} switch --eval-root /run/runtime-config-image-default-switch
-      """, timeout=300)
-      image_default.succeed("systemctl is-active --quiet aos-config.target")
-
-
-      # Reaching these units proves graph compilation synchronously awaited the
-      # activation proof, rather than merely observing an eval manifest.
-      wait_for_activation(runtime)
-      runtime.wait_until_succeeds(
-          "systemctl is-active --quiet aos-activate.service", timeout=300
+      image_default.succeed("mkdir -p /run/empty-runtime-modules")
+      preview = json.loads(image_default.succeed(
+          f"{APM} --json switch --dry-run --worktree /run/empty-runtime-modules "
+          "--eval-root /run/runtime-image-default-preview", timeout=300
+      ))
+      assert preview["added"] == [] and preview["removed"] == [], preview
+      image_default.succeed(
+          f"{APM} switch --worktree /run/empty-runtime-modules "
+          "--eval-root /run/runtime-image-default-switch", timeout=300
       )
-      runtime.succeed("systemctl is-active --quiet aos-config.target")
-      runtime.succeed("systemctl is-active --quiet multi-user.target")
 
-      eval_properties = properties(
-          "aos-eval.service",
-          [
-              "Type",
-              "After",
-              "Before",
-              "Requires",
-              "MemoryMax",
-              "MemoryHigh",
-              "TimeoutStartUSec",
-              "TasksMax",
-              "ProtectSystem",
-              "ProtectHome",
-              "PrivateTmp",
-              "NoNewPrivileges",
-              "SystemCallArchitectures",
-              "SystemCallFilter",
-          ],
-      )
-      assert eval_properties["Type"] == "oneshot", eval_properties
-      assert "network-online.target" in eval_properties["After"].split(), eval_properties
-      assert "aos-nix-db.service" in eval_properties["After"].split(), eval_properties
-      assert "aos-nix-db.service" in eval_properties["Requires"].split(), eval_properties
-      assert "aos-graph-compile.service" in eval_properties["Before"].split(), eval_properties
-      assert "multi-user.target" in eval_properties["Before"].split(), eval_properties
-      assert eval_properties["MemoryMax"] == str(2 * 1024 * 1024 * 1024), eval_properties
-      assert eval_properties["MemoryHigh"] == str(1536 * 1024 * 1024), eval_properties
-      assert eval_properties["TimeoutStartUSec"] == "5min", eval_properties
-      assert eval_properties["TasksMax"] == "4096", eval_properties
-      assert eval_properties["ProtectSystem"] == "strict", eval_properties
-      assert eval_properties["ProtectHome"] == "yes", eval_properties
-      assert eval_properties["PrivateTmp"] == "yes", eval_properties
-      assert eval_properties["NoNewPrivileges"] == "yes", eval_properties
-      assert eval_properties["SystemCallArchitectures"] == "native", eval_properties
-      assert eval_properties["SystemCallFilter"], eval_properties
-
-      manifest_text = runtime.succeed("cat /run/aos/manifest.json")
-      manifest = json.loads(manifest_text)
-      assert manifest["schema"] == "aos.config-manifest/v1", manifest["schema"]
-      for field, expected_type in (
-          ("etc", dict),
-          ("units", dict),
-          ("jobScripts", dict),
-          ("inputs", dict),
-          ("users", list),
-          ("packages", list),
-      ):
-          assert isinstance(manifest[field], expected_type), field
-      assert manifest["etc"]["hostname"]["text"] == "runtime-one\n"
-      assert manifest["etc"]["runtime-config/runtime.conf"]["text"] == "generation=one\n"
-      assert "runtime-config-host.service" in manifest["units"]
-      assert any(
-          key.startswith("runtime-config-host.service:") for key in manifest["jobScripts"]
-      ), manifest["jobScripts"].keys()
-      assert any(user["name"] == "runtime-config" for user in manifest["users"])
-      assert "aos-test-agent" in manifest["packages"], manifest["packages"]
-      assert manifest["inputs"]["host_nix"]["trust_mode"] == "platform"
-      assert manifest["inputs"]["host_nix"]["store_path"].startswith("/nix/store/")
+      first, first_marker, first_descriptor = wait_for_activation(runtime)
+      controller = dict(line.split("=", 1) for line in runtime.succeed(
+          "systemctl show aos-activate.service "
+          "--property=Type --property=MemoryMax --property=MemoryHigh "
+          "--property=TasksMax --property=PrivateTmp --property=ProtectSystem "
+          "--property=NoNewPrivileges --property=KillMode --property=LimitCORE"
+      ).splitlines())
+      assert controller["Type"] == "oneshot", controller
+      assert controller["MemoryMax"] == str(2 * 1024 * 1024 * 1024), controller
+      assert controller["MemoryHigh"] == str(1536 * 1024 * 1024), controller
+      assert controller["TasksMax"] == "4096", controller
+      assert controller["PrivateTmp"] == "yes", controller
+      # The native controller dispatches admitted host mutations, so its
+      # process policy must permit those effects rather than sandbox them away.
+      assert controller["ProtectSystem"] == "no", controller
+      assert controller["NoNewPrivileges"] == "no", controller
+      assert controller["KillMode"] == "control-group", controller
+      assert controller["LimitCORE"] == "0", controller
+      assert_live("one")
+      assert first_descriptor["runtimeConfiguration"], first_descriptor
       runtime.fail(f"{GREP} -q MIIDHzCCAgeg /etc/ssl/certs/ca-certificates.crt")
+      boot = runtime.succeed("cat /proc/sys/kernel/random/boot_id").strip()
+      image = runtime.succeed("cat /var/lib/profiles/image/state.json")
 
-      first = current_generation()
-      assert first > 0
-      first_dir = f"/var/lib/profiles/system/gen-{first}"
-      runtime.succeed(f"test \"$(readlink /var/lib/profiles/system/current)\" = gen-{first}")
-      runtime.succeed(f"test -s {first_dir}/manifest.json")
-      runtime.succeed(f"test -s {first_dir}/config-lower/etc.erofs")
-      runtime.succeed(f"test -s {first_dir}/activation.json")
-      activation = json.loads(runtime.succeed("cat /run/aos/activation.json"))
-      assert activation["schema"] == "aos.config-activation/v1", activation
-      assert activation["generation"] == first, activation
-      assert activation["status"] == "complete", activation
-      assert activation["activation_exit"] == 0, activation
-      state = json.loads(runtime.succeed("cat /var/lib/profiles/system/state.json"))
-      first_record = next(g for g in state["generations"] if g["number"] == first)
-      assert first_record["manifest_hash"] == activation["generation_id"]
-      assert first_record["image_gen_parent"] > 0
-      assert first_record["module_abi_pinned"] == manifest["module_abi"]
-      assert_live("one")
-
-      # Equal-priority operator definitions must produce a structured conflict
-      # and leave both the durable pointer and live transaction inputs intact.
-      conflict_host = """{
+      # Equal-priority authored definitions fail before any live reconciliation.
+      write_source(runtime, "/run/runtime-conflict", """{
         imports = [
-          { aos.firewall.forwardPolicy = "accept"; }
-          { aos.firewall.forwardPolicy = "drop"; }
+          { aos.networking.hostName = "conflict-one"; }
+          { aos.networking.hostName = "conflict-two"; }
         ];
-      }
-      """
-      conflict_encoded = base64.b64encode(conflict_host.encode()).decode()
+      }""")
+      status, stdout, stderr = runtime.execute(
+          f"{APM} switch --worktree /run/runtime-conflict "
+          "--eval-root /run/runtime-conflict-eval", timeout=300
+      )
+      assert status != 0, (stdout, stderr)
+      assert "conflict" in (stdout + stderr).lower(), (stdout, stderr)
+      assert current(runtime)[1] == first_marker
+      assert_live("one")
+
+      second_source = ${builtins.toJSON (import ./_native-runtime-source.nix {
+        inherit pkgs;
+        hostname = "runtime-two";
+        value = "two";
+        account = true;
+        service = true;
+        certificate = testCertificate;
+      })}
+      write_source(runtime, "/run/runtime-two", second_source)
+      command = f"{APM} --json switch --dry-run --worktree /run/runtime-two"
+      preview_one = json.loads(runtime.succeed(
+          command + " --eval-root /run/runtime-preview-one", timeout=300
+      ))
+      preview_two = json.loads(runtime.succeed(
+          command + " --eval-root /run/runtime-preview-two", timeout=300
+      ))
+      assert preview_one == preview_two, (preview_one, preview_two)
+      assert preview_one["before"] == first_marker["content"], preview_one
+      assert preview_one["after"] != preview_one["before"], preview_one
+      assert preview_one["changed"] or preview_one["added"], preview_one
+      assert current(runtime)[1] == first_marker
+      assert_live("one")
+
       runtime.succeed(
-          f"printf '%s' {conflict_encoded} | base64 -d > /run/runtime-config-conflict.nix"
+          f"{APM} switch --worktree /run/runtime-two --eval-root /run/runtime-switch", timeout=300
       )
-      live_manifest_hash = runtime.succeed(
-          "sha256sum /run/aos/manifest.json"
-      ).split()[0]
-      runtime.succeed("rm -rf /run/runtime-config-conflict-eval")
-      runtime.succeed(f"""
-          set -eu
-          if {APM} switch \
-            --from /run/runtime-config-conflict.nix \
-            --eval-root /run/runtime-config-conflict-eval \
-            > /run/runtime-config-conflict.out 2>&1; then
-            echo 'conflicting host configuration unexpectedly succeeded' >&2
-            exit 1
-          fi
-      """, timeout=300)
-      conflict_output = runtime.succeed("cat /run/runtime-config-conflict.out")
-      assert "config-eval.class=conflict" in conflict_output, conflict_output
-      assert current_generation() == first
-      assert runtime.succeed(
-          "sha256sum /run/aos/manifest.json"
-      ).split()[0] == live_manifest_hash
-      assert_live("one")
-
-      # The same production evaluator must be byte-deterministic when driven
-      # twice with identical authenticated inputs.
-      runtime.succeed(f"""
-          set -eu
-          base_lib=$(readlink -f /usr/lib/aos/toplevel/base-lib)
-          module_abi=""
-          while IFS='=' read -r key value; do
-            if [ "$key" = AOS_MODULE_ABI ]; then module_abi="$value"; fi
-          done < /usr/lib/aos/toplevel/os-release
-          test -n "$module_abi"
-          rm -rf /run/runtime-config-eval-one /run/runtime-config-eval-two
-          mkdir -p /run/runtime-config-eval-one /run/runtime-config-eval-two
-          {PACKAGE_RUNTIME} __eval \
-            --host-nix /run/aos-metadata/host.nix \
-            --base-lib "$base_lib" \
-            --facts /run/aos-metadata/facts.json \
-            --module-abi "$module_abi" \
-            --out /run/runtime-config-eval-one/manifest.json \
-            --eval-root /run/runtime-config-eval-one
-          {PACKAGE_RUNTIME} __eval \
-            --host-nix /run/aos-metadata/host.nix \
-            --base-lib "$base_lib" \
-            --facts /run/aos-metadata/facts.json \
-            --module-abi "$module_abi" \
-            --out /run/runtime-config-eval-two/manifest.json \
-            --eval-root /run/runtime-config-eval-two
-          {CMP} /run/runtime-config-eval-one/manifest.json /run/runtime-config-eval-two/manifest.json
-      """, timeout=300)
-
-      # Create a second same-ABI configuration through `apm switch`, then prove
-      # rollback is a direct generation reactivation with no image transition.
-      second_host = """{
-        aos.provisioning.storage.partitions.var.sizeMin = \"2G\";
-        aos.networking.hostName = \"runtime-two\";
-        aos.apm.desiredPackages = [ \"aos-test-agent\" ];
-        aos.security.pki.certificates = [ ${builtins.toJSON testCertificate} ];
-        environment.etc.\"runtime-config/runtime.conf\" = {
-          text = \"generation=two\\n\";
-          mode = \"0644\";
-        };
-        aos.users.groups.runtime-config = { gid = 976; members = []; };
-        aos.users.users.runtime-config = {
-          uid = 976;
-          group = \"runtime-config\";
-          home = \"/var/lib/runtime-config\";
-          shell = \"/bin/bash\";
-          description = \"Runtime-configured host user\";
-          extraGroups = [];
-        };
-        systemd.services.runtime-config-host = {
-          description = \"Runtime-configured host service\";
-          wantedBy = [ \"multi-user.target\" ];
-          serviceConfig = { Type = \"oneshot\"; RemainAfterExit = true; };
-          script = \"printf two > /run/runtime-config-host-service\";
-        };
-      }
-      """
-      encoded = base64.b64encode(second_host.encode()).decode()
-      runtime.succeed(f"printf '%s' {encoded} | base64 -d > /run/runtime-config-host-two.nix")
-
-      # The porcelain defaults derive the running base library, module ABI,
-      # current retained manifest, and normalized facts automatically. The
-      # JSON dry-run is the oracle for the real switch and must be a clean
-      # no-op on both the generation pointer and live files.
-      runtime.succeed("rm -rf /run/runtime-config-dry-run")
-      dry_run = json.loads(runtime.succeed(f"""
-          {APM} --json switch --dry-run \
-            --from /run/runtime-config-host-two.nix \
-            --eval-root /run/runtime-config-dry-run
-      """, timeout=300))
-      assert any(
-          change["path"] in ("hostname", "runtime-config/runtime.conf")
-          for change in dry_run["etc_diff"]
-      ), dry_run
-      for ca_path in (
-          "ssl/certs/ca-certificates.crt",
-          "ssl/certs/ca-bundle.crt",
-          "pki/tls/certs/ca-bundle.crt",
-      ):
-          assert any(change["path"] == ca_path for change in dry_run["etc_diff"]), (
-              ca_path,
-              dry_run,
-          )
-      assert any(
-          action["unit"] == "runtime-config-host.service"
-          for action in dry_run["unit_actions"]
-      ), dry_run
-      assert isinstance(dry_run["fetch_plan"], list), dry_run
-      assert isinstance(dry_run["resolution_trace"], list), dry_run
-      assert current_generation() == first
-      assert_live("one")
-
-      runtime.succeed("rm -rf /run/runtime-config-switch")
-      runtime.succeed(f"""
-          set -eu
-          {APM} switch \
-            --from /run/runtime-config-host-two.nix \
-            --eval-root /run/runtime-config-switch
-      """, timeout=300)
-      second = current_generation()
-      assert second != first, (first, second)
+      second, second_marker, second_descriptor = current(runtime)
+      assert second != first and second_marker["sequence"] > first_marker["sequence"]
+      assert second_marker["content"] == preview_one["after"], second_marker
+      assert second_descriptor["library"] == first_descriptor["library"]
+      assert second_descriptor["runtimeConfiguration"] != first_descriptor["runtimeConfiguration"]
       assert_live("two")
-      ca_paths = (
-          "/etc/ssl/certs/ca-certificates.crt",
-          "/etc/ssl/certs/ca-bundle.crt",
-          "/etc/pki/tls/certs/ca-bundle.crt",
-      )
-      for ca_path in ca_paths:
-          runtime.succeed(f"test -f {ca_path}")
-          runtime.succeed(f"{GREP} -q MIIDHzCCAgeg {ca_path}")
+      ca_paths = ["/etc/ssl/certs/ca-certificates.crt", "/etc/ssl/certs/ca-bundle.crt", "/etc/pki/tls/certs/ca-bundle.crt"]
+      for path in ca_paths:
+          runtime.succeed(f"{GREP} -q MIIDHzCCAgeg {path}")
       runtime.succeed(f"{CMP} {ca_paths[0]} {ca_paths[1]}")
       runtime.succeed(f"{CMP} {ca_paths[0]} {ca_paths[2]}")
-      second_manifest = json.loads(runtime.succeed(
-          f"cat /var/lib/profiles/system/gen-{second}/manifest.json"
-      ))
-      for ca_path in (
-          "ssl/certs/ca-certificates.crt",
-          "ssl/certs/ca-bundle.crt",
-          "pki/tls/certs/ca-bundle.crt",
-      ):
-          assert second_manifest["etc"][ca_path]["kind"] == "certificate-bundle"
-          assert second_manifest["ownership"]["etc"][ca_path] == "@host"
-      image_before_rollback = runtime.succeed(
-          f"{JQ} -er '.running' /var/lib/profiles/image/state.json"
-      ).strip()
 
+      # Rollback reconciles the original authenticated descriptor into a new publication.
       runtime.succeed(f"{APM} rollback --system --generation {first}", timeout=300)
-      assert current_generation() == first
-      assert runtime.succeed(
-          f"{JQ} -er '.running' /var/lib/profiles/image/state.json"
-      ).strip() == image_before_rollback
+      rolled, rolled_marker, rolled_descriptor = current(runtime)
+      assert rolled not in (first, second)
+      assert rolled_marker["sequence"] > second_marker["sequence"]
+      assert rolled_marker["content"] == first_marker["content"]
+      assert rolled_descriptor == first_descriptor
+      assert runtime.succeed("cat /var/lib/profiles/image/state.json") == image
+      assert runtime.succeed("cat /proc/sys/kernel/random/boot_id").strip() == boot
       assert_live("one")
-      for ca_path in ca_paths:
-          runtime.fail(f"{GREP} -q MIIDHzCCAgeg {ca_path}")
+      for path in ca_paths:
+          runtime.fail(f"{GREP} -q MIIDHzCCAgeg {path}")
 
-      # Reboot with the original metadata attached. Byte-identical evaluation
-      # must reuse the retained content-addressed generation.
-      runtime.reboot()
-      wait_for_activation(runtime)
-      runtime.wait_until_succeeds(
-          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-      )
-      assert current_generation() == first
-      assert_live("one")
-
-      # Reboot without metadata exercises the durable, hash-checked host input
-      # cache. The same host policy and generation must remain live.
-      runtime.reboot_without_metadata()
-      wait_for_activation(runtime)
-      runtime.wait_until_succeeds(
-          "systemctl is-active --quiet aos-graph-compile.service", timeout=300
-      )
-      assert current_generation() == first
-      assert_live("one")
-
-      # Fail-closed cache-loss regression: a machine that has committed a
-      # non-empty operator host input must never silently substitute `{}` and
-      # activate a base-only generation when both metadata and its durable cache
-      # disappear. Either eval may fail or the graph may no-op; the committed
-      # pointer and live policy must remain unchanged.
-      runtime.succeed("rm -f /run/aos-metadata/host.nix")
-      runtime.succeed("rm -f /var/lib/aos-provisioning/current/host.nix")
-      runtime.succeed("rm -f /run/aos/manifest.json /run/aos/graph.json")
-      runtime.fail("systemctl restart aos-host-config-restore.service")
-      runtime.fail("systemctl restart aos-eval.service")
-      runtime.succeed("systemctl restart aos-graph-compile.service")
-      runtime.fail("test -e /run/aos/manifest.json")
-      runtime.fail("test -e /run/aos/graph.json")
-      assert current_generation() == first
+      # Boot reconciles committed operator sources, even after metadata disappears.
+      for reboot in (runtime.reboot, runtime.reboot_without_metadata):
+          reboot()
+          _, marker, descriptor = wait_for_activation(runtime)
+          assert marker["content"] == first_marker["content"]
+          assert descriptor == first_descriptor
+          assert_live("one")
+      runtime.succeed("test ! -e /run/aos-metadata")
+      runtime.succeed("systemctl restart aos-activate.service", timeout=300)
+      assert current(runtime)[1]["content"] == first_marker["content"]
       assert_live("one")
     '';
 }

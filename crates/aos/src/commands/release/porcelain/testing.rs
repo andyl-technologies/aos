@@ -4,7 +4,6 @@ use std::fs;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use aos_release::canonical;
 use aos_release::qualification::QualificationContract;
 
 use super::super::config::MaintainerConfig;
@@ -114,10 +113,11 @@ destination = "oncall@example.org"
 
 /// Returns the repository's current qualification contract fixture.
 pub(super) fn contract() -> Result<QualificationContract> {
-    let contract: QualificationContract = canonical::from_slice(
-        include_bytes!("../../../../../aos-release/tests/fixtures/qualification-contract.json"),
-        "qualification contract fixture",
-    )?;
+    let contract = qualification_fixture::contract()?;
     contract.validate()?;
     Ok(contract)
 }
+
+#[path = "../../../../../aos-release/src/test_support/qualification/mod.rs"]
+#[allow(dead_code)]
+mod qualification_fixture;

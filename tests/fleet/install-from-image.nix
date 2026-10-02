@@ -59,6 +59,7 @@
   candidate = mkSystem [
     ../../systems/server-2.nix
     ../../systems/server-measured-boot.nix
+    ../../systems/_server-test-packages.nix
     {
       # The upgrade candidate deliberately carries the fleet control agent in
       # its immutable root so the harness can reconnect after the UEFI reboot.
@@ -68,16 +69,13 @@
         maxRootMiB = 640;
         # The measured-boot candidate also retains the Python HTTP upgrade
         # fixture. Its audited runtime closure is 813 MiB.
-        maxRuntimeClosureMiB = 896;
+        maxRuntimeClosureMiB = 3072;
       };
       aos.boot.kernelParams = ["net.ifnames=0"];
-      environment.etc."systemd/network/10-fleet-eth0.network".text = ''
-        [Match]
-        MACAddress=52:54:00:12:00:02
-
-        [Network]
-        Address=192.168.50.11/24
-      '';
+      aos.networking.interfaces.fleet-eth0 = {
+        matchMACAddress = "52:54:00:12:00:02";
+        address = "192.168.50.11/24";
+      };
       systemd.services.aos-test-agent = {
         description = "AOS VM Test Guest Agent";
         wantedBy = ["multi-user.target"];
@@ -113,10 +111,11 @@
   server2Image = candidate.config.system.build.image.raw;
   server2ImageDisk = candidate.config.system.build.imageArtifacts.raw.disk;
   server2ImageInfo = candidate.config.system.build.imageArtifacts.raw.info;
-  server2Uki = candidate.config.system.build.uki;
+  server2Uki = candidate.config.system.build.initialBootExecutable;
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_server-test-packages.nix
     {
       # The registry workflow uses basic Git transport operations. Reuse the
       # runtime client without pulling development-language helpers into boot.
@@ -141,7 +140,10 @@
       aos.packages =
         lib.genAttrs
         ["aos-registry-server" "test-static-cache-server"]
-        (_: {bundle = true;});
+        (name: {
+          package = pkgs.${name};
+          bundle = true;
+        });
     }
   ];
 

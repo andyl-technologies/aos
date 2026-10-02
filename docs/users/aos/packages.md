@@ -12,11 +12,11 @@ Before installing a package, configure and verify its source as described in
 signed store graph authenticate the publisher and exact closure bytes; they do
 not establish that a program is benign.
 
-For packages that activate services, inspect the signed permissions and local
-policy described in [Understand the package sandbox](package-sandbox.md). On
-measured-boot systems, [Secure Boot and package trust](secure-boot.md) explains
-how the image-baked registry anchors and PCR 15 measurements connect package
-admission to the boot chain.
+For packages that contribute services, inspect the signed package contract and
+selected resources described in [Understand native package runtime
+policy](package-sandbox.md). [Secure Boot and package trust](secure-boot.md)
+explains how image-baked registry anchors connect package admission to the boot
+chain.
 
 ## Manage user packages
 
@@ -84,13 +84,35 @@ apm rollback --generation N --dry-run
 apm rollback --generation N
 ```
 
+## Prepare an image before selecting it
+
+On a live AOS host, root can authenticate and stage a system image separately
+from choosing the next boot:
+
+```sh
+apm image prepare server --registry acme --dry-run
+apm image prepare server --registry acme --yes
+```
+
+Preparation imports the signed closure, performs physical staging, and indexes
+the authenticated receipt. It prints the exact staged `ImageGeneration` as JSON.
+A dry-run resolves the package without importing, staging, or writing image
+state. Preparation does not select the next boot or submit a rollout.
+
+Add `--qualified` to require explicit authenticated candidate health before
+staging for a later qualified rollout. This check does not itself qualify a
+rollout; subsequent operator-source admission still applies. Pending profile or
+image work must be recovered before preparing another candidate. Cancellation
+waits for immutable transfers to finish before physical writes; interrupted
+physical staging retains its intent for authenticated retry.
+
 ## Manage machine-wide packages
 
 Ordinary machine-wide packages are reconciled from an authoritative desired
 file. Create `desired.toml`:
 
 ```toml
-packages = ["nginx", "curl"]
+packages = ["tailscale"]
 ```
 
 Preview and apply the complete set:
@@ -106,9 +128,15 @@ metadata. When applying additions, reconciliation also attempts an update and
 falls back to cached metadata with a warning if that update fails. A change
 with no additions does not refresh metadata.
 
+Keep every explicit package you want in this file when adding a workload.
+Alternatively, [host policy](host-nix.md#understand-the-runtime-boundary) can
+select a package with `aos.apm.desiredPackages` and configure its native service
+in one generation, without a prior installation. Installing a payload alone
+does not substitute for reviewing and enabling its service configuration.
+
 The list is declarative. Explicit packages omitted from the next file are
 removed during reconciliation, including packages made unreachable by that
-change. To remove `nginx`, delete it from `packages` and run the same command
+change. To remove `tailscale`, delete it from `packages` and run the same command
 again. There is no `apm remove --system` command.
 
 The desired format can also carry package configuration and credential input.

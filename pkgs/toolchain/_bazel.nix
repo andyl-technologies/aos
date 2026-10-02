@@ -41,8 +41,10 @@
   version,
   srcHash,
   vendorDepsHash,
+  platformSupport,
   source ? null,
   update ? null,
+  qualification ? null,
   # Major version string for the version check test (e.g. "7.7", "8.6", "9.0")
   versionCheck ? builtins.substring 0 3 version,
 }: let
@@ -1378,7 +1380,8 @@ in
     passthru.sourcePythonRuntime = sourcePythonRuntime;
     passthru.sourceModules = sourceModules;
     pname = "bazel";
-    inherit version;
+    inherit platformSupport;
+    inherit version qualification;
     inherit update;
 
     # The binary is an ELF+zip self-extractor. Generic ELF mutation and

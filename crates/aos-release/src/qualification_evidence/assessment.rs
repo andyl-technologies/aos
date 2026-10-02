@@ -152,6 +152,12 @@ pub fn assess_observations(
         let stale = now.duration_since(finish)?.as_secs() > maximum_age;
         let mut passed = record.result == GateResult::Passed
             && observation.checks.values().all(|check| check.passed);
+        if let Some(matrix_passed) = super::validate_matrix_for_case(case, observation)? {
+            if (record.result == GateResult::Passed) != matrix_passed {
+                bail!("native matrix result differs from exact cell observations");
+            }
+            passed &= matrix_passed;
+        }
         validate_target_scope(case, observation)?;
         if case
             .target

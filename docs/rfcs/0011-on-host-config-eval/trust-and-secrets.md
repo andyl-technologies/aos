@@ -100,9 +100,9 @@ evaluated input set to the activation and quote evidence.
 ## Provisioning and host.nix authenticity
 
 `host.nix` is operator-supplied and per-host — an input to the trusted
-computation but not in the image. The `aos metadata` agent fetches its exact
-literal Nix bytes (or resolves a URL+hash transport pointer used only for
-provider size limits). Authentication is selected by image policy:
+computation but not in the image. The selected metadata provider fetches its
+exact literal Nix bytes (or resolves a URL+hash transport pointer used only
+for provider size limits). Authentication is selected by image policy:
 
 - **`platform` (default)** treats successful delivery through the detected
   cloud metadata service or deployment-owned config drive as authorization.
@@ -125,12 +125,13 @@ Signed-mode public anchors are therefore copied into the measured initrd.
 Public verification keys are safe to share; per-instance secret injection is
 neither necessary nor desirable.
 
-The restricted initrd evaluator and the full stage-2 evaluator consume the same
-accepted `host.nix` bytes carried through `/run` and confirm their recorded
-hash. On an unprovisioned machine, a platform authorization failure or a
-signed-mode missing/bad signature fails closed before disk mutation. After the
-GPT provenance record is committed, early metadata/eval failures warn and
-continue with the existing disk layout and last committed config generation.
+The common complete evaluator receives distinct frozen input sets for initrd
+and stage 2. Both sets contain the same accepted `host.nix` bytes carried
+through `/run` and confirm their recorded hash. On an unprovisioned machine, a
+platform authorization failure or a signed-mode missing/bad signature fails
+closed before disk mutation. After the GPT provenance record is committed,
+early metadata/eval failures warn and continue with the existing disk layout
+and last committed config generation.
 
 **Per-host config does not break attestation** — it breaks whole-image
 attestation (no single golden manifest hash fleet-wide), but not
@@ -187,7 +188,7 @@ cumulative PCR 15; quote covers PCR 7, 11, 12, 15):
       abi_hash       = <hash of the base-lib module API + module_abi>
     evaluator:
       store_path     = <store path of the eval binary>               # ⊂ measured UKI
-    config_modules:
+    package_modules:
       origins        = [<registry|image>, ...]  # aligned with module inputs
       registry       = <name>                   # when any origin is registry
       release_tag    = <semver>                  # verify_tag_chain target

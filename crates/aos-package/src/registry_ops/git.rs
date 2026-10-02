@@ -2,6 +2,7 @@
 
 use crate::registry::objectstore;
 use crate::registry_ops::images::receipts::persist_image_publication_receipt;
+
 use crate::registry_ops::provenance::staged::{
     staged_package_provenance_transparency_validation_needed,
     validate_staged_package_provenance_transparency_log,

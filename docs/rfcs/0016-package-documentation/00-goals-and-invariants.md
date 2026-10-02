@@ -54,22 +54,25 @@ between native SQL backends and Worker D1.
 
 ## Terminology
 
-**Documentation document**
-: The canonical JSON value describing one package version/platform's package,
-  options, runtime surface, integrity identity, and authored conceptual sections.
+**Package reference**
+: The canonical signed JSON value for one package version/platform. It retains
+  authored package metadata and the `PackageAbilityReference` derived from the
+  checked package fixed point. Option and method rows are disposable views
+  derived when read and are never stored inside the reference.
 
-**Documentation object**
+**Package reference object**
 : The content-addressed Nix store regular-file object whose bytes are the
-  canonical documentation document.
+  canonical package reference.
 
-**Documentation artifact reference**
-: Signed package metadata that binds a documentation object store path, NAR
+**Package reference artifact reference**
+: Signed package metadata that binds a package reference object store path, NAR
   identity, content digest, format, and limits to a platform entry.
 
 **Semantic schema digest**
-: A digest over the option paths, structured types, ownership and contribution
-  rules, visibility, availability, credential declarations, and runtime effects
-  that tools use as an interface identity. Editorial prose is excluded.
+: The package metadata digest over its configuration-independent semantic
+  fields. Ability semantics retain their checked manifest and package digests
+  inside the same signed reference. Editorial prose is excluded from the
+  semantic schema digest.
 
 **Search projection**
 : Disposable SQL rows derived deterministically from authenticated documents.
@@ -83,10 +86,12 @@ between native SQL backends and Worker D1.
 
 ### One authenticated authority
 
-For a selected `registry/package/version/platform`, all rendered documentation
-is derived from the documentation object named by that signed platform entry.
-Hub rows, static pages, browser caches, CLI caches, generated man pages, and LSP
-caches are discardable derivatives.
+For a selected `registry/package/version/platform`, authored package prose,
+metadata, and the checked ability reference come from the single package
+reference object named by that signed platform entry. Readers recompute option
+and method rows directly from its checked ability reference. Hub rows, rendered pages, browser
+caches, CLI caches, generated man pages, and LSP caches are discardable
+derivatives.
 
 ### Documentation never executes
 
@@ -115,9 +120,9 @@ produce a new documentation object and signed release metadata. It must not
 change the runtime payload root digest, configuration binding measurement,
 service unit fingerprint, restart decision, or module ABI.
 
-Changing a path, structured type, ownership rule, contribution boundary,
-availability constraint, credential contract, or declared activation effect
-does change the semantic schema digest and is visible to compare and tooling.
+Changing a path, structured type, contribution boundary, or provided/consumed
+ability semantic changes the corresponding checked identity and is visible to
+compare and tooling. Concrete activation remains a deployment-plan fact.
 
 ### Offline fidelity
 
@@ -142,6 +147,7 @@ allocation and streamed bytes are independently capped and hashed.
 
 ### Stable addressability
 
-Human routes may select mutable channels, but every response exposes its exact
-registry commit/release, package version/platform, store path, NAR hash, document
-digest, and semantic schema digest. Digest routes are immutable and cacheable.
+Human routes may select mutable channels, but every schema response exposes its
+exact registry commit/release, package version/platform, documentation store
+path and NAR hash, document and semantic digests, ability manifest digest, and
+ability package digest. Digest routes are immutable and cacheable.

@@ -4,14 +4,14 @@
 //! reads join the current signed tag and completed artifact snapshot, so an
 //! interrupted refresh cannot expose an unpublished catalog. JSON package
 //! projections retain the complete `PackageToml` schema, including historical
-//! descriptions and platform store identities. Configuration paths and search
-//! tokens are projected by the bounded documentation-tree index.
+//! descriptions and platform store identities. Native reference declarations
+//! and search tokens are retained separately by the native documentation index.
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use aos_registry_surface::manifest::PackageToml;
 use sha2::{Digest as _, Sha256};
 
-use super::{Database, IndexedPackageDocumentation};
+use super::Database;
 use crate::backend::Statement;
 
 /// One container index recorded by a signed release.
@@ -44,7 +44,6 @@ impl Database {
         source_commit: &str,
         packages: &[PackageToml],
         default_release: Option<&str>,
-        documents: &[IndexedPackageDocumentation],
     ) -> Result<()> {
         if let Some(version) = default_release {
             semver::Version::parse(version).context("invalid default browsing release")?;
@@ -57,7 +56,7 @@ impl Database {
                 .iter()
                 .flat_map(|package| &package.versions)
                 .flat_map(|version| version.platforms.values())
-                .filter(|platform| platform.documentation.is_some())
+                .filter(|platform| platform.module_documentation.is_some())
                 .count(),
         )?;
         let mut statements = vec![Statement::new(
@@ -82,12 +81,11 @@ impl Database {
             ]
             .to_vec(),
         )];
-        super::documentation_tree::extend_tree_projection(
-            &mut statements,
-            registry_id,
-            source_commit,
-            documents,
-        )?;
+        statements.push(Statement::new(
+            "DELETE FROM release_ability_graphs
+             WHERE registry_id = ?1 AND source_commit = ?2",
+            vals![registry_id, source_commit].to_vec(),
+        ));
         self.backend.batch(&statements).await?;
         Ok(())
     }
@@ -264,15 +262,15 @@ impl Database {
         &self,
         registry_id: i64,
     ) -> Result<bool> {
-        let missing = self.backend.query_opt(
-            "SELECT 1 FROM releases rel
+        let missing = self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM releases rel
              LEFT JOIN release_browse_catalogs catalog
                ON catalog.registry_id = rel.registry_id AND catalog.source_commit = rel.commit_oid
              LEFT JOIN release_browse_notes note
                ON note.registry_id = rel.registry_id AND note.tag_oid = rel.tag_oid
-             LEFT JOIN release_browse_tree_nodes node
-               ON node.registry_id = rel.registry_id AND node.source_commit = rel.commit_oid AND node.parent_key IS NULL
-             WHERE rel.registry_id = ?1 AND (catalog.source_commit IS NULL OR note.tag_oid IS NULL OR node.node_key IS NULL)
+             WHERE rel.registry_id = ?1 AND (catalog.source_commit IS NULL OR note.tag_oid IS NULL)
              UNION ALL
              SELECT 1 FROM registry_index current_index
              LEFT JOIN registry_public_catalog_heads head
@@ -284,9 +282,22 @@ impl Database {
                AND (head.registry_id IS NULL
                  OR (head.source_commit IS NOT NULL AND catalog.source_commit IS NULL))
              LIMIT 1",
-            &vals![registry_id],
-        ).await?;
-        Ok(missing.is_none())
+                &vals![registry_id],
+            )
+            .await?;
+        if missing.is_some() {
+            return Ok(false);
+        }
+        for release in self.list_releases(registry_id).await? {
+            if self
+                .native_documentation_at_release(registry_id, &release.semver)
+                .await
+                .is_err()
+            {
+                return Ok(false);
+            }
+        }
+        Ok(true)
     }
 
     /// Loads the complete package catalog for an exact published release.
@@ -406,17 +417,18 @@ mod tests {
             .unwrap();
         let released = vec![package("Published on a maintenance branch", "1.9.0")];
         let head = vec![package("Unpublished main changes", "99.0.0")];
-        db.retain_release_browse_catalog(registry, "branch-commit", &released, None, &[])
+        db.retain_release_browse_catalog(registry, "branch-commit", &released, None)
             .await
             .unwrap();
-        db.retain_release_browse_catalog(registry, "head-commit", &head, Some("1.0.0"), &[])
+        db.retain_release_browse_catalog(registry, "head-commit", &head, Some("1.0.0"))
             .await
             .unwrap();
-        assert!(db
-            .release_browse_packages(registry, "1.0.0")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.release_browse_packages(registry, "1.0.0")
+                .await
+                .unwrap()
+                .is_none()
+        );
         let snapshot = IndexSnapshot {
             commit: "head-commit".into(),
             public_catalog_commit: Some("branch-commit".into()),
@@ -438,7 +450,6 @@ mod tests {
                 manifest_digest: hex::encode(Sha256::digest(b"[]")),
                 artifacts: Vec::new(),
                 container_release: None,
-                documentation: Vec::new(),
             }],
             ..IndexSnapshot::default()
         };
@@ -485,18 +496,11 @@ mod tests {
             .register_registry("identical-release", &[], false)
             .await
             .unwrap();
-        db.retain_release_browse_catalog(twin, "branch-commit", &released, None, &[])
+        db.retain_release_browse_catalog(twin, "branch-commit", &released, None)
             .await
             .unwrap();
         db.apply_snapshot(twin, &snapshot).await.unwrap();
         for owner in [registry, twin] {
-            assert_eq!(
-                db.documentation_tree_commit(owner, "1.0.0")
-                    .await
-                    .unwrap()
-                    .as_deref(),
-                Some("branch-commit")
-            );
             db.apply_snapshot(owner, &snapshot).await.unwrap();
         }
         let published = db
@@ -519,27 +523,31 @@ mod tests {
                 .as_deref(),
             Some("1.0.0")
         );
-        assert!(db
-            .release_browse_packages(registry, "HEAD")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(db
-            .release_browse_packages(registry + 1, "1.0.0")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(!db
-            .release_browse_projection_complete(registry)
-            .await
-            .unwrap());
+        assert!(
+            db.release_browse_packages(registry, "HEAD")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.release_browse_packages(registry + 1, "1.0.0")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            !db.release_browse_projection_complete(registry)
+                .await
+                .unwrap()
+        );
         db.retain_release_notes(registry, "signed-tag", "Maintenance fixes")
             .await
             .unwrap();
-        assert!(db
-            .release_browse_projection_complete(registry)
-            .await
-            .unwrap());
+        assert!(
+            db.release_browse_projection_complete(registry)
+                .await
+                .unwrap()
+        );
         assert_eq!(
             db.release_browse_notes(registry, "1.0.0")
                 .await
@@ -554,7 +562,7 @@ mod tests {
 
         db.backend.execute("UPDATE release_browse_catalogs SET packages_json = '{}' WHERE registry_id = ?1 AND source_commit = 'branch-commit'", &vals![registry]).await.unwrap();
         assert!(db.release_browse_packages(registry, "1.0.0").await.is_err());
-        db.retain_release_browse_catalog(registry, "branch-commit", &released, None, &[])
+        db.retain_release_browse_catalog(registry, "branch-commit", &released, None)
             .await
             .unwrap();
         db.backend
@@ -564,20 +572,17 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(db
-            .release_browse_packages(registry, "1.0.0")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(db
-            .documentation_tree_commit(registry, "1.0.0")
-            .await
-            .unwrap()
-            .is_none());
-        assert!(db
-            .release_browse_notes(registry, "1.0.0")
-            .await
-            .unwrap()
-            .is_none());
+        assert!(
+            db.release_browse_packages(registry, "1.0.0")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            db.release_browse_notes(registry, "1.0.0")
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

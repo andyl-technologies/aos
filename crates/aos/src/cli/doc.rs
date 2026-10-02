@@ -1,4 +1,4 @@
-//! Resolves repository, installed-package, and explicit Hub documentation modes.
+//! Resolves repository, native runtime, installed-package, and Hub documentation modes.
 
 use anyhow::{Context, Result, ensure};
 use aos_package::DocumentationCommand;
@@ -16,7 +16,7 @@ impl Commands {
     /// Validates documentation selectors before repository or network access.
     ///
     /// Returns a package-manager command for installed or Hub documentation,
-    /// and `None` for repository documentation or another command.
+    /// and `None` for repository/native artifact documentation or another command.
     ///
     /// # Errors
     ///
@@ -35,10 +35,35 @@ impl Commands {
             token,
             version,
             platform,
+            format,
+            output,
         } = self
         else {
             return Ok(None);
         };
+        if source.as_deref() == Some("runtime") {
+            ensure!(
+                path.is_some(),
+                "aos docs runtime requires a document JSON path"
+            );
+            ensure!(
+                search.is_none()
+                    && list.is_none()
+                    && !rebuild
+                    && !system
+                    && hub.is_none()
+                    && registry.is_none()
+                    && token.is_none()
+                    && version.is_none()
+                    && platform.is_none(),
+                "runtime documentation accepts only a document path, --format, and --output"
+            );
+            return Ok(None);
+        }
+        ensure!(
+            format.is_none() && output.is_none(),
+            "--format and --output require aos docs runtime FILE"
+        );
         let source = match source.as_deref() {
             Some("package") => Source::Installed,
             Some("hub") => Source::Hub,

@@ -18,7 +18,7 @@
 ##! AOS-built tools — the same three steps, no network:
 ##!
 ##! 1. `cargo build -p aos-hub-worker --target wasm32-unknown-unknown
-##!    --release` with the workspace deps vendored offline by `fetchCargoDeps`.
+##!    --release` with the pinned workspace dependencies vendored offline.
 ##!    The `wasm32` std + `rust-lld` linker ship in `pkgs.rust` already.
 ##! 2. `wasm-bindgen --target bundler` (`pkgs.wasm-bindgen-cli`, version-locked
 ##!    to the crate's `wasm-bindgen` 0.2.125) generates `index_bg.js` +
@@ -64,7 +64,8 @@
   mkDerivation,
   mkCargoArtifacts,
   mkCargoDummySource,
-  fetchCargoVendor,
+  aosWorkspaceSliceFor,
+  aosWorkspaceVendor,
   wasm-bindgen-cli,
   nodejs,
   stdenv,
@@ -74,8 +75,6 @@
   cargoFeatures ? "",
 }: let
   version = "0.1.0";
-  repoRoot = ../..;
-  repoRootString = toString repoRoot;
 
   # Every generator and generated browser input is consumed on Linux even
   # when the final WebAssembly distribution is evaluated for Darwin.
@@ -136,38 +135,13 @@
   };
   mkHubDerivation = args: mkDerivation (args // nativeRustToolchainEnv);
 
-  # The Cargo workspace plus its generated API-manifest input are the source.
-  # `aos-proto-types` validates that manifest in its build script, so the Worker
-  # artifact must carry the same RFC subtree as the native Hub package.
-  src = builtins.path {
-    path = repoRoot;
-    name = "aos-hub-worker-workspace-src";
-    filter = path: _type: let
-      pathString = toString path;
-      base = baseNameOf path;
-    in
-      base
-      != "target"
-      && base != ".git"
-      && (
-        pathString
-        == repoRootString
-        || lib.hasPrefix "${repoRootString}/crates" pathString
-        || pathString == "${repoRootString}/docs"
-        || pathString == "${repoRootString}/docs/rfcs"
-        || lib.hasPrefix "${repoRootString}/docs/rfcs/0012-hub-surface-topology" pathString
-      );
-  };
+  cargoSelector = "-p aos-hub-worker";
+  workspaceSlice = aosWorkspaceSliceFor {cargoFlags = cargoSelector;};
+  src = workspaceSlice.src;
 
-  # Bundle with the AOS-built native executable, independent of Wrangler and
-  # its local workerd runtime.
+  # Bundle with the AOS-built native executable.
   esbuildBin = "${buildEsbuild}/bin/esbuild";
-  cargoDeps = fetchCargoVendor {
-    inherit src;
-    name = "aos-vendor-${version}";
-    sourceRoot = "source/crates";
-    hash = "sha256-6FU3M+iwF2iVd+nl7JvCC6r2oGz4Yq1PWOqBC2nBqDQ=";
-  };
+  cargoDeps = aosWorkspaceVendor;
   qualifiedFeatures =
     if cargoFeatures == ""
     then ""
@@ -196,7 +170,7 @@
       cargoRoot = "crates";
     };
     cargoRoot = "crates";
-    cargoFlags = "-p aos-hub-worker --target wasm32-unknown-unknown ${lib.optionalString (qualifiedFeatures != "") "--features ${qualifiedFeatures}"}";
+    cargoFlags = "${cargoSelector} --target wasm32-unknown-unknown ${lib.optionalString (qualifiedFeatures != "") "--features ${qualifiedFeatures}"}";
     cargoArtifactContract = {
       family = "aos-hub-worker-wasm-release";
       target = "wasm32-unknown-unknown";
@@ -207,7 +181,79 @@
   };
 in
   mkHubDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "aos-hub-worker-dist";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The shim references the module, the module is WebAssembly, and required static assets exist.";
+        "files" = {};
+        "input" = "The Worker shim, WebAssembly module, and static-asset tree.";
+        "operation" = "Inspect the deployment surface and validate its binary module.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib\nroot = pathlib.Path(\"@out@\")\nshim = (root / \"shim.mjs\").read_text()\nwasm = (root / \"index.wasm\").read_bytes()\nassets = root / \"assets/_assets\"\nassert \"index.wasm\" in shim and wasm.startswith(b\"\\\\0asm\")\nassert all((assets / name).stat().st_size > 0 for name in [\"style.css\", \"app.js\", \"theme.js\"])\nprint(\"aos-hub-worker-dist data passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "aos-hub-worker-dist data passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The immutable Worker bundle rejects the undeclared asset.";
+        "files" = {};
+        "input" = "A request for an undeclared Worker source map.";
+        "operation" = "Resolve the absent source map in the deployment surface.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/shim.mjs.map\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"aos-hub-worker-dist rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "aos-hub-worker-dist rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version src;
 
     # The wasm32 toolchain (rustc + cargo + the wasm32 std + rust-lld), the
@@ -239,8 +285,13 @@ in
           mkdir -p "$CARGO_HOME" .cargo
           # The lockfile-aware vendor output includes replacement entries for
           # both crates.io and pinned Git sources.
+          # Retain the workspace's wasm target flags alongside that source map.
+          # Redirection preserves the writable copy's mode for the append below.
+          cat ${../../crates/.cargo/config.toml} > .cargo/config.toml
+          printf '\n' >> .cargo/config.toml
           sed "s|@vendor@|$cargoDeps|g" "$cargoDeps/.cargo/config.toml" \
-            > .cargo/config.toml
+            >> .cargo/config.toml
+          ${workspaceSlice.configureWorkspace}
           mkdir -p target
           tar xf ${cargoArtifacts}/target.tar -C target
           chmod -R u+w target
@@ -308,7 +359,7 @@ in
           # silently dropped (the cfg never activates), so the qualified form is
           # the reliable one.
           cargo build \
-            -p aos-hub-worker \
+            ${cargoSelector} \
             --target wasm32-unknown-unknown \
             --release \
             --frozen \

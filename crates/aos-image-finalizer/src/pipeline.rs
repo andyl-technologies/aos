@@ -163,6 +163,16 @@ pub async fn finalize_image_set(
     let artifacts_root = final_root.join("artifacts");
     fs::create_dir(&final_root)?;
     fs::create_dir(&artifacts_root)?;
+    // Both slot identities need their authenticated PCR evidence during OTA
+    // staging, even though the initial disk boots only slot A.
+    for (name, source) in [
+        ("uki-a.efi.measurement", &efi.measurement_a.measurement),
+        ("uki-a.efi.measurement.sig", &efi.measurement_a.signature),
+        ("uki-b.efi.measurement", &efi.measurement_b.measurement),
+        ("uki-b.efi.measurement.sig", &efi.measurement_b.signature),
+    ] {
+        fs::copy(source, artifacts_root.join(name))?;
+    }
     let logical_digest = formats.logical_disk_sha256;
     let mut artifacts = Vec::new();
     for (id, kind, source, name, reconstruction) in [
@@ -252,6 +262,7 @@ pub async fn finalize_image_set(
         artifacts.push(FinalizedImageArtifactV1 {
             id: id.to_owned(),
             kind,
+            publication: kind.publication(),
             path: relative,
             size_bytes,
             sha256,

@@ -5,6 +5,7 @@
 ##! headless-only packages (e.g. OpenJDK) can compile their AWT code
 ##! without pulling in a real X server or libxcb.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -83,7 +84,67 @@
   };
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "xorg-stubs";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The header contract compiles, the stub library links, and the program prints 1.";
+        "files" = {
+          "valid.c" = "#include <X11/Xlib.h>\n#include <stdio.h>\n\nint main(void) {\n    printf(\"%d\\n\", None == 0L);\n    return 0;\n}\n";
+        };
+        "input" = "A C translation unit using the X11 None constant and the headless Xlib stub.";
+        "operation" = "Compile, link, and execute the translation unit against the packaged headers and library.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\ncompile = subprocess.run([\"@cc@\", \"-I@out@/include\", \"valid.c\", \"-L@out@/lib\", \"-Wl,-rpath,@out@/lib\", \"-lX11\", \"-o\", \"valid\"], capture_output=True)\nassert compile.returncode == 0, compile.stderr\nresult = subprocess.run([\"@work@/primary/valid\"], capture_output=True, text=True)\nassert result.returncode == 0 and result.stdout == \"1\\n\"\nprint(\"xorg-stubs operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "xorg-stubs operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The compiler rejects the unsupported Xcursor header.";
+        "files" = {
+          "invalid.c" = "#include <X11/Xcursor/Xcursor.h>\nint main(void) { return 0; }\n";
+        };
+        "input" = "A translation unit requesting the deliberately unprovided Xcursor API.";
+        "operation" = "Compile the source against the bounded headless header set.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport pathlib, subprocess\nresult = subprocess.run([\"@cc@\", \"-I@out@/include\", \"invalid.c\", \"-o\", \"invalid\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"Xcursor.h\" in result.stderr\nassert not pathlib.Path(\"invalid\").exists()\n\nsys.stderr.write(\"xorg-stubs rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "xorg-stubs rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     version = "2024.1";
 
     # Dummy src — we use the fetchurl results directly in phases

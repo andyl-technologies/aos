@@ -14,6 +14,7 @@ Commands:
   build <package|image|container|check|build|eval> <name> [Nix flags]
   run <package|image|container> <name> [arguments]
   run <aos|apm|apr> [arguments]  Build or fetch an ordinary packaged CLI, then run it
+  cargo <arguments>         Run Cargo in the current AOS-built dev shell
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
   release <arguments>       Run aos maintain release without shared caches
@@ -26,13 +27,16 @@ Commands:
   completion bash           Print Bash completion setup
   help
 
-Target names come from 'list'; a filter narrows the output by name. 'build'
+Target names come from 'list'; check listing starts at top-level names and a
+trailing dot descends into a check group (for example, 'list check build.'). 'build'
 accepts ordinary nix-build flags after the target, such as --no-out-link or
 --dry-run. 'all packages' builds the package aggregate; 'all builds' also
 includes images, containers, and system roots. 'all ci' runs formatting,
 evaluation, broad builds, and checks, and can take a long time. Running aos, apm,
 or apr uses ordinary production derivations without shared compiler caches.
 This also applies to 'run package aos', 'run package apm', and 'run package apr'.
+Use 'aos-dev cargo test --manifest-path crates/Cargo.toml ...' for incremental
+Rust checks without evaluating unrelated flake package outputs.
 
 Builds use the production experimental binary cache and its dedicated Nix signing
 key. Missing binaries build from source; failed substitutions also fall back

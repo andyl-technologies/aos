@@ -107,19 +107,34 @@ pub struct VersionEntry {
     pub platforms: HashMap<String, PlatformEntry>,
 }
 
+/// Authenticates one explicitly selectable named package output.
+///
+/// NAR identity and dependency edges remain authoritative in the signed store graph.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputMeta {
+    /// Exact immutable payload root selected by this output name.
+    pub store_path: String,
+    /// Native envelope whose package path selects this output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<NativeArtifactMeta>,
+    /// Output-specific root measurement and signed build provenance.
+    #[serde(default, skip_serializing_if = "AttestationMeta::is_empty")]
+    pub attestation: AttestationMeta,
+}
+
 /// A `[versions.platforms.<platform>]` artifact entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PlatformEntry {
     /// Absolute store path of the installable `out` output.
     pub store_path: String,
-    /// Additional retained derivation outputs, keyed by Nix output name.
+    /// Available derivation outputs, keyed by Nix output name.
     ///
-    /// These paths are authenticated release and static-cache roots. Package
-    /// installation continues to select [`Self::store_path`]; build consumers
-    /// may resolve development and tool outputs explicitly from this map.
+    /// Publication authenticates every output independently. Installation
+    /// retains only selected payloads and outputs referenced by the native graph.
     #[serde(default)]
-    pub named_outputs: BTreeMap<String, String>,
+    pub named_outputs: BTreeMap<String, OutputMeta>,
     /// NAR hash of the output (`sha256:...`).
     ///
     /// Legacy (pre-RFC-0005) field: newer registries publish the hash in
@@ -138,8 +153,8 @@ pub struct PlatformEntry {
     pub source_drv: String,
     /// NAR hash of the source derivation closure.
     pub source_nar_hash: String,
-    /// Store path hashes of direct runtime references, or a structural
-    /// RFC-0001 gate table for permission-bearing packages.
+    /// Store path hashes of direct runtime references, or a structural feature
+    /// gate for authenticated package metadata.
     #[serde(default)]
     pub references: ReferenceField,
     /// Pre-compiled images (only for sysroot packages).
@@ -151,18 +166,6 @@ pub struct PlatformEntry {
     /// Feature flags a consumer must understand before installing this entry.
     #[serde(default, rename = "requires-features")]
     pub requires_features: Vec<String>,
-    /// Optional RFC-0001 service exposure metadata.
-    #[serde(default)]
-    pub expose: Option<ExposeMeta>,
-    /// Store artifact carrying rendered RFC-0001 unit files and manifest.
-    #[serde(default)]
-    pub expose_artifact: Option<ExposeArtifactMeta>,
-    /// Signed RFC-0001 permission manifest.
-    #[serde(default)]
-    pub permissions: PermissionsMeta,
-    /// Signed fleet BPF-LSM policy metadata.
-    #[serde(default)]
-    pub bpf_lsm: Option<BpfLsmPolicyMeta>,
     /// Digest used as the package-root input to TPM measurements.
     #[serde(default)]
     pub root_digest: Option<String>,
@@ -178,12 +181,24 @@ pub struct PlatformEntry {
     /// Golden package measurement tuple.
     #[serde(default)]
     pub measurement: Option<String>,
-    /// Configuration-only module output and its declared interface.
-    #[serde(default)]
-    pub config_module: Option<ConfigModuleMeta>,
-    /// Canonical RFC-0016 package documentation store object.
-    #[serde(default)]
-    pub documentation: Option<DocumentationArtifactMeta>,
+    /// Native package deployment envelope retained by this release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deployment: Option<NativeArtifactMeta>,
+    /// Retains the generated compatibility requirement for this package release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version_requirement: Option<String>,
+    /// Host operating system release compatibility requirement.
+    #[serde(rename = "osVersion", default, skip_serializing_if = "Option::is_none")]
+    pub os_version: Option<String>,
+    /// Declaration-derived exact or ranged module dependency requests.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_dependencies: Vec<crate::native_dependencies::ModuleDependency>,
+    /// Module-generated options and operation reference retained by this release.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub module_documentation: Option<NativeArtifactMeta>,
+    /// Authenticated native package qualification companion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qualification: Option<NativeArtifactMeta>,
 }
 
 impl PlatformEntry {
@@ -201,10 +216,10 @@ impl PlatformEntry {
 }
 
 /// Store path hashes of a platform entry's direct runtime references, or a
-/// structural RFC-0001 gate table for permission-bearing packages.
+/// structural feature gate for authenticated package metadata.
 ///
 /// Old clients that expected a plain list reject the structural gate form,
-/// which is the intended fail-closed behavior for permission-bearing packages.
+/// which is the intended fail-closed behavior for gated metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ReferenceField {
@@ -251,7 +266,7 @@ impl ReferenceField {
     }
 }
 
-/// A structural RFC-0001 references gate table.
+/// A structural references feature-gate table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReferenceGate {
@@ -266,142 +281,7 @@ pub struct ReferenceGate {
     pub requires_features: Vec<String>,
 }
 
-/// An SBAT component/generation pair from a UKI's PE `.sbat` section
-/// (RFC-0006).
-///
-/// Each line of the `.sbat` CSV names a boot component and the *generation*
-/// number an `sbat` revocation compares against; the registry records these so
-/// the fleet can enforce a per-component revocation floor at download time.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SbatEntry {
-    /// SBAT component identifier (the first CSV column, e.g. `aos`).
-    pub component: String,
-    /// SBAT generation number; a higher number supersedes a lower one.
-    pub generation: u32,
-}
-
-/// Stable A/B slot named by a UKI carried in a sysroot image artifact.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum UkiSlot {
-    /// The UKI whose measured command line selects `root-a`.
-    A,
-    /// The UKI whose measured command line selects `root-b`.
-    B,
-}
-
-/// Slot-specific Secure Boot and measured-boot facts for one UKI.
-///
-/// A/B UKIs have different measured command lines because each names a
-/// different root and verity partition. Consequently their PCR-11 values are
-/// distinct even when they carry identical kernel, initrd, and root bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct SysrootUkiEntry {
-    /// Root slot selected by this UKI's measured command line.
-    pub slot: UkiSlot,
-    /// Relative path to the UKI inside the image store artifact.
-    pub path: String,
-    /// Lowercase hex SHA-256 of the Authenticode signer leaf certificate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sb_signer_cert_sha256: Option<String>,
-    /// SBAT component/generation pairs read from this UKI's `.sbat` section.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sbat: Vec<SbatEntry>,
-    /// Predicted PCR-11 for this exact UKI's measured PE sections.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_pcr11: Option<String>,
-}
-
-/// Signed, uncounted recovery UKI paired with one immutable A/B slot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecoveryUkiEntry {
-    /// Normal slot whose update transaction owns this recovery copy.
-    pub copy: UkiSlot,
-    /// Relative recovery UKI path inside the image store artifact.
-    pub path: String,
-    /// Relative Type-1 loader-entry path inside the image store artifact.
-    pub entry_path: String,
-    /// Exact recovery UKI byte size authenticated by the release catalog.
-    pub byte_size: u64,
-    /// Lowercase hex SHA-256 of the recovery UKI bytes.
-    pub sha256: String,
-    /// Signed release identity carried by the recovery UKI.
-    pub release: String,
-    /// Recovery interface and artifact compatibility ABI.
-    pub recovery_abi: u32,
-    /// Lowercase hex SHA-256 of the Authenticode signer leaf certificate.
-    pub sb_signer_cert_sha256: String,
-    /// SBAT component/generation pairs read from this recovery UKI.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sbat: Vec<SbatEntry>,
-}
-
-/// Closed component identifiers in an authenticated offline recovery bundle.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RecoveryBundleComponentId {
-    /// Immutable root filesystem bytes.
-    RootImage,
-    /// dm-verity hash-tree bytes.
-    RootVerity,
-    /// Canonical text dm-verity root hash.
-    RootHash,
-    /// Slot-A normal UKI.
-    NormalUkiA,
-    /// Slot-B normal UKI.
-    NormalUkiB,
-    /// Recovery copy A UKI.
-    RecoveryUkiA,
-    /// Recovery copy B UKI.
-    RecoveryUkiB,
-    /// Recovery copy A Type-1 loader entry.
-    RecoveryEntryA,
-    /// Recovery copy B Type-1 loader entry.
-    RecoveryEntryB,
-    /// Canonical public image metadata.
-    ImageMetadata,
-}
-
-/// One bounded regular-file component covered by a recovery bundle manifest.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecoveryBundleComponent {
-    /// Path-free closed identifier interpreted by recovery code.
-    pub id: RecoveryBundleComponentId,
-    /// Canonical relative source filename inside the bundle directory.
-    pub path: String,
-    /// Exact regular-file byte size.
-    pub byte_size: u64,
-    /// Lowercase hexadecimal SHA-256 of the complete file.
-    pub sha256: String,
-}
-
-/// Versioned manifest authenticated by the signed system-image catalog.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecoveryBundleManifest {
-    /// Exact recovery bundle schema identifier.
-    pub schema: String,
-    /// Signed system image release.
-    pub release: String,
-    /// Target CPU architecture.
-    pub architecture: String,
-    /// Target AOS platform identifier.
-    pub platform: String,
-    /// Module schema ABI required by the restored image.
-    pub module_abi: u32,
-    /// Recovery interface ABI required to interpret the bundle.
-    pub recovery_abi: u32,
-    /// Complete, duplicate-free closed component set.
-    pub components: Vec<RecoveryBundleComponent>,
-}
-
 /// A pre-compiled image entry within a platform entry.
-///
-/// The trailing Secure Boot fields (RFC-0006) are populated only for signed
-/// UKIs/images and are optional for unsigned publishes.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ImageEntry {
@@ -423,36 +303,6 @@ pub struct ImageEntry {
         skip_serializing_if = "ImageDelivery::is_store_only"
     )]
     pub delivery: ImageDelivery,
-    /// Lowercase hex SHA-256 of the signer leaf cert, when signed.
-    #[serde(default)]
-    pub sb_signer_cert_sha256: Option<String>,
-    /// SBAT component/generation pairs from the image's `.sbat` section.
-    #[serde(default)]
-    pub sbat: Vec<SbatEntry>,
-    /// Predicted PCR-11 for the image's UKI, when measured.
-    #[serde(default)]
-    pub expected_pcr11: Option<String>,
-    /// Slot-specific UKI facts for an A/B image payload.
-    #[serde(default)]
-    pub ukis: Vec<SysrootUkiEntry>,
-    /// Slot-paired signed recovery UKIs carried by an A/B image payload.
-    #[serde(default)]
-    pub recovery_ukis: Vec<RecoveryUkiEntry>,
-    /// Versioned authenticated manifest for bounded offline restoration.
-    #[serde(default)]
-    pub recovery_bundle: Option<RecoveryBundleManifest>,
-    /// Relative path inside `store_path` to the root filesystem image.
-    #[serde(default)]
-    pub root_image: Option<String>,
-    /// Relative path inside `store_path` to the separate dm-verity hash tree.
-    #[serde(default)]
-    pub root_verity: Option<String>,
-    /// dm-verity root hash for `root_image`.
-    #[serde(default)]
-    pub root_hash: Option<String>,
-    /// Relative path inside `store_path` to the PKCS#7 root-hash signature.
-    #[serde(default)]
-    pub root_hash_sig: Option<String>,
 }
 
 impl ImageEntry {
@@ -475,18 +325,6 @@ impl ImageEntry {
             "legacy store-only image has no direct-delivery contract"
         );
         delivery.validate(&self.format, release, platform)?;
-        anyhow::ensure!(
-            self.sb_signer_cert_sha256 == delivery.uki.signer_cert_sha256,
-            "top-level and delivery UKI signer facts disagree"
-        );
-        anyhow::ensure!(
-            self.sbat == delivery.uki.sbat,
-            "top-level and delivery SBAT facts disagree"
-        );
-        anyhow::ensure!(
-            self.expected_pcr11 == delivery.uki.expected_pcr11,
-            "top-level and delivery PCR-11 facts disagree"
-        );
         Ok(())
     }
 }
@@ -512,8 +350,6 @@ pub struct ImageDelivery {
     pub logical_image_id: String,
     /// SHA-256 of the canonical raw logical disk shared by all encodings.
     pub logical_disk_sha256: String,
-    /// SHA-256 of the root filesystem payload embedded in the logical disk.
-    pub rootfs_sha256: String,
     /// Exact useful filename assigned when the restored store output is copied.
     pub filename: String,
     /// Legacy content-addressed object key for direct disk bytes.
@@ -529,17 +365,8 @@ pub struct ImageDelivery {
     pub sha256: String,
     /// End-user targets compatible with this image encoding.
     pub compatible_targets: Vec<ImageTarget>,
-    /// Immutable identity of the UKI embedded in this logical disk.
-    pub uki: ImageUkiIdentity,
-    /// Separately content-bound canonical producer metadata.
-    pub image_info: ImageInfoReference,
-    /// Store-backed directory carrying artifacts needed for an in-place A/B update.
-    ///
-    /// This is distinct from the regular-file disk output in the containing
-    /// [`SysrootImageEntry`]. It contains `root.img`, dm-verity metadata, and
-    /// the slot-specific UKIs authenticated by that entry.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub update_payload: Option<ImageStoreReference>,
+    /// Provider-owned boot artifact contract and immutable artifact location.
+    pub artifact_contract: ImageArtifactContractReference,
 }
 
 impl ImageDelivery {
@@ -556,7 +383,6 @@ impl ImageDelivery {
             architecture: String::new(),
             logical_image_id: String::new(),
             logical_disk_sha256: String::new(),
-            rootfs_sha256: String::new(),
             filename: String::new(),
             object_key: String::new(),
             media_type: String::new(),
@@ -564,28 +390,7 @@ impl ImageDelivery {
             byte_size: 0,
             sha256: String::new(),
             compatible_targets: Vec::new(),
-            uki: ImageUkiIdentity {
-                filename: String::new(),
-                esp_path: String::new(),
-                byte_size: 0,
-                sha256: String::new(),
-                verification: ImageVerificationState::Unsigned,
-                signer_cert_sha256: None,
-                sbat: Vec::new(),
-                measured: false,
-                expected_pcr11: None,
-            },
-            image_info: ImageInfoReference {
-                filename: String::new(),
-                object_key: String::new(),
-                store_path: String::new(),
-                nar_hash: String::new(),
-                nar_size: 0,
-                media_type: String::new(),
-                byte_size: 0,
-                sha256: String::new(),
-            },
-            update_payload: None,
+            artifact_contract: ImageArtifactContractReference::empty(),
         }
     }
 
@@ -636,7 +441,6 @@ impl ImageDelivery {
         validate_image_filename(&self.filename)?;
         validate_sha256(&self.logical_image_id, "logical image")?;
         validate_sha256(&self.logical_disk_sha256, "logical disk")?;
-        validate_sha256(&self.rootfs_sha256, "root filesystem")?;
         validate_sha256(&self.sha256, "image")?;
         ensure!(self.byte_size > 0, "image byte size must be non-zero");
         if self.schema_version == 1 {
@@ -692,15 +496,63 @@ impl ImageDelivery {
             self.compatible_targets.as_slice() == targets,
             "image compatible targets do not match format"
         );
-        self.uki.validate()?;
-        self.image_info
+        self.artifact_contract
             .validate(self.schema_version, &self.sha256)?;
-        if let Some(payload) = &self.update_payload {
-            ensure!(
-                self.schema_version == 2,
-                "update payload must use store-backed delivery"
+        Ok(())
+    }
+}
+
+/// Opaque provider-owned contract for the boot artifacts carried by an image.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImageArtifactContractReference {
+    /// Provider-owned schema identifier used to select a compatible consumer.
+    pub schema: String,
+    /// Immutable contract document containing provider-specific artifact facts.
+    pub document: ImageArtifactContractDocumentReference,
+    /// Store-backed artifact set interpreted by the selected provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifacts: Option<ImageStoreReference>,
+}
+
+impl ImageArtifactContractReference {
+    fn empty() -> Self {
+        Self {
+            schema: String::new(),
+            document: ImageArtifactContractDocumentReference {
+                filename: String::new(),
+                object_key: String::new(),
+                store_path: String::new(),
+                nar_hash: String::new(),
+                nar_size: 0,
+                media_type: String::new(),
+                byte_size: 0,
+                sha256: String::new(),
+            },
+            artifacts: None,
+        }
+    }
+
+    fn validate(&self, delivery_schema: u32, image_sha256: &str) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.schema.is_empty()
+                && self.schema.len() <= 128
+                && self.schema.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b'/')
+                }),
+            "image artifact contract schema is not a bounded portable identifier"
+        );
+        self.document.validate(delivery_schema, image_sha256)?;
+        if delivery_schema == 2 {
+            self.artifacts
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("store-backed image lacks an artifact set"))?
+                .validate("image artifact contract")?;
+        } else {
+            anyhow::ensure!(
+                self.artifacts.is_none(),
+                "direct image contract must not declare a store-backed artifact set"
             );
-            payload.validate("image update payload")?;
         }
         Ok(())
     }
@@ -734,105 +586,6 @@ impl ImageStoreReference {
     }
 }
 
-/// Immutable boot payload identity shared by all encodings of one image.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ImageUkiIdentity {
-    /// Portable basename of the UKI file.
-    pub filename: String,
-    /// Portable relative path at which the UKI is installed in the ESP.
-    pub esp_path: String,
-    /// Exact UKI byte length.
-    pub byte_size: u64,
-    /// Lowercase hexadecimal SHA-256 of the UKI bytes.
-    pub sha256: String,
-    /// Secure Boot verification state, separate from registry release trust.
-    pub verification: ImageVerificationState,
-    /// Lowercase hexadecimal SHA-256 of the Authenticode signer certificate.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub signer_cert_sha256: Option<String>,
-    /// SBAT component generations extracted from the exact embedded UKI.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sbat: Vec<SbatEntry>,
-    /// Whether the UKI declares measured-boot policy.
-    #[serde(default)]
-    pub measured: bool,
-    /// Predicted PCR-11 for the exact embedded UKI when measured boot is enabled.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_pcr11: Option<String>,
-}
-
-impl ImageUkiIdentity {
-    fn validate(&self) -> anyhow::Result<()> {
-        validate_image_filename(&self.filename)?;
-        anyhow::ensure!(
-            self.filename.ends_with(".efi"),
-            "UKI filename must end in .efi"
-        );
-        anyhow::ensure!(self.byte_size > 0, "UKI byte size must be non-zero");
-        validate_sha256(&self.sha256, "UKI")?;
-        validate_portable_image_path(&self.esp_path, "UKI ESP path")?;
-        anyhow::ensure!(
-            self.esp_path.ends_with(&format!("/{}", self.filename)),
-            "UKI ESP path does not end in its filename"
-        );
-        match self.verification {
-            ImageVerificationState::Unsigned => {
-                anyhow::ensure!(
-                    self.signer_cert_sha256.is_none() && self.sbat.is_empty(),
-                    "unsigned UKI must not carry signer or SBAT facts"
-                );
-            }
-            ImageVerificationState::SignedUnverified | ImageVerificationState::PolicyVerified => {
-                let signer = self
-                    .signer_cert_sha256
-                    .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("signed UKI must carry a signer digest"))?;
-                validate_sha256(signer, "UKI signer certificate")?;
-                anyhow::ensure!(
-                    !self.sbat.is_empty(),
-                    "signed UKI must carry SBAT generations"
-                );
-                let mut components = HashSet::new();
-                anyhow::ensure!(
-                    self.sbat.iter().all(|entry| {
-                        !entry.component.is_empty()
-                            && entry.component.is_ascii()
-                            && entry.generation > 0
-                            && components.insert(entry.component.as_str())
-                    }),
-                    "UKI SBAT components must be unique, non-empty ASCII with non-zero generations"
-                );
-            }
-        }
-        if self.measured {
-            let pcr = self
-                .expected_pcr11
-                .as_deref()
-                .ok_or_else(|| anyhow::anyhow!("measured UKI must carry expected PCR-11"))?;
-            validate_sha256(pcr, "UKI expected PCR-11")?;
-        } else {
-            anyhow::ensure!(
-                self.expected_pcr11.is_none(),
-                "unmeasured UKI must not carry expected PCR-11"
-            );
-        }
-        Ok(())
-    }
-}
-
-/// Verification state of an image's boot payload.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ImageVerificationState {
-    /// The UKI carries no Authenticode signature.
-    Unsigned,
-    /// The UKI is signed, but no committed active-certificate policy verified it.
-    SignedUnverified,
-    /// The UKI was verified against the committed active-certificate policy.
-    PolicyVerified,
-}
-
 /// Compression applied to encoded disk-image bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -859,10 +612,10 @@ pub enum ImageTarget {
     HyperV,
 }
 
-/// Content-bound reference to the producer's `image-info.json`.
+/// Content-bound reference to a provider-owned image artifact contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct ImageInfoReference {
+pub struct ImageArtifactContractDocumentReference {
     /// Exact metadata filename.
     pub filename: String,
     /// Legacy content-addressed object key for direct metadata bytes.
@@ -871,10 +624,10 @@ pub struct ImageInfoReference {
     /// Canonical Nix store path containing the metadata as one regular file.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub store_path: String,
-    /// Signed NAR hash of [`ImageInfoReference::store_path`].
+    /// Signed NAR hash of [`ImageArtifactContractDocumentReference::store_path`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub nar_hash: String,
-    /// Exact uncompressed NAR size of [`ImageInfoReference::store_path`].
+    /// Exact uncompressed NAR size of [`ImageArtifactContractDocumentReference::store_path`].
     #[serde(default, skip_serializing_if = "is_zero")]
     pub nar_size: u64,
     /// Media type of the metadata document.
@@ -885,39 +638,54 @@ pub struct ImageInfoReference {
     pub sha256: String,
 }
 
-impl ImageInfoReference {
+impl ImageArtifactContractDocumentReference {
     fn validate(&self, schema_version: u32, image_sha256: &str) -> anyhow::Result<()> {
         use anyhow::ensure;
 
+        validate_image_filename(&self.filename)?;
         ensure!(
-            self.filename == "image-info.json",
-            "invalid image-info filename"
+            !self.media_type.is_empty()
+                && self.media_type.len() <= 128
+                && self.media_type.is_ascii()
+                && self.media_type.contains('/')
+                && !self
+                    .media_type
+                    .bytes()
+                    .any(|byte| byte.is_ascii_whitespace()),
+            "invalid image artifact contract media type"
         );
         ensure!(
-            self.media_type == "application/vnd.aos.image-info+json",
-            "invalid image-info media type"
+            self.byte_size > 0,
+            "image artifact contract byte size must be non-zero"
         );
-        ensure!(self.byte_size > 0, "image-info byte size must be non-zero");
-        validate_sha256(&self.sha256, "image-info")?;
+        validate_sha256(&self.sha256, "image artifact contract")?;
         if schema_version == 1 {
             ensure!(
-                self.object_key == immutable_image_info_object_key(image_sha256, &self.sha256),
-                "image-info object key is not the canonical content-addressed key"
+                self.object_key
+                    == immutable_image_contract_object_key(
+                        image_sha256,
+                        &self.sha256,
+                        &self.filename,
+                    ),
+                "image artifact contract object key is not canonical"
             );
             ensure!(
                 self.store_path.is_empty() && self.nar_hash.is_empty() && self.nar_size == 0,
-                "legacy direct image-info must not declare store delivery"
+                "direct image artifact contract must not declare store delivery"
             );
         } else {
             ensure!(
                 self.object_key.is_empty(),
-                "store-backed image-info must not declare a direct object key"
+                "store-backed image artifact contract must not declare a direct object key"
             );
             crate::store::store_path_hash(&self.store_path)
-                .context("validating image-info store path")?;
-            ensure!(self.nar_size > 0, "image-info NAR size must be non-zero");
+                .context("validating image artifact contract store path")?;
+            ensure!(
+                self.nar_size > 0,
+                "image artifact contract NAR size must be non-zero"
+            );
             crate::store::NarBytes::from_hash(&self.nar_hash, self.nar_size)
-                .context("validating image-info NAR identity")?;
+                .context("validating image artifact contract NAR identity")?;
         }
         Ok(())
     }
@@ -928,9 +696,43 @@ pub fn immutable_image_object_key(sha256: &str, filename: &str) -> String {
     format!("images/sha256/{sha256}/{filename}")
 }
 
-/// Returns the canonical immutable object key for an image metadata document.
-pub fn immutable_image_info_object_key(image_sha256: &str, info_sha256: &str) -> String {
-    format!("images/sha256/{image_sha256}/metadata/{info_sha256}/image-info.json")
+/// Returns the canonical immutable object key for an image artifact contract.
+pub fn immutable_image_contract_object_key(
+    image_sha256: &str,
+    contract_sha256: &str,
+    filename: &str,
+) -> String {
+    format!("images/sha256/{image_sha256}/contracts/{contract_sha256}/{filename}")
+}
+
+/// Returns the content digest encoded by a canonical immutable image object key.
+///
+/// Disk keys encode the disk digest. Contract keys encode both the parent disk
+/// digest and the contract digest, and return the latter because it authenticates
+/// the bytes stored at that key.
+///
+/// # Errors
+///
+/// Returns an error when an image key has a non-canonical shape, digest, or
+/// filename.
+pub fn immutable_image_object_sha256(object_key: &str) -> anyhow::Result<Option<String>> {
+    let Some(rest) = object_key.strip_prefix("images/sha256/") else {
+        return Ok(None);
+    };
+    let parts = rest.split('/').collect::<Vec<_>>();
+    let (image_sha256, content_sha256, filename) = match parts.as_slice() {
+        [image_sha256, filename] => (*image_sha256, *image_sha256, *filename),
+        [image_sha256, "contracts", contract_sha256, filename] => {
+            (*image_sha256, *contract_sha256, *filename)
+        }
+        _ => anyhow::bail!("non-canonical immutable image object key '{object_key}'"),
+    };
+
+    validate_sha256(image_sha256, "image object")?;
+    validate_sha256(content_sha256, "image object content")?;
+    validate_image_filename(filename)?;
+
+    Ok(Some(content_sha256.to_string()))
 }
 
 fn validate_sha256(value: &str, label: &str) -> anyhow::Result<()> {
@@ -997,25 +799,6 @@ fn validate_image_filename(filename: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn validate_portable_image_path(path: &str, label: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        !path.is_empty() && path.len() <= 256 && path.is_ascii() && !path.contains('\\'),
-        "{label} must be a portable relative path"
-    );
-    for component in path.split('/') {
-        anyhow::ensure!(
-            !component.is_empty()
-                && component != "."
-                && component != ".."
-                && component.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')
-                }),
-            "{label} must be a portable relative path"
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod image_delivery_tests {
     use super::*;
@@ -1066,7 +849,6 @@ mod image_delivery_tests {
             architecture: "x86_64".to_string(),
             logical_image_id: "c".repeat(64),
             logical_disk_sha256: image_sha256.clone(),
-            rootfs_sha256: "f".repeat(64),
             filename: filename.clone(),
             object_key: immutable_image_object_key(&image_sha256, &filename),
             media_type: media_type.to_string(),
@@ -1078,28 +860,24 @@ mod image_delivery_tests {
             byte_size: 4096,
             sha256: image_sha256.clone(),
             compatible_targets: targets,
-            uki: ImageUkiIdentity {
-                filename: "aos-server.efi".to_string(),
-                esp_path: "EFI/Linux/aos-server.efi".to_string(),
-                byte_size: 1024,
-                sha256: "d".repeat(64),
-                verification: ImageVerificationState::Unsigned,
-                signer_cert_sha256: None,
-                sbat: Vec::new(),
-                measured: false,
-                expected_pcr11: None,
+            artifact_contract: ImageArtifactContractReference {
+                schema: "aos.test-image/v1".to_string(),
+                document: ImageArtifactContractDocumentReference {
+                    filename: "image-info.json".to_string(),
+                    object_key: immutable_image_contract_object_key(
+                        &image_sha256,
+                        &info_sha256,
+                        "image-info.json",
+                    ),
+                    store_path: String::new(),
+                    nar_hash: String::new(),
+                    nar_size: 0,
+                    media_type: "application/vnd.aos.image-info+json".to_string(),
+                    byte_size: 512,
+                    sha256: info_sha256,
+                },
+                artifacts: None,
             },
-            image_info: ImageInfoReference {
-                filename: "image-info.json".to_string(),
-                object_key: immutable_image_info_object_key(&image_sha256, &info_sha256),
-                store_path: String::new(),
-                nar_hash: String::new(),
-                nar_size: 0,
-                media_type: "application/vnd.aos.image-info+json".to_string(),
-                byte_size: 512,
-                sha256: info_sha256,
-            },
-            update_payload: None,
         }
     }
 
@@ -1146,12 +924,12 @@ nar_size = 1
                     "[versions.platforms.x86_64-linux.images.delivery]",
                 )
                 .replace(
-                    "[delivery.uki]",
-                    "[versions.platforms.x86_64-linux.images.delivery.uki]",
+                    "[delivery.artifact_contract]",
+                    "[versions.platforms.x86_64-linux.images.delivery.artifact_contract]",
                 )
                 .replace(
-                    "[delivery.image_info]",
-                    "[versions.platforms.x86_64-linux.images.delivery.image_info]",
+                    "[delivery.artifact_contract.document]",
+                    "[versions.platforms.x86_64-linux.images.delivery.artifact_contract.document]",
                 );
             format!("{base}\n{}", encoded)
         } else {
@@ -1181,12 +959,17 @@ nar_size = 1
         let mut image = delivery("qcow2");
         image.schema_version = 2;
         image.object_key.clear();
-        image.image_info.object_key.clear();
-        image.image_info.store_path =
+        image.artifact_contract.document.object_key.clear();
+        image.artifact_contract.document.store_path =
             "/nix/store/11111111111111111111111111111111-image-info".to_string();
-        image.image_info.nar_hash =
+        image.artifact_contract.document.nar_hash =
             "sha256:1111111111111111111111111111111111111111111111111111".to_string();
-        image.image_info.nar_size = 512;
+        image.artifact_contract.document.nar_size = 512;
+        image.artifact_contract.artifacts = Some(ImageStoreReference {
+            store_path: "/nix/store/22222222222222222222222222222222-image-artifacts".to_string(),
+            nar_hash: format!("sha256:{}", "2".repeat(52)),
+            nar_size: 4096,
+        });
         image.validate("qcow2", "2026.08", "x86_64-linux").unwrap();
 
         image.object_key = immutable_image_object_key(&image.sha256, &image.filename);
@@ -1194,23 +977,23 @@ nar_size = 1
     }
 
     #[test]
-    fn store_backed_delivery_authenticates_update_payload_identity() {
+    fn store_backed_delivery_authenticates_artifact_contract_identity() {
         let mut image = delivery("raw");
         image.schema_version = 2;
         image.object_key.clear();
-        image.image_info.object_key.clear();
-        image.image_info.store_path =
+        image.artifact_contract.document.object_key.clear();
+        image.artifact_contract.document.store_path =
             "/nix/store/11111111111111111111111111111111-image-info".to_string();
-        image.image_info.nar_hash = format!("sha256:{}", "1".repeat(52));
-        image.image_info.nar_size = 512;
-        image.update_payload = Some(ImageStoreReference {
+        image.artifact_contract.document.nar_hash = format!("sha256:{}", "1".repeat(52));
+        image.artifact_contract.document.nar_size = 512;
+        image.artifact_contract.artifacts = Some(ImageStoreReference {
             store_path: "/nix/store/22222222222222222222222222222222-update-payload".to_string(),
             nar_hash: format!("sha256:{}", "2".repeat(52)),
             nar_size: 4096,
         });
         image.validate("raw", "2026.08", "x86_64-linux").unwrap();
 
-        image.update_payload.as_mut().unwrap().nar_size = 0;
+        image.artifact_contract.artifacts.as_mut().unwrap().nar_size = 0;
         assert!(image.validate("raw", "2026.08", "x86_64-linux").is_err());
     }
 
@@ -1218,9 +1001,11 @@ nar_size = 1
     fn delivery_contract_rejects_path_traversal_and_tampering() {
         let mut traversal = delivery("raw");
         traversal.filename = "../server.img".to_string();
-        assert!(traversal
-            .validate("raw", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            traversal
+                .validate("raw", "2026.08", "x86_64-linux")
+                .is_err()
+        );
 
         let mut tampered = delivery("raw");
         tampered.sha256 = "A".repeat(64);
@@ -1228,54 +1013,42 @@ nar_size = 1
 
         let mut wrong_target = delivery("qcow2");
         wrong_target.compatible_targets = vec![ImageTarget::BareMetal];
-        assert!(wrong_target
-            .validate("qcow2", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            wrong_target
+                .validate("qcow2", "2026.08", "x86_64-linux")
+                .is_err()
+        );
 
         let mut uncompressed_raw = delivery("raw");
         uncompressed_raw.compression = ImageCompression::None;
-        assert!(uncompressed_raw
-            .validate("raw", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            uncompressed_raw
+                .validate("raw", "2026.08", "x86_64-linux")
+                .is_err()
+        );
 
         let mut compressed_qcow2 = delivery("qcow2");
         compressed_qcow2.compression = ImageCompression::Zstd;
-        assert!(compressed_qcow2
-            .validate("qcow2", "2026.08", "x86_64-linux")
-            .is_err());
+        assert!(
+            compressed_qcow2
+                .validate("qcow2", "2026.08", "x86_64-linux")
+                .is_err()
+        );
     }
 
     #[test]
     fn delivery_contract_rejects_parent_identity_drift() {
         let contract = delivery("vmdk");
-        assert!(contract
-            .validate("vmdk", "2026.09", "x86_64-linux")
-            .is_err());
-        assert!(contract
-            .validate("vmdk", "2026.08", "aarch64-linux")
-            .is_err());
-    }
-
-    #[test]
-    fn uki_verification_facts_are_closed_and_state_dependent() {
-        let mut contract = delivery("raw");
-        contract.uki.verification = ImageVerificationState::SignedUnverified;
-        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
-
-        contract.uki.signer_cert_sha256 = Some("9".repeat(64));
-        contract.uki.sbat = vec![SbatEntry {
-            component: "aos".to_string(),
-            generation: 1,
-        }];
-        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_ok());
-
-        contract.uki.measured = true;
-        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
-        contract.uki.expected_pcr11 = Some("8".repeat(64));
-        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_ok());
-
-        contract.uki.verification = ImageVerificationState::Unsigned;
-        assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
+        assert!(
+            contract
+                .validate("vmdk", "2026.09", "x86_64-linux")
+                .is_err()
+        );
+        assert!(
+            contract
+                .validate("vmdk", "2026.08", "aarch64-linux")
+                .is_err()
+        );
     }
 
     #[test]
@@ -1300,8 +1073,8 @@ nar_size = 1
         let valid = package_with_images(
             r#"
 [versions.platforms.x86_64-linux.named_outputs]
-dev = "/aos/store/server-dev"
-tools = "/aos/store/server-tools"
+dev = {store_path = "/aos/store/server-dev"}
+tools = {store_path = "/aos/store/server-tools"}
 "#,
         );
         let parsed = parse_package_file(&valid).expect("valid named outputs");
@@ -1363,48 +1136,18 @@ tools = "/aos/store/server-tools"
             assert!(contract.validate("raw", "2026.08", "x86_64-linux").is_err());
         }
     }
-
-    #[test]
-    fn delivery_accepts_sd_boot_counting_suffix() {
-        let mut contract = delivery("raw");
-        contract.uki.filename = "aos-server+3.efi".to_string();
-        contract.uki.esp_path = "EFI/Linux/aos-server+3.efi".to_string();
-        contract
-            .validate("raw", "2026.08", "x86_64-linux")
-            .expect("sd-boot counting filename");
-    }
 }
 
 // ---------------------------------------------------------------------------
-// RFC-0001 package metadata (expose, permissions, attestation)
+// RFC-0001 package metadata
 // ---------------------------------------------------------------------------
 //
 // These pure serde structs and their inherent helpers moved here from
 // `aos-package`'s `types` module (RFC-0004 Phase 5) so the wasm-clean indexer
-// and the Cloudflare Worker can deserialize the expanded RFC-0001 package
-// metadata the producer publishes. `aos-package` re-exports every type below
-// so `aos_package::types::{ExposeMeta, …}` paths are unchanged.
-
-/// Prefixes treated as host system locations for confinement classification.
-const SYSTEM_LOCATION_PREFIXES: &[&str] = &[
-    "/boot", "/etc", "/lib", "/lib64", "/nix", "/sbin", "/usr", "/var",
-];
-
-fn is_false(value: &bool) -> bool {
-    !*value
-}
-
-fn has_system_location_prefix(path: &str) -> bool {
-    SYSTEM_LOCATION_PREFIXES
-        .iter()
-        .any(|prefix| path == *prefix || path.starts_with(&format!("{prefix}/")))
-}
+// and the Cloudflare Worker can deserialize the RFC-0001 package metadata
+// that the producer publishes. `aos-package` re-exports the shared types.
 
 /// A pre-compiled image format entry within a sysroot package version.
-///
-/// The direct-delivery contract is mandatory after the topology cutover. The
-/// trailing Secure Boot compatibility fields mirror the exact nested UKI
-/// identity and remain optional only when that identity makes no such claim.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SysrootImageEntry {
@@ -1423,259 +1166,6 @@ pub struct SysrootImageEntry {
         skip_serializing_if = "ImageDelivery::is_store_only"
     )]
     pub delivery: ImageDelivery,
-    /// Lowercase hex SHA-256 of the signer leaf certificate found in the
-    /// PE's Authenticode certificate table; the db cert this image must
-    /// chain to. `None` for unsigned images.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sb_signer_cert_sha256: Option<String>,
-    /// SBAT component/generation pairs read from the PE `.sbat` section.
-    /// Empty when the image carries no `.sbat` section.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub sbat: Vec<SbatEntry>,
-    /// ukify/`systemd-measure`-predicted TPM PCR-11 value for this UKI
-    /// (hex). See [`SysrootImageEntry`] callers and RFC-0006
-    /// `registry-catalog.md` for the prediction-scope caveat: this records
-    /// the UKI's own contribution, not the full sd-boot phase sequence.
-    /// `None` when `systemd-measure` was unavailable at publish time.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_pcr11: Option<String>,
-    /// Slot-specific UKI paths and measured-boot facts for A/B updates.
-    ///
-    /// This is empty for legacy single-UKI images. New A/B image publishers
-    /// record exactly one `a` and one `b` entry and consumers select by slot.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub ukis: Vec<SysrootUkiEntry>,
-    /// Slot-paired signed recovery UKIs and their uncounted loader entries.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub recovery_ukis: Vec<RecoveryUkiEntry>,
-    /// Versioned authenticated manifest for bounded offline restoration.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recovery_bundle: Option<RecoveryBundleManifest>,
-    /// Relative path inside the authenticated update payload to the root
-    /// filesystem image consumed by `RootImage=`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_image: Option<String>,
-    /// Relative path inside the authenticated update payload to the separate
-    /// dm-verity hash tree consumed by `RootVerity=`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_verity: Option<String>,
-    /// dm-verity root hash for [`SysrootImageEntry::root_image`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_hash: Option<String>,
-    /// Relative path inside the authenticated update payload to the PKCS#7
-    /// signature consumed by `RootHashSignature=`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub root_hash_sig: Option<String>,
-}
-
-/// RFC-0001 service exposure metadata carried by registry package metadata.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExposeMeta {
-    /// Systemd target that is the package activation handle.
-    pub target: String,
-    /// Unit files rendered for this package and pulled in by the target.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-    /// Container/root artifacts attached to the package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub images: Vec<SysrootImageEntry>,
-    /// Package names that must be installed atomically with this package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requires: Vec<String>,
-    /// Package-scoped config declarations and hot-reload policy.
-    #[serde(default, skip_serializing_if = "ExposeConfigMeta::is_empty")]
-    pub config: ExposeConfigMeta,
-    /// Typed capabilities this package offers to other packages.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub provides: Vec<ProvidedCapabilityMeta>,
-    /// Typed capabilities this package consumes from other packages.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub uses: Vec<RequiredCapabilityMeta>,
-}
-
-/// RFC-0001 package config metadata signed with exposure metadata.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExposeConfigMeta {
-    /// Structured config artifacts `apm` validates and materializes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub artifacts: Vec<ConfigArtifactMeta>,
-    /// TPM2/systemd credential declarations consumed by package units.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub credentials: Vec<CredentialMeta>,
-}
-
-impl ExposeConfigMeta {
-    /// Returns whether the package declares no config inputs.
-    pub fn is_empty(&self) -> bool {
-        self.artifacts.is_empty() && self.credentials.is_empty()
-    }
-
-    /// Returns whether config metadata asks runtime reconciliation to touch units.
-    pub fn has_unit_reconciliation(&self) -> bool {
-        self.artifacts
-            .iter()
-            .any(|artifact| !artifact.units.is_empty())
-    }
-
-    /// Returns whether configuration may conditionally bind credentials.
-    pub fn has_optional_credentials(&self) -> bool {
-        self.credentials
-            .iter()
-            .any(|credential| credential.optional)
-    }
-}
-
-/// Structured config artifact materialized from host desired-package config.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigArtifactMeta {
-    /// Stable artifact name inside the package config namespace.
-    pub name: String,
-    /// Absolute `/etc` path where `apm` materializes the artifact.
-    pub path: String,
-    /// Serialization format for the materialized artifact.
-    pub format: ConfigArtifactFormat,
-    /// Field names that must be present in desired config.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub required: Vec<String>,
-    /// Field names that may be present in desired config.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub optional: Vec<String>,
-    /// Service units whose config changes should reconcile.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-    /// Whether changed content reloads, restarts, or leaves units untouched.
-    #[serde(default, skip_serializing_if = "ConfigReloadPolicy::is_default")]
-    pub reload: ConfigReloadPolicy,
-}
-
-/// Materialized config artifact serialization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConfigArtifactFormat {
-    /// systemd-compatible `KEY=VALUE` environment file.
-    Env,
-    /// JSON object.
-    Json,
-    /// TOML table.
-    Toml,
-}
-
-/// Config-change reconciliation policy.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConfigReloadPolicy {
-    /// Restart affected units on content change.
-    #[default]
-    Restart,
-    /// Reload affected units on content change, falling back to restart if unsupported.
-    Reload,
-    /// Materialize the artifact without service reconciliation.
-    None,
-}
-
-impl ConfigReloadPolicy {
-    fn is_default(policy: &Self) -> bool {
-        *policy == Self::Restart
-    }
-}
-
-/// TPM2/systemd credential declaration for an exposed package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CredentialMeta {
-    /// systemd credential name.
-    pub name: String,
-    /// Optional host-side credstore source path for fail-closed loading.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    /// Optional inline systemd encrypted credential payload.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ciphertext: Option<String>,
-    /// Service units expected to consume this credential.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-    /// Whether the credential is expected to be TPM2/systemd encrypted.
-    #[serde(default, rename = "encrypted", skip_serializing_if = "is_false")]
-    pub encrypted: bool,
-    /// Whether the unit binding is emitted only when configuration references
-    /// this credential. Optional declarations remain signed authorization for
-    /// runtime credential reconciliation, but do not make unrelated service
-    /// configurations depend on an absent credential.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub optional: bool,
-}
-
-/// Typed package capability kind.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum CapabilityKind {
-    /// A provider-owned directory exposed read-only to consumers.
-    Directory,
-    /// A provider service namespace joined by consumer units.
-    Namespace,
-    /// Socket/fd-passing capability routed through generated systemd drop-ins.
-    Socket,
-}
-
-/// Capability a package exposes to other packages.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProvidedCapabilityMeta {
-    /// Capability name unique within the provider package.
-    pub name: String,
-    /// Capability materialization kind.
-    pub kind: CapabilityKind,
-    /// Provider path for [`CapabilityKind::Directory`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
-    /// Provider unit for [`CapabilityKind::Namespace`] or future socket routes.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub unit: Option<String>,
-}
-
-/// Capability a package consumes from another installed package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RequiredCapabilityMeta {
-    /// Provider package name.
-    pub provider: String,
-    /// Capability name on the provider package.
-    pub name: String,
-    /// Expected capability kind.
-    pub kind: CapabilityKind,
-    /// Consumer unit that receives the generated route drop-in.
-    pub unit: String,
-}
-
-/// Store metadata for rendered RFC-0001 exposure artifacts.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExposeArtifactMeta {
-    /// Store path containing `units/` and `manifest.json`.
-    pub store_path: String,
-    /// NAR hash of the rendered expose artifact.
-    pub nar_hash: String,
-    /// Uncompressed NAR size of the rendered expose artifact in bytes.
-    pub nar_size: u64,
-}
-
-/// Signed metadata for fleet-managed BPF-LSM policy artifacts.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BpfLsmPolicyMeta {
-    /// BPF-LSM policies carried by this package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub policies: Vec<BpfLsmPolicyArtifactMeta>,
-}
-
-impl BpfLsmPolicyMeta {
-    /// Returns whether the package declares no BPF-LSM policies.
-    pub fn is_empty(&self) -> bool {
-        self.policies.is_empty()
-    }
 }
 
 /// Registry-published runtime integrity, attestation, and provenance facts.
@@ -1715,313 +1205,11 @@ impl AttestationMeta {
     }
 }
 
-/// One BPF-LSM policy artifact carried by a signed package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct BpfLsmPolicyArtifactMeta {
-    /// Stable policy name used for host policy selection and bpffs pins.
-    pub name: String,
-    /// Relative JSON policy path inside the package root.
-    pub policy: String,
-    /// Relative BPF object path inside the package root.
-    pub object: String,
-    /// BPF program names expected in the object and policy JSON.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub programs: Vec<String>,
-}
-
-/// Signed RFC-0001 package permission manifest.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct PermissionsMeta {
-    /// Linux capabilities requested by the package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub capabilities: Vec<String>,
-    /// Package network mode; absent means the default private mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub network: Option<NetworkPermission>,
-    /// TCP ports the package may bind under Landlock/eBPF network policy.
-    #[serde(default, rename = "tcp-bind", skip_serializing_if = "Vec::is_empty")]
-    pub tcp_bind: Vec<u16>,
-    /// TCP ports the package may connect to under Landlock/eBPF network policy.
-    #[serde(default, rename = "tcp-connect", skip_serializing_if = "Vec::is_empty")]
-    pub tcp_connect: Vec<u16>,
-    /// Device nodes requested by the package.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub devices: Vec<String>,
-    /// Host paths requested by the package.
-    #[serde(default, rename = "host-paths", skip_serializing_if = "Vec::is_empty")]
-    pub host_paths: Vec<HostPathPermission>,
-    /// Whether the package requests cgroup controller delegation.
-    #[serde(default, rename = "cgroup-delegate", skip_serializing_if = "is_false")]
-    pub cgroup_delegate: bool,
-    /// Whether the package requests host-root-equivalent users.
-    #[serde(default, rename = "privileged-users", skip_serializing_if = "is_false")]
-    pub privileged_users: bool,
-    /// Static non-root service accounts derived from authenticated units.
-    #[serde(
-        default,
-        rename = "static-users",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub static_users: Vec<String>,
-    /// Host-fulfilled kernel modules requested by the package.
-    #[serde(
-        default,
-        rename = "kernel-modules",
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub kernel_modules: Vec<String>,
-    /// Named syscall profile requested by the package.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub syscalls: Option<SyscallProfile>,
-    /// Generated SELinux/AppArmor label requested by the package.
-    #[serde(
-        default,
-        rename = "security-label",
-        skip_serializing_if = "Option::is_none"
-    )]
-    pub security_label: Option<String>,
-    /// Computed package confinement summary.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub confinement: Option<ConfinementMeta>,
-}
-
-impl PermissionsMeta {
-    /// Returns whether the manifest carries no explicit permission requests.
-    pub fn is_empty(&self) -> bool {
-        self.capabilities.is_empty()
-            && self.network.is_none()
-            && self.tcp_bind.is_empty()
-            && self.tcp_connect.is_empty()
-            && self.devices.is_empty()
-            && self.host_paths.is_empty()
-            && !self.cgroup_delegate
-            && !self.privileged_users
-            && self.static_users.is_empty()
-            && self.kernel_modules.is_empty()
-            && self.syscalls.is_none()
-            && self.security_label.is_none()
-            && self.confinement.is_none()
-    }
-
-    /// Returns whether the manifest requests host-policy-admitted grants.
-    pub fn requires_policy_admission(&self) -> bool {
-        self.network
-            .is_some_and(|network| network != NetworkPermission::Private)
-            || !self.tcp_bind.is_empty()
-            || !self.tcp_connect.is_empty()
-            || !self.capabilities.is_empty()
-            || !self.devices.is_empty()
-            || !self.host_paths.is_empty()
-            || self.cgroup_delegate
-            || self.privileged_users
-            || !self.kernel_modules.is_empty()
-            || self
-                .syscalls
-                .is_some_and(|syscalls| syscalls != SyscallProfile::Restricted)
-    }
-
-    /// Returns whether this manifest needs host policy for a package name.
-    pub fn requires_policy_admission_for_package(&self, package_name: &str) -> bool {
-        self.requires_policy_admission()
-            || self
-                .security_label
-                .as_ref()
-                .is_some_and(|label| label != &format!("aos-pkg-{package_name}"))
-    }
-
-    /// Returns whether this manifest carries explicit Landlock/eBPF policy.
-    pub fn has_network_policy(&self) -> bool {
-        !self.tcp_bind.is_empty() || !self.tcp_connect.is_empty() || !self.host_paths.is_empty()
-    }
-
-    /// Computes the RFC-0001 confinement summary from permission grants.
-    pub fn computed_confinement(&self) -> ConfinementMeta {
-        let network = self.network.unwrap_or(NetworkPermission::Private);
-        let syscall_profile = self.syscalls.unwrap_or(SyscallProfile::Restricted);
-        let mut holes = Vec::new();
-
-        if network != NetworkPermission::Private {
-            holes.push(format!("network:{}", network.as_manifest_str()));
-        }
-        holes.extend(self.tcp_bind.iter().map(|port| format!("tcp-bind:{port}")));
-        holes.extend(
-            self.tcp_connect
-                .iter()
-                .map(|port| format!("tcp-connect:{port}")),
-        );
-        holes.extend(
-            self.capabilities
-                .iter()
-                .map(|capability| format!("capability:{capability}")),
-        );
-        holes.extend(self.devices.iter().map(|device| format!("device:{device}")));
-        holes.extend(self.host_paths.iter().map(|host_path| {
-            format!(
-                "host-path:{}:{}",
-                host_path.mode.as_manifest_str(),
-                host_path.path
-            )
-        }));
-        if self.cgroup_delegate {
-            holes.push("cgroup-delegate".into());
-        }
-        if self.privileged_users {
-            holes.push("privileged-users".into());
-        }
-        holes.extend(
-            self.static_users
-                .iter()
-                .map(|user| format!("static-user:{user}")),
-        );
-        if syscall_profile != SyscallProfile::Restricted {
-            holes.push(format!("syscalls:{}", syscall_profile.as_manifest_str()));
-        }
-
-        let root_equivalent = self
-            .capabilities
-            .iter()
-            .any(|capability| capability == "CAP_SYS_ADMIN")
-            || self.privileged_users
-            || self.host_paths.iter().any(|host_path| {
-                host_path.mode == HostPathMode::Rw && has_system_location_prefix(&host_path.path)
-            });
-
-        let class = if root_equivalent {
-            ConfinementClass::Unconfined
-        } else if holes.is_empty() {
-            ConfinementClass::Sandboxed
-        } else {
-            ConfinementClass::SandboxedWithHoles
-        };
-        let label = if class == ConfinementClass::SandboxedWithHoles {
-            format!("sandboxed-with-holes ({})", holes.join(", "))
-        } else {
-            class.as_manifest_str().to_string()
-        };
-
-        ConfinementMeta {
-            class,
-            label,
-            holes,
-        }
-    }
-}
-
-/// Computed RFC-0001 package confinement summary.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfinementMeta {
-    /// Coarse confinement class computed from generated unit permissions.
-    pub class: ConfinementClass,
-    /// Human-readable confinement label shown by package tools.
-    pub label: String,
-    /// Permission holes that prevent the package from being fully sandboxed.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub holes: Vec<String>,
-}
-
-/// Coarse RFC-0001 package confinement class.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ConfinementClass {
-    /// Generated units have the default sandbox and no explicit holes.
-    Sandboxed,
-    /// Generated units keep the default sandbox but include explicit holes.
-    SandboxedWithHoles,
-    /// Generated units request root-equivalent or host-level privileges.
-    Unconfined,
-}
-
-impl ConfinementClass {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            ConfinementClass::Sandboxed => "sandboxed",
-            ConfinementClass::SandboxedWithHoles => "sandboxed-with-holes",
-            ConfinementClass::Unconfined => "unconfined",
-        }
-    }
-}
-
-/// RFC-0001 package network mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum NetworkPermission {
-    /// Inbound-only private namespace with host-owned socket activation.
-    Private,
-    /// Private namespace with an outbound veth path.
-    PrivateOutbound,
-    /// Host network namespace.
-    Host,
-}
-
-impl NetworkPermission {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            NetworkPermission::Private => "private",
-            NetworkPermission::PrivateOutbound => "private-outbound",
-            NetworkPermission::Host => "host",
-        }
-    }
-}
-
-/// Host path permission requested by a package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct HostPathPermission {
-    /// Absolute host path to bind into the package.
-    pub path: String,
-    /// Whether the bind is read-only or read-write.
-    pub mode: HostPathMode,
-}
-
-/// Host path access mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum HostPathMode {
-    /// Read-only host path bind.
-    ReadOnly,
-    /// Read-write host path bind.
-    Rw,
-}
-
-impl HostPathMode {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            HostPathMode::ReadOnly => "read-only",
-            HostPathMode::Rw => "rw",
-        }
-    }
-}
-
-/// Named syscall profile pinned to systemd syscall groups.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum SyscallProfile {
-    /// Minimal syscall profile for tightly sandboxed services.
-    Restricted,
-    /// Systemd's `@system-service` syscall group profile.
-    SystemService,
-    /// Privileged syscall profile for infrastructure packages.
-    Privileged,
-}
-
-impl SyscallProfile {
-    fn as_manifest_str(self) -> &'static str {
-        match self {
-            SyscallProfile::Restricted => "restricted",
-            SyscallProfile::SystemService => "system-service",
-            SyscallProfile::Privileged => "privileged",
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Committed root config (`registry.toml`)
 // ---------------------------------------------------------------------------
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 
 use crate::stack::{self, StackNode};
 
@@ -2136,14 +1324,6 @@ pub struct RegistryRootMeta {
     /// set `false` for a pure input-addressed registry.
     #[serde(default = "default_content_addressed")]
     pub content_addressed: bool,
-    /// Whether every directly delivered system image must contain UKIs whose
-    /// signatures verify against the committed `sb-certs.toml` policy.
-    ///
-    /// This is an authenticated, opt-in release gate. Package-only releases
-    /// are unaffected. The default remains `false` for development and legacy
-    /// registries that intentionally publish unsigned images.
-    #[serde(default)]
-    pub require_signed_ukis: bool,
 }
 
 /// Validates the committed support policy when reading registry metadata.
@@ -2212,6 +1392,7 @@ pub struct RosterKey {
 
 /// A planned retired key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RevokedKey {
     /// Identifier of the roster key being revoked.
     pub id: String,
@@ -2329,8 +1510,67 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
     validate_package_name(&toml.package.name)?;
     for version in &toml.versions {
         for (platform, entry) in &version.platforms {
+            crate::native_dependencies::check_version_requirement(
+                &version.version,
+                entry.version_requirement.as_deref(),
+            )?;
+            crate::native_dependencies::check_resolution_metadata(
+                entry.os_version.as_deref(),
+                &entry.module_dependencies,
+            )?;
+            if (entry.version_requirement.is_some()
+                || entry.os_version.is_some()
+                || !entry.module_dependencies.is_empty())
+                && entry.deployment.is_none()
+            {
+                bail!("native resolution catalog lacks its authenticated deployment document");
+            }
+            let native = entry.deployment.is_some()
+                || entry.module_documentation.is_some()
+                || entry.qualification.is_some()
+                || entry
+                    .named_outputs
+                    .values()
+                    .any(|output| output.deployment.is_some())
+                || entry
+                    .requires_features
+                    .iter()
+                    .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1);
+            if native {
+                if entry.deployment.is_none() {
+                    bail!(
+                        "native package artifact bindings are missing or contain obsolete projections"
+                    );
+                }
+                if !entry
+                    .requires_features
+                    .iter()
+                    .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1)
+                    || !entry
+                        .references
+                        .requires_features()
+                        .iter()
+                        .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1)
+                {
+                    bail!("native package artifacts lack their structural feature gate");
+                }
+                for artifact in [
+                    &entry.deployment,
+                    &entry.module_documentation,
+                    &entry.qualification,
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    artifact.validate()?;
+                }
+            }
             let mut output_paths = HashSet::from([entry.store_path.as_str()]);
-            for (output, store_path) in &entry.named_outputs {
+            for (output, metadata) in &entry.named_outputs {
+                let store_path = &metadata.store_path;
+                if let Some(deployment) = &metadata.deployment {
+                    deployment.validate()?;
+                }
                 if output == "out"
                     || output.is_empty()
                     || output.len() > 256
@@ -2407,19 +1647,15 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                         platform
                     );
                     anyhow::ensure!(
-                        delivery.uki == first.uki
-                            && image.sb_signer_cert_sha256
-                                == first_image.sb_signer_cert_sha256
-                            && image.sbat == first_image.sbat
-                            && image.expected_pcr11 == first_image.expected_pcr11
-                            && image.recovery_ukis == first_image.recovery_ukis,
-                        "release '{}' platform '{}' image encodings have different UKI or Secure Boot facts",
+                        delivery.artifact_contract.schema == first.artifact_contract.schema
+                            && delivery.artifact_contract.artifacts
+                                == first.artifact_contract.artifacts,
+                        "release '{}' platform '{}' image encodings have different artifact contracts",
                         version.version,
                         platform
                     );
-                    // The recovery manifest authenticates the format-specific
-                    // image-info.json, so its component digest legitimately
-                    // differs between raw, QCOW2, VMDK, and VHD encodings.
+                    // The provider contract document may bind format-specific
+                    // metadata while every encoding shares one artifact set.
                 }
             }
         }
@@ -2493,18 +1729,6 @@ mod root_config_tests {
         assert!(cfg.caches.is_none());
         assert!(cfg.cache_entries().is_empty());
         assert!(cfg.cache_stack().is_none());
-        assert!(!cfg.registry.require_signed_ukis);
-    }
-
-    #[test]
-    fn signed_uki_release_gate_is_explicitly_opt_in() {
-        let source = r#"
-            [registry]
-            name = "example"
-            require_signed_ukis = true
-        "#;
-        let cfg: RegistryRootConfig = toml::from_str(source).unwrap();
-        assert!(cfg.registry.require_signed_ukis);
     }
 
     #[test]
@@ -2519,289 +1743,59 @@ mod root_config_tests {
 // Configuration-module schema represented as pure manifest data.
 // ---------------------------------------------------------------------------
 
-/// Signed identity of a canonical package-documentation Nix store object.
+/// Gates package consumption through native envelopes and ordinary modules.
+pub const FEATURE_NATIVE_PACKAGE_MODULES_V1: &str = "native-package-modules-v1";
+
+/// Authenticated directory artifact containing one native JSON document.
 ///
-/// The object is one non-executable regular-file NAR with no references. Its
-/// JSON bytes describe this exact package version/platform, but deliberately do
-/// not repeat the store path so prose never creates a retention edge.
+/// The signed store graph authenticates the directory and its retained source
+/// closure. The document digest binds the exact JSON bytes within that root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DocumentationArtifactMeta {
-    /// Closed canonical document format identifier.
-    pub format: String,
-    /// Store path of the single-file documentation object.
+pub struct NativeArtifactMeta {
+    /// Immutable directory root retained by the release.
     pub store_path: String,
-    /// Hash of the uncompressed NAR.
+    /// Hash of the directory's uncompressed NAR.
     pub nar_hash: String,
-    /// Uncompressed NAR size in bytes.
+    /// Size of the directory's uncompressed NAR.
     pub nar_size: u64,
-    /// SHA-256 digest of the exact canonical JSON file bytes.
+    /// Sorted unique direct references, encoded as 32-character Nix store hashes.
+    pub references: Vec<String>,
+    /// SHA-256 identity of the JSON document bytes.
     pub document_sha256: String,
-    /// Exact canonical JSON file size in bytes.
+    /// Exact JSON document size in bytes.
     pub document_size: u64,
-    /// Digest over configuration semantics, excluding explanatory prose.
-    pub semantic_schema_sha256: String,
-    /// NAR identity of the trusted image base library used to extract
-    /// system-owned options, when this package is configured by the image.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub system_module_nar_hash: Option<String>,
-    /// Direct references. Version 1 requires this to be empty.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
 }
 
-/// Stores metadata for a package's second `config` output.
-///
-/// The `config` output is a store-path NAR carrying the package's config-only
-/// Nix module (`module.nix` at its root) plus any relative-imported private
-/// `.nix`. Its identity is content-addressed exactly like
-/// [`ExposeArtifactMeta`]: a store path, the uncompressed NAR hash, and the NAR
-/// size, plus the module's *direct* store references.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigOutputMeta {
-    /// Store path of the `config` output (contains `module.nix` at its root).
-    pub store_path: String,
-    /// Hash of the uncompressed `config`-output NAR: `"sha256:…"`.
-    pub nar_hash: String,
-    /// Uncompressed NAR size in bytes.
-    pub nar_size: u64,
-    /// Store-path hashes of the `config` output's *direct* references.
+impl NativeArtifactMeta {
+    /// Checks the signed locator before any document is opened.
     ///
-    /// The enforced invariant is **no `.drv`** (see `validate_config_output_meta`):
-    /// the config module is config-only and must not pull store objects into
-    /// evaluation. Trusted companion outputs have an empty reference set;
-    /// runtime output strings are injected separately from authenticated
-    /// resolution metadata.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub references: Vec<String>,
-}
-
-/// Configuration-module interface declared by a package.
-///
-/// Carries the second [`ConfigOutputMeta`] output, the declared option surface
-/// (the package's `provides`, computed by an options-only eval at publish), the
-/// shared roots it owns or contributes to, and its base-lib ABI compatibility
-/// range. The presence of this block on a `PackageMeta` is gated behind
-/// `FEATURE_CONFIG_MODULE_V1` and requires DSSE provenance.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigModuleMeta {
-    /// The `config` output store metadata.
-    pub config_output: ConfigOutputMeta,
-    /// Exact base library used for the publish-time options-only evaluation.
-    ///
-    /// New publishers always populate this binding. It remains optional so
-    /// registries produced before the binding was introduced stay readable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evaluation_base_lib: Option<ConfigOutputMeta>,
-    /// Exact runtime dependency outputs exposed to the module by name.
-    ///
-    /// Publishers authenticate these paths as members of the package runtime
-    /// closure. Evaluators pass only this map, rather than an ambient package
-    /// set, so interpolation remains builder-free and reproducible.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub dependency_outputs: BTreeMap<String, String>,
-    /// Base-lib ABI range this module is compatible with (inclusive).
-    pub module_abi_compat: ModuleAbiCompat,
-    /// Option paths this module *declares* (its `provides`), computed by an
-    /// options-only eval in isolation. Sorted, deduplicated. These become the
-    /// registry inverted-index keys for this `package@version`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub declares: Vec<String>,
-    /// Sorted option declaration paths paired with their stable type
-    /// descriptions from the options-only evaluation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub declaration_schema: Vec<ConfigOptionDeclaration>,
-    /// Conservative option accesses found by the publish-time Nix-source scan.
-    ///
-    /// These paths pre-close the resolver working set. They are an
-    /// over-approximation only; error-driven resolve/eval remains the backstop
-    /// for computed attribute access that cannot be represented statically.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub requires: Vec<String>,
-    /// Shared roots this module declares exclusive ownership of (e.g.
-    /// `firewall`, `nginx`). Each carries its own interface ABI.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub owns_roots: Vec<OwnedRoot>,
-    /// Foreign shared roots this module contributes into, restricted to the
-    /// owner-declared contributable sub-paths (F3-B).
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contributes: Vec<RootContribution>,
-    /// Exact core artifact names this module may materialize.
-    ///
-    /// These grants are deliberately leaf-scoped: they do not confer
-    /// ownership of the structural `environment`, `systemd`, or `aos` roots.
-    #[serde(default, skip_serializing_if = "ConfigModuleArtifacts::is_empty")]
-    pub artifacts: ConfigModuleArtifacts,
-    /// Capability tokens this module *sets* (write-provider index entries),
-    /// e.g. `system.capabilities.dns-resolver`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub provides_capabilities: Vec<String>,
-}
-
-/// Exact core artifact leaves a package configuration module may write.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigModuleArtifacts {
-    /// Targets below `environment.etc`, such as `nginx/nginx.conf`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub etc: Vec<String>,
-    /// Full systemd unit names, such as `nginx.service`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub units: Vec<String>,
-    /// Exact names below `aos.users.users`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub users: Vec<String>,
-    /// Exact names below `aos.users.groups`.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub groups: Vec<String>,
-}
-
-impl ConfigModuleArtifacts {
-    /// Returns whether this authorization grants no core artifact leaves.
-    pub fn is_empty(&self) -> bool {
-        self.etc.is_empty()
-            && self.units.is_empty()
-            && self.users.is_empty()
-            && self.groups.is_empty()
-    }
-}
-
-/// One mechanically derived option declaration in a config module's schema.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigOptionDeclaration {
-    /// Full dotted option path.
-    pub path: String,
-    /// Stable type description exported by the module engine.
-    pub type_signature: String,
-}
-
-/// Inclusive base-lib ABI compatibility range for a config module.
-///
-/// The resolver refuses the module unless `min <= running_image_abi <= max`.
-/// This is the configuration analogue of the SBAT revocation floor: a monotonic
-/// integer band, gated pre-eval and fail-closed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ModuleAbiCompat {
-    /// Lowest `module_abi` this module supports.
-    pub min: u32,
-    /// Highest `module_abi` this module supports.
-    pub max: u32,
-}
-
-impl ModuleAbiCompat {
-    /// Returns whether `abi` lies within the inclusive `[min, max]` band.
-    pub fn admits(&self, abi: u32) -> bool {
-        self.min <= abi && abi <= self.max
-    }
-}
-
-/// A shared root a package owns, plus its own interface ABI and the sub-paths
-/// non-owners may contribute into (F3-B capability-scoped surface).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct OwnedRoot {
-    /// Root segment, e.g. `firewall`, `nginx`.
-    pub root: String,
-    /// Independent interface ABI for this shared root.
-    pub interface_abi: u32,
-    /// Owner-declared contributable sub-paths (relative to the root), e.g.
-    /// `virtualHosts`, `upstreams`. Owner-only paths (`enable`, globals) are
-    /// excluded. A non-owner write outside these is rejected at publish.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub contributable: Vec<String>,
-}
-
-/// A foreign-root contribution declared by a non-owner package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RootContribution {
-    /// The shared root being contributed into, e.g. `nginx`.
-    pub root: String,
-    /// Exact interface ABI expected from the installed owner of `root`.
-    ///
-    /// Contributions are capabilities issued against a particular owner
-    /// interface. They are never admitted across an owner ABI upgrade without
-    /// being republished against the new ABI.
-    pub interface_abi: u32,
-    /// Sub-paths (relative to `root`) this package writes; each MUST be within
-    /// the owner's `contributable` set, checked at resolve.
-    pub paths: Vec<String>,
-}
-
-impl<'de> Deserialize<'de> for RootContribution {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        #[derive(Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct WireContribution {
-            root: String,
-            #[serde(default)]
-            interface_abi: Option<u32>,
-            paths: Vec<String>,
+    /// # Errors
+    /// Returns an error for an invalid store root, digest, size, or reference.
+    pub fn validate(&self) -> Result<()> {
+        if crate::store::store_path_hash(&self.store_path)?.len() != 32 {
+            bail!("native artifact root has an invalid store hash");
         }
-
-        let wire = WireContribution::deserialize(deserializer)?;
-        let interface_abi = wire.interface_abi.ok_or_else(|| {
-            serde::de::Error::custom(format!(
-                "legacy contribution metadata for root '{}' has no interface_abi; republish the package with contributes[].interfaceAbi set to the owner's interface ABI",
-                wire.root
-            ))
-        })?;
-        Ok(Self {
-            root: wire.root,
-            interface_abi,
-            paths: wire.paths,
-        })
-    }
-}
-
-#[cfg(test)]
-mod config_module_compat_tests {
-    use super::ConfigModuleMeta;
-
-    #[test]
-    fn legacy_config_module_metadata_defaults_new_publish_bindings() {
-        let legacy = serde_json::json!({
-            "config_output": {
-                "store_path": "/nix/store/0000000000000000000000000000000a-web-config",
-                "nar_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                "nar_size": 1
-            },
-            "module_abi_compat": { "min": 1, "max": 1 },
-            "declares": ["web.enable"],
-            "owns_roots": [],
-            "contributes": [],
-            "provides_capabilities": []
-        });
-
-        let parsed: ConfigModuleMeta =
-            serde_json::from_value(legacy).expect("legacy config-module metadata parses");
-
-        assert!(parsed.requires.is_empty());
-        assert!(parsed.declaration_schema.is_empty());
-        assert!(parsed.evaluation_base_lib.is_none());
-    }
-
-    #[test]
-    fn legacy_nonempty_contribution_requires_explicit_migration() {
-        let legacy = serde_json::json!({
-            "root": "nginx",
-            "paths": ["virtualHosts.example"]
-        });
-
-        let error = serde_json::from_value::<super::RootContribution>(legacy)
-            .expect_err("legacy contribution must be rejected");
-        let message = error.to_string();
-        assert!(
-            message.contains("legacy contribution metadata"),
-            "{message}"
-        );
-        assert!(message.contains("interface_abi"), "{message}");
-        assert!(message.contains("republish"), "{message}");
+        validate_sha256(
+            self.document_sha256.strip_prefix("sha256:").unwrap_or(""),
+            "native document",
+        )?;
+        crate::store::normalize_digest(&self.nar_hash)?;
+        if self.document_size == 0 || self.document_size > 16 * 1024 * 1024 || self.nar_size == 0 {
+            bail!("native artifact has invalid document or NAR bounds");
+        }
+        for reference in &self.references {
+            if reference.len() != 32
+                || !reference
+                    .bytes()
+                    .all(|byte| b"0123456789abcdfghijklmnpqrsvwxyz".contains(&byte))
+            {
+                bail!("native artifact has invalid store reference");
+            }
+        }
+        if self.references.windows(2).any(|pair| pair[0] >= pair[1]) {
+            bail!("native artifact references must be unique and sorted");
+        }
+        Ok(())
     }
 }

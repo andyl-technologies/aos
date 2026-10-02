@@ -70,6 +70,7 @@
 
   targetSystem = mkSystem [
     ../../systems/server-verity.nix
+    ../../systems/_server-test-packages.nix
     {
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [
@@ -78,7 +79,7 @@
       ];
     }
   ];
-  fixtureClosureInfo = import ../../lib/build/closure-info.nix {inherit lib pkgs;} {
+  fixtureClosureInfo = lib.build.closureInfo {inherit pkgs;} {
     rootPaths = [
       pkgs.aos.apm
       pkgs.aos.apr

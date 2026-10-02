@@ -1,8 +1,8 @@
 //! Data model for the documentation index.
 //!
 //! The index is a flat list of [`DocEntry`] records, each identified by a
-//! dotted path (`functions.lists.head`, `options.security.ssh.port`,
-//! `packages.openssl`, ...) and tagged with a [`DocCategory`]. The whole
+//! dotted path (`functions.lists.head`, `builtins.map`, ...) and tagged with a
+//! [`DocCategory`]. The whole
 //! [`DocIndex`] serializes to JSON via serde so it can be cached on disk
 //! between runs (see [`crate::cache`]).
 
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// Current schema version for serialized documentation indexes.
-pub const DOC_INDEX_SCHEMA_VERSION: u32 = 1;
+pub const DOC_INDEX_SCHEMA_VERSION: u32 = 2;
 
 /// The complete documentation index, serialized to JSON for caching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,16 +24,15 @@ pub struct DocIndex {
     pub entries: Vec<DocEntry>,
 }
 
-/// A single documented item (function, option, package, type, or language ref).
+/// A single documented language or library item.
 ///
 /// Entries are produced by [`crate::extract::build_index`] from Nix doc
 /// comments and compiled-in reference data. Most optional fields are only
 /// populated when the corresponding markdown section (`# Type`,
-/// `# Examples`, ...) is present in the source doc comment, or when the
-/// module system could be evaluated for option metadata.
+/// `# Examples`, ...) is present in the source doc comment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DocEntry {
-    /// Dotted path, e.g. "functions.lists.head" or "options.aos.services.ssh.port".
+    /// Dotted path, e.g. `functions.lists.head` or `builtins.map`.
     pub path: String,
     /// What kind of thing this documents.
     pub category: DocCategory,
@@ -41,9 +40,9 @@ pub struct DocEntry {
     pub summary: String,
     /// Additional markdown prose after the summary, excluding structured sections.
     pub body: String,
-    /// Type signature from `# Type` section or Nix evaluation.
+    /// Type signature from a `# Type` section.
     pub type_sig: Option<String>,
-    /// Default value (primarily for module options).
+    /// Optional documented default value.
     pub default: Option<String>,
     /// Code examples from `# Examples` section.
     pub examples: Vec<String>,
@@ -57,24 +56,20 @@ pub struct DocEntry {
     pub source_line: Option<usize>,
     /// Grouping section within a module (from `## # Heading` markers).
     pub section: Option<String>,
-    /// Extensible metadata: version, deps, urls, etc.
+    /// Extensible metadata such as lifecycle notes from source comments.
     pub extra: BTreeMap<String, String>,
 }
 
 /// The kind of documented item.
 ///
 /// The `Display` impl renders the short lowercase form used in CLI output
-/// and JSON (`function`, `type`, `option`, `package`, `language`).
+/// and JSON (`function`, `type`, or `language`).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum DocCategory {
     /// Nix builtins and lib.* functions.
     Function,
     /// Type definitions from lib.types.*.
     Type,
-    /// Module options (aos.* configuration).
-    ModuleOption,
-    /// AOS packages built from source.
-    Package,
     /// Nix language reference entries.
     LanguageRef,
 }
@@ -84,8 +79,6 @@ impl std::fmt::Display for DocCategory {
         match self {
             DocCategory::Function => write!(f, "function"),
             DocCategory::Type => write!(f, "type"),
-            DocCategory::ModuleOption => write!(f, "option"),
-            DocCategory::Package => write!(f, "package"),
             DocCategory::LanguageRef => write!(f, "language"),
         }
     }

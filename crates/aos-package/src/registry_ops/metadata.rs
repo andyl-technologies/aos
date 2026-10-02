@@ -9,24 +9,11 @@
 //!   [versions.platforms.<name>]  per-platform artifact bindings
 //! ```
 
-use crate::registry_ops::attestation::publish_attestation_meta;
 use crate::registry_ops::images::PublishedImage;
-use crate::registry_ops::mac::PublishExposeManifest;
-use crate::registry_ops::provenance::bind_documentation_provenance;
 use crate::registry_ops::store_paths::StorePathInfo;
-use crate::types::{
-    AttestationMeta, ConfigModuleMeta, DocumentationArtifactMeta, ExposeArtifactMeta,
-    FEATURE_ATTESTATION_V1, FEATURE_CAPABILITY_ROUTES_V1, FEATURE_CONFIG_MODULE_V1,
-    FEATURE_CONFIG_V1, FEATURE_EBPF_NET_POLICY_V1, FEATURE_EXPOSE_ARTIFACT_V1, FEATURE_EXPOSE_V1,
-    FEATURE_MAC_PROFILE_V1, FEATURE_NETWORK_POLICY_V1, FEATURE_OPTIONAL_CREDENTIALS_V1,
-    FEATURE_PACKAGE_DOCUMENTATION_V1, FEATURE_PERMISSIONS_V1, FEATURE_RECOVERY_UKIS_V1,
-    FEATURE_RELOAD_V1, FEATURE_REQUIRES_V1, FEATURE_UKI_SLOTS_V1, PACKAGE_META_FORMAT,
-    validate_attestation_meta, validate_config_module_meta, validate_documentation_artifact_meta,
-    validate_expose_artifact_meta,
-};
+use crate::types::{FEATURE_IMAGE_ARTIFACT_CONTRACT_V1, PACKAGE_META_FORMAT};
 use anyhow::{Context, Result, bail};
-use std::collections::HashSet;
-use std::fs;
+use std::collections::{BTreeSet, HashSet};
 
 /// Build package TOML content, merging with existing content if present.
 ///
@@ -35,7 +22,7 @@ use std::fs;
 /// unrelated versions and platforms. Panics if an existing `versions` array
 /// entry is not a table.
 #[allow(clippy::too_many_arguments)]
-pub(in crate::registry_ops) fn build_package_toml_with_documentation(
+pub(in crate::registry_ops) fn build_package_toml(
     existing: &str,
     name: &str,
     version: &str,
@@ -49,13 +36,6 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
     previous: Option<&str>,
     image_infos: &[PublishedImage],
     source_info: Option<&StorePathInfo>,
-    expose_manifest: Option<&PublishExposeManifest>,
-    expose_artifact_info: Option<&StorePathInfo>,
-    expose_manifest_digest: Option<&str>,
-    config_module: Option<&ConfigModuleMeta>,
-    config_attestation: Option<&AttestationMeta>,
-    documentation: Option<&DocumentationArtifactMeta>,
-    documentation_attestation: Option<&AttestationMeta>,
 ) -> Result<String> {
     let desc = description.context("package description is required")?;
     let lic = license.context("package license is required")?;
@@ -66,79 +46,14 @@ pub(in crate::registry_ops) fn build_package_toml_with_documentation(
     let source_nar_hash = source_info
         .map(|source| source.nar_hash.as_str())
         .unwrap_or_default();
-    let mut platform_table = package_platform_table(
-        name,
-        version,
-        platform,
-        info,
-        image_infos,
-        source_drv,
-        source_nar_hash,
-        expose_manifest,
-        expose_artifact_info,
-        expose_manifest_digest,
-    )?;
-    if let Some(documentation) = documentation {
+    let mut platform_table =
+        package_platform_table(info, image_infos, source_drv, source_nar_hash)?;
+    if sysroot {
         let table = platform_table
             .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        record_documentation_platform_fields(table, documentation)?;
+            .context("new sysroot platform metadata is not a TOML table")?;
+        record_feature_gate(table, FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)?;
     }
-    if let Some(module) = config_module {
-        let table = platform_table
-            .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        record_config_module_platform_fields(table, name, module)?;
-        record_attestation_platform_fields(
-            table,
-            config_attestation
-                .context("config-module package is missing its publish provenance attestation")?,
-        )?;
-    } else if let Some(attestation) = documentation_attestation {
-        let table = platform_table
-            .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        record_attestation_platform_fields(table, attestation)?;
-    }
-    if let Some(documentation) = documentation {
-        let table = platform_table
-            .as_table_mut()
-            .context("new package platform metadata is not a TOML table")?;
-        let measurement = table
-            .get("measurement")
-            .and_then(toml::Value::as_str)
-            .context("documented package platform is missing its measurement")?;
-        let attestation = bind_documentation_provenance(
-            AttestationMeta {
-                root_digest: table
-                    .get("root_digest")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                root_hash: table
-                    .get("root_hash")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                root_hash_sig: table
-                    .get("root_hash_sig")
-                    .and_then(toml::Value::as_str)
-                    .map(str::to_string),
-                provenance: None,
-                measurement: Some(measurement.to_string()),
-            },
-            name,
-            platform,
-            documentation,
-        )?;
-        table.insert(
-            "provenance".into(),
-            toml::Value::String(
-                attestation
-                    .provenance
-                    .context("documented attestation is missing provenance")?,
-            ),
-        );
-    }
-
     if existing.is_empty() {
         let mut package = toml::map::Map::new();
         package.insert("name".into(), toml::Value::String(name.to_string()));
@@ -335,76 +250,224 @@ pub(crate) fn record_named_output(
         .or_insert_with(|| toml::Value::Table(toml::map::Map::new()))
         .as_table_mut()
         .context("package platform named_outputs is not a table")?;
-    if let Some(previous) = named_outputs.get(output).and_then(toml::Value::as_str)
+    if let Some(previous) = named_outputs
+        .get(output)
+        .and_then(|value| value.get("store_path"))
+        .and_then(toml::Value::as_str)
         && previous != store_path
     {
         bail!("package {name} {version} {platform} output {output} is already bound to {previous}");
     }
-    named_outputs.insert(
-        output.to_string(),
-        toml::Value::String(store_path.to_string()),
-    );
+    let metadata = named_outputs
+        .entry(output.to_string())
+        .or_insert_with(|| toml::Value::Table(toml::map::Map::new()));
+    metadata
+        .as_table_mut()
+        .context("named output metadata is not a table")?
+        .insert(
+            "store_path".to_string(),
+            toml::Value::String(store_path.to_string()),
+        );
 
     toml::to_string_pretty(&document).context("serializing package TOML with supplemental output")
 }
 
-#[allow(clippy::too_many_arguments)]
-#[cfg(test)]
-fn build_package_toml(
+/// Records native artifacts and declaration-derived resolution metadata with their feature gate.
+///
+/// # Errors
+/// Returns an error when the exact package coordinate is missing or malformed,
+/// an artifact locator is invalid, or feature gates cannot be merged.
+pub(crate) fn record_native_artifacts(
     existing: &str,
     name: &str,
     version: &str,
     platform: &str,
-    info: &StorePathInfo,
-    description: Option<&str>,
-    homepage: Option<&str>,
-    license: Option<&str>,
-    maintainer: Option<&str>,
-    sysroot: bool,
-    previous: Option<&str>,
-    image_infos: &[PublishedImage],
-    source_info: Option<&StorePathInfo>,
-    expose_manifest: Option<&PublishExposeManifest>,
-    expose_artifact_info: Option<&StorePathInfo>,
-    expose_manifest_digest: Option<&str>,
-    config_module: Option<&ConfigModuleMeta>,
-    config_attestation: Option<&AttestationMeta>,
+    deployment: &crate::types::NativeArtifactMeta,
+    documentation: Option<&crate::types::NativeArtifactMeta>,
+    qualification: Option<&crate::types::NativeArtifactMeta>,
+    version_requirement: Option<&str>,
+    os_version: Option<&str>,
+    dependencies: &[crate::deployment::model::ModuleDependency],
 ) -> Result<String> {
-    build_package_toml_with_documentation(
-        existing,
-        name,
+    aos_registry_surface::native_dependencies::check_version_requirement(
         version,
-        platform,
-        info,
-        description,
-        homepage,
-        license,
-        maintainer,
-        sysroot,
-        previous,
-        image_infos,
-        source_info,
-        expose_manifest,
-        expose_artifact_info,
-        expose_manifest_digest,
-        config_module,
-        config_attestation,
-        None,
-        None,
-    )
+        version_requirement,
+    )?;
+    aos_registry_surface::native_dependencies::check_resolution_metadata(os_version, dependencies)?;
+    deployment.validate()?;
+    if let Some(documentation) = documentation {
+        documentation.validate()?;
+    }
+    if let Some(qualification) = qualification {
+        qualification.validate()?;
+    }
+    let mut document: toml::Value = toml::from_str(existing)?;
+    if document
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str)
+        != Some(name)
+    {
+        bail!("native artifact package coordinate differs from catalog");
+    }
+    let entry = document
+        .get_mut("versions")
+        .and_then(toml::Value::as_array_mut)
+        .and_then(|versions| {
+            versions.iter_mut().find(|candidate| {
+                candidate.get("version").and_then(toml::Value::as_str) == Some(version)
+            })
+        })
+        .and_then(|version| version.get_mut("platforms"))
+        .and_then(toml::Value::as_table_mut)
+        .and_then(|platforms| platforms.get_mut(platform))
+        .and_then(toml::Value::as_table_mut)
+        .with_context(|| format!("package {name} {version} is missing platform {platform}"))?;
+    entry.insert("deployment".into(), toml::Value::try_from(deployment)?);
+    if let Some(requirement) = version_requirement {
+        entry.insert(
+            "version_requirement".into(),
+            toml::Value::String(requirement.into()),
+        );
+    } else {
+        entry.remove("version_requirement");
+    }
+    if let Some(requirement) = os_version {
+        entry.insert("osVersion".into(), toml::Value::String(requirement.into()));
+    } else {
+        entry.remove("osVersion");
+    }
+    if dependencies.is_empty() {
+        entry.remove("module_dependencies");
+    } else {
+        entry.insert(
+            "module_dependencies".into(),
+            toml::Value::try_from(dependencies)?,
+        );
+    }
+    if let Some(documentation) = documentation {
+        entry.insert(
+            "module_documentation".into(),
+            toml::Value::try_from(documentation)?,
+        );
+    } else {
+        entry.remove("module_documentation");
+    }
+    if let Some(qualification) = qualification {
+        entry.insert(
+            "qualification".into(),
+            toml::Value::try_from(qualification)?,
+        );
+    } else {
+        entry.remove("qualification");
+    }
+    // Republishing the native coordinate retires the former projection.
+    entry.remove("documentation");
+    entry.remove("contract");
+    let features = BTreeSet::from([crate::types::FEATURE_NATIVE_PACKAGE_MODULES_V1.to_string()]);
+    merge_feature_gate(entry, "requires-features", &features)?;
+    merge_minimum_format(entry, "platform")?;
+    let references = entry.remove("references");
+    let mut gate = match references {
+        Some(toml::Value::Table(gate)) => gate,
+        Some(toml::Value::Array(hashes)) => {
+            toml::map::Map::from_iter([("hashes".into(), toml::Value::Array(hashes))])
+        }
+        None => toml::map::Map::new(),
+        Some(_) => bail!("platform references metadata is malformed"),
+    };
+    merge_feature_gate(&mut gate, "requires-features", &features)?;
+    merge_minimum_format(&mut gate, "native references")?;
+    entry.insert("references".into(), toml::Value::Table(gate));
+    toml::to_string_pretty(&document).context("encoding native package catalog entry")
+}
+
+fn merge_feature_gate(
+    table: &mut toml::map::Map<String, toml::Value>,
+    key: &str,
+    additions: &BTreeSet<String>,
+) -> Result<()> {
+    let values = table
+        .entry(key)
+        .or_insert_with(|| toml::Value::Array(Vec::new()))
+        .as_array_mut()
+        .with_context(|| format!("{key} metadata is not an array"))?;
+    let mut merged = values
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .with_context(|| format!("{key} contains a non-string feature"))
+        })
+        .collect::<Result<BTreeSet<_>>>()?;
+    merged.extend(additions.iter().cloned());
+    *values = merged.into_iter().map(toml::Value::String).collect();
+    Ok(())
+}
+
+fn merge_minimum_format(
+    table: &mut toml::map::Map<String, toml::Value>,
+    label: &str,
+) -> Result<()> {
+    let existing = match table.get("min-format") {
+        Some(value) => {
+            let value = value
+                .as_integer()
+                .with_context(|| format!("{label} min-format metadata is not an integer"))?;
+            u32::try_from(value)
+                .with_context(|| format!("{label} min-format metadata is outside the u32 range"))?
+        }
+        None => 0,
+    };
+    let required = existing.max(PACKAGE_META_FORMAT);
+    table.insert(
+        "min-format".into(),
+        toml::Value::Integer(i64::from(required)),
+    );
+    Ok(())
+}
+
+/// Preserves structural gates while declaring a newly authored registry feature.
+///
+/// # Errors
+/// Rejects malformed feature arrays, reference tables, or format declarations.
+pub(super) fn record_feature_gate(
+    platform: &mut toml::map::Map<String, toml::Value>,
+    feature: &str,
+) -> Result<()> {
+    let features = BTreeSet::from([feature.to_string()]);
+    merge_feature_gate(platform, "requires-features", &features)?;
+    merge_minimum_format(platform, "package platform")?;
+
+    // The table representation makes readers that predate structural feature
+    // gates reject the package before they can stage its payload.
+    let prior_references = platform.remove("references");
+    let mut reference_gate = match prior_references {
+        Some(toml::Value::Array(hashes)) => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(hashes));
+            gate
+        }
+        Some(toml::Value::Table(gate)) => gate,
+        Some(_) => bail!("package references metadata is neither a hash list nor a gate table"),
+        None => {
+            let mut gate = toml::map::Map::new();
+            gate.insert("hashes".into(), toml::Value::Array(Vec::new()));
+            gate
+        }
+    };
+    merge_feature_gate(&mut reference_gate, "requires-features", &features)?;
+    merge_minimum_format(&mut reference_gate, "package references")?;
+    platform.insert("references".into(), toml::Value::Table(reference_gate));
+    Ok(())
 }
 
 fn package_platform_table(
-    name: &str,
-    version: &str,
-    platform: &str,
     info: &StorePathInfo,
     image_infos: &[PublishedImage],
     source_drv: &str,
     source_nar_hash: &str,
-    expose_manifest: Option<&PublishExposeManifest>,
-    expose_artifact_info: Option<&StorePathInfo>,
-    expose_manifest_digest: Option<&str>,
 ) -> Result<toml::Value> {
     let mut table = toml::map::Map::new();
     table.insert("store_path".into(), toml::Value::String(info.path.clone()));
@@ -427,7 +490,7 @@ fn package_platform_table(
 
     if !image_infos.is_empty() {
         let mut formats = HashSet::new();
-        let first = &image_infos[0];
+        let first = &image_infos[0].delivery;
         for image in image_infos {
             image.recheck_for_commit()?;
             if !formats.insert(image.format.as_str()) {
@@ -436,14 +499,12 @@ fn package_platform_table(
                     image.format
                 );
             }
-            if image.delivery.logical_image_id != first.delivery.logical_image_id
-                || image.delivery.uki != first.delivery.uki
-                || image.sb.signer_cert_sha256 != first.sb.signer_cert_sha256
-                || image.sb.sbat != first.sb.sbat
-                || image.sb.expected_pcr11 != first.sb.expected_pcr11
+            if image.delivery.logical_image_id != first.logical_image_id
+                || image.delivery.artifact_contract.schema != first.artifact_contract.schema
+                || image.delivery.artifact_contract.artifacts != first.artifact_contract.artifacts
             {
                 bail!(
-                    "all image encodings in one platform publication must share one logical disk and UKI identity"
+                    "all image encodings in one platform publication must share one logical disk and artifact contract"
                 );
             }
         }
@@ -466,418 +527,13 @@ fn package_platform_table(
                 let delivery = toml::Value::try_from(&image.delivery)
                     .context("serializing image delivery contract")?;
                 entry.insert("delivery".into(), delivery);
-                if let Some(cert) = &image.sb.signer_cert_sha256 {
-                    entry.insert(
-                        "sb_signer_cert_sha256".into(),
-                        toml::Value::String(cert.clone()),
-                    );
-                }
-                if !image.sb.sbat.is_empty() {
-                    let sbat = image
-                        .sb
-                        .sbat
-                        .iter()
-                        .map(|item| {
-                            let mut row = toml::map::Map::new();
-                            row.insert(
-                                "component".into(),
-                                toml::Value::String(item.component.clone()),
-                            );
-                            row.insert(
-                                "generation".into(),
-                                toml::Value::Integer(i64::from(item.generation)),
-                            );
-                            toml::Value::Table(row)
-                        })
-                        .collect::<Vec<_>>();
-                    entry.insert("sbat".into(), toml::Value::Array(sbat));
-                }
-                if let Some(pcr11) = &image.sb.expected_pcr11 {
-                    entry.insert("expected_pcr11".into(), toml::Value::String(pcr11.clone()));
-                }
-                if !image.sb.ukis.is_empty() {
-                    entry.insert(
-                        "ukis".into(),
-                        toml::Value::try_from(&image.sb.ukis)
-                            .context("serializing slot-specific UKI facts")?,
-                    );
-                }
-                if !image.sb.recovery_ukis.is_empty() {
-                    entry.insert(
-                        "recovery_ukis".into(),
-                        toml::Value::try_from(&image.sb.recovery_ukis)
-                            .context("serializing recovery UKI facts")?,
-                    );
-                }
-                if let Some(bundle) = &image.sb.recovery_bundle {
-                    entry.insert(
-                        "recovery_bundle".into(),
-                        toml::Value::try_from(bundle)
-                            .context("serializing recovery bundle manifest")?,
-                    );
-                }
-                let root_image = image.directory.path.join("root.img");
-                let root_verity = image.directory.path.join("root.verity");
-                let root_hash = image.directory.path.join("root.roothash");
-                let root_hash_sig = image.directory.path.join("root.roothash.p7s");
-                // Recovery UKIs are only valid with the complete A/B verity
-                // payload, including when its distributable disk encoding is
-                // `raw`. Ordinary raw disk images may contain unrelated files
-                // with these names and must not acquire a verity contract.
-                let catalogs_verity =
-                    matches!(image.format.as_str(), "ext4-verity" | "erofs-verity")
-                        || !image.sb.recovery_ukis.is_empty();
-                if catalogs_verity {
-                    let verity_count = [&root_image, &root_verity, &root_hash, &root_hash_sig]
-                        .iter()
-                        .filter(|path| path.is_file())
-                        .count();
-                    if verity_count != 4 {
-                        bail!("published image has an incomplete dm-verity artifact set");
-                    }
-
-                    let hash = fs::read_to_string(&root_hash)?;
-                    let hash = hash.trim();
-                    if hash.len() != 64
-                        || !hash
-                            .bytes()
-                            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-                    {
-                        bail!("published image has a malformed root.roothash");
-                    }
-                    entry.insert("root_image".into(), toml::Value::String("root.img".into()));
-                    entry.insert(
-                        "root_verity".into(),
-                        toml::Value::String("root.verity".into()),
-                    );
-                    entry.insert(
-                        "root_hash".into(),
-                        toml::Value::String(format!("sha256:{hash}")),
-                    );
-                    entry.insert(
-                        "root_hash_sig".into(),
-                        toml::Value::String("root.roothash.p7s".into()),
-                    );
-                }
                 Ok(toml::Value::Table(entry))
             })
             .collect::<Result<Vec<_>>>()?;
         table.insert("images".into(), toml::Value::Array(images));
-        if image_infos.iter().any(|image| !image.sb.ukis.is_empty()) {
-            let feature = toml::Value::String(FEATURE_UKI_SLOTS_V1.to_string());
-            let features = table
-                .entry("requires-features")
-                .or_insert_with(|| toml::Value::Array(Vec::new()))
-                .as_array_mut()
-                .context("platform requires-features metadata is not an array")?;
-            if !features.contains(&feature) {
-                features.push(feature);
-            }
-            table.insert(
-                "min-format".into(),
-                toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-            );
-        }
-        if image_infos
-            .iter()
-            .any(|image| !image.sb.recovery_ukis.is_empty())
-        {
-            let feature = toml::Value::String(FEATURE_RECOVERY_UKIS_V1.to_string());
-            let features = table
-                .entry("requires-features")
-                .or_insert_with(|| toml::Value::Array(Vec::new()))
-                .as_array_mut()
-                .context("platform requires-features metadata is not an array")?;
-            if !features.contains(&feature) {
-                features.push(feature);
-            }
-            table.insert(
-                "min-format".into(),
-                toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-            );
-        }
-    }
-
-    if let Some(manifest) = expose_manifest {
-        let artifact = expose_artifact_info
-            .context("expose manifest requires rendered expose artifact metadata")?;
-        let attestation = publish_attestation_meta(
-            name,
-            version,
-            platform,
-            info,
-            manifest,
-            expose_manifest_digest,
-        )
-        .with_context(|| format!("deriving package attestation metadata for package '{name}'"))?;
-        table.insert(
-            "min-format".into(),
-            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-        );
-        let mut required_features = vec![
-            toml::Value::String(FEATURE_EXPOSE_V1.to_string()),
-            toml::Value::String(FEATURE_EXPOSE_ARTIFACT_V1.to_string()),
-            toml::Value::String(FEATURE_PERMISSIONS_V1.to_string()),
-            toml::Value::String(FEATURE_NETWORK_POLICY_V1.to_string()),
-        ];
-        if !manifest.expose.requires.is_empty() {
-            required_features.push(toml::Value::String(FEATURE_REQUIRES_V1.to_string()));
-        }
-        if !manifest.expose.config.is_empty() {
-            required_features.push(toml::Value::String(FEATURE_CONFIG_V1.to_string()));
-        }
-        if manifest.expose.config.has_optional_credentials() {
-            required_features.push(toml::Value::String(
-                FEATURE_OPTIONAL_CREDENTIALS_V1.to_string(),
-            ));
-        }
-        if manifest.expose.config.has_unit_reconciliation() {
-            required_features.push(toml::Value::String(FEATURE_RELOAD_V1.to_string()));
-        }
-        if !manifest.expose.provides.is_empty() || !manifest.expose.uses.is_empty() {
-            required_features.push(toml::Value::String(
-                FEATURE_CAPABILITY_ROUTES_V1.to_string(),
-            ));
-        }
-        let ebpf_unit = format!("aos-pkg-{name}-ebpf.service");
-        if manifest.expose.units.iter().any(|unit| unit == &ebpf_unit) {
-            required_features.push(toml::Value::String(FEATURE_EBPF_NET_POLICY_V1.to_string()));
-        }
-        if manifest.mac.is_some() {
-            required_features.push(toml::Value::String(FEATURE_MAC_PROFILE_V1.to_string()));
-        }
-        if attestation.is_some() {
-            required_features.push(toml::Value::String(FEATURE_ATTESTATION_V1.to_string()));
-        }
-        table.insert(
-            "requires-features".into(),
-            toml::Value::Array(required_features.clone()),
-        );
-        let mut references = toml::map::Map::new();
-        references.insert("hashes".into(), toml::Value::Array(Vec::new()));
-        references.insert(
-            "min-format".into(),
-            toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-        );
-        references.insert(
-            "requires-features".into(),
-            toml::Value::Array(required_features.clone()),
-        );
-        table.insert("references".into(), toml::Value::Table(references));
-        table.insert(
-            "expose".into(),
-            toml::Value::try_from(&manifest.expose)
-                .context("serializing expose manifest metadata")?,
-        );
-        let artifact = ExposeArtifactMeta {
-            store_path: artifact.path.clone(),
-            nar_hash: artifact.nar_hash.clone(),
-            nar_size: artifact.nar_size,
-        };
-        validate_expose_artifact_meta(&artifact)?;
-        table.insert(
-            "expose_artifact".into(),
-            toml::Value::try_from(&artifact).context("serializing expose artifact metadata")?,
-        );
-        table.insert(
-            "permissions".into(),
-            toml::Value::try_from(&manifest.permissions)
-                .context("serializing permissions manifest metadata")?,
-        );
-        if let Some(attestation) = attestation {
-            if let Some(root_digest) = attestation.root_digest {
-                table.insert("root_digest".into(), toml::Value::String(root_digest));
-            }
-            if let Some(root_hash) = attestation.root_hash {
-                table.insert("root_hash".into(), toml::Value::String(root_hash));
-            }
-            if let Some(root_hash_sig) = attestation.root_hash_sig {
-                table.insert("root_hash_sig".into(), toml::Value::String(root_hash_sig));
-            }
-            if let Some(provenance) = attestation.provenance {
-                table.insert("provenance".into(), toml::Value::String(provenance));
-            }
-            table.insert(
-                "measurement".into(),
-                toml::Value::String(
-                    attestation
-                        .measurement
-                        .context("package attestation measurement missing")?,
-                ),
-            );
-        }
     }
 
     Ok(toml::Value::Table(table))
-}
-
-fn record_documentation_platform_fields(
-    table: &mut toml::map::Map<String, toml::Value>,
-    documentation: &DocumentationArtifactMeta,
-) -> Result<()> {
-    validate_documentation_artifact_meta(documentation)
-        .context("validating package documentation metadata for publish")?;
-    let feature = toml::Value::String(FEATURE_PACKAGE_DOCUMENTATION_V1.to_string());
-    let features = table
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()))
-        .as_array_mut()
-        .context("platform requires-features metadata is not an array")?;
-    if !features.contains(&feature) {
-        features.push(feature.clone());
-    }
-    table.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-
-    let references = table
-        .entry("references")
-        .or_insert_with(|| {
-            let mut references = toml::map::Map::new();
-            references.insert("hashes".into(), toml::Value::Array(Vec::new()));
-            toml::Value::Table(references)
-        })
-        .as_table_mut()
-        .context("platform references metadata is not a table")?;
-    references.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-    let reference_features = references
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()))
-        .as_array_mut()
-        .context("platform references requires-features metadata is not an array")?;
-    if !reference_features.contains(&feature) {
-        reference_features.push(feature);
-    }
-    table.insert(
-        "documentation".into(),
-        toml::Value::try_from(documentation)
-            .context("serializing package documentation metadata")?,
-    );
-    Ok(())
-}
-
-/// Records a `config_module` block and its fail-closed format gates.
-///
-/// # Errors
-///
-/// Returns an error when the package name or `module` metadata is malformed,
-/// including when a declaration escapes the package's private, owned, and
-/// contributed roots, or when TOML serialization fails.
-pub(crate) fn record_config_module_platform_fields(
-    table: &mut toml::map::Map<String, toml::Value>,
-    package_name: &str,
-    module: &ConfigModuleMeta,
-) -> Result<()> {
-    validate_config_module_meta(package_name, module)
-        .context("validating config-module metadata for publish")?;
-    let feature = toml::Value::String(FEATURE_CONFIG_MODULE_V1.to_string());
-    let required_features_value = table
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()));
-    let required_features = required_features_value
-        .as_array_mut()
-        .context("platform requires-features metadata is not an array")?;
-    if !required_features.contains(&feature) {
-        required_features.push(feature.clone());
-    }
-    table.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-    let references_value = table.entry("references").or_insert_with(|| {
-        let mut references = toml::map::Map::new();
-        references.insert("hashes".into(), toml::Value::Array(Vec::new()));
-        toml::Value::Table(references)
-    });
-    let references = references_value
-        .as_table_mut()
-        .context("platform references metadata is not a table")?;
-    references.insert(
-        "min-format".into(),
-        toml::Value::Integer(i64::from(PACKAGE_META_FORMAT)),
-    );
-    let reference_features_value = references
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()));
-    let reference_features = reference_features_value
-        .as_array_mut()
-        .context("platform references requires-features metadata is not an array")?;
-    if !reference_features.contains(&feature) {
-        reference_features.push(feature);
-    }
-    table.insert(
-        "config_module".into(),
-        toml::Value::try_from(module).context("serializing config-module metadata")?,
-    );
-    Ok(())
-}
-
-fn record_attestation_platform_fields(
-    table: &mut toml::map::Map<String, toml::Value>,
-    attestation: &AttestationMeta,
-) -> Result<()> {
-    validate_attestation_meta(attestation)?;
-    let feature = toml::Value::String(FEATURE_ATTESTATION_V1.to_string());
-    for key in ["requires-features"] {
-        let features = table
-            .entry(key)
-            .or_insert_with(|| toml::Value::Array(Vec::new()))
-            .as_array_mut()
-            .with_context(|| format!("platform {key} metadata is not an array"))?;
-        if !features.contains(&feature) {
-            features.push(feature.clone());
-        }
-    }
-    let references = table
-        .get_mut("references")
-        .and_then(toml::Value::as_table_mut)
-        .context("config-module platform is missing structural references metadata")?;
-    let reference_features = references
-        .entry("requires-features")
-        .or_insert_with(|| toml::Value::Array(Vec::new()))
-        .as_array_mut()
-        .context("platform references requires-features metadata is not an array")?;
-    if !reference_features.contains(&feature) {
-        reference_features.push(feature);
-    }
-    if let Some(root_digest) = &attestation.root_digest {
-        table.insert(
-            "root_digest".into(),
-            toml::Value::String(root_digest.clone()),
-        );
-    }
-    if let Some(root_hash) = &attestation.root_hash {
-        table.insert("root_hash".into(), toml::Value::String(root_hash.clone()));
-    }
-    if let Some(root_hash_sig) = &attestation.root_hash_sig {
-        table.insert(
-            "root_hash_sig".into(),
-            toml::Value::String(root_hash_sig.clone()),
-        );
-    }
-    table.insert(
-        "provenance".into(),
-        toml::Value::String(
-            attestation
-                .provenance
-                .clone()
-                .context("config-module attestation is missing provenance")?,
-        ),
-    );
-    table.insert(
-        "measurement".into(),
-        toml::Value::String(
-            attestation
-                .measurement
-                .clone()
-                .context("config-module attestation is missing measurement")?,
-        ),
-    );
-    Ok(())
 }
 
 #[cfg(test)]

@@ -120,6 +120,7 @@ pub(super) async fn prepare(
             &config,
             &authoring_registry,
             &publications,
+            &intent.entries,
             &mut signer,
             printer,
         );
@@ -261,7 +262,8 @@ fn registry_intent(
 ) -> Result<RegistryReleaseIntent> {
     let planned_support =
         SupportSectionWrite::from_policy(&plan.version, &plan.qualification.support)?;
-    let entries = super::registry_entries::from_build(&plan.packages, &report.outputs)?;
+    let entries =
+        super::registry_entries::from_build(&plan.packages, &report.outputs, &report.sources)?;
 
     Ok(RegistryReleaseIntent {
         schema: INTENT_SCHEMA.to_string(),
@@ -321,9 +323,10 @@ fn validate_transaction_binding(
     if transaction.support != planned_support {
         bail!("registry transaction support tables differ from the release plan's contract");
     }
-    if transaction.entries != super::registry_entries::from_build(&plan.packages, &report.outputs)?
+    if transaction.entries
+        != super::registry_entries::from_build(&plan.packages, &report.outputs, &report.sources)?
     {
-        bail!("registry transaction differs from the built package and configuration inputs");
+        bail!("registry transaction differs from the frozen package artifacts");
     }
     Ok(())
 }

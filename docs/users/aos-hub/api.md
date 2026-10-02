@@ -176,6 +176,113 @@ aos --json hub registry get acme/cdn --hub https://hub.example.com
 Pass `--token '<access-token>'` to commands that require authentication. Use
 the schema when building a client or integration.
 
+## Read native release documentation
+
+`aos.hub.v1.DocumentationService` uses the registry's normal read authorization.
+Native references are retained with completed signed releases. Hub checks the
+publication's documentation directory and exact `options.json` byte identity
+before returning or rendering the `aos.module.documentation` document.
+Packages without a native documentation artifact return not found. The
+`/{registry}/-/api/v1/` documentation, ability, and option reads accept the same
+registry read bearer as their RPC counterparts; a browser session cookie alone
+does not authenticate these JSON routes. Credentialed responses use private,
+no-store caching even when the document digest identifies immutable bytes.
+
+| Method | Native behavior |
+| --- | --- |
+| `GetPackageDocumentation` | Selects registry/package/version/platform, with an optional exact `release` pin. |
+| `SearchPackageDocumentation` | Searches generated `package`, `option`, or `operation` rows; each result carries release, registry commit, and document digest. |
+| `ListPackageOptions` | Lists typed native options with prefix, owner, portable type JSON, and extensibility filters. |
+| `GetPackageOption` | Selects an option by exact nonempty literal path segments. |
+| `ComparePackageDocumentation` | Compares two package versions on the same platform and returns `aos.module.documentation.comparison`. |
+| `GetDocumentationArtifact` | Retrieves the exact native reference matching a document digest. |
+| `GetPackageDocumentationSchema` | Returns the selected native reference bytes and documentation identity. |
+
+For a pinned document read:
+
+```sh
+curl -fsS -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <access-token>' \
+  -d '{"registry":"acme/packages","package":"sample","version":"1.0","platform":"x86_64-linux","release":"1.0.0"}' \
+  https://hub.example.com/aos.hub.v1.DocumentationService/GetPackageDocumentation
+```
+
+Empty version/platform selectors use Hub's deterministic default selection.
+An explicit release never falls back to another release. The HTTP package
+options list also honors its `release` query; the options RPC uses
+version/platform selection. The response identity includes the verified commit,
+tag object, completed snapshot, exact document
+digest and size, and artifact store path/NAR identity. The `canonicalJson`
+transport field carries the exact signed JSON bytes as protobuf JSON base64.
+Decode those bytes before checking their digest; do not parse and reserialize
+the document first. `etag` is the document digest.
+A search-to-read client should send the result's release with its exact package,
+version, and platform, then check the returned commit and digest against the
+result.
+
+The schema-named method returns the package's native reference; it does not
+return an independently authored schema. Interface metadata identifies each
+interface's release owner: package interfaces use the owning package release,
+and OS/base interfaces use the OS release. `moduleRequirements` entries
+preserve `owner`, `package`, and `packageVersion`; `osRequirements` entries
+preserve `owner` and `osVersion` for the selected host OS. Plain dependencies inherit the recipe's generated
+`package.versionRequirement`; explicit source pins remain exact. These fields are generated from the same module
+declarations; they do not report a resolver decision. The generic reference
+schema is available through local documentation tooling. Native comparison output keeps
+option path segments and `[ability, operation]` pairs separate, and compares
+option type/mutability/extension policy and operation input/result types,
+handler availability, and configured instances. It also reports interface release
+owner changes and module requirement changes by exact `[owner, package]` pairs. Prose changes and observed runtime state are outside
+that comparison.
+
+## Read native release declarations and reporter assertions
+
+`GetPackageAbilityReference` returns the exact native reference bytes with the
+completed release, commit, tag, snapshot, and document digest. The retired
+manifest/provider-plan identity fields are reserved. `GetReleaseAbilityGraph`
+returns `aos.module.release-graph`: an authenticated release and platform pin
+with exact package references. It aggregates declarations; it does not infer
+executed effects or handler edges.
+
+`ReportPackageAbilityDeployment` accepts `aos.module.deployment-report`, binding
+one enrolled deployment slot and strictly increasing sequence to an exact native
+package reference. Hub checks the desired transaction graph, declaration input
+and result contracts, and any reported result values. The active enrolled
+principal and current enrollment resource version must match. Reports expire
+within 300 seconds; reads require `audit.read` and recheck enrollment liveness.
+Exact identities and checked values establish the report's scope, not proof of
+live runtime state. The graph is desired state and outputs are reporter
+assertions. Migrating from retired report formats clears their assertion bytes
+while preserving enrollment and the sequence replay fence.
+
+## Inspect a native runtime document
+
+This stateless endpoint is available when the browse UI is mounted:
+
+```text
+POST /-/api/runtime-documentation
+POST /-/api/runtime-documentation?format=html
+```
+
+Send raw JSON with schema `aos.module.documentation` or
+`aos.package.transaction`. The shared native reader validates the document;
+transaction input includes checked graph identities, dependencies, and ordering.
+The default response is parsed JSON; `format=html` returns an HTML fragment with
+package/operation links or the ordered execution path. Invalid documents or
+formats return HTTP 400. Requests share the Hub's 8 MiB body ceiling.
+
+```sh
+curl --data-binary @options.json -H 'Content-Type: application/json' \
+  'https://hub.example/-/api/runtime-documentation?format=html'
+```
+
+The endpoint does not retain uploads, evaluate Nix, execute handlers, authenticate
+release provenance, or add documents to a release index. Successful inspection
+responses use `Cache-Control: no-store`. This read-only browser support endpoint
+is separate from the release documentation Connect service. See the
+[runtime abilities guide](../aos/runtime-abilities.md) for native declaration
+and transaction examples.
+
 ## Unpublished registry release candidates
 
 `aos.hub.v1.PublishService` exposes these Connect methods. Every operation,

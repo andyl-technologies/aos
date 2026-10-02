@@ -129,7 +129,7 @@ registry, cache, or network connection:
 
 ```sh
 apm docs show nginx
-apm options show nginx.enable --package nginx
+apm options show aos.services.nginx.enable --package nginx
 apm docs man nginx --install
 apm docs serve
 ```
@@ -146,48 +146,45 @@ definition, links, symbols, diagnostics, and quick fixes are advisory because
 the language server never evaluates an editor buffer. Review the authoritative
 result with `apm config diff` before applying it. `apm options complete` exposes
 the same bounded option-path completion to shells and other editor clients.
+The read-only `aos/packageDocumentation/abilityGraph` extension accepts one
+exact loaded package/version plus the canonical shared graph query object. Its
+public-only slice uses the same node identities, relationship meanings, query
+bounds, and limitation diagnostics as `aos ability inspect` and the Hub. It
+does not report deployment authorization or live provider availability.
 
 ## Understand runtime `host.nix`
 
 Runtime activation follows one transaction:
 
 ```text
-host.nix + facts + ABI-pinned base library
-  -> pure resolve/evaluate fixpoint
-  -> authenticated package fetch and signed config render
-  -> secretRef resolution
-  -> EROFS /etc lower in gen-N
-  -> atomic pointer and /etc switch
-  -> unit reconciliation and activation record
+accepted host.nix + facts + retained native module sources
+  -> typed desired-package selection
+  -> signed registry acquisition of missing packages and native companions
+  -> complete native graph evaluation
+  -> journaled effects, including configuration lower and services
+  -> one committed system-profile generation
 ```
 
-The resolver imports only authenticated package `config` outputs compatible
-with the running image ABI. Package render failures use the documented soft
-degradation path and are recorded in the projection; evaluation, credential,
-or pre-swap failures leave the active generation unchanged.
+Selection reads explicit package requirements before package-owned options are
+checked. It does not infer providers from undefined-option errors. Full native
+evaluation checks authenticated modules, release requirements, handlers, and
+effect dependencies before execution.
 
-The server and edge images retain the package closures needed by their
-built-in runtime roles. Enabling `aos.roles.server` or `aos.roles.edge` in an
-authenticated `host.nix` can therefore start SSH and time synchronization
-without rebuilding or downloading a different image. Retained role packages
-remain absent from the generation-zero manifest and interactive command path
-until host policy selects their services.
+Built-in server and edge roles contribute conditional package requirements.
+Enabling a role can acquire its SSH and time-synchronization packages through
+configured registries without rebuilding the image. Their configuration and
+package selection commit together.
 
-After the atomic `/etc` switch, activation applies the new `tmpfiles.d` rules
-before reconciling services. Runtime roles may therefore introduce required
-state directories in the same transaction that starts their daemons.
-Changes to generated service scripts replace the corresponding image unit as
-one activation artifact. Settings that disable an image-baked file or service
-create a generation-local overlay deletion, so the immutable lower copy does
-not remain active merely because it exists in the image.
+The configuration-lower effect retains and mounts an EROFS `/etc` lower before
+its dependent consumers. Other declared dependencies order state preparation
+and service realization. The native journals record completed effects and
+pending recovery; a failed activation does not publish a new `current` pointer.
+Recovery completes before another change is accepted.
 
-Image and configuration generations are independent. An image generation owns
-the kernel, initrd, base module library, evaluator, and A/B slot. A
-configuration generation owns the evaluated manifest and EROFS `/etc`
-lower and records the image generation and module ABI it was built against.
-Same-ABI rollback can reactivate retained configuration directly. Cross-ABI
-rollback re-evaluates retained `host.nix`, facts, and authenticated package
-modules against the running image instead of replaying an incompatible `/etc`.
+Image generations own the kernel, initrd, and A/B slot. Native system-profile
+generations retain selected packages, module sources, operator input, and
+evaluated deployment state. Subsequent boots recover and reconcile the latest
+committed profile rather than replacing it with the image's initial selection.
 
 ## Supplement `host.nix` at runtime
 
@@ -203,7 +200,7 @@ For a package installed through `apm`, put only its configuration in a module:
 
 ```nix
 {
-  nginx = {
+  aos.services.nginx = {
     enable = true;
     virtualHosts.health = {
       listen = [8080];
@@ -230,8 +227,9 @@ package selection and configuration occur in the same transaction. Use
 `replace` and `remove` to edit desired state, and `discard` to restore the
 worktree from the active immutable snapshot. A failed evaluation or activation
 leaves the current generation live; the edited worktree remains dirty for
-inspection. Reboot, rollback, ordinary `apm switch`, and cross-ABI
-re-evaluation use the generation-pinned snapshot, never unsaved worktree bytes.
+inspection. Subsequent boot reconciliation uses the generation-pinned snapshot;
+edited worktree files are admitted by an explicit `apm config apply` or
+`apm switch` transaction.
 
 Runtime modules have full stage-2 local-root operator authority but cannot
 change `aos.provisioning.*`: storage provisioning remains exclusively sourced
@@ -246,87 +244,58 @@ generation:
 apm switch --dry-run
 ```
 
-By default, APM evaluates the staged runtime `host.nix` with the running
-image's base library and module ABI, and compares it with `current`. Use
-`--from ./host.nix` to preview edited input. `--diff-against` accepts
-`current`, `gen-N`, or an explicit manifest path.
+APM evaluates the complete operator worktree with the retained host input and
+running image's native module library, then compares it with the committed
+generation. Use `apm config add` or `apm config replace` to stage edited input.
 
-The human report includes `/etc` additions, changes, and removals; unit
-start/restart/stop actions; store paths to fetch; and the provider-resolution
-trace. Put the global `--json` option before the subcommand for
-machine-readable fields:
+When selected packages are already installed, native preview reports added,
+changed, and removed effects. If packages must be acquired first, it reports
+those names and stops before full graph evaluation. Preview neither downloads
+those missing packages nor activates effects or publishes a generation. Put
+the global `--json` option before the subcommand for machine-readable output:
 
 ```sh
 apm --json switch --dry-run
 ```
 
-Apply a reviewed configuration with the same evaluator and graph compiler:
+Apply a reviewed configuration with the same evaluator and checked activation:
 
 ```sh
-apm switch --from ./host.nix
+apm switch
 ```
 
-The switch also reconciles `aos.apm.desiredPackages`: authenticated rendered
-unit artifacts are attached to the candidate generation, selected package
-targets are enabled and started after the `/etc` swap, and targets removed from
-the desired set are stopped. Packages bundled in the image remain inert unless
-the active host configuration selects them.
+The switch also reconciles `aos.apm.desiredPackages`. Typed selection runs before
+authenticated package acquisition and complete native evaluation, so a module
+can name a new package and set its package-owned options together. Package
+selection and enabled effects commit in the same generation. Dependency modules
+and available sibling outputs do not install unused payloads.
 
-Selection prefers an authenticated configured registry. If no registry
-publishes a selected name, AOS may use the exact package and config companion
-from the active image-seeded package profile. This is the supported
-bootstrap/recovery and deliberate-offline path: every local NAR is verified
-against the immutable package seed reached through the booted image's lower
-store. Writable profile metadata must exactly match that seed, so changing a
-profile record cannot authorize a different module. Missing or mismatched
-image-local content fails closed instead of being fetched from an unrelated
-registry.
+Already installed packages are retained through their committed native
+sources and authenticated envelopes. Missing roots use normal configured
+registry resolution, download verification, and native companion admission.
+The host input authorizes its configuration bytes; each acquired package
+still needs its own registry release proof.
 
-`--from` selects the input for this transaction; it does not replace the
-metadata-delivered policy or its last-known-good cache. Update and, in signed
-mode, sign the authoritative metadata input before relying on the change after
-a reboot. For a standalone file in signed mode, also use
-`--require-signed-host-nix` and point `--trusted-config-keys-dir` at the
-applicable trust-anchor directory.
-
-Terminal evaluation failures retain a stable `config-eval.class` journal tag
-and distinct exit code:
-
-| Exit | Class |
-| --- | --- |
-| `10`-`12` | Assertion, undefined option, or conflicting definitions |
-| `13`-`14` | Missing provider or module ABI mismatch |
-| `15`-`17` | Resource kill, non-convergence, or unsatisfiable provider cycle |
-| `18` | Ambiguous provider |
-| `19`-`20` | Fetch failure or unclassified evaluation error |
-| `21`-`22` | Shadowed root or invalid contribution grant |
-
-The default journal message is a one-line operator summary. Repeat the command
-in verbose mode when the complete Nix trace is required.
+Runtime operator modules are retained with the committed generation; editing
+the worktree alone does not change active or rebooted state. These commands do
+not rewrite the metadata-delivered source. Inspect the command error and native
+controller journal when acquisition, evaluation, admission, or an effect fails.
 
 ## Inspect configuration state
 
 ```sh
-systemctl status aos-eval.service
-journalctl -b \
-  -u aos-eval.service \
-  -u aos-graph-compile.service \
-  -u aos-activate.service
-test -s /run/aos/manifest.json && echo "host input evaluated"
-cat /run/aos/activation.json
+apm config status
+systemctl status aos-ability-host-controller.service
+journalctl -b -u aos-ability-host-controller.service
 readlink /var/lib/profiles/system/current
-cat /var/lib/profiles/system/state.json
-
-cat /var/lib/aos-provisioning/audit.json
-if test -r /run/aos-metadata/storage-coherence; then
-  cat /run/aos-metadata/storage-coherence
-fi
+cat /var/lib/profiles/system/current/evaluation.json
+cat /var/lib/profiles/system/current/native-deployment.json
 ```
 
-An evaluated manifest proves only that module evaluation converged. The current
-pointer and matching activation record prove that the generation was committed.
-The record's `status` distinguishes `complete` from `degraded`; also inspect
-the command result, failed units, and application health.
+Evaluation alone does not prove activation. The native generation and effect
+journals under `/var/lib/profiles/system/deployment` record committed state and
+recovery. Check the controller result, failed units, and application health as
+well as the current pointer and its retained publication marker.
 
 Release maintainers who need to change the golden image should use
 [Build and customize release images](../../maintainers/system-images.md).

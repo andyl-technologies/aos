@@ -4,7 +4,7 @@ An AOS package is a Nix derivation built from source with the AOS package set.
 Adding an application normally has three parts:
 
 1. define the package under `pkgs/`;
-2. expose its runtime interface when `apm` must activate it;
+2. declare its typed package module when it contributes runtime behavior;
 3. include it in a system variant or publish it to a registry.
 
 This guide builds a small service package called `acme-health-agent`. The
@@ -12,9 +12,9 @@ example is deliberately self-contained so it can be evaluated and built
 without a separate source repository.
 
 Use [Review package security](../../maintainers/package-security.md) while
-choosing dependencies, permissions, and an `expose` contract. The corresponding
-operator-visible boundary is documented in [Understand the package
-sandbox](package-sandbox.md).
+choosing dependencies and native ability requests. The corresponding
+operator-visible boundary is documented in [Understand native package runtime
+policy](package-sandbox.md).
 
 ## Define the package
 
@@ -56,27 +56,6 @@ mkDerivation {
       '';
     }
   ];
-
-  expose = {
-    units."acme-health-agent.service" = {
-      description = "Acme host health agent";
-      serviceConfig = {
-        Type = "simple";
-        ExecStart = "${agent}/bin/acme-health-agent";
-        Restart = "on-failure";
-        RestartSec = "5s";
-      };
-    };
-
-    permissions = {
-      network = "private";
-      tcp-bind = [];
-      capabilities = [];
-      devices = [];
-      host-paths = [];
-      syscalls = "restricted";
-    };
-  };
 
   meta = {
     description = "Acme host health agent";
@@ -166,6 +145,34 @@ corruption or as evidence for a permanent package-specific limit. See the
 [build concurrency notes](../../maintainers/build-concurrency.md) for packages
 to watch under resource pressure and the available reproduction results.
 
+A recipe `version` can carry its compatibility policy: `"^7.4.2"`, `"~7.4.2"`,
+and `"=7.4.2"` all publish exact version `7.4.2`, with caret, tilde, or equal-version
+requirements. Bare strict SemVer defaults to caret; other bare version schemes
+remain exact-only. Use one optional operator and a full version, not a compound
+range. The default is an authoring convention, not evidence that upstream follows
+SemVer. Check the interface the package exposes: use `~` for a documented
+patch-series guarantee, and `=` while a broader policy remains unverified.
+Compatibility of an AOS-authored module also requires review of its options,
+handlers, and effects; an upstream library ABI promise does not establish that
+contract. Keep the rationale and any upstream policy link beside the recipe's
+version declaration.
+
+Keep the source URL variable exact when adding an operator:
+
+```nix
+{ mkDerivation, fetchurl, fakeHash, ... }: let
+  version = "7.4.2";
+in mkDerivation {
+  pname = "acme-agent";
+  version = "~${version}";
+  src = fetchurl {
+    urls = ["https://downloads.example.com/acme-agent-${version}.tar.gz"];
+    hash = fakeHash;
+  };
+  # Dependencies and phases are declared normally.
+}
+```
+
 For an upstream release, add `fetchurl` and `fakeHash` to the package function
 arguments, keep `version` beside the source, and replace `src = null` with:
 
@@ -214,7 +221,7 @@ hostname already used by the dependency closure instead of widening its
 network-origin set.
 
 Leave Bazel action placement to the system Bazel configuration when its local
-default works in the package sandbox. Do not add a global
+default works in the build sandbox. Do not add a global
 `--spawn_strategy=standalone` package flag: command-line package flags override
 the system configuration and prevent an available remote executor from
 receiving actions. When nested Bazel sandboxing is unavailable and a package
@@ -260,171 +267,89 @@ changing the Cargo.lock-selected graph, advance the generated lock's exact
 checksum in the source patch phase and assert the new value. Do not enable
 repinning in production fetches merely to bypass a stale rule digest.
 
-## Expose the runtime interface
+## Declare the native package module
 
-The `expose` attribute is the contract used by APM. It renders a separate
-activation artifact containing units, firewall rules, configuration, and a
-permission declaration. A package without `expose` can be used at image build
-time, but it cannot be registered under `aos.packages` or activated as an APM
-package.
-
-The renderer creates a package target named:
-
-```text
-aos-pkg-<package-name>.target
-```
-
-## Author generated package documentation
-
-Configuration reference belongs beside the package's Nix interface. Add a
-structured `documentation` value to `configModule`; do not create a per-package
-Markdown option guide:
+A recipe may publish a configuration module directory alongside its payload:
 
 ```nix
-configModule = {
-  module = ./_acme-health-agent-config/module.nix;
-  documentation = {
-    summary = "Health reporting, listener policy, and reload behavior.";
-    sections.quickstart = {
-      title = "Quick start";
-      blocks = [
-        {
-          kind = "paragraph";
-          spans = [
-            {
-              kind = "text";
-              text = "Enable the agent and select its reporting interval.";
-            }
-          ];
-        }
-        {
-          kind = "code";
-          language = "nix";
-          text = ''
-            {
-              acmeHealthAgent.enable = true;
-              acmeHealthAgent.interval = "60s";
-            }
-          '';
-        }
-      ];
-    };
-  };
-};
-```
-
-The restricted publisher evaluation mechanically extracts option paths, types,
-defaults, examples, ownership and contribution rules. It cross-checks any
-package-authored option enrichment against that declared interface, combines it
-with expose metadata for services, listeners, credentials, paths and
-capabilities, and emits canonical `aos.package-documentation/v1` JSON. Structured
-prose supports paragraphs, lists, notes and code blocks; raw Markdown, HTML and
-external includes are intentionally not representable.
-
-Publication stores the canonical JSON as a reference-free Nix store object and
-binds its NAR and semantic identities into signed package metadata. A prose-only
-change updates documentation without changing runtime measurement, while an
-option or runtime-interface change updates the semantic schema digest. Verify
-the package's generated interface and publication contract with:
-
-```sh
-nix-build -A checks.package-documentation --no-out-link
-nix-build -A checks.package-expose --no-out-link
-apr verify --registry <name>
-```
-
-Activating `acme-health-agent` enables
-`aos-pkg-acme-health-agent.target`, which owns the service unit above. Units
-marked `onlyManualStart = true` are installed but are not pulled into that
-target.
-
-Declare the narrowest permissions the service needs. `network = "private"`
-gives the package an isolated network namespace. A service that must use the
-host network needs `network = "host"` and the appropriate `tcp-bind` ports.
-The package renderer rejects inconsistent permissions during evaluation. The
-port list remains signed audit and socket-listener intent, but host networking
-is an explicit downgrade from per-package Landlock/eBPF network enforcement;
-filesystem, MAC, capability, and systemd sandboxing still apply.
-
-## Add an on-host configuration module
-
-Use `configModule` when host policy must set typed package options at runtime.
-Keep the module in a local directory containing `module.nix`; it receives
-`lib`, `config`, and a resolver-supplied `outputs` attrset. Declare every
-runtime output that the module interpolates by name:
-
-```nix
-configModule = {
-  src = ./config-module;
-  dependencies = {
-    bash = bash;
-  };
-  declares = ["acmeHealth.command"];
-  ownsRoots = [{root = "acmeHealth";}];
-};
-```
-
-The module refers to that output without importing a package set:
-
-```nix
-{lib, outputs, ...}: {
-  options.acmeHealth.command = lib.mkOption {
-    type = lib.types.str;
-    default = "${outputs.dependencies.bash}/bin/bash";
-  };
+{ mkDerivation, service-interface, ... }:
+mkDerivation {
+  pname = "acme-health-agent";
+  version = "1.0.0";
+  module = ./acme-health-agent-module; # Contains module.nix.
+  moduleDeps = [ service-interface ];
+  # Sources, dependencies, and phases are declared normally.
 }
 ```
 
-`mkDerivation` exposes the resolved map as `configModuleDependencies` without
-copying store paths into the config-only output. Publication must bind the same
-names to their exact runtime outputs:
+The interface dependency is illustrative: select the package defining your
+actual domain contract. Module dependencies are separate from build and runtime
+library dependencies. A plain dependency inherits the package's generated
+`package.versionRequirement`, so consumers need not repeat its declared range.
+To override the range, use
+`moduleDeps = [ { package = service-interface; packageVersion = "^7.0"; } ];`.
+To pin immutable source identity, use
+`moduleDeps = [ { package = service-interface; exact = true; } ];`; an equal-version
+range can still select another source with that semantic version.
+An optional recipe `osVersion = "^1.0";` checks the selected host OS release;
+dependency resolution never selects or upgrades the OS. A payload-only package
+does not need a module.
+
+The module owns ordinary option declarations and configuration. It may expose
+ability operations, select handlers, or configure effects through a domain
+manager. Definitions in different files merge through the module fixed point.
+The [runtime abilities guide](runtime-abilities.md) shows the complete interface,
+service option, package configuration, handler composition, and execution path.
+
+Use `module` and `moduleDeps` for native configuration. The builder rejects the
+superseded `abilities` and `configModule` recipe fields.
+
+## Generate and inspect package documentation
+
+Descriptions and types belong beside `mkOption` declarations. The builder
+projects options, operation schemas, and definition provenance from the same
+module evaluation. Do not maintain a separate documentation attrset, service
+catalog, or copy of the operation schema.
+
+The derivation exposes `deployment` and `documentation` Nix values plus two
+companion artifacts: `deploymentArtifact/deployment.json` and
+`documentationArtifact/options.json`. The first retains payload and module
+identities; the second is a native generated reference. Building either does
+not activate the package.
+
+After exporting `options.json`, inspect it without Nix or a running system:
 
 ```sh
-apr publish "$STORE_PATH" \
-  --config-module "$CONFIG_MODULE_PATH" \
-  --config-base-lib "$BASE_LIB_PATH" \
-  --config-dependency "bash=$BASH_PATH" \
-  --registry acme \
-  --key-id initial
+aos docs runtime options.json
+aos docs runtime options.json --format html --output package-reference.html
 ```
 
-Each dependency must be a direct reference of the published runtime output.
-The registry signs the name-to-path map, and on-host evaluation injects that
-authenticated map as plain strings. It never exposes ambient packages or
-instantiates a derivation.
+The same reader is available in Hub at `/-/runtime-abilities`. It links packages
+to the operations they declare, handle, and configure. An evaluated
+`aos.package.transaction` document instead shows the selected execution path.
+See [runtime inspection](runtime-abilities.md#inspect-the-generated-reference-and-execution-path).
 
-## Build and inspect the package
+## Build and inspect the payload
 
-Add the new file to Git before using its flake output; flakes evaluate the
-tracked source tree:
+Add source files to Git before using flake outputs, then use the repository
+build entry point:
 
 ```sh
-git add pkgs/acme/acme-health-agent.nix
-nix build .#pkg-acme-health-agent
+bash ./aos-dev build package acme-health-agent --no-out-link
+bash ./aos-dev build check effects --no-out-link
 ```
 
-Inspect the payload and rendered activation manifest:
-
-```sh
-find result -maxdepth 3 -type f -o -type l
-nix-build -A pkgs.acme-health-agent.expose -o result-expose
-sed -n '1,240p' result-expose/manifest.json
-```
-
-Run repository checks before publishing:
-
-```sh
-nix run . -- lint
-nix run . -- test eval
-nix build .#pkg-acme-health-agent
-```
-
-Add package-specific checks under the derivation's `checks` attribute when a
-version command, library link, protocol response, or VM behavior can be tested
-directly. A successful build proves that the output was produced; it does not
-by itself prove that the service is healthy.
+Use package-specific checks for program behavior, linking, protocols, and runtime
+health. The generic effects check verifies the infrastructure with a small
+fixture; it does not qualify every package or prove that a service is running.
+Publication and installed-package consumers still need the
+[native migration](../../rfcs/0022-abilities-and-effects/consumer-migration.md).
 
 ## Integrate the service into a release image
+
+The following is the existing image consumer workflow. Its integration with the
+native runtime transaction path remains migration work; do not infer that
+registering a package already switches its activation to the new machinery.
 
 This is a release-maintainer workflow. Users of a published AOS image should
 install the package from a registry with `apm` instead. See
@@ -446,9 +371,9 @@ Register the package in a system variant:
 }
 ```
 
-`bundle = true` includes the package and its activation artifact in the image.
-`preset = true` enables its package target when AOS seeds the initial system
-package profile. A preset package must also be bundled.
+`bundle = true` includes the package payload, authenticated module, and signed
+contract artifacts in the image. `preset = true` selects it in the initial
+machine-wide desired package set. A preset package must also be bundled.
 
 Build and validate the image as described in the release-image maintainer
 guide linked above.
@@ -471,11 +396,14 @@ STORE_PATH="$(nix build .#pkg-acme-health-agent \
 
 apr publish "$STORE_PATH" \
   --registry acme \
-  --description "Acme host health agent" \
-  --license Apache-2.0 \
-  --maintainer packages@example.com \
   --key-id release
 ```
+
+`apr publish` evaluates the package's target inventory and publishes its
+generated documentation, named outputs, and package contract from that exact
+record. Keep the package's version, description, homepage, license, and
+maintainers in its Nix `meta`; the registry command does not accept manual
+copies of those fields for ordinary packages.
 
 Create and upload a signed registry release using the workflow in
 [Publish packages and releases](../registry/publishing.md). Once the consumer

@@ -1,5 +1,6 @@
 ##! Rust — the Rust programming language, built from source
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -61,6 +62,12 @@ in
           openssl
           zlib
           ;
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          role = "public-package";
+        };
         pname = "rust";
         inherit changeId configFileName;
         nativeRust = buildPackages.rust-1_97;
@@ -79,6 +86,12 @@ in
     then
       import ./_rust-linux-hosted.nix {
         inherit mkDerivation version src buildPackages stdenv curl openssl zlib;
+        platformSupport = {
+          build = [{abi = ["gnu"]; os = ["linux"];}];
+          host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+          role = "public-package";
+        };
         pname = "rust";
         inherit changeId configFileName buildTool;
         nativeRust = buildPackages.rust-1_97;
@@ -99,7 +112,78 @@ in
       }
   else
     mkDerivation {
+      platformSupport = {
+        build = [{abi = ["gnu"]; os = ["linux"];}];
+        host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+        role = "public-package";
+      };
       pname = "rust";
+      qualification.packageProbe = lib.qualification.commandProbe {
+        "primary" = {
+          "artifacts" = [];
+          "expected" = "The compiler produces a runnable binary that prints the fixed result 42.";
+          "files" = {
+            "answer.rs" = "fn main() {\n    let mut values = [23, 19];\n    values.sort();\n    println!(\"{}\", values.iter().sum::<i32>());\n}\n";
+          };
+          "input" = "A Rust program that sorts integers and prints their sum.";
+          "operation" = "Compile the program with rustc, then execute the generated binary.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/rustc"
+                "answer.rs"
+                "-o"
+                "answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+            {
+              "argv" = [
+                "@work@/primary/answer"
+              ];
+              "exit_code" = 0;
+              "stderr" = {
+                "exact" = "";
+              };
+              "stdout" = {
+                "exact" = "42\n";
+              };
+            }
+          ];
+        };
+        "badInput" = {
+          "artifacts" = [];
+          "expected" = "rustc rejects the syntax error with its compilation-failure status.";
+          "files" = {
+            "invalid.rs" = "fn main() { let answer = 19 + ; println!(\"{}\", answer); }\n";
+          };
+          "input" = "A Rust function with a missing expression after an addition operator.";
+          "operation" = "Compile the malformed source with rustc.";
+          "steps" = [
+            {
+              "argv" = [
+                "@out@/bin/rustc"
+                "invalid.rs"
+                "-o"
+                "invalid"
+              ];
+              "exit_code" = 1;
+              "observes_rejection" = true;
+              "stdout" = {
+                "exact" = "";
+              };
+            }
+          ];
+        };
+      };
+
       inherit version;
 
       # $out is the lean production toolchain (rustc + cargo + std) that every

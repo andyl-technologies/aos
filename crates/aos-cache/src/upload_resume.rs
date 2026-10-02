@@ -25,10 +25,30 @@ pub(crate) struct Checkpoint {
     pub(crate) parts: Vec<(u32, String)>,
 }
 
+/// Releases transfer ownership even if a subprocess inherited the descriptor.
+pub(crate) struct TransferLock {
+    file: std::fs::File,
+}
+
+impl TransferLock {
+    pub(crate) fn acquire(file: std::fs::File) -> Result<Self> {
+        file.try_lock()?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for TransferLock {
+    fn drop(&mut self) {
+        // Closing only this descriptor can leave a forked child holding the
+        // same open-file description until exec. Ownership ends with the guard.
+        let _ = self.file.unlock();
+    }
+}
+
 /// Holds an OS advisory lock until this transfer finishes or its process exits.
 pub(crate) struct ResumeJournal {
     path: PathBuf,
-    _lock: std::fs::File,
+    _lock: TransferLock,
 }
 
 impl ResumeJournal {
@@ -62,7 +82,7 @@ impl ResumeJournal {
             .read(true)
             .write(true)
             .open(root.join(format!("{key}.lock")))?;
-        lock.try_lock()
+        let lock = TransferLock::acquire(lock)
             .context("another process is transferring this exact object")?;
         Ok(Self {
             path: root.join(format!("{key}.json")),
@@ -150,4 +170,31 @@ pub(crate) fn source_identity(source: &MultipartSource) -> Result<(u64, String)>
         }
     }
     Ok((size, hex::encode(hasher.finalize())))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transfer_lock_releases_ownership_despite_a_retained_descriptor() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let open = || {
+            std::fs::File::options()
+                .read(true)
+                .write(true)
+                .open(file.path())
+                .unwrap()
+        };
+        let lock = TransferLock::acquire(open()).unwrap();
+        let inherited = lock.file.try_clone().unwrap();
+
+        assert!(TransferLock::acquire(open()).is_err());
+        drop(lock);
+
+        let next = TransferLock::acquire(open()).unwrap();
+        assert!(TransferLock::acquire(open()).is_err());
+        drop(next);
+        drop(inherited);
+    }
 }

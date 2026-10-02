@@ -1,9 +1,4 @@
-# lib/testing/system-structure.nix — focused system output contract checks.
-#
-# This check deliberately avoids committed snapshots of rendered systems.
-# Nix derivation references carry their output context, so realization resolves
-# the exact store paths and retains their closures without copying generated
-# units, activation scripts, or package identities into source control.
+##! Checks actual image assembly artifacts and retained manager render inputs.
 {
   pkgs,
   lib,
@@ -11,64 +6,56 @@
   variant ? "system",
 }: let
   config = system.config;
-  manifest = config.system.build.configManifest;
-  systemdUnits = config.system.build.systemdSystemUnits;
-  contextualOutputs = [
-    systemdUnits
-    config.system.build.etcDump
-    config.system.build.activateScript
-    config.environment.etc."os-release".source
-    config.aos.config.evalAtBoot.baseLib
-  ];
-  hasOutputContext = value:
-    builtins.attrNames (builtins.getContext (toString value)) != [];
-  manifestSystemdPaths =
-    builtins.map
-    (path: lib.removePrefix "systemd/system/" path)
-    (builtins.attrNames (lib.filterAttrs
-      (path: _entry: lib.hasPrefix "systemd/system/" path)
-      manifest.etc));
-  # Every directory derivation carries its publication target marker. Keep the
-  # focused system-output contract explicit about that metadata alongside the
-  # rendered unit paths supplied by the manifest.
-  manifestSystemdPathsText =
-    lib.concatStringsSep "\n" (manifestSystemdPaths ++ ["nix-support/aos-target-platform"])
-    + "\n";
+  manager = config.system.build.managerConfiguration;
+  units = "${manager}/systemd-units";
+  renderedPaths =
+    map (path: lib.removePrefix "systemd/system/" path)
+    (builtins.attrNames config.system.build.systemdEtcEntries);
+  bootstrapServices = import ../../pkgs/system/_systemd-abilities/bootstrap-services.nix {
+    inherit config lib pkgs;
+  };
+  outputs = [manager config.system.build.etcDump config.environment.etc."os-release".source];
+  hasContext = value: builtins.attrNames (builtins.getContext (toString value)) != [];
 in
-  assert builtins.isAttrs manifest;
-  assert !(lib.isDerivation manifest);
-  assert builtins.all hasOutputContext contextualOutputs;
+  assert builtins.all hasContext outputs;
     pkgs.mkDerivation {
       pname = "aos-system-structure-${variant}";
       version = "0";
       src = null;
-      buildDeps = [
-        systemdUnits
-        pkgs.coreutils
-        pkgs.diffutils
-        pkgs.findutils
-      ];
-
-      expectedSystemdPaths = manifestSystemdPathsText;
-      passAsFile = ["expectedSystemdPaths"];
-
+      buildDeps = outputs ++ [pkgs.coreutils pkgs.diffutils pkgs.findutils pkgs.grep pkgs.buildPackages.systemd];
+      expectedSystemdPaths = lib.concatStringsSep "\n" (renderedPaths ++ ["nix-support/aos-target-platform"]) + "\n";
+      bootstrapServicesJSON = builtins.toJSON bootstrapServices;
+      passAsFile = ["expectedSystemdPaths" "bootstrapServicesJSON"];
       phases = [
         {
           name = "check";
           script = ''
             set -eu
-            ${pkgs.findutils}/bin/find "${systemdUnits}" \
+            [ -d "${units}" ]
+            [ -d "${manager}/systemd-presets" ]
+            [ -s "${config.system.build.etcDump}" ]
+            [ -s "${config.environment.etc."os-release".source}" ]
+            # Native bootstrap units supplement the declarative image units.
+            # Compare their exact union so undeclared extra files also fail.
+            ${pkgs.buildPackages.systemd}/bin/aos-service-handler render \
+              --output-dir expected-bootstrap-units < "$bootstrapServicesJSONPath"
+            ${pkgs.findutils}/bin/find expected-bootstrap-units \
+              \( -type f -o -type l \) -printf '%P\n' > bootstrap-systemd-paths
+            cat "$expectedSystemdPathsPath" bootstrap-systemd-paths \
+              | ${pkgs.coreutils}/bin/sort -u > expected-systemd-paths
+            ${pkgs.findutils}/bin/find "${units}/" \
               \( -type f -o -type l \) -printf '%P\n' \
               | ${pkgs.coreutils}/bin/sort > actual-systemd-paths
-            ${pkgs.coreutils}/bin/sort "$expectedSystemdPathsPath" \
-              > expected-systemd-paths
-            ${pkgs.diffutils}/bin/diff -u \
-              expected-systemd-paths actual-systemd-paths
+            ${pkgs.diffutils}/bin/diff -u expected-systemd-paths actual-systemd-paths
+            if ${pkgs.grep}/bin/grep -r '#aos-jobscript:' "${units}"; then
+              echo 'unresolved job-script reference in manager output' >&2
+              exit 1
+            fi
+            ${pkgs.grep}/bin/grep -qx 'disable \*' "${manager}/systemd-presets/99-aos-default.preset"
             mkdir -p "$out"
             echo PASS > "$out/result"
           '';
         }
       ];
-
-      meta.description = "Focused rendered-system structure check (${variant})";
+      meta.description = "Rendered manager and image assembly artifact contract (${variant})";
     }

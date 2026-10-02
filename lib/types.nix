@@ -21,7 +21,10 @@
 ##! type checking runs). When `null` (only during bootstrap, before the
 ##! modules engine is available), submodules fall back to a permissive deep
 ##! merge that preserves the definitions but skips option processing.
-{evalSubmodule ? null}: let
+{
+  evalSubmodule ? null,
+  projectOptionType ? type: type._aosDocType,
+}: let
   # Helper: take the last definition's value (last-writer-wins semantics).
   lastValue = _loc: defs: let
     last = builtins.elemAt defs (builtins.length defs - 1);
@@ -32,7 +35,7 @@
   showLoc = loc: builtins.concatStringsSep "." loc;
 
   # Helper: show the source file and value of a definition.
-  showDef = def: "'${builtins.toString def.value}' (defined in ${def.file})";
+  showDef = def: "${builtins.toJSON def.value} (defined in ${def.file})";
 
   # Helper: show all definitions.
   showDefs = defs: builtins.concatStringsSep ", " (builtins.map showDef defs);
@@ -87,7 +90,7 @@
   # only the defs at the winning (lowest) override priority.
   peelProperties = defs: let
     peeled = builtins.concatLists (
-      builtins.map (d: peelDef d true (d._priority or 100) d.value) defs
+      builtins.map (d: peelDef d (d.condition or true) (d._priority or 100) d.value) defs
     );
   in
     builtins.filter (d: d._condition) peeled;
@@ -157,6 +160,25 @@ in rec {
     _aosDocType = aosDocType;
   };
 
+  ## Adds portable value constraints without changing the underlying module merge.
+  refined = {
+    type,
+    constraints,
+  }: let
+    predicates = import ./types/constraints.nix;
+    checked = builtins.map predicates.validate constraints;
+  in
+    type
+    // {
+      _refinementConstraints = (type._refinementConstraints or []) ++ checked;
+      merge = loc: defs: let
+        value = type.merge loc defs;
+      in
+        if builtins.deepSeq checked (predicates.check checked value)
+        then value
+        else throw "Option '${showLoc loc}' violates its portable refinement constraints.";
+    };
+
   ## Merge function that insists all definitions agree. Used by ported
   ## nixpkgs code (`systemd-unit-options.nix`'s `unitOption` type) as the
   ## fallback merge when definitions are not lists.
@@ -196,6 +218,28 @@ in rec {
       min = null;
       max = null;
     };
+  };
+
+  ## Signed integer refinements with bounds retained across the runtime boundary.
+  ## Unlike arbitrary predicates, both Nix and the portable validator can check these.
+  ints = rec {
+    between = minimum: maximum:
+      if !builtins.isInt minimum || !builtins.isInt maximum || minimum > maximum
+      then throw "types.ints.between requires ordered integer bounds"
+      else
+        (addCheck int (value: value >= minimum && value <= maximum))
+        // {
+          name = "intBetween";
+          description = "integer between ${toString minimum} and ${toString maximum}";
+          _portable = true;
+          _aosDocType = {
+            kind = "integer";
+            min = minimum;
+            max = maximum;
+          };
+        };
+    unsigned = between 0 9223372036854775807;
+    positive = between 1 9223372036854775807;
   };
 
   float = {
@@ -241,6 +285,12 @@ in rec {
       then throw "The option '${showLoc loc}' must be a non-empty string, but is empty."
       else val;
     _aosDocType = str._aosDocType;
+    _refinementConstraints = [
+      {
+        kind = "minimum-size";
+        minimum = 1;
+      }
+    ];
   };
 
   ## Single-line string: any string that does not contain an embedded
@@ -255,11 +305,13 @@ in rec {
       if builtins.match ".*\n.*" val != null
       then throw "The option '${showLoc loc}' must be a single-line string (no embedded newlines)."
       else val;
-    _aosDocType = {
-      kind = "string";
-      pattern = "single-line";
-      max_length = null;
-    };
+    _aosDocType = str._aosDocType;
+    _refinementConstraints = [
+      {
+        kind = "string-excludes";
+        classes = ["line-feed"];
+      }
+    ];
   };
 
   path = {
@@ -324,6 +376,42 @@ in rec {
     merge = lastValue;
   };
 
+  ## Recursively mergeable canonical JSON, including typed deferred leaves.
+  ## Functions, derivations, paths, and floating-point values are not JSON inputs.
+  json = {
+    name = "json";
+    description = "canonical JSON value";
+    mergeProvenanceByKey = true;
+    check = value:
+      value
+      == null
+      || builtins.isBool value
+      || builtins.isString value
+      || (builtins.isInt value && value >= -9007199254740991 && value <= 9007199254740991)
+      || (builtins.isList value && builtins.all json.check value)
+      || (builtins.isAttrs value
+        && !(value ? outPath || value ? drvPath)
+        && (
+          if (value._type or null) == "aos-effect-output"
+          then effectOutput.check value
+          else builtins.all json.check (builtins.attrValues value)
+        ));
+    merge = loc: definitions: let
+      active = peelProperties definitions;
+      ordinaryObject = value: builtins.isAttrs value && !(value ? _type);
+      merged =
+        if builtins.all (definition: ordinaryObject definition.value) active
+        then (attrsOf json).merge loc active
+        else if builtins.all (definition: builtins.isList definition.value) active
+        then (listOf json).merge loc (dischargeProperties active)
+        else mergeEqualOption loc (dischargeProperties active);
+    in
+      if json.check merged
+      then merged
+      else throw "The option '${showLoc loc}' is not canonical JSON.";
+    _aosDocType = {kind = "json";};
+  };
+
   anything = {
     name = "anything";
     description = "any value";
@@ -337,6 +425,32 @@ in rec {
       else if builtins.all (d: builtins.isList d.value) defs
       then builtins.concatLists (builtins.map (d: d.value) defs)
       else last.value;
+  };
+
+  ## An opaque function with one authoritative definition whose result is
+  ## checked through the supplied result type.
+  ## # Type
+  ## `type -> type`
+  functionTo = resultType: {
+    name = "functionTo(${resultType.name})";
+    description = "function returning ${resultType.description}";
+    check = builtins.isFunction;
+    merge = loc: defs:
+      if builtins.length defs != 1
+      then throw "The option '${showLoc loc}' must have one authoritative function definition."
+      else let
+        definition = builtins.head defs;
+      in
+        argument: let
+          result = definition.value argument;
+        in
+          if resultType.check result
+          then result
+          else throw "The function at option '${showLoc loc}' returned a value outside ${resultType.description}.";
+    _aosDocType = {
+      kind = "opaque";
+      signature = "function returning ${resultType.description}";
+    };
   };
 
   ## # Network types
@@ -375,10 +489,23 @@ in rec {
         values =
           builtins.map (value: {
             inherit value;
-            description = [];
           })
           allowedValues;
       }
+      else if builtins.all builtins.isBool allowedValues
+      then
+        if builtins.all (value: value == builtins.head allowedValues) allowedValues
+        then {
+          kind = "refined";
+          value = {kind = "bool";};
+          constraints = [
+            {
+              kind = "boolean-value";
+              value = builtins.head allowedValues;
+            }
+          ];
+        }
+        else {kind = "bool";}
       else {
         kind = "opaque";
         signature = "one of ${builtins.toJSON allowedValues}";
@@ -401,6 +528,7 @@ in rec {
   ## # Type
   ## `type -> type`
   listOf = elemType: {
+    _nestedType = elemType;
     name = "listOf(${elemType.name})";
     description = "list of ${elemType.description}";
     check = v: builtins.isList v;
@@ -433,12 +561,17 @@ in rec {
       allElems = builtins.concatLists (builtins.map processDef defs);
       # Stable sort by priority (lower = earlier in the list).
       sorted = builtins.sort (a: b: a.priority < b.priority) allElems;
-      resolveOne = i: e:
-        elemType.merge
-        (loc ++ ["[${builtins.toString i}]"])
-        [
-          (builtins.removeAttrs e ["priority"])
-        ];
+      resolveOne = i: e: let
+        merged =
+          elemType.merge
+          (loc ++ ["[${builtins.toString i}]"])
+          [
+            (builtins.removeAttrs e ["priority"])
+          ];
+      in
+        if elemType ? _elementType || elemType.check merged
+        then merged
+        else throw "The option '${showLoc loc}' has an element that does not satisfy type '${elemType.description}'.";
     in
       builtins.genList
       (i: resolveOne i (builtins.elemAt sorted i))
@@ -454,6 +587,82 @@ in rec {
       unique = false;
     };
   };
+
+  ## Constrains a mergeable list while preserving its element module type.
+  listWith = {
+    elemType,
+    maxItems,
+    unique ? false,
+    canonicalOrder ? false,
+  }: let
+    base = listOf elemType;
+    valid = value: let
+      # Equality and ordering compare JSON bytes. Contexts on the original
+      # values still retain artifacts, but cannot be used as attribute names.
+      encoded = builtins.map (item: builtins.unsafeDiscardStringContext (builtins.toJSON item)) value;
+      names = builtins.attrNames (builtins.listToAttrs (builtins.map (name: {
+          inherit name;
+          value = true;
+        })
+        encoded));
+    in
+      builtins.length value
+      <= maxItems
+      && (!unique || builtins.length names == builtins.length encoded)
+      && (!canonicalOrder || encoded == builtins.sort builtins.lessThan encoded);
+  in
+    assert builtins.isInt maxItems && maxItems >= 0;
+    assert !canonicalOrder || unique;
+      (addCheck base valid)
+      // {
+        _portable = true;
+        _aosDocType =
+          base._aosDocType
+          // {
+            max_items = maxItems;
+            inherit unique;
+            canonical_order = canonicalOrder;
+          };
+      };
+
+  ## Constrains dynamic keys and cardinality without changing per-key merging.
+  attrsWith = {
+    elemType,
+    maxEntries,
+    keyMaxLength,
+    keySyntax ? null,
+  }: let
+    base = attrsOf elemType;
+    keyValid = key:
+      builtins.stringLength key
+      <= keyMaxLength
+      && (
+        if keySyntax == null
+        then builtins.match ".*[[:cntrl:]].*" key == null
+        else if keySyntax == "local-key-v1"
+        then builtins.stringLength key <= 128 && builtins.match "[A-Za-z0-9._-]+" key != null
+        else throw "Unsupported map key syntax '${keySyntax}'."
+      );
+    valid = value:
+      builtins.length (builtins.attrNames value)
+      <= maxEntries
+      && builtins.all keyValid (builtins.attrNames value);
+  in
+    assert builtins.isInt maxEntries && maxEntries >= 0;
+    assert builtins.isInt keyMaxLength && keyMaxLength > 0;
+      (addCheck base valid)
+      // {
+        _portable = true;
+        _aosDocType = {
+          kind = "map";
+          key = {
+            max_length = keyMaxLength;
+            syntax = keySyntax;
+          };
+          max_entries = maxEntries;
+          value = elemType._aosDocType;
+        };
+      };
 
   ## A list of `elemType` that must contain at least one element after
   ## merging. Delegates checking and merging to `listOf` and rejects an
@@ -478,30 +687,37 @@ in rec {
 
   ## # Type
   ## `type -> type`
-  attrsOf = elemType: {
-    name = "attrsOf(${elemType.name})";
+  attrsOfWith = lazy: elemType: {
+    name = "${
+      if lazy
+      then "lazyAttrsOf"
+      else "attrsOf"
+    }(${elemType.name})";
     description = "attribute set of ${elemType.description}";
     # Resolver provenance priority is applied independently to each dynamic
     # attribute, matching the ordinary mkOverride discharge performed here.
     # Without this marker a tier-75 host definition of one `/etc` entry would
     # discard every unrelated package/base entry in the attrsOf option.
     mergeProvenanceByKey = true;
+    _elementType = elemType;
+    _lazyAttrsOf = lazy;
     check = v: builtins.isAttrs v && builtins.all elemType.check (builtins.attrValues v);
     merge = loc: defs: let
-      allKeys = builtins.concatLists (builtins.map (d: builtins.attrNames d.value) defs);
-      uniqueKeys = let
-        go = acc: remaining:
-          if remaining == []
-          then acc
-          else let
-            h = builtins.elemAt remaining 0;
-            t = builtins.genList (i: builtins.elemAt remaining (i + 1)) (builtins.length remaining - 1);
-          in
-            if builtins.any (x: x == h) acc
-            then go acc t
-            else go (acc ++ [h]) t;
-      in
-        go [] allKeys;
+      # Index each definition once. Scanning every definition for every key
+      # makes large dynamic option sets quadratic during system evaluation.
+      definitionsByKey = builtins.groupBy (entry: entry.name) (
+        builtins.concatMap (def:
+          map (name: {
+            inherit name;
+            value =
+              def
+              // {
+                value = def.value.${name};
+                _priority = def._priority or 100;
+              };
+          }) (builtins.attrNames def.value))
+        defs
+      );
       # For each key, collect its raw defs, unwrap override / mkIf /
       # mkMerge markers via dischargeProperties, and — critically —
       # drop keys whose def list became empty after filtering. A key
@@ -512,21 +728,7 @@ in rec {
       perKeyEntries = builtins.concatLists (
         builtins.map (
           key: let
-            keyDefs =
-              builtins.filter (d: builtins.hasAttr key d.value)
-              (
-                builtins.map (d:
-                  d
-                  // {_priority = d._priority or 100;})
-                defs
-              );
-            valueDefs = builtins.map (d:
-              d
-              // {
-                value = d.value.${key};
-                _priority = d._priority or 100;
-              })
-            keyDefs;
+            valueDefs = map (entry: entry.value) definitionsByKey.${key};
             # Unwrap override / mkIf / mkMerge markers at the sub-
             # attribute level and keep only defs at the winning
             # priority. This lets
@@ -544,16 +746,21 @@ in rec {
               then peelProperties valueDefs
               else dischargeProperties valueDefs;
           in
-            if filteredDefs == []
+            if !lazy && filteredDefs == []
             then []
             else [
               {
                 name = key;
-                value = elemType.merge (loc ++ [key]) filteredDefs;
+                value = let
+                  merged = elemType.merge (loc ++ [key]) filteredDefs;
+                in
+                  if elemType ? _elementType || elemType.check merged
+                  then merged
+                  else throw "The option '${showLoc (loc ++ [key])}' does not satisfy type '${elemType.description}'.";
               }
             ]
         )
-        uniqueKeys
+        (builtins.attrNames definitionsByKey)
       );
     in
       builtins.listToAttrs perKeyEntries;
@@ -569,21 +776,49 @@ in rec {
     };
   };
 
+  attrsOf = attrsOfWith false;
+
+  ## Keeps syntactically declared keys while resolving their conditions only
+  ## when an individual value is demanded. This supports sibling submodules
+  ## whose conditional definitions refer to each other's evaluated values.
+  lazyAttrsOf = elemType:
+    if elemType ? _submodule
+    then attrsOfWith true elemType
+    else throw "lazyAttrsOf requires a submodule element type";
+
   ## # Type
   ## `type -> type`
   nullOr = elemType: {
+    _nestedType = elemType;
     name = "nullOr(${elemType.name})";
     description = "${elemType.description} or null";
     check = v: v == null || elemType.check v;
+    # A nullable structural value still merges its non-null definitions at
+    # nested option boundaries. Preserve their priorities for the inner type.
+    mergeProvenanceByKey = elemType.mergeProvenanceByKey or false;
     merge = loc: defs: let
-      val = lastValue loc defs;
+      structural = elemType.mergeProvenanceByKey or false;
+      minPriority =
+        builtins.foldl' (
+          priority: def:
+            if (def._priority or 100) < priority
+            then def._priority or 100
+            else priority
+        )
+        9999
+        defs;
+      winningDefs = builtins.filter (def: (def._priority or 100) == minPriority) defs;
+      winningNull = builtins.any (def: def.value == null) winningDefs;
+      winningValue = builtins.any (def: def.value != null) winningDefs;
+      nonNullDefs = builtins.filter (def: def.value != null) defs;
     in
-      if val == null
+      if winningNull && winningValue
+      then throw "The option '${showLoc loc}' has conflicting null and non-null definitions: ${showDefs winningDefs}"
+      else if winningNull
       then null
-      else
-        elemType.merge loc [
-          ((builtins.elemAt defs (builtins.length defs - 1)) // {value = val;})
-        ];
+      else if structural
+      then elemType.merge loc nonNullDefs
+      else elemType.merge loc winningDefs;
     _aosDocType = {
       kind = "nullable";
       value =
@@ -598,6 +833,7 @@ in rec {
   ## # Type
   ## `type -> type -> type`
   either = type1: type2: {
+    _alternativeTypes = [type1 type2];
     name = "either(${type1.name},${type2.name})";
     description = "${type1.description} or ${type2.description}";
     check = v: type1.check v || type2.check v;
@@ -626,6 +862,7 @@ in rec {
   ## # Type
   ## `[type] -> type`
   oneOf = types: {
+    _alternativeTypes = types;
     name = "oneOf(${builtins.concatStringsSep "," (builtins.map (t: t.name) types)})";
     description = "one of ${builtins.concatStringsSep ", " (builtins.map (t: t.description) types)}";
     check = v: builtins.any (t: t.check v) types;
@@ -662,6 +899,39 @@ in rec {
     };
   };
 
+  ## A record union whose discriminator is merged before its selected module.
+  ## Each variant remains a normal mergeable option type. Definitions may
+  ## supply different fields, but conflicting discriminator values are errors.
+  taggedUnion = tag: variants: {
+    name = "taggedUnion(${tag})";
+    description = "record selected by '${tag}'";
+    mergeProvenanceByKey = true;
+    _variantTypes = variants;
+    check = value:
+      builtins.isAttrs value
+      && builtins.hasAttr tag value
+      && builtins.isString value.${tag}
+      && builtins.hasAttr value.${tag} variants
+      && variants.${value.${tag}}.check value;
+    merge = loc: definitions: let
+      active = peelProperties definitions;
+      tagDefinitions = dischargeProperties (builtins.concatMap (definition:
+        if builtins.isAttrs definition.value && builtins.hasAttr tag definition.value
+        then [(definition // {value = definition.value.${tag};})]
+        else [])
+      active);
+      selected = mergeEqualOption (loc ++ [tag]) tagDefinitions;
+    in
+      if !(builtins.isString selected && builtins.hasAttr selected variants)
+      then throw "The option '${showLoc loc}' has an unknown '${tag}' variant."
+      else variants.${selected}.merge loc active;
+    _aosDocType = {
+      kind = "tagged-union";
+      inherit tag;
+      variants = builtins.mapAttrs (_: type: type._aosDocType) variants;
+    };
+  };
+
   ## A submodule type: a typed attrset of options declared in a nested
   ## module. When `evalSubmodule` is available (i.e. after bootstrap), the
   ## merge function delegates to it and the submodule is evaluated with
@@ -687,15 +957,85 @@ in rec {
     mergeProvenanceByKey = true;
     check = builtins.isAttrs;
     merge = loc: defs:
-      if evalSubmodule != null
-      then evalSubmodule moduleArgs loc defs
-      else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs;
+      builtins.removeAttrs (
+        if evalSubmodule != null
+        then evalSubmodule moduleArgs loc defs
+        else builtins.foldl' (acc: def: deepMergeSub acc def.value) {} defs
+      ) ["_module"];
     _submodule = moduleArgs;
     _aosDocType = {
       kind = "submodule";
       fields = {};
       open = true;
     };
+  };
+
+  ## A module held as an option value for a later nested evaluation. It does
+  ## not evaluate the module here; the consumer supplies its fixed-point
+  ## context when it constructs the submodule type.
+  deferredModule = {
+    name = "deferredModule";
+    description = "module evaluated by a later module fixed point";
+    check = value:
+      builtins.isFunction value
+      || builtins.isPath value
+      || (builtins.isAttrs value && !(value ? _type));
+    merge = loc: defs:
+      if
+        builtins.all (definition:
+          builtins.isFunction definition.value
+          || builtins.isPath definition.value
+          || (builtins.isAttrs definition.value && !(definition.value ? _type)))
+        defs
+      then
+        if builtins.length defs == 1
+        then (builtins.head defs).value
+        else {imports = builtins.map (definition: definition.value) defs;}
+      else throw "The option '${showLoc loc}' must contain module values.";
+    _aosDocType = {
+      kind = "opaque";
+      signature = "deferred module";
+    };
+  };
+
+  ## An output reference denotes a value available only during activation.
+  ## Its schema travels with it so inputs can reject incompatible references
+  ## during module evaluation without demanding the producer's execution.
+  effectOutput = {
+    name = "effectOutput";
+    description = "typed deferred effect output";
+    check = value:
+      builtins.isAttrs value
+      && builtins.attrNames value == ["_type" "identity" "output" "schema"]
+      && value._type == "aos-effect-output"
+      && builtins.isList value.identity
+      && builtins.length value.identity >= 3
+      && builtins.all builtins.isString value.identity
+      && builtins.isString value.output
+      && builtins.isAttrs value.schema;
+    merge = mergeEqualOption;
+  };
+
+  ## Accepts an ordinary value or a deferred output of the same declared type.
+  ## This wraps an option type; it does not construct graph expressions.
+  deferred = valueType: {
+    _nestedType = valueType;
+    _deferred = true;
+    name = "deferred(${valueType.name})";
+    description = "${valueType.description} or its deferred result";
+    check = value:
+      if builtins.isAttrs value && (value._type or null) == "aos-effect-output"
+      then effectOutput.check value && value.schema == projectOptionType valueType
+      else valueType.check value;
+    merge = loc: definitions:
+      if
+        builtins.any (definition:
+          builtins.isAttrs definition.value
+          && (definition.value._type or null) == "aos-effect-output")
+        definitions
+      then mergeEqualOption loc definitions
+      else valueType.merge loc definitions;
+    _aosDocType = valueType._aosDocType;
   };
 
   ## Wrap a type with an additional check predicate. The inner type's
@@ -707,6 +1047,7 @@ in rec {
   addCheck = type: check:
     type
     // {
+      _portable = false;
       check = v: type.check v && check v;
       # The module engine delegates validation to merge. Retain the extra
       # predicate there as well, including when this type is nested in a list
@@ -719,6 +1060,23 @@ in rec {
         else throw "The option '${showLoc loc}' does not satisfy its type's additional check.";
     };
 
+  ## Bounds UTF-8 bytes and optionally checks a whole-string pattern.
+  strWith = {
+    maxLength,
+    pattern ? null,
+  }: let
+    base =
+      if pattern == null
+      then str
+      else strMatching pattern;
+  in
+    assert builtins.isInt maxLength && maxLength > 0;
+      (addCheck base (value: builtins.stringLength value <= maxLength))
+      // {
+        _portable = true;
+        _aosDocType = base._aosDocType // {max_length = maxLength;};
+      };
+
   ## A string that matches a regular expression (POSIX ERE).
   ## # Type
   ## `string -> type`
@@ -729,7 +1087,9 @@ in rec {
     merge = loc: defs: let
       val = lastValue loc defs;
     in
-      if builtins.match regex val == null
+      if !builtins.isString val
+      then throw "The option '${showLoc loc}' must be a string matching '${regex}'."
+      else if builtins.match regex val == null
       then throw "The option '${showLoc loc}' must match the regex '${regex}' but is '${val}'."
       else val;
     _aosDocType = {
@@ -765,6 +1125,7 @@ in rec {
   ## # Type
   ## `type -> (a -> b) -> type -> type`
   coercedTo = fromType: coercion: toType: {
+    _projectionType = toType;
     name = "coercedTo(${fromType.name},${toType.name})";
     description = "${fromType.description} convertible to ${toType.description}";
     check = v: fromType.check v || toType.check v;
@@ -806,6 +1167,7 @@ in rec {
   ## # Type
   ## `type -> type`
   uniq = elemType: {
+    _projectionType = elemType;
     name = "uniq(${elemType.name})";
     description = "unique ${elemType.description}";
     check = elemType.check;

@@ -34,7 +34,7 @@ pub(super) fn put(root: &Path, relative: &str, source: &Path, expected: &str) ->
         .truncate(false)
         .write(true)
         .open(&lock_path)?;
-    lock.try_lock()
+    let transfer_lock = crate::upload_resume::TransferLock::acquire(lock)
         .context("another process is transferring this filesystem object")?;
     let partial_path = private.join(format!("{identity}.part"));
     let mut partial = std::fs::OpenOptions::new()
@@ -107,7 +107,7 @@ pub(super) fn put(root: &Path, relative: &str, source: &Path, expected: &str) ->
     // while it is still held so a completed upload leaves no private files in
     // the served origin; publication surfaces reject unknown paths.
     std::fs::remove_file(&lock_path)?;
-    drop(lock);
+    drop(transfer_lock);
     std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }

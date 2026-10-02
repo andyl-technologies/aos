@@ -1,6 +1,8 @@
 ##! dnsmasq — Lightweight DNS, DHCP, and TFTP server
 {
+  lib,
   mkDerivation,
+  aos-runtime-checks,
   fetchurl,
   gnumake,
   gettext,
@@ -10,14 +12,76 @@
   nettle,
   gmp,
   dbus,
+  systemd,
   libnetfilter_conntrack,
   libnfnetlink,
   nftables,
+  service-management,
+  aos-filesystem-provider,
 }: let
   version = "2.93";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "dnsmasq";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Dnsmasq accepts the configuration without starting a daemon.";
+        "files" = {
+          "dnsmasq.conf" = "port=0\nno-dhcp-interface=*\nlog-facility=-\n";
+        };
+        "input" = "A self-contained dnsmasq configuration with DNS and DHCP disabled.";
+        "operation" = "Parse and validate the configuration with dnsmasq's test mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/dnsmasq"
+              "--test"
+              "--conf-file=dnsmasq.conf"
+            ];
+            "exit_code" = 0;
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Dnsmasq rejects the unknown directive with status 1.";
+        "files" = {
+          "invalid.conf" = "aos-not-a-dnsmasq-option=42\n";
+        };
+        "input" = "A dnsmasq configuration containing an unknown directive.";
+        "operation" = "Parse the malformed configuration in test mode.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/sbin/dnsmasq"
+              "--test"
+              "--conf-file=invalid.conf"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {
@@ -32,11 +96,15 @@ in
       nettle
       gmp
       dbus
+      systemd
       libnetfilter_conntrack
       libnfnetlink
       nftables
     ];
     propagatedDeps = [];
+
+    module = ./_dnsmasq;
+    moduleDeps = [aos-runtime-checks service-management aos-filesystem-provider nftables];
 
     phases = [
       {
@@ -77,8 +145,12 @@ in
     checks = {
       testing,
       self,
+      pkgs,
       ...
-    }: {
+    }: let
+      nativeTests = import ./_dnsmasq/native-tests.nix {inherit lib self pkgs;};
+      contractHolds = builtins.all (value: value) (builtins.attrValues nativeTests);
+    in {
       tool = testing.mkToolCheck {
         pname = "tool-dnsmasq";
         tool = self;
@@ -90,6 +162,14 @@ in
           grep -F ' nftset ' /tmp/dnsmasq-version
         '';
       };
+      native-module-contract =
+        if contractHolds
+        then
+          pkgs.runCommand "dnsmasq-native-module-contract" {} ''
+            mkdir -p "$out"
+            printf '%s\n' PASS > "$out/result"
+          ''
+        else throw "the dnsmasq native ability contract check failed";
     };
 
     meta = {

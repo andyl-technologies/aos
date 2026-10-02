@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 
 use super::QualificationCase;
-use super::selection::select;
+use super::selection::{requires_predecessor, select};
 use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
 use crate::digest::Sha256Digest;
 use crate::manifest::ReleaseManifestV1;
@@ -25,8 +25,8 @@ use crate::qualification::{
 /// its change scope restricts package cells when the profile is
 /// change-scoped, and its soak sets the A3 observation window. `None` expands
 /// the union of every planned destination (or, for a qualification snapshot,
-/// every contract obligation), which is how build evidence and manifest
-/// structure are checked.
+/// every predecessor-independent contract obligation), which is how build
+/// evidence and manifest structure are checked.
 ///
 /// # Errors
 /// Returns an error for an invalid plan, an unknown destination, missing
@@ -92,6 +92,8 @@ pub(super) fn expand(
                 } else {
                     QualificationMethod::Automated
                 },
+                native_operation_spec: None,
+                production_only: false,
                 checks: checks.into_iter().collect(),
                 measurements,
                 regressions: Vec::new(),
@@ -133,13 +135,10 @@ pub(super) fn expand(
             } else {
                 None
             };
-            let predecessor = if requirement.id == "image-update-recovery"
+            let predecessor = if requires_predecessor(&requirement.id)
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
-                        && claim
-                            .requirements
-                            .iter()
-                            .any(|id| id == "image-update-recovery")
+                        && claim.requirements.iter().any(|id| requires_predecessor(id))
                 })
                 || package_rule.is_some_and(|rule| {
                     matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))
@@ -189,6 +188,7 @@ pub(super) fn expand(
                     .then_some(selection.soak_seconds),
                 id: format!("{}/{suffix}", requirement.id),
                 requirement_id: requirement.id.clone(),
+                native_operation_spec: requirement.native_operation_spec.clone(),
                 policy_digest,
                 plan_digest,
                 subjects_digest,
@@ -397,26 +397,6 @@ fn k3s_fleet_subjects(
         let MatrixCell::Artifact { artifact } = &cell.decision else {
             bail!("K3s fleet package {name}/{platform} is not an artifact");
         };
-        if name != "k3s" {
-            let configuration = artifact.configuration.as_ref().ok_or_else(|| {
-                anyhow::anyhow!("K3s fleet {name} lacks its configuration binding")
-            })?;
-            for (id, output) in [
-                (&configuration.module_artifact, "config"),
-                (&configuration.evaluation_base_artifact, "out"),
-            ] {
-                if !artifact.artifact_ids.contains(id)
-                    || !manifest.artifacts.iter().any(|record| {
-                        record.id == *id
-                            && record.kind == ArtifactKind::PackageNar
-                            && record.platform == Some(platform)
-                            && record.output.as_deref() == Some(output)
-                    })
-                {
-                    bail!("K3s fleet {name} lacks its exact configuration companion {id}");
-                }
-            }
-        }
         subjects.extend(artifact.artifact_ids.iter().cloned());
     }
 

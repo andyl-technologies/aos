@@ -1,18 +1,16 @@
-//! Release-pinned documentation requests with bounded lazy tree reads.
+//! Authenticated native release reference browsing and indexed search.
 //!
-//! Every page resolves one completed catalog generation. Expanding a folder
-//! reads only its immediate children; loading an option fetches one authenticated
-//! document. The JSON enhancement uses the same session visibility as HTML.
+//! A completed signed release catalog supplies every document coordinate.
+//! Detail reads reverify the immutable directory and use the shared runtime
+//! reader; generated search projections never replace signed artifact bytes.
 
-use super::browse::{browse_rate_limited, load_visible, session_indicator, BrowseQuery, Rendered};
-use super::documentation_pages;
-use super::release_browse::{unavailable_page, ReleaseContext};
+use super::browse::{BrowseQuery, Rendered, browse_rate_limited, load_visible, session_indicator};
+use super::release_browse::{ReleaseContext, unavailable_page};
 use crate::clock::Instant;
-use crate::db::documentation_node_key;
 use crate::service::RpcService;
 use axum::http::HeaderMap;
 
-/// Renders a bounded release tree or its session-authorized child page.
+/// Renders native indexed reference entries for the authorized release.
 pub(crate) async fn browse(
     svc: &RpcService,
     headers: &HeaderMap,
@@ -22,6 +20,9 @@ pub(crate) async fn browse(
 ) -> Rendered {
     if let Some(limited) = browse_rate_limited(svc, headers).await {
         return limited;
+    }
+    if children_only {
+        return Rendered::NotFound;
     }
     let started = Instant::now();
     let Some((registry, status)) = load_visible(svc, headers, slug).await else {
@@ -39,256 +40,34 @@ pub(crate) async fn browse(
             status.as_ref(),
             &context,
             "docs",
-            "Documentation for this release has not finished indexing.",
+            "No completed release documentation is available.",
             started,
             &session,
         ));
     };
-    if let Some(redirect) = query.pin_release(
-        &format!(
-            "/{slug}/-/docs{}",
-            if children_only { "/children" } else { "" }
-        ),
-        &context,
-    ) {
+    if let Some(redirect) = query.pin_release(&format!("/{slug}/-/docs"), &context) {
         return redirect;
     }
-    let commit = match svc.db.documentation_tree_commit(registry.id, release).await {
-        Ok(Some(commit)) => commit,
-        Ok(None) => {
-            return Rendered::Html(unavailable_page(
-                &registry,
-                status.as_ref(),
-                &context,
-                "docs",
-                "Documentation for this release has not finished indexing.",
-                started,
-                &session,
-            ))
-        }
-        Err(_) => return Rendered::ServiceUnavailable,
-    };
-    let selected = match query.entry.as_deref() {
-        Some(key) => match svc
-            .db
-            .documentation_tree_entry(registry.id, &commit, key)
-            .await
-        {
-            Ok(Some(entry)) => Some(entry),
-            Ok(None) => return Rendered::NotFound,
-            Err(_) => return Rendered::ServiceUnavailable,
-        },
-        None => None,
-    };
-    let package = match query.package_entry.as_deref() {
-        Some(key) => match svc
-            .db
-            .documentation_tree_entry(registry.id, &commit, key)
-            .await
-        {
-            Ok(Some(entry)) if entry.kind == "package" => Some(entry),
-            Ok(_) => return Rendered::NotFound,
-            Err(_) => return Rendered::ServiceUnavailable,
-        },
-        None => selected
-            .as_ref()
-            .filter(|entry| entry.kind == "package")
-            .cloned(),
-    };
-    let digest = package.as_ref().map(|entry| entry.document_sha256.as_str());
-    if selected
-        .as_ref()
-        .is_some_and(|entry| digest.is_some_and(|digest| digest != entry.document_sha256))
-    {
-        return Rendered::NotFound;
-    }
-    let mut query = query.clone();
-    query.package_entry = package.as_ref().map(|entry| entry.key.clone());
-    let query = &query;
-    let root_key = documentation_node_key(&[]);
-    let key = query
-        .root
-        .as_deref()
-        .or_else(|| {
-            selected
-                .as_ref()
-                .and_then(|entry| entry.node_key.as_deref())
-        })
-        .unwrap_or(&root_key);
-    if selected
-        .as_ref()
-        .and_then(|entry| entry.node_key.as_deref())
-        .is_some_and(|node| node != key)
-    {
-        return Rendered::NotFound;
-    }
-    let node = match svc
+    match svc
         .db
-        .documentation_tree_node_in_document(registry.id, &commit, key, digest)
+        .native_documentation_at_release(registry.id, release)
         .await
     {
-        Ok(Some(node)) => node,
-        Ok(None) => return Rendered::NotFound,
-        Err(_) => return Rendered::ServiceUnavailable,
-    };
-    let term = query
-        .q
-        .as_deref()
-        .map(str::trim)
-        .filter(|term| !term.is_empty());
-    // One cursor per page: it continues the children list, the flattened
-    // subtree listing, or the search results, never more than one of them.
-    let flattened = term.is_none() && query.view.as_deref() == Some("all");
-    let children = match svc
-        .db
-        .documentation_tree_children_in_document(
-            registry.id,
-            &commit,
-            key,
-            if term.is_none() && !flattened {
-                query.cursor.as_deref()
-            } else {
-                None
-            },
-            digest,
-        )
-        .await
-    {
-        Ok(page) => page,
-        Err(error) => return query_error(error),
-    };
-    if children_only {
-        return match serde_json::to_string(&children) {
-            Ok(json) => Rendered::PrivateJson(json),
-            Err(_) => Rendered::ServiceUnavailable,
-        };
-    }
-    let descendants = if flattened {
-        match svc
-            .db
-            .documentation_tree_descendants_in_document(
-                registry.id,
-                &commit,
-                key,
-                query.cursor.as_deref(),
-                digest,
-            )
-            .await
-        {
-            Ok(page) => Some(page),
-            Err(error) => return query_error(error),
-        }
-    } else {
-        None
-    };
-    let results = if let Some(term) = term {
-        match svc
-            .db
-            .search_documentation_tree_in_document(
-                registry.id,
-                &commit,
-                (query.scope.as_deref() == Some("subtree")).then_some(key),
-                term,
-                query.kind.as_deref(),
-                query.cursor.as_deref(),
-                digest,
-            )
-            .await
-        {
-            Ok(page) => Some(page),
-            Err(error) => return query_error(error),
-        }
-    } else {
-        None
-    };
-    let variants = match svc
-        .db
-        .documentation_tree_variants_in_document(
-            registry.id,
-            &commit,
-            key,
-            query.variant_cursor.as_deref(),
-            digest,
-        )
-        .await
-    {
-        Ok(page) => page,
-        Err(error) => return query_error(error),
-    };
-    let selected = if term.is_some() {
-        None
-    } else {
-        selected.or_else(|| variants.items.first().cloned())
-    };
-    // Child expansion needs only the authenticated catalog projection. Fetch
-    // the full package document only when rendering its overview or an option.
-    let package_document = if let Some(entry) = &package {
-        match load_document(svc, registry.id, release, entry).await {
-            Ok(document) => Some(document),
-            Err(error) => return error,
-        }
-    } else {
-        None
-    };
-    let document = if let Some(entry) = &selected {
-        if let Some(document) = &package_document {
-            Some(document.clone())
-        } else {
-            match load_document(svc, registry.id, release, entry).await {
-                Ok(document) => Some(document),
-                Err(error) => return error,
-            }
-        }
-    } else {
-        None
-    };
-    Rendered::Html(documentation_pages::page(
-        &registry,
-        status.as_ref(),
-        &context,
-        query,
-        &node,
-        &children,
-        descendants.as_ref(),
-        &variants,
-        results.as_ref(),
-        selected.as_ref(),
-        document.as_ref(),
-        package.as_ref().zip(package_document.as_ref()),
-        started,
-        &session,
-    ))
-}
-
-/// Authenticates the exact document against the selected release snapshot.
-async fn load_document(
-    svc: &RpcService,
-    registry_id: i64,
-    release: &str,
-    entry: &crate::db::DocumentationTreeEntry,
-) -> Result<aos_doc_model::PackageDocumentation, Rendered> {
-    let locator = match svc
-        .db
-        .package_documentation_locator_at_release(
-            registry_id,
+        Ok(documents) => native_index_page(
+            slug,
             release,
-            &entry.package_name,
-            &entry.package_version,
-            &entry.platform,
-        )
-        .await
-    {
-        Ok(Some(locator)) if locator.artifact.document_sha256 == entry.document_sha256 => locator,
-        Ok(_) => return Err(Rendered::NotFound),
-        Err(_) => return Err(Rendered::ServiceUnavailable),
-    };
-    svc.load_package_documentation_locator(registry_id, &locator)
-        .await
-        .map_err(|_| Rendered::ServiceUnavailable)
+            query,
+            &documents,
+            status.as_ref(),
+            started,
+            &session,
+        ),
+        Err(_) => Rendered::ServiceUnavailable,
+    }
 }
 
-/// Resolves older package documentation URLs into the same release tree.
-pub(crate) async fn legacy(
+/// Resolves a coordinate URL to its exact native signed release reference.
+pub(crate) async fn package_reference(
     svc: &RpcService,
     headers: &HeaderMap,
     slug: &str,
@@ -303,136 +82,186 @@ pub(crate) async fn legacy(
     let Some((registry, _)) = load_visible(svc, headers, slug).await else {
         return Rendered::NotFound;
     };
-    let requested_release = if let Some(release) = query.release.as_ref() {
-        Some(release.clone())
-    } else if query.digest.is_none() {
-        let context = match ReleaseContext::load(&svc.db, registry.id, None, false).await {
-            Ok(context) => context,
-            Err(error) => return error,
-        };
-        let candidates = match svc
-            .db
-            .documentation_releases_for_package(registry.id, package, version, platform)
-            .await
-        {
-            Ok(candidates) => candidates,
-            Err(_) => return Rendered::ServiceUnavailable,
-        };
-        context
-            .selected()
-            .filter(|release| candidates.iter().any(|candidate| candidate == release))
-            .map(str::to_string)
-            .or_else(|| {
-                context
-                    .releases()
-                    .iter()
-                    .find(|release| candidates.contains(&release.semver))
-                    .map(|release| release.semver.clone())
-            })
-    } else {
-        None
-    };
-    if requested_release.is_none() && query.digest.is_none() {
-        return Rendered::NotFound;
-    }
-    let locator = if let Some(release) = requested_release.as_deref() {
-        svc.db
-            .package_documentation_locator_at_release(
-                registry.id,
-                release,
-                package,
-                version,
-                platform,
-            )
-            .await
-    } else {
-        super::browse::documentation_locator_for_page(
-            &svc.db,
+    let locator = match svc
+        .db
+        .native_documentation_locator(
             registry.id,
             package,
             version,
             platform,
-            query.digest.as_deref(),
+            query.release.as_deref(),
         )
         .await
-    };
-    let locator = match locator {
-        Ok(Some(locator))
-            if query
-                .digest
-                .as_deref()
-                .is_none_or(|digest| digest == locator.artifact.document_sha256) =>
-        {
-            locator
-        }
-        Ok(_) => return Rendered::NotFound,
+    {
+        Ok(Some(locator)) => locator,
+        Ok(None) => return Rendered::NotFound,
         Err(_) => return Rendered::ServiceUnavailable,
     };
-    let release = match requested_release.as_ref() {
-        Some(release) => release.clone(),
-        None => match svc
-            .db
-            .documentation_release_for_digest(registry.id, &locator.artifact.document_sha256)
-            .await
-        {
-            Ok(Some(release)) => release,
-            Ok(None) => return Rendered::NotFound,
-            Err(_) => return Rendered::ServiceUnavailable,
-        },
+    match native_package_reference(
+        svc,
+        registry.id,
+        slug,
+        &locator.release,
+        package,
+        version,
+        platform,
+        query,
+        headers,
+    )
+    .await
+    {
+        Ok(Some(rendered)) => rendered,
+        Ok(None) => Rendered::NotFound,
+        Err(error) => error,
+    }
+}
+
+/// Reads native package documentation from the same completed signed release catalog.
+#[allow(clippy::too_many_arguments)]
+async fn native_package_reference(
+    svc: &RpcService,
+    registry_id: i64,
+    slug: &str,
+    release: &str,
+    package: &str,
+    version: &str,
+    platform: &str,
+    query: &BrowseQuery,
+    headers: &HeaderMap,
+) -> Result<Option<Rendered>, Rendered> {
+    let locator = svc
+        .db
+        .native_documentation_locator(registry_id, package, version, platform, Some(release))
+        .await
+        .map_err(|_| Rendered::ServiceUnavailable)?;
+    let Some(locator) = locator else {
+        return Ok(None);
     };
-    if query.release.as_deref() != Some(&release)
-        || query.digest.as_deref() != Some(&locator.artifact.document_sha256)
+    let artifact = &locator.artifact;
+    if query
+        .digest
+        .as_deref()
+        .is_some_and(|digest| digest != artifact.document_sha256)
+    {
+        return Err(Rendered::NotFound);
+    }
+    if query.release.as_deref() != Some(release)
+        || query.digest.as_deref() != Some(&artifact.document_sha256)
     {
         use super::console_render::urlencode;
-        let mut location = format!(
+        return Ok(Some(Rendered::TemporaryRedirect(format!(
             "/{slug}/-/docs/{}/{}/{}?release={}&digest={}",
             urlencode(package),
             urlencode(version),
             urlencode(platform),
-            urlencode(&release),
-            urlencode(&locator.artifact.document_sha256)
-        );
-        for (name, value) in [("kind", &query.kind), ("doc_key", &query.doc_key)] {
-            if let Some(value) = value {
-                location.push_str(&format!("&{name}={}", urlencode(value)));
-            }
-        }
-        return Rendered::TemporaryRedirect(location);
+            urlencode(release),
+            urlencode(&artifact.document_sha256)
+        ))));
     }
-    let kind = query.kind.as_deref().unwrap_or("package");
-    let key = query.doc_key.as_deref().unwrap_or(package);
-    let entry_key =
-        match crate::db::documentation_entry_key(&locator.artifact.document_sha256, kind, key) {
-            Ok(key) => key,
-            Err(_) => return Rendered::ServiceUnavailable,
-        };
-    let selection = BrowseQuery {
-        release: Some(release),
-        entry: Some(entry_key),
-        package_entry: match crate::db::documentation_entry_key(
-            &locator.artifact.document_sha256,
-            "package",
-            package,
-        ) {
-            Ok(key) => Some(key),
-            Err(_) => return Rendered::ServiceUnavailable,
-        },
-        ..query.clone()
-    };
-    // Keep the legacy address on the initial request so its fragment remains
-    // available to the enhancement. Direct query links also work without JS.
-    match browse(svc, headers, slug, &selection, false).await {
-        Rendered::Html(html) => {
-            Rendered::Html(html.replacen("data-doc-browser", "data-doc-legacy data-doc-browser", 1))
-        }
-        result => result,
-    }
+    let fetch = crate::placement_read::TopologySurfaceFetch::new(
+        std::sync::Arc::clone(&svc.db),
+        std::sync::Arc::clone(&svc.surface),
+        crate::db::SurfaceTarget::Registry(registry_id),
+    );
+    let document = crate::indexer::native_documentation::fetch_native_documentation(
+        &fetch, package, version, platform, artifact,
+    )
+    .await
+    .map_err(|_| Rendered::ServiceUnavailable)?;
+    let session = session_indicator(svc, headers).await;
+    let coordinates = format!(
+        "<p>Release <code>{}</code>; package <code>{}</code> <code>{}</code>; platform <code>{}</code>.</p>",
+        super::render::escape(release),
+        super::render::escape(package),
+        super::render::escape(version),
+        super::render::escape(platform)
+    );
+    let body = format!("{coordinates}{}", document.render_html());
+    Ok(Some(Rendered::Html(
+        super::console_render::page_with_session(
+            "Native package documentation",
+            &super::browse_pages::registry_crumbs(slug, &[(String::new(), "documentation".into())]),
+            &body,
+            &super::browse_pages::state_line(None, Instant::now()),
+            &session,
+        ),
+    )))
 }
 
-/// Separates malformed continuation requests from unavailable indexed data.
-fn query_error(error: anyhow::Error) -> Rendered {
-    match error.downcast_ref::<crate::db::InvalidDocumentationQuery>() {
-        Some(error) => Rendered::BadRequest(error.0),
-        None => Rendered::ServiceUnavailable,
+fn native_index_page(
+    slug: &str,
+    release: &str,
+    query: &BrowseQuery,
+    documents: &[crate::db::NativeDocumentationIndex],
+    status: Option<&crate::db::IndexStatus>,
+    started: Instant,
+    session: &super::console_render::SessionIndicator,
+) -> Rendered {
+    use super::console_render::urlencode;
+    use super::render::escape;
+    let term = query.q.as_deref().unwrap_or_default();
+    let terms = aos_doc_model::tokenize(term);
+    if query
+        .kind
+        .as_deref()
+        .is_some_and(|kind| !matches!(kind, "package" | "option" | "operation"))
+    {
+        return Rendered::BadRequest(
+            "native documentation kind must be package, option, or operation",
+        );
     }
+    let mut body = format!(
+        r#"<h1>Native module documentation</h1><p>Release <code>{}</code>. Declarations and configured uses; no live runtime state.</p><form method="get"><input type="hidden" name="release" value="{}"><label>Search reference <input name="q" value="{}"></label><button>Search</button></form><ul>"#,
+        escape(release),
+        escape(release),
+        escape(term)
+    );
+    let mut count = 0;
+    for document in documents {
+        for row in &document.search {
+            if query.kind.as_deref().is_some_and(|kind| kind != row.kind)
+                || !terms.iter().all(|term| row.terms.contains_key(term))
+            {
+                continue;
+            }
+            if count == 1000 {
+                break;
+            }
+            let href = format!(
+                "/{slug}/-/docs/{}/{}/{}?release={}&digest={}",
+                urlencode(&document.package),
+                urlencode(&document.version),
+                urlencode(&document.platform),
+                urlencode(release),
+                urlencode(&document.document_sha256)
+            );
+            body.push_str(&format!(
+                r#"<li><a href="{}">{}</a> <code>{}</code><p>{}</p><p>{} {} ({})</p></li>"#,
+                escape(&href),
+                escape(&row.title),
+                escape(&row.kind),
+                escape(&row.summary),
+                escape(&document.package),
+                escape(&document.version),
+                escape(&document.platform)
+            ));
+            count += 1;
+        }
+    }
+    if count == 0 {
+        body.push_str("<li>No matching native reference entries.</li>");
+    }
+    body.push_str("</ul>");
+    if count == 1000 {
+        body.push_str(
+            "<p>Showing the first 1000 entries. Narrow the search for more specific results.</p>",
+        );
+    }
+    Rendered::Html(super::console_render::page_with_session(
+        "Native module documentation",
+        &super::browse_pages::registry_crumbs(slug, &[(String::new(), "documentation".into())]),
+        &body,
+        &super::browse_pages::state_line(status, started),
+        session,
+    ))
 }

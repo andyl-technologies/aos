@@ -5,6 +5,7 @@
 }: {
   systems,
   sourceIdentity,
+  evalCheck ? null,
 }: let
   buildPackages = pkgs.buildPackages;
   platform = pkgs.stdenv.hostPlatform.system;
@@ -76,7 +77,6 @@
       toplevel = toString system.build.toplevel;
       version = config.aos.system.version;
       kernel = system.build.kernel.version;
-      moduleAbi = config.aos.system.moduleAbi;
       role =
         if config.aos.roles.edge.enable
         then "edge"
@@ -97,6 +97,7 @@
     };
     guestTools = {
       apm = "${pkgs.aos.apm}/bin/apm";
+      packageRuntime = "${pkgs.aos.packageRuntime}/bin/aos-package-runtime";
       enroll =
         if secureBoot.enable
         then "${config.aos.config.artifacts.secure-boot-enroll}/bin/aos-sb-enroll"
@@ -182,7 +183,11 @@ in
       pname = "aos-image-matrix-${platform}";
       version = "1";
       src = null;
-      buildDeps = [buildPackages.coreutils buildPackages.python3 runner] ++ builtins.attrValues checks ++ builtins.attrValues assemblies;
+      buildDeps =
+        [buildPackages.coreutils buildPackages.python3 runner]
+        ++ lib.optional (evalCheck != null) evalCheck
+        ++ builtins.attrValues checks
+        ++ builtins.attrValues assemblies;
       outputChecks.out = {};
       dontStrip = true;
       dontNukeRefs = true;

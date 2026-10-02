@@ -8,6 +8,7 @@
 {
   mkDerivation,
   pname,
+  platformSupport,
   version,
   src,
   changeId,
@@ -31,8 +32,16 @@
   needsNativeCryptoBuildDeps ? builtins.compareVersions version "1.93.0" < 0,
   needsNativeZlibLink ? builtins.compareVersions version "1.79.0" >= 0 && builtins.compareVersions version "1.93.0" < 0,
   description,
+  qualification ? null,
   buildTool ? null,
 }: let
+  mkRustDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   buildTriple = stdenv.buildPlatform.config;
   buildTripleEnv = builtins.replaceStrings ["-"] ["_"] buildTriple;
   cargoBuildTripleEnv =
@@ -95,8 +104,8 @@ in
   else if nativeLlvmVersion != targetLlvmVersion
   then throw "${pname}: native LLVM ${nativeLlvmVersion} does not match target LLVM ${targetLlvmVersion}"
   else
-    mkDerivation {
-      inherit pname version src outputs;
+    mkRustDerivation {
+      inherit pname version src outputs platformSupport;
 
       buildDeps =
         [

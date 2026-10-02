@@ -21,11 +21,20 @@
   changeId,
   prevRust,
   llvm,
+  platformSupport,
   needsDownloadRustc ? false,
   useBootstrapToml ? false,
   disableLld ? false,
   disableDarwinLld ? disableLld,
+  qualification ? null,
 }: let
+  mkRustDerivation = attrs:
+    mkDerivation (attrs
+      // (
+        if qualification == null
+        then {}
+        else {inherit qualification;}
+      ));
   configFileName =
     if useBootstrapToml
     then "bootstrap.toml"
@@ -59,6 +68,8 @@ in
         openssl
         zlib
         needsDownloadRustc
+        qualification
+        platformSupport
         ;
       disableLld = disableDarwinLld;
       nativeRust = buildPackages.${prevRust.pname};
@@ -72,7 +83,7 @@ in
   else if stdenv.isCross && stdenv.hostPlatform.isLinux
   then
     import ./_rust-linux-hosted.nix {
-      inherit mkDerivation pname version src changeId configFileName;
+      inherit mkDerivation pname version src changeId configFileName qualification platformSupport;
       inherit buildPackages stdenv curl openssl zlib needsDownloadRustc disableLld;
       nativeRust = buildPackages.${prevRust.pname};
       nativeLlvm = buildPackages.${"llvm-${llvmMajor}"};
@@ -80,8 +91,8 @@ in
       description = "Rust ${version} — bootstrap chain intermediate";
     }
   else
-    mkDerivation {
-      inherit pname version src;
+    mkRustDerivation {
+      inherit pname version src platformSupport;
 
       buildDeps = [
         gnumake

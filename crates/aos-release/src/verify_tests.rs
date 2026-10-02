@@ -7,12 +7,14 @@
 //! `andyl/experimental` whose `production/edge` destination uses the change-scoped
 //! smoke profile.
 
+use anyhow::Context as _;
 use base64::Engine as _;
 use ed25519_dalek::{Signer as _, SigningKey};
 use std::collections::BTreeMap;
 
 use crate::artifact::{
     ArtifactKind, ArtifactRecord, ArtifactRelation, ArtifactRelationship, BundlePath, Compression,
+    ImageArtifactIdentity,
 };
 use crate::canonical;
 use crate::digest::Sha256Digest;
@@ -60,7 +62,6 @@ pub(crate) fn signer(role: SignerRole) -> SignerRequirement {
 
 pub(crate) fn planned(ids: &[String]) -> PlannedArtifactSet {
     PlannedArtifactSet {
-        configuration: None,
         artifacts: ids
             .iter()
             .map(|id| PlannedArtifact {
@@ -76,7 +77,6 @@ pub(crate) fn planned(ids: &[String]) -> PlannedArtifactSet {
 
 pub(crate) fn final_set(ids: &[String]) -> FinalArtifactSet {
     FinalArtifactSet {
-        configuration: None,
         artifact_ids: ids.to_vec(),
     }
 }
@@ -87,15 +87,15 @@ pub(crate) fn package_id(platform: Platform) -> String {
 
 fn image_ids(platform: Platform) -> Vec<(String, ArtifactKind)> {
     [
-        ("logical-disk", ArtifactKind::LogicalDisk),
-        ("raw", ArtifactKind::RawImage),
-        ("qcow2", ArtifactKind::Qcow2Image),
-        ("vmdk", ArtifactKind::VmdkImage),
-        ("vhd", ArtifactKind::VhdImage),
-        ("uki", ArtifactKind::Uki),
-        ("recovery-uki", ArtifactKind::RecoveryUki),
-        ("recovery-bundle", ArtifactKind::RecoveryBundle),
-        ("metadata", ArtifactKind::ImageMetadata),
+        ("logical-disk", ArtifactKind::Image),
+        ("raw", ArtifactKind::Image),
+        ("qcow2", ArtifactKind::Image),
+        ("vmdk", ArtifactKind::Image),
+        ("vhd", ArtifactKind::Image),
+        ("uki", ArtifactKind::Image),
+        ("recovery-uki", ArtifactKind::Image),
+        ("recovery-bundle", ArtifactKind::Image),
+        ("metadata", ArtifactKind::Image),
     ]
     .into_iter()
     .map(|(name, kind)| (format!("image/server/{platform}/{name}"), kind))
@@ -119,16 +119,37 @@ fn artifact_with_bytes(
     kind: ArtifactKind,
     platform: Option<Platform>,
     system_variant: Option<&str>,
-    relationships: Vec<ArtifactRelationship>,
+    mut relationships: Vec<ArtifactRelationship>,
     bytes: Vec<u8>,
 ) -> anyhow::Result<(ArtifactRecord, Vec<u8>)> {
     let path = BundlePath::parse(format!("objects/{id}"))?;
+    let image = if kind == ArtifactKind::Image {
+        let platform = platform.context("test image artifact lacks a platform")?;
+        let role = id
+            .rsplit('/')
+            .next()
+            .context("test image artifact lacks a local id")?;
+        let contract_artifact = image_contract_id(platform);
+        relationships.push(ArtifactRelationship {
+            relation: ArtifactRelation::Documents,
+            target: contract_artifact.clone(),
+        });
+        Some(ImageArtifactIdentity {
+            contract_schema: "aos.test.image-provider/v1".to_owned(),
+            contract_artifact,
+            role: format!("aos.test.image-artifact.{role}/v1"),
+        })
+    } else {
+        None
+    };
+
     Ok((
         ArtifactRecord {
             id,
             kind,
             platform,
             system_variant: system_variant.map(str::to_owned),
+            image,
             path,
             size_bytes: u64::try_from(bytes.len())?,
             sha256: Sha256Digest::of_bytes(&bytes),
@@ -291,10 +312,17 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
         )?);
     }
     // Image metadata carries the capabilities the qualification fixture binds.
-    let metadata = canonical::canonical_json(&crate::qualification_fixture::metadata()?)?;
+    let metadata = canonical::canonical_json(&crate::test_support::qualification::metadata()?)?;
     for platform in Platform::LINUX {
+        payloads.push(artifact(
+            image_contract_id(platform),
+            ArtifactKind::Provenance,
+            Some(platform),
+            None,
+            Vec::new(),
+        )?);
         for (id, kind) in image_ids(platform) {
-            let bytes = if kind == ArtifactKind::ImageMetadata {
+            let bytes = if id.ends_with("/metadata") {
                 metadata.clone()
             } else {
                 format!("exact bytes for {id}").into_bytes()
@@ -337,6 +365,7 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
         kind: ArtifactKind::ReleasePlan,
         platform: None,
         system_variant: None,
+        image: None,
         path: BundlePath::parse("release-plan.json")?,
         size_bytes: u64::try_from(plan_bytes.len())?,
         sha256: Sha256Digest::of_bytes(&plan_bytes),
@@ -469,10 +498,7 @@ pub(crate) fn release_fixture() -> anyhow::Result<ReleaseFixture> {
 
 /// Parses the shipped contract fixture.
 pub(crate) fn current_contract() -> anyhow::Result<QualificationContract> {
-    canonical::from_slice(
-        include_bytes!("../tests/fixtures/qualification-contract.json"),
-        "contract",
-    )
+    crate::test_support::qualification::contract()
 }
 
 /// Returns the fixture's staging and production Hub surfaces.
@@ -584,14 +610,14 @@ pub(crate) fn observations(
             let assessment_only = case.claim.as_ref().is_some_and(|claim| {
                 claim.minimum_assurance == crate::qualification::claims::AssuranceLevel::A1
             });
-            let assessment = crate::qualification_fixture::assessment(&case)?;
+            let assessment = crate::test_support::qualification::assessment(&case)?;
             let environment = if assessment_only {
                 None
             } else {
-                crate::qualification_fixture::environment(&case)?
+                crate::test_support::qualification::environment(&case)?
             };
-            let capabilities = crate::qualification_fixture::capabilities(&case)?;
-            let environment_digest = environment
+            let capabilities = crate::test_support::qualification::capabilities(&case)?;
+            let mut environment_digest = environment
                 .as_ref()
                 .map(|environment| environment.digest())
                 .transpose()?
@@ -601,13 +627,209 @@ pub(crate) fn observations(
                         .map(|assessment| assessment.scope_digest)
                 })
                 .unwrap_or(digest("environment"));
-            let mut operations = crate::qualification_fixture::measurements();
+            let mut operations = crate::test_support::qualification::measurements();
             if case.target.is_none() {
                 operations = BTreeMap::from([("requests".into(), 1)]);
             }
             if assessment_only {
                 operations.clear();
             }
+                let mut checks = case
+                    .checks
+                    .iter()
+                    .map(|check| {
+                        (
+                            check.clone(),
+                            crate::qualification_evidence::CheckObservation {
+                                passed: true,
+                                detail: "fixture observation".into(),
+                            },
+                        )
+                    })
+                    .collect::<BTreeMap<_, _>>();
+                let native_adapter_matrix = if case.requirement_id
+                    == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_REQUIREMENT
+                {
+                    let authored = &case.native_operation_spec.as_ref().context("matrix fixture case lacks its exact specification")?.cohorts[0];
+                    let spec = authored.matrix_spec.clone();
+                    let component = |name: &str, component_digest: Sha256Digest| {
+                        crate::qualification_evidence::NativeAdapterMatrixComponentIdentity {
+                            name: name.into(),
+                            version: "fixture-v1".into(),
+                            digest: component_digest,
+                        }
+                    };
+                    let executor_digest = digest("executor");
+                    let matrix_environment =
+                        crate::qualification_evidence::NativeAdapterMatrixEnvironment {
+                            schema_version:
+                                "aos.release.native-adapter-matrix-environment/v1".into(),
+                            status:
+                                crate::qualification_evidence::NativeAdapterMatrixEnvironmentStatus::Production,
+                            platform: Platform::X86_64Linux,
+                            scenario_registry_digest: executor_digest,
+                            candidate_subjects_digest: case.subjects_digest,
+                            predecessor_manifest_digest: case
+                                .predecessor
+                                .as_ref()
+                                .context("matrix fixture case lacks its predecessor")?
+                                .manifest_digest,
+                            unqualified_reason: None,
+                            cohort: Some("fixture-cohort".into()),
+                            qemu: Some(component("qemu", digest("qemu"))),
+                            firmware: Some(component("firmware", digest("firmware"))),
+                            guest_kernel: Some(component("guest-kernel", digest("guest kernel"))),
+                            fault_injection_tool: Some(component(
+                                "fault-injection-tool",
+                                digest("fault tool"),
+                            )),
+                            harness: Some(component("matrix-harness", digest("harness closure"))),
+                        };
+                    environment_digest =
+                        Sha256Digest::of_bytes(canonical::to_vec(&matrix_environment)?);
+                    let probe_kind = |postcondition: &str| -> anyhow::Result<&'static str> {
+                        Ok(match postcondition {
+                            "durable-attempt-state-classified" => "journal-timeline",
+                            "at-most-one-resource-owner" => "ownership-inventory",
+                            "foreign-resources-unchanged" => "foreign-resource-snapshot",
+                            "dependent-effects-not-executed" => "dependency-barrier",
+                            "fresh-receiving-authority" => "authority-incarnation",
+                            "compatible-state-adopted" => "state-adoption",
+                            "exactly-one-resource-owner" => "exact-ownership-inventory",
+                            "transfer-rejected-before-candidate-effect" => "transfer-rejection",
+                            "predecessor-remains-sole-owner" => "predecessor-ownership",
+                            "current-grants-reauthorized" => "authority-grants",
+                            "retained-target-identity-preserved" => "target-identity",
+                            "prerequisite-failure-recorded" => "prerequisite-failure",
+                            "foreign-attempt-rejected-before-mutation" => {
+                                "foreign-attempt-rejection"
+                            }
+                            _ => anyhow::bail!("matrix fixture has an unknown postcondition"),
+                        })
+                    };
+                    let cells = crate::qualification_evidence::native_adapter_applicable_cells(
+                        &spec,
+                    )
+                        .into_iter()
+                        .map(|cell| {
+                            let cell_digest = Sha256Digest::of_bytes(canonical::to_vec(cell)?);
+                            let disposition = crate::qualification_evidence::native_adapter_expected_disposition(cell)
+                                .ok_or_else(|| anyhow::anyhow!("matrix fixture has an unknown scenario"))?;
+                            let cohort_subject = serde_json::json!({
+                                "schema": "aos.release.native-adapter-cell-cohort-subject/v1",
+                                "cell_id": cell.id,
+                                "cell_digest": cell_digest,
+                                "boundary": cell.boundary,
+                                "failure": cell.failure,
+                                "candidate": cell.candidate,
+                                "predecessor": cell.predecessor,
+                                "subject": {
+                                    "schema": "aos.test.native-adapter-cohort-subject/v1",
+                                    "operation": cell.id,
+                                },
+                            });
+                            let cohort_subject_digest = Sha256Digest::of_bytes(
+                                canonical::to_vec(&cohort_subject)?,
+                            );
+                            let probes = cell
+                                .postconditions
+                                .iter()
+                                .map(|postcondition| {
+                                    let observations = BTreeMap::from([(
+                                        "fixture-observation".into(),
+                                        serde_json::json!(format!(
+                                            "{}:{postcondition}",
+                                            cell.id
+                                        )),
+                                    )]);
+                                    let observation_digest = Sha256Digest::of_bytes(
+                                        canonical::to_vec(&observations)?,
+                                    );
+                                    Ok((
+                                        postcondition.clone(),
+                                        crate::qualification_evidence::NativeAdapterPostconditionProbe {
+                                            schema_version: "aos.release.native-adapter-postcondition-probe/v1".into(),
+                                            kind: probe_kind(postcondition)?.into(),
+                                            cell_id: cell.id.clone(),
+                                            cell_digest,
+                                            disposition: disposition.into(),
+                                            subject_digest: case.subjects_digest,
+                                            cohort_subject_digest,
+                                            observation_digest,
+                                            observations,
+                                        },
+                                    ))
+                                })
+                                .collect::<anyhow::Result<BTreeMap<_, _>>>()?;
+                            Ok(crate::qualification_evidence::NativeAdapterCellObservation {
+                                id: cell.id.clone(),
+                                cell_digest,
+                                environment_digest,
+                                cohort_subject: Some(cohort_subject),
+                                postconditions: cell
+                                    .postconditions
+                                    .iter()
+                                    .map(|postcondition| {
+                                        (
+                                            postcondition.clone(),
+                                            crate::qualification_evidence::CheckObservation {
+                                                passed: true,
+                                                detail: "fixture postcondition".into(),
+                                            },
+                                        )
+                                    })
+                                    .collect(),
+                                probes,
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    let matrix =
+                        crate::qualification_evidence::NativeAdapterMatrixObservation {
+                            schema_version:
+                                crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_OBSERVATION_V1
+                                    .into(),
+                            environment: matrix_environment,
+                            cohorts: vec![crate::test_support::qualification::native_cohort_observation(authored, cells)],
+                        };
+                    let passed =
+                        crate::qualification_evidence::validate_native_adapter_matrix_observation(
+                            &case,
+                            environment_digest,
+                            executor_digest,
+                            &matrix,
+                        )?;
+                    let matrix_check = case
+                        .checks
+                        .iter()
+                        .find(|check| {
+                            check.as_str()
+                                == crate::qualification_evidence::NATIVE_ADAPTER_MATRIX_CHECK
+                        })
+                        .context("matrix fixture case lacks its policy check")?;
+                    checks.insert(
+                        matrix_check.clone(),
+                        crate::qualification_evidence::native_adapter_matrix_check(
+                            &matrix, passed,
+                        )?,
+                    );
+                    operations = BTreeMap::from([
+                        (
+                            "matrix_cells_reported".into(),
+                            u64::try_from(matrix.cohorts[0].cells.len())?,
+                        ),
+                        (
+                            "matrix_postconditions_reported".into(),
+                            matrix.cohorts[0].cells.iter().try_fold(0_u64, |count, cell| {
+                                Ok::<_, std::num::TryFromIntError>(
+                                    count + u64::try_from(cell.postconditions.len())?,
+                                )
+                            })?,
+                        ),
+                    ]);
+                    Some(matrix)
+                } else {
+                    None
+                };
             Ok(EvidenceRecord {
                 id: format!("qualification/{}", case.id),
                 policy_id: case.requirement_id.clone(),
@@ -624,22 +846,11 @@ pub(crate) fn observations(
                     environment,
                     capabilities,
                     assessment,
+                    native_adapter_matrix,
                     case_digest: case.digest()?,
                     executor_digest: digest("executor"),
                     environment_digest,
-                    checks: case
-                        .checks
-                        .iter()
-                        .map(|check| {
-                            (
-                                check.clone(),
-                                crate::qualification_evidence::CheckObservation {
-                                    passed: true,
-                                    detail: "fixture observation".into(),
-                                },
-                            )
-                        })
-                        .collect(),
+                    checks,
                     observed_seconds: if assessment_only { 0 } else { 1 },
                     operations,
                     predecessor: case.predecessor,
@@ -799,4 +1010,8 @@ fn release_fixture_rejects_signature_replay() -> anyhow::Result<()> {
     let replayed = canonical::canonical_json(&value)?;
     assert!(verify_release(&fixture.plan, &replayed, &fixture.files, &[fixture.key]).is_err());
     Ok(())
+}
+
+fn image_contract_id(platform: Platform) -> String {
+    format!("provenance/image/server/{platform}/provider-contract")
 }

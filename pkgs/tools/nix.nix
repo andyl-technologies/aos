@@ -1,7 +1,7 @@
 ##! Nix — The purely functional package manager
 {
-  mkDerivation,
   lib,
+  mkDerivation,
   fetchurl,
   gnumake,
   cmake,
@@ -77,8 +77,62 @@
     else "";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      role = "public-package";
+    };
     pname = "nix";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "The evaluator prints the integer value 42.";
+        "files" = {};
+        "input" = "A pure Nix arithmetic expression adding 19 and 23.";
+        "operation" = "Evaluate the expression through nix-instantiate.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nix-instantiate"
+              "--eval"
+              "--expr"
+              "19 + 23"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "The evaluator exits with its syntax-error status.";
+        "files" = {};
+        "input" = "A Nix let expression with no value after the equals sign.";
+        "operation" = "Parse and evaluate the malformed expression.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/nix-instantiate"
+              "--eval"
+              "--expr"
+              "let answer = ; in answer"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+          }
+        ];
+      };
+    };
+
+    # Minor releases can change CLI JSON; keep this interface release fixed.
+    # https://nix.dev/manual/nix/2.34/release-notes/rl-2.32
+    version = "=${version}";
 
     # `out` ships the CLI + shared libraries (the runtime image uses the nix
     # CLI only); `dev` holds the headers and pkg-config files. Keeping the
@@ -132,6 +186,7 @@ in
         else []
       );
     propagatedDeps = [];
+
 
     phases = [
       {

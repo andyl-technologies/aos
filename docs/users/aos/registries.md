@@ -6,8 +6,8 @@ authorized; a cache or AOS Hub transports their bytes.
 
 This guide is for people configuring registries on an AOS host. Registry
 maintainers should use [Operate an AOS package registry](../registry/README.md).
-Package runtime confinement is a separate control described in [Understand the
-package sandbox](package-sandbox.md).
+Package runtime policy is a separate control described in [Understand native
+package runtime policy](package-sandbox.md).
 
 ## Start with the built-in registry
 
@@ -46,7 +46,7 @@ Several controls protect different boundaries:
 | TUF metadata | Role separation, signed release metadata, and freshness for moving release selections |
 | Store realization graph | The exact NAR identity and closure relationships authorized by the signed release |
 | Narinfo signature | Authorization for stock Nix substitution through the cache protocol |
-| Package sandbox | What an activated exposed service may do after installation |
+| Native resource policy | What selected package abilities may realize on the host |
 
 A valid TLS connection or bearer token does not make package content trusted.
 A valid registry signature authenticates an owner and exact bytes; it does not

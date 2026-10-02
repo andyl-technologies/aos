@@ -23,8 +23,7 @@
 //!
 //! Image/sysroot installs (`apm install --system`) are handled by
 //! [`crate::sysroot`]. Profile installs handled here can still target the
-//! system profile; when an installed root exposes systemd units, this module
-//! persists and applies the corresponding preset policy.
+//! system profile.
 
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
@@ -32,7 +31,7 @@ use std::io::{Read as _, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 
 use super::config::ApmConfig;
 use super::download::{
@@ -40,17 +39,10 @@ use super::download::{
     fetch_narinfos, order_resolved_downloads, reference_store_path, resolve_mirror_chain,
     resolved_downloads_json, split_mirror_chain,
 };
-use super::exposed_units::{
-    rebuild_generation_expose_image_roots, rebuild_generation_expose_roots,
-    reconcile_system_profile, validate_generation_exposed_units,
-};
 use super::platform::native_platform;
-use super::policy::admit_package_roots;
 use super::profile::Profile;
 use super::profile::merge::build_generation_fhs_tree;
-use super::profile::meta::{
-    delete_meta, list_meta, snapshot_profile_meta_to_generation, write_meta,
-};
+use super::profile::meta::{delete_meta, list_meta, write_meta};
 use super::provenance;
 use super::registry::{RegistrySet, keys, store_path_hash};
 use super::remove::retained_installed_indexes;
@@ -58,13 +50,16 @@ use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{
-    ApmMeta, InstalledMeta, PackageMeta, RegistryRootConfig, package_requires_provenance,
-    validate_attestation_provenance_ref, validate_registry_name,
+    ApmMeta, InstalledMeta, PackageMeta, RegistryRootConfig, validate_attestation_provenance_ref,
+    validate_registry_name,
 };
 use super::verify::verify_downloads;
 use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
 use aos_core::output::{OutputMode, Printer};
+
+pub(crate) mod acquire;
+pub(crate) mod native;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SecondaryArtifactDownload {
@@ -126,37 +121,6 @@ pub async fn run(
         yes,
         ignore_lock,
         printer,
-        true,
-    )
-    .await
-}
-
-pub(crate) async fn run_deferred_expose_reconcile(
-    config: &ApmConfig,
-    packages: &[String],
-    registry_filter: Option<&str>,
-    reinstall: bool,
-    require_installed: bool,
-    download_only: bool,
-    no_deps: bool,
-    dry_run: bool,
-    yes: bool,
-    ignore_lock: &IgnoreSysrootLock,
-    printer: &Printer,
-) -> Result<()> {
-    run_inner(
-        config,
-        packages,
-        registry_filter,
-        reinstall,
-        require_installed,
-        download_only,
-        no_deps,
-        dry_run,
-        yes,
-        ignore_lock,
-        printer,
-        false,
     )
     .await
 }
@@ -173,7 +137,6 @@ async fn run_inner(
     yes: bool,
     ignore_lock: &IgnoreSysrootLock,
     printer: &Printer,
-    reconcile_exposed_units: bool,
 ) -> Result<()> {
     let json_mode = printer.mode() == OutputMode::Json;
     if packages.is_empty() {
@@ -194,6 +157,14 @@ async fn run_inner(
     let registries = load_registries(config)?;
 
     let inspect_profile = Profile::open_readonly(config.scope);
+    let _profile_guard = if !dry_run && !download_only {
+        Some(inspect_profile.lock_mutation()?)
+    } else {
+        None
+    };
+    if !dry_run && !download_only {
+        native::recover(&inspect_profile)?;
+    }
     let installed = list_meta(&inspect_profile)?;
     if require_installed || reinstall {
         ensure_reinstall_targets_installed(packages, &installed)?;
@@ -212,15 +183,32 @@ async fn run_inner(
         ensure_skipped_dependencies_present(&closures).await?;
         prune_dependency_members(&mut closures);
     }
-    admit_package_roots(closures.iter().flat_map(|closure| closure.closure.iter()))?;
     let all_metas = collect_unique_metas(&closures);
-    let expose_artifacts = collect_expose_artifacts(&closures)?;
+    for meta in &all_metas {
+        anyhow::ensure!(
+            meta.deployment.is_some(),
+            "package {}@{} has no native deployment envelope",
+            meta.name,
+            meta.version
+        );
+    }
+    let secondary_artifacts = collect_secondary_artifacts(&closures)?;
     let mut store_paths: Vec<String> = all_metas.iter().map(|m| m.store_path.clone()).collect();
     store_paths.extend(
-        expose_artifacts
+        secondary_artifacts
             .iter()
             .map(|artifact| artifact.store_path.clone()),
     );
+    let mut temporary_roots = if !dry_run && !download_only {
+        let mut lease = crate::store::temp_roots::TemporaryRoots::open(
+            &crate::install::native::packaged_path("AOS_NIX_STORE")?,
+            &Default::default(),
+        )?;
+        lease.retain(store_paths.iter().cloned(), &Default::default())?;
+        Some(lease)
+    } else {
+        None
+    };
     let missing = if reinstall {
         Vec::new()
     } else {
@@ -232,6 +220,15 @@ async fn run_inner(
         && missing.is_empty()
         && requested_closures_already_installed(&closures, &installed)
     {
+        let committed =
+            crate::profile::deployment::current_committed_generation(&inspect_profile.path)?
+                .context("installed packages have no committed native profile generation")?;
+        ensure!(
+            inspect_profile
+                .current_generation()?
+                .is_some_and(|generation| generation.number == committed),
+            "installed package pointer differs from committed native profile generation"
+        );
         if json_mode {
             printer.json(&install_result_json(
                 "current",
@@ -246,9 +243,6 @@ async fn run_inner(
                 0,
                 None,
             ));
-        }
-        if reconcile_exposed_units {
-            reconcile_system_profile(config, printer).await?;
         }
         printer.info("All requested packages are already installed. No changes made.");
         return Ok(());
@@ -283,9 +277,9 @@ async fn run_inner(
     // Sysroot-lock check: verify package closures don't diverge from sysroot.
     if !matches!(ignore_lock, IgnoreSysrootLock::All) {
         if let Some((sysroot_refs, sys_name, sys_version)) =
-            sysroot_lock::get_sysroot_references(config)
+            sysroot_lock::get_sysroot_references(config)?
         {
-            let lookup = sysroot_lock::build_registry_lookup(config);
+            let lookup = sysroot_lock::build_registry_lookup(config)?;
             for closure in &closures {
                 let pkg_refs: Vec<String> = closure
                     .closure
@@ -333,7 +327,7 @@ async fn run_inner(
             )
         })
         .chain(
-            expose_artifacts
+            secondary_artifacts
                 .iter()
                 .filter(|artifact| artifact.trust_graph_root)
                 .map(|artifact| {
@@ -350,9 +344,9 @@ async fn run_inner(
     // Step 5: Fetch narinfo for each missing path so the summary can show
     // real compressed sizes and the download can use the cache's URL/hash.
     let mut requests = build_download_requests(&closures, &to_download, config)?;
-    requests.extend(build_expose_artifact_download_requests(
+    requests.extend(build_secondary_artifact_download_requests(
         &registries,
-        &expose_artifacts,
+        &secondary_artifacts,
         &missing,
         reinstall,
         config,
@@ -439,9 +433,18 @@ async fn run_inner(
         // registries. Closure totality was already enforced above.
         printer.step(4, 7, "Verifying downloads...");
         verify_downloads(&results, &trust_ctx, printer)?;
-        verify_secondary_artifact_downloads(&results, &expose_artifacts)?;
+        verify_secondary_artifact_downloads(&results, &secondary_artifacts)?;
 
         if download_only {
+            native::realize_modules(
+                config,
+                &registries,
+                &closures,
+                printer,
+                true,
+                &mut temporary_roots,
+            )
+            .await?;
             if json_mode {
                 printer.json(&install_result_json(
                     "downloaded",
@@ -466,6 +469,12 @@ async fn run_inner(
 
         // Import NARs into the store.
         printer.step(5, 7, "Importing packages...");
+        if let Some(lease) = temporary_roots.as_mut() {
+            lease.retain(
+                results.iter().map(|result| result.store_path.clone()),
+                &Default::default(),
+            )?;
+        }
         for result in &results {
             crate::store::import_nar_with_compression(
                 &result.local_path,
@@ -481,6 +490,15 @@ async fn run_inner(
     } else {
         printer.info("All packages already in store, skipping download.");
         if download_only {
+            native::realize_modules(
+                config,
+                &registries,
+                &closures,
+                printer,
+                true,
+                &mut temporary_roots,
+            )
+            .await?;
             if json_mode {
                 printer.json(&install_result_json(
                     "downloaded",
@@ -501,16 +519,36 @@ async fn run_inner(
         }
     }
 
+    let realized_modules = native::realize_modules(
+        config,
+        &registries,
+        &closures,
+        printer,
+        false,
+        &mut temporary_roots,
+    )
+    .await?;
+
     // Step 8: Create new profile generation.
     printer.step(6, 7, "Updating profile...");
     let profile = Profile::open(config.scope)?;
     let prev_gen = profile.current_generation()?;
-    let new_gen = profile.new_generation()?;
     let explicit_names: HashSet<&str> = packages.iter().map(|s| s.as_str()).collect();
     let obsolete_hashes =
         obsolete_installed_hashes_after_install(&installed, &explicit_names, &closures)
             .await
             .context("computing post-install profile roots")?;
+    let native = native::prepare(
+        config,
+        &profile,
+        &registries,
+        &installed,
+        &closures,
+        &realized_modules,
+        &obsolete_hashes,
+        None,
+    )?;
+    let new_gen = profile.new_generation()?;
 
     // Copy existing roots from the previous generation (if any).
     if let Some(ref prev) = prev_gen {
@@ -521,6 +559,7 @@ async fn run_inner(
     let all_closure_metas: Vec<PackageMeta> = closures
         .iter()
         .flat_map(|c| c.closure.iter().cloned())
+        .chain(native.additional.iter().map(|(_, meta)| meta.clone()))
         .collect();
     // Deduplicate for GC root creation.
     let unique_for_roots: Vec<PackageMeta> = {
@@ -532,9 +571,28 @@ async fn run_inner(
     };
     create_gc_roots(&new_gen.path, &unique_for_roots)?;
 
+    let metadata_profile = {
+        let selected = native.selected_paths();
+        for (hash, path) in new_gen.roots()? {
+            if !selected.contains(path.to_str().context("profile root is not UTF-8")?) {
+                std::fs::remove_file(new_gen.path.join("usr").join(hash))?;
+            }
+        }
+        let staged = Profile {
+            path: new_gen.path.clone(),
+            scope: profile.scope,
+        };
+        for meta in &installed {
+            if selected.contains(meta.store_path.as_str()) {
+                write_meta(&staged, store_path_hash(&meta.store_path), meta)?;
+            }
+        }
+        staged
+    };
+
     // Write metadata -- explicit packages get explicit=true, deps get explicit=false.
     for hash in &obsolete_hashes {
-        delete_meta(&profile, hash)?;
+        delete_meta(&metadata_profile, hash)?;
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -544,73 +602,71 @@ async fn run_inner(
     let installed_flags_by_hash = installed_flags_by_hash(&installed);
     let installed_flags_by_name = installed_flags_by_name(&installed);
 
-    for closure in &closures {
-        for meta in &closure.closure {
-            let hash = store_path_hash(&meta.store_path).to_string();
-            let hash_flags = installed_flags_by_hash
-                .get(hash.as_str())
+    let entries = closures
+        .iter()
+        .flat_map(|closure| {
+            closure
+                .closure
+                .iter()
+                .map(|meta| (closure.registry_name.as_str(), meta))
+        })
+        .chain(
+            native
+                .additional
+                .iter()
+                .map(|(registry, meta)| (registry.as_str(), meta)),
+        );
+    for (registry_name, meta) in entries {
+        let hash = store_path_hash(&meta.store_path).to_string();
+        let hash_flags = installed_flags_by_hash
+            .get(hash.as_str())
+            .copied()
+            .unwrap_or_default();
+        let name_flags = if explicit_names.contains(meta.name.as_str()) {
+            installed_flags_by_name
+                .get(meta.name.as_str())
                 .copied()
-                .unwrap_or_default();
-            let name_flags = if explicit_names.contains(meta.name.as_str()) {
-                installed_flags_by_name
-                    .get(meta.name.as_str())
-                    .copied()
-                    .unwrap_or_default()
-            } else {
-                InstalledFlags::default()
-            };
-            let existing_flags = InstalledFlags {
-                explicit: hash_flags.explicit || name_flags.explicit,
-                held: hash_flags.held || name_flags.held,
-            };
-            let is_explicit =
-                explicit_names.contains(meta.name.as_str()) || existing_flags.explicit;
+                .unwrap_or_default()
+        } else {
+            InstalledFlags::default()
+        };
+        let existing_flags = InstalledFlags {
+            explicit: hash_flags.explicit || name_flags.explicit,
+            held: hash_flags.held || name_flags.held,
+        };
+        let is_explicit = explicit_names.contains(meta.name.as_str()) || existing_flags.explicit;
 
-            let installed = InstalledMeta {
-                store_path: meta.store_path.clone(),
-                pushed_at: now,
-                pushed_by: "apm".into(),
-                expires_at: None,
-                is_root: true,
-                last_accessed: now,
-                access_count: 0,
-                apm: Some(ApmMeta {
-                    name: meta.name.clone(),
-                    version: meta.version.clone(),
-                    explicit: is_explicit,
-                    registry: closure.registry_name.clone(),
-                    installed_at: now_iso.clone(),
-                    held: existing_flags.held,
-                    source_drv: meta.source_drv.clone(),
-                    source_nar_hash: meta.source_nar_hash.clone(),
-                    expose: meta.expose.clone(),
-                    expose_artifact: meta.expose_artifact.clone(),
-                    config_module: meta.config_module.clone(),
-                    documentation: meta.documentation.clone(),
-                    permissions: meta.permissions.clone(),
-                    bpf_lsm: meta.bpf_lsm.clone(),
-                    attestation: meta.attestation.clone(),
-                }),
-            };
+        let installed = InstalledMeta {
+            store_path: meta.store_path.clone(),
+            pushed_at: now,
+            pushed_by: "apm".into(),
+            expires_at: None,
+            is_root: true,
+            last_accessed: now,
+            access_count: 0,
+            apm: Some(ApmMeta {
+                name: meta.name.clone(),
+                version: meta.version.clone(),
+                explicit: is_explicit,
+                registry: registry_name.to_owned(),
+                installed_at: now_iso.clone(),
+                held: existing_flags.held,
+                source_drv: meta.source_drv.clone(),
+                source_nar_hash: meta.source_nar_hash.clone(),
+                deployment: meta.deployment.clone(),
+                module_documentation: meta.module_documentation.clone(),
+                qualification: meta.qualification.clone(),
+                attestation: meta.attestation.clone(),
+            }),
+        };
 
-            write_meta(&profile, &hash, &installed)?;
-        }
+        write_meta(&metadata_profile, &hash, &installed)?;
     }
-    snapshot_profile_meta_to_generation(&profile, &new_gen)?;
-    let future_installed = list_meta(&profile)?;
-    rebuild_generation_expose_roots(&new_gen, &future_installed)?;
-    rebuild_generation_expose_image_roots(&new_gen, &future_installed)?;
-    validate_generation_exposed_units(&new_gen, &future_installed)?;
-
     // Build FHS tree for the new generation.
     build_generation_fhs_tree(&new_gen, printer)?;
 
     // Atomic switch to the new generation.
-    profile.switch_to(&new_gen)?;
-    if reconcile_exposed_units {
-        reconcile_system_profile(config, printer).await?;
-    }
-
+    native.commit(&profile, &new_gen)?;
     printer.step(7, 7, "Done!");
     let verb = if reinstall {
         "Reinstalled"
@@ -740,11 +796,11 @@ fn install_package_json(registry: &str, meta: &PackageMeta, explicit: bool) -> s
 /// Load registries from the config's cache directory.
 pub(crate) fn load_registries(config: &ApmConfig) -> Result<RegistrySet> {
     let reg_configs = config.enabled_registries();
-    RegistrySet::load(&config.cache_path(), &reg_configs, &native_platform())
+    RegistrySet::load_for_package_operations(&config.cache_path(), &reg_configs, &native_platform())
 }
 
-/// Collect rendered expose artifacts needed for explicitly requested roots.
-fn collect_expose_artifacts(
+/// Collect authenticated secondary artifacts needed by the resolved closure.
+fn collect_secondary_artifacts(
     closures: &[ResolvedClosure],
 ) -> Result<Vec<SecondaryArtifactDownload>> {
     let mut artifacts = Vec::new();
@@ -752,46 +808,21 @@ fn collect_expose_artifacts(
 
     for closure in closures {
         for package in &closure.closure {
-            if let Some(documentation) = &package.documentation {
+            for artifact in [&package.deployment, &package.module_documentation]
+                .into_iter()
+                .flatten()
+            {
+                artifact.validate()?;
                 push_secondary_artifact(
                     &mut artifacts,
                     &mut seen,
                     &closure.registry_name,
-                    &documentation.store_path,
-                    &documentation.nar_hash,
+                    &artifact.store_path,
+                    &artifact.nar_hash,
                     true,
-                    true,
+                    false,
                 )?;
             }
-        }
-        let Some(expose) = closure.root.expose.as_ref() else {
-            continue;
-        };
-        let Some(artifact) = closure.root.expose_artifact.as_ref() else {
-            anyhow::bail!(
-                "package '{}' exposes systemd units but does not record an expose artifact",
-                closure.root.name
-            );
-        };
-        push_secondary_artifact(
-            &mut artifacts,
-            &mut seen,
-            &closure.registry_name,
-            &artifact.store_path,
-            &artifact.nar_hash,
-            true,
-            false,
-        )?;
-        for image in &expose.images {
-            push_secondary_artifact(
-                &mut artifacts,
-                &mut seen,
-                &closure.registry_name,
-                &image.store_path,
-                &image.nar_hash,
-                false,
-                true,
-            )?;
         }
     }
 
@@ -879,7 +910,6 @@ fn verify_install_provenance_from_cache(
                 .iter()
                 .map(|meta| (closure.registry_name.as_str(), meta))
         }),
-        &HashMap::new(),
     )
 }
 
@@ -887,7 +917,6 @@ fn verify_install_provenance_from_cache_with_policy(
     config: &ApmConfig,
     closures: &[ResolvedClosure],
 ) -> Result<usize> {
-    let policies = root_owner_signer_policies(config);
     verify_package_provenance_entries_from_cache_inner(
         &config.cache_path(),
         closures.iter().flat_map(|closure| {
@@ -896,7 +925,6 @@ fn verify_install_provenance_from_cache_with_policy(
                 .iter()
                 .map(|meta| (closure.registry_name.as_str(), meta))
         }),
-        &policies,
     )
 }
 
@@ -904,29 +932,12 @@ pub(crate) fn verify_package_provenance_entries_from_cache_with_policy<'a>(
     config: &ApmConfig,
     entries: impl IntoIterator<Item = (&'a str, &'a PackageMeta)>,
 ) -> Result<usize> {
-    let policies = root_owner_signer_policies(config);
-    verify_package_provenance_entries_from_cache_inner(&config.cache_path(), entries, &policies)
-}
-
-fn root_owner_signer_policies(config: &ApmConfig) -> HashMap<String, HashSet<String>> {
-    config
-        .registries
-        .iter()
-        .map(|(registry, _)| {
-            let signers = registry
-                .signing
-                .as_ref()
-                .map(|signing| signing.root_owner_signers.iter().cloned().collect())
-                .unwrap_or_default();
-            (registry.name.clone(), signers)
-        })
-        .collect()
+    verify_package_provenance_entries_from_cache_inner(&config.cache_path(), entries)
 }
 
 fn verify_package_provenance_entries_from_cache_inner<'a>(
     registry_cache_root: &Path,
     entries: impl IntoIterator<Item = (&'a str, &'a PackageMeta)>,
-    root_owner_signers: &HashMap<String, HashSet<String>>,
 ) -> Result<usize> {
     let mut verified = 0;
     let mut transparency_logs = HashMap::<String, String>::new();
@@ -934,12 +945,6 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
 
     for (registry_name, meta) in entries {
         let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
-            if package_requires_provenance(meta) {
-                anyhow::bail!(
-                    "package '{}' uses RFC-0001 exposed or permission metadata but does not declare provenance",
-                    meta.name
-                );
-            }
             continue;
         };
         ensure_safe_provenance_ref(provenance_ref)?;
@@ -984,39 +989,13 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
             sequence,
         )
         .with_context(|| format!("verifying provenance key lifetime for {}", path.display()))?;
-        enforce_root_owner_signer(meta, registry_name, &key_id, root_owner_signers)?;
         verified += 1;
     }
 
     Ok(verified)
 }
 
-fn enforce_root_owner_signer(
-    meta: &PackageMeta,
-    registry_name: &str,
-    authenticated_signer: &str,
-    root_owner_signers: &HashMap<String, HashSet<String>>,
-) -> Result<()> {
-    if meta
-        .config_module
-        .as_ref()
-        .is_some_and(|module| !module.owns_roots.is_empty())
-        && !root_owner_signers
-            .get(registry_name)
-            .is_some_and(|allowed| allowed.contains(authenticated_signer))
-    {
-        anyhow::bail!(
-            "package '{}@{}' claims shared-root ownership, but authenticated provenance signer '{}' is not in registry '{}' operator allowlist [registry.signing].root_owner_signers",
-            meta.name,
-            meta.version,
-            authenticated_signer,
-            registry_name
-        );
-    }
-    Ok(())
-}
-
-fn read_provenance_artifact(
+pub(crate) fn read_provenance_artifact(
     registry_cache_root: &Path,
     registry_name: &str,
     provenance_ref: &str,
@@ -1208,8 +1187,8 @@ fn ensure_safe_provenance_ref(path: &str) -> Result<()> {
     validate_attestation_provenance_ref(path)
 }
 
-/// Build NAR download requests for missing expose artifacts.
-fn build_expose_artifact_download_requests(
+/// Build NAR download requests for missing secondary artifacts.
+fn build_secondary_artifact_download_requests(
     registries: &RegistrySet,
     artifacts: &[SecondaryArtifactDownload],
     missing_store_paths: &[String],
@@ -1592,16 +1571,14 @@ fn obsolete_installed_hashes(
         if !apm.source_drv.is_empty() {
             hashes.insert(store_path_hash(&apm.source_drv).to_string());
         }
-        if let Some(documentation) = &apm.documentation {
-            hashes.insert(store_path_hash(&documentation.store_path).to_string());
-        }
     }
     hashes
 }
 
-/// Copy the `usr/`, `src/`, and `docs/` GC-root symlinks from one generation to
-/// another, skipping the hashes in `skip_hashes` (replaced packages) and
-/// never overwriting links already present in the destination.
+/// Copies profile GC-root symlinks into a replacement generation.
+///
+/// Hashes in `skip_hashes` belong to replaced packages. Existing destination
+/// links are preserved.
 pub(crate) fn copy_roots_except_hashes(
     from: &super::profile::Generation,
     to: &super::profile::Generation,
@@ -1609,7 +1586,7 @@ pub(crate) fn copy_roots_except_hashes(
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
-    for directory in ["usr", "src", "docs"] {
+    for directory in ["usr", "src", "docs", "abilities"] {
         let source = from.path.join(directory);
         let destination = to.path.join(directory);
         std::fs::create_dir_all(&destination)
@@ -1711,7 +1688,7 @@ pub fn copy_roots_for_upgrade(
 }
 
 /// Prompt for confirmation.  Returns `Err(UserCancelled)` on "n".
-fn confirm(printer: &Printer) -> Result<()> {
+pub(crate) fn confirm(printer: &Printer) -> Result<()> {
     printer.plain("Do you want to continue? [Y/n] ");
 
     // Flush stderr since the prompt goes there via `plain`.
@@ -1898,7 +1875,7 @@ fn build_download_requests(
 ///
 /// Produces `YYYY-MM-DDTHH:MM:SSZ` in UTC.  Does not depend on external
 /// crates -- uses manual division to avoid adding a time dependency.
-fn chrono_iso8601(epoch_secs: i64) -> String {
+pub(crate) fn chrono_iso8601(epoch_secs: i64) -> String {
     // Simple approach: delegate to the system for formatting.
     // For a minimal implementation without chrono, we compute manually.
     let secs_per_day: i64 = 86400;
@@ -1942,10 +1919,7 @@ mod tests {
     use tempfile::TempDir;
 
     use crate::profile::Generation;
-    use crate::types::{
-        AttestationMeta, ConfigModuleMeta, ConfigOutputMeta, ExposeArtifactMeta, ExposeMeta,
-        ModuleAbiCompat, OwnedRoot, SysrootImageEntry,
-    };
+    use crate::types::AttestationMeta;
     use serde::{Deserialize, Serialize};
     use sha2::{Digest, Sha256};
 
@@ -2051,74 +2025,21 @@ mod tests {
             references: Vec::new(),
             source_drv: String::new(),
             source_nar_hash: String::new(),
+            named_outputs: std::collections::BTreeMap::new(),
+            version_requirement: None,
+            os_version: None,
+            module_dependencies: Vec::new(),
             closure_size: 1,
             sysroot: false,
             previous: None,
             images: Vec::new(),
             min_format: None,
             requires_features: Vec::new(),
-            expose: None,
-            expose_artifact: None,
-            config_module: None,
-            documentation: None,
-            permissions: Default::default(),
-            bpf_lsm: None,
+            deployment: None,
+            module_documentation: None,
+            qualification: None,
             attestation: Default::default(),
         }
-    }
-
-    fn add_owned_root(meta: &mut PackageMeta, root: &str) {
-        meta.config_module = Some(ConfigModuleMeta {
-            config_output: ConfigOutputMeta {
-                store_path: "/nix/store/0000000000000000000000000000000a-config".to_string(),
-                nar_hash: "sha256:test".to_string(),
-                nar_size: 1,
-                references: Vec::new(),
-            },
-            evaluation_base_lib: None,
-            dependency_outputs: Default::default(),
-            module_abi_compat: ModuleAbiCompat { min: 1, max: 1 },
-            declares: Vec::new(),
-            declaration_schema: Vec::new(),
-            requires: Vec::new(),
-            owns_roots: vec![OwnedRoot {
-                root: root.to_string(),
-                interface_abi: 1,
-                contributable: Vec::new(),
-            }],
-            contributes: Vec::new(),
-            artifacts: Default::default(),
-            provides_capabilities: Vec::new(),
-        });
-    }
-
-    #[test]
-    fn root_owner_requires_authenticated_signer_in_operator_allowlist() {
-        let mut meta = sample_package("firewall", "1.0.0", "/var/lib/store/root-firewall");
-        add_owned_root(&mut meta, "firewall");
-
-        let mut policies = HashMap::new();
-        policies.insert(
-            "test-reg".to_string(),
-            HashSet::from(["release".to_string()]),
-        );
-        let error = enforce_root_owner_signer(&meta, "test-reg", "builder", &policies)
-            .expect_err("non-allowlisted signer must not grant root ownership");
-        assert!(error.to_string().contains("operator allowlist"), "{error}");
-
-        policies
-            .get_mut("test-reg")
-            .expect("test policy")
-            .insert("builder".to_string());
-        enforce_root_owner_signer(&meta, "test-reg", "builder", &policies)
-            .expect("allowlisted authenticated signer grants ownership");
-    }
-
-    #[test]
-    fn packages_without_root_claims_preserve_compatibility_without_allowlist() {
-        let meta = sample_package("curl", "1.0.0", "/var/lib/store/root-curl");
-        enforce_root_owner_signer(&meta, "test-reg", "builder", &HashMap::new())
-            .expect("ordinary packages do not require the privileged signer allowlist");
     }
 
     fn sample_installed(name: &str, version: &str, store_path: &str) -> InstalledMeta {
@@ -2148,12 +2069,9 @@ mod tests {
                 held: false,
                 source_drv: String::new(),
                 source_nar_hash: String::new(),
-                expose: None,
-                expose_artifact: None,
-                config_module: None,
-                documentation: None,
-                permissions: Default::default(),
-                bpf_lsm: None,
+                deployment: None,
+                module_documentation: None,
+                qualification: None,
                 attestation: Default::default(),
             }),
         }
@@ -2201,36 +2119,15 @@ mod tests {
             total_nar_size: 1,
         }
     }
-
-    fn sample_expose_image(store_path: &str, nar_hash: &str) -> SysrootImageEntry {
-        SysrootImageEntry {
-            format: "dir".to_string(),
-            store_path: store_path.to_string(),
-            nar_hash: nar_hash.to_string(),
-            nar_size: 1,
-            delivery: crate::types::test_image_delivery("raw"),
-            sb_signer_cert_sha256: None,
-            sbat: Vec::new(),
-            expected_pcr11: None,
-            ukis: Vec::new(),
-            recovery_ukis: Vec::new(),
-            recovery_bundle: None,
-            root_image: None,
-            root_verity: None,
-            root_hash: None,
-            root_hash_sig: None,
-        }
-    }
-
     fn attested_sample_package() -> PackageMeta {
         let root_hash = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
-        let manifest_digest =
+        let binding_digest =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
         let measurement = crate::package_attestation::package_measurement_digest(
             "web",
             "1.0.0",
             root_hash,
-            manifest_digest,
+            binding_digest,
         );
         let measurement_hex = measurement.trim_start_matches("sha256:");
         let mut meta = sample_package("web", "1.0.0", "/nix/store/abc123-web-1.0.0");
@@ -2277,7 +2174,7 @@ mod tests {
         let root_hash_sig = meta.attestation.root_hash_sig.as_deref().unwrap();
         let provenance = meta.attestation.provenance.as_deref().unwrap();
         let measurement = meta.attestation.measurement.as_deref().unwrap();
-        let manifest_digest =
+        let binding_digest =
             "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
         let source_uri = format!("nix:{}", meta.source_drv);
         let statement = serde_json::json!({
@@ -2289,10 +2186,10 @@ mod tests {
                 },
                 {
                     "name": format!(
-                        "aos:permissions-manifest:{}:{}:{}",
+                        "aos:package-runtime-binding:{}:{}:{}",
                         meta.name, meta.version, meta.platform
                     ),
-                    "digest": crate::provenance::digest_map(manifest_digest),
+                    "digest": crate::provenance::digest_map(binding_digest),
                 },
                 {
                     "name": format!(
@@ -2436,52 +2333,6 @@ mod tests {
         let digest = Sha256::digest(bytes);
         digest.iter().map(|byte| format!("{byte:02x}")).collect()
     }
-
-    #[test]
-    fn collect_expose_artifacts_includes_expose_images() {
-        let mut root = sample_package("web", "1.0.0", "/var/lib/store/root-web");
-        root.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: vec![sample_expose_image(
-                "/var/lib/store/image-web",
-                "sha256:image",
-            )],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        root.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/expose-web".to_string(),
-            nar_hash: "sha256:expose".to_string(),
-            nar_size: 1,
-        });
-
-        let artifacts = collect_expose_artifacts(&[sample_closure(root.clone(), vec![root])])
-            .expect("collect expose artifacts");
-
-        assert_eq!(
-            artifacts,
-            vec![
-                SecondaryArtifactDownload {
-                    registry_name: "test-reg".to_string(),
-                    store_path: "/var/lib/store/expose-web".to_string(),
-                    nar_hash: "sha256:expose".to_string(),
-                    trust_graph_root: true,
-                    requires_empty_references: false,
-                },
-                SecondaryArtifactDownload {
-                    registry_name: "test-reg".to_string(),
-                    store_path: "/var/lib/store/image-web".to_string(),
-                    nar_hash: "sha256:image".to_string(),
-                    trust_graph_root: false,
-                    requires_empty_references: true,
-                },
-            ]
-        );
-    }
-
     #[test]
     fn verify_install_provenance_from_cache_reads_registry_artifact() {
         let tmp = TempDir::new().unwrap();
@@ -2528,30 +2379,6 @@ mod tests {
         let meta = aliased_provenance_fixture(tmp.path());
 
         assert_eq!(verify_aliased_provenance(tmp.path(), meta).unwrap(), 1);
-    }
-
-    #[test]
-    fn verify_install_provenance_keeps_root_owner_policy_bound_to_local_alias() {
-        let tmp = TempDir::new().unwrap();
-        let mut meta = aliased_provenance_fixture(tmp.path());
-        add_owned_root(&mut meta, "firewall");
-        let signers = HashSet::from([TEST_PROVENANCE_KEY_ID.to_string()]);
-        let entries = [("local-alias", &meta)];
-        let canonical_policy = HashMap::from([("test-reg".to_string(), signers.clone())]);
-
-        let error = verify_package_provenance_entries_from_cache_inner(
-            tmp.path(),
-            entries,
-            &canonical_policy,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("operator allowlist"));
-
-        let alias_policy = HashMap::from([("local-alias".to_string(), signers)]);
-        let count =
-            verify_package_provenance_entries_from_cache_inner(tmp.path(), entries, &alias_policy)
-                .unwrap();
-        assert_eq!(count, 1);
     }
 
     #[test]
@@ -2700,72 +2527,6 @@ mod tests {
 
         assert!(err.to_string().contains("must not contain symlinks"));
     }
-
-    #[test]
-    fn verify_install_provenance_from_cache_rejects_exposed_without_provenance() {
-        let mut meta = sample_package("web", "1.0.0", "/var/lib/store/root-web");
-        meta.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-
-        let err = verify_install_provenance_from_cache(
-            TempDir::new().unwrap().path(),
-            &[sample_closure(meta.clone(), vec![meta])],
-        )
-        .unwrap_err();
-
-        assert!(format!("{err:#}").contains("does not declare provenance"));
-    }
-
-    #[test]
-    fn collect_expose_artifacts_rejects_incompatible_duplicate_roles() {
-        let shared_path = "/var/lib/store/shared-secondary";
-        let mut image_root = sample_package("web", "1.0.0", "/var/lib/store/root-web");
-        image_root.expose = Some(ExposeMeta {
-            target: "web.target".to_string(),
-            units: vec!["web.service".to_string()],
-            images: vec![sample_expose_image(shared_path, "sha256:shared")],
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        image_root.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: "/var/lib/store/expose-web".to_string(),
-            nar_hash: "sha256:web-expose".to_string(),
-            nar_size: 1,
-        });
-        let mut artifact_root = sample_package("api", "1.0.0", "/var/lib/store/root-api");
-        artifact_root.expose = Some(ExposeMeta {
-            target: "api.target".to_string(),
-            units: vec!["api.service".to_string()],
-            images: Vec::new(),
-            requires: Vec::new(),
-            config: Default::default(),
-            provides: Vec::new(),
-            uses: Vec::new(),
-        });
-        artifact_root.expose_artifact = Some(ExposeArtifactMeta {
-            store_path: shared_path.to_string(),
-            nar_hash: "sha256:shared".to_string(),
-            nar_size: 1,
-        });
-
-        let err = collect_expose_artifacts(&[
-            sample_closure(image_root.clone(), vec![image_root]),
-            sample_closure(artifact_root.clone(), vec![artifact_root]),
-        ])
-        .expect_err("duplicate image/artifact path should be rejected");
-
-        assert!(err.to_string().contains("incompatible roles"));
-    }
-
     #[test]
     fn verify_secondary_artifact_downloads_rejects_image_references() {
         let result = crate::download::DownloadResult {
@@ -2786,7 +2547,7 @@ mod tests {
         };
 
         let err = verify_secondary_artifact_downloads(&[result], &[artifact])
-            .expect_err("referenced expose image should be rejected");
+            .expect_err("secondary artifact with references should be rejected");
 
         assert!(err.to_string().contains("empty reference set"));
     }

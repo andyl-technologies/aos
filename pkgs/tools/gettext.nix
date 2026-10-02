@@ -1,5 +1,6 @@
 ##! gettext — GNU internationalization and localization tools
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -14,7 +15,77 @@
   splitDarwinRuntime = stdenv.isCross && stdenv.hostPlatform.isDarwin;
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "gettext";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Gettext accepts both source and compiled catalog representations.";
+        "files" = {
+          "catalog.po" = "msgid \"\"\nmsgstr \"\"\n\"Content-Type: text/plain; charset=UTF-8\\n\"\n\nmsgid \"hello\"\nmsgstr \"qualified\"\n";
+        };
+        "input" = "A portable-object catalog with one translated message.";
+        "operation" = "Compile the PO source and decode the resulting MO catalog.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/msgfmt"
+              "--check"
+              "--output-file=catalog.mo"
+              "catalog.po"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+          {
+            "argv" = [
+              "@out@/bin/msgunfmt"
+              "--no-wrap"
+              "catalog.mo"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Msgfmt rejects the syntax error with status 1.";
+        "files" = {
+          "invalid.po" = "msgid \"hello\"\nmsgstr \"unterminated\n";
+        };
+        "input" = "A portable-object catalog with an unterminated message string.";
+        "operation" = "Compile the malformed catalog with msgfmt.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/msgfmt"
+              "--check"
+              "--output-file=invalid.mo"
+              "invalid.po"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
     outputs =
       if splitDarwinRuntime

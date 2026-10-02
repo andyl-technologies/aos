@@ -75,4 +75,3 @@ impl RegistryMetadataSigner for FileMetadataSigner<'_> {
         sign_payload_signature(&key.key_path, REGISTRY_METADATA_SIGNATURE_NAMESPACE, &request.payload)
     }
 }
-

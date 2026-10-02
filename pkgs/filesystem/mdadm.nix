@@ -5,6 +5,7 @@
 ##! and stage 2 keeps the same tool, udev rules, and monitor units for hotplug
 ##! and health. Built from the Makefile-only upstream release; no autoconf.
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -34,6 +35,56 @@
   '';
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+    qualification.packageProbe = lib.qualification.commandProbe {
+      primary = {
+        input = "The installed target command and its offline query.";
+        operation = "Execute the packaged command without network or persistent state.";
+        expected = "The target command reports its documented query result.";
+        files = {};
+        steps = [
+          {
+            argv = ["@python@" "-c" "import subprocess\nresult = subprocess.run(['@out@/sbin/mdadm', '--version'], capture_output=True, text=True)\nassert result.returncode == 0 and ('mdadm' in result.stdout + result.stderr), (result.returncode, result.stdout, result.stderr)\nprint('mdadm command passed')\n"];
+            exit_code = 0;
+            stdout.exact = "mdadm command passed\n";
+            stderr.exact = "";
+          }
+        ];
+        artifacts = [];
+      };
+      badInput = {
+        input = "An unknown command option or variable.";
+        operation = "Parse and reject the invalid request.";
+        expected = "The target command fails before performing the operation.";
+        files = {};
+        steps = [
+          {
+            argv = ["@python@" "-c" "import subprocess, sys\nresult = subprocess.run(['@out@/sbin/mdadm', '--aos-invalid-option'], capture_output=True, text=True)\nassert result.returncode != 0, (result.returncode, result.stdout, result.stderr)\nsys.stderr.write('mdadm rejected invalid input\\n')\nraise SystemExit(7)\n"];
+            exit_code = 7;
+            observes_rejection = true;
+            stdout.exact = "";
+            stderr.exact = "mdadm rejected invalid input\n";
+          }
+        ];
+        artifacts = [];
+      };
+    };
     pname = "mdadm";
     inherit version;
 

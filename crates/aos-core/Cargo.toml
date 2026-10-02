@@ -5,6 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+aos-contract.workspace = true
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

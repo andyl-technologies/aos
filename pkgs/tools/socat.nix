@@ -1,5 +1,6 @@
 ##! socat — Multipurpose relay for bidirectional data transfer
 {
+  lib,
   mkDerivation,
   fetchurl,
   gnumake,
@@ -12,7 +13,63 @@
   version = "1.8.1.3";
 in
   mkDerivation {
+    platformSupport = {
+      build = [{abi = ["gnu"]; os = ["linux"];}];
+      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      target = [];
+      role = "public-package";
+    };
     pname = "socat";
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Socat preserves the payload exactly.";
+        "files" = {};
+        "input" = "A fixed byte stream on standard input.";
+        "operation" = "Relay the stream between Socat's standard-input and standard-output addresses.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/socat"
+              "-u"
+              "STDIN"
+              "STDOUT"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdin" = "answer=42\n";
+            "stdout" = {
+              "exact" = "answer=42\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Socat rejects the address before starting a relay.";
+        "files" = {};
+        "input" = "An address type that Socat does not implement.";
+        "operation" = "Open the unknown address.";
+        "steps" = [
+          {
+            "argv" = [
+              "@out@/bin/socat"
+              "-u"
+              "QUALIFICATION-NOT-AN-ADDRESS"
+              "STDOUT"
+            ];
+            "exit_code" = 1;
+            "observes_rejection" = true;
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
     inherit version;
 
     src = fetchurl {

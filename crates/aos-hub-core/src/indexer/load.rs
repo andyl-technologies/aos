@@ -19,13 +19,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_oci_types::{
-    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, to_canonical_json, ContainerRelease,
-    CONTAINER_RELEASE_SIDECAR_PATH,
+    CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES,
+    to_canonical_json,
 };
 use aos_registry_surface::manifest::{
-    parse_package_file, KeysToml, PackageToml, ReferenceField, RegistryRootConfig,
+    KeysToml, PackageToml, ReferenceField, RegistryRootConfig, parse_package_file,
 };
 use aos_registry_surface::object::{self, Commit, ObjectKind, Oid};
 use aos_registry_surface::store::{self, StoreEntry};
@@ -647,11 +647,11 @@ fn parse_container_release(bytes: &[u8]) -> Result<LoadedContainerRelease> {
 mod container_release_tests {
     use super::*;
     use aos_oci_types::{
-        Annotations, ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
+        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
         ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
         ContainerReleaseEvidence, ContainerReleaseIdentity, Descriptor, MediaType,
         NixDefinitionIdentity, NixOutputIdentity, Platform, Sha256Digest,
-        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
     };
 
     fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
@@ -720,6 +720,7 @@ mod container_release_tests {
                 ready_for_verified_publication: true,
             },
             evidence: ContainerReleaseEvidence {
+                abilities: evidence_descriptor(MediaType::AosContainerStaticAbilities, "abilities"),
                 sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
                 source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
                 license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
@@ -951,6 +952,14 @@ pub(super) fn required_package_store_hashes(packages: &[PackageToml]) -> BTreeSe
                     artifact
                         .named_outputs
                         .values()
+                        .flat_map(|output| {
+                            std::iter::once(&output.store_path).chain(
+                                output
+                                    .deployment
+                                    .iter()
+                                    .map(|deployment| &deployment.store_path),
+                            )
+                        })
                         .map(|store_path| store_hash_component(store_path).to_string()),
                 );
             }
@@ -990,8 +999,8 @@ fn enrich_packages_from_store(
                 artifact.nar_hash = nar.nar_hash();
                 artifact.nar_size = nar.size;
 
-                for (output, store_path) in &artifact.named_outputs {
-                    let output_hash = store_hash_component(store_path);
+                for (output, metadata) in &artifact.named_outputs {
+                    let output_hash = store_hash_component(&metadata.store_path);
                     let output_record = store.get(output_hash).with_context(|| {
                         format!(
                             "package {} {} {platform} named output {output} has no signed store record for {output_hash}",
@@ -1004,6 +1013,20 @@ fn enrich_packages_from_store(
                         package.package.name,
                         version.version
                     );
+                    if let Some(deployment) = &metadata.deployment {
+                        deployment.validate()?;
+                        let deployment_hash = store_hash_component(&deployment.store_path);
+                        let deployment_record = store.get(deployment_hash).with_context(|| {
+                            format!("named output {output} has no signed deployment store record for {deployment_hash}")
+                        })?;
+                        anyhow::ensure!(
+                            deployment_record
+                                .blessed_nars()
+                                .iter()
+                                .any(|nar| nar.matches(&deployment.nar_hash, deployment.nar_size)),
+                            "named output {output} deployment NAR differs from its signed store record"
+                        );
+                    }
                 }
 
                 let dependencies = record.dep_ias();
@@ -1160,7 +1183,9 @@ mod bundle_tests {
     }
 
     struct InvalidBundleFetch {
+        bundle_path: String,
         bundle: Vec<u8>,
+        loose_path: String,
         loose: Vec<u8>,
         loose_reads: AtomicUsize,
     }
@@ -1206,19 +1231,20 @@ mod bundle_tests {
     #[async_trait::async_trait]
     impl SurfaceFetch for InvalidBundleFetch {
         async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
-            panic!("unexpected unbounded fetch for {path}")
+            panic!("unexpected unbounded object fetch for {path}")
         }
 
-        // Loose-object fallback is bounded like bundle reads, so route by
-        // path: bundle shards return the corrupt bundle, anything else is
-        // the canonical loose object.
-        async fn fetch_bounded(&self, path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
-            if path.starts_with(aos_registry_surface::object_bundle::DIRECTORY) {
-                return Ok(Some(self.bundle.clone()));
-            }
+        async fn fetch_bounded(&self, path: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            let bytes = if path == self.bundle_path {
+                &self.bundle
+            } else {
+                assert_eq!(path, self.loose_path);
+                self.loose_reads.fetch_add(1, Ordering::SeqCst);
+                &self.loose
+            };
+            assert!(bytes.len() <= max_bytes);
 
-            self.loose_reads.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(self.loose.clone()))
+            Ok(Some(bytes.clone()))
         }
 
         fn describe(&self) -> String {
@@ -1320,7 +1346,9 @@ mod bundle_tests {
         )
         .unwrap();
         let fetch = InvalidBundleFetch {
+            bundle_path: aos_registry_surface::object_bundle::shard_path(shard).unwrap(),
             bundle,
+            loose_path: oid.loose_path(),
             loose: object::encode_loose(ObjectKind::Blob, content).unwrap(),
             loose_reads: AtomicUsize::new(0),
         };

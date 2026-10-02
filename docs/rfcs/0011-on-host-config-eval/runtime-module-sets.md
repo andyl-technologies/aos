@@ -1,5 +1,11 @@
 # Runtime module sets
 
+> Package module/deferred runtime APIs have since moved to
+> [RFC-0022's native target](../0022-abilities-and-effects/13-target-state.md).
+> Its [infrastructure status](../0022-abilities-and-effects/infrastructure-cutover.md)
+> and [consumer migration](../0022-abilities-and-effects/consumer-migration.md)
+> distinguish implemented mechanisms from remaining integration work.
+
 This extension lets an operator supplement the cloud-delivered `host.nix`
 without replacing it. It keeps the two inputs distinct:
 
@@ -56,7 +62,7 @@ retry from a fresh snapshot; it must not let an older evaluation commit last.
 At boot, rollback, cross-ABI re-evaluation, and attestation, the active or
 selected generation supplies the exact retained runtime module set. Dirty,
 partially edited, or absent worktree contents are ignored. The platform input,
-runtime set, package configuration-module closure, facts, evaluator, and base
+runtime set, authenticated package-module closure, facts, evaluator, and base
 library are independently identified in the manifest and attestation record.
 The per-generation `cfgsrc` root retains all of them, and garbage collection
 may remove a runtime snapshot only after no retained generation refers to it.
@@ -112,7 +118,7 @@ existing authorization rules remain the boundary:
 
 - a package owns its exact package-name option root by default;
 - a shared root has exactly one installed owner and an interface ABI;
-- a meta-package may write only owner-declared contributable subpaths at the
+- a meta-package may write only owner-declared extensible subpaths at the
   matching interface ABI;
 - no package may enable another package; the operator runtime module selects
   packages and enables services;
@@ -127,8 +133,8 @@ target, unit, user, or group), never ownership of the whole
 
 The three k3s role packages publish the same versioned `k3s` interface and are
 mutually exclusive providers of that root. Its CNI and CSI integration
-subtrees are contributable without allowing an integration package to enable
-k3s. nginx owns the versioned `nginx` root and exposes contributable
+subtrees are extensible without allowing an integration package to enable
+k3s. nginx owns the versioned `nginx` root and exposes extensible
 virtual-host and upstream subtrees. Envoy owns the versioned `envoy` root and
 exposes listener, cluster, endpoint, route, secret-reference, and runtime-layer
 subtrees. Credentials are references to the credential channel and never

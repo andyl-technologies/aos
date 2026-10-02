@@ -824,10 +824,141 @@ a passing gate. Environment-specific adapters and remote macOS transport must
 be provisioned before a campaign. All source regression groups are exposed at
 `checks.qualification.<requirement-id>` and `checks.qualification.all`.
 
-The runner reads a canonical `aos.release.qualification-executor-request/v1`
-on stdin. It verifies every anonymous HTTPS download's size and SHA-256,
-retains it under a hashed name, and writes `request.json`,
-`scenario-registry.json`, and `objects.json` in a private attempt directory. The configured scenario receives the request on
+The RFC-0022 native ability gates are `ability-native-activation`,
+`ability-native-kubernetes`, `ability-native-recovery`, and
+`ability-native-adapter-matrix`. They use release scope so each staging case
+binds the complete finalized non-control artifact set, including the exact
+package, native transaction, handler, and image records carried by the release.
+A change to the case subjects, qualification policy, executor, or environment
+invalidates its observation.
+
+Native package qualification uses the signed `aos.package.qualification`
+companion. Its closed probe declarations name exact package/output selectors;
+the frozen artifact bindings select immutable payload roots. Release admission
+validates the companion's exact bytes and retained store identity, rather than
+reconstructing an interface or provider catalog. A package probe proves only
+its declared package-function claim. It does not establish a whole-system
+activation or recovery claim.
+
+The release policy carries `aos.qualification.native-operation-spec`, with an
+explicit required operation set and independently checked cohorts. Each cohort
+has its own `aos.qualification.native-operation-matrix-spec` and selected
+baseline or scenario evaluation. The complete scenario registry, including
+interruption, cancellation, rejection, and teardown cases, defines coverage;
+a focused subset cannot satisfy the release requirement.
+
+A scenario retains the original authored modules and its immutable evaluation
+descriptor. The configured executor registry commits the exact fixture archive,
+original store inventory, and evaluation selections at build time. Its executor
+identity binds those commitments. The runner verifies them before replaying the
+scenario against admitted candidate inputs. These are executor-authorized
+scenario inputs; they are distinct from the candidate's signed boot baseline.
+Ambient store paths or a fixture's self-reported inventory do not supply that
+authority.
+
+A selected operation retains its checked desired graph and exact graph digest. Each dispatched attempt is
+identified by transaction, effect, semantic revision, action, and durable
+journal sequence. Invocation and recovery observations must match that exact
+attempt. An observation for another revision, backend, action, or sequence
+cannot satisfy its cell.
+
+Live flights retain checked native journal inspection alongside independent
+substrate and backend receipt ownership inventories and foreign-state
+snapshots. Pending intent, completed outcomes, and committed output mappings
+are distinct evidence. Interruption and recovery cases must show dependent
+nonexecution after failure, safe handling of incomplete tails, and the exact
+ownership and foreign-state results required by the cell. Removal decisions
+come from the transaction's explicit `retire` list and target retained or
+already durably retired effects; omission from a desired graph does not
+authorize retirement.
+
+Native rejection evidence must identify the selected graph and the rejected
+attempt, and independently establish that no prohibited dispatch or external
+mutation occurred. Schema checks, mocked callbacks, and a successful source
+regression cannot substitute for live domain observations. The source-built
+`aos.qualification.native-runtime-audit` checks generic runtime boundaries
+separately; passing it does not qualify Kubernetes, storage, services, boot, or
+any other domain.
+
+Source-candidate regression derivations and release staging cases remain
+separate. Release admission requires fresh executor observations for the exact
+frozen subjects and acceptance checks. Whole-system native fleet qualification
+is incomplete until every applicable domain operation and recovery case has
+produced its required evidence. An unfinished scenario must leave the gate
+unsatisfied. An x86 fleet does not establish direct aarch64 execution.
+
+Kubernetes qualification requires actual native package modules, authenticated
+APM deployment, observed readiness and exact object revisions, and verified
+replacement and removal behavior. A package-function probe or a fabricated
+companion cannot impersonate the finalized Kubernetes or system manager
+artifacts for a production flight.
+
+The x86 release executor maps the remaining implemented native policy IDs to
+ability scenarios for the Crucible baseline, adapter matrix, image rollout,
+and recovery. Activation uses the ordinary report scenario while its source
+regression runs the production package-module and APM configuration path.
+Each mapped scenario selects the exact finalized server QCOW2,
+slot-A UKI, metadata, unsigned assembly, and finalized-set objects from the
+downloaded release case.
+It verifies their byte identities and cross-bindings, extracts the UKI's initrd,
+and checks the published native host and initrd transaction, package, evaluation,
+and admission roots before booting that QCOW2 with
+KVM, UEFI Secure Boot, and a software TPM. It then confirms through the guest's
+recorded running generation, booted UKI digest, kernel, root hash, and host
+native admission and retained transaction identities that execution stayed on
+those published subjects. A checked desired graph alone does not prove that its
+effects ran.
+
+The production-only image-rollout scenario additionally requires the frozen
+predecessor manifest and its downloaded object bundle. It rejects a missing or
+mismatched bundle before boot, validates the predecessor's complete finalized
+server image controls, and starts independent healthy and failed-health flights
+from exact copies of that predecessor QCOW2. The candidate is obtained only by
+retaining the image's baked authenticated registry trust anchor, redirecting it
+to the bounded HTTPS staging Hub origin, and replacing its channel with the
+exact finalized release-version tag. The healthy flight independently observes
+the health hook and native journal before allowing physical boot commit, then
+proves expiry retires both rollout roots and retained UKIs. The failed-health
+flight observes the exact candidate boot before releasing the failure hook,
+then checks the exact predecessor boot, retained roots, native journal, and
+terminal fallback before allowing physical commit. A missing predecessor,
+untrusted registry configuration, inaccessible staging Hub, non-matching image
+object, absent branch result, or incomplete exact-boot observation leaves no
+scenario report and therefore cannot satisfy the gate.
+
+The scenario also reconstructs the complete published NAR graph rooted at the
+release's `aos`, `apm`, `apr`, and `packageRuntime` outputs. It verifies every
+downloaded NAR and narinfo relationship in an initially empty private Nix store,
+exports that checked graph, imports it into the published guest, and compares
+the guest's registered NAR hashes and references with the downloaded records.
+Executor-owned observation fixtures remain separate from the release subjects.
+Their immutable artifacts and candidate runtime selection must be retained and
+bound to the observation. They cannot replace a signed package companion or
+alter published subjects to manufacture a passing production claim.
+
+Native boot evidence binds the image-owned host and initrd transaction,
+packages, evaluation snapshot, and admission roots to the published assembly.
+Read-only inspection of the native effects journal distinguishes desired
+configuration, pending durable dispatch intent, and committed output mappings.
+It does not repair incomplete tails or treat graph digests as live-state proof.
+Live operation evidence records the exact transaction, effect, revision, action,
+and journal sequence alongside independently observed backend ownership and
+foreign-state snapshots. A source-built native runtime audit is separate from
+domain qualification; its success does not qualify a fleet scenario that has
+not completed its own native operation and recovery checks.
+
+After provisioning through the published `apm`, implemented native fleet
+scenarios drive
+the published `aos`, `apm`, `apr`, and package runtime paths in the guest. The
+recovery case also observes fresh host authority and resource incarnations
+after reboot. A passing scenario writes a fresh canonical report in the private
+executor attempt. No precreated report under
+`/run/aos-release/qualification-reports` can satisfy these mapped staging cases.
+
+The runner reads a canonical v2 executor request on stdin. It verifies every
+anonymous HTTPS download's size and SHA-256, retains it under a hashed name,
+and writes `request.json`, `scenario-registry.json`, and `objects.json` in a
+private attempt directory. The configured scenario receives the request on
 stdin and runs in that directory with no inherited environment. `objects.json`
 maps artifact IDs to the verified local paths. The object set contains each
 case subject and the complete transitive graph named by its manifest
@@ -958,9 +1089,10 @@ passes it to `step qualify-run`. Before starting an
 executor, install each applicable report-backed scenario's single-link
 canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
-The staging container lifecycle cases execute directly and do not read this
-report directory. Environment recovery exercises are not executor cases; they
-are [fitness attestations](#fitness-attestations). Each report-backed adapter
+The staging container and native ability lifecycle cases execute directly and
+do not read this report directory. Environment recovery exercises are not
+executor cases; they are [fitness attestations](#fitness-attestations). Each
+report-backed adapter
 drains the coordinator request, captures the selected report without following
 links, and binds it through `qualification respond`. A missing, changing,
 stale, malformed, incorrectly identified, or case-incomplete report fails the

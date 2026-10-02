@@ -10,7 +10,7 @@ the smallest responsible boundary.
 Evaluation checks cover:
 
 - exactly one registered definition named `aos`;
-- package-root parity with the production server golden image;
+- package-root parity with the evaluated container slice and backend roots;
 - supported AOS-to-OCI platform mapping;
 - valid layer names and ordering;
 - no duplicate roots or facade collisions;
@@ -75,6 +75,11 @@ exposed as `packages.<system>.container-aos-publication-inputs` and contains:
 - `evidence-layout/` and `evidence.oci.tar`, the unsigned OCI evidence graph;
 - `signature-input.json`, `signing-request.json`, and
   `publication-roots.json`.
+
+The canonical `/v1` signature input requires the static ability evidence
+descriptor. Tests parse that same contract through the signer, finalizer, Hub
+indexer, CLI, and registry graph walkers, and reject an input or release with a
+missing ability descriptor.
 
 It deliberately does not contain `container-release.json`. An external signer
 must add the DSSE object to a final layout and produce the canonical signed

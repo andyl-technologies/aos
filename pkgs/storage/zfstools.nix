@@ -1,8 +1,8 @@
 ##! zfstools — Scheduled ZFS snapshot management utilities
 {
+  lib,
   mkDerivation,
   fetchurl,
-  lib,
   stdenv,
   ruby,
   zfs,
@@ -10,13 +10,83 @@
   grep,
   mariadb,
   postgresql,
+  service-management,
+  storage-interface,
 }: let
   version = "0.3.6";
   runtimePath = "${zfs}/bin:${zfs}/sbin:${coreutils}/bin:${mariadb}/bin:${postgresql}/bin";
 in
   mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
     pname = "zfstools";
-    inherit version;
+    qualification.packageProbe = lib.qualification.commandProbe {
+      "primary" = {
+        "artifacts" = [];
+        "expected" = "Zfs-auto-snapshot prints its interval, retention, dry-run, pool, and UTC controls.";
+        "files" = {};
+        "input" = "An invocation without a snapshot interval or retention count.";
+        "operation" = "Request the zfs-auto-snapshot usage contract without accessing a pool.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import subprocess\nresult = subprocess.run([\"@out@/bin/zfs-auto-snapshot\"], capture_output=True, text=True)\nassert result.returncode == 0 and result.stdout.startswith(\"Usage:\") and \"INTERVAL\" in result.stdout and \"KEEP\" in result.stdout\nprint(\"zfstools operation passed\")\n"
+            ];
+            "exit_code" = 0;
+            "stderr" = {
+              "exact" = "";
+            };
+            "stdout" = {
+              "exact" = "zfstools operation passed\n";
+            };
+          }
+        ];
+      };
+      "badInput" = {
+        "artifacts" = [];
+        "expected" = "Zfs-auto-snapshot rejects the unknown option.";
+        "files" = {};
+        "input" = "An option outside zfs-auto-snapshot's supported switch set.";
+        "operation" = "Parse the unsupported option before accessing any ZFS pool.";
+        "steps" = [
+          {
+            "argv" = [
+              "@python@"
+              "-c"
+              "import sys\nimport subprocess\nresult = subprocess.run([\"@out@/bin/zfs-auto-snapshot\", \"--qualification-invalid\"], capture_output=True, text=True)\nassert result.returncode != 0 and \"unrecognized option\" in result.stderr\n\nsys.stderr.write(\"zfstools rejected invalid input\\n\")\nraise SystemExit(7)\n"
+            ];
+            "exit_code" = 7;
+            "observes_rejection" = true;
+            "stderr" = {
+              "exact" = "zfstools rejected invalid input\n";
+            };
+            "stdout" = {
+              "exact" = "";
+            };
+          }
+        ];
+      };
+    };
+
+    # Keep module compatibility at this release until a broader policy is reviewed.
+    version = "=${version}";
 
     src = fetchurl {
       urls = ["https://github.com/bdrewery/zfstools/archive/refs/tags/v${version}.tar.gz"];
@@ -26,6 +96,9 @@ in
     buildDeps = [];
     runtimeDeps = [ruby zfs coreutils mariadb postgresql];
     propagatedDeps = [];
+
+    module = ./_zfstools;
+    moduleDeps = [service-management storage-interface];
 
     phases = [
       {
@@ -52,7 +125,7 @@ in
           done
 
           # The upstream library intentionally invokes the ZFS and optional
-          # database clients by name.  Give those subprocesses an exact,
+          # database clients by name. Give those subprocesses an exact,
           # source-built runtime path without relying on a global environment.
           sed -i "2iENV['PATH'] = '${runtimePath}:' + ENV.fetch('PATH', String.new)" \
             "$out/lib/zfstools.rb"

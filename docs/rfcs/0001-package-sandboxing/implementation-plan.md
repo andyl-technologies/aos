@@ -189,7 +189,7 @@ no central module tree. (migration.md increment 1.)
       hand it to the renderer instead. One filter-list entry, not N top-level args.
 - [x] **Build-time renderer as a cheap sibling derivation.** Render
       `expose.units` to unit text + a manifest copy via a trivial builder
-      (`pkgs/build-support/trivial-builders.nix`), surfaced as `pkg.expose` via
+      (`pkgs/build-support/_trivial-builders.nix`), surfaced as `pkg.expose` via
       `passthru`. Editing a unit re-renders text and never rebuilds the payload;
       the payload closure never references its own integration.
 - [x] **Reuse the pure renderers.** Call `serviceToUnit`/`targetToUnit`/… from
@@ -630,20 +630,13 @@ Full spec: [`enforcement.md`](enforcement.md).
       Current coverage enables `CONFIG_BPF_EVENTS`, `CONFIG_BPF_LSM`,
       `CONFIG_FUNCTION_TRACER`, `CONFIG_DYNAMIC_FTRACE`, `bpf` in `CONFIG_LSM`,
       AOS-built `pahole`/dwarves, and `CONFIG_DEBUG_INFO_BTF` /
-      `CONFIG_DEBUG_INFO_BTF_MODULES`; adds the `bpf-lsm-policy-v1` signed
-      package metadata gate, registry parser support, and host policy
-      `[[ebpf-lsm.policies]]` selector; ships the AOS-built
-      `aos-ebpf-lsm-policy` helper and seed BPF-LSM policy package; and loads
-      selected installed policy artifacts through
-      `apm _load-ebpf-lsm-policies --system`, resolving the JSON policy and
-      `.bpf.o` object from installed, signed package metadata rooted in the
-      current system package generation before pinning BPF links under
-      `/sys/fs/bpf/aos/lsm`. The `aos-ebpf-lsm-policies.service` prepares bpffs
-      and runs after package seed and install services, while the helper also
-      verifies or mounts bpffs for direct and live-reconcile invocations. Live
-      package target reconciliation loads the selected fleet BPF-LSM policies
-      before exposing package targets; complete existing pin sets are treated as
-      already loaded, and partial pin sets fail closed.
+      `CONFIG_DEBUG_INFO_BTF_MODULES`; ships the selected package's typed
+      BPF-LSM policy resource, exact JSON and `.bpf.o` artifact references, and
+      package-owned Linux terminal. The checked ability runtime resolves those
+      ordinary signed package artifacts and applies them through the selected
+      terminal before exposing dependent resources. The backend validates or
+      mounts bpffs, pins links under its admitted realization, treats complete
+      owned pin sets as already loaded, and rejects partial or unowned pin sets.
 - [x] **Full systemd hardening baseline** on every generated workload service (the
       `systemd-analyze security` consensus set — see [`enforcement.md`](enforcement.md));
       relaxations computed from the manifest, never hand-written. The renderer
@@ -675,8 +668,8 @@ Full spec: [`enforcement.md`](enforcement.md).
 the default `systemd-analyze` threshold; its Landlock ruleset denies an
 out-of-manifest path in a VM test *with a host-path hole present* (proves
 namespace-independence); its MAC profile loads and denies a default-denied
-operation; a signed fleet BPF-LSM package selected by `/etc/aos/policy.toml` is
-rooted in the current package generation, loads in a VM with `bpf` active in
+operation; a signed fleet BPF-LSM package selected in the checked package
+fixed point loads in a VM with `bpf` active in
 `/sys/kernel/security/lsm`, emits the trusted helper's success record, survives
 an idempotent second load, and pins the expected BPF link before package targets
 are exposed.

@@ -26,7 +26,8 @@
 in
   mkDerivation {
     pname = "darwin-dtrace-compiler";
-    version = "370.40.1-${builtins.substring 0 8 dtraceRevision}";
+    # Composite source revisions carry no broader compatibility promise.
+    version = "=370.40.1-${builtins.substring 0 8 dtraceRevision}";
 
     src = dtraceSource;
     buildDeps = [llvm zlib];
