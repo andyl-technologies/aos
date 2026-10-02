@@ -26577,9 +26577,9 @@ requires-features = ["image-artifact-contract-v1"]
 
     #[tokio::test]
     async fn native_reference_schema_upgrades_from_released_production_versions() {
-        // Released versions 2 and 3 add the channel ledger and private stages
-        // before the native reference migrations introduced by this branch.
-        for baseline_version in [1, 2, 3] {
+        // Released versions 2 through 4 add the channel ledger, private stages, and
+        // OCI retirement before this branch's native reference migrations.
+        for baseline_version in [1, 2, 3, 4] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("hub.db");
             let connection = Connection::open(&path).unwrap();
