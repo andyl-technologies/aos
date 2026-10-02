@@ -28,11 +28,12 @@ pub(super) fn put(root: &Path, relative: &str, source: &Path, expected: &str) ->
     let identity = hex::encode(Sha256::digest(serde_json::to_vec(&(
         relative, size, expected,
     ))?));
+    let lock_path = private.join(format!("{identity}.lock"));
     let lock = std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(private.join(format!("{identity}.lock")))?;
+        .open(&lock_path)?;
     lock.try_lock()
         .context("another process is transferring this filesystem object")?;
     let partial_path = private.join(format!("{identity}.part"));
@@ -101,6 +102,12 @@ pub(super) fn put(root: &Path, relative: &str, source: &Path, expected: &str) ->
         Err(error) => return Err(error).context("installing immutable filesystem object"),
     }
     std::fs::remove_file(&partial_path)?;
+
+    // The identity lock guards only the in-flight partial object. Remove it
+    // while it is still held so a completed upload leaves no private files in
+    // the served origin; publication surfaces reject unknown paths.
+    std::fs::remove_file(&lock_path)?;
+    drop(lock);
     std::fs::File::open(parent)?.sync_all()?;
     Ok(())
 }
@@ -137,6 +144,11 @@ mod tests {
 
         assert_eq!(std::fs::read(root.join("images/disk"))?, bytes);
         assert!(!partial.exists());
+        assert_eq!(
+            std::fs::read_dir(root.join(".aos-upload-resume"))?.count(),
+            0,
+            "a completed upload must not leave private resume files"
+        );
         std::fs::write(root.join("images/disk"), b"other immutable bytes")?;
         assert!(put(&root, "images/disk", &source, &digest).is_err());
         assert_eq!(
