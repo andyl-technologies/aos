@@ -458,6 +458,8 @@
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
             truncate -s "$DISK_BYTES" disk.img
 
+            # ESP isolates the boot stub from linux-generic /var matching;
+            # repart selects existing partitions by type, not the new label.
             # The x86-64 DPS root GUID isolates root-a from operator
             # linux-generic data. The reserved AOS GUID marks a baked /var
             # disk as provisioned out-of-band. The partlabel `var` is what
@@ -467,7 +469,7 @@
             # because it is created at first boot.
             {
               echo "label: gpt"
-              echo "size=$BOOT_SECTORS, type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=boot"
+              echo "size=$BOOT_SECTORS, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=boot"
               echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-a"
               echo "size=$ROOT_SECTORS, type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"
               echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
