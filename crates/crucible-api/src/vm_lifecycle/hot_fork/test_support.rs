@@ -273,6 +273,18 @@ fn prepared_multi_node_hot_fork_source_world_with_time_limit_and_powered_off_for
         source_node
             .bind_scripted_io_inventory_for_test(source.world(), &retained_node)
             .map_err(|error| test_support_error("bind scripted World I/O inventory", error))?;
+        // Production admits the primed physical counter at scheduler epoch zero.
+        let ready_point = crucible::SimulationBackend::now(&source_node);
+        lifecycle
+            .inner
+            .loop_impl_mut()
+            .rebase_restarted_backend_counter(
+                &retained_node,
+                crucible::NodeCounter {
+                    ticks: ready_point.ticks,
+                },
+            )
+            .map_err(|error| test_support_error("anchor scripted ready point", error))?;
         lifecycle
             .inner
             .backend_mut()
@@ -512,6 +524,7 @@ fn lifecycle_without_backends(
         debug_runtime_evidence: Vec::new(),
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,
+        retained_hot_fork_disk_owners: Vec::new(),
         retained_resource_owners: Vec::new(),
         hot_fork_backing_files: BTreeMap::new(),
     };

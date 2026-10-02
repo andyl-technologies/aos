@@ -282,6 +282,23 @@ impl SingleSchedulerCheckpoint {
         self.wire.quanta
     }
 
+    /// Returns a VM's unchanged physical ready-point counter at logical epoch zero.
+    ///
+    /// A nonzero boot counter may own genesis. This requires exact equality
+    /// with the retained mapping anchor, rather than a rounded projection.
+    /// Returns `None` for an absent VM or a counter or anchor beyond genesis.
+    #[must_use]
+    pub fn epoch_ready_point_counter_for_node(&self, node: &NodeId) -> Option<NodeCounter> {
+        let retained = self.wire.nodes.iter().find(|retained| {
+            retained.id.node == *node && retained.id.kind == SchedulingNodeKind::Vm
+        })?;
+        (retained.counter == retained.time_mapping.anchor_counter.ticks
+            && retained.time_mapping.anchor_time == SimInstant::EPOCH)
+            .then_some(NodeCounter {
+                ticks: retained.counter,
+            })
+    }
+
     /// Returns the scheduler-state projection retained at this boundary.
     ///
     /// # Errors
@@ -751,4 +768,83 @@ pub enum SingleSchedulerCheckpointError {
     /// The accepted representation is not byte-canonical.
     #[error("noncanonical single-scheduler checkpoint")]
     Noncanonical,
+}
+
+#[cfg(test)]
+mod epoch_ready_point_tests {
+    use super::*;
+
+    #[test]
+    fn epoch_ready_point_counter_requires_exact_vm_anchor() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let source = crate::crash_restart_scenario()?.scenario;
+        let node = source
+            .world()
+            .vm_nodes()
+            .iter()
+            .next()
+            .ok_or("missing VM")?
+            .id
+            .clone();
+        let scenario = SchedulerLivenessScenario::from_runnable_world(
+            "nonzero-ready-point",
+            4,
+            SimInstant { ticks: 100 },
+            37,
+            source.world(),
+        )
+        .with_scenario_def(source.scenario_def());
+        let scheduler = SingleScheduler::new(scenario)?;
+        let bytes = scheduler.checkpoint()?.canonical_bytes()?;
+        let checkpoint = SingleSchedulerCheckpoint::from_canonical_bytes(&bytes)?;
+
+        assert_eq!(checkpoint.frontier().ticks, 0);
+        assert_eq!(checkpoint.quanta(), 0);
+        assert_eq!(
+            checkpoint.epoch_ready_point_counter_for_node(&node),
+            Some(NodeCounter { ticks: 37 }),
+        );
+        let retained_index = checkpoint
+            .wire
+            .nodes
+            .iter()
+            .position(|retained| {
+                retained.id.node == node && retained.id.kind == SchedulingNodeKind::Vm
+            })
+            .ok_or("missing retained VM")?;
+
+        let mut drifted_counter = checkpoint.clone();
+        drifted_counter.wire.nodes[retained_index].counter += 1;
+        assert_eq!(
+            drifted_counter.epoch_ready_point_counter_for_node(&node),
+            None
+        );
+
+        let mut drifted_anchor = checkpoint.clone();
+        drifted_anchor.wire.nodes[retained_index]
+            .time_mapping
+            .anchor_counter
+            .ticks += 1;
+        assert_eq!(
+            drifted_anchor.epoch_ready_point_counter_for_node(&node),
+            None
+        );
+
+        let mut later_anchor = checkpoint.clone();
+        later_anchor.wire.nodes[retained_index]
+            .time_mapping
+            .anchor_time = SimInstant { ticks: 1 };
+        assert_eq!(later_anchor.epoch_ready_point_counter_for_node(&node), None);
+
+        let mut non_vm = checkpoint;
+        non_vm.wire.nodes[retained_index].id.kind = SchedulingNodeKind::Disk;
+        assert_eq!(non_vm.epoch_ready_point_counter_for_node(&node), None);
+        assert_eq!(
+            non_vm.epoch_ready_point_counter_for_node(&NodeId {
+                name: "absent".into()
+            }),
+            None,
+        );
+        Ok(())
+    }
 }
