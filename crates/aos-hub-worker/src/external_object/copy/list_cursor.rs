@@ -104,13 +104,15 @@ mod tests {
         assert_eq!(open(&key, Some(&second), &selector, 3).unwrap().0, 2);
         assert!(seal(&key, "provider-page-four".into(), &selector, 2, 3).is_err());
         assert!(open(&key, Some(&first), &"b".repeat(64), 3).is_err());
-        assert!(open(
-            &StorageWorkKey::new([9_u8; 32]).unwrap(),
-            Some(&first),
-            &selector,
-            3
-        )
-        .is_err());
+        assert!(
+            open(
+                &StorageWorkKey::new([9_u8; 32]).unwrap(),
+                Some(&first),
+                &selector,
+                3
+            )
+            .is_err()
+        );
         assert!(open(&key, Some("raw-provider-cursor"), &selector, 3).is_err());
         assert!(open(&key, Some(&second), &selector, 2).is_err());
         assert!(seal(&key, "x".repeat(1024), &selector, 0, 3).is_err());

@@ -48,9 +48,11 @@ fn cold_lookup_keeps_unknown_original_after_source_replacement() {
     assert!(cold.validate(&fresh).is_err());
     assert_ne!(retained.original.source_object, fresh.source_object);
     assert!(body.len() <= MAX_MESSAGE);
-    assert!(!String::from_utf8(body.clone())
-        .unwrap()
-        .contains("source_state"));
+    assert!(
+        !String::from_utf8(body.clone())
+            .unwrap()
+            .contains("source_state")
+    );
 
     let mut changed = request.clone();
     changed.nonce = "c".repeat(64);
@@ -59,16 +61,20 @@ fn cold_lookup_keeps_unknown_original_after_source_replacement() {
     changed.selector.destination.prefix.push_str("-changed");
     assert!(verify_reply(&key, &changed, &signature, &body).is_err());
     assert!(sign_reply(&key, &changed, Some(retained)).is_err());
-    assert!(verify_reply(
-        &StorageWorkKey::new([8_u8; 32]).unwrap(),
-        &request,
-        &signature,
-        &body
-    )
-    .is_err());
+    assert!(
+        verify_reply(
+            &StorageWorkKey::new([8_u8; 32]).unwrap(),
+            &request,
+            &signature,
+            &body
+        )
+        .is_err()
+    );
 
     let (body, signature) = sign_reply(&key, &request, None).unwrap();
-    assert!(verify_reply(&key, &request, &signature, &body)
-        .unwrap()
-        .is_none());
+    assert!(
+        verify_reply(&key, &request, &signature, &body)
+            .unwrap()
+            .is_none()
+    );
 }

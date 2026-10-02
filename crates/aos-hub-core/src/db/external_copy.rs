@@ -24,12 +24,20 @@ impl Database {
         binding: &BindingRecord,
         owner_scope: &str,
     ) -> Result<ConsumerScopeGrantRecord> {
-        ensure!(binding.id > 0 && !binding.stable_id.is_empty() && !owner_scope.is_empty(),
-            "invalid copy binding grant selector");
-        self.load_consumer_scope_grant(GrantResource::Binding {
-            id: binding.id, stable_id: &binding.stable_id }, owner_scope).await?
-            .filter(|grant| grant.state == "active")
-            .context("copy surface no longer has an active binding consumer grant")
+        ensure!(
+            binding.id > 0 && !binding.stable_id.is_empty() && !owner_scope.is_empty(),
+            "invalid copy binding grant selector"
+        );
+        self.load_consumer_scope_grant(
+            GrantResource::Binding {
+                id: binding.id,
+                stable_id: &binding.stable_id,
+            },
+            owner_scope,
+        )
+        .await?
+        .filter(|grant| grant.state == "active")
+        .context("copy surface no longer has an active binding consumer grant")
     }
 
     /// Loads only the live claim owned by an exact running copy operation.

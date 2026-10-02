@@ -99,18 +99,22 @@ mod tests {
         );
         assert!(created(response, "other-bucket", "source&destination/nar").is_err());
         assert!(created(response, "fixture-bucket", "replacement/nar").is_err());
-        assert!(created(
-            &response.replace("InitiateMultipartUploadResult", "Error"),
-            "fixture-bucket",
-            "source&destination/nar"
-        )
-        .is_err());
-        assert!(created(
-            &response.replace("</Bucket>", "</Bucket><Bucket>fixture-bucket</Bucket>"),
-            "fixture-bucket",
-            "source&destination/nar"
-        )
-        .is_err());
+        assert!(
+            created(
+                &response.replace("InitiateMultipartUploadResult", "Error"),
+                "fixture-bucket",
+                "source&destination/nar"
+            )
+            .is_err()
+        );
+        assert!(
+            created(
+                &response.replace("</Bucket>", "</Bucket><Bucket>fixture-bucket</Bucket>"),
+                "fixture-bucket",
+                "source&destination/nar"
+            )
+            .is_err()
+        );
         assert_eq!(xml_text("\"part<&>\""), "&quot;part&lt;&amp;&gt;&quot;");
     }
 }

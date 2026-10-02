@@ -98,38 +98,44 @@ fn authenticated_words_cannot_replace_the_pending_continuation_or_turn() {
     let (request, turn, floor, mut source) = pending_part();
     let key = StorageWorkKey::new([7_u8; 32]).unwrap();
     source.update(b"forged prior bytes").unwrap();
-    assert!(sign_reply(
-        &key,
-        &request,
-        Reply::Dispatch {
-            turn: turn.clone(),
-            floor: floor.clone(),
-            source_state: Some(source)
-        }
-    )
-    .is_err());
-    assert!(sign_reply(
-        &key,
-        &request,
-        Reply::Dispatch {
-            turn: turn.clone(),
-            floor: floor.clone(),
-            source_state: None
-        }
-    )
-    .is_err());
+    assert!(
+        sign_reply(
+            &key,
+            &request,
+            Reply::Dispatch {
+                turn: turn.clone(),
+                floor: floor.clone(),
+                source_state: Some(source)
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        sign_reply(
+            &key,
+            &request,
+            Reply::Dispatch {
+                turn: turn.clone(),
+                floor: floor.clone(),
+                source_state: None
+            }
+        )
+        .is_err()
+    );
     let mut changed = turn;
     changed.original_digest = "f".repeat(64);
-    assert!(sign_reply(
-        &key,
-        &request,
-        Reply::Dispatch {
-            turn: changed,
-            floor,
-            source_state: Some(OciSha256State::initial())
-        }
-    )
-    .is_err());
+    assert!(
+        sign_reply(
+            &key,
+            &request,
+            Reply::Dispatch {
+                turn: changed,
+                floor,
+                source_state: Some(OciSha256State::initial())
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]

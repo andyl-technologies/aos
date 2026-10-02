@@ -318,11 +318,21 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     let _callback_task = IssuerTask(tokio::spawn(async move {
         axum::serve(callback_listener, callback).await.unwrap();
     }));
-    private_file(&root.join("setup.json"), &serde_json::to_vec(&json!({
-        "issuer":issuer_address.to_string(),"catalogueMutation":format!("http://{callback_address}/fixture/catalogue-race"),"object":object,"copy":copy,
-        "application":configuration::APPLICATION,"guard":configuration::GUARD,"renewal":configuration::RENEWAL,
-        "sourceKey":"managed/binding/objects/source/nar/source.nar", "destinationKey":"managed/binding/objects/destination/nar/source.nar"
-    })).unwrap());
+    private_file(
+        &root.join("setup.json"),
+        &serde_json::to_vec(&json!({
+            "issuer": issuer_address.to_string(),
+            "catalogueMutation": format!("http://{callback_address}/fixture/catalogue-race"),
+            "object": object,
+            "copy": copy,
+            "application": configuration::APPLICATION,
+            "guard": configuration::GUARD,
+            "renewal": configuration::RENEWAL,
+            "sourceKey": "managed/binding/objects/source/nar/source.nar",
+            "destinationKey": "managed/binding/objects/destination/nar/source.nar"
+        }))
+        .unwrap(),
+    );
     let node = std::env::var("AOS_COPY_NODE").unwrap();
     let workerd = std::env::var("AOS_COPY_WORKERD").unwrap();
     assert!(node.starts_with("/nix/store/") && workerd.starts_with("/nix/store/"));
