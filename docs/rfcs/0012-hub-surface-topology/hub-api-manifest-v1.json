@@ -496,14 +496,14 @@
          "method" : "PlanDeleteRegistry",
          "path" : "aos.hub.v1.RegistryService/PlanDeleteRegistry",
          "request" : "PlanDeleteTopologyResourceRequest",
-         "response" : "TopologyPlanResponse",
+         "response" : "RegistryDeletePlanResponse",
          "service" : "RegistryService"
       },
       {
          "method" : "DeleteRegistry",
          "path" : "aos.hub.v1.RegistryService/DeleteRegistry",
          "request" : "ApplyDeleteTopologyResourceRequest",
-         "response" : "DeleteTopologyResourceResponse",
+         "response" : "OperationResponse",
          "service" : "RegistryService"
       },
       {
