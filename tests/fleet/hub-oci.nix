@@ -859,7 +859,9 @@ in {
     # release publishes beside the OCI blobs. Seed deterministic non-OCI keys
     # that sort on both sides of `oci/blobs/sha256/` before any inventory can
     # begin, so every provider inventory generation of this placement must
-    # enumerate the blob namespace alone rather than page through them.
+    # enumerate the blob namespace alone rather than page through them. The
+    # service writes staged NARs beside these keys later, so the seeded
+    # directories must belong to it.
     PUBLIC_PLACEMENT_ROOT = "/var/lib/aos-hub/storage/public"
     SEEDED_NON_OCI_KEYS = [
         "0000000000000000000000000000000a.narinfo",
@@ -871,10 +873,11 @@ in {
     hub.succeed(textwrap.dedent(f"""
         set -eu
         for key in {" ".join(shlex.quote(key) for key in SEEDED_NON_OCI_KEYS)}; do
-            mkdir -p "$(dirname {PUBLIC_PLACEMENT_ROOT}/$key)"
-            printf 'seeded non-OCI placement key %s\n' "$key" \
-              > {PUBLIC_PLACEMENT_ROOT}/$key
-            chmod 0644 {PUBLIC_PLACEMENT_ROOT}/$key
+            install -d -o aos-hub -g aos-hub -m 0750 \
+              "$(dirname {PUBLIC_PLACEMENT_ROOT}/$key)"
+            printf 'seeded non-OCI placement key %s\n' "$key" | \
+              install -o aos-hub -g aos-hub -m 0644 /dev/stdin \
+                {PUBLIC_PLACEMENT_ROOT}/$key
         done
     """))
     inventory_seeded_at = int(hub.succeed("date +%s").strip())
