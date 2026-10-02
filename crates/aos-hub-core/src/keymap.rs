@@ -26,7 +26,7 @@ pub use aos_registry_surface::keymap::{
     cache_control, content_type, image_object_sha256, immutable_object_sha256,
     is_git_pack_index_path, is_git_pack_path, is_loose_git_object_path, is_machine_path,
     is_mutable_path, is_producer_document, is_release_object_info_path, IMMUTABLE_CACHE_CONTROL,
-    MUTABLE_CACHE_CONTROL,
+    MUTABLE_CACHE_CONTROL, OCI_BLOB_KEY_PREFIX,
 };
 
 /// Map a registry prefix and a machine path to its R2 object key.
@@ -229,6 +229,20 @@ mod tests {
         assert_eq!(content_type("web/app.wasm"), "application/wasm");
         assert_eq!(content_type("HEAD"), "text/plain; charset=utf-8");
         assert_eq!(content_type("web/index.json"), "application/json");
+    }
+
+    #[test]
+    fn r2_key_composes_listing_prefixes() {
+        // A listing prefix is a key fragment, not a path: its trailing slash
+        // must survive so the bucket list stays inside the namespace.
+        assert_eq!(r2_key("demo", ""), "demo/");
+        assert_eq!(r2_key("", ""), "");
+        assert_eq!(r2_key("demo", OCI_BLOB_KEY_PREFIX), "demo/oci/blobs/sha256/");
+        assert_eq!(r2_key("", OCI_BLOB_KEY_PREFIX), "oci/blobs/sha256/");
+        assert_eq!(
+            r2_key("/demo/", "oci/blobs/sha256/ab"),
+            "demo/oci/blobs/sha256/ab"
+        );
     }
 
     #[test]
