@@ -5,10 +5,16 @@
 //!
 //! Subcommands:
 //!
+//! - `contract`: the qualification contract the fixture plans with, for the
+//!   work directory of `aos maintain release new --request-only`;
 //! - `prepare`: a finalized `aos-2026.9.0-rc.1` candidate bundle on
 //!   `andyl/main` planned for `staging/candidate` and `production/candidate`
-//!   on the fleet's two Hubs, its qualification-snapshot predecessor, public
-//!   keys, and a `finalized` journal;
+//!   on the fleet's two Hubs from the first-release request `new` derived, its
+//!   qualification-snapshot predecessor, public keys, and a `finalized`
+//!   journal. The fixture stands in for the Nix-evaluated `step plan` leaf,
+//!   which needs an AOS source checkout the fleet does not carry;
+//! - `bootstrap-intent`: a release-evidence-signed registry bootstrap intent
+//!   for one environment of a prepared plan;
 //! - `review`: an accepted release-evidence review of a qualification report;
 //! - `fitness`: signed attestations for every fitness kind the production
 //!   destination's profile demands, bound to the fleet's live identities;
@@ -45,14 +51,17 @@ use aos_release::manifest::{
 };
 use aos_release::plan::{
     PackagePlan, PlannedArtifact, PlannedArtifactSet, PlannedSurface, PlatformCell, ReleaseClass,
-    ReleasePlan, RequestedDestination, RetentionPolicy, SourceIdentity, SurfaceKind, SurfaceRole,
-    planned_destinations,
+    ReleasePlan, ReleasePlanRequest, RequestedDestination, RetentionPolicy, SourceIdentity,
+    SurfaceKind, SurfaceRole, planned_destinations,
 };
 use aos_release::platform::{MatrixCell, Platform};
 use aos_release::qualification::ChangeScope;
 use aos_release::qualification_admission::{QUALIFICATION_REVIEW, QualificationReview};
 use aos_release::qualification_evidence::CheckObservation;
-use aos_release::receipt::{RECEIPT_SIGNATURE_DOMAIN, SIGNED_RECEIPT, SignedReceiptEnvelope};
+use aos_release::receipt::{
+    HubEnvironment, RECEIPT_SIGNATURE_DOMAIN, REGISTRY_BOOTSTRAP_INTENT, RegistryBootstrapIntent,
+    SIGNED_RECEIPT, SignedReceiptEnvelope,
+};
 use aos_release::signing::{
     SIGNING_REQUEST_DOMAIN, SignatureAlgorithm, SignatureResponse, SignerRequirement, SignerRole,
     SigningContext, SigningOperation, SigningRequest,
@@ -97,7 +106,9 @@ const SIGNER_RESPONSE_DOMAIN: &[u8] = b"aos.release.signer-exchange-response/v1\
 async fn main() -> Result<()> {
     let arguments = env::args().skip(1).collect::<Vec<_>>();
     match arguments.first().map(String::as_str) {
+        Some("contract") => write_contract(&arguments[1..]),
         Some("prepare") => prepare(&arguments[1..]),
+        Some("bootstrap-intent") => bootstrap_intent(&arguments[1..]),
         Some("sign-exchange-v1") => signer_exchange(),
         Some("review") => review(&arguments[1..]),
         Some("fitness") => fitness(&arguments[1..]),
@@ -107,17 +118,77 @@ async fn main() -> Result<()> {
     }
 }
 
+/// Writes the contract the fixture plans with, as `new` would export it.
+fn write_contract(arguments: &[String]) -> Result<()> {
+    if arguments.len() != 1 {
+        bail!("usage: aos-release-fleet-fixture contract OUTPUT");
+    }
+    write_new(
+        PathBuf::from(&arguments[0]),
+        &canonical::to_vec(&fleet_contract()?)?,
+    )
+}
+
+/// Returns the shared contract with the fleet package as its only catalog rule.
+fn fleet_contract() -> Result<aos_release::qualification::QualificationContract> {
+    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
+        include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
+        "fixture contract",
+    )?;
+    contract.package_rules = vec![aos_release::qualification::PackageRule {
+        name: "fleet-package".into(),
+        role: aos_release::qualification::PackageRole::GeneralCatalog,
+        inherit_dependency_obligations: true,
+        execution: None,
+    }];
+    Ok(contract)
+}
+
+/// Reads the first-release request `new` derived and checks it fits the fleet.
+///
+/// The fixture keeps the request's registry base, generation, surfaces,
+/// destinations, and policy binding, and substitutes only what the
+/// Nix-evaluated planner would add: the package matrix and source identity.
+fn first_release_request(path: &Path) -> Result<ReleasePlanRequest> {
+    let request: ReleasePlanRequest =
+        canonical::from_slice(&fs::read(path)?, "first-release plan request")?;
+    if !request.first_release {
+        bail!("the fleet plans a registry's first release; the request is an ordinary one");
+    }
+    if request.registry != aos_release::registry::MAIN_REGISTRY
+        || request.release_id != RELEASE_ID
+        || request.version != RELEASE_VERSION
+        || request.surfaces != fleet_surfaces()
+    {
+        bail!("the request does not describe the fleet's andyl/main candidate on its two Hubs");
+    }
+    if request.public_evidence_policy_digest != fleet_contract()?.digest()? {
+        bail!("the request binds a different qualification contract than the fixture plans with");
+    }
+    let mut requested: Vec<String> = request
+        .destinations
+        .iter()
+        .map(|destination| format!("{}/{}", destination.surface, destination.channel))
+        .collect();
+    requested.sort();
+    if requested != ["production/candidate", "staging/candidate"] {
+        bail!("the request plans {requested:?}, not the fleet's candidate destinations");
+    }
+    Ok(request)
+}
+
 fn prepare(arguments: &[String]) -> Result<()> {
     if arguments.len() != 9 {
         bail!(
-            "usage: aos-release-fleet-fixture prepare BASE_SURFACE OUTPUT PREDECESSOR TRUST_DIR BASE_COMMIT X86_LINUX AARCH64_LINUX X86_DARWIN AARCH64_DARWIN"
+            "usage: aos-release-fleet-fixture prepare BASE_SURFACE OUTPUT PREDECESSOR TRUST_DIR REQUEST X86_LINUX AARCH64_LINUX X86_DARWIN AARCH64_DARWIN"
         );
     }
     let base = Path::new(&arguments[0]);
     let output = Path::new(&arguments[1]);
     let predecessor = Path::new(&arguments[2]);
     let trust = Path::new(&arguments[3]);
-    let base_commit = &arguments[4];
+    let request = first_release_request(Path::new(&arguments[4]))?;
+    let base_commit = &request.registry_base_commit;
     if output.exists() || predecessor.exists() || trust.exists() {
         bail!("fixture outputs must not already exist");
     }
@@ -155,7 +226,7 @@ fn prepare(arguments: &[String]) -> Result<()> {
             },
         })
         .collect::<Vec<_>>();
-    let mut plan = release_plan(base_commit, package_cells.clone())?;
+    let mut plan = release_plan(&request, package_cells.clone())?;
     plan.validate()?;
     let mut plan_bytes = canonical::to_vec(&plan)?;
     write_new(output.join("release-plan.json"), &plan_bytes)?;
@@ -454,9 +525,10 @@ fn signed_manifest(plan_bytes: &[u8], manifest: ReleaseManifestV1) -> Result<Man
 /// `aos maintain release step plan` applies to a request, so their profiles, gates,
 /// soak, and rings are exactly the contract's.
 fn release_plan(
-    base_commit: &str,
+    request: &ReleasePlanRequest,
     platforms: Vec<PlatformCell<PlannedArtifactSet>>,
 ) -> Result<ReleasePlan> {
+    let base_commit = request.registry_base_commit.as_str();
     // Two Hub surfaces need no surface-receipt signer; a planned channel
     // needs the channel signer.
     let roles = [
@@ -472,16 +544,7 @@ fn release_plan(
         SignerRole::TufTimestamp,
         SignerRole::Channel,
     ];
-    let mut contract: aos_release::qualification::QualificationContract = canonical::from_slice(
-        include_bytes!("../../../aos-release/tests/fixtures/qualification-contract.json"),
-        "fixture contract",
-    )?;
-    contract.package_rules = vec![aos_release::qualification::PackageRule {
-        name: "fleet-package".into(),
-        role: aos_release::qualification::PackageRole::GeneralCatalog,
-        inherit_dependency_obligations: true,
-        execution: None,
-    }];
+    let contract = fleet_contract()?;
 
     let mut plan = ReleasePlan {
         schema_version: aos_release::RELEASE_PLAN.into(),
@@ -499,7 +562,7 @@ fn release_plan(
         release_class: ReleaseClass::Candidate,
         registry: aos_release::registry::MAIN_REGISTRY.into(),
         registry_base_commit: base_commit.into(),
-        registry_base_generation: 1,
+        registry_base_generation: request.registry_base_generation,
         source: SourceIdentity {
             commit: base_commit.into(),
             tree_digest: digest("fleet-source-tree"),
@@ -1018,6 +1081,38 @@ fn fleet_live_bindings(plan: &ReleasePlan, surface: &PlannedSurface) -> Result<L
         tooling: Some(digest(TOOLING_LABEL)),
         alert_config: Some(digest(ALERT_CONFIG_LABEL)),
     })
+}
+
+/// Signs the bootstrap intent for one environment of a prepared plan.
+///
+/// The fixture's plan requires one release-evidence signature, so a single
+/// envelope satisfies the planned threshold.
+fn bootstrap_intent(arguments: &[String]) -> Result<()> {
+    if arguments.len() != 3 {
+        bail!("usage: bootstrap-intent PLAN staging|production OUTPUT");
+    }
+    let plan_bytes = fs::read(&arguments[0])?;
+    let plan: ReleasePlan = canonical::from_slice(&plan_bytes, "release plan")?;
+    let (role, environment) = match arguments[1].as_str() {
+        "staging" => (SurfaceRole::Staging, HubEnvironment::Staging),
+        "production" => (SurfaceRole::Production, HubEnvironment::Production),
+        other => bail!("unknown bootstrap environment {other}"),
+    };
+    let intent = RegistryBootstrapIntent {
+        schema_version: REGISTRY_BOOTSTRAP_INTENT.into(),
+        environment,
+        deployment_id: plan.surface(role)?.identity.clone(),
+        registry: plan.registry.clone(),
+        base_commit: plan.registry_base_commit.clone(),
+        plan_digest: Sha256Digest::of_bytes(&plan_bytes),
+        authority_id: "fleet-release-evidence".into(),
+        approved_at: TIME.into(),
+    };
+    intent.validate()?;
+    write_new(
+        PathBuf::from(&arguments[2]),
+        &release_evidence_envelope(&intent)?,
+    )
 }
 
 /// Signs a canonical payload with the fixed release-evidence key.
