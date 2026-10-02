@@ -19,6 +19,9 @@ use serde_json::{Value, json};
 
 use super::{atomic_write, key, normalized_path, private_directory, read_regular, state_path};
 
+#[cfg(all(test, feature = "systemd-parser-tests"))]
+mod parser_tests;
+
 const UNIT_ROOT: &str = "/etc/systemd/system";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -106,18 +109,19 @@ fn accuracy() -> u64 {
     60_000
 }
 
-fn quoted(value: &str) -> Result<String> {
+fn scalar(value: &str) -> Result<String> {
     ensure!(
         !value.chars().any(char::is_control),
         "unit value contains a control character"
     );
-    Ok(format!(
-        "\"{}\"",
-        value
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('%', "%%")
-    ))
+    ensure!(
+        value == value.trim() && !value.ends_with('\\'),
+        "unit scalar cannot require whitespace or continuation escaping"
+    );
+
+    // These directives consume the whole value, without Exec*= unquoting.
+    // Preserve literal path characters and escape only manager specifiers.
+    Ok(value.replace('%', "%%"))
 }
 
 fn path_unit(path: &str, suffix: &str) -> Result<String> {
@@ -171,7 +175,7 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
         "swap" => {
             let input: Swap = serde_json::from_value(input.clone())?;
             let unit = path_unit(&input.source, "swap")?;
-            let mut body = format!("[Swap]\nWhat={}\n", quoted(&input.source)?);
+            let mut body = format!("[Swap]\nWhat={}\n", scalar(&input.source)?);
             if let Some(priority) = input.priority {
                 body.push_str(&format!("Priority={priority}\n"));
             }
@@ -193,18 +197,18 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
                 optional_mount_source = Some(input.source.clone());
             }
             let mut body = if input.optional {
-                format!("ConditionPathExists={}\n\n", quoted(&input.source)?)
+                format!("ConditionPathExists={}\n\n", scalar(&input.source)?)
             } else {
                 String::new()
             };
             body.push_str(&format!(
                 "[Mount]\nWhat={}\nWhere={}\n",
-                quoted(&input.source)?,
-                quoted(&input.destination)?
+                scalar(&input.source)?,
+                scalar(&input.destination)?
             ));
             if let Some(filesystem) = input.filesystem {
                 ensure!(!filesystem.is_empty(), "empty filesystem type");
-                body.push_str(&format!("Type={}\n", quoted(&filesystem)?));
+                body.push_str(&format!("Type={}\n", scalar(&filesystem)?));
             }
             let mut options = input.options;
             if input.optional && !options.iter().any(|option| option == "nofail") {
@@ -217,7 +221,7 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
                         .all(|option| !option.is_empty() && !option.contains(',')),
                     "ambiguous mount options"
                 );
-                body.push_str(&format!("Options={}\n", quoted(&options.join(","))?));
+                body.push_str(&format!("Options={}\n", scalar(&options.join(","))?));
             }
             if let Some(timeout) = input.timeout_millis {
                 body.push_str(&format!("TimeoutSec={timeout}ms\n"));
@@ -241,11 +245,11 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
                 "timer target must be a canonical service unit"
             );
             let unit = format!("aos-{}.timer", &key(id)[..40]);
-            let mut body = format!("[Timer]\nUnit={}\n", quoted(&input.target)?);
+            let mut body = format!("[Timer]\nUnit={}\n", scalar(&input.target)?);
             match input.schedule {
                 Schedule::Calendar { expression } => {
                     ensure!(!expression.is_empty(), "calendar expression is empty");
-                    body.push_str(&format!("OnCalendar={}\n", quoted(&expression)?));
+                    body.push_str(&format!("OnCalendar={}\n", scalar(&expression)?));
                 }
                 Schedule::Interval {
                     initial_delay_millis,
@@ -277,8 +281,8 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
     };
     let text = format!(
         "[Unit]\nDescription={}\nDocumentation={}\n\n{body}",
-        quoted(&title)?,
-        receipt_uri(&unit, &format!("sha256:{revision}"))
+        scalar(&title)?,
+        scalar(&receipt_uri(&unit, &format!("sha256:{revision}")))?
     );
     Ok(Definition {
         unit,
@@ -740,7 +744,7 @@ mod tests {
         let inactive = aos_systemd::UnitActiveState::Inactive;
 
         assert!(desired.text.contains("ConditionPathExists="));
-        assert!(desired.text.contains("Options=\"nofail\""));
+        assert!(desired.text.contains("Options=nofail"));
         assert!(optional_mount_source_missing(&desired).unwrap());
         assert!(resource_converged(&desired, &inactive, true));
         assert_eq!(
@@ -823,7 +827,7 @@ mod tests {
             }),
         )
         .unwrap();
-        assert!(calendar.text.contains("Unit=\"aos-zfs-scrub.service\""));
+        assert!(calendar.text.contains("Unit=aos-zfs-scrub.service"));
         assert!(
             calendar
                 .text
@@ -864,7 +868,7 @@ mod tests {
         assert_eq!(swap.swap_source.as_deref(), Some("/dev/mapper/cryptswap"));
         assert!(
             swap.text
-                .contains("What=\"/dev/mapper/cryptswap\"\nPriority=20")
+                .contains("What=/dev/mapper/cryptswap\nPriority=20")
         );
         assert!(!swap.enabled);
 
@@ -873,7 +877,7 @@ mod tests {
             "destination":"/nix/var/nix/gcroots/aos-profiles", "options":["bind"], "timeout_millis":5000
         })).unwrap();
         assert_eq!(mount.unit, "nix-var-nix-gcroots-aos\\x2dprofiles.mount");
-        assert!(mount.text.contains("Options=\"bind\"\nTimeoutSec=5000ms"));
+        assert!(mount.text.contains("Options=bind\nTimeoutSec=5000ms"));
     }
 
     #[test]
@@ -920,8 +924,11 @@ mod tests {
 
     #[test]
     fn unit_values_cannot_inject_directives_or_specifiers() {
-        assert!(quoted("x\nExecStart=foreign").is_err());
-        assert_eq!(quoted("%n\"").unwrap(), "\"%%n\\\"\"");
+        assert!(scalar("x\nExecStart=foreign").is_err());
+        assert!(scalar(" /leading-whitespace").is_err());
+        assert!(scalar("/trailing-whitespace ").is_err());
+        assert!(scalar("/continuation\\").is_err());
+        assert_eq!(scalar("%n\"").unwrap(), "%%n\"");
         assert_eq!(
             receipt_uri("dev-a\\x2db.swap", &format!("sha256:{}", "a".repeat(64))),
             format!(
