@@ -77,6 +77,11 @@
     hash = "sha256-WGkOGTHCcEgqZb0Igesu7xXTnhmEifgKt1IS0ARGuCI=";
   };
   cargoEnv = {
+    # Keep the full Native suite within the service image's closure budget.
+    # Both dependency artifacts and real binaries use the same release profile.
+    CARGO_PROFILE_RELEASE_OPT_LEVEL = "s";
+    CARGO_PROFILE_RELEASE_LTO = "thin";
+    CARGO_PROFILE_RELEASE_CODEGEN_UNITS = "1";
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
@@ -91,6 +96,11 @@
   cargoArtifactContract = {
     family = "aos-hub-native-postgres-release";
     features = ["postgres"];
+    releaseProfile = {
+      optLevel = "s";
+      lto = "thin";
+      codegenUnits = 1;
+    };
     nativeInputs = map toString [openssl sqlite buildPkgConfig buildProtobuf aos-hub-console-dist];
   };
   cargoArtifacts = mkCargoArtifacts {
