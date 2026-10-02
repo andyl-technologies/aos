@@ -184,6 +184,34 @@ the requirement IDs each decision affects.
   - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
     §How to use this plan, PLAN-3.
 
+- **[AD-11] Complete index machinery on the local-repository trunk**
+  - **Status:** Decided
+  - **Decision:** Move the existing T-DRV-2 task, without renumbering it,
+    from B-derive to T1. Add derivation-memo and index-tree-maintenance to
+    T1's exit gates. Preserve same-commit incremental maintenance,
+    verification/rebuild, independently checked producers and the mandatory
+    positive native safe-index disclosure case. Later algebra and ruleset
+    tasks extend the same memo mechanism. Record the separate general
+    lookup-cost correction in spec D-100/DRV-24.
+  - **Rationale:** T1's required native index materialization depends on
+    an operation formerly deferred until after T1. Deferring that case
+    alone also leaves CI-3's T4 SHA-256 CAS index and SBX-12's T5 indexed
+    descriptor resolution dependent on a branch that the MVP must not
+    need. T1 is still incomplete and its format freeze has not begun, so
+    the acyclic owner binding, executable profile and typed occurrence
+    prerequisites can be settled before freezing. A per-object side-table
+    lookup cannot satisfy the index requirement. NIX-9's explicit
+    hash-prefixed path-keyed lookup alternative remains valid and separate
+    from CAS indexing. This decision does not resolve AD-5's framed-descriptor
+    mismatch or claim that any index gate has passed.
+  - **Alternatives considered:** Start B-derive before T1 completes
+    (rejected: violates serial gating and freezes); postpone all positive
+    index cases (rejected: leaves mandatory MVP consumers unsupported);
+    weaken verification, maintenance or current policy checks (rejected:
+    changes required behavior rather than its implementation order).
+  - **Affects:** T-DRV-2, T1 exit gates, T-DOM-1, T-NIX-1, T-SBX-4,
+    CI-3, SBX-12; spec DRV-12 to DRV-17, DRV-19 to DRV-24 and D-100.
+
 ## Open
 
 - **[AD-9] Whether `aos-cache` gains a `terrane://` backend or is replaced**

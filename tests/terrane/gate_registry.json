@@ -77,7 +77,7 @@
   {
     "name": "index-tree-maintenance",
     "owner": "10",
-    "requirements": "DRV-12"
+    "requirements": "DRV-12, DRV-24"
   },
   {
     "name": "no-duplicate-tiers",

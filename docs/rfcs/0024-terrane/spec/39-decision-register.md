@@ -1827,6 +1827,42 @@ is added rather than editing history.
     remain stable. This correction precedes T1's initial freeze and does not
     qualify index maintenance, descriptor bridging or native disclosure.
 
+- **[D-100] Account for candidates and current-policy work in indexed lookup.**
+  - **Status:** Decided
+  - **Decision:** Withdraw DRV-18 without reusing its ID. DRV-24 preserves
+    its registered SHA-256 trigger, exact authorized/trusted answer and
+    indexed equality-range lookup, while distinguishing candidate rows,
+    occurrences and current-policy/provenance work from returned objects.
+    Candidate discovery is O(log n + C); additional occurrence and checking
+    work is accounted for explicitly. This changes the former unconditional
+    filtered-output complexity requirement; it is not an editorial fix.
+  - **Rationale:** A file object can appear under M independently governed
+    graft occurrences, with the same secondary hash at every occurrence.
+    If all M current ACLs deny the reader, the candidate object set contains
+    one object and the filtered answer is empty. Under independently
+    evaluated policies, any unchecked occurrence could allow it, so correct
+    rejection can require examination of all M policies. Distinct manifests
+    for identical plaintext, with different permitted advisory media types,
+    also create distinct equal-value candidates without a hash collision.
+    Variable path and provenance work cannot be bounded by returned object
+    count. The specified candidate index supplies no separately maintained
+    policy-aware structure or restricted query class proving the old bound.
+    This is a limitation of that model, not an impossibility proof for every
+    conceivable authorization index. Fresh policy, attribute-producer and
+    trust checks remain mandatory; no stale cache or candidate exposure is
+    an alternative to them.
+  - **Alternatives considered:** Call raw candidates the result size
+    (rejected: conflates denied evidence with the returned answer); retain
+    the old bound by restricting policy/query classes (rejected: changes
+    supported view semantics and requires new preprocessing, invalidation
+    and cost proofs); substitute a root walk (rejected: loses the required
+    indexed lookup). Same-commit O(delta × log n) maintenance and independent
+    verification/rebuild remain required by DRV-14 and DRV-16/17.
+  - **Affects:** DRV-18, DRV-24 and the existing index-tree-maintenance gate.
+    No encoding, identity, profile, property or media type changes. This
+    correction precedes the initial format freeze. Registration does not
+    qualify an index implementation, native disclosure or the cost bound.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

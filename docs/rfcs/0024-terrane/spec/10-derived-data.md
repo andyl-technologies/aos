@@ -188,11 +188,41 @@ The motivating index is lookup of an object by a hash other than its primary
 content hash: a client that knows only the SHA-256 of a file asks the store
 for it.
 
-- **[DRV-18]** A store whose roots list `sha256` in `hashes` and
+- **[DRV-18] (withdrawn)** A store whose roots list `sha256` in `hashes` and
   `hash.sha256` in `index` MUST answer `lookup(root, hash.sha256, value)`
   with the set of object hashes whose attribute equals `value`, in O(log n)
   plus the size of the result. The answer MUST be filtered by the reader's
   authority and the root's trust selector before it is returned.
+  Replaced by DRV-24 under D-100: the number of returned objects does not
+  bound the work of rejecting independently governed occurrences.
+
+- **[DRV-24]** A store whose roots list `sha256` in `hashes` and
+  `hash.sha256` in `index` MUST answer `lookup(root, hash.sha256, value)`
+  with exactly the deduplicated set of matching object hashes having a
+  currently authorized and trusted occurrence in that view. With a
+  validated index of size `n`, discovery of the equality-range candidate
+  rows MUST cost O(log n + C), where `C` is the number of candidate rows
+  examined before authority and trust filtering. Implementations MUST
+  account separately for the `P` candidate path occurrences examined and
+  the additional `W` work of occurrence-tree traversal, path resolution,
+  current-policy checks and provenance verification. Total lookup work
+  MUST be reported in these terms, O(log n + C + P + W), rather than
+  claiming a bound in the size of the filtered answer alone. Index
+  validation or rebuilding work MUST be reported separately when needed.
+  Before returning an object, the implementation MUST verify the actual
+  occurrence's content identity and attribute value, the reader's current
+  authority, independently required attribute-producer evidence, and the
+  root's trust selector. Unfiltered candidates MUST NOT be exposed as
+  answers, and a full-root walk MUST NOT substitute for indexed candidate
+  discovery when the index exists. DRV-16 governs divergent indexes.
+  *Gate:* `gate:index-tree-maintenance`.
+
+For example, one object can occur under many independently governed grafts.
+If every occurrence denies the reader, the answer is empty but each relevant
+policy may still need examination. An ancestor denial can prune some views;
+it does not establish a general filtered-output bound for all views. The
+index narrows candidate discovery; it does not eliminate current policy or
+producer verification.
 
 ### Memos
 

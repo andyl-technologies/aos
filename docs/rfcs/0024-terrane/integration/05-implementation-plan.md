@@ -133,7 +133,9 @@ Freezes: every identity domain, encoding, bucket key, and the store traits.
 Exit gates: `checks.terrane.gates.golden-vectors`,
 `checks.terrane.gates.core-fuzz`, `checks.terrane.gates.bucket-file-cas`,
 `checks.terrane.gates.gc-grace-window`,
-`checks.terrane.gates.algebra-merge`, store conformance on `file://`.
+`checks.terrane.gates.algebra-merge`,
+`checks.terrane.gates.derivation-memo`,
+`checks.terrane.gates.index-tree-maintenance`, store conformance on `file://`.
 
 - [x] **T-OBJ-1** Identity domains, descriptors, and the `terrane-v1`
   identity profile; second-identity-profile registration hook. — satisfies
@@ -271,8 +273,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   satisfies OBJ-21, OBJ-22, REF-1 to REF-11, REF-24 to REF-26;
   `checks.terrane.gates.ref-names`.
 - [ ] **T-DRV-1** Derived attribute records and classification (`hash.*`,
-  `class.magic`), stored per object. Narrowed to trunk scope: index trees,
-  derivations, and memos are T-DRV-2 on B-derive. The nine reviewed pure paths
+  `class.magic`), stored per object. Index trees, derivations, and memos
+  belong to T-DRV-2 in this milestone under AD-11. The nine reviewed pure paths
   now implement stream hashes, bounded classification, canonical records and
   producer evidence requiring complete carrying-view and producer contexts.
   They match the task candidate without dependency or vendor changes. All
@@ -294,6 +296,29 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   joint T-JOB-1 backfill under DRV-11 remain incomplete; a passing attribute
   gate does not qualify those operations.
   — satisfies DRV-1 to DRV-11; `checks.terrane.gates.derived-attr-record`.
+- [ ] **T-DRV-2** Derivations, the common memo form, index trees with
+  same-commit O(delta × log n) maintenance, `verify_index`, `rebuild_index`,
+  attribute-value lookup and SHA-256 index continuity. AD-11 moves this
+  unchanged task ID from B-derive into T1 because native safe index
+  materialization and the later mandatory cache/sandbox consumers need it.
+  Implement memoization and verification for the recipe kinds available in
+  T1; T-ALG-3 and T-RULE-1 extend the same mechanism for their later kinds.
+  D-100 replaces the withdrawn DRV-18 filtered-output bound with DRV-24's
+  explicit candidate, occurrence and current-check accounting. The registered
+  acyclic owner/index binding and executable recipe profile remain unresolved
+  pre-freeze prerequisites; an invented property or optional derived ref
+  cannot substitute for them. Positive native safe-index materialization,
+  independent current attribute-producer checks and genuine divergent-index
+  refusal/rebuild remain required. Neither this ordering correction nor
+  passing opaque-index codecs completes the task. — satisfies DRV-12 to
+  DRV-17, DRV-19 to DRV-24 (DRV-18 withdrawn);
+  `checks.terrane.gates.derivation-memo`,
+  `checks.terrane.gates.index-tree-maintenance`.
+  D-100/AD-11's actual `registry-complete` derivation and both mandatory
+  formatting commands pass. The registry still exposes all 292 stable gates;
+  its index row now names DRV-24 explicitly. The index implementation checks
+  remain pending and fail when requested. No task checkbox or milestone
+  status is advanced by this correction.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
@@ -1584,12 +1609,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The DOM-7/PROV-30 native index-rebuild case remains mandatory and unqualified;
   its operational dependency belongs to T-DRV-2. No branch workline is started,
   encoding is not frozen, and no pure-codec result substitutes for that case.
-  A read-only ordering audit identifies the resulting cycle: completed T1
+  A read-only ordering audit identified the former cycle: completed T1
   is needed before B-derive, while this positive native case currently requires
   T-DRV-2's rebuilding operation before T1 can exit. PROV-30/DOM-7 forbid index
   certificates and permit safe materialization or authorized full-source
   retention; they do not independently mandate native rebuild availability.
-  A D-n-backed task/gate scope correction remains required. Raw index refusal
+  AD-11 below resolves this task-ordering cycle. Raw index refusal
   and independent current attribute-producer checks remain T1 obligations;
   no branch work, guessed binding carrier or weaker current-policy rule follows.
   A broader ordering audit finds that moving this positive contract to B-derive
@@ -1610,6 +1635,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   its complexity and authorization obligations are unchanged. This editorial
   namespace correction does not resolve the carrier, ordering or framed
   descriptor prerequisites, and no native index capability is claimed.
+  AD-11 now resolves the task-ordering cycle by placing T-DRV-2 in T1 and
+  adding both of its gates to the milestone exit set. The positive native
+  index case stays mandatory; no B-* workline starts. D-100 explicitly
+  replaces the filtered-output cost bound with DRV-24's candidate and
+  current-check accounting. Acyclic binding, executable recipe, occurrence
+  evidence and the framed descriptor bridge remain unresolved prerequisites.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
@@ -1893,10 +1924,13 @@ GitHub Actions cache client exercised end to end in a Nix check.
 
 - [ ] **T-NIX-1** `nix-cache` surface: schema, narinfo, zero-CPU `.nar.zst`
   streaming, store-path lookups, writable uploads, bearer credential
-  mapping. Lookups use a per-root store-path map maintained by the surface
-  until index trees land (T-DRV-2); the map is a derivation in all but
-  name and is replaced, not migrated. — satisfies NIX-1 to NIX-8, NIX-10 to
-  NIX-13; `checks.terrane.gates.nix-frame-concat`,
+  mapping. Lookups use path-keyed lookup in the canonical root whose entry
+  names begin with the store-path hash, as permitted by NIX-9; T-DRV-2's
+  indexes are already a trunk prerequisite. T-NIX-2 replaces this lookup
+  with a store-path index without making the SHA-256 CAS index optional.
+  — satisfies
+  NIX-1 to NIX-8, NIX-10 to NIX-13;
+  `checks.terrane.gates.nix-frame-concat`,
   `checks.terrane.gates.nix-surface-stream`.
 - [ ] **T-REAPI-1** `reapi` surface: `cas/` and `ac/` schema, SHA-256
   addressing through `hash.sha256`, `FindMissingBlobs` from the tree,
@@ -1987,9 +2021,11 @@ conformance tests passing over Terrane.
   satisfies SBX-9, SBX-10; `checks.terrane.integration.domain-map`.
 - [ ] **T-SBX-4** `aos-sandbox-v1` identity profile, SHA-256 attributes on
   sandbox roots, portable-tree adapter, `ObjectSource` and
-  `ImmutableFetchTransport` implementations. The SHA-256 index tree
-  arrives with T-DRV-2; until then lookups use the per-object attribute
-  record. — satisfies SBX-11 to SBX-17;
+  `ImmutableFetchTransport` implementations. Indexed descriptor resolution
+  consumes the completed T-DRV-2 machinery; a per-object record lookup
+  does not satisfy the one-index lookup requirement. The exact framed
+  descriptor bridge still requires its separate normative correction.
+  — satisfies SBX-11 to SBX-17;
   `checks.terrane.integration.identity-profile`,
   `checks.terrane.integration.object-source`,
   `checks.terrane.integration.fetch-transport`.
@@ -2035,20 +2071,19 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 
 ## Branches
 
-### B-derive — Derivations, index trees, rulesets
+### B-derive — Additional tree algebra and rulesets
 
 Forks from T1. Merge gates: `checks.terrane.gates.derivation-memo`,
 `checks.terrane.gates.index-tree-maintenance`,
 `checks.terrane.gates.ruleset-eval-order`.
 
+T-DRV-2 is a T1 trunk task under AD-11. This workline extends its common
+memo/evaluation machinery for additional operations and keeps both existing
+index gates green; it does not supply an MVP index prerequisite.
+
 - [ ] **T-ALG-3** `filter`, `map`, set operations, and recipes for every
   composite kind. Deferred from T-ALG-2. — satisfies ALG-22 to ALG-27;
   `checks.terrane.gates.algebra-diff`.
-- [ ] **T-DRV-2** Derivations, memos, index trees with O(delta) maintenance,
-  `verify_index`, lookup by attribute value, SHA-256 index continuity.
-  Deferred from T-DRV-1. — satisfies DRV-12 to DRV-23;
-  `checks.terrane.gates.derivation-memo`,
-  `checks.terrane.gates.index-tree-maintenance`.
 - [ ] **T-RULE-1** Ruleset IR, compiler to recipes, evaluator, and portable
   policy encoding. — satisfies RULE-1 to RULE-28;
   `checks.terrane.gates.ruleset-eval-order`,
