@@ -23,6 +23,7 @@
     systemdResources = import ./systemd-resources.nix;
     platformReplay = import ./platform-replay.nix;
     observerBootstrap = import ./observer-bootstrap.nix;
+    initrdAccountSeed = import ./initrd-account-seed.nix {inherit pkgs;};
     nativeReleaseInventory = import ./release-native-inventory.nix {inherit pkgs;};
     releaseMaintenance = import ./release-maintenance.nix;
     fixtureConsumers = import ./fixture-consumers.nix;

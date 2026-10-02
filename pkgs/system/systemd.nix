@@ -63,6 +63,8 @@
   aos-systemd-provider,
   pe-tools,
 }: let
+  identityShells = import ./_systemd-abilities/identity-shells.nix {inherit bash util-linux;};
+
   version = "261.2";
 
   # PYTHONPATH that makes `import pefile` / `import elftools` succeed
@@ -743,8 +745,8 @@ in
           #!${bash}/bin/bash
           exec "${aos-systemd-provider}/bin/aos-systemd-native-resource-provider" \\
             --systemd-creds "$out/bin/systemd-creds" \\
-            --login-shell "${bash}/bin/bash" \\
-            --nologin-shell "${util-linux}/sbin/nologin" \\
+            --login-shell "${identityShells.login}" \\
+            --nologin-shell "${identityShells.nologin}" \\
             "\$@"
           EOF
           chmod +x "$out/bin/aos-systemd-native-resources"
