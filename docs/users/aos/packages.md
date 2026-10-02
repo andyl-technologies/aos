@@ -1,193 +1,309 @@
 # Manage packages with APM
 
-`apm` consumes signed registry metadata and manages generation-based package
-profiles. User packages, machine-wide runtime packages, configuration
-generations, and A/B image generations are separate scopes. The distinction is
-important: `--system` does not simply make a normal user install global.
+`apm` is the AOS package manager. Use it to find software, install and remove
+packages, and update the packages you use.
 
-## Establish package policy first
+On a stock AOS host, an administrator manages packages for the whole machine
+using a package list. Start with [Find a package](#find-a-package), then
+[Manage machine-wide packages](#manage-machine-wide-packages). If your
+administrator has enabled personal package installs, see
+[Manage user packages](#manage-user-packages).
 
-Before installing a package, configure and verify its source as described in
-[Configure package registries](registries.md). Registry signatures and the
-signed store graph authenticate the publisher and exact closure bytes; they do
-not establish that a program is benign.
+## Find a package
 
-For packages that activate services, inspect the signed permissions and local
-policy described in [Understand the package sandbox](package-sandbox.md). On
-measured-boot systems, [Secure Boot and package trust](secure-boot.md) explains
-how the image-baked registry anchors and PCR 15 measurements connect package
-admission to the boot chain.
+APM gets its list of available packages from registries. AOS comes with the
+`andyl` registry configured; your administrator may have added others.
 
-## Manage user packages
-
-User scope is the default; there is no `--user` flag. Stock images do not yet
-provision writable per-user APM configuration, a per-user profile directory, or
-unprivileged Nix-store mutation. The commands in this section require an
-account whose writable XDG directories and
-`/var/lib/profiles/per-user/$USER` have been provisioned by the operator. Use
-the system-scope desired-package workflow on a stock host.
+First, fetch the latest package lists:
 
 ```sh
-apm install nginx --registry acme --dry-run
-apm install nginx --registry acme
-
-apm list --installed
-apm files nginx
-apm depends nginx
+apm update --system
 ```
 
-Installed executables are under:
+`update` tells APM which packages and versions are available. It does not
+install or upgrade anything.
 
-```text
-/var/lib/profiles/per-user/$USER/current/bin
-```
-
-That directory is not added to the default shell `PATH`. Invoke a binary by its
-full path or configure the profile path in the user's shell environment:
+Search by name or description, then inspect a result:
 
 ```sh
-export PATH="/var/lib/profiles/per-user/$USER/current/bin:$PATH"
+apm search nginx --system
+apm show nginx --system
 ```
 
-Refresh metadata before checking for upgrades:
+`search` lists matching package names, versions, and descriptions. `show`
+provides details about one package. Use the package name from the results
+when installing it.
+
+If a package is available from more than one registry, check its versions and
+sources:
 
 ```sh
-apm update
-apm list --upgradable
-apm upgrade --dry-run
-apm upgrade
+apm policy nginx --system
 ```
 
-`apm update` synchronizes metadata; it does not install packages. `apm upgrade`
-uses the already-synchronized metadata and does not update it implicitly.
-
-Remove a package after reviewing the dependency plan:
+To search a particular registry, add `--registry`:
 
 ```sh
-apm remove nginx --dry-run --autoremove
-apm remove nginx --autoremove
+apm search nginx --system --registry andyl
 ```
 
-Hold and unhold keep a package out of ordinary upgrade selection:
-
-```sh
-apm hold nginx
-apm unhold nginx
-```
-
-Install, remove, and upgrade create numbered profile generations. Rollback
-repoints `current` to an existing generation:
-
-```sh
-apm rollback --list
-apm rollback --generation N --dry-run
-apm rollback --generation N
-```
+See [Configure package registries](registries.md) to add or change sources.
 
 ## Manage machine-wide packages
 
-Ordinary machine-wide packages are reconciled from an authoritative desired
-file. Create `desired.toml`:
+Run the commands in this section as an administrator. Keep a TOML file listing
+the packages you want installed. For example, save this as `desired.toml`:
 
 ```toml
 packages = ["nginx", "curl"]
 ```
 
-Preview and apply the complete set:
+**This is the complete list of packages you want APM to manage for the
+machine.** If the host already has such a file, edit that file to preserve its
+other packages. Applying a shorter list removes packages omitted from it.
+Packages supplied by the base OS are managed separately.
+
+### Install packages
+
+Refresh the package lists and preview the change:
 
 ```sh
 apm update --system
 apm install --system --from ./desired.toml --dry-run
-apm install --system --from ./desired.toml --yes
 ```
 
-The explicit update makes the preview predictable: dry-run never refreshes
-metadata. When applying additions, reconciliation also attempts an update and
-falls back to cached metadata with a warning if that update fails. A change
-with no additions does not refresh metadata.
+Review the planned additions and removals. A package may need other packages
+to work; these are its dependencies, and APM installs them as needed.
 
-The list is declarative. Explicit packages omitted from the next file are
-removed during reconciliation, including packages made unreachable by that
-change. To remove `nginx`, delete it from `packages` and run the same command
-again. There is no `apm remove --system` command.
+Apply the list once you are satisfied with the plan:
 
-The desired format can also carry package configuration and credential input.
-APM checks those inputs before mutating the package profile. Prefer systemd
-system-credential references; if a separately managed desired file contains
-bytes, protect it as secret state. Evaluated `host.nix` contains only opaque
-`secretRef` handles, never those bytes.
-
-Machine-wide runtime package generations are stored separately from the OS:
-
-```text
-/var/lib/profiles/system-packages
+```sh
+apm install --system --from ./desired.toml
 ```
 
-Prune old machine-wide package and configuration generations together with:
+APM asks for confirmation before installing or removing packages. Add `--yes`
+to accept those prompts automatically. Installed commands are available in
+new login sessions through the machine-wide package directory on `PATH`.
+
+To add another package later, add its name to the same file, preview, and
+apply it again.
+
+A dry run uses the package lists already fetched. When applying a list with
+additions, APM also attempts to refresh those lists; if that refresh fails, it
+warns and uses the cached lists. A change with no additions does not refresh
+lists. Run `apm update --system` yourself before previewing to catch update
+failures and review a plan based on current information.
+
+### Remove packages
+
+Remove the package name from `desired.toml`. For example, to remove `nginx`
+and keep `curl`, change the file to:
+
+```toml
+packages = ["curl"]
+```
+
+Then preview and apply it:
+
+```sh
+apm install --system --from ./desired.toml --dry-run
+apm install --system --from ./desired.toml
+```
+
+APM also removes dependencies that are no longer needed. Review the removal
+plan before confirming. Machine-wide removal uses this file workflow; there
+is no `apm remove --system` command.
+
+### Check installed packages
+
+```sh
+apm list --installed --system
+apm files nginx --system
+apm depends nginx --system
+```
+
+`list --installed` shows the installed packages. `files` lists the files a
+package provides. `depends` shows the store references making up the package
+and its dependencies.
+
+### Update the operating system
+
+`apm upgrade --system` updates the OS image. It does not upgrade the ordinary
+machine-wide package list. Reapplying `desired.toml` adds and removes packages;
+it does not upgrade packages already present in that list.
+
+For OS updates, follow [Upgrade and roll back a host](upgrades.md). That guide
+also covers installing a selected OS image with `apm install aos --system`.
+
+### Configure a package
+
+For package settings and services, see
+[Discover package configuration](configuration.md#discover-package-configuration)
+and [Supplement host.nix at runtime](configuration.md#supplement-hostnix-at-runtime).
+The desired file can carry configuration and credential inputs as well as the
+package list. Prefer systemd credential references; protect any file containing
+secret values as secret state.
+
+## Manage user packages
+
+Personal installs affect only your account. They are the default when you omit
+`--system`; there is no `--user` flag.
+
+Stock images do not yet set up personal installs. Your administrator must
+provide writable APM configuration and data directories, a writable profile
+under `/var/lib/profiles/per-user/$USER`, and permission to add packages to the
+Nix store. If these are unavailable, use the machine-wide workflow above.
+
+### Install a package
+
+Fetch the package lists for your account, then find a package:
+
+```sh
+apm update
+apm search curl
+apm show curl
+```
+
+Preview the install, then apply it:
+
+```sh
+apm install curl --dry-run
+apm install curl
+```
+
+APM installs any needed dependencies and asks for confirmation before making
+changes. If you need a package from a particular configured registry, add
+`--registry NAME` to the install command.
+
+New AOS login sessions include your package directory on `PATH`. If an
+existing shell cannot find an installed command, start a new login session or
+add the directory to that shell:
+
+```sh
+export PATH="/var/lib/profiles/per-user/$USER/current/bin:$PATH"
+```
+
+Inspect what you have installed:
+
+```sh
+apm list --installed
+apm files curl
+apm depends curl
+```
+
+### Upgrade packages
+
+Fetch the latest package lists and check which installed packages have updates:
+
+```sh
+apm update
+apm list --upgradable
+```
+
+Preview and apply the upgrades:
+
+```sh
+apm upgrade --dry-run
+apm upgrade
+```
+
+`upgrade` uses the lists fetched by `update`; it does not fetch new lists itself.
+To upgrade just one package, supply its name:
+
+```sh
+apm upgrade curl
+```
+
+To keep a package at its current version during ordinary upgrades, put it on
+hold. Remove the hold when you are ready to upgrade it again:
+
+```sh
+apm hold curl
+apm unhold curl
+```
+
+### Remove a package
+
+```sh
+apm remove curl --dry-run
+apm remove curl
+```
+
+Removal keeps dependencies by default. To also remove dependencies that are
+no longer needed, preview and apply with `--autoremove`:
+
+```sh
+apm remove curl --autoremove --dry-run
+apm remove curl --autoremove
+```
+
+### Undo a package change
+
+APM saves a numbered version of your installed package set each time you
+install, remove, or upgrade packages. These saved sets are called generations.
+You can return to a previous generation if a change causes problems.
+
+List the saved generations and preview the one you want:
+
+```sh
+apm rollback --list
+apm rollback --generation N --dry-run
+```
+
+Replace `N` with a generation number from the list, then apply it:
+
+```sh
+apm rollback --generation N
+```
+
+This changes your account's installed package set. For host configuration and
+OS rollback, use [Upgrade and roll back a host](upgrades.md).
+
+## Free disk space
+
+Old generations keep packages available for rollback. To retain the latest
+three user-package generations and the active generation, then reclaim
+unreferenced store data:
+
+```sh
+apm clean --generations --keep 3
+apm gc
+```
+
+For machine-wide packages, run as an administrator:
 
 ```sh
 apm clean --system --generations --keep 3
 apm gc
 ```
 
-The latest keep window and the active generation of each independent profile
-are retained. Image generations are not affected.
+The system command prunes both machine-wide package and host-configuration
+generations, keeping the latest three and the active generation of each. It
+does not remove OS image generations. Pruned generations are no longer
+available for rollback.
 
-## Distinguish a sysroot install
+To remove cached package downloads without pruning generations, use `apm clean`
+for your account or `apm clean --system` for the machine.
 
-This command has a narrower meaning than its spelling suggests:
+## Get help
 
-```sh
-apm install aos --system --registry acme
-```
-
-It selects exactly one registry package marked `sysroot = true`, verifies its
-authenticated OTA payload, and stages it as the next A/B image generation. It
-is not the command for installing an ordinary package globally, and it does not
-replace the running root before reboot.
-
-Always preview a selected sysroot install:
+Use `--help` to see the options for a command:
 
 ```sh
-apm install aos --system --registry acme --dry-run
-apm install aos --system --registry acme --yes
+apm --help
+apm install --help
 ```
 
-Image and configuration state are separate:
+For scripts, use `apm --json ...` to request structured results. The normal
+terminal output is intended for people and is not a stable interface for scripts.
 
-```text
-/var/lib/profiles/image    A/B image generations
-/var/lib/profiles/system   configuration generations
-```
+If APM refuses an install because it conflicts with a package supplied by the
+OS, see [Troubleshoot a host](troubleshooting.md). The
+`--ignore-sysroot-lock` option bypasses this check and belongs in targeted
+recovery procedures.
 
-For ordinary OS rollout, use the controlled update and rollback procedure in
-[Upgrade and roll back a host](upgrades.md).
-
-## Confirmation and safety controls
-
-Install, remove, and user-package upgrade operations prompt before mutation
-unless `--yes`, `[settings].assume_yes`, or `--dry-run` applies. System upgrade
-and rollback have their own behavior; lead automation with `--dry-run` rather
-than relying on a prompt.
-
-The sysroot lock prevents a runtime package from diverging from dependencies
-owned by the active OS. `--ignore-sysroot-lock` bypasses that protection and is
-for targeted recovery, not routine package management. Prefer a specific
-package name over the `all` form when a recovery procedure requires it.
-
-## Default state and cache paths
-
-| State | User scope | System scope |
-| --- | --- | --- |
-| Profile | `/var/lib/profiles/per-user/$USER` | Runtime packages: `/var/lib/profiles/system-packages`; configuration: `/var/lib/profiles/system`; image: `/var/lib/profiles/image` |
-| Registry clones | `~/.local/share/apm/registries` | `/var/lib/apm/registries` |
-| Synchronized metadata | `~/.local/share/apm/remote` | `/var/lib/apm/remote` |
-| NAR and cache data | `~/.cache/apm` | `/var/lib/apm/cache` |
-| Writable trust pins | `~/.config/apm/trusted-keys.d` | `/var/lib/apm/trusted-keys.d` |
-
-Use `apm --json ...` when consuming package results in automation. Normal
-human-facing output is not a stable machine interface.
-
-User XDG paths honor the corresponding `XDG_*` variables. Test and recovery
-environments can also redirect roots with `AOS_ROOT`, `AOS_PROFILE_ROOT`, and
-the documented system-config override.
+For registry verification failures, see
+[Troubleshoot registry verification](troubleshooting.md#apm-cannot-verify-a-registry).
+For service permissions, see [Understand the package sandbox](package-sandbox.md).
+For the signing and boot verification model, see
+[Secure Boot and package trust](secure-boot.md).
