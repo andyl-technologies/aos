@@ -8,6 +8,7 @@
     };
 in {
   imports = [
+    ./dbus-registrations.nix
     ./core.nix
     ./resource-handlers.nix
     ./packaged-unit.nix
