@@ -61,7 +61,7 @@ pub(super) fn record_output_facts(
         .and_then(|platforms| platforms.get_mut(platform))
         .context("package platform absent")?;
     let selected = if output == "out" {
-        entry
+        &mut *entry
     } else {
         entry
             .get_mut("named_outputs")
@@ -93,6 +93,15 @@ pub(super) fn record_output_facts(
         } else {
             table.insert("attestation".into(), toml::Value::try_from(attestation)?);
         }
+    }
+    if attestation.is_some() {
+        // Readers must reject unsupported evidence before selecting any output.
+        super::metadata::record_feature_gate(
+            entry
+                .as_table_mut()
+                .context("platform metadata is not a table")?,
+            crate::types::FEATURE_ATTESTATION_V1,
+        )?;
     }
     Ok(toml::to_string_pretty(&document)?)
 }
@@ -248,6 +257,67 @@ measurement = "sha256:primary-measurement"
 [versions.platforms.x86_64-linux.named_outputs.tools]
 store_path = "/nix/store/22222222222222222222222222222222-example-tools"
 "#
+    }
+
+    #[test]
+    fn output_evidence_declares_features_required_by_strict_catalog_readers() {
+        let deployment = NativeArtifactMeta {
+            store_path: "/nix/store/33333333333333333333333333333333-envelope".into(),
+            nar_hash: format!("sha256:{}", "a".repeat(64)),
+            nar_size: 512,
+            references: vec![],
+            document_sha256: format!("sha256:{}", "b".repeat(64)),
+            document_size: 256,
+        };
+        let attestation = AttestationMeta {
+            root_digest: Some(format!("sha256:{}", "c".repeat(64))),
+            measurement: Some(format!("sha256:{}", "d".repeat(64))),
+            provenance: Some("provenance/e/example/x86_64-linux/output.intoto.jsonl".into()),
+            ..AttestationMeta::default()
+        };
+        let clean = catalog()
+            .replace("root_digest = \"sha256:primary\"\n", "")
+            .replace("measurement = \"sha256:primary-measurement\"\n", "");
+        let native = super::super::metadata::record_native_artifacts(
+            &clean,
+            "example",
+            "1",
+            "x86_64-linux",
+            &deployment,
+            None,
+            None,
+            None,
+            None,
+            &[],
+        )
+        .unwrap();
+
+        for output in ["out", "tools"] {
+            let encoded = record_output_facts(
+                &native,
+                "example",
+                "1",
+                "x86_64-linux",
+                output,
+                Some(&deployment),
+                Some(&attestation),
+            )
+            .unwrap();
+            let meta = crate::registry::parse::parse_package_toml(&encoded, "x86_64-linux")
+                .unwrap()
+                .unwrap();
+            crate::types::validate_supported_package_meta(&meta).unwrap();
+            let expected = vec![
+                crate::types::FEATURE_ATTESTATION_V1.to_string(),
+                crate::types::FEATURE_NATIVE_PACKAGE_MODULES_V1.to_string(),
+            ];
+            assert_eq!(meta.requires_features, expected);
+            let parsed = parse_package_file(&encoded).unwrap();
+            let platform = &parsed.versions[0].platforms["x86_64-linux"];
+            assert_eq!(platform.requires_features, expected);
+            assert_eq!(platform.references.requires_features(), expected);
+            assert_eq!(platform.deployment.as_ref(), Some(&deployment));
+        }
     }
 
     #[test]
