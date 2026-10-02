@@ -21,12 +21,11 @@
     .${
       stdenv.hostPlatform.system
     };
+  cargoEnv = import ./_aos-configuration-lower/cargo-env.nix {
+    inherit erofs-utils util-linux;
+    packageRuntime = aos.packageRuntime;
+  };
   staticBuildSetup = ''
-    export AOS_MKFS_EROFS=${erofs-utils}/bin/mkfs.erofs
-    export AOS_FSCK_EROFS=${erofs-utils}/bin/fsck.erofs
-    export AOS_MOUNT=${util-linux}/bin/mount
-    export AOS_UMOUNT=${util-linux}/bin/umount
-    export AOS_PACKAGE_RUNTIME=${aos.packageRuntime}/bin/aos-package-runtime
     target_triple="$(rustc -vV | sed -n 's/^host: //p')"
     test "$target_triple" = "${targetTriple}"
     rustflags_var="CARGO_TARGET_$(printf '%s' "$target_triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
@@ -45,7 +44,7 @@
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-configuration-lower-static-artifacts";
-    inherit version cargoDeps cargoArtifactContract;
+    inherit version cargoDeps cargoEnv cargoArtifactContract;
     src = mkCargoDummySource {
       srcRoot = ../../crates;
       name = "aos-configuration-lower-dummy-source";
@@ -84,7 +83,7 @@ in
       entryPoint = "bin/aos-configuration-lower";
     };
 
-    inherit version cargoDeps cargoArtifacts cargoArtifactContract;
+    inherit version cargoDeps cargoEnv cargoArtifacts cargoArtifactContract;
     cargoRoot = "crates";
     cargoNextest = true;
     cargoFlags = "-p aos-configuration-lower --bins";
