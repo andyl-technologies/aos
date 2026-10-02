@@ -1602,6 +1602,30 @@ is added rather than editing history.
     initial encoding freeze and does not qualify complete golden coverage,
     ownership resolution, verified merge evaluation or materialization.
 
+- **[D-90] Publish complete namespace and derived-attribute field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 69 entry/root-property witnesses and 110 derived-attribute
+    witnesses. Include all seven entry kinds, optional metadata presence,
+    every registered root property, nested selectors, 19 attribute values,
+    42 complete records and 87 structural negative inputs. Publish only
+    whole positive node and attribute-record identities, with exact unsigned
+    attribute signature preimages. Preserve every existing reference byte.
+  - **Rationale:** TEST-2 requires vectors for implemented formats, but these
+    encodings lacked complete independently constructed field models.
+    Primitive CBOR assembly and raw registered-domain hashes reproduce the
+    bytes without invoking their owning codecs. Separately constructed
+    public models compare complete encoded and decoded fields; primitive
+    negative inputs bypass rejecting encoders. An assumed future property
+    is excluded from the reference under CONV-3. Unknown function versions
+    remain inert retained metadata under DRV-8. Opaque provenance, grants,
+    executable metadata and signatures establish no verified authority.
+  - **Affects:** TEST-1 to TEST-3, TREE-1 to TREE-8, TREE-14, PROP-4, DRV-1,
+    DRV-2, DRV-6, DRV-8 and the golden-vector reference. Requirement IDs,
+    registered schemas, identity domains and existing bytes remain unchanged.
+    This additive correction precedes T1's initial format freeze and does
+    not qualify the complete corpus, derived computation, tree operations,
+    policy enforcement or native publication.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

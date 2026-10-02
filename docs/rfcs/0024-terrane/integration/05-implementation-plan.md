@@ -430,6 +430,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Its actual hermetic request fails explicitly while the independent inputs
   are absent; mandatory formatting passes. These reserved checks establish no
   format or runtime conformance.
+  The isolated namespace candidate now passes all three exact format groups
+  for 69 models (22 entries, six root-property roots, three namespace roots
+  and 38 negative wires), strict template Clippy and all 490 core tests with
+  zero skips (run `8f025970-31b4-4cbc-8b6b-7b48c109cb69`). Its strict all-target
+  Clippy, warnings/missing-docs rustdoc and mandatory formatting pass.
+  The assumed future property remains a local extension-preservation test,
+  excluded from the reference under CONV-3; all 33 registered properties are
+  represented. The attribute candidate likewise passes its actual three-group
+  auxiliary check for 19 values, 42 complete records and 49 negative wires,
+  strict template Clippy, all 490 core tests, strict all-target Clippy,
+  warnings/missing-docs rustdoc and mandatory formatting. Both isolated actual
+  aggregates still reject the absent `format_properties` target.
+  D-90 publishes these 179 additive field witnesses while preserving every
+  preceding reference byte. The two auxiliary harnesses now require independent
+  reproduction of the normative corpus and run owning-codec tests against
+  that corpus. Their reviewed input branches remain separate; qualification
+  against this stronger published check is pending. No full golden or native
+  conformance is claimed.
   The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
