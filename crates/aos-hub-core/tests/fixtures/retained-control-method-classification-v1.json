@@ -393,6 +393,14 @@
   },
   {
     "service": "ContainerService",
+    "method": "CancelContainerGcRun",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "operation_lifecycle" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
     "method": "GetContainerGcRun",
     "exposure": "public",
     "durability": "read_only",

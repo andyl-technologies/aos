@@ -315,6 +315,15 @@ mod connect_path_tests {
             ]
         );
         assert_eq!(
+            request_fields("CancelContainerGcRun"),
+            [
+                "registry",
+                "run_id",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+        );
+        assert_eq!(
             request_fields("ListContainerGcCandidates"),
             ["registry", "run_id", "page_size", "page_token"]
         );
@@ -388,7 +397,7 @@ mod connect_path_tests {
             .filter(|descriptor| descriptor.service == "ContainerService")
             .map(|descriptor| descriptor.method)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(methods.len(), 46);
+        assert_eq!(methods.len(), 47);
         for method in [
             "ListContainerRepositories",
             "GetContainerRepository",
@@ -409,6 +418,7 @@ mod connect_path_tests {
             "SetContainerRetentionPolicy",
             "PlanRunContainerGc",
             "RunContainerGc",
+            "CancelContainerGcRun",
             "GetContainerGcRun",
             "ListContainerGcRuns",
             "ListContainerGcCandidates",

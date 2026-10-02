@@ -74,6 +74,31 @@ idempotency key returns the same operation. A different actor, expired plan,
 confirmation mismatch, stale policy/root/topology/inventory/epoch, new lease or
 upload, or changed placement identity must fail before an action is claimed.
 
+### Discarding an unapplied plan
+
+A plan created only to inspect blockers or impact need not be applied. An
+unexpired `planned` run counts as GC work and blocks registry deletion, so
+cancel it once it is no longer needed instead of waiting for its review to
+expire. Read the run's `resource_version` with `gc get`, then:
+
+```sh
+aos hub registry container gc cancel REGISTRY RUN_ID \
+  --if-version RUN_RESOURCE_VERSION \
+  --idempotency-key CANCEL_ID
+```
+
+Any operator with registry-configure permission may cancel the run, not only
+its author. The run moves to the terminal `aborted` state with the failure
+`cancelled by operator before apply`, the same state an expired review reaches
+(`review expired before apply`); `gc list --state aborted` shows both. Apply
+then rejects the run. Retrying the command after the run is terminal returns
+it unchanged. An `applying` run cannot be cancelled: its physical work is
+recovered through action requeue and finalization (see Incident response).
+
+A planned run stops blocking registry deletion and purge-fence acquisition as
+soon as its fifteen-minute review expires, even before the maintenance sweep
+marks it `aborted`.
+
 ## Untracked provider inventory repair
 
 An object in a current, complete provider inventory with no matching catalog
@@ -166,7 +191,8 @@ registry. Once a retiring run is applying or complete, indexing refuses to
 re-project container-release roots for that registry; the retirement is the
 reviewed intent and a re-index must not resurrect roots underneath the
 collector. Repeat plan/apply until a plan reports no candidates and the
-catalog is empty, delete the now-empty repositories, then continue with the
+catalog is empty, cancel that final empty plan with `gc cancel` so it does not
+count as GC work, delete the now-empty repositories, then continue with the
 purge fence below.
 
 On the Cloudflare deployment the deployment bucket is deleted through the
@@ -179,7 +205,9 @@ backend, and a plan still fails closed without a valid observation.
 Final registry deletion requires a reviewed writer fence; the Hub never creates
 that fence implicitly inside `DeleteRegistry`. First verify that repositories,
 catalog objects, active sessions, GC work, untracked repairs, and snapshot
-references are empty. Then use the registry resource version returned by
+references are empty. GC work counts applying runs and unexpired planned runs;
+cancel a leftover diagnostic plan with `gc cancel` rather than waiting for it
+to expire. Then use the registry resource version returned by
 `aos hub registry show REGISTRY` to review and acquire the fence:
 
 ```sh
