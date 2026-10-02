@@ -15,12 +15,19 @@ use terrane_core::tree_format::Attribute;
 type NativeRepository =
     Repository<FileBucket<TokioLocalFs, TokioClock, MetadataValidator>, TokioClock, TokioLocalFs>;
 
-struct Factory {
-    repository: NativeRepository,
-    authority: LocalAuthority,
+/// Supplies an actual protected repository with genuine receiver validation.
+pub(super) struct Factory {
+    /// Repository whose backend validates encoded plaintext and metadata.
+    pub(super) repository: NativeRepository,
+    /// Independently generated host-held current signing credentials.
+    pub(super) authority: LocalAuthority,
 }
 
-async fn factory() -> Factory {
+/// Initializes genuine protected authority and a metadata-validating backend.
+///
+/// # Panics
+/// Panics if native physical setup, credential generation, or registration fails.
+pub(super) async fn factory() -> Factory {
     let raw = raw_fixture().await;
     let root = raw.store().root().to_owned();
     let guard_config = raw.guard().config().clone();

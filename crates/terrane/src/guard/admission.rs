@@ -332,7 +332,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
             let tree = candidate.tree(occurrence.root, self.config().min_chunk_size)?;
             let old_occurrence = previous_occurrences
                 .iter()
-                .find(|old| old.path == occurrence.path);
+                // An exact carried root keeps its own checked producers even
+                // when it replaces another root with equal entry bytes. Only a
+                // root edited in place inherits from the prior path occurrence;
+                // descriptor and graft authority checks remain independent.
+                .find(|old| old.root == occurrence.root)
+                .or_else(|| {
+                    previous_occurrences
+                        .iter()
+                        .find(|old| old.path == occurrence.path)
+                });
             let old_tree = match (previous.as_ref(), old_occurrence) {
                 (Some(previous), Some(old)) => {
                     Some(previous.tree(old.root, self.config().min_chunk_size)?)

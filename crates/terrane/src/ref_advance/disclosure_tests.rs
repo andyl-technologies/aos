@@ -14,8 +14,44 @@ use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
 #[cfg(unix)]
+mod boundary_checks;
+#[cfg(unix)]
+mod dictionaries;
+#[cfg(unix)]
 mod fresh_recovery;
+#[cfg(unix)]
+mod materialization;
 mod multiple;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_rejects_whole_commit_receipt_and_projection_mutations() {
+    boundary_checks::reject_signed_mutations().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_projection_safe_materialization_certifies_each_flattened_file() {
+    materialization::certify_flattened_files().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_graft_preserves_independent_private_attribute_producer() {
+    materialization::preserve_relocated_attribute_producer().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_replacement_graft_preserves_carried_private_producers() {
+    materialization::preserve_replacement_graft_producers().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_dictionary_dependencies_preserve_registered_codecs_and_verified_lengths() {
+    dictionaries::publish_dictionary_codecs().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
