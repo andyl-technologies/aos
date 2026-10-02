@@ -22,6 +22,8 @@ mod dictionaries;
 #[cfg(unix)]
 mod fresh_recovery;
 #[cfg(unix)]
+mod limited;
+#[cfg(unix)]
 mod materialization;
 mod multiple;
 
@@ -53,6 +55,12 @@ async fn disclosure_replacement_graft_preserves_carried_private_producers() {
 #[tokio::test]
 async fn disclosure_projection_safe_conflict_resolution_certifies_selected_file() {
     conflicts::certify_resolved_file().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_directory_marker_and_raw_symlink_have_limited_scope() {
+    limited::certify_limited_entries().await;
 }
 
 #[cfg(unix)]
