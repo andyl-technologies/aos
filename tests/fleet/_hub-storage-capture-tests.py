@@ -85,6 +85,50 @@ class StorageCaptureTests(unittest.TestCase):
         self.assertIsNone(omitted[ORIGINAL]["files"]["path_and_query"])
         self.assertEqual(omitted[ORIGINAL]["queryClass"], "unsupported")
 
+    def test_managed_cleanup_controls_are_private_and_do_not_imply_authentication(self):
+        route = "/_internal/storage/managed-oci-cleanup/v1"
+        raw = header(ORIGINAL, version="4", path_and_query=route,
+            request_signature="", reply_signature="",
+            **{field: "" for field in capture.EXTERNAL_OCI_SIGNATURE_FIELDS},
+            managed_oci_cleanup_request_signature="a" * 64,
+            managed_oci_cleanup_reply_signature="b" * 64)
+        original_headers = capture.capture_protected_headers(json.dumps(raw), "native-outbound")
+        received = {**raw, "request_id": RECEIVED, "origin_request_id": ORIGINAL}
+        received_headers = capture.capture_protected_headers(json.dumps(received), "worker-received")
+
+        summary = json.dumps(original_headers)
+        for field in capture.MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS:
+            reference = original_headers[ORIGINAL]["files"][field]
+            self.assertEqual(reference["sha256"], hashlib.sha256(raw[field].encode()).hexdigest())
+            self.assertEqual(reference["byteSize"], 64)
+            self.assertNotIn(raw[field], summary)
+        self.assertEqual(original_headers[ORIGINAL]["transportCallId"], ORIGINAL)
+        originals = [{**body(ORIGINAL), "procedure": route}]
+        actual = [{**body(RECEIVED), "procedure": route}]
+        result = capture.join_authenticated_storage_transports(originals, actual,
+            original_headers, received_headers, [])
+
+        self.assertEqual(result["joined"], [])
+        self.assertEqual(result["unresolvedNativeRequestIds"], [ORIGINAL])
+        self.assertIsNone(result["nativeBulkBytes"])
+
+    def test_managed_cleanup_header_schema_and_mac_substitution_refuse(self):
+        raw = header(ORIGINAL, version="4", request_signature="", reply_signature="",
+            **{field: "" for field in capture.EXTERNAL_OCI_SIGNATURE_FIELDS},
+            managed_oci_cleanup_request_signature="a" * 64,
+            managed_oci_cleanup_reply_signature="b" * 64)
+        for changes in ({"version": "3"}, {"version": "2"},
+                {"managed_oci_cleanup_request_signature": "a" * 64 + "," + "b" * 64},
+                {"managed_oci_cleanup_reply_signature": "Bearer private"},
+                {"authorization": "Bearer private"}):
+            retained.clear()
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                capture.capture_protected_headers(json.dumps({**raw, **changes}), "native-outbound")
+            self.assertNotIn(b"Bearer private", retained.values())
+        del raw["managed_oci_cleanup_reply_signature"]
+        with self.assertRaises(ValueError):
+            capture.capture_protected_headers(json.dumps(raw), "native-outbound")
+
     def test_numeric_capture_keeps_unsupported_distribution_phases_for_review(self):
         row = {name: "" for name in observations.NATIVE_OBSERVATION_FIELDS}
         row.update(procedure="/v2/repo/blobs/sha256:" + "c" * 64, phase="authorize-final",

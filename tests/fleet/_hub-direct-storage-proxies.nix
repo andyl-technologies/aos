@@ -13,12 +13,19 @@
   workerUpstream ? "https://127.0.0.1:4443",
   workerUpstreamCertificateName ? "localhost",
   heldExecuteUpstream ? null,
+  managedCleanupLossUpstream ? null,
+  includeManagedCleanupControls ? false,
   workerAdditionalHttp ? "",
   includeTransferCompletion ? false,
 }:
 assert heldExecuteUpstream == null || heldExecuteUpstream == "https://localhost:4650";
+assert managedCleanupLossUpstream == null || managedCleanupLossUpstream == "http://127.0.0.1:4660";
 let
   protectedHeaders = import ./_hub-protected-header-format.nix;
+  headerFormat = name: protectedHeaders {
+    inherit name;
+    includeManagedCleanup = includeManagedCleanupControls;
+  };
   format = name: root: extra: ''
     log_format ${name} escape=json
       '{"procedure":"$uri","phase":"$http_x_aos_hybrid_upload_phase",'
@@ -55,7 +62,7 @@ let
 in {
   nativeHttp = ''
     ${format "native_outbound" nativeRoot ""}
-    ${protectedHeaders "native_outbound_headers"}
+    ${headerFormat "native_outbound_headers"}
     server {
       listen ${toString nativeListenPort} ssl;
       server_name ${serverName};
@@ -77,6 +84,19 @@ in {
           }
         ''
       }
+      ${
+        if managedCleanupLossUpstream == null
+        then ""
+        else ''
+          # This initial unarmed listener may lose one fully consumed, verified
+          # cleanup reply. All original request bytes and correlation stay intact.
+          location = /_internal/storage/managed-oci-cleanup/v1 {
+            ${capture nativeRoot}
+            ${forwarding managedCleanupLossUpstream "localhost"}
+            proxy_set_header x-aos-fleet-request-id $request_id;
+          }
+        ''
+      }
       location / {
         ${capture nativeRoot}
         ${forwarding nativeUpstream nativeUpstreamCertificateName}
@@ -92,7 +112,7 @@ in {
     events { worker_connections 256; }
     http {
       ${format "worker_storage" workerRoot '',"origin_request_id":"$http_x_aos_fleet_request_id","caller":"$remote_addr"''}
-      ${protectedHeaders "worker_storage_headers"}
+      ${headerFormat "worker_storage_headers"}
       access_log off;
       ${workerAdditionalHttp}
       client_max_body_size 0;

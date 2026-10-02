@@ -3,6 +3,7 @@
 {
   serverCertificate,
   serverPrivateKey,
+  managedCleanupLossUpstream ? null,
 }: let
   nativeRoot = "/var/lib/hybrid-managed-native/@MANAGED_RUN@";
   workerRoot = "/var/lib/hybrid-managed-worker/@MANAGED_RUN@/boundary";
@@ -17,7 +18,8 @@
     includeTransferCompletion = true;
   };
   storage = import ./_hub-direct-storage-proxies.nix {
-    inherit serverCertificate serverPrivateKey workerRoot;
+    inherit serverCertificate serverPrivateKey workerRoot managedCleanupLossUpstream;
+    includeManagedCleanupControls = true;
     nativeRoot = "${nativeRoot}/outbound";
     nativeListenPort = 4643;
     workerListenPort = 4643;

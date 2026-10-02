@@ -25,6 +25,10 @@ EXTERNAL_OCI_SIGNATURE_FIELDS = frozenset((
     "external_oci_cleanup_request_signature", "external_oci_cleanup_reply_signature",
 ))
 PROTECTED_HEADER_FIELDS = PROTECTED_HEADER_V2_FIELDS | EXTERNAL_OCI_SIGNATURE_FIELDS
+MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS = frozenset((
+    "managed_oci_cleanup_request_signature", "managed_oci_cleanup_reply_signature",
+))
+PROTECTED_HEADER_V4_FIELDS = PROTECTED_HEADER_FIELDS | MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS
 STORAGE_AUTHENTICATED_FIELDS = frozenset((
     "version", "route", "planId", "operation", "requestSha256", "replySha256",
     "requestBytes", "replyBytes", "transportCallId",
@@ -172,7 +176,8 @@ def capture_protected_headers(source, label, artifact_prefix=None):
         raw = _closed_review_json(line)
         if (not isinstance(raw, dict) or (raw.get("version") == "2" and set(raw) != PROTECTED_HEADER_V2_FIELDS)
                 or (raw.get("version") == "3" and set(raw) != PROTECTED_HEADER_FIELDS)
-                or raw.get("version") not in {"2", "3"}):
+                or (raw.get("version") == "4" and set(raw) != PROTECTED_HEADER_V4_FIELDS)
+                or raw.get("version") not in {"2", "3", "4"}):
             raise ValueError("protected header capture shape differs")
         if (not re.fullmatch(r"[0-9a-f]{32}", raw["request_id"])
                 or raw["request_id"] in projected
@@ -193,7 +198,10 @@ def capture_protected_headers(source, label, artifact_prefix=None):
             raise ValueError("protected target is not bounded")
         files = {}
         for field in ("path_and_query", "ingress", "request_signature", "reply_signature",
-                "oci_request_signature", "oci_reply_signature", *sorted(EXTERNAL_OCI_SIGNATURE_FIELDS)):
+                "oci_request_signature", "oci_reply_signature",
+                *sorted(EXTERNAL_OCI_SIGNATURE_FIELDS | MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS)):
+            if field in MANAGED_OCI_CLEANUP_SIGNATURE_FIELDS and raw["version"] != "4":
+                continue
             value = raw.get(field, "")
             if not isinstance(value, str) or len(value.encode()) > 16 * 1024:
                 raise ValueError("protected compact control exceeds its bound")
