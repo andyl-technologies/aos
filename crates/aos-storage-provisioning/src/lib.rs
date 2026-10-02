@@ -70,10 +70,10 @@ pub struct AuthorizedProvisioningInput {
     /// Identifies whether operator input or image defaults supply the plan.
     pub source: CanonicalProvisioningSource,
     /// Carries the exact authenticated Nix module or source-bundle JSON for operator input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub host_module: Option<String>,
     /// Authenticates [`Self::host_module`] when operator input is present.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub host_module_sha256: Option<String>,
     /// Records the authorization decision and source platform.
     pub authorization: ProvisioningAuthorization,
@@ -114,7 +114,7 @@ pub struct ProvisioningAuthorization {
     /// Identifies the platform that supplied metadata.
     pub platform_id: String,
     /// Identifies the matching configuration signer in signed mode.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub signer: Option<String>,
 }
 
