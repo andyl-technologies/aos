@@ -6,7 +6,8 @@ use anyhow::{bail, Context, Result};
 use aos_oci_types::{MediaType, Sha256Digest};
 
 use super::plan_model::{
-    canonical_digest, EffectivePolicy, FrozenCandidate, FrozenRoot, PlanBlocker,
+    canonical_digest, oci_gc_grace_cutoff, EffectivePolicy, FrozenCandidate, FrozenRoot,
+    PlanBlocker,
 };
 use super::{OCI_GC_MAX_CANDIDATES, OCI_GC_MAX_OBJECTS};
 use crate::db::Database;
@@ -94,12 +95,14 @@ impl Database {
         registry_id: i64,
         policy: &EffectivePolicy,
         now: i64,
+        retire_registry: bool,
         live: &BTreeSet<String>,
         blockers: &mut Vec<PlanBlocker>,
     ) -> Result<Vec<FrozenCandidate>> {
-        let grace = i64::try_from(policy.untagged_grace_seconds)
-            .context("OCI untagged grace exceeds int64")?;
-        let cutoff = now.saturating_sub(grace);
+        let cutoff = oci_gc_grace_cutoff(policy, now, retire_registry)?;
+        // Candidate eligibility is reported against the same cutoff the
+        // frontier used, so a retiring run shows objects as eligible at once.
+        let grace = now.saturating_sub(cutoff);
         const CANDIDATE_SCAN_PAGE: usize = 100;
         let mut candidates = Vec::new();
         let mut cursor: Option<String> = None;

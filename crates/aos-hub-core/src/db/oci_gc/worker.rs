@@ -242,7 +242,7 @@ impl Database {
                        AND binding.resource_version = snapshot.binding_resource_version
                        AND ((snapshot.delete_credential_purpose IS NULL
                              AND snapshot.delete_credential_generation IS NULL
-                             AND binding.kind = 'local_fs')
+                             AND binding.kind IN('local_fs', 'deployment_r2'))
                          OR delete_credential.validation_state = 'valid'))
                    AND NOT EXISTS (
                      SELECT 1 FROM staged_release_objects staged_object
@@ -339,7 +339,7 @@ impl Database {
                            AND binding.resource_version = snapshot.binding_resource_version
                            AND ((snapshot.delete_credential_purpose IS NULL
                                  AND snapshot.delete_credential_generation IS NULL
-                                 AND binding.kind = 'local_fs')
+                                 AND binding.kind IN('local_fs', 'deployment_r2'))
                              OR (delete_credential.validation_state = 'valid'
                                AND EXISTS (SELECT 1 FROM oci_gc_credential_holds hold
                                  WHERE hold.run_id = run.id

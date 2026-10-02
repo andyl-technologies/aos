@@ -479,6 +479,9 @@ fn ContainerGcPlanner(
             registry: plan_registry.clone(),
             expected_resource_version: version.clone(),
             idempotency_key: key.clone(),
+            // Catalog retirement is a maintainer CLI operation reviewed
+            // alongside registry deletion; the console only runs ordinary GC.
+            retire_registry: false,
         };
         pending.set(None);
         exact.set(None);

@@ -7,9 +7,12 @@ use aos_oci_types::Sha256Digest;
 use uuid::Uuid;
 
 use super::plan_model::{
-    canonical_digest, digest_json, oci_gc_snapshot_guard_statement, policy_guard_statement,
-    validate_apply_input, validate_plan_input, EffectivePolicy, FrozenAction, FrozenCandidate,
-    FrozenPlacement, FrozenRoot, PlanBlocker,
+    canonical_digest, digest_json, oci_gc_grace_cutoff, oci_gc_snapshot_guard_statement,
+    policy_guard_statement, validate_apply_input, validate_plan_input, EffectivePolicy,
+    FrozenAction, FrozenCandidate, FrozenPlacement, FrozenRoot, PlanBlocker,
+};
+use super::retirement::{
+    oci_route_disabled_guard_statement, retire_catalog_root_statements, ENABLED_OCI_ROUTE_PREDICATE,
 };
 pub use super::plan_model::{ApplyOciGc, PlanOciGc};
 use super::{
@@ -55,7 +58,9 @@ impl Database {
             )
             .await?
         {
-            if existing.policy_resource_version != input.expected_resource_version {
+            if existing.policy_resource_version != input.expected_resource_version
+                || existing.retire_registry != input.retire_registry
+            {
                 bail!("OCI GC plan idempotency conflict");
             }
             return Ok(existing);
@@ -70,13 +75,84 @@ impl Database {
             .await?;
         let mut blockers = Vec::new();
 
+        if input.retire_registry {
+            self.collect_oci_gc_retirement_blockers(input.registry_id, &mut blockers)
+                .await?;
+        } else {
+            self.collect_oci_gc_projection_blockers(input.registry_id, &mut blockers)
+                .await?;
+        }
+
+        let placements = self
+            .freeze_oci_gc_placements(input.registry_id, captured_epoch, input.now, &mut blockers)
+            .await?;
+        let mut roots = self
+            .collect_oci_gc_hard_roots(input.registry_id, &policy, input.now, input.retire_registry)
+            .await?;
+        self.reconcile_oci_unreferenced_since(input.registry_id, input.now, &roots, &mut blockers)
+            .await?;
+        let grace_roots = self
+            .collect_oci_gc_grace_roots(
+                input.registry_id,
+                &policy,
+                input.now,
+                input.retire_registry,
+            )
+            .await?;
+        let live = self
+            .traverse_oci_gc_live_graph(
+                input.registry_id,
+                policy.retain_referrers,
+                &mut roots,
+                &grace_roots,
+                &mut blockers,
+            )
+            .await?;
+        let candidates = self
+            .collect_oci_gc_candidates(
+                input.registry_id,
+                &policy,
+                input.now,
+                input.retire_registry,
+                &live,
+                &mut blockers,
+            )
+            .await?;
+        let actions = self
+            .freeze_oci_gc_actions(input.registry_id, &placements, &candidates, &mut blockers)
+            .await?;
+        if actions.len() > OCI_GC_MAX_ACTIONS {
+            bail!("OCI GC plan exceeds the {OCI_GC_MAX_ACTIONS}-action synchronous bound");
+        }
+
+        self.persist_oci_gc_plan(
+            input,
+            captured_epoch,
+            &policy,
+            &roots,
+            &placements,
+            &candidates,
+            &actions,
+            &blockers,
+            live.len(),
+        )
+        .await
+    }
+
+    /// Fails closed while exact config/layer projections are incomplete, since
+    /// an ordinary plan must keep every runnable manifest's projection intact.
+    async fn collect_oci_gc_projection_blockers(
+        &self,
+        registry_id: i64,
+        blockers: &mut Vec<PlanBlocker>,
+    ) -> Result<()> {
         let pending_reconciliation = self
             .backend
             .query_opt(
                 "SELECT root_digest FROM oci_admin_projection_reconciliations
                  WHERE registry_id = ?1 AND state IN('pending', 'failed')
                  ORDER BY root_digest LIMIT 1",
-                &vals![input.registry_id],
+                &vals![registry_id],
             )
             .await?;
         if let Some(row) = pending_reconciliation {
@@ -100,7 +176,7 @@ impl Database {
                        AND projection.repository_id = link.repository_id
                        AND projection.manifest_digest = manifest.digest)
                  ORDER BY manifest.digest LIMIT 1",
-                &vals![input.registry_id],
+                &vals![registry_id],
             )
             .await?
         {
@@ -110,49 +186,39 @@ impl Database {
                 detail: "a runnable manifest lacks its exact config/layer projection".into(),
             });
         }
+        Ok(())
+    }
 
-        let placements = self
-            .freeze_oci_gc_placements(input.registry_id, captured_epoch, input.now, &mut blockers)
-            .await?;
-        let mut roots = self
-            .collect_oci_gc_hard_roots(input.registry_id, &policy, input.now)
-            .await?;
-        self.reconcile_oci_unreferenced_since(input.registry_id, input.now, &roots, &mut blockers)
-            .await?;
-        let grace_roots = self
-            .collect_oci_gc_grace_roots(input.registry_id, &policy, input.now)
-            .await?;
-        let live = self
-            .traverse_oci_gc_live_graph(
-                input.registry_id,
-                policy.retain_referrers,
-                &mut roots,
-                &grace_roots,
-                &mut blockers,
+    /// Fails closed while any enabled route still serves the registry's OCI
+    /// surface, since retirement collects objects that clients could still
+    /// resolve by tag or signed release.
+    async fn collect_oci_gc_retirement_blockers(
+        &self,
+        registry_id: i64,
+        blockers: &mut Vec<PlanBlocker>,
+    ) -> Result<()> {
+        let serving_route = self
+            .backend
+            .query_opt(
+                &format!(
+                    "SELECT route.id FROM routes route
+                     WHERE {ENABLED_OCI_ROUTE_PREDICATE}
+                     ORDER BY route.id LIMIT 1"
+                ),
+                &vals![registry_id],
             )
             .await?;
-        let candidates = self
-            .collect_oci_gc_candidates(input.registry_id, &policy, input.now, &live, &mut blockers)
-            .await?;
-        let actions = self
-            .freeze_oci_gc_actions(input.registry_id, &placements, &candidates, &mut blockers)
-            .await?;
-        if actions.len() > OCI_GC_MAX_ACTIONS {
-            bail!("OCI GC plan exceeds the {OCI_GC_MAX_ACTIONS}-action synchronous bound");
+        if let Some(row) = serving_route {
+            blockers.push(PlanBlocker {
+                kind: "oci_route_enabled",
+                digest: None,
+                detail: format!(
+                    "route '{}' still serves the OCI surface; disable it before retirement",
+                    sanitize_log_text(&row.get::<String>(0)?)
+                ),
+            });
         }
-
-        self.persist_oci_gc_plan(
-            input,
-            captured_epoch,
-            &policy,
-            &roots,
-            &placements,
-            &candidates,
-            &actions,
-            &blockers,
-            live.len(),
-        )
-        .await
+        Ok(())
     }
 
     /// Applies one reviewed plan and atomically hides every candidate.
@@ -206,10 +272,20 @@ impl Database {
 
         let current_policy = self.effective_oci_gc_policy(plan.registry_id).await?;
         let mut current_roots = self
-            .collect_oci_gc_hard_roots(plan.registry_id, &current_policy, input.now)
+            .collect_oci_gc_hard_roots(
+                plan.registry_id,
+                &current_policy,
+                input.now,
+                plan.retire_registry,
+            )
             .await?;
         let current_grace_roots = self
-            .collect_oci_gc_grace_roots(plan.registry_id, &current_policy, input.now)
+            .collect_oci_gc_grace_roots(
+                plan.registry_id,
+                &current_policy,
+                input.now,
+                plan.retire_registry,
+            )
             .await?;
         let mut current_blockers = Vec::new();
         self.traverse_oci_gc_live_graph(
@@ -283,10 +359,16 @@ impl Database {
             self.oci_gc_snapshot_guard_statements(&input.generation_id, input.now)
                 .await?,
         );
+        if plan.retire_registry {
+            statements.push(oci_route_disabled_guard_statement(plan.registry_id));
+        }
         for row in &candidate_rows {
             let digest: String = row.get(0)?;
             let surface_object_id: i64 = row.get(1)?;
             let object_resource_version: i64 = row.get(2)?;
+            if plan.retire_registry {
+                statements.extend(retire_catalog_root_statements(plan.registry_id, &digest));
+            }
             statements.extend([
                 Statement::new(
                     "UPDATE oci_registry_state SET updated_at = updated_at
@@ -519,6 +601,7 @@ impl Database {
             actions,
             blockers,
             captured_epoch,
+            input.retire_registry,
         ))?;
         let confirmation_hash = digest_json(&(
             generation_id.as_str(),
@@ -572,10 +655,10 @@ impl Database {
                     planned_bytes, planned_objects, placement_action_count,
                     deleted_object_count, deleted_byte_size,
                     expires_at, created_at, applied_at, finished_at, last_error,
-                    resource_version)
+                    resource_version, retire_registry)
                  SELECT ?1, ?2, ?3, ?4, NULL, ?5, ?6, NULL, ?7, ?8, ?9,
                         ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
-                        ?19, 0, 0, ?20, ?21, NULL, ?22, ?23, 1
+                        ?19, 0, 0, ?20, ?21, NULL, ?22, ?23, 1, ?24
                  FROM registries registry WHERE registry.id = ?2
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_runs run
                      WHERE run.registry_id = ?2 AND run.actor_id = ?3
@@ -603,7 +686,8 @@ impl Database {
                     expires_at,
                     input.now,
                     blocked.then_some(input.now),
-                    last_error
+                    last_error,
+                    i64::from(input.retire_registry)
                 ],
             )
             .expecting(1),
@@ -939,7 +1023,8 @@ impl Database {
                 || capability_fingerprint.is_none()
                 || capability_resource_version.is_none()
                 || capability_observed_at.is_none_or(|observed| observed < oldest_allowed)
-                || (credential_purpose.is_none() && binding_kind != "local_fs")
+                || (credential_purpose.is_none()
+                    && !matches!(binding_kind.as_str(), "local_fs" | "deployment_r2"))
                 || (credential_purpose.is_some()
                     && (delete_credential_state.as_deref() != Some("valid")
                         || current_delete_credential_generation != credential_generation))
@@ -1009,13 +1094,40 @@ impl Database {
         Ok(placements)
     }
 
+    /// Collects the roots that keep objects alive regardless of grace.
+    ///
+    /// A retiring run drops the catalog-owned roots (tags, signed releases, and
+    /// retained tag history) because the registry is being deleted. In-flight
+    /// leases, uploads, publication sessions, and staged releases stay roots in
+    /// both modes: they belong to writers that still hold the objects.
     async fn collect_oci_gc_hard_roots(
         &self,
         registry_id: i64,
         policy: &EffectivePolicy,
         now: i64,
+        retire_registry: bool,
     ) -> Result<BTreeSet<FrozenRoot>> {
         let mut roots = BTreeSet::new();
+        if !retire_registry {
+            self.collect_oci_gc_catalog_roots(registry_id, policy, now, &mut roots)
+                .await?;
+        }
+        self.collect_oci_gc_writer_roots(registry_id, now, &mut roots)
+            .await?;
+        if roots.len() > OCI_GC_MAX_OBJECTS {
+            bail!("OCI GC hard-root set exceeds the {OCI_GC_MAX_OBJECTS}-object bound");
+        }
+        Ok(roots)
+    }
+
+    /// Adds tag, signed-release, and retained tag-history roots.
+    async fn collect_oci_gc_catalog_roots(
+        &self,
+        registry_id: i64,
+        policy: &EffectivePolicy,
+        now: i64,
+        roots: &mut BTreeSet<FrozenRoot>,
+    ) -> Result<()> {
         for row in self
             .backend
             .query(
@@ -1081,6 +1193,17 @@ impl Database {
                 repository_id: Some(repository_id),
             });
         }
+        self.collect_oci_gc_history_roots(registry_id, policy, now, roots)
+            .await
+    }
+
+    /// Adds lease, upload, publication-session, and staged-release roots.
+    async fn collect_oci_gc_writer_roots(
+        &self,
+        registry_id: i64,
+        now: i64,
+        roots: &mut BTreeSet<FrozenRoot>,
+    ) -> Result<()> {
         for row in self
             .backend
             .query(
@@ -1189,12 +1312,7 @@ impl Database {
                 repository_id: None,
             });
         }
-        self.collect_oci_gc_history_roots(registry_id, policy, now, &mut roots)
-            .await?;
-        if roots.len() > OCI_GC_MAX_OBJECTS {
-            bail!("OCI GC hard-root set exceeds the {OCI_GC_MAX_OBJECTS}-object bound");
-        }
-        Ok(roots)
+        Ok(())
     }
 
     /// Stamps the first authoritative unreferenced observation in bounded
@@ -1274,10 +1392,9 @@ impl Database {
         registry_id: i64,
         policy: &EffectivePolicy,
         now: i64,
+        retire_registry: bool,
     ) -> Result<BTreeSet<String>> {
-        let grace = i64::try_from(policy.untagged_grace_seconds)
-            .context("OCI untagged grace exceeds int64")?;
-        let cutoff = now.saturating_sub(grace);
+        let cutoff = oci_gc_grace_cutoff(policy, now, retire_registry)?;
         let rows = self
             .backend
             .query(
@@ -1566,7 +1683,7 @@ mod tests {
             .unwrap();
 
         let roots = db
-            .collect_oci_gc_hard_roots(registry_id, &policy, 200)
+            .collect_oci_gc_hard_roots(registry_id, &policy, 200, false)
             .await
             .unwrap();
         assert!(roots.iter().any(|root| root.kind == "publication"
@@ -1580,17 +1697,23 @@ mod tests {
             !db.collect_oci_gc_hard_roots(
                 registry_id,
                 &policy,
-                300 + STAGED_RELEASE_GRACE_SECONDS - 1
+                300 + STAGED_RELEASE_GRACE_SECONDS - 1,
+                false
             )
             .await
             .unwrap()
             .is_empty()
         );
         assert!(
-            db.collect_oci_gc_hard_roots(registry_id, &policy, 300 + STAGED_RELEASE_GRACE_SECONDS)
-                .await
-                .unwrap()
-                .is_empty()
+            db.collect_oci_gc_hard_roots(
+                registry_id,
+                &policy,
+                300 + STAGED_RELEASE_GRACE_SECONDS,
+                false
+            )
+            .await
+            .unwrap()
+            .is_empty()
         );
     }
 
