@@ -14,6 +14,13 @@ from unittest.mock import patch
 
 
 handler_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_systemd-abilities/service-handler.py"
+configuration_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_aos-configuration-provider/aos_configuration.py"
+configuration_entrypoint = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else configuration_path.parent / "handler.py"
+configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
+configuration_module = importlib.util.module_from_spec(configuration_spec)
+sys.modules["aos_configuration"] = configuration_module
+configuration_spec.loader.exec_module(configuration_module)
+
 spec = importlib.util.spec_from_file_location("service_handler", handler_path)
 handler_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(handler_module)
@@ -296,6 +303,64 @@ class NativeHandlerTests(unittest.TestCase):
             second = handler_module.Handler(other, "unused", root, Path(root) / "state")
             with self.assertRaisesRegex(ValueError, "another installation effect"):
                 second.file("apply")
+
+    def test_configuration_provider_rejects_service_owned_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            instance = handler_module.Handler(invocation("serviceManagement", "realize", service()), "unused", units, state)
+            instance.manager = lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr="")
+            instance.service("apply")
+            path = units / "example.service"
+            value = {"path": str(path), "content": path.read_text(), "mode": "0644"}
+            other = dict(invocation("configuration", "file", value), id="configuration-owner")
+            configuration = handler_module.ConfigurationHandler(other, state)
+
+            with self.assertRaisesRegex(ValueError, "another installation effect"):
+                configuration.file("apply")
+
+    def test_service_rejects_configuration_owned_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            rendered = handler_module.realize_service(service())["units"]["example.service"]
+            value = {"path": str(units / "example.service"), "content": rendered, "mode": "0644"}
+            configuration = handler_module.ConfigurationHandler(invocation("configuration", "file", value), state)
+            configuration.file("apply")
+            other = dict(invocation("serviceManagement", "realize", service()), id="service-owner")
+            instance = handler_module.Handler(other, "unused", units, state)
+
+            with self.assertRaisesRegex(ValueError, "another installation effect"):
+                instance.service("apply")
+
+    def test_standalone_configuration_process_needs_no_service_manager(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / "configuration"
+            state = Path(root) / "state"
+            document = invocation("configuration", "file", {"path": str(path), "content": "portable", "mode": "0600"})
+            # Reproduce the installed source layout from the exact retained files.
+            library = Path(root) / "libexec"
+            library.mkdir()
+            (library / "aos_configuration.py").write_bytes(configuration_path.read_bytes())
+            executable = library / "handler.py"
+            executable.write_bytes(configuration_entrypoint.read_bytes())
+
+            def run(action):
+                result = subprocess.run(
+                    [sys.executable, str(executable), "--state-directory", str(state), action],
+                    input=json.dumps(document), capture_output=True, text=True,
+                    env={}, check=True,
+                )
+                return json.loads(result.stdout)
+
+            self.assertEqual(run("apply")["path"], str(path))
+            self.assertEqual(path.read_text(), "portable")
+            self.assertEqual(run("observe")["status"], "current")
+            path.write_text("external edit")
+            self.assertEqual(run("observe")["status"], "indeterminate")
+            path.write_text("portable")
+            self.assertEqual(run("remove"), {})
+            self.assertFalse(path.exists())
 
     def test_configuration_views_are_not_interpreted_as_environment_files(self):
         value = service()

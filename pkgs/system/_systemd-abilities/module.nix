@@ -21,7 +21,6 @@ in {
   ];
   aos.abilities = {
     serviceManagement.operations.realize.handler = {inherit program;};
-    configuration.operations.file.handler = {inherit program;};
     device.operations.present.handler = {inherit program;};
   };
 }

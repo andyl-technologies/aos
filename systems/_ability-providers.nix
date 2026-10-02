@@ -1,6 +1,7 @@
 ##! Admit provider contracts without installing unused implementations.
 {pkgs, ...}: let
   providers = [
+    pkgs.aos-configuration-provider
     pkgs.aos-filesystem-provider
     pkgs.cryptsetup
     pkgs.aos-cryptsetup-provider

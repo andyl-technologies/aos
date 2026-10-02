@@ -2,6 +2,7 @@
 {
   lib,
   service-management,
+  aos-configuration-provider,
   aos-host-policy,
   mkDerivation,
   stdenv,
@@ -189,7 +190,7 @@ in
 
     inherit version;
     module = ./_systemd-abilities;
-    moduleDeps = [service-management aos-host-policy linux-pam];
+    moduleDeps = [service-management aos-configuration-provider aos-host-policy linux-pam];
 
     # Keep UKI construction and kernel installation in `tools`, including
     # kernel-install's Python hook. PID 1 and boot-time generators do not need
@@ -249,7 +250,7 @@ in
     # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
     # Image assembly selects binutils and QEMU through the package contract.
     # Keep them addressable without adding their libraries to every ELF RPATH.
-    runtimeDeps = systemdRuntimeDeps ++ [binutils qemu aos-systemd-provider];
+    runtimeDeps = systemdRuntimeDeps ++ [binutils qemu aos-systemd-provider aos-configuration-provider];
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
@@ -728,6 +729,7 @@ in
           cp ${./_systemd-abilities/service-handler.py} "$out/libexec/aos-service-handler.py"
           cat > "$out/bin/aos-service-handler" << EOF
           #!${bash}/bin/bash
+          export PYTHONPATH="${aos-configuration-provider}/libexec"
           exec "${python3}/bin/python3" "$out/libexec/aos-service-handler.py" \\
             --systemctl "$out/bin/systemctl" \\
             --true-executable "${coreutils}/bin/true" \\
