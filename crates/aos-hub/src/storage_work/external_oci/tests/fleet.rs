@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use anyhow::{ensure, Context as _, Result};
+use anyhow::{Context as _, Result, ensure};
 use aos_hub_core::backend::{Backend as _, SqlxBackend};
 use aos_hub_core::db::Database;
 use aos_hub_core::storage_authority::external_object::oci::{
@@ -795,15 +795,17 @@ async fn owner_shutdown_cannot_name_another_input_or_candidate() {
         &json!({"version":1,"inputSha256":"another","candidateSha256":"candidate"}),
     )
     .unwrap();
-    assert!(wait_for_stop(
-        &input,
-        "input",
-        "candidate",
-        Instant::now() + Duration::from_secs(1),
-        aos_hub_core::clock::now_unix_secs() + 600
-    )
-    .await
-    .is_err());
+    assert!(
+        wait_for_stop(
+            &input,
+            "input",
+            "candidate",
+            Instant::now() + Duration::from_secs(1),
+            aos_hub_core::clock::now_unix_secs() + 600
+        )
+        .await
+        .is_err()
+    );
 }
 
 #[tokio::test]
