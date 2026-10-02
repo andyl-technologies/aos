@@ -129,6 +129,7 @@
     };
     imageBuild = import ./_image-builder.nix {
       pkgs = imagePackages;
+      inherit (pkgs) buildPackages;
       inherit kernel lib bootArtifacts rawDiskFilename rawMetadataFilename rawDeliveryFilename rootfs runtimeClosureAudit targetPlatform;
       system = {inherit config;};
       inherit name;
