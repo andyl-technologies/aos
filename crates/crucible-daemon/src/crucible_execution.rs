@@ -219,20 +219,7 @@ fn record_materialization_diagnostic(
     input: &AttemptExecutionInput,
     materialization: CrucibleMaterializationTier,
 ) {
-    let limit = *MATERIALIZATION_DIAGNOSTIC_LIMIT.get_or_init(|| {
-        std::env::var("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
-            .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-            .filter(|value| (1..=MAX_MATERIALIZATION_DIAGNOSTIC_EVENTS).contains(value))
-            .unwrap_or(0)
-    });
-    if limit == 0
-        || MATERIALIZATION_DIAGNOSTIC_COUNT
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
-                (count < limit).then_some(count + 1)
-            })
-            .is_err()
-    {
+    if !admit_materialization_diagnostic() {
         return;
     }
 
@@ -242,6 +229,35 @@ fn record_materialization_diagnostic(
             "CRUCIBLE-MATERIALIZATION-V1 attempt={attempt} tier={materialization:?}"
         );
     }
+}
+
+/// Emits a best-effort phase notice within the existing opt-in process budget.
+///
+/// Callers supply bounded identities and stored counts without encoding evidence
+/// or acquiring campaign/runtime locks. Stderr failures never affect execution.
+pub(crate) fn record_execution_phase_diagnostic(stage: &str, details: std::fmt::Arguments<'_>) {
+    if admit_materialization_diagnostic() {
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CRUCIBLE-EXECUTION-PHASE-V1 stage={stage} {details}"
+        );
+    }
+}
+
+fn admit_materialization_diagnostic() -> bool {
+    let limit = *MATERIALIZATION_DIAGNOSTIC_LIMIT.get_or_init(|| {
+        std::env::var("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .filter(|value| (1..=MAX_MATERIALIZATION_DIAGNOSTIC_EVENTS).contains(value))
+            .unwrap_or(0)
+    });
+    limit != 0
+        && MATERIALIZATION_DIAGNOSTIC_COUNT
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+                (count < limit).then_some(count + 1)
+            })
+            .is_ok()
 }
 
 /// Complete runner result with non-canonical materialization telemetry.

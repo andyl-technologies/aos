@@ -225,13 +225,29 @@ pub(crate) fn stage_prepared_attempt_result_journal(
     let key = crate::AttemptExecutionKey::for_request(prepared.queued.request());
     let execution = prepared.queued.execution();
     let result = prepared.result().clone();
-    let (journal, disposition) = match DirectoryPreparedResultJournal::prepare_staged(
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "journal-begin",
+        format_args!(
+            "execution={execution:?} canceled={}",
+            prepared.queued.cancellation().is_canceled()
+        ),
+    );
+    let staged = DirectoryPreparedResultJournal::prepare_staged(
         namespace,
         key,
         execution,
         maximum_payload_bytes,
         result,
-    ) {
+    );
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "journal-return",
+        format_args!(
+            "execution={execution:?} canceled={} ok={}",
+            prepared.queued.cancellation().is_canceled(),
+            staged.is_ok()
+        ),
+    );
+    let (journal, disposition) = match staged {
         Ok(created) => created,
         Err(source) => {
             return Err(AttemptResultJournalError {

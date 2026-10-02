@@ -1300,6 +1300,16 @@ impl QemuFreshAttemptDriver for QemuFreshModeledDriver {
             final_events,
         )
         .map_err(AttemptWorkerFailure::Terminal)?;
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "seal-input",
+            format_args!(
+                "events={} retained_canonical_bytes={} quanta={} frontier_ps={}",
+                pending.event_log.len(),
+                pending.event_log_bytes,
+                pending.completed_quanta,
+                pending.terminal_at.ticks
+            ),
+        );
         build_observation_candidate(pending, resolved_effect_trace)
             .map_err(AttemptWorkerFailure::Terminal)
     }
