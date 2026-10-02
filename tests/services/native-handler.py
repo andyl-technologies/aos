@@ -331,6 +331,34 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertIn('BindPaths="' + root + 'example/state"', main)
                 self.assertNotIn(directive + "=", main)
 
+    def test_managed_public_keys_are_created_before_a_readonly_daemon_view(self):
+        value = dict(service(), service="sshd")
+        value["directories"] = {"managed": [{
+            "path": "ssh/authorized_keys", "purpose": "configuration", "mode": "0755",
+            "retention": "persistent", "owner": "root", "group": "root",
+        }]}
+        value["configuration"] = {"views": [{
+            "name": "authorized-keys", "source": "/etc/ssh/authorized_keys", "optional": False,
+        }]}
+
+        with patch.object(handler_module, "TRUE_EXECUTABLE", "/nix/store/coreutils/bin/true"):
+            rendered = handler_module.realize_service(value)
+        main = rendered["units"]["sshd.service"]
+        directory_name = next(name for name in rendered["units"] if name != "sshd.service")
+        directory = rendered["units"][directory_name]
+
+        self.assertIn('ConfigurationDirectory="ssh/authorized_keys"', directory)
+        self.assertIn("ConfigurationDirectoryMode=0755", directory)
+        self.assertIn("User=root", directory)
+        self.assertIn("Group=root", directory)
+        self.assertIn("Before=sshd.service", directory)
+        self.assertIn("Requires=" + directory_name, main)
+        self.assertIn("After=" + directory_name, main)
+        self.assertIn('ReadOnlyPaths="/etc/ssh/authorized_keys"', main)
+        self.assertNotIn("ReadOnlyPaths=", directory)
+        self.assertNotIn("RuntimeDirectory=", directory)
+        self.assertNotIn("BindsTo=", directory)
+
     def test_registry_state_directory_precedes_sandboxed_bootstrap_service(self):
         value = dict(service(), service="aos-registry-sync", activation_owner="image", auto_start=False)
         value["directories"] = {"managed": [{
