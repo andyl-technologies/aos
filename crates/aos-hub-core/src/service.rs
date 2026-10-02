@@ -8454,7 +8454,7 @@ impl RpcService {
         &self,
         surface: SurfaceTarget,
         owner_scope_key: &str,
-        spec: pb::RouteSpec,
+        mut spec: pb::RouteSpec,
     ) -> Result<(crate::db::RouteSpec, String, crate::db::EndpointRecord), RpcError> {
         if spec.surface.as_ref() != Some(&self.route_surface_message(surface).await?) {
             return Err(RpcError::invalid(
@@ -8473,7 +8473,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
-        let base_path = Self::normalize_route_base_path(&spec.base_path)?;
+        let mut base_path = Self::normalize_route_base_path(&spec.base_path)?;
         let target = spec
             .target
             .and_then(|target| target.target)
@@ -8539,6 +8539,24 @@ impl RpcService {
                     .await
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("gateway generation"))?;
+                // A direct route is reachable only through its gateway, so
+                // its path and policy derive from the gateway generation and
+                // placement unless the caller pins them explicitly. The
+                // database rejects any other path, so deriving here lets a
+                // client omit what it cannot choose.
+                if base_path.is_empty() {
+                    base_path = crate::db::join_route_segments(
+                        &gateway.spec.client_base_path,
+                        &placement.prefix,
+                    )
+                    .map_err(|error| RpcError::invalid(format!("direct route path: {error:#}")))?;
+                }
+                if spec.access_policy.is_none() {
+                    spec.access_policy = Some(
+                        serde_json::from_str(&gateway.spec.access_policy_json)
+                            .map_err(RpcError::internal)?,
+                    );
+                }
                 gateway_id = Some(gateway.gateway_id);
                 gateway_generation = Some(gateway.generation);
                 target_binding_id = Some(placement.binding_id);
