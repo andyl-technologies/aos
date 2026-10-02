@@ -5,6 +5,9 @@
 //! sandbox projection, and the publisher's current revision in one protected
 //! journal claim. It is a source observation, not a compiler layer or a
 //! durable AOSPCB01 binding.
+//!
+//! The closed input precursor combines that observation with signed Root
+//! sources as proposal DATA only; publication still requires its own join.
 
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -12,6 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use aos_sandbox_core::model::CacheDomain;
 use aos_sandbox_core::{ObjectDigest, OperationId, ProjectId, RevocationScopeId, SandboxId};
+#[cfg(target_os = "linux")]
+use aos_sandbox_core::ResourceDimension;
 use sha2::{Digest as _, Sha256};
 
 use crate::cache_residency::{
@@ -52,6 +57,13 @@ use super::{
     RevocationInputV1, RootV8ReleasedProofV1, SignedProjectPolicySourceV1,
     VerifiedSignedProjectPolicySourceV2, normalized_policy_input_digest_v1,
 };
+#[cfg(target_os = "linux")]
+use super::{
+    AuthenticatedSandboxProjectRelationV1, HardLimitRequestV1, HardResourceKeyV1,
+    HardResourceModelError, HardResourceProfileV1, PORTABLE_LIMIT_DIMENSIONS,
+    PolicyCompilerLimitsV1, PolicyDeploymentHeadErrorV1, PolicyDeploymentHeadV1,
+    PolicyLayerV1, PolicyModelError, ProjectPolicyInputV1, RequestPolicyInputV1,
+};
 
 const SOURCE_DOMAIN: &[u8] = b"aos.sandbox.public-create-project-source.v2\0";
 const DRAFT_DOMAIN: &[u8] = b"aos.sandbox.public-create-policy-draft.v1\0";
@@ -86,6 +98,27 @@ pub enum CurrentCreatePolicySourceErrorV1 {
     /// The independent source-domain ancestry owner could not establish currentness.
     #[error(transparent)]
     Hierarchy(HierarchyProtectedJournalErrorV1),
+}
+
+/// Reports failure to construct nonauthorizing current-Create compiler input.
+///
+/// The original source, signed-layer and model causes remain typed. This error
+/// does not classify Root stage issuance or release any owner custody.
+#[cfg(target_os = "linux")]
+#[derive(Debug, thiserror::Error)]
+pub enum CurrentCreateCompilerInputErrorV1 {
+    /// The original Controller source or fixed journal changed or is unavailable.
+    #[error(transparent)]
+    Source(#[from] CurrentCreatePolicySourceErrorV1),
+    /// Signed project choices do not match protected current publisher state.
+    #[error(transparent)]
+    Project(#[from] PolicyDeploymentHeadErrorV1),
+    /// The sole model constructor rejected input or canonical relation bytes.
+    #[error(transparent)]
+    Model(#[from] PolicyModelError),
+    /// The complete inherited request profile could not be constructed.
+    #[error(transparent)]
+    Resources(#[from] HardResourceModelError),
 }
 
 /// Carries a read-only snapshot of two independent heads at one held cut.
@@ -731,6 +764,158 @@ pub fn current_parentless_create_project_source_v1(
         canonical_policy,
         commitment,
     })
+}
+
+/// Rechecks the fixed Controller journal for the current-Create input precursor.
+///
+/// This uses the original writer's retained owner, fixed directory and names,
+/// and exact production journal limits. It returns no owner identity, permit,
+/// source snapshot or Root authority; accepted Create and publisher checks are
+/// separate steps in the input producer.
+///
+/// # Errors
+///
+/// Rejects an unprotected or unhealthy writer, wrong production limits, or
+/// changed fixed directory, journal or lock names and protected file metadata.
+#[cfg(target_os = "linux")]
+pub fn validate_current_create_controller_journal_v1(
+    journal: &Journal,
+) -> Result<(), CurrentCreatePolicySourceErrorV1> {
+    let controller_uid = journal.protected_owner_uid()?;
+    journal.require_protected_named_location(
+        Path::new("/var/lib/aos/sandboxd"),
+        "controller.journal",
+        controller_uid,
+        production_journal_limits(),
+    )?;
+    Ok(())
+}
+
+/// Constructs parentless compiler input against the actual Controller writer.
+///
+/// The caller supplies the typed sources from its exact signed Root stage
+/// receipt. The complete request inherits every dimension; ancestors and both
+/// catalogs are empty. Project choices reuse current protected publisher,
+/// cache-domain and revocation replay, never the resolved public Policy.
+///
+/// The result is proposal DATA. Signed backend declarations do not establish
+/// live enforcement, and no Source ancestry, physical Cache or live Root hold
+/// is acquired here. Publication and effects still require their own genuine
+/// held-owner/currentness join.
+///
+/// # Errors
+///
+/// Rejects an unsafe fixed Controller journal, changed accepted Create or
+/// publisher/projection/revocation cut, expired or mismatched signed sources,
+/// nonempty catalogs, or a failed canonical input/model constructor.
+#[cfg(target_os = "linux")]
+pub fn current_parentless_create_compiler_input_v1(
+    journal: &mut Journal,
+    operation: OperationId,
+    sandbox: SandboxId,
+    deployment_head: PolicyDeploymentHeadV1,
+    deployment: &PolicyDeploymentSourcesV1,
+    signed_project: &VerifiedSignedProjectPolicySourceV2,
+) -> Result<PolicyCompilerInputV1, CurrentCreateCompilerInputErrorV1> {
+    validate_current_create_controller_journal_v1(journal)?;
+    let source = current_parentless_create_project_source_v1(journal, operation, sandbox)?;
+    require_create_input_sources(&source, deployment_head, deployment, signed_project)?;
+
+    let project_layer = super::project_source_v2::current_explicit_layer(
+        journal,
+        source.revocation_scope(),
+        signed_project,
+        current_create_input_time()?,
+    )?;
+    let relation = AuthenticatedSandboxProjectRelationV1::from_current_create_source(&source)?;
+    let project = ProjectPolicyInputV1::new(source.project(), project_layer)?;
+    let request = RequestPolicyInputV1::new(inherited_create_request_layer()?)?;
+    let input = PolicyCompilerInputV1::new(
+        relation,
+        deployment.node().clone(),
+        deployment.site().clone(),
+        project,
+        Vec::new(),
+        request,
+        deployment.endpoints().clone(),
+        deployment.destinations().clone(),
+        deployment.backend().clone(),
+        PolicyCompilerLimitsV1::DEFAULT,
+    )?;
+
+    validate_current_create_controller_journal_v1(journal)?;
+    let current = current_parentless_create_project_source_v1(journal, operation, sandbox)?;
+    if current.commitment() != source.commitment() {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent.into());
+    }
+    require_create_input_sources(&current, deployment_head, deployment, signed_project)?;
+    Ok(input)
+}
+
+#[cfg(target_os = "linux")]
+fn require_create_input_sources(
+    source: &CurrentCreateProjectPolicySourceV1,
+    deployment_head: PolicyDeploymentHeadV1,
+    deployment: &PolicyDeploymentSourcesV1,
+    signed_project: &VerifiedSignedProjectPolicySourceV2,
+) -> Result<(), CurrentCreatePolicySourceErrorV1> {
+    let now = current_create_input_time()?;
+    let project_head = signed_project.head();
+    if now >= deployment_head.expires_at()
+        || now >= project_head.expires_at()
+        || project_head.project() != source.project()
+        || project_head.publisher_generation() != source.policy_generation()
+        || project_head.publisher_digest() != source.policy_digest()
+        || signed_project.cache_domain() != source.cache_domain()
+        || project_head.prerequisite_claims()[1] != deployment_head.packet_digest()
+        || project_head.prerequisite_claims()[2] != source.cache_domain_head()
+        || project_head.prerequisite_claims()[3] != source.revocation_head()
+        || !deployment.endpoints().entries().is_empty()
+        || !deployment.destinations().entries().is_empty()
+    {
+        return Err(CurrentCreatePolicySourceErrorV1::NotCurrent);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn current_create_input_time() -> Result<i64, CurrentCreatePolicySourceErrorV1> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)?;
+    i64::try_from(now.as_secs()).map_err(|_| CurrentCreatePolicySourceErrorV1::NotCurrent)
+}
+
+#[cfg(target_os = "linux")]
+fn inherited_create_request_layer() -> Result<PolicyLayerV1, CurrentCreateCompilerInputErrorV1> {
+    let portable = PORTABLE_LIMIT_DIMENSIONS
+        .into_iter()
+        .map(|dimension| {
+            HardLimitRequestV1::new(
+                HardResourceKeyV1::Portable(dimension),
+                HardLimitValueV1::Inherit,
+                None,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let accounting = ResourceDimension::ALL
+        .into_iter()
+        .map(|dimension| {
+            HardLimitRequestV1::new(
+                HardResourceKeyV1::Accounting(dimension),
+                HardLimitValueV1::Inherit,
+                None,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PolicyLayerV1::new(
+        Vec::new(),
+        HardResourceProfileV1::new(portable, accounting)?,
+        Vec::new(),
+        Vec::new(),
+        CacheDomainInputV1::Inherit,
+        RevocationInputV1::Inherit,
+    )?)
 }
 
 /// Holds the matching physical Cache partition inside an already-held source cut.

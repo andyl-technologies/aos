@@ -302,6 +302,11 @@ pub use public_create_source::with_current_create_cache_signer_released_barrier_
 pub use public_create_source::with_current_create_cache_signer_terminal_barrier_v6;
 #[cfg(target_os = "linux")]
 pub use public_create_source::with_current_create_v8_owner_settlement_barrier_v9;
+#[cfg(target_os = "linux")]
+pub use public_create_source::{
+    CurrentCreateCompilerInputErrorV1, current_parentless_create_compiler_input_v1,
+    validate_current_create_controller_journal_v1,
+};
 pub use public_create_source::{
     CurrentCreatePolicyBarrierHeadsV2, CurrentCreatePolicySourceErrorV1,
     CurrentCreateProjectPolicySourceV1, checked_parentless_create_policy_draft_v1,

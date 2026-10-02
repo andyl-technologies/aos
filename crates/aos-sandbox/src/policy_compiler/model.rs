@@ -96,6 +96,17 @@ pub struct AuthenticatedSandboxProjectRelationV1 {
     descriptor: ObjectDescriptor,
 }
 impl AuthenticatedSandboxProjectRelationV1 {
+    /// Brands only the pair selected by the private current-Create producer.
+    pub(super) fn from_current_create_source(
+        source: &super::public_create_source::CurrentCreateProjectPolicySourceV1,
+    ) -> Result<Self, PolicyModelError> {
+        Self::authenticate(
+            source.sandbox(),
+            source.project(),
+            &CurrentCreateRelationVerifierV1 { source },
+        )
+    }
+
     /// Authenticates one exact non-sentinel sandbox and project pair.
     ///
     /// # Errors
@@ -140,6 +151,32 @@ impl AuthenticatedSandboxProjectRelationV1 {
         &self.descriptor
     }
 }
+
+// Only the current-Create producer selects this verifier, after reading the
+// actual protected Controller journal. The input remains nonauthoritative.
+struct CurrentCreateRelationVerifierV1<'source> {
+    source: &'source super::public_create_source::CurrentCreateProjectPolicySourceV1,
+}
+
+impl SandboxProjectRelationVerifierV1 for CurrentCreateRelationVerifierV1<'_> {
+    fn verify(
+        &self,
+        sandbox: SandboxId,
+        project: ProjectId,
+        descriptor: &ObjectDescriptor,
+        canonical_bytes: &[u8],
+    ) -> bool {
+        let Ok(media) = media_type(PortableMediaType::Content) else {
+            return false;
+        };
+
+        sandbox == self.source.sandbox()
+            && project == self.source.project()
+            && !canonical_bytes.is_empty()
+            && descriptor_for_bytes(media, canonical_bytes) == *descriptor
+    }
+}
+
 commitment_type!(
     SitePolicyCommitmentV1,
     "Commits to frozen site policy input."
