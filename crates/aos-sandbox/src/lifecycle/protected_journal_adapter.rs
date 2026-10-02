@@ -43,8 +43,77 @@ const CHECKPOINT_MAGIC: &[u8; 8] = b"AOSDCP01";
 const REDUCER_PAYLOAD_MAGIC: &[u8; 8] = b"AOSRDP01";
 const MAXIMUM_REDUCER_COMPANIONS: usize = 64;
 const DURABLE_MEMBER_MAGIC: &[u8; 8] = b"AOSDTX01";
+const ENVELOPE_FIXED_BYTES: usize = 88;
+const DURABLE_MEMBER_FIXED_BYTES: usize = 100;
+
+/// Bounds additional retained canonical byte payloads, without granting authority.
+///
+/// The current Journal graph is independently bounded and is not charged once
+/// per leg. This does not measure decoded containers or allocator overhead.
+pub(crate) struct ResidentDomainPayloadBudgetV1 {
+    maximum: usize,
+    retained: usize,
+}
+
+impl ResidentDomainPayloadBudgetV1 {
+    pub(crate) const fn new(maximum: usize) -> Self {
+        Self {
+            maximum,
+            retained: 0,
+        }
+    }
+
+    pub(crate) const fn retained(&self) -> usize {
+        self.retained
+    }
+
+    /// Reserves aggregate canonical bytes before retaining another member.
+    ///
+    /// # Errors
+    /// Refuses overflow or exhaustion without changing the prior reservation.
+    pub(crate) fn reserve(&mut self, bytes: usize) -> Result<(), ProtectedDomainJournalErrorV1> {
+        let retained = self
+            .retained
+            .checked_add(bytes)
+            .filter(|bytes| *bytes <= self.maximum)
+            .ok_or(JournalError::LimitExceeded("resident canonical payload bytes"))?;
+        self.retained = retained;
+        Ok(())
+    }
+}
+
 const MAXIMUM_COLD_REPLAY_MEMBERS: usize = 262_144;
 
+#[cfg(test)]
+mod resident_payload_tests {
+    use super::*;
+
+    #[test]
+    fn completed_leg_payloads_share_one_checked_ceiling() {
+        let mut budget = ResidentDomainPayloadBudgetV1::new(13);
+
+        budget.reserve(5).unwrap();
+        budget.reserve(8).unwrap();
+        let returned = budget.reserve(1);
+
+        assert!(matches!(
+            returned,
+            Err(ProtectedDomainJournalErrorV1::Journal(
+                JournalError::LimitExceeded("resident canonical payload bytes")
+            ))
+        ));
+        assert_eq!(budget.retained(), 13);
+    }
+
+    #[test]
+    fn payload_overflow_does_not_replace_prior_retention() {
+        let mut budget = ResidentDomainPayloadBudgetV1::new(usize::MAX);
+        budget.reserve(usize::MAX).unwrap();
+
+        assert!(budget.reserve(1).is_err());
+        assert_eq!(budget.retained(), usize::MAX);
+    }
+}
 #[cfg(test)]
 mod retained_tests;
 
@@ -341,7 +410,7 @@ impl<S: ProtectedDomainSchemaV1> ProtectedDomainEnvelopeV1<S> {
     /// Encodes the envelope into its unique bounded representation.
     #[must_use]
     pub fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(88 + self.payload.len());
+        let mut bytes = Vec::with_capacity(ENVELOPE_FIXED_BYTES + self.payload.len());
         bytes.extend_from_slice(&S::MAGIC);
         bytes.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
         bytes.push(S::kind_code(self.key.kind));
@@ -436,7 +505,7 @@ pub(crate) fn encode_durable_member<S: ProtectedDomainSchemaV1>(
     let inner = envelope.encode();
     let inner_length = u32::try_from(inner.len())
         .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let mut encoded = Vec::with_capacity(100 + inner.len());
+    let mut encoded = Vec::with_capacity(DURABLE_MEMBER_FIXED_BYTES + inner.len());
     encoded.extend_from_slice(DURABLE_MEMBER_MAGIC);
     encoded.extend_from_slice(&ENVELOPE_VERSION.to_be_bytes());
     encoded.extend_from_slice(&[0; 2]);
@@ -805,8 +874,28 @@ pub struct DomainPostcommitCapabilityV1<S: ProtectedDomainSchemaV1> {
 pub struct ValidatedDomainPostcommitV1<'current, S: ProtectedDomainSchemaV1> {
     transaction: ObjectDigest,
     set_digest: ObjectDigest,
-    records: Vec<DomainPostcommitRecordV1<S>>,
+    records: ValidatedPostcommitRecordsV1<'current, S>,
     current: PhantomData<&'current ()>,
+}
+
+// Borrowing keeps the original composite capability parked while the same
+// current checks lend its exact records to one resident physical handoff.
+enum ValidatedPostcommitRecordsV1<'current, S: ProtectedDomainSchemaV1> {
+    Owned(Vec<DomainPostcommitRecordV1<S>>),
+    Borrowed(&'current [DomainPostcommitRecordV1<S>]),
+}
+
+/// Retains the first phase-specific failure while Prepared stays in its owner.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum ResidentDomainCommitFailureV1 {
+    #[error("resident preappend validation failed: {0}")]
+    Before(#[source] ProtectedDomainJournalErrorV1),
+    #[error("resident append durability is unknown: {0}")]
+    Append(#[source] JournalError),
+    #[error("resident exact readback failed: {0}")]
+    Readback(#[source] ProtectedDomainJournalErrorV1),
+    #[error("resident postcommit sealing failed: {0}")]
+    Sealing(#[source] ProtectedDomainJournalErrorV1),
 }
 
 /// Retains one exact typed envelope proven by postcommit readback.
@@ -1090,6 +1179,18 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         &self,
         transaction_id: [u8; 16],
     ) -> Result<Option<ReplayedDomainPostcommitV1<S>>, ProtectedDomainJournalErrorV1> {
+        self.recover_current_postcommit_with_payload_budget(transaction_id, None)
+    }
+
+    /// Uses the same cold scan with a checked retained-payload destination.
+    ///
+    /// # Errors
+    /// Returns unchanged replay errors or aggregate payload exhaustion.
+    pub(crate) fn recover_current_postcommit_with_payload_budget(
+        &self,
+        transaction_id: [u8; 16],
+        mut budget: Option<&mut ResidentDomainPayloadBudgetV1>,
+    ) -> Result<Option<ReplayedDomainPostcommitV1<S>>, ProtectedDomainJournalErrorV1> {
         let snapshot = self.snapshot()?;
         let mut members = Vec::new();
         for (namespace, key_bytes, value) in self.journal.all_records() {
@@ -1102,6 +1203,18 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             }
             let member = decode_durable_member::<S>(key, value, &self.validator)?;
             if member.transaction_id == transaction_id {
+                if let Some(budget) = budget.as_deref_mut() {
+                    // One retained encoded member and its decoded envelope.
+                    // Reserve before keeping it beyond this bounded scan.
+                    let payload = member
+                        .encoded
+                        .len()
+                        .checked_add(member.envelope.payload.len())
+                        .and_then(|bytes| bytes.checked_add(member.envelope.key.as_bytes().len()))
+                        .and_then(|bytes| bytes.checked_add(member.envelope.key.identity.len()))
+                        .ok_or(JournalError::LimitExceeded("resident canonical payload bytes"))?;
+                    budget.reserve(payload)?;
+                }
                 if members.len() >= MAXIMUM_COLD_REPLAY_MEMBERS {
                     return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
                 }
@@ -1270,7 +1383,7 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         )
     }
 
-    fn plan_with_cache_gate(
+    pub(crate) fn plan_with_cache_gate(
         &self,
         transaction_id: [u8; 16],
         mut successors: Vec<ProtectedDomainEnvelopeV1<S>>,
@@ -1338,6 +1451,40 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
             digest,
             set_digest,
         })
+    }
+
+    /// Reserves the resident prepared/readback payload before the planner copies it.
+    ///
+    /// # Errors
+    /// Refuses checked aggregate payload overflow or configured exhaustion.
+    pub(crate) fn reserve_resident_plan_payload(
+        &self,
+        successors: &[ProtectedDomainEnvelopeV1<S>],
+        budget: &mut ResidentDomainPayloadBudgetV1,
+    ) -> Result<(), ProtectedDomainJournalErrorV1> {
+        let bytes = successors.iter().try_fold(0_usize, |sum, successor| {
+            let key = successor.key.as_bytes();
+            let previous = self
+                .journal
+                .get(S::namespace(successor.key.kind), key)
+                .map_or(0, <[u8]>::len);
+            // Prepared: two new durable values + one old value + one key.
+            // Postcommit: one encoded value + decoded payload + one key.
+            let durable = successor
+                .payload
+                .len()
+                .checked_add(ENVELOPE_FIXED_BYTES)
+                .and_then(|bytes| bytes.checked_add(DURABLE_MEMBER_FIXED_BYTES));
+            durable
+                .and_then(|bytes| bytes.checked_mul(3))
+                .and_then(|bytes| bytes.checked_add(previous))
+                .and_then(|bytes| bytes.checked_add(successor.payload.len()))
+                .and_then(|bytes| key.len().checked_mul(2).and_then(|keys| bytes.checked_add(keys)))
+                .and_then(|bytes| bytes.checked_add(successor.key.identity.len()))
+                .and_then(|bytes| sum.checked_add(bytes))
+                .ok_or(JournalError::LimitExceeded("resident canonical payload bytes"))
+        })?;
+        budget.reserve(bytes)
     }
 
     /// Joins an exact prepared domain admission to a global capacity reservation.
@@ -2009,19 +2156,26 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         self.commit_with_custody(prepared, |_| Ok(()), CacheMutationGateV1::Retained(gate))
     }
 
+    /// Keeps Prepared or Pending under the actual resident Cache interlock.
+    ///
+    /// # Errors
+    /// Returns the complete original token and typed failure without refreshing
+    /// its snapshot or granting retry permission.
+    pub(crate) fn commit_strict_with_original_cache_gate_v1(
+        &mut self,
+        prepared: PreparedDomainTransactionV1<S>,
+        gate: CacheMutationGateV1<'_>,
+    ) -> Result<DomainCommitOutcomeV1<S>, DomainRetainedCommitFailureV1<S>> {
+        self.commit_with_custody(prepared, |_| Ok(()), gate)
+    }
+
     fn commit_with_custody(
         &mut self,
         prepared: PreparedDomainTransactionV1<S>,
         mut check: impl FnMut(&Journal) -> Result<(), JournalError>,
         mut gate: CacheMutationGateV1<'_>,
     ) -> Result<DomainCommitOutcomeV1<S>, DomainRetainedCommitFailureV1<S>> {
-        let before = (|| {
-            self.validate_snapshot(&prepared.snapshot)?;
-            validate_expected_values(self.journal, &prepared, false)?;
-            gate.preflight(self.journal, std::slice::from_ref(&prepared.transaction))?;
-            check(self.journal)?;
-            Ok::<(), ProtectedDomainJournalErrorV1>(())
-        })();
+        let before = self.check_prepared_before_append(&prepared, &mut gate, &mut check);
         if let Err(cause) = before {
             return Err(RetainedCommitFailureV1::BeforeJournalAppend { prepared, cause });
         }
@@ -2051,6 +2205,42 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
                     cause,
                 },
             )
+    }
+
+    fn check_prepared_before_append(
+        &self,
+        prepared: &PreparedDomainTransactionV1<S>,
+        gate: &mut CacheMutationGateV1<'_>,
+        check: &mut impl FnMut(&Journal) -> Result<(), JournalError>,
+    ) -> Result<(), ProtectedDomainJournalErrorV1> {
+        self.validate_snapshot(&prepared.snapshot)?;
+        validate_expected_values(self.journal, prepared, false)?;
+        gate.preflight(self.journal, std::slice::from_ref(&prepared.transaction))?;
+        check(self.journal)?;
+        Ok(())
+    }
+
+    /// Appends while borrowing the resident Prepared instead of taking it.
+    ///
+    /// The caller parks this complete Result before any final owner checks.
+    /// An append failure keeps both exact before/after bytes and its native
+    /// error in the same resident owner; it is not retry authorization.
+    ///
+    /// # Errors
+    /// Returns the first preappend, append, readback or sealing failure.
+    pub(crate) fn commit_resident_prepared(
+        &mut self,
+        prepared: &PreparedDomainTransactionV1<S>,
+        mut gate: CacheMutationGateV1<'_>,
+    ) -> Result<AppliedDomainTransactionV1<S>, ResidentDomainCommitFailureV1> {
+        self.check_prepared_before_append(prepared, &mut gate, &mut |_| Ok(()))
+            .map_err(ResidentDomainCommitFailureV1::Before)?;
+        gate.commit(self.journal, &prepared.transaction)
+            .map_err(ResidentDomainCommitFailureV1::Append)?;
+        validate_expected_values(self.journal, prepared, true)
+            .map_err(ResidentDomainCommitFailureV1::Readback)?;
+        self.applied_borrowed(prepared)
+            .map_err(ResidentDomainCommitFailureV1::Sealing)
     }
 
     /// Commits while retaining the exact prepared token on preflight failure.
@@ -2153,6 +2343,18 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         &self,
         pending: DomainOutcomeUnknownV1<S>,
     ) -> DomainRetainedRecoveryV1<S> {
+        self.recover_retaining_with_cache_gate(pending, CacheMutationGateV1::Ordinary)
+    }
+
+    /// Classifies the same pending event without reopening a resident writer.
+    ///
+    /// A before image must still match its original snapshot and pass the same
+    /// gate and preflight. Classification is not permission to retry an effect.
+    pub(crate) fn recover_retaining_with_cache_gate(
+        &self,
+        pending: DomainOutcomeUnknownV1<S>,
+        mut gate: CacheMutationGateV1<'_>,
+    ) -> DomainRetainedRecoveryV1<S> {
         if let Err(error) = self.replay() {
             return DomainRetainedRecoveryV1::Retryable { pending, error };
         }
@@ -2172,18 +2374,24 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         }
         if before {
             let mut prepared = prepared;
-            prepared.snapshot = match self.snapshot() {
-                Ok(snapshot) => snapshot,
-                Err(error) => {
-                    return DomainRetainedRecoveryV1::Retryable {
-                        pending: DomainOutcomeUnknownV1 { prepared },
-                        error,
-                    };
-                }
-            };
-            if let Err(error) = self
-                .journal
-                .preflight_transactions(std::slice::from_ref(&prepared.transaction))
+            if matches!(&gate, CacheMutationGateV1::Ordinary) {
+                prepared.snapshot = match self.snapshot() {
+                    Ok(snapshot) => snapshot,
+                    Err(error) => {
+                        return DomainRetainedRecoveryV1::Retryable {
+                            pending: DomainOutcomeUnknownV1 { prepared },
+                            error,
+                        };
+                    }
+                };
+            } else if let Err(error) = self.validate_snapshot(&prepared.snapshot) {
+                return DomainRetainedRecoveryV1::Retryable {
+                    pending: DomainOutcomeUnknownV1 { prepared },
+                    error,
+                };
+            }
+            if let Err(error) = gate
+                .preflight(self.journal, std::slice::from_ref(&prepared.transaction))
                 .map_err(ProtectedDomainJournalErrorV1::from)
             {
                 return DomainRetainedRecoveryV1::Retryable {
@@ -2216,8 +2424,15 @@ impl<'journal, S: ProtectedDomainSchemaV1> ProtectedDomainJournalV1<'journal, S>
         &self,
         prepared: PreparedDomainTransactionV1<S>,
     ) -> Result<AppliedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
+        self.applied_borrowed(&prepared)
+    }
+
+    fn applied_borrowed(
+        &self,
+        prepared: &PreparedDomainTransactionV1<S>,
+    ) -> Result<AppliedDomainTransactionV1<S>, ProtectedDomainJournalErrorV1> {
         let snapshot = self.snapshot()?;
-        let records = postcommit_records(&prepared, &self.validator)?;
+        let records = postcommit_records(prepared, &self.validator)?;
         let capability = Some(DomainPostcommitCapabilityV1 {
             instance: Arc::clone(&self.instance),
             transaction: prepared.digest,
@@ -2305,6 +2520,36 @@ impl<S: ProtectedDomainSchemaV1> DomainPostcommitCapabilityV1<S> {
         self,
         authority: &'current ProtectedDomainJournalV1<'_, S>,
     ) -> Result<ValidatedDomainPostcommitV1<'current, S>, ProtectedDomainJournalErrorV1> {
+        self.validate_current(authority)?;
+        Ok(ValidatedDomainPostcommitV1 {
+            transaction: self.transaction,
+            set_digest: self.set_digest,
+            records: ValidatedPostcommitRecordsV1::Owned(self.records),
+            current: PhantomData,
+        })
+    }
+
+    /// Borrows the original capability records after unchanged current checks.
+    ///
+    /// # Errors
+    /// Refuses a changed writer instance, head, member set or current authority.
+    pub(crate) fn validate_borrowed<'current>(
+        &'current self,
+        authority: &'current ProtectedDomainJournalV1<'_, S>,
+    ) -> Result<ValidatedDomainPostcommitV1<'current, S>, ProtectedDomainJournalErrorV1> {
+        self.validate_current(authority)?;
+        Ok(ValidatedDomainPostcommitV1 {
+            transaction: self.transaction,
+            set_digest: self.set_digest,
+            records: ValidatedPostcommitRecordsV1::Borrowed(&self.records),
+            current: PhantomData,
+        })
+    }
+
+    fn validate_current(
+        &self,
+        authority: &ProtectedDomainJournalV1<'_, S>,
+    ) -> Result<(), ProtectedDomainJournalErrorV1> {
         let current = authority.snapshot()?;
         if !Arc::ptr_eq(&self.instance, &authority.instance)
             || self.sequence != current.sequence
@@ -2318,12 +2563,7 @@ impl<S: ProtectedDomainSchemaV1> DomainPostcommitCapabilityV1<S> {
         {
             return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
         }
-        Ok(ValidatedDomainPostcommitV1 {
-            transaction: self.transaction,
-            set_digest: self.set_digest,
-            records: self.records,
-            current: PhantomData,
-        })
+        Ok(())
     }
 }
 
@@ -2343,7 +2583,10 @@ impl<S: ProtectedDomainSchemaV1> ValidatedDomainPostcommitV1<'_, S> {
     /// Returns the complete ordered transaction member set.
     #[must_use]
     pub fn records(&self) -> &[DomainPostcommitRecordV1<S>] {
-        &self.records
+        match &self.records {
+            ValidatedPostcommitRecordsV1::Owned(records) => records,
+            ValidatedPostcommitRecordsV1::Borrowed(records) => records,
+        }
     }
 }
 

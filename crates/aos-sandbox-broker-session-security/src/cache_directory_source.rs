@@ -61,6 +61,11 @@ pub struct ProjectSealedViewObjectSourceV1 {
     project: ProjectId,
 }
 
+/// Loans the same immutable source while its original root can be bookended.
+pub(crate) struct BorrowedCachePinSourceV1<'source> {
+    source: &'source ProjectSealedViewObjectSourceV1,
+}
+
 impl ProjectSealedViewObjectSourceV1 {
     /// Opens the protected, project-specific source directory at its fixed path.
     ///
@@ -82,6 +87,19 @@ impl ProjectSealedViewObjectSourceV1 {
     #[must_use]
     pub const fn project(&self) -> ProjectId {
         self.project
+    }
+
+    /// Rechecks the original Cache source-availability root, not Source authority.
+    ///
+    /// # Errors
+    /// Returns the same protected root error if its original path changed.
+    pub(crate) fn recheck_retained_cache_pin_root_v1(&self) -> Result<(), ProjectSealedViewSourceErrorV1> {
+        self.root.recheck_protected_path()?;
+        Ok(())
+    }
+
+    pub(crate) fn borrow_cache_pin_source_v1(&self) -> BorrowedCachePinSourceV1<'_> {
+        BorrowedCachePinSourceV1 { source: self }
     }
 
     /// Pins a descriptor-selected sealed input without creating effect authority.
@@ -118,6 +136,16 @@ impl ProjectSealedViewObjectSourceV1 {
         self.root
             .open_named_sealed(&name, descriptor.encoded_size())?
             .ok_or(ProjectSealedViewSourceErrorV1::Missing)
+    }
+}
+
+impl ObjectSource for BorrowedCachePinSourceV1<'_> {
+    type Error = ProjectSealedViewSourceErrorV1;
+    type Reader<'source> = ObservedSealedPublicationReader<'source> where Self: 'source;
+
+    fn open(&mut self, descriptor: &ObjectDescriptor) -> Result<Self::Reader<'_>, Self::Error> {
+        let file = self.source.open_staged_object(descriptor)?;
+        Ok(file.into_reader())
     }
 }
 

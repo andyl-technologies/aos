@@ -11,8 +11,8 @@ use crate::cache_residency::protected_owner::{
 };
 use crate::cache_residency::{CachePinId, CachePinV1, ValidatedPublicLogicalPinAcquisitionV1};
 use crate::journal::{
-    CacheMutationGateV1, JournalRecord, JournalTransaction, ProtectedJournalAuthority,
-    RecordNamespace,
+    CacheMutationGateV1, CommitResult, JournalError, JournalRecord, JournalTransaction,
+    ProtectedJournalAuthority, ProtectedJournalPreflight, RecordNamespace,
 };
 use crate::lifecycle::protected_journal_adapter::ProtectedDomainJournalErrorV1;
 use aos_sandbox_core::ObjectDigest;
@@ -26,7 +26,56 @@ use super::{
 const LOGICAL_PIN_ACQUIRE_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-acquire.v1/";
 pub(crate) const LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS: u64 = 120;
 const LOGICAL_PIN_DRAIN_KEY_PREFIX: &[u8] = b"aos.cache.logical-pin-drain.v1/";
-const LOGICAL_PIN_DRAIN_LIFETIME_SECONDS: u64 = 120;
+pub(super) const LOGICAL_PIN_DRAIN_LIFETIME_SECONDS: u64 = 120;
+
+/// Parks the exact authority append before any subsequent observation.
+#[derive(Default)]
+pub(in crate::cache_residency) struct ResidentPinAuthorityAppendV1 {
+    pub(in crate::cache_residency) valid_until: Option<u64>,
+    pub(in crate::cache_residency) record_key: Option<Vec<u8>>,
+    pub(in crate::cache_residency) transaction: Option<JournalTransaction>,
+    pub(in crate::cache_residency) preflight: Option<Result<ProtectedJournalPreflight, JournalError>>,
+    pub(in crate::cache_residency) commit: Option<Result<CommitResult, JournalError>>,
+    pub(in crate::cache_residency) preparation_failure: Option<CacheResidencyProtectedJournalErrorV1>,
+    pub(in crate::cache_residency) postcheck: Option<CacheResidencyProtectedJournalErrorV1>,
+    pub(in crate::cache_residency) unchanged: bool,
+}
+
+impl ResidentPinAuthorityAppendV1 {
+    pub(in crate::cache_residency) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(cause) = self.preparation_failure.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.preflight.as_ref() {
+            return Some(cause);
+        }
+        if let Some(Err(cause)) = self.commit.as_ref() {
+            return Some(cause);
+        }
+        self.postcheck.as_ref().map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+}
+
+fn canonical_record_transaction(
+    record_key: &[u8],
+    previous: Option<&[u8]>,
+    record: &[u8],
+    transaction_domain: &[u8],
+) -> Result<JournalTransaction, CacheResidencyProtectedJournalErrorV1> {
+    let digest = Sha256::new()
+        .chain_update(transaction_domain)
+        .chain_update(record_key)
+        .chain_update(previous.unwrap_or_default())
+        .chain_update(record)
+        .finalize();
+    let transaction_id: [u8; 16] = digest[..16].try_into()
+        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+    Ok(JournalTransaction::new(transaction_id, vec![JournalRecord::put(
+        RecordNamespace::DesiredState,
+        record_key.to_vec(),
+        record.to_vec(),
+    )])?)
+}
 
 /// Shares canonical single-record mechanics under an already borrowed claim.
 ///
@@ -68,22 +117,8 @@ pub(super) fn commit_canonical_record_under_claim_v1(
         return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
     }
 
-    let digest = Sha256::new()
-        .chain_update(transaction_domain)
-        .chain_update(&record_key)
-        .chain_update(previous.as_deref().unwrap_or_default())
-        .chain_update(record)
-        .finalize();
-    let transaction_id: [u8; 16] = digest[..16]
-        .try_into()
-        .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
-    let transaction = JournalTransaction::new(
-        transaction_id,
-        vec![JournalRecord::put(
-            RecordNamespace::DesiredState,
-            record_key.clone(),
-            record.to_vec(),
-        )],
+    let transaction = canonical_record_transaction(
+        &record_key, previous.as_deref(), &record, transaction_domain,
     )?;
     let preflight = match &mut gate {
         CacheMutationGateV1::Ordinary => {
@@ -91,6 +126,8 @@ pub(super) fn commit_canonical_record_under_claim_v1(
         }
         CacheMutationGateV1::Retained(original) => authority
             .preflight_with_retained_cache_gate_v1(std::slice::from_ref(&transaction), original)?,
+        resident @ CacheMutationGateV1::Resident(_, _) => authority
+            .preflight_with_cache_gate(std::slice::from_ref(&transaction), resident.reborrow())?,
     };
     authority.validate_preflight_for_effect(&preflight, std::slice::from_ref(&transaction))?;
     match &mut gate {
@@ -100,11 +137,116 @@ pub(super) fn commit_canonical_record_under_claim_v1(
         CacheMutationGateV1::Retained(original) => {
             authority.commit_with_retained_cache_gate_v1(&preflight, &transaction, original)?;
         }
+        resident @ CacheMutationGateV1::Resident(_, _) => {
+            authority.commit_with_original_cache_gate_v1(
+                &preflight, &transaction, resident.reborrow(),
+            )?;
+        }
     }
     if authority.get(&record_key)? != Some(record.as_slice()) {
         return Err(ProtectedDomainJournalErrorV1::DivergentRecovery);
     }
     Ok(record_key)
+}
+
+/// Drives the same canonical append with resident tokens and native causes.
+///
+/// Only the proof-consuming session's PinAcquire and PinDrain calls reach this
+/// adapter. Its short refusal does not replace the parked first typed error.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn append_resident_pin_authority(
+    authority: &mut ProtectedJournalAuthority<'_>,
+    owner_scope: ObjectDigest,
+    maximum_record_bytes: usize,
+    purpose: CacheAuthorityPurposeV1,
+    scope: super::CacheAuthorityScopeV1,
+    transaction_domain: &[u8],
+    gate: &mut CacheMutationGateV1<'_>,
+    progress: &mut ResidentPinAuthorityAppendV1,
+    budget: &mut super::ResidentDomainPayloadBudgetV1,
+) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    let prepared = (|| {
+        authority.require_original_cache_gate_v1(gate)?;
+        let record_key = progress.record_key.as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let owner = CacheAuthorityOwner::new(authority, owner_scope, maximum_record_bytes)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        let record = owner.canonical_record(purpose, scope);
+        let previous = authority.get(record_key)?.map(ToOwned::to_owned);
+        if previous.as_deref() == Some(record.as_slice()) {
+            authority.require_original_cache_gate_v1(gate)?;
+            progress.unchanged = true;
+            return Ok(None);
+        }
+        if previous.is_some()
+            && owner.verify_current_record_for_purpose(purpose, record_key).is_err()
+        {
+            return Err(ProtectedDomainJournalErrorV1::NonCanonicalRecord);
+        }
+        let bytes = record_key.len().checked_mul(2)
+            .and_then(|keys| keys.checked_add(record.len()))
+            .ok_or(JournalError::LimitExceeded("resident canonical payload bytes"))?;
+        budget.reserve(bytes)?;
+        canonical_record_transaction(record_key, previous.as_deref(), &record, transaction_domain)
+            .map(Some)
+    })();
+    match prepared {
+        Ok(transaction) => progress.transaction = transaction,
+        Err(cause) => {
+            progress.preparation_failure = Some(cause);
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+    }
+    if progress.unchanged {
+        return Ok(());
+    }
+
+    let transaction = progress.transaction.as_ref()
+        .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+    progress.preflight = Some(authority.preflight_with_cache_gate(
+        std::slice::from_ref(transaction), gate.reborrow(),
+    ));
+    let Some(Ok(preflight)) = progress.preflight.as_ref() else {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+    };
+    // The exact preflight is checked by the same commit adapter immediately
+    // before its single append; the returned Result is parked before readback.
+    progress.commit = Some(authority.commit_with_original_cache_gate_v1(
+        preflight, transaction, gate.reborrow(),
+    ));
+    if !matches!(progress.commit.as_ref(), Some(Ok(_))) {
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+    }
+    let readback = (|| {
+        let record_key = progress.record_key.as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let owner = CacheAuthorityOwner::new(authority, owner_scope, maximum_record_bytes)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        if authority.get(record_key)? != Some(owner.canonical_record(purpose, scope).as_slice()) {
+            return Err(ProtectedDomainJournalErrorV1::DivergentRecovery);
+        }
+        Ok(())
+    })();
+    if let Err(cause) = readback {
+        progress.postcheck = Some(cause);
+        return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+    }
+    Ok(())
+}
+
+pub(super) fn logical_pin_record_key(prefix: &[u8], partition: PhysicalPartitionId) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 32);
+    key.extend_from_slice(prefix);
+    key.extend_from_slice(partition.digest().as_bytes());
+    key
+}
+
+pub(super) fn acquire_record_key(partition: PhysicalPartitionId) -> Vec<u8> {
+    logical_pin_record_key(LOGICAL_PIN_ACQUIRE_KEY_PREFIX, partition)
+}
+
+pub(super) fn drain_record_key(partition: PhysicalPartitionId) -> Vec<u8> {
+    logical_pin_record_key(LOGICAL_PIN_DRAIN_KEY_PREFIX, partition)
 }
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
@@ -186,9 +328,7 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         key_prefix: &[u8],
         transaction_domain: &[u8],
     ) -> Result<Vec<u8>, CacheResidencyProtectedJournalErrorV1> {
-        let mut record_key = Vec::with_capacity(key_prefix.len() + 32);
-        record_key.extend_from_slice(key_prefix);
-        record_key.extend_from_slice(partition.digest().as_bytes());
+        let record_key = logical_pin_record_key(key_prefix, partition);
         let mut journal = self
             .journal
             .lock()

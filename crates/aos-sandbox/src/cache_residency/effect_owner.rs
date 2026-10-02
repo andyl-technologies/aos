@@ -317,6 +317,172 @@ struct OrphanEntry {
     bytes: u64,
 }
 
+#[derive(Clone, Copy)]
+enum CachePhysicalOpenProfileV1 {
+    Ordinary,
+    ExistingOnly,
+}
+
+#[derive(Default)]
+struct ResidentCacheManifestV1 {
+    capture_bytes: Option<Vec<u8>>,
+    pending: Option<CacheOwnerOutcomeUnknownV1>,
+    temporary_file: Option<File>,
+    first_failure: Option<CacheOwnerErrorV1>,
+    readback: Option<Result<Vec<u8>, CacheOwnerErrorV1>>,
+    complete: bool,
+}
+
+impl ResidentCacheManifestV1 {
+    fn retained_payload_bytes(&self) -> Result<u64, CacheOwnerErrorV1> {
+        let pending = match self.pending.as_ref() {
+            Some(pending) => pending.expected.len().checked_add(pending.temporary_name.len())
+                .ok_or(CacheOwnerErrorV1::CapacityExhausted)?,
+            None => 0,
+        };
+        let readback = self.readback.as_ref().and_then(|returned| returned.as_ref().ok())
+            .map_or(0, Vec::len);
+        let capture = self.capture_bytes.as_ref().map_or(0, Vec::len);
+        pending.checked_add(readback).and_then(|bytes| bytes.checked_add(capture))
+            .and_then(|bytes| u64::try_from(bytes).ok())
+            .ok_or(CacheOwnerErrorV1::CapacityExhausted)
+    }
+}
+
+// This bounds retained byte payloads, not Rust containers, allocator overhead,
+// decoded maps, descriptors or total physical memory. The scratch allowance is
+// the SAME bounded reader's ceiling, including its one-byte rejection probe.
+fn require_resident_manifest_payload_headroom(
+    retained: u64,
+    encoded: usize,
+    name: usize,
+    maximum: u64,
+) -> Result<(), CacheOwnerErrorV1> {
+    let encoded = u64::try_from(encoded).map_err(|_| CacheOwnerErrorV1::CapacityExhausted)?;
+    let name = u64::try_from(name).map_err(|_| CacheOwnerErrorV1::CapacityExhausted)?;
+    let peak = encoded.checked_mul(3)
+        .and_then(|bytes| name.checked_mul(2).and_then(|names| bytes.checked_add(names)))
+        .and_then(|bytes| bytes.checked_add((MAXIMUM_MANIFEST_BYTES as u64) + 1))
+        .and_then(|bytes| bytes.checked_add(retained));
+    if peak.is_none_or(|bytes| bytes > maximum) {
+        return Err(CacheOwnerErrorV1::CapacityExhausted);
+    }
+    Ok(())
+}
+
+/// Parks each returned fixed physical original before later validation.
+#[derive(Default)]
+pub(super) struct ResidentCachePhysicalOpenV1 {
+    root: Option<OwnedFd>,
+    root_identity: Option<RootIdentity>,
+    lock: Option<OwnedFd>,
+    publication: Option<FsVerityPublicationRoot>,
+    mapping: Option<BeneathRoot>,
+    manifest: Option<Vec<u8>>,
+    first_failure: Option<CacheOwnerErrorV1>,
+    started: bool,
+}
+
+impl ResidentCachePhysicalOpenV1 {
+    pub(super) fn failure(&self) -> Option<&CacheOwnerErrorV1> {
+        self.first_failure.as_ref()
+    }
+
+    pub(super) fn open_once(
+        &mut self,
+        destination: &mut Option<DormantCacheOwnerV1>,
+        limits: CacheOwnerLimitsV1,
+    ) -> Result<(), CacheOwnerErrorV1> {
+        if self.started || destination.is_some() {
+            return Err(CacheOwnerErrorV1::Fenced);
+        }
+        self.started = true;
+        let returned = self.capture_existing(destination, limits);
+        match returned {
+            Ok(()) => Ok(()),
+            Err(cause) => {
+                self.first_failure = Some(cause);
+                Err(CacheOwnerErrorV1::Fenced)
+            }
+        }
+    }
+
+    fn capture_existing(
+        &mut self,
+        destination: &mut Option<DormantCacheOwnerV1>,
+        limits: CacheOwnerLimitsV1,
+    ) -> Result<(), CacheOwnerErrorV1> {
+        let limits = limits.validate()?;
+        reject_legacy_object_root()?;
+        self.root = Some(rustix::fs::open(
+            FIXED_CACHE_ROOT,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?);
+        let root = self.root.as_ref().ok_or(CacheOwnerErrorV1::Fenced)?;
+        self.root_identity = Some(inspect_root(root)?);
+        let (lock, created) = open_owner_lock_source(root, CachePhysicalOpenProfileV1::ExistingOnly)?;
+        self.lock = Some(lock);
+        validate_owner_lock(root, self.lock.as_ref().ok_or(CacheOwnerErrorV1::Fenced)?, created)?;
+        self.publication = Some(FsVerityPublicationRoot::from_protected_absolute_path(
+            Path::new(FIXED_CACHE_ROOT),
+        )?);
+        let identity = self.root_identity.ok_or(CacheOwnerErrorV1::Fenced)?;
+        let publication = self.publication.as_ref().ok_or(CacheOwnerErrorV1::Fenced)?;
+        if publication.device() != identity.device || publication.inode() != identity.inode {
+            return Err(CacheOwnerErrorV1::RootChanged);
+        }
+        self.mapping = Some(BeneathRoot::from_owned(rustix::io::dup(root)?)?);
+        self.manifest = Some(read_bounded_at(root, MANIFEST_NAME, MAXIMUM_MANIFEST_BYTES)?);
+        let bytes = self.manifest.as_ref().ok_or(CacheOwnerErrorV1::Fenced)?;
+        let (generation, disk, negatives) = decode_manifest(bytes, limits)?;
+        let manifest_digest = ObjectDigest::from_bytes(Sha256::digest(bytes).into());
+
+        // Every destination is checked before the first move. The owner is
+        // parked before full object verification or orphan observation begins.
+        if self.root.is_none() || self.lock.is_none() || self.publication.is_none()
+            || self.mapping.is_none() || destination.is_some()
+        {
+            return Err(CacheOwnerErrorV1::Fenced);
+        }
+        let (Some(root), Some(lock), Some(publication), Some(mapping)) = (
+            self.root.take(), self.lock.take(), self.publication.take(), self.mapping.take(),
+        ) else {
+            return Err(CacheOwnerErrorV1::Fenced);
+        };
+        *destination = Some(DormantCacheOwnerV1 {
+            root,
+            _owner_lock: lock,
+            root_identity: identity,
+            publication_root: publication,
+            mapping_root: mapping,
+            limits,
+            generation,
+            manifest_digest,
+            memory: BTreeMap::new(),
+            disk,
+            negatives,
+            pin_index: BTreeMap::new(),
+            memory_bytes: 0,
+            disk_bytes: 0,
+            pinned_bytes: 0,
+            orphans: BTreeMap::new(),
+            fenced: false,
+            pending_manifest: None,
+            resident_manifest: Some(ResidentCacheManifestV1 {
+                capture_bytes: self.manifest.take(),
+                ..ResidentCacheManifestV1::default()
+            }),
+            completed_resident_manifests: Vec::new(),
+        });
+        let owner = destination.as_mut().ok_or(CacheOwnerErrorV1::Fenced)?;
+        owner.recover_and_verify_with_profile(CachePhysicalOpenProfileV1::ExistingOnly)?;
+        owner.quarantine_orphan_staging_with_profile(CachePhysicalOpenProfileV1::ExistingOnly)?;
+        owner.held_snapshot()?;
+        Ok(())
+    }
+}
+
 /// Owns bounded node-local cache state beneath the fixed dormant root.
 pub struct DormantCacheOwnerV1 {
     root: OwnedFd,
@@ -338,6 +504,10 @@ pub struct DormantCacheOwnerV1 {
     fenced: bool,
     // A manifest with unknown durability must be resolved before any other effect.
     pending_manifest: Option<ObjectDigest>,
+    // Present only on the existing-only route. No failed input is taken out of
+    // this owner before a later filesystem step or currentness observation.
+    resident_manifest: Option<ResidentCacheManifestV1>,
+    completed_resident_manifests: Vec<ResidentCacheManifestV1>,
 }
 
 /// Borrows one replayable Cache head while its physical owner keeps the flock.
@@ -1025,6 +1195,8 @@ impl DormantCacheOwnerV1 {
             orphans: BTreeMap::new(),
             fenced: false,
             pending_manifest: None,
+            resident_manifest: None,
+            completed_resident_manifests: Vec::new(),
         };
         owner.recover_and_verify()?;
         owner.quarantine_orphan_staging()?;
@@ -1058,6 +1230,8 @@ impl DormantCacheOwnerV1 {
             orphans: BTreeMap::new(),
             fenced: false,
             pending_manifest: None,
+            resident_manifest: None,
+            completed_resident_manifests: Vec::new(),
         }
     }
 
@@ -1074,6 +1248,53 @@ impl DormantCacheOwnerV1 {
     #[must_use]
     pub const fn limits(&self) -> CacheOwnerLimitsV1 {
         self.limits
+    }
+
+    /// Borrows the first native manifest failure kept by the resident route.
+    #[must_use]
+    pub fn resident_pin_failure(&self) -> Option<&CacheOwnerErrorV1> {
+        self.resident_manifest.as_ref().and_then(|progress| {
+            progress.first_failure.as_ref().or_else(|| progress.readback.as_ref()?.as_ref().err())
+        })
+    }
+
+    /// Ends only a fully read-back physical step after its owner bookends.
+    ///
+    /// # Errors
+    /// Refuses incomplete persistence, retained failure or changed originals.
+    pub(crate) fn finish_resident_pin_step(&mut self) -> Result<(), CacheOwnerErrorV1> {
+        let Some(progress) = self.resident_manifest.as_ref() else {
+            return Err(CacheOwnerErrorV1::Fenced);
+        };
+        if progress.first_failure.is_some() || (progress.pending.is_some() && !progress.complete) {
+            return Err(CacheOwnerErrorV1::Fenced);
+        }
+        self.held_snapshot()?;
+        if let Some(progress) = self.resident_manifest.as_mut() {
+            // Keep completed files and outcomes across later partition steps.
+            // Neither the actual root nor its exclusive lock is released.
+            if progress.pending.is_some() {
+                self.completed_resident_manifests.push(std::mem::take(progress));
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates completed steps while retaining their immutable physical DATA.
+    ///
+    /// # Errors
+    /// Refuses unfinished steps or changed original physical custody.
+    pub(crate) fn finish_resident_pin_operation(&mut self) -> Result<(), CacheOwnerErrorV1> {
+        self.finish_resident_pin_step()?;
+        self.held_snapshot()?;
+        Ok(())
+    }
+
+    /// Releases completed physical DATA after the caller's final original check.
+    ///
+    /// This is an infallible DATA release, not validation or drain permission.
+    pub(in crate::cache_residency) fn release_completed_resident_pin_data(&mut self) {
+        self.completed_resident_manifests.clear();
     }
 
     /// Borrows a replayable Cache head and its held fixed-root descriptors.
@@ -2096,6 +2317,18 @@ impl DormantCacheOwnerV1 {
     }
 
     fn recover_and_verify(&mut self) -> Result<(), CacheOwnerErrorV1> {
+        self.recover_and_verify_with_profile(CachePhysicalOpenProfileV1::Ordinary)
+    }
+
+    fn recover_and_verify_with_profile(
+        &mut self,
+        profile: CachePhysicalOpenProfileV1,
+    ) -> Result<(), CacheOwnerErrorV1> {
+        if matches!(profile, CachePhysicalOpenProfileV1::ExistingOnly)
+            && self.disk.values().any(|entry| entry.staging_name.is_some() || entry.deleting_name.is_some())
+        {
+            return Err(CacheOwnerErrorV1::Fenced);
+        }
         self.disk_bytes = 0;
         self.pinned_bytes = 0;
         self.pin_index.clear();
@@ -2192,6 +2425,10 @@ impl DormantCacheOwnerV1 {
                 &verification,
                 Err(CacheOwnerErrorV1::Rustix(error)) if *error == rustix::io::Errno::NOENT
             ) {
+                if matches!(profile, CachePhysicalOpenProfileV1::ExistingOnly) {
+                    verification?;
+                    return Err(CacheOwnerErrorV1::RecoveryMismatch);
+                }
                 let interrupted = format!(
                     ".deleting-{}-{}",
                     self.generation
@@ -2305,6 +2542,13 @@ impl DormantCacheOwnerV1 {
     }
 
     fn quarantine_orphan_staging(&mut self) -> Result<(), CacheOwnerErrorV1> {
+        self.quarantine_orphan_staging_with_profile(CachePhysicalOpenProfileV1::Ordinary)
+    }
+
+    fn quarantine_orphan_staging_with_profile(
+        &mut self,
+        profile: CachePhysicalOpenProfileV1,
+    ) -> Result<(), CacheOwnerErrorV1> {
         self.recheck_root()?;
         let readable = rustix::fs::openat(
             &self.root,
@@ -2321,6 +2565,9 @@ impl DormantCacheOwnerV1 {
                 && !name_bytes.starts_with(b".orphan-")
             {
                 continue;
+            }
+            if matches!(profile, CachePhysicalOpenProfileV1::ExistingOnly) {
+                return Err(CacheOwnerErrorV1::Fenced);
             }
             inspected = inspected
                 .checked_add(1)
@@ -2432,6 +2679,24 @@ impl DormantCacheOwnerV1 {
             .ok_or(CacheOwnerErrorV1::GenerationExhausted)?;
         let bytes = encode_manifest(generation, &self.disk, &self.negatives)?;
         let temporary_name = format!(".{MANIFEST_NAME}-{generation}.tmp");
+        if self.resident_manifest.is_some() {
+            let current = self.resident_manifest.as_ref().ok_or(CacheOwnerErrorV1::Fenced)?;
+            if current.pending.is_some() || current.first_failure.is_some() {
+                return Err(CacheOwnerErrorV1::Fenced);
+            }
+            let retained = self.completed_resident_manifests.iter().try_fold(
+                self.memory_bytes.checked_add(current.retained_payload_bytes()?)
+                    .ok_or(CacheOwnerErrorV1::CapacityExhausted)?,
+                |bytes, progress| bytes.checked_add(progress.retained_payload_bytes()?)
+                    .ok_or(CacheOwnerErrorV1::CapacityExhausted),
+            )?;
+            // Original encoded bytes, parked pending bytes and an ambiguous
+            // return can coexist with one bounded temporary/readback buffer.
+            // Reserve before the first clone or filesystem mutation.
+            require_resident_manifest_payload_headroom(
+                retained, bytes.len(), temporary_name.len(), self.limits.maximum_memory_bytes,
+            )?;
+        }
         let digest = ObjectDigest::from_bytes(Sha256::digest(&bytes).into());
         let current = CacheOwnerCurrentnessV1 { generation, digest };
         let effect = cache_owner_effect_commitment_v1(kind, subject, current);
@@ -2442,6 +2707,12 @@ impl DormantCacheOwnerV1 {
             temporary_name: temporary_name.clone(),
             effect,
         };
+        if let Some(progress) = self.resident_manifest.as_mut() {
+            if progress.pending.is_some() || progress.first_failure.is_some() {
+                return Err(CacheOwnerErrorV1::Fenced);
+            }
+            progress.pending = Some(pending());
+        }
         let stage_result = (|| -> Result<(), CacheOwnerErrorV1> {
             remove_exact_temporary(&self.root, &temporary_name, &bytes)?;
             let descriptor = rustix::fs::openat(
@@ -2450,41 +2721,103 @@ impl DormantCacheOwnerV1 {
                 OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
                 Mode::RUSR | Mode::WUSR,
             )?;
-            let mut file = File::from(descriptor);
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            drop(file);
+            match self.resident_manifest.as_mut() {
+                None => {
+                    let mut file = File::from(descriptor);
+                    write_and_sync_manifest(&mut file, &bytes)?;
+                    drop(file);
+                }
+                Some(progress) => {
+                    progress.temporary_file = Some(File::from(descriptor));
+                    let file = progress.temporary_file.as_mut().ok_or(CacheOwnerErrorV1::Fenced)?;
+                    write_and_sync_manifest(file, &bytes)?;
+                }
+            }
             if read_bounded_at(&self.root, &temporary_name, MAXIMUM_MANIFEST_BYTES)? != bytes {
                 return Err(CacheOwnerErrorV1::InvalidManifest);
             }
             Ok(())
         })();
-        if stage_result.is_err() {
-            return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
-        }
-        if self.validate_durable_head(predecessor).is_err() {
-            return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
-        }
-        if rustix::fs::renameat(
-            &self.root,
-            temporary_name.as_str(),
-            &self.root,
-            MANIFEST_NAME,
-        )
-        .is_err()
-            || rustix::fs::fsync(&self.root).is_err()
-        {
-            return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+        if self.resident_manifest.is_some() {
+            if self.park_manifest_failure(stage_result) {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+            let predecessor_check = self.validate_durable_head(predecessor);
+            if self.park_manifest_failure(predecessor_check) {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+            let renamed = rustix::fs::renameat(
+                &self.root,
+                temporary_name.as_str(),
+                &self.root,
+                MANIFEST_NAME,
+            ).map_err(CacheOwnerErrorV1::from);
+            if self.park_manifest_failure(renamed) {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+            let synchronized = rustix::fs::fsync(&self.root).map_err(CacheOwnerErrorV1::from);
+            if self.park_manifest_failure(synchronized) {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+        } else {
+            // Keep the ordinary local error/drop interval and short circuit.
+            if stage_result.is_err() {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+            if self.validate_durable_head(predecessor).is_err() {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+            if rustix::fs::renameat(
+                &self.root,
+                temporary_name.as_str(),
+                &self.root,
+                MANIFEST_NAME,
+            )
+            .is_err()
+                || rustix::fs::fsync(&self.root).is_err()
+            {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
         }
         let readback = read_bounded_at(&self.root, MANIFEST_NAME, MAXIMUM_MANIFEST_BYTES);
-        if !readback.as_ref().is_ok_and(|observed| observed == &bytes)
+        if self.resident_manifest.is_some() {
+            let progress = self.resident_manifest.as_mut().ok_or(CacheOwnerErrorV1::Fenced)?;
+            progress.readback = Some(readback);
+            let exact = match progress.readback.as_ref() {
+                Some(Ok(observed)) if observed == &bytes => Ok(()),
+                Some(Ok(_)) => Err(CacheOwnerErrorV1::InvalidManifest),
+                Some(Err(_)) | None => return Err(CacheOwnerErrorV1::OutcomeUnknown(pending())),
+            };
+            if self.park_manifest_failure(exact) {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+            let root_check = self.recheck_root();
+            if self.park_manifest_failure(root_check) {
+                return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
+            }
+        } else if !readback.as_ref().is_ok_and(|observed| observed == &bytes)
             || self.recheck_root().is_err()
         {
             return Err(CacheOwnerErrorV1::OutcomeUnknown(pending()));
         }
         self.generation = generation;
         self.manifest_digest = digest;
+        if let Some(progress) = self.resident_manifest.as_mut() {
+            progress.complete = true;
+        }
         Ok(CacheEffectObservationV1 { effect, current })
+    }
+
+    fn park_manifest_failure(&mut self, returned: Result<(), CacheOwnerErrorV1>) -> bool {
+        match returned {
+            Ok(()) => false,
+            Err(cause) => {
+                if let Some(progress) = self.resident_manifest.as_mut() {
+                    progress.first_failure.get_or_insert(cause);
+                }
+                true
+            }
+        }
     }
 
     /// Reopens and resolves one exact manifest replacement without broad retry.
@@ -3027,6 +3360,12 @@ fn remove_exact_temporary(
     }
 }
 
+fn write_and_sync_manifest(file: &mut File, bytes: &[u8]) -> Result<(), CacheOwnerErrorV1> {
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
 fn validate_basename(name: &str) -> Result<(), CacheOwnerErrorV1> {
     let bytes = name.as_bytes();
     if bytes.is_empty()
@@ -3060,6 +3399,20 @@ fn inspect_root(root: &OwnedFd) -> Result<RootIdentity, CacheOwnerErrorV1> {
 }
 
 fn open_owner_lock(root: &OwnedFd) -> Result<OwnedFd, CacheOwnerErrorV1> {
+    let (lock, created) = open_owner_lock_source(root, CachePhysicalOpenProfileV1::Ordinary)?;
+    validate_owner_lock(root, &lock, created)?;
+    Ok(lock)
+}
+
+fn open_owner_lock_source(
+    root: &OwnedFd,
+    profile: CachePhysicalOpenProfileV1,
+) -> Result<(OwnedFd, bool), CacheOwnerErrorV1> {
+    if matches!(profile, CachePhysicalOpenProfileV1::ExistingOnly) {
+        return Ok((rustix::fs::openat(
+            root, ".owner.lock", OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC, Mode::empty(),
+        )?, false));
+    }
     let create_flags =
         OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC;
     let (lock, created) =
@@ -3077,13 +3430,17 @@ fn open_owner_lock(root: &OwnedFd) -> Result<OwnedFd, CacheOwnerErrorV1> {
             Err(error) => return Err(error.into()),
         };
 
-    rustix::fs::flock(&lock, FlockOperation::NonBlockingLockExclusive)
+    Ok((lock, created))
+}
+
+fn validate_owner_lock(root: &OwnedFd, lock: &OwnedFd, created: bool) -> Result<(), CacheOwnerErrorV1> {
+    rustix::fs::flock(lock, FlockOperation::NonBlockingLockExclusive)
         .map_err(|_| CacheOwnerErrorV1::OwnerBusy)?;
     if created {
         // Normalize a fresh lock independently of the caller's umask.
-        rustix::fs::fchmod(&lock, Mode::RUSR | Mode::WUSR)?;
+        rustix::fs::fchmod(lock, Mode::RUSR | Mode::WUSR)?;
     }
-    let stat = rustix::fs::fstat(&lock)?;
+    let stat = rustix::fs::fstat(lock)?;
     let named = rustix::fs::statat(root, ".owner.lock", AtFlags::SYMLINK_NOFOLLOW)?;
     if FileType::from_raw_mode(stat.st_mode) != FileType::RegularFile
         || stat.st_uid != rustix::process::geteuid().as_raw()
@@ -3095,9 +3452,9 @@ fn open_owner_lock(root: &OwnedFd) -> Result<OwnedFd, CacheOwnerErrorV1> {
     {
         return Err(CacheOwnerErrorV1::RootChanged);
     }
-    rustix::fs::fsync(&lock)?;
+    rustix::fs::fsync(lock)?;
     rustix::fs::fsync(root)?;
-    Ok(lock)
+    Ok(())
 }
 
 fn inspect_lock(root: &OwnedFd, lock: &OwnedFd) -> Result<LockIdentity, CacheOwnerErrorV1> {
@@ -3469,6 +3826,74 @@ mod tests {
             maximum_pins: 4,
             maximum_pinned_bytes: 1024,
         }
+    }
+
+    #[test]
+    fn resident_manifest_peak_includes_earlier_partition_results() {
+        let scratch = (super::MAXIMUM_MANIFEST_BYTES as u64) + 1;
+        let ceiling = scratch + 3 * 7 + 2 * 5 + 11;
+
+        assert!(super::require_resident_manifest_payload_headroom(11, 7, 5, ceiling).is_ok());
+        assert!(matches!(
+            super::require_resident_manifest_payload_headroom(12, 7, 5, ceiling),
+            Err(CacheOwnerErrorV1::CapacityExhausted)
+        ));
+        assert!(super::require_resident_manifest_payload_headroom(u64::MAX, 1, 1, u64::MAX).is_err());
+    }
+
+    #[test]
+    fn resident_payload_count_uses_actual_pending_and_readback_bytes() {
+        let mut progress = super::ResidentCacheManifestV1::default();
+        progress.capture_bytes = Some(vec![3; 4]);
+        progress.pending = Some(super::CacheOwnerOutcomeUnknownV1 {
+            generation: 1,
+            predecessor: super::CacheOwnerCurrentnessV1 {
+                generation: 0,
+                digest: ObjectDigest::from_bytes([0; 32]),
+            },
+            expected: vec![1; 7],
+            temporary_name: "fixed.tmp".to_owned(),
+            effect: ObjectDigest::from_bytes([2; 32]),
+        });
+        progress.readback = Some(Ok(vec![1; 7]));
+
+        assert_eq!(progress.retained_payload_bytes().unwrap(), 4 + 7 + 9 + 7);
+        assert!(progress.pending.is_some());
+        assert!(matches!(progress.readback, Some(Ok(_))));
+    }
+
+    #[test]
+    fn existing_only_capture_refuses_reuse_before_any_fixed_open() {
+        let mut original = super::ResidentCachePhysicalOpenV1::default();
+        original.started = true;
+        original.first_failure = Some(CacheOwnerErrorV1::Rustix(rustix::io::Errno::IO));
+        let mut destination = None;
+
+        let returned = original.open_once(&mut destination, fixture_limits());
+
+        assert!(matches!(returned, Err(CacheOwnerErrorV1::Fenced)));
+        assert!(matches!(original.failure(), Some(CacheOwnerErrorV1::Rustix(cause)) if *cause == rustix::io::Errno::IO));
+        assert!(destination.is_none());
+        assert!(original.root.is_none());
+    }
+
+    #[test]
+    fn resident_manifest_keeps_a_returned_file_and_native_write_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("read-only-input");
+        std::fs::write(&path, b"original").unwrap();
+        let mut progress = super::ResidentCacheManifestV1::default();
+        progress.temporary_file = Some(std::fs::File::open(&path).unwrap());
+
+        let returned = super::write_and_sync_manifest(progress.temporary_file.as_mut().unwrap(), b"candidate");
+        if let Err(cause) = returned {
+            progress.first_failure = Some(cause);
+        }
+
+        assert!(matches!(progress.first_failure, Some(CacheOwnerErrorV1::Io(_))));
+        assert!(progress.temporary_file.is_some());
+        assert!(!progress.complete);
+        assert_eq!(std::fs::read(path).unwrap(), b"original");
     }
 
     #[test]

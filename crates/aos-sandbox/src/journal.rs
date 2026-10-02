@@ -100,7 +100,9 @@ pub use root_local_recovery::{
 };
 pub use source_provider_readonly::SourceProviderHeldReadOnlyJournalAuthorityV1;
 mod cache_policy_hold;
-pub(crate) use cache_policy_hold::{CacheMutationGateV1, HeldCacheMutationGateV1};
+pub(crate) use cache_policy_hold::{
+    BorrowedCacheMutationGateV1, CacheMutationGateV1, HeldCacheMutationGateV1,
+};
 mod capacity_reservation;
 pub use capacity_reservation::native_held;
 mod controller_policy_hold;
@@ -2817,6 +2819,18 @@ impl Journal {
         transaction: &JournalTransaction,
         gate: &mut HeldCacheMutationGateV1,
     ) -> Result<CommitResult, JournalError> {
+        self.commit_with_original_cache_gate_v1(transaction, CacheMutationGateV1::Retained(gate))
+    }
+
+    /// Appends with the closed original Cache disposition and ordinary bounds.
+    ///
+    /// # Errors
+    /// Returns the same gate, preflight, durability or exact-successor failure.
+    pub(crate) fn commit_with_original_cache_gate_v1(
+        &mut self,
+        transaction: &JournalTransaction,
+        gate: CacheMutationGateV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
         self.commit_with_cache_gate(
             transaction,
             None,
@@ -2830,7 +2844,7 @@ impl Journal {
             source_tree_genesis::SourceGenesisTransitionV1::None,
             RootSourceGenesisTransitionV1::None,
             None,
-            CacheMutationGateV1::Retained(gate),
+            gate,
         )
     }
 
@@ -3201,6 +3215,21 @@ impl Journal {
         transactions: &[JournalTransaction],
         gate: &mut HeldCacheMutationGateV1,
     ) -> Result<(), JournalError> {
+        self.preflight_with_original_cache_gate_v1(
+            transactions,
+            CacheMutationGateV1::Retained(gate),
+        )
+    }
+
+    /// Uses the same eight limits and sequence checks with an original gate.
+    ///
+    /// # Errors
+    /// Returns unchanged simulation errors or original-writer refusal.
+    pub(crate) fn preflight_with_original_cache_gate_v1(
+        &self,
+        transactions: &[JournalTransaction],
+        gate: CacheMutationGateV1<'_>,
+    ) -> Result<(), JournalError> {
         self.preflight_with_cache_gate(
             transactions,
             None,
@@ -3210,7 +3239,7 @@ impl Journal {
             None,
             None,
             None,
-            CacheMutationGateV1::Retained(gate),
+            gate,
         )
     }
 
@@ -4046,20 +4075,15 @@ impl ProtectedJournalAuthority<'_> {
         self.preflight_with_cache_gate(transactions, CacheMutationGateV1::Retained(gate))
     }
 
-    fn preflight_with_cache_gate(
+    pub(crate) fn preflight_with_cache_gate(
         &self,
         transactions: &[JournalTransaction],
-        gate: CacheMutationGateV1<'_>,
+        mut gate: CacheMutationGateV1<'_>,
     ) -> Result<ProtectedJournalPreflight, JournalError> {
         self.validate_generic_authority_mutation()?;
         self.journal.ensure_protected_authority()?;
         self.validate_transaction_namespaces(transactions)?;
-        match gate {
-            CacheMutationGateV1::Ordinary => self.journal.preflight_transactions(transactions)?,
-            CacheMutationGateV1::Retained(gate) => self
-                .journal
-                .preflight_with_retained_cache_gate_v1(transactions, gate)?,
-        }
+        gate.preflight(self.journal, transactions)?;
 
         Ok(ProtectedJournalPreflight {
             snapshot: self.current_snapshot(),
@@ -4137,6 +4161,32 @@ impl ProtectedJournalAuthority<'_> {
             .commit_with_retained_cache_gate_v1(transaction, gate)
     }
 
+    /// Commits an exact protected preflight with the resident original gate.
+    ///
+    /// # Errors
+    /// Refuses stale preflight, changed originals or ambiguous durability.
+    pub(crate) fn commit_with_original_cache_gate_v1(
+        &mut self,
+        preflight: &ProtectedJournalPreflight,
+        transaction: &JournalTransaction,
+        mut gate: CacheMutationGateV1<'_>,
+    ) -> Result<CommitResult, JournalError> {
+        self.validate_preflight_for_effect(preflight, std::slice::from_ref(transaction))?;
+        gate.commit(self.journal, transaction)
+    }
+
+    /// Rechecks a closed original disposition without admitting an append.
+    ///
+    /// # Errors
+    /// Refuses wrong scope or changed original protected target and interlock.
+    pub(crate) fn require_original_cache_gate_v1(
+        &self,
+        gate: &mut CacheMutationGateV1<'_>,
+    ) -> Result<(), JournalError> {
+        self.validate_generic_authority_mutation()?;
+        gate.check(self.journal)
+    }
+
     /// Rechecks the original target even for a retained same-record replay.
     ///
     /// # Errors
@@ -4159,6 +4209,25 @@ impl ProtectedJournalAuthority<'_> {
         transaction: &JournalTransaction,
         result: &CommitResult,
         gate: &mut HeldCacheMutationGateV1,
+    ) -> Result<(), JournalError> {
+        self.require_original_cache_own_append_v1(
+            before,
+            transaction,
+            result,
+            &mut CacheMutationGateV1::Retained(gate),
+        )
+    }
+
+    /// Checks the actual append seal for either original Cache disposition.
+    ///
+    /// # Errors
+    /// Refuses wrong scope, original identity, transaction or successor seal.
+    pub(crate) fn require_original_cache_own_append_v1(
+        &self,
+        before: &ProtectedJournalSnapshot,
+        transaction: &JournalTransaction,
+        result: &CommitResult,
+        gate: &mut CacheMutationGateV1<'_>,
     ) -> Result<(), JournalError> {
         self.validate_generic_authority_mutation()?;
         self.journal.ensure_protected_authority()?;

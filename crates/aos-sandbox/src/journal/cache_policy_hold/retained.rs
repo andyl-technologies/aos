@@ -22,9 +22,20 @@ struct RetainedCacheTargetV1 {
 
 /// Owns the original existing interlock, not a policy or effect capability.
 pub(crate) struct HeldCacheMutationGateV1 {
+    gate: Journal,
+    checks: RetainedCacheGateChecksV1,
+}
+
+/// Borrows the already resident interlock without opening another writer.
+pub(crate) struct BorrowedCacheMutationGateV1<'hold> {
+    gate: &'hold mut Journal,
+    checks: RetainedCacheGateChecksV1,
+}
+
+// Both dispositions use exactly the same original-name and own-append checks.
+pub(crate) struct RetainedCacheGateChecksV1 {
     directory: PathBuf,
     uid: u32,
-    gate: Journal,
     gate_witness: ProtectedWriterNameWitness,
     gate_sequence: u64,
     state: CachePolicyHoldStateV1,
@@ -35,6 +46,7 @@ pub(crate) struct HeldCacheMutationGateV1 {
 pub(crate) enum CacheMutationGateV1<'held> {
     Ordinary,
     Retained(&'held mut HeldCacheMutationGateV1),
+    Resident(&'held mut Journal, &'held mut RetainedCacheGateChecksV1),
 }
 
 impl CacheMutationGateV1<'_> {
@@ -52,6 +64,9 @@ impl CacheMutationGateV1<'_> {
             Self::Retained(gate) => {
                 journal.preflight_with_retained_cache_gate_v1(transactions, gate)
             }
+            Self::Resident(_, _) => {
+                journal.preflight_with_original_cache_gate_v1(transactions, self.reborrow())
+            }
         }
     }
 
@@ -67,6 +82,9 @@ impl CacheMutationGateV1<'_> {
         match self {
             Self::Ordinary => journal.commit(transaction),
             Self::Retained(gate) => journal.commit_with_retained_cache_gate_v1(transaction, gate),
+            Self::Resident(_, _) => {
+                journal.commit_with_original_cache_gate_v1(transaction, self.reborrow())
+            }
         }
     }
 
@@ -74,6 +92,7 @@ impl CacheMutationGateV1<'_> {
         match self {
             Self::Ordinary => super::check_unheld(target),
             Self::Retained(gate) => gate.require_for_target(target),
+            Self::Resident(gate, checks) => checks.require_for_target(gate, target),
         }
     }
 
@@ -85,6 +104,10 @@ impl CacheMutationGateV1<'_> {
             Self::Ordinary => mutation_guard(target),
             Self::Retained(gate) => {
                 gate.require_for_target(target)?;
+                Ok(None)
+            }
+            Self::Resident(gate, checks) => {
+                checks.require_for_target(gate, target)?;
                 Ok(None)
             }
         }
@@ -100,6 +123,34 @@ impl CacheMutationGateV1<'_> {
         match self {
             Self::Ordinary => Ok(()),
             Self::Retained(gate) => gate.own_successor(target, transaction, sequence, length),
+            Self::Resident(gate, checks) => {
+                checks.own_successor(gate, target, transaction, sequence, length)
+            }
+        }
+    }
+
+    /// Borrows the same disposition again; it never captures a newer cut.
+    pub(crate) fn reborrow(&mut self) -> CacheMutationGateV1<'_> {
+        match self {
+            Self::Ordinary => CacheMutationGateV1::Ordinary,
+            Self::Retained(gate) => CacheMutationGateV1::Retained(gate),
+            Self::Resident(gate, checks) => CacheMutationGateV1::Resident(gate, checks),
+        }
+    }
+
+    pub(in crate::journal) fn require_own_append(
+        &mut self,
+        target: &Journal,
+        before: u64,
+        transaction: &JournalTransaction,
+        result: &super::super::CommitResult,
+    ) -> Result<(), JournalError> {
+        match self {
+            Self::Ordinary => Err(JournalError::ProtectedBoundary),
+            Self::Retained(gate) => gate.require_own_append(target, before, transaction, result),
+            Self::Resident(gate, checks) => {
+                checks.require_own_append(gate, target, before, transaction, result)
+            }
         }
     }
 }
@@ -115,6 +166,23 @@ fn require_named(
     return target.require_protected_named_location_at_uid_for_test(directory, name, uid, limits);
     #[cfg(not(test))]
     target.require_protected_named_location(directory, name, uid, limits)
+}
+
+fn retain_target(
+    journal: &Journal,
+    directory: &std::path::Path,
+    uid: u32,
+    name: &'static str,
+) -> Result<RetainedCacheTargetV1, JournalError> {
+    require_named(journal, directory, name, uid, journal.limits)?;
+    Ok(RetainedCacheTargetV1 {
+        name,
+        instance: Arc::clone(&journal.authority_instance),
+        limits: journal.limits,
+        sequence: journal.snapshot_sequence(),
+        witness: journal.protected_writer_name_witness()?,
+        own_append: None,
+    })
 }
 
 impl Journal {
@@ -138,20 +206,9 @@ impl Journal {
         if authority.cache_policy_gate.as_ref() != Some(&(directory.clone(), *uid)) {
             return Err(JournalError::ProtectedBoundary);
         }
-        let target = |journal: &Journal, name| -> Result<RetainedCacheTargetV1, JournalError> {
-            require_named(journal, directory, name, *uid, journal.limits)?;
-            Ok(RetainedCacheTargetV1 {
-                name,
-                instance: Arc::clone(&journal.authority_instance),
-                limits: journal.limits,
-                sequence: journal.snapshot_sequence(),
-                witness: journal.protected_writer_name_witness()?,
-                own_append: None,
-            })
-        };
         let targets = [
-            target(state, "state.journal")?,
-            target(authority, "authority.journal")?,
+            retain_target(state, directory, *uid, "state.journal")?,
+            retain_target(authority, directory, *uid, "authority.journal")?,
         ];
         #[cfg(not(test))]
         let (mut gate, _) =
@@ -176,20 +233,66 @@ impl Journal {
             return Err(JournalError::ProtectedBoundary);
         }
         Ok(HeldCacheMutationGateV1 {
-            directory: directory.clone(),
-            uid: *uid,
-            gate_sequence: gate.snapshot_sequence(),
-            gate_witness: gate.protected_writer_name_witness()?,
+            checks: RetainedCacheGateChecksV1 {
+                directory: directory.clone(),
+                uid: *uid,
+                gate_sequence: gate.snapshot_sequence(),
+                gate_witness: gate.protected_writer_name_witness()?,
+                state: current,
+                targets,
+            },
             gate,
-            state: current,
-            targets,
+        })
+    }
+
+    /// Borrows the actual initialization's hold writer and both original targets.
+    ///
+    /// # Errors
+    /// Refuses unsafe names, foreign target allocations, held or pending policy
+    /// state. This method neither opens a writer nor changes a policy hold.
+    pub(crate) fn borrow_cache_mutation_gate_v1<'hold>(
+        state: &Journal,
+        authority: &Journal,
+        gate: &'hold mut Journal,
+    ) -> Result<BorrowedCacheMutationGateV1<'hold>, JournalError> {
+        let (directory, uid) = state
+            .cache_policy_gate
+            .as_ref()
+            .ok_or(JournalError::ProtectedBoundary)?;
+        #[cfg(not(test))]
+        if directory.as_path() != std::path::Path::new(crate::cache_residency::PROTECTED_CACHE_ROOT)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        if authority.cache_policy_gate.as_ref() != Some(&(directory.clone(), *uid)) {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        let targets = [
+            retain_target(state, directory, *uid, "state.journal")?,
+            retain_target(authority, directory, *uid, "authority.journal")?,
+        ];
+        require_named(gate, directory, NAME, *uid, hold_limits())?;
+        let current = current_state(gate)?;
+        if current.hold.is_some_and(|hold| hold.is_held()) || current.v8_pending.is_some() {
+            return Err(JournalError::ProtectedBoundary);
+        }
+
+        Ok(BorrowedCacheMutationGateV1 {
+            checks: RetainedCacheGateChecksV1 {
+                directory: directory.clone(),
+                uid: *uid,
+                gate_sequence: gate.snapshot_sequence(),
+                gate_witness: gate.protected_writer_name_witness()?,
+                state: current,
+                targets,
+            },
+            gate,
         })
     }
 }
 
 impl HeldCacheMutationGateV1 {
-    // The seal is installed only by the actual shared append engine. A copied
-    // transaction/result cannot advance a token at an arbitrary later head.
     pub(in crate::journal) fn require_own_append(
         &mut self,
         target: &Journal,
@@ -197,7 +300,47 @@ impl HeldCacheMutationGateV1 {
         transaction: &JournalTransaction,
         result: &super::super::CommitResult,
     ) -> Result<(), JournalError> {
-        self.require_for_target(target)?;
+        self.checks.require_own_append(&mut self.gate, target, before, transaction, result)
+    }
+
+    /// Checks the original gate and one exact retained writer target.
+    ///
+    /// # Errors
+    /// Refuses any changed identity, protected name, witness or sequence.
+    pub(crate) fn require_for_target(&mut self, target: &Journal) -> Result<(), JournalError> {
+        self.checks.require_for_target(&mut self.gate, target)
+    }
+
+    fn own_successor(
+        &mut self,
+        target: &Journal,
+        transaction: &JournalTransaction,
+        sequence: u64,
+        length: u64,
+    ) -> Result<(), JournalError> {
+        self.checks.own_successor(&mut self.gate, target, transaction, sequence, length)
+    }
+}
+
+impl BorrowedCacheMutationGateV1<'_> {
+    /// Loans the original gate checks for one exact operation.
+    pub(crate) fn as_gate(&mut self) -> CacheMutationGateV1<'_> {
+        CacheMutationGateV1::Resident(self.gate, &mut self.checks)
+    }
+}
+
+impl RetainedCacheGateChecksV1 {
+    // The seal is installed only by the actual shared append engine. A copied
+    // transaction/result cannot advance a token at an arbitrary later head.
+    fn require_own_append(
+        &mut self,
+        gate: &mut Journal,
+        target: &Journal,
+        before: u64,
+        transaction: &JournalTransaction,
+        result: &super::super::CommitResult,
+    ) -> Result<(), JournalError> {
+        self.require_for_target(gate, target)?;
         let original = &self.targets[self.target_index(target)?];
         if original.own_append
             != Some((
@@ -220,12 +363,11 @@ impl HeldCacheMutationGateV1 {
             .ok_or(JournalError::StaleAuthoritySnapshot)
     }
 
-    fn require_gate(&mut self) -> Result<(), JournalError> {
-        require_named(&self.gate, &self.directory, NAME, self.uid, hold_limits())?;
-        self.gate
-            .validate_protected_writer_name_witness(&self.gate_witness)?;
-        if self.gate.snapshot_sequence() != self.gate_sequence
-            || current_state(&mut self.gate)? != self.state
+    fn require_gate(&self, gate: &mut Journal) -> Result<(), JournalError> {
+        require_named(gate, &self.directory, NAME, self.uid, hold_limits())?;
+        gate.validate_protected_writer_name_witness(&self.gate_witness)?;
+        if gate.snapshot_sequence() != self.gate_sequence
+            || current_state(gate)? != self.state
         {
             return Err(JournalError::StaleAuthoritySnapshot);
         }
@@ -236,8 +378,8 @@ impl HeldCacheMutationGateV1 {
     ///
     /// # Errors
     /// Refuses any changed identity, protected name, witness or sequence.
-    pub(crate) fn require_for_target(&mut self, target: &Journal) -> Result<(), JournalError> {
-        self.require_gate()?;
+    fn require_for_target(&self, gate: &mut Journal, target: &Journal) -> Result<(), JournalError> {
+        self.require_gate(gate)?;
         let original = &self.targets[self.target_index(target)?];
         if target.cache_policy_gate.as_ref() != Some(&(self.directory.clone(), self.uid))
             || target.snapshot_sequence() != original.sequence
@@ -258,12 +400,13 @@ impl HeldCacheMutationGateV1 {
     // RAM application. Stable origin plus exact successor excludes latest-head refresh.
     fn own_successor(
         &mut self,
+        gate: &mut Journal,
         target: &Journal,
         transaction: &JournalTransaction,
         sequence: u64,
         length: u64,
     ) -> Result<(), JournalError> {
-        self.require_gate()?;
+        self.require_gate(gate)?;
         let index = self.target_index(target)?;
         let original = &self.targets[index];
         require_named(
@@ -310,6 +453,13 @@ mod tests {
     };
 
     fn fixture(initialize: bool) -> (tempfile::TempDir, u32, Journal, Journal) {
+        fixture_with_limits(initialize, JournalLimits::default())
+    }
+
+    fn fixture_with_limits(
+        initialize: bool,
+        limits: JournalLimits,
+    ) -> (tempfile::TempDir, u32, Journal, Journal) {
         let directory = tempfile::tempdir().expect("private fixture");
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let uid = fs::metadata(directory.path()).unwrap().uid();
@@ -320,7 +470,7 @@ mod tests {
             let (mut journal, _) = Journal::open_protected_at_uid(
                 directory.path(),
                 name,
-                JournalLimits::default(),
+                limits,
                 uid,
             )
             .unwrap();
@@ -344,6 +494,120 @@ mod tests {
             )],
         )
         .unwrap()
+    }
+
+    #[test]
+    fn borrowed_gate_uses_the_actual_existing_writer_and_own_seal() {
+        let (_directory, _uid, mut state, authority) = fixture(true);
+        let mut original = Journal::retain_cache_read_mutation_gate_v1(&state, &authority).unwrap();
+        let mut borrowed =
+            Journal::borrow_cache_mutation_gate_v1(&state, &authority, &mut original.gate).unwrap();
+        let transaction = put(71);
+        let before = state.snapshot_sequence();
+
+        borrowed
+            .as_gate()
+            .preflight(&state, std::slice::from_ref(&transaction))
+            .unwrap();
+        let committed = borrowed
+            .as_gate()
+            .commit(&mut state, &transaction)
+            .unwrap();
+
+        borrowed
+            .as_gate()
+            .require_own_append(&state, before, &transaction, &committed)
+            .unwrap();
+        let mut substituted = committed;
+        substituted.durable_bytes += 1;
+        assert!(
+            borrowed
+                .as_gate()
+                .require_own_append(&state, before, &transaction, &substituted)
+                .is_err()
+        );
+        assert!(matches!(
+            state.preflight_transactions(&[put(72)]),
+            Err(JournalError::AlreadyLocked)
+        ));
+        assert_eq!(
+            state.get(RecordNamespace::DesiredState, &[71]),
+            Some([71].as_slice())
+        );
+    }
+
+    #[test]
+    fn borrowed_gate_refuses_foreign_targets_and_keeps_the_original_lock() {
+        let (_directory, _uid, state, authority) = fixture(true);
+        let (_foreign_directory, _foreign_uid, foreign_state, _) = fixture(true);
+        let mut original = Journal::retain_cache_read_mutation_gate_v1(&state, &authority).unwrap();
+
+        assert!(
+            Journal::borrow_cache_mutation_gate_v1(&foreign_state, &authority, &mut original.gate)
+                .is_err()
+        );
+
+        assert!(matches!(
+            state.preflight_transactions(&[put(73)]),
+            Err(JournalError::AlreadyLocked)
+        ));
+        assert!(
+            Journal::borrow_cache_mutation_gate_v1(&state, &authority, &mut original.gate).is_ok()
+        );
+    }
+
+    #[test]
+    fn borrowed_preflight_preserves_all_eight_native_limit_families() {
+        let default = JournalLimits::default();
+        let limits = [
+            JournalLimits { maximum_journal_bytes: 72, ..default },
+            JournalLimits { maximum_record_bytes: 7, ..default },
+            JournalLimits { maximum_key_bytes: 1, ..default },
+            JournalLimits { maximum_records_per_transaction: 1, ..default },
+            JournalLimits { maximum_transaction_bytes: 7, ..default },
+            JournalLimits { maximum_transactions: 1, ..default },
+            JournalLimits { maximum_materialized_bytes: 1, ..default },
+            JournalLimits { maximum_materialized_records: 1, ..default },
+        ];
+        for (index, limit) in limits.into_iter().enumerate() {
+            let (_directory, _uid, state, authority) = fixture_with_limits(true, limit);
+            let mut original = Journal::retain_cache_read_mutation_gate_v1(&state, &authority).unwrap();
+            let mut borrowed =
+                Journal::borrow_cache_mutation_gate_v1(&state, &authority, &mut original.gate)
+                    .unwrap();
+            let transaction = |id| {
+                JournalTransaction::new(
+                    [id; 16],
+                    vec![
+                        JournalRecord::put(RecordNamespace::DesiredState, vec![1, id], vec![9; 16]),
+                        JournalRecord::put(RecordNamespace::DesiredState, vec![2, id], vec![8; 16]),
+                    ],
+                )
+                .unwrap()
+            };
+
+            let returned = borrowed.as_gate().preflight(&state, &[transaction(81), transaction(82)]);
+
+            assert!(
+                returned.is_err(),
+                "limit family {index} must refuse before append"
+            );
+            assert_eq!(state.snapshot_sequence(), 0);
+        }
+    }
+
+    #[test]
+    fn borrowed_preflight_preserves_next_frame_sequence_overflow() {
+        let (_directory, _uid, mut state, authority) = fixture(true);
+        state.next_sequence = u64::MAX;
+        let mut original = Journal::retain_cache_read_mutation_gate_v1(&state, &authority).unwrap();
+        let mut borrowed =
+            Journal::borrow_cache_mutation_gate_v1(&state, &authority, &mut original.gate).unwrap();
+
+        let returned = borrowed.as_gate().preflight(&state, &[put(83)]);
+
+        assert!(matches!(returned, Err(JournalError::SequenceExhausted)));
+        assert!(state.get(RecordNamespace::DesiredState, &[83]).is_none());
     }
 
     #[test]

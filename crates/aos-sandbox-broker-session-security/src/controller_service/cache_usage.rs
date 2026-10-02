@@ -14,6 +14,7 @@ impl ProductionEffectExecutor {
         &mut self,
         project: ProjectId,
     ) -> Result<CacheProjectUsageLoanV1<'_>, CacheResidentUnavailableV1> {
+        self.cache_mutation.require_completed_or_empty()?;
         if !self.cache_resident_usage.started() {
             self.cache_resident_usage.initialize_once(&mut self.cache_inventory, self.controller_uid)?;
         }

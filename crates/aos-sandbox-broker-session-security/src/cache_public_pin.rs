@@ -26,6 +26,199 @@ use crate::cache_source_membership::{
     with_compiled_cache_source_membership_v1,
 };
 
+/// Keeps the complete consumer-wide selection and each physical observation.
+#[derive(Default)]
+pub(crate) struct ResidentPublicCacheUnpinV1 {
+    selected: Option<Result<(Vec<CachePinV1>, Vec<CachePinV1>), CacheResidencyProtectedJournalErrorV1>>,
+    observations: Vec<Result<CacheOwnerPinPresenceV1, CacheOwnerErrorV1>>,
+}
+
+impl ResidentPublicCacheUnpinV1 {
+    pub(crate) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        if let Some(Err(cause)) = self.selected.as_ref() {
+            return Some(cause);
+        }
+        self.observations.iter().find_map(|result| result.as_ref().err())
+            .map(|cause| cause as &(dyn std::error::Error + 'static))
+    }
+}
+
+/// Uses the sole portable compiler with the actual retained Cache owner cut.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_resident_public_cache_pin_v1(
+    original: &mut aos_sandbox::cache_residency::CacheResidentInitializationV1,
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    source: &mut ProjectSealedViewObjectSourceV1,
+    revision: &DurableFilesystemViewRevisionV1,
+    consumer: &RecheckedCacheConsumerV1,
+    source_journal: &Journal,
+    request: &DormantSandboxRequestKindV1,
+    operation: OperationId,
+    controller_node: NodeId,
+    compiler_abi: [u8; 32],
+    limits: CacheCompiledSourceLimitsV1,
+) -> Result<(), PublicCachePinExecutionErrorV1<ProjectSealedViewSourceErrorV1>> {
+    if source.project() != consumer.project() {
+        return Err(PublicCachePinExecutionErrorV1::SourceProjectMismatch);
+    }
+    let mut reader = source.borrow_cache_pin_source_v1();
+    with_compiled_cache_source_membership_from_revision_v1(
+        consumer, &mut reader, revision, compiler_abi, limits,
+        |membership| {
+            source.recheck_retained_cache_pin_root_v1()
+                .map_err(cache_pin_root_error)?;
+            let inventories = original.existing_pin_inventories(protected)
+                .map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+            let mut selected = None;
+            for inventory in inventories {
+                let partition = inventory.global.node_quota.partition;
+                if partition.node().as_bytes() != controller_node.as_bytes()
+                    || partition.disclosure() != membership.disclosure()
+                {
+                    continue;
+                }
+                for payload in &inventory.reconstructed {
+                    if !public_pin_partition_payload_matches(payload, partition, consumer) {
+                        continue;
+                    }
+                    if selected.replace(partition).is_some() {
+                        return Err(PublicCachePinExecutionErrorV1::PartitionSelection);
+                    }
+                }
+            }
+            let partition = selected.ok_or(PublicCachePinExecutionErrorV1::PartitionSelection)?;
+            let acquisition = ValidatedPublicLogicalPinAcquisitionV1::new(
+                consumer, membership, partition, controller_node,
+            )?;
+            source.recheck_retained_cache_pin_root_v1()
+                .map_err(cache_pin_root_error)?;
+            original.pin_existing_logical_consumer(
+                protected, physical, &acquisition, operation,
+                public_cache_pin_transaction_id_v1(operation), source_journal, request,
+            ).map_err(|_| CacheResidencyProtectedJournalErrorV1::StaleAuthority)?;
+            Ok(())
+        },
+    )?
+}
+
+fn cache_pin_root_error(cause: ProjectSealedViewSourceErrorV1) -> PublicCachePinExecutionErrorV1<ProjectSealedViewSourceErrorV1> {
+    PublicCachePinExecutionErrorV1::Source(CompiledCacheSourceMembershipErrorV1::ViewSource(
+        aos_filesystem_view_core::SourceError::Source(cause),
+    ))
+}
+
+fn public_pin_partition_payload_matches(
+    payload: &aos_sandbox::cache_residency::CacheAtomicObjectPayloadV1,
+    partition: PhysicalPartitionId,
+    consumer: &RecheckedCacheConsumerV1,
+) -> bool {
+    payload.plan.partition == partition
+        && payload.plan.project == consumer.project()
+        && &payload.plan.descriptor == consumer.object()
+        && payload.catalog.as_ref().is_some_and(|entry| entry.presence == CatalogPresenceV1::Committed)
+}
+
+fn public_consumer_pin_matches(pin: &CachePinV1, consumer: &RecheckedCacheConsumerV1) -> bool {
+    pin.object() == consumer.object()
+        && pin.project() == consumer.project()
+        && pin.view() == consumer.view()
+        && pin.attachment() == consumer.attachment()
+        && pin.kind() == aos_sandbox::cache_residency::CachePinKindV1::LogicalLease
+}
+
+fn select_resident_consumer_pins(
+    inventories: &[aos_sandbox::cache_residency::CacheRecoveryInventoryV1],
+    consumer: &RecheckedCacheConsumerV1,
+) -> Result<(Vec<CachePinV1>, Vec<CachePinV1>), CacheResidencyProtectedJournalErrorV1> {
+    let mut active = Vec::new();
+    let mut released = Vec::new();
+    for inventory in inventories {
+        let mut partition_pin = None;
+        for payload in &inventory.reconstructed {
+            if &payload.plan.descriptor != consumer.object()
+                || payload.plan.project != consumer.project()
+            {
+                continue;
+            }
+            for pin in &payload.pins {
+                if pin.partition() != payload.plan.partition
+                    || !public_consumer_pin_matches(pin, consumer)
+                {
+                    continue;
+                }
+                if partition_pin.replace(pin.clone()).is_some() {
+                    return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+                }
+            }
+            for tombstone in &payload.released_pins {
+                if tombstone.pin.partition() != payload.plan.partition {
+                    return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+                }
+                if public_consumer_pin_matches(&tombstone.pin, consumer) {
+                    released.push(tombstone.pin.clone());
+                }
+            }
+        }
+        if let Some(pin) = partition_pin {
+            active.push(pin);
+        }
+    }
+    Ok((active, released))
+}
+
+/// Releases all partitions, then checks every retained release tombstone.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_resident_public_cache_unpin_v1(
+    original: &mut aos_sandbox::cache_residency::CacheResidentInitializationV1,
+    protected: &mut CacheResidencyProtectedOwnerV1,
+    physical: &mut DormantCacheOwnerV1,
+    progress: &mut ResidentPublicCacheUnpinV1,
+    consumer: &RecheckedCacheConsumerV1,
+    source_journal: &Journal,
+    request: &DormantSandboxRequestKindV1,
+    operation: OperationId,
+) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+    progress.selected = Some(select_resident_consumer_pins(
+        original.existing_pin_inventories(protected)?, consumer,
+    ));
+    let Some(Ok((active, _))) = progress.selected.as_ref() else {
+        return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1);
+    };
+    for pin in active {
+        original.unpin_existing_logical_consumer(
+            protected, physical, consumer, pin, operation,
+            public_cache_unpin_transaction_id_v1(pin), source_journal, request,
+        )?;
+    }
+
+    // Recapture all partitions only after the exact own successors settled.
+    // This replaces completed selection DATA, not any failed or live owner.
+    progress.selected = Some(select_resident_consumer_pins(
+        original.existing_pin_inventories(protected)?, consumer,
+    ));
+    let Some(Ok((active, released))) = progress.selected.as_ref() else {
+        return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1);
+    };
+    if !active.is_empty() {
+        return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1);
+    }
+    for pin in released {
+        let id = CacheOwnerPinIdV1::for_cache_pin(pin.partition(), pin.id());
+        progress.observations.push(id.and_then(|id| physical.observe_pin(id, pin.partition(), pin.object())));
+        match progress.observations.last() {
+            Some(Ok(CacheOwnerPinPresenceV1::Absent)) => {}
+            Some(Ok(CacheOwnerPinPresenceV1::Present)) => original.reconcile_existing_public_unpin(
+                protected, physical, consumer, pin, operation,
+                public_cache_unpin_transaction_id_v1(pin), source_journal, request,
+            )?,
+            _ => return Err(aos_sandbox::cache_residency::CacheResidentUnavailableV1),
+        }
+        original.recheck(protected)?;
+    }
+    original.recheck(protected)
+}
+
 /// Retains every required outcome of one public logical pin acquisition.
 #[must_use = "public completion requires a confirmed protected and physical pin"]
 pub enum PublicCachePinExecutionV1 {
@@ -675,13 +868,7 @@ fn select_public_cache_pin_partition_v1<E: std::error::Error + 'static>(
         }
 
         for payload in inventory.reconstructed {
-            if payload.plan.partition != partition
-                || payload.plan.project != consumer.project()
-                || &payload.plan.descriptor != consumer.object()
-                || !payload
-                    .catalog
-                    .is_some_and(|entry| entry.presence == CatalogPresenceV1::Committed)
-            {
+            if !public_pin_partition_payload_matches(&payload, partition, consumer) {
                 continue;
             }
             if selected.replace(partition).is_some() {

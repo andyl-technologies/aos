@@ -23,6 +23,18 @@ pub(in crate::controller_service) enum CacheCustodyV1 {
     Physical(CacheOwnerOutcomeUnknownV1),
 }
 
+/// Refuses old reopen-based tokens without taking any retained payload.
+pub(in crate::controller_service) fn require_absent_legacy_custody<Payload>(
+    pending: &Option<PendingControllerCacheCustodyV1<Payload>>,
+) -> Result<(), EffectFailure> {
+    if pending.is_some() {
+        return Err(EffectFailure::Permanent(
+            "legacy Cache recovery is unavailable while originals remain resident".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 pub(in crate::controller_service) struct CacheCustodyMessages {
     pub(in crate::controller_service) owners_unavailable: &'static str,
     pub(in crate::controller_service) another_operation: &'static str,
