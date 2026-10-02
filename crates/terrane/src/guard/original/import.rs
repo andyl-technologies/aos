@@ -40,12 +40,18 @@ impl ImportedEvidence {
         let import = ImportRecord::decode(&self.import).map_err(|_| invalid())?;
         let binding = ImportBindingRecord::decode(&self.binding).map_err(|_| invalid())?;
         let trust = PublicTrustRecord::decode(&self.trust).map_err(|_| invalid())?;
-        binding.validate_pair(&import, owner.id()).map_err(|_| invalid())?;
+        binding
+            .validate_pair(&import, owner.id())
+            .map_err(|_| invalid())?;
         trust.validate_binding(&binding).map_err(|_| invalid())?;
         let owner = crate::guard::consumed_registration(owner);
         [
-            (ControlKind::Import, import.selector(), &self.import),
-            (ControlKind::ImportBinding, binding.selector(), &self.binding),
+            (ControlKind::Import, Ok(import.selector()), &self.import),
+            (
+                ControlKind::ImportBinding,
+                binding.selector(),
+                &self.binding,
+            ),
             (ControlKind::ImportTrust, trust.selector(), &self.trust),
         ]
         .into_iter()
@@ -88,13 +94,64 @@ impl OriginalCommitContext {
     }
 }
 
-impl<
-    F: LocalFs + BucketBinding,
-    B: Clock + BucketBinding,
-    V: ContentValidator + BucketBinding,
-    C,
-> Guard<FileBucket<F, B, V>, C>
+impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator + BucketBinding, C>
+    Guard<FileBucket<F, B, V>, C>
 {
+    /// Checks the complete configured historical mappings under existing exclusion.
+    ///
+    /// Role configuration changes cannot remain hidden behind a cached snapshot.
+    /// Imported mappings are checked against exact retained bytes without reading
+    /// any former source namespace or its private signing material.
+    ///
+    /// # Errors
+    /// Rejects added, removed, replaced or changed role rows and imported controls.
+    pub(crate) async fn check_retained_trust_controls(
+        &self,
+        owner: &OriginalAuthority,
+        controls: &mut super::ControlExclusion<'_, F>,
+        snapshot: &terrane_core::gc::publication::evidence::GuardSnapshot,
+    ) -> Result<(), StoreFailure> {
+        let mut expected_roles = std::collections::BTreeSet::new();
+        for row in snapshot
+            .disclosures
+            .iter()
+            .filter(|row| row.repository == super::hex(owner.id()))
+        {
+            let role = crate::repository::local_authority::public_trust::DisclosureRoleRecord {
+                repository: row.repository.clone(),
+                domain: row.domain.clone(),
+                public_key: row.public_key,
+                not_before: row.not_before,
+                not_after: row.not_after,
+            };
+            let key = role.selector().map_err(retention_failure)?;
+            if !expected_roles.insert(key.clone())
+                || controls.read_record(&key).await? != role.encode().map_err(retention_failure)?
+            {
+                return Err(invalid());
+            }
+        }
+        let actual_roles = self
+            .store()
+            .fs()
+            .read_dir(owner.control())
+            .await
+            .map_err(super::io_failure)?
+            .into_iter()
+            .filter_map(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| name.starts_with("disclosure-role-"))
+                    .map(str::to_owned)
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        if actual_roles != expected_roles {
+            return Err(invalid());
+        }
+        controls.revalidate().await?;
+        Ok(())
+    }
+
     /// Rechecks a retained original association against its actual destination.
     ///
     /// A copied source registration is not checked as this backend's physical
@@ -118,19 +175,39 @@ impl<
             return Err(invalid());
         }
         let fs = self.store().fs();
-        let uid = self.store().publication_operator_uid().ok_or_else(invalid)?;
+        let uid = self
+            .store()
+            .publication_operator_uid()
+            .ok_or_else(invalid)?;
         let commit = super::hex(view.commit);
         let import: ImportRecord = crate::repository::local_authority::retention::read(
-            fs, owner.control(), uid, &format!("import-{commit}.cbor"),
-        ).await.map_err(retention_failure)?;
+            fs,
+            owner.control(),
+            uid,
+            &format!("import-{commit}.cbor"),
+        )
+        .await
+        .map_err(retention_failure)?;
         let binding: ImportBindingRecord = crate::repository::local_authority::retention::read(
-            fs, owner.control(), uid, &format!("import-binding-{commit}.cbor"),
-        ).await.map_err(retention_failure)?;
-        binding.validate_pair(&import, owner.id()).map_err(|_| invalid())?;
+            fs,
+            owner.control(),
+            uid,
+            &format!("import-binding-{commit}.cbor"),
+        )
+        .await
+        .map_err(retention_failure)?;
+        binding
+            .validate_pair(&import, owner.id())
+            .map_err(|_| invalid())?;
         let trust_key = format!("import-trust-{}.cbor", super::hex(&binding.import_digest));
         let trust: PublicTrustRecord = crate::repository::local_authority::retention::read(
-            fs, owner.control(), uid, &trust_key,
-        ).await.map_err(retention_failure)?;
+            fs,
+            owner.control(),
+            uid,
+            &trust_key,
+        )
+        .await
+        .map_err(retention_failure)?;
         trust.validate_binding(&binding).map_err(|_| invalid())?;
         if import.association.commit != *view.commit
             || import.baseline.id != *view.id
@@ -147,26 +224,33 @@ impl<
             trust: trust.encode().map_err(|_| invalid())?,
         };
         let records = vec![
-            (import.selector().map_err(|_| invalid())?, imported.import.clone()),
-            (binding.selector().map_err(|_| invalid())?, imported.binding.clone()),
+            (import.selector(), imported.import.clone()),
+            (
+                binding.selector().map_err(|_| invalid())?,
+                imported.binding.clone(),
+            ),
             (trust_key, imported.trust.clone()),
         ];
         let namespace = DomainNamespace {
             root: owner.root().to_path_buf(),
             domain: owner.domain().to_owned(),
         };
-        let checked_owner = self.bind_original_records(
-            &namespace,
-            owner.control(),
-            RegistrationView {
-                id: owner.id(), root: owner.root(), domain: owner.domain(),
-                root_identity: owner.root_identity,
-                coordination_identity: owner.coordination_identity,
-                control: owner.control(),
-            },
-            &records,
-            held,
-        ).await?;
+        let checked_owner = self
+            .bind_original_records(
+                &namespace,
+                owner.control(),
+                RegistrationView {
+                    id: owner.id(),
+                    root: owner.root(),
+                    domain: owner.domain(),
+                    root_identity: owner.root_identity,
+                    coordination_identity: owner.coordination_identity,
+                    control: owner.control(),
+                },
+                &records,
+                held,
+            )
+            .await?;
         Ok(OriginalCommitContext {
             commit: *view.commit,
             baseline: baseline.clone(),
@@ -191,10 +275,10 @@ impl<
             epoch: import.baseline.epoch,
             acl: import.baseline.acl.clone(),
         };
-        self.bind_imported_commit_at(
-            owner, &baseline, import.association.view(), None,
-        ).await?;
-        self.check_original_commit(&baseline, import.association.view()).await
+        self.bind_imported_commit_at(owner, &baseline, import.association.view(), None)
+            .await?;
+        self.check_original_commit(&baseline, import.association.view())
+            .await
     }
 }
 
@@ -210,23 +294,45 @@ fn original_authority(import: &ImportRecord) -> OriginalAuthority {
     }
 }
 
-fn retention_failure(error: crate::repository::Error) -> StoreFailure {
+pub(super) fn retention_failure(error: crate::repository::Error) -> StoreFailure {
     match error {
         crate::repository::Error::Store(failure) => failure,
         crate::repository::Error::Io(error) => super::io_failure(error),
         error => StoreFailure::with_source(
-            StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest), error,
+            StoreErrorKind::Invalid(crate::store::InvalidReason::MalformedRequest),
+            error,
         ),
     }
 }
 
 impl<S, C> Guard<S, C> {
+    /// Returns roles loaded by the concrete factory from protected source configuration.
+    ///
+    /// # Errors
+    /// Rejects missing native dispatch or unavailable synchronized state.
+    pub(crate) fn configured_disclosure_roles(
+        &self,
+    ) -> Result<
+        Vec<crate::repository::local_authority::public_trust::DisclosureRoleRecord>,
+        StoreFailure,
+    > {
+        Ok(self
+            .original_verifier
+            .read()
+            .map_err(|_| super::unavailable())?
+            .as_ref()
+            .map(|verifier| verifier.roles.clone())
+            .unwrap_or_default())
+    }
+
     /// Enumerates only mappings carried by independently checked retained contexts.
     ///
     /// # Errors
     /// Rejects malformed retained public trust or unavailable resolver state.
     pub(crate) fn retained_public_trust(&self) -> Result<Vec<PublicTrustRecord>, StoreFailure> {
-        self.original_commits.read().map_err(|_| super::unavailable())?
+        self.original_commits
+            .read()
+            .map_err(|_| super::unavailable())?
             .values()
             .filter_map(|context| context.imported.as_ref())
             .map(ImportedEvidence::trust)

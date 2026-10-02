@@ -9,8 +9,8 @@ use std::sync::Mutex;
 
 use terrane_core::gc::publication::evidence::{
     AuthorityGrant, ConfiguredRegistryInputs, ConsumedRootLayer, ConsumedRootPolicy,
-    ConsumedViewPolicy, ControlKind, GuardSnapshot, IssuerRow, LineageUsedInputs,
-    DisclosureRow, LocalOriginalRegistration, PhysicalRegistration, RequiredControlPin, SeededChunkProfile,
+    ConsumedViewPolicy, ControlKind, DisclosureRow, GuardSnapshot, IssuerRow, LineageUsedInputs,
+    LocalOriginalRegistration, PhysicalRegistration, RequiredControlPin, SeededChunkProfile,
     TrustedGuardConfig,
 };
 use terrane_core::tree_format::Property;
@@ -106,27 +106,65 @@ impl ConsumedResolver {
         for trust in guard.retained_public_trust()? {
             for key in trust.issuer_keys {
                 let row = IssuerRow {
-                    issuer: key.issuer, key_id: key.key_id,
-                    public_key: key.public_key, retired_at: key.retirement,
+                    issuer: key.issuer,
+                    key_id: key.key_id,
+                    public_key: key.public_key,
+                    retired_at: key.retirement,
                 };
                 let selector = (row.issuer.clone(), row.key_id.clone());
-                if issuer_map.get(&selector).is_some_and(|previous| previous != &row) {
+                if issuer_map
+                    .get(&selector)
+                    .is_some_and(|previous| previous != &row)
+                {
                     return Err(invalid());
                 }
                 issuer_map.insert(selector, row);
             }
             for role in trust.disclosure_roles {
                 let row = DisclosureRow {
-                    repository: role.repository, domain: role.domain,
-                    public_key: role.public_key, not_before: role.not_before,
+                    repository: role.repository,
+                    domain: role.domain,
+                    public_key: role.public_key,
+                    not_before: role.not_before,
                     not_after: role.not_after,
                 };
-                let selector = (row.repository.clone(), row.domain.clone(), row.public_key, row.not_before);
-                if disclosure_map.get(&selector).is_some_and(|previous| previous != &row) {
+                let selector = (
+                    row.repository.clone(),
+                    row.domain.clone(),
+                    row.public_key,
+                    row.not_before,
+                );
+                if disclosure_map
+                    .get(&selector)
+                    .is_some_and(|previous| previous != &row)
+                {
                     return Err(invalid());
                 }
                 disclosure_map.insert(selector, row);
             }
+        }
+        #[cfg(unix)]
+        for role in guard.configured_disclosure_roles()? {
+            let row = DisclosureRow {
+                repository: role.repository,
+                domain: role.domain,
+                public_key: role.public_key,
+                not_before: role.not_before,
+                not_after: role.not_after,
+            };
+            let selector = (
+                row.repository.clone(),
+                row.domain.clone(),
+                row.public_key,
+                row.not_before,
+            );
+            if disclosure_map
+                .get(&selector)
+                .is_some_and(|previous| previous != &row)
+            {
+                return Err(invalid());
+            }
+            disclosure_map.insert(selector, row);
         }
         let snapshot = GuardSnapshot {
             registration: registration(authority),
@@ -242,8 +280,17 @@ impl ConsumedResolver {
         if matching.next().is_some() {
             return Err(invalid());
         }
-        let selector = (row.repository.clone(), row.domain.clone(), row.public_key, row.not_before);
-        self.consumed.lock().map_err(|_| unavailable())?.disclosures.insert(selector, row);
+        let selector = (
+            row.repository.clone(),
+            row.domain.clone(),
+            row.public_key,
+            row.not_before,
+        );
+        self.consumed
+            .lock()
+            .map_err(|_| unavailable())?
+            .disclosures
+            .insert(selector, row);
         Ok(())
     }
 

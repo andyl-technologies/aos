@@ -124,6 +124,9 @@ type TagCheck =
 #[derive(Clone)]
 pub(in crate::guard) struct OriginalVerifier {
     authority: OriginalAuthority,
+    #[cfg(unix)]
+    pub(in crate::guard::original) roles:
+        Vec<crate::repository::local_authority::public_trust::DisclosureRoleRecord>,
     baseline: Arc<BaselineCheck>,
     commit: Arc<CommitCheck>,
     publication: Arc<PublicationCheck>,
@@ -186,23 +189,6 @@ impl<
             self.keys.clone(),
             self.config.clone(),
         ));
-        {
-            let namespace = SingleHeld::acquire(&self.store).await?;
-            let destination = namespace.destination();
-            let observed = destination.observe_publication().await?;
-            crate::selected_bridge::native_guard::install_initial_guard(
-                SetupGuard::new(Guard::new(
-                    self.store.clone(),
-                    setup_clock,
-                    self.keys.clone(),
-                    self.config.clone(),
-                )),
-                &authority,
-                &destination,
-                &observed,
-            )
-            .await?;
-        }
         let baseline_guard = Arc::clone(&concrete);
         let baseline_authority = authority.clone();
         let baseline: Arc<BaselineCheck> = Arc::new(move |view| {
@@ -365,9 +351,56 @@ impl<
                 if baseline.authority() == &owner {
                     guard.bind_original_commit_at(baseline, view, held).await
                 } else {
-                    guard.bind_imported_commit_at(&owner, baseline, view, held).await
+                    guard
+                        .bind_imported_commit_at(&owner, baseline, view, held)
+                        .await
                 }
             })
+        });
+        let mut roles = Vec::new();
+        let uid = self.store.publication_operator_uid().ok_or_else(invalid)?;
+        for path in self
+            .store
+            .fs()
+            .read_dir(authority.control())
+            .await
+            .map_err(super::io_failure)?
+        {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            if name.starts_with("disclosure-role-") {
+                use crate::repository::local_authority::{
+                    public_trust::DisclosureRoleRecord,
+                    retention::{self, Record},
+                };
+                let role: DisclosureRoleRecord =
+                    retention::read(self.store.fs(), authority.control(), uid, name)
+                        .await
+                        .map_err(super::import::retention_failure)?;
+                if role.repository != super::hex(authority.id())
+                    || role.domain != authority.domain()
+                    || role.selector().map_err(|_| invalid())? != name
+                {
+                    return Err(invalid());
+                }
+                roles.push(role);
+            }
+        }
+        roles.sort_by(|left, right| {
+            (
+                &left.repository,
+                &left.domain,
+                left.public_key,
+                left.not_before,
+            )
+                .cmp(&(
+                    &right.repository,
+                    &right.domain,
+                    right.public_key,
+                    right.not_before,
+                ))
         });
         let mut installed = self.original_verifier.write().map_err(|_| unavailable())?;
         if installed
@@ -377,12 +410,63 @@ impl<
             return Err(invalid());
         }
         *installed = Some(OriginalVerifier {
-            authority,
+            authority: authority.clone(),
+            roles,
             baseline,
             commit,
             publication,
             tag,
         });
+        drop(installed);
+        for path in self
+            .store
+            .fs()
+            .read_dir(authority.control())
+            .await
+            .map_err(super::io_failure)?
+        {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            if name.starts_with("import-")
+                && !name.starts_with("import-binding-")
+                && !name.starts_with("import-trust-")
+            {
+                use crate::repository::local_authority::retention::{self, ImportRecord};
+                let import: ImportRecord =
+                    retention::read(self.store.fs(), authority.control(), uid, name)
+                        .await
+                        .map_err(super::import::retention_failure)?;
+                self.load_original_import(&authority, &import).await?;
+            }
+        }
+        let setup = Guard::new(
+            self.store.clone(),
+            setup_clock,
+            self.keys.clone(),
+            self.config.clone(),
+        );
+        *setup.original_verifier.write().map_err(|_| unavailable())? = self
+            .original_verifier
+            .read()
+            .map_err(|_| unavailable())?
+            .clone();
+        *setup.original_commits.write().map_err(|_| unavailable())? = self
+            .original_commits
+            .read()
+            .map_err(|_| unavailable())?
+            .clone();
+        let namespace = SingleHeld::acquire(&self.store).await?;
+        let destination = namespace.destination();
+        let observed = destination.observe_publication().await?;
+        crate::selected_bridge::native_guard::install_initial_guard(
+            SetupGuard::new(setup),
+            &authority,
+            &destination,
+            &observed,
+        )
+        .await?;
         Ok(())
     }
 }
