@@ -626,7 +626,17 @@ pub(crate) fn posix_spawn_fixed(
 const FIXED_EXEC_ERROR_FD: libc::c_int = 8;
 const FIXED_DUPLICATE_MINIMUM: libc::c_int = 64;
 const SECURE_NOROOT_AND_NO_SETUID_FIXUP_LOCKED: libc::c_int = 0x0f;
+const SECURE_NO_SETUID_FIXUP_LOCKED: libc::c_int = 0x0c;
 const LINUX_CAPABILITY_VERSION_3: u32 = 0x2008_0522;
+
+/// Selects one closed parent admission recipe for the shared descriptor engine.
+#[derive(Clone, Copy)]
+pub(crate) enum FixedDescriptorExecRecipeV1 {
+    /// Preserves ordinary UID 0 NOROOT admission and non-root behavior.
+    LockedNorootV1,
+    /// Requires UID 0, exactly locked no-setuid-fixup and already-active NNP.
+    NixOfflineNnpV1,
+}
 
 #[repr(C)]
 struct RawCapabilityHeader {
@@ -697,15 +707,61 @@ pub(crate) fn begin_fixed_execveat_without_authority(
     stderr: BorrowedFd<'_>,
     inherited: &[BorrowedFd<'_>],
 ) -> Result<PendingFixedExecChild> {
-    // Locked NOROOT and NO_SETUID_FIXUP are what prevent UID 0 from regaining
-    // a permitted set when the dynamic loader is entered after capset(2).
+    begin_fixed_execveat_with_recipe(
+        executable,
+        argument_zero,
+        arguments,
+        stdin,
+        stdout,
+        stderr,
+        inherited,
+        FixedDescriptorExecRecipeV1::LockedNorootV1,
+    )
+}
+
+/// Admits one closed recipe before entering the sole fork/exec-status engine.
+///
+/// # Errors
+///
+/// Returns the original securebits, pipe, duplication or fork error. The Nix
+/// recipe additionally rejects non-root callers, non-exact securebits and
+/// inactive NNP, or returns the concrete NNP observation syscall error.
+pub(crate) fn begin_fixed_execveat_with_recipe(
+    executable: BorrowedFd<'_>,
+    argument_zero: &CStr,
+    arguments: &[CString],
+    stdin: BorrowedFd<'_>,
+    stdout: BorrowedFd<'_>,
+    stderr: BorrowedFd<'_>,
+    inherited: &[BorrowedFd<'_>],
+    recipe: FixedDescriptorExecRecipeV1,
+) -> Result<PendingFixedExecChild> {
     // SAFETY: PR_GET_SECUREBITS consumes scalar arguments only.
     let securebits = unsafe { libc::prctl(libc::PR_GET_SECUREBITS, 0, 0, 0, 0) };
     if securebits < 0 {
         return Err(Error::syscall("prctl(PR_GET_SECUREBITS)"));
     }
     // SAFETY: geteuid observes process credentials without pointer arguments.
-    validate_descriptor_exec_securebits(unsafe { libc::geteuid() }, securebits)?;
+    let effective_uid = unsafe { libc::geteuid() };
+    match recipe {
+        FixedDescriptorExecRecipeV1::LockedNorootV1 => {
+            // Locked NOROOT and NO_SETUID_FIXUP are what prevent UID 0 from regaining
+            // a permitted set when the dynamic loader is entered after capset(2).
+            validate_descriptor_exec_securebits(effective_uid, securebits)?;
+        }
+        FixedDescriptorExecRecipeV1::NixOfflineNnpV1 => {
+            validate_nix_offline_descriptor_exec_securebits(effective_uid, securebits)?;
+
+            // This parent cannot set NOROOT without SETPCAP. Its already-active
+            // NNP must prevent root exec from restoring the cleared permitted set.
+            let no_new_privileges =
+                rustix::thread::no_new_privs().map_err(|source| Error::Syscall {
+                    operation: "prctl(PR_GET_NO_NEW_PRIVS)",
+                    source: source.into(),
+                })?;
+            validate_nix_offline_descriptor_exec_nnp(no_new_privileges)?;
+        }
+    }
 
     let mut argument_pointers = Vec::with_capacity(arguments.len() + 2);
     argument_pointers.push(argument_zero.as_ptr().cast_mut());
@@ -776,6 +832,29 @@ fn validate_descriptor_exec_securebits(
         return Err(Error::invalid(
             "fixed descriptor process securebits",
             "UID 0 requires locked noroot and no-setuid-fixup",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_nix_offline_descriptor_exec_securebits(
+    effective_uid: libc::uid_t,
+    securebits: libc::c_int,
+) -> Result<()> {
+    if effective_uid != 0 || securebits != SECURE_NO_SETUID_FIXUP_LOCKED {
+        return Err(Error::invalid(
+            "fixed descriptor process securebits",
+            "Nix offline UID 0 requires exactly locked no-setuid-fixup",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_nix_offline_descriptor_exec_nnp(no_new_privileges: bool) -> Result<()> {
+    if !no_new_privileges {
+        return Err(Error::invalid(
+            "fixed descriptor process no-new-privileges",
+            "Nix offline descriptor exec requires no-new-privileges",
         ));
     }
     Ok(())
@@ -3111,6 +3190,48 @@ mod tests {
             assert!(validate_descriptor_exec_securebits(0, incomplete).is_err());
         }
         assert!(validate_descriptor_exec_securebits(1000, 0).is_ok());
+    }
+
+    #[test]
+    fn nix_offline_descriptor_exec_requires_exact_root_securebits() {
+        assert!(validate_nix_offline_descriptor_exec_securebits(0, 0x0c).is_ok());
+
+        for wrong_bits in [0, 0x03, 0x07, 0x0e, 0x0f, 0x1c] {
+            assert!(matches!(
+                validate_nix_offline_descriptor_exec_securebits(0, wrong_bits),
+                Err(Error::InvalidInput {
+                    field: "fixed descriptor process securebits",
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn nix_offline_descriptor_exec_rejects_nonroot_even_with_exact_bits() {
+        for effective_uid in [1, 1000, libc::uid_t::MAX] {
+            assert!(
+                validate_nix_offline_descriptor_exec_securebits(effective_uid, 0x0c).is_err()
+            );
+        }
+
+        // The new closed route does not narrow the ordinary non-root recipe.
+        for securebits in [0, 0x0c, 0x0f, 0x1c] {
+            assert!(validate_descriptor_exec_securebits(1000, securebits).is_ok());
+        }
+    }
+
+    #[test]
+    fn nix_offline_descriptor_exec_requires_already_active_nnp() {
+        assert!(validate_nix_offline_descriptor_exec_nnp(true).is_ok());
+
+        assert!(matches!(
+            validate_nix_offline_descriptor_exec_nnp(false),
+            Err(Error::InvalidInput {
+                field: "fixed descriptor process no-new-privileges",
+                ..
+            })
+        ));
     }
 
     #[test]

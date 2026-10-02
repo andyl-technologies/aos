@@ -33,6 +33,7 @@ pub use session::{
     run_fixed_process_session_retained_v1,
     run_fixed_process_session_from_executable_descriptor,
     run_fixed_process_session_from_executable_descriptor_retained_v1,
+    run_fixed_process_session_from_nix_offline_executable_descriptor_retained_v1,
 };
 
 const MAXIMUM_EXECUTABLE_BYTES: usize = 4096;
@@ -204,7 +205,7 @@ struct PreparedInvocation {
 enum SpawnExecution<'a> {
     Path,
     Descriptor(BorrowedFd<'a>),
-    PendingDescriptor(BorrowedFd<'a>),
+    PendingDescriptor(BorrowedFd<'a>, uapi::FixedDescriptorExecRecipeV1),
 }
 
 impl PreparedInvocation {
@@ -255,7 +256,26 @@ impl PreparedInvocation {
         self.spawn_internal(
             stdin,
             inherited,
-            SpawnExecution::PendingDescriptor(executable),
+            SpawnExecution::PendingDescriptor(
+                executable,
+                uapi::FixedDescriptorExecRecipeV1::LockedNorootV1,
+            ),
+        )
+    }
+
+    fn begin_from_nix_offline_executable_descriptor(
+        &self,
+        executable: BorrowedFd<'_>,
+        stdin: Option<BorrowedFd<'_>>,
+        inherited: &[BorrowedFd<'_>],
+    ) -> Result<SpawnedProcess> {
+        self.spawn_internal(
+            stdin,
+            inherited,
+            SpawnExecution::PendingDescriptor(
+                executable,
+                uapi::FixedDescriptorExecRecipeV1::NixOfflineNnpV1,
+            ),
         )
     }
 
@@ -286,7 +306,8 @@ impl PreparedInvocation {
             .collect::<Result<Vec<_>>>()?;
         let executable_descriptor = match execution {
             SpawnExecution::Path => None,
-            SpawnExecution::Descriptor(descriptor) | SpawnExecution::PendingDescriptor(descriptor) => {
+            SpawnExecution::Descriptor(descriptor)
+            | SpawnExecution::PendingDescriptor(descriptor, _) => {
                 Some(duplicate_high(descriptor)?)
             }
         };
@@ -299,8 +320,8 @@ impl PreparedInvocation {
             .collect::<Vec<_>>();
 
         let (mut guard, exec_status) = match (execution, executable_descriptor.as_ref()) {
-            (SpawnExecution::PendingDescriptor(_), Some(executable)) => {
-                let pending = uapi::begin_fixed_execveat_without_authority(
+            (SpawnExecution::PendingDescriptor(_, recipe), Some(executable)) => {
+                let pending = uapi::begin_fixed_execveat_with_recipe(
                     executable.as_fd(),
                     &self.argument_zero,
                     &self.arguments,
@@ -308,6 +329,7 @@ impl PreparedInvocation {
                     stdout_write.as_fd(),
                     stderr_write.as_fd(),
                     &inherited,
+                    recipe,
                 )?;
                 let (mut raw_guard, status) = pending.into_parts();
                 let guard = ChildGuard::new(raw_guard.pid()?);

@@ -10,6 +10,7 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::time::Duration;
 
 use crate::pidfd::{PidFd, PidFdInfo};
+use crate::uapi::FixedDescriptorExecRecipeV1;
 use crate::{Error, Result};
 
 use super::capture::{
@@ -476,6 +477,78 @@ pub fn run_fixed_process_session_from_executable_descriptor_retained_v1<X>(
 where
     X: FixedProcessSessionExchange,
 {
+    run_descriptor_session_retained(
+        request,
+        executable,
+        exchange,
+        capture,
+        FixedDescriptorExecRecipeV1::LockedNorootV1,
+    )
+}
+
+/// Runs a retained descriptor session with the closed Nix offline NNP recipe.
+///
+/// This route requires actual effective UID 0, exactly locked no-setuid-fixup
+/// securebits (`0x0c`), and already-active no-new-privileges. The shared child engine clears
+/// effective, permitted and inheritable capabilities, preserves the inherited
+/// bounding set and securebits, and enables NNP before descriptor exec. It does
+/// not turn this recipe into the ordinary locked-NOROOT (`0x0f`) recipe.
+///
+/// This is process and captured-output DATA machinery, not an offline role,
+/// executable provenance, approval, TPM, currentness or process-tree drain
+/// authority. The caller must independently retain and validate those owners.
+/// Request bounds, empty environment, FD roles, absolute deadline, exchange and
+/// output retention are identical to the ordinary retained descriptor route.
+/// Cleanup can block, and a blocking exchange cannot be preempted.
+///
+/// # Errors
+///
+/// Returns the original concrete validation, reservation, spawning, observation,
+/// exchange or cleanup error. Additionally rejects a parent outside the closed
+/// UID/securebits/NNP recipe, preserving a failed NNP syscall's concrete cause.
+/// Parent recipe rejection precedes the exec-status pipe and fork, but follows
+/// the shared invocation preparation and standard output pipe setup.
+///
+/// # Panics
+///
+/// Propagates the original exchange panic. The caller-held capture retains
+/// bounded observed output and cleanup diagnostics during unwinding; dropping
+/// that capture or aborting the worker loses its in-memory DATA.
+pub fn run_fixed_process_session_from_nix_offline_executable_descriptor_retained_v1<X>(
+    request: FixedProcessSessionRequest<'_>,
+    executable: OwnedFd,
+    exchange: &mut X,
+    capture: &mut FixedProcessCaptureV1,
+) -> std::result::Result<
+    FixedProcessRetainedSessionOutcome<X::Output>,
+    FixedProcessRetainedSessionError<X::Error>,
+>
+where
+    X: FixedProcessSessionExchange,
+{
+    run_descriptor_session_retained(
+        request,
+        executable,
+        exchange,
+        capture,
+        FixedDescriptorExecRecipeV1::NixOfflineNnpV1,
+    )
+}
+
+// Both public routes retain the same validation, ownership and supervision body.
+fn run_descriptor_session_retained<X>(
+    request: FixedProcessSessionRequest<'_>,
+    executable: OwnedFd,
+    exchange: &mut X,
+    capture: &mut FixedProcessCaptureV1,
+    recipe: FixedDescriptorExecRecipeV1,
+) -> std::result::Result<
+    FixedProcessRetainedSessionOutcome<X::Output>,
+    FixedProcessRetainedSessionError<X::Error>,
+>
+where
+    X: FixedProcessSessionExchange,
+{
     let result = (|| {
         let started = monotonic_now();
         let deadline = started.checked_add(request.process.timeout).ok_or_else(|| {
@@ -513,13 +586,23 @@ where
         .iter()
         .map(|descriptor| descriptor.as_fd())
         .collect::<Vec<_>>();
-    let spawned = invocation
-        .begin_from_executable_descriptor(
-            executable.as_fd(),
-            stdin.as_ref().map(|descriptor| descriptor.as_fd()),
-            &inherited_borrows,
-        )
-        .map_err(|source| FixedProcessRetainedSessionError::Session(process_error(source)))?;
+    let spawned = match recipe {
+        FixedDescriptorExecRecipeV1::LockedNorootV1 => {
+            invocation.begin_from_executable_descriptor(
+                executable.as_fd(),
+                stdin.as_ref().map(|descriptor| descriptor.as_fd()),
+                &inherited_borrows,
+            )
+        }
+        FixedDescriptorExecRecipeV1::NixOfflineNnpV1 => {
+            invocation.begin_from_nix_offline_executable_descriptor(
+                executable.as_fd(),
+                stdin.as_ref().map(|descriptor| descriptor.as_fd()),
+                &inherited_borrows,
+            )
+        }
+    }
+    .map_err(|source| FixedProcessRetainedSessionError::Session(process_error(source)))?;
     let mut run = SessionRun::retained(spawned, process, capture);
 
     drop(inherited_borrows);
