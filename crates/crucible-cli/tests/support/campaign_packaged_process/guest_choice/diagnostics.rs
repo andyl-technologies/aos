@@ -2,6 +2,24 @@
 
 use super::*;
 
+pub(super) fn report_recent_host_wait_observations(service: &CampaignServiceChild) {
+    // Retain before-cancellation polling evidence even if callback records push
+    // it outside the ordinary stderr tail: <=64 rows of <=2048 bytes each.
+    match service.stderr_recent_lines_with_prefix("CRUCIBLE-HOST-WAIT-V1 ", 64, 2048) {
+        Ok(records) => {
+            for record in records {
+                let _write_result = writeln!(std::io::stderr().lock(), "{record}");
+            }
+        }
+        Err(error) => {
+            let _write_result = writeln!(
+                std::io::stderr().lock(),
+                "host wait observation unavailable: {error}"
+            );
+        }
+    }
+}
+
 pub(super) fn configure_flight_diagnostics(
     invocation: &mut Command,
     diagnostics: FlightDiagnostics,
@@ -70,6 +88,12 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     let attempt = "synthetic-capture-regression-attempt";
     let attestation = format!("{MATERIALIZATION_DIAGNOSTIC_PREFIX}attempt={attempt} tier=HotFork");
     writeln!(service.stderr, "{attestation}")?;
+    for record in 0..70 {
+        writeln!(
+            service.stderr,
+            "CRUCIBLE-HOST-WAIT-V1 phase=advance-pending slot=0 record={record}"
+        )?;
+    }
     for token in 0..1024 {
         writeln!(
             service.stderr,
@@ -90,5 +114,18 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     assert_materialization_tier(&events, attempt, "HotFork")?;
     assert!(assert_materialization_tier(&events, attempt, "ThinReplay").is_err());
     assert!(assert_materialization_tier(&events, "different-attempt", "HotFork").is_err());
+    let waits = service.stderr_recent_lines_with_prefix("CRUCIBLE-HOST-WAIT-V1 ", 64, 2048)?;
+    assert_eq!(waits.len(), 64);
+    assert!(
+        waits
+            .first()
+            .is_some_and(|record| record.ends_with("record=6"))
+    );
+    assert!(
+        waits
+            .last()
+            .is_some_and(|record| record.ends_with("record=69"))
+    );
+    assert!(!service.stderr_tail().contains("CRUCIBLE-HOST-WAIT-V1 "));
     Ok(())
 }
