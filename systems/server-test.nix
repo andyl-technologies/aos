@@ -39,8 +39,16 @@
   # Preserve the production EROFS format and all boot semantics while avoiding
   # zstd-19 recompression on every iterative fleet-test image rebuild.
   aos.image.erofsCompressionLevel = 1;
-  # Image sizes follow the measured production limits; test artifact
-  # admission remains explicit.
+  # The current level-1 activation fixture measures 1407.945 MiB. Keep its
+  # artifact allowance separate from production compression, with A/B slot
+  # headroom and bounded delivery space for the root, firmware, and verity.
+  aos.image.rootPartitionMiB = 2048;
+  aos.image.budgets = {
+    maxRootMiB = 1536;
+    maxDownloadMiB = 2048;
+  };
+
+  # Test artifact admission remains explicit under every size allowance.
   aos.image.allowTestArtifacts = true;
   aos.image.testArtifactRoots = [pkgs.binutils];
 
