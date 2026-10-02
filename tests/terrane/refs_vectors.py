@@ -299,7 +299,7 @@ def negatives():
 def render(binary):
     """Renders full field tables, exact wires, preimages and commit identities."""
     parts = [HEADING, "", textwrap.fill(
-        "These TEST-1/TEST-2 field witnesses cover REF-10/REF-20 and PROV-1/PROV-3. "
+        "These TEST-1/TEST-2 field witnesses cover REF-9/REF-20 and PROV-1/PROV-3. "
         "Fixed signatures, public token chains, context roots, disclosure proofs "
         "and selectors are unverified inert data. Only complete positive Commit "
         "records have immutable identities. Ref records, logs, annotations and "
