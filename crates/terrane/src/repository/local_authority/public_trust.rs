@@ -20,7 +20,7 @@ const LIMIT: usize = 65_536;
 const RECORD_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Owns an untrusted dedicated disclosure role without a private key.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DisclosureRoleRecord {
     /// Canonical lowercase hexadecimal physical repository authority identifier.
     pub(crate) repository: String,
