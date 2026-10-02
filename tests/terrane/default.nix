@@ -201,4 +201,5 @@ in {
   integration.attribute-reference-models = import ./attribute-models.nix {inherit sourceGate;};
   integration.container-reference-models = import ./container-models.nix {inherit sourceGate;};
   integration.refs-reference-models = import ./refs-models.nix {inherit sourceGate;};
+  integration.evidence-reference-models = import ./evidence-models.nix {inherit sourceGate;};
 }

@@ -174,6 +174,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   dependency-first envelopes with verified plaintext lengths as ordinary data.
   Native preload consumption and complete joint qualification remain required;
   the reader stays on its task branch and T-CDC-1 remains open.
+  Both actual codec checks also pass on the isolated joint candidate with the
+  reviewed reader merged. Native preload consumption remains on its workline;
+  these joint codec results do not advance task completion.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
@@ -545,6 +548,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   reference and copies that published file into the consumer. Published-input
   qualification remains pending. Its actual candidate aggregate still rejects
   the absent `format_properties` target; no task or milestone advances.
+  The rebased reviewed retirement consumer now passes the actual published-input
+  auxiliary, including all seven exact groups and strict Clippy. Its copied
+  output reference matches the entire normative golden file byte-for-byte.
+  The isolated combined core candidate passes its full build, all 575 Nextest
+  tests across eleven binaries with zero skips (run
+  `fbd1e124-b65a-4894-abdf-96555cc671fa`), strict all-target Clippy,
+  warnings/missing-docs rustdoc and both mandatory formatters. All ten temporary
+  inputs remained frozen through every original consumer and were removed only
+  after terminal qualification. Native aggregate and complete corpus coverage
+  remain unqualified; no formal task merge or status advance follows.
   The separate `refs-reference-models` auxiliary reserves four exact groups
   for complete modern commit optional fields/preimages, ref policy and snapshot
   envelope fields/preimages, reflog reason/CAS/predecessor alternatives and
@@ -552,6 +565,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   generator and model templates are absent. These untrusted format inputs
   establish no signed authority, live ref state or successful publication;
   complete reference publication remains open.
+  A separate `evidence-reference-models` auxiliary reserves five exact pure
+  groups for complete selector AST models, trust-context versions and presence,
+  selected side-evidence tuples, disclosure statement fields/preimages and
+  normalized whole-target binding fields/digests. It appends test-only consumers
+  to the existing pure encoding seams in its sandbox, without exposing a new
+  production interface. It fails explicitly while those input templates,
+  generator or pure prerequisites are absent. This registration establishes
+  no verification, trust evaluation or native disclosure authority.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
