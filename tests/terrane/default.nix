@@ -205,4 +205,5 @@ in {
   integration.control-reference-models = import ./control-models.nix {inherit sourceGate;};
   integration.reconciliation-reference-models = import ./reconciliation-models.nix {inherit sourceGate;};
   integration.lineage-reference-models = import ./lineage-models.nix {inherit sourceGate;};
+  integration.prefix-reference-models = import ./prefix-models.nix {inherit sourceGate;};
 }
