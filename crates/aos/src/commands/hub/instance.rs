@@ -1,16 +1,18 @@
 //! Handles hub instance commands and their domain-specific request validation.
 
 use crate::cli::{
-    HubInstanceCmd, HubInstanceMaintenanceCmd, HubInstanceSettingsMutationCmd,
-    HubInstanceSettingsSectionCmd,
+    HubInstanceCmd, HubInstanceMaintenanceCmd, HubInstanceOciRouteCmd,
+    HubInstanceSettingsMutationCmd, HubInstanceSettingsSectionCmd,
     HubInstanceTopologyDefaultsCmd, HubMutationArgs, HubOrgTopologyDefaultsCmd,
 };
+use crate::commands::hub::access_policy::{access_policy_args_present, build_access_policy};
 use crate::commands::hub::client::hub_client;
 use crate::commands::hub::input::parse_generation_ref;
 use crate::commands::hub::mutation::apply_topology_plan;
 use crate::commands::hub::mutation::{
-    new_idempotency_key, retained_apply_mutation, retained_plan_mutation, topology_mutation,
-    topology_read,
+    delete_topology_resource, new_idempotency_key, required_plan_version,
+    retained_apply_mutation, retained_plan_mutation, topology_mutation, topology_read,
+    topology_stable_id,
 };
 use crate::commands::hub::output::print_topology_message;
 use anyhow::{Context as _, Result};
@@ -48,7 +50,249 @@ pub(super) async fn instance(printer: &Printer, command: &HubInstanceCmd) -> Res
         HubInstanceCmd::TopologyDefaults { command } => {
             instance_topology_defaults(printer, command).await
         }
+        HubInstanceCmd::OciRoute { command } => instance_oci_route(printer, command).await,
     }
+}
+
+/// Handles `aos hub instance oci-route …` (instance-owned OCI root routes).
+async fn instance_oci_route(printer: &Printer, command: &HubInstanceOciRouteCmd) -> Result<()> {
+    match command {
+        HubInstanceOciRouteCmd::List { access } => {
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            topology_read::<_, hub_types::ListInstanceOciRoutesResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::ListInstanceOciRoutes,
+                &hub_types::ListInstanceOciRoutesRequest {},
+            )
+            .await
+        }
+        HubInstanceOciRouteCmd::Show { access, route } => {
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            topology_read::<_, hub_types::InstanceOciRouteResponse>(
+                printer,
+                &client,
+                HubTopologyMethod::GetInstanceOciRoute,
+                &hub_types::GetTopologyResourceRequest {
+                    stable_id: route.clone(),
+                },
+            )
+            .await
+        }
+        HubInstanceOciRouteCmd::Add {
+            access,
+            stable_id,
+            endpoint,
+            endpoint_generation,
+            default_registry,
+            enabled,
+            bind_existing_reservation,
+            policy,
+            mutation,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let request = if mutation.plan_id.is_some() {
+                hub_types::PlanInstanceOciRouteMutationRequest::default()
+            } else {
+                let access_policy = build_access_policy(policy, true)?
+                    .context("instance OCI route creation requires --access public or hub-auth")?;
+                let endpoint_generation = match endpoint_generation {
+                    Some(generation) => i64::try_from(*generation)
+                        .context("--endpoint-generation is out of range")?,
+                    None => current_endpoint_generation(&client, endpoint).await?,
+                };
+                hub_types::PlanInstanceOciRouteMutationRequest {
+                    stable_id: topology_stable_id(stable_id.as_deref(), "instance-oci-route"),
+                    spec: Some(hub_types::InstanceOciRouteSpec {
+                        endpoint_id: endpoint.clone(),
+                        endpoint_generation,
+                        access_policy: Some(access_policy),
+                        default_registry: default_registry.clone().unwrap_or_default(),
+                        enabled: *enabled,
+                    }),
+                    bind_existing_reservation: *bind_existing_reservation,
+                    idempotency_key: new_idempotency_key(),
+                    ..Default::default()
+                }
+            };
+            instance_oci_route_mutation(
+                printer,
+                &client,
+                HubTopologyMethod::PlanCreateInstanceOciRoute,
+                HubTopologyMethod::CreateInstanceOciRoute,
+                &request,
+                mutation,
+            )
+            .await
+        }
+        HubInstanceOciRouteCmd::Update {
+            access,
+            route,
+            endpoint_generation,
+            default_registry,
+            clear_default_registry,
+            enable,
+            disable,
+            policy,
+            mutation,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let request = if mutation.plan_id.is_some() {
+                hub_types::PlanInstanceOciRouteMutationRequest::default()
+            } else {
+                let mut update_mask = Vec::new();
+                let mut spec = hub_types::InstanceOciRouteSpec::default();
+                if let Some(generation) = endpoint_generation {
+                    spec.endpoint_generation = i64::try_from(*generation)
+                        .context("--endpoint-generation is out of range")?;
+                    update_mask.push("spec.endpoint_generation".to_string());
+                }
+                if access_policy_args_present(policy) {
+                    spec.access_policy = build_access_policy(policy, true)?;
+                    update_mask.push("spec.access_policy".to_string());
+                }
+                if let Some(registry) = default_registry {
+                    spec.default_registry = registry.clone();
+                    update_mask.push("spec.default_registry".to_string());
+                } else if *clear_default_registry {
+                    update_mask.push("spec.default_registry".to_string());
+                }
+                if *enable || *disable {
+                    spec.enabled = *enable;
+                    update_mask.push("spec.enabled".to_string());
+                }
+                anyhow::ensure!(
+                    !update_mask.is_empty(),
+                    "instance OCI route update requires at least one changed field"
+                );
+                hub_types::PlanInstanceOciRouteMutationRequest {
+                    stable_id: route.clone(),
+                    spec: Some(spec),
+                    expected_resource_version: required_plan_version(
+                        mutation,
+                        "instance OCI route update",
+                    )?
+                    .to_string(),
+                    update_mask,
+                    idempotency_key: new_idempotency_key(),
+                    bind_existing_reservation: false,
+                }
+            };
+            instance_oci_route_mutation(
+                printer,
+                &client,
+                HubTopologyMethod::PlanUpdateInstanceOciRoute,
+                HubTopologyMethod::UpdateInstanceOciRoute,
+                &request,
+                mutation,
+            )
+            .await
+        }
+        HubInstanceOciRouteCmd::Remove {
+            access,
+            route,
+            mutation,
+        } => {
+            delete_topology_resource(
+                printer,
+                access,
+                route,
+                mutation,
+                HubTopologyMethod::PlanDeleteInstanceOciRoute,
+                HubTopologyMethod::DeleteInstanceOciRoute,
+            )
+            .await
+        }
+        HubInstanceOciRouteCmd::Convert {
+            access,
+            route,
+            stable_id,
+            mutation,
+        } => {
+            let client = hub_client(&access.hub, access.token.as_deref()).await?;
+            let request = if mutation.plan_id.is_some() {
+                hub_types::PlanConvertRouteToInstanceOciRouteRequest::default()
+            } else {
+                hub_types::PlanConvertRouteToInstanceOciRouteRequest {
+                    route_id: route.clone(),
+                    expected_resource_version: required_plan_version(
+                        mutation,
+                        "route conversion",
+                    )?
+                    .to_string(),
+                    stable_id: stable_id.clone().unwrap_or_default(),
+                    idempotency_key: new_idempotency_key(),
+                }
+            };
+            topology_mutation::<
+                _,
+                hub_types::ApplyTopologyPlanRequest,
+                hub_types::InstanceOciRouteResponse,
+                _,
+            >(
+                printer,
+                &client,
+                HubTopologyMethod::PlanConvertRouteToInstanceOciRoute,
+                HubTopologyMethod::ConvertRouteToInstanceOciRoute,
+                &request,
+                mutation,
+                apply_topology_plan,
+            )
+            .await
+        }
+    }
+}
+
+/// Runs one instance OCI route plan/apply pair.
+async fn instance_oci_route_mutation(
+    printer: &Printer,
+    client: &HubClient,
+    plan_method: impl HubRpc<
+        Request = hub_types::PlanInstanceOciRouteMutationRequest,
+        Response = hub_types::TopologyPlanResponse,
+    >,
+    apply_method: impl HubRpc<
+        Request = hub_types::ApplyTopologyPlanRequest,
+        Response = hub_types::InstanceOciRouteResponse,
+    > + Copy,
+    request: &hub_types::PlanInstanceOciRouteMutationRequest,
+    mutation: &HubMutationArgs,
+) -> Result<()> {
+    topology_mutation::<
+        _,
+        hub_types::ApplyTopologyPlanRequest,
+        hub_types::InstanceOciRouteResponse,
+        _,
+    >(
+        printer,
+        client,
+        plan_method,
+        apply_method,
+        request,
+        mutation,
+        apply_topology_plan,
+    )
+    .await
+}
+
+/// Reads the endpoint's desired generation so `add` can omit it.
+async fn current_endpoint_generation(client: &HubClient, endpoint: &str) -> Result<i64> {
+    let response: hub_types::EndpointResponse = client
+        .call_topology(
+            HubTopologyMethod::GetEndpoint,
+            &hub_types::GetTopologyResourceRequest {
+                stable_id: endpoint.to_string(),
+            },
+        )
+        .await?;
+    let endpoint = response
+        .endpoint
+        .context("the Hub returned no endpoint")?;
+    anyhow::ensure!(
+        endpoint.desired_generation > 0,
+        "the endpoint has no desired generation; pass --endpoint-generation"
+    );
+    Ok(endpoint.desired_generation)
 }
 
 /// Handles one topologically owned instance-settings section.

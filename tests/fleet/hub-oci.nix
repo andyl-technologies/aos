@@ -3,6 +3,10 @@
 ##! Runs the packaged native Hub behind an AOS-built TLS edge, publishes the
 ##! production AOS container graph, pulls it with daemonless AOS porcelain and
 ##! containerd/nerdctl, and exercises every container-administration CLI leaf.
+##! It then converts the public registry-bound root route into an
+##! instance-owned OCI route, serves `<host>/<registry-slug>/<repository>`
+##! through enabled registry namespaces, binds a burned host reservation to a
+##! second instance route, and deletes a registry without touching either.
 {
   lib,
   mkSystem,
@@ -859,11 +863,12 @@ in {
     # service writes staged NARs beside these keys later, so the seeded
     # directories must belong to it.
     PUBLIC_PLACEMENT_ROOT = "/var/lib/aos-hub/storage/public"
+    # `nix-cache-info` is a prepared publication pointer that release
+    # finalization compares against the placement, so it is never seeded.
     SEEDED_NON_OCI_KEYS = [
         "0000000000000000000000000000000a.narinfo",
         "nar/0000000000000000000000000000000a.nar.zst",
         "nar/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.nar.zst",
-        "nix-cache-info",
         "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.narinfo",
     ]
     hub.succeed(textwrap.dedent(f"""
@@ -2223,6 +2228,312 @@ in {
     )
     publisher.fail(hub_command("registry show acme/gc-cancel", token))
 
+    # Instance-owned OCI root routes. The public registry-bound root route is
+    # converted in place: the host keeps its permanent URL reservation, the
+    # default registry keeps answering unnamespaced references, and the enabled
+    # registry namespace additionally serves
+    # `<host>/<registry-slug>/<repository>:<tag>` to unmodified clients.
+    token = browser_session_token()
+    public_route = next(
+        item
+        for item in json.loads(publisher.succeed(
+            hub_command("route list registry:acme/containers", token)
+        ))["data"]["routes"]
+        if item["stable_id"] == "oci-public-route"
+    )
+    converted = reviewed(
+        publisher,
+        "oci-public-convert",
+        "instance oci-route convert oci-public-route "
+        "--stable-id oci-public-instance "
+        f"--if-version {shlex.quote(public_route['resource_version'])}",
+        token,
+    )["data"]["route"]
+    assert converted["stable_id"] == "oci-public-instance", converted
+    assert converted["spec"]["default_registry"] == "acme/containers", converted
+    assert converted["spec"]["enabled"], converted
+    assert converted["ready"], converted
+    instance_url = converted["canonical_rendered_url"]
+    assert instance_url.startswith("https://hub:8443"), converted
+    assert not any(
+        item["stable_id"] == "oci-public-route"
+        for item in json.loads(publisher.succeed(
+            hub_command("route list registry:acme/containers", token)
+        ))["data"]["routes"]
+    )
+    instance_routes = json.loads(publisher.succeed(
+        hub_command("instance oci-route list", token)
+    ))["data"]["routes"]
+    assert [item["stable_id"] for item in instance_routes] == [
+        "oci-public-instance"
+    ], instance_routes
+    namespace = json.loads(publisher.succeed(hub_command(
+        "registry container namespace show acme/containers", token
+    )))["data"]["namespace"]
+    assert namespace["enabled"], namespace
+    registry = json.loads(publisher.succeed(
+        hub_command("registry show acme/containers", token)
+    ))["data"]["registry"]
+    assert registry["oci_distribution_origin"].rstrip("/") == OCI, registry
+    assert registry["oci_repository_namespace"] == "acme/containers", registry
+
+    # Unmodified clients push and pull the namespaced reference; the registry
+    # keeps serving the unnamespaced form as the route's default registry.
+    namespaced_push = json.loads(publisher.succeed(
+        f"HOME=/var/lib/aos-oci-publisher {AOS} "
+        f"--json --progress off --color never container push {DELIVERY_LAYOUT} "
+        "hub:8443/acme/containers/aos:namespaced --hub https://hub:8443 "
+        f"--token {shlex.quote(token)}",
+        timeout=900,
+    ))
+    assert namespaced_push["index_digest"] == root_digest, namespaced_push
+    tags = json.loads(publisher.succeed(hub_command(
+        "registry container tag list acme/containers aos", token
+    )))["data"]["tags"]
+    namespaced_tag = next(item for item in tags if item["tag"] == "namespaced")
+    assert namespaced_tag["digest"] == root_digest, namespaced_tag
+    namespaced_publish = json.loads(publisher.succeed(
+        f"HOME=/var/lib/aos-oci-publisher {AOS} "
+        "--json --progress off --color never container publish aos "
+        "hub:8443/acme/containers/aos:namespaced-stable "
+        "--release /var/tmp/container-final/container-release.json "
+        "--release-layout /var/tmp/container-final/layout "
+        "--signature-input /var/tmp/container-final/signature-input.json "
+        "--registry acme/containers "
+        "--registry-origin https://hub:8443 "
+        f"--registry-token {shlex.quote(token)} "
+        f"--hub {HUB} --token {shlex.quote(token)} "
+        "--idempotency-key hub-oci-namespaced-commit",
+        timeout=900,
+    ))
+    assert namespaced_publish["verification"] == "verified", namespaced_publish
+    assert namespaced_publish["index_digest"] == signed_root, namespaced_publish
+    consumer.succeed(
+        f"{CURL} -fsS {OCI}/v2/acme/containers/aos/tags/list | {JQ} -e "
+        + shlex.quote(
+            '.name == "acme/containers/aos" '
+            'and (.tags | index("namespaced")) '
+            'and (.tags | index("namespaced-stable"))'
+        )
+    )
+    consumer.succeed(
+        f"{AOS} --json --progress off --color never container pull "
+        "hub:8443/acme/containers/aos:namespaced --hub https://hub:8443 "
+        "--platform linux/amd64 --format oci-layout "
+        "--output /var/tmp/aos-namespaced-tag",
+        timeout=900,
+    )
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 "
+        "hub:8443/acme/containers/aos:namespaced",
+        timeout=900,
+    )
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 "
+        "hub:8443/acme/containers/aos:namespaced-stable",
+        timeout=900,
+    )
+    consumer.succeed(
+        f"${nerdctl} pull --platform linux/amd64 "
+        f"hub:8443/acme/containers/aos@{root_digest}",
+        timeout=900,
+    )
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 hub:8443/aos:namespaced",
+        timeout=900,
+    )
+    consumer.fail(
+        "${nerdctl} pull --platform linux/amd64 hub:8443/acme/missing/aos:latest"
+    )
+    consumer.fail(f"{CURL} -fsS {OCI}/v2/acme/containers/tags/list")
+
+    # The private host still carries its registry-bound root route, so its
+    # root URL reservation is burned. Binding it to an instance route is a
+    # reviewed instance-administration decision, never an implicit takeover.
+    private_generation = endpoint_generations["oci-private"]
+    private_instance_add = (
+        "instance oci-route add --stable-id oci-private-instance "
+        f"--endpoint oci-private --endpoint-generation {private_generation} "
+        "--access hub-auth --default-registry acme/containers-private --enabled"
+    )
+    publisher.fail(hub_command(
+        private_instance_add,
+        token,
+        "--plan --idempotency-key oci-private-instance-burned-plan",
+    ))
+    private_instance = reviewed(
+        publisher,
+        "oci-private-instance-create",
+        private_instance_add + " --bind-existing-reservation",
+        token,
+    )["data"]["route"]
+    assert private_instance["ready"], private_instance
+    assert "hub_auth" in private_instance["spec"]["access_policy"], private_instance
+    reviewed(
+        publisher,
+        "containers-private-namespace-enable",
+        "registry container namespace enable acme/containers-private",
+        token,
+    )
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 "
+        "192.168.50.11:8443/acme/containers-private/aos:private",
+        timeout=900,
+    )
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 192.168.50.11:8443/aos:private",
+        timeout=900,
+    )
+    consumer.fail(
+        f"{CURL} -fsS {PRIVATE_OCI}/v2/acme/containers-private/aos/tags/list"
+    )
+    consumer.succeed(
+        f"{CURL} -fsS -H {shlex.quote(f'Authorization: Bearer {client_bearer}')} "
+        f"{PRIVATE_OCI}/v2/acme/containers-private/aos/tags/list | {JQ} -e "
+        + shlex.quote('.name == "acme/containers-private/aos"')
+    )
+
+    # Namespace exposure blocks catalog retirement exactly like an enabled
+    # registry-bound OCI route.
+    registry = json.loads(publisher.succeed(
+        hub_command("registry show acme/containers", token)
+    ))["data"]["registry"]
+    retirement = json.loads(publisher.succeed(hub_command(
+        "registry container gc plan acme/containers --retire-registry "
+        f"--if-version {shlex.quote(registry['resource_version'])} "
+        "--idempotency-key hub-oci-namespace-retirement-plan",
+        token,
+    ), timeout=240))["data"]
+    assert retirement["run"]["state"] == "failed", retirement
+    assert any(
+        blocker["kind"] == "oci_route_enabled" for blocker in retirement["blockers"]
+    ), retirement
+
+    # Registry deletion never touches instance routes: an enabled namespace
+    # refuses deletion, and deleting the registry afterwards leaves the host
+    # route serving every other registry.
+    reviewed(
+        publisher,
+        "scratch-registry-create",
+        "registry create --org acme --name scratch --visibility public",
+        token,
+    )
+    reviewed(
+        publisher,
+        "scratch-namespace-enable",
+        "registry container namespace enable acme/scratch",
+        token,
+    )
+    scratch = json.loads(publisher.succeed(
+        hub_command("registry show acme/scratch", token)
+    ))["data"]["registry"]
+    blocked_delete = json.loads(publisher.succeed(hub_command(
+        f"registry delete acme/scratch --if-version {shlex.quote(scratch['resource_version'])}",
+        token,
+        "--plan --idempotency-key scratch-delete-blocked-plan",
+    )))["data"]["plan"]
+    publisher.fail(hub_command(
+        f"registry delete acme/scratch --if-version {shlex.quote(scratch['resource_version'])}",
+        token,
+        f"--plan-id {shlex.quote(blocked_delete['plan_id'])} "
+        f"--confirm-hash {shlex.quote(blocked_delete['confirmation_hash'])} "
+        "--yes --idempotency-key scratch-delete-blocked-apply",
+    ))
+    publisher.succeed(hub_command("registry show acme/scratch", token))
+    reviewed(
+        publisher,
+        "scratch-namespace-disable",
+        "registry container namespace disable acme/scratch",
+        token,
+    )
+    scratch = json.loads(publisher.succeed(
+        hub_command("registry show acme/scratch", token)
+    ))["data"]["registry"]
+    scratch_fence = json.loads(publisher.succeed(hub_command(
+        "registry container gc purge-fence plan acme/scratch "
+        f"--action begin --if-version {shlex.quote(scratch['resource_version'])} "
+        "--idempotency-key scratch-purge-plan",
+        token,
+    )))["data"]["plan"]
+    publisher.succeed(hub_command(
+        "registry container gc purge-fence apply "
+        f"--plan-id {shlex.quote(scratch_fence['plan_id'])} "
+        f"--confirm-hash {shlex.quote(scratch_fence['confirmation_hash'])} "
+        f"--if-version {shlex.quote(scratch['resource_version'])} "
+        "--idempotency-key scratch-purge-apply --yes",
+        token,
+    ))
+    scratch = json.loads(publisher.succeed(
+        hub_command("registry show acme/scratch", token)
+    ))["data"]["registry"]
+    reviewed(
+        publisher,
+        "scratch-registry-delete",
+        f"registry delete acme/scratch --if-version {shlex.quote(scratch['resource_version'])}",
+        token,
+    )
+    publisher.fail(hub_command("registry show acme/scratch", token))
+    surviving = json.loads(publisher.succeed(
+        hub_command("instance oci-route show oci-public-instance", token)
+    ))["data"]["route"]
+    assert surviving["canonical_rendered_url"] == instance_url, surviving
+    assert surviving["ready"], surviving
+    assert surviving["resource_version"] == converted["resource_version"], surviving
+    consumer.succeed(f"{CURL} -fsS {OCI}/v2/")
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 "
+        "hub:8443/acme/containers/aos:namespaced",
+        timeout=900,
+    )
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 hub:8443/aos:latest",
+        timeout=900,
+    )
+
+    # A disabled instance route hands /v2 back to the registry-bound root
+    # route of the same host; removal requires the disabled state and keeps
+    # the host reservation bound to the instance.
+    private_instance = json.loads(publisher.succeed(
+        hub_command("instance oci-route show oci-private-instance", token)
+    ))["data"]["route"]
+    publisher.fail(hub_command(
+        "instance oci-route remove oci-private-instance "
+        f"--if-version {shlex.quote(private_instance['resource_version'])}",
+        token,
+        "--plan --idempotency-key oci-private-instance-remove-enabled-plan",
+    ))
+    private_instance = reviewed(
+        publisher,
+        "oci-private-instance-disable",
+        "instance oci-route update oci-private-instance --disable "
+        f"--if-version {shlex.quote(private_instance['resource_version'])}",
+        token,
+    )["data"]["route"]
+    assert not private_instance["spec"]["enabled"], private_instance
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 192.168.50.11:8443/aos:private",
+        timeout=900,
+    )
+    consumer.fail(
+        "${nerdctl} pull --platform linux/amd64 "
+        "192.168.50.11:8443/acme/containers-private/aos:private"
+    )
+    reviewed(
+        publisher,
+        "oci-private-instance-remove",
+        "instance oci-route remove oci-private-instance "
+        f"--if-version {shlex.quote(private_instance['resource_version'])}",
+        token,
+    )
+    publisher.fail(hub_command("instance oci-route show oci-private-instance", token))
+    publisher.fail(hub_command(
+        "instance oci-route add --stable-id oci-private-instance-again "
+        f"--endpoint oci-private --endpoint-generation {private_generation} "
+        "--access hub-auth",
+        token,
+        "--plan --idempotency-key oci-private-instance-again-plan",
+    ))
+
     # The published registry's deletion review reports its structured
     # blockers, and the apply is refused with the same breakdown.
     blocked = json.loads(publisher.succeed(hub_command(
@@ -2254,40 +2565,40 @@ in {
     # fresh empty inventory, and deletes without any other operator step.
     reviewed(
         publisher,
-        "scratch-registry-create",
-        "registry create --org acme --name scratch --visibility public",
+        "oneclick-registry-create",
+        "registry create --org acme --name oneclick --visibility public",
         token,
     )
     reviewed(
         publisher,
-        "scratch-placement-create",
-        "placement add registry:acme/scratch primary --binding instance-default "
-        "--prefix scratch --kind complete --desired-state active --read enabled",
+        "oneclick-placement-create",
+        "placement add registry:acme/oneclick primary --binding instance-default "
+        "--prefix oneclick --kind complete --desired-state active --read enabled",
         token,
     )
-    scratch = json.loads(publisher.succeed(
-        hub_command("registry show acme/scratch", token)
+    oneclick = json.loads(publisher.succeed(
+        hub_command("registry show acme/oneclick", token)
     ))["data"]["registry"]
     planned = json.loads(publisher.succeed(hub_command(
-        "registry delete acme/scratch "
-        f"--if-version {shlex.quote(scratch['resource_version'])}",
+        "registry delete acme/oneclick "
+        f"--if-version {shlex.quote(oneclick['resource_version'])}",
         token,
-        "--plan --idempotency-key hub-oci-delete-scratch-plan",
+        "--plan --idempotency-key hub-oci-delete-oneclick-plan",
     )))["data"]
     assert planned["readiness"]["verdict"] == "automatic", planned
     assert not planned["readiness"].get("blocking_reasons"), planned
     deleted = json.loads(publisher.succeed(hub_command(
-        "registry delete acme/scratch",
+        "registry delete acme/oneclick",
         token,
         " ".join([
             "--plan-id", shlex.quote(planned["plan"]["plan_id"]),
             "--confirm-hash", shlex.quote(planned["plan"]["confirmation_hash"]),
-            "--idempotency-key hub-oci-delete-scratch-apply --yes --wait --timeout 3m",
+            "--idempotency-key hub-oci-delete-oneclick-apply --yes --wait --timeout 3m",
         ]),
     ), timeout=240))["data"]
     assert deleted["operation"]["operation"]["state"] == "succeeded", deleted
     assert deleted["deletion"]["phase"] == "deleted", deleted
     assert deleted["deletion"]["fence_acquired"] is True, deleted
-    publisher.fail(hub_command("registry show acme/scratch", token))
+    publisher.fail(hub_command("registry show acme/oneclick", token))
   '';
 }

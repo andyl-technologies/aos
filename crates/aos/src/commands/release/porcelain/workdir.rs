@@ -17,6 +17,8 @@
 //! inputs/source-registry/          operator: clean authoring registry at the base
 //! inputs/container/                operator: signed OCI release bundle
 //! inputs/advisory-disposition.json operator: reviewed advisory disposition
+//! bootstrap/<role>/                operator: step bootstrap output of a first
+//!                                  release (signed-intents/, bootstrap-evidence.json)
 //! build/                           build report, SBOM, build journal
 //! images/<platform>/<variant>/     finalize-image work, finalized/ output
 //! registry/prepared/               isolated registry (finalized in place)
@@ -59,7 +61,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, bail};
 use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
-use aos_release::plan::ReleasePlan;
+use aos_release::plan::{ReleasePlan, SurfaceRole};
 use aos_release::platform::Platform;
 use serde::{Deserialize, Serialize};
 
@@ -237,6 +239,11 @@ impl WorkDir {
     /// Returns the operator-supplied clean authoring registry.
     pub(super) fn source_registry(&self) -> PathBuf {
         self.join("inputs/source-registry")
+    }
+
+    /// Returns the `step bootstrap` output of a first release on one surface.
+    pub(super) fn bootstrap(&self, role: SurfaceRole) -> PathBuf {
+        self.join(format!("bootstrap/{role}"))
     }
 
     /// Returns the operator-supplied signed OCI release bundle.

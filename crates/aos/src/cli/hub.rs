@@ -726,6 +726,98 @@ pub enum HubInstanceCmd {
         #[command(subcommand)]
         command: HubInstanceMaintenanceCmd,
     },
+    /// Manage instance-owned OCI root routes that serve registry namespaces
+    OciRoute {
+        #[command(subcommand)]
+        command: HubInstanceOciRouteCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubInstanceOciRouteCmd {
+    /// List instance OCI routes
+    List {
+        #[command(flatten)]
+        access: HubAccessArgs,
+    },
+    /// Show one instance OCI route
+    Show {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        route: String,
+    },
+    /// Add an instance OCI route at an endpoint's host root
+    Add {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Use this stable identity instead of generating one
+        #[arg(long)]
+        stable_id: Option<String>,
+        /// Select a stable endpoint identity
+        #[arg(long)]
+        endpoint: String,
+        /// Pin an endpoint generation; defaults to the endpoint's desired generation
+        #[arg(long)]
+        endpoint_generation: Option<u64>,
+        /// Serve this registry for repository names without a namespace prefix
+        #[arg(long)]
+        default_registry: Option<String>,
+        /// Create the route enabled
+        #[arg(long)]
+        enabled: bool,
+        /// Bind the host root's existing URL reservation instead of refusing it
+        #[arg(long)]
+        bind_existing_reservation: bool,
+        #[command(flatten)]
+        policy: HubAccessPolicyArgs,
+        #[command(flatten)]
+        mutation: HubMutationArgs,
+    },
+    /// Update an instance OCI route without changing its URL
+    Update {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        route: String,
+        /// Move to another generation of the same endpoint
+        #[arg(long)]
+        endpoint_generation: Option<u64>,
+        /// Serve this registry for repository names without a namespace prefix
+        #[arg(long, conflicts_with = "clear_default_registry")]
+        default_registry: Option<String>,
+        /// Stop serving a default registry
+        #[arg(long)]
+        clear_default_registry: bool,
+        /// Enable the route
+        #[arg(long, conflicts_with = "disable")]
+        enable: bool,
+        /// Disable the route
+        #[arg(long)]
+        disable: bool,
+        #[command(flatten)]
+        policy: HubAccessPolicyArgs,
+        #[command(flatten)]
+        mutation: HubMutationArgs,
+    },
+    /// Remove a disabled instance OCI route; its URL reservation remains
+    Remove {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        route: String,
+        #[command(flatten)]
+        mutation: HubMutationArgs,
+    },
+    /// Convert a registry-bound root OCI route into an instance OCI route in place
+    Convert {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Registry-bound hub-proxy route that serves only OCI at a host root
+        route: String,
+        /// Use this stable identity for the new instance route
+        #[arg(long)]
+        stable_id: Option<String>,
+        #[command(flatten)]
+        mutation: HubMutationArgs,
+    },
 }
 
 #[derive(Subcommand)]
