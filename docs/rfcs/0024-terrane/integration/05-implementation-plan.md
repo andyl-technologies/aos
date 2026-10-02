@@ -273,10 +273,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and rustdoc. Every prior golden byte remains unchanged. Remaining
   collection/retirement formats and complete corpus/fuzz qualification
   remain required before T1's encoding freeze; `golden-vectors` stays pending.
+  The `core-fuzz` harness now requires the pure `format_properties` integration
+  target and refuses empty or ignored execution. Its implementation and
+  format-by-format coverage review remain pending; registering that harness
+  does not qualify TEST-3.
   Mandatory repository formatting passes. The actual trunk aggregate remains
-  red: its latest run refuses the absent original-bootstrap regressions in
-  `prov-commit-signature`. The earlier retirement-compatibility assertion in
-  `index-generation-manifest` remains unresolved; no task or milestone advances.
+  red on the historical-bootstrap candidate: `index-generation-manifest`
+  rejects its legacy-state compatibility assertion. That run does not prove
+  the remaining native disclosure gates green; no task or milestone advances.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -817,12 +821,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   gate passes all fourteen exact cases, including widening denial and a genuine
   retained fork with source Fork and destination Commit-only token grants.
   Standalone Nextest also passes all three focused bootstrap cases. Native
-  compilation, strict rustdoc and Clippy remain under verification; current
-  credentials cannot repair missing original Admin.
-  The actual aggregate exits with failure after the first new historical
-  bootstrap selector executes zero tests; the exact-test guard refuses this
-  result. This failure does not resolve retirement compatibility or any of
-  the nineteen still-unqualified native disclosure boundary cases.
+  compilation and strict rustdoc pass. Strict all-target Clippy fails with
+  twenty production and two test diagnostics for unused integration paths;
+  those warnings are not suppressed. Current credentials cannot repair
+  missing original Admin.
+  The reviewed historical-bootstrap candidate implements all eight required
+  regressions, passes all 457 core tests, strict core Clippy and rustdoc, and
+  the twenty-case hermetic signature gate. Its required actual aggregate
+  exits with failure at `index-generation-manifest`: the legacy-state test
+  expects `Unsupported`, but receives a different error kind that the test
+  does not print. The candidate remains unmerged. That result does not resolve
+  retirement compatibility or qualify any of the nineteen native disclosure
+  boundary cases; the unmerged historical selectors still fail on trunk.
   Reviewed annotated-tag signing and verification now bind the exact REF-20
   preimage, terminal key, expected tag/commit and source Tag/Admin scope.
   Earlier snapshot-only qualification passed all 303 trunk core tests and its
