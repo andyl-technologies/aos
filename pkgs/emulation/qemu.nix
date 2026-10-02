@@ -1978,7 +1978,7 @@ in
                   plugin.rindex("static void qemu_plugin_control_boundary_barrier_bh")
               ]
               request_boundary = plugin[
-                  plugin.index("static void qemu_plugin_request_rr_control_boundary"):
+                  plugin.index("static void qemu_plugin_request_rr_control_boundary(void)\n{"):
                   plugin.index("int qemu_plugin_request_control_boundary")
               ]
               acknowledge_boundary = plugin[
@@ -1987,7 +1987,23 @@ in
               ]
               cancel_boundary = plugin[
                   plugin.index("void qemu_plugin_crucible_rr_control_boundary_cancel"):
-                  plugin.index("static void qemu_plugin_request_rr_control_boundary")
+                  plugin.index("static void qemu_plugin_request_rr_control_boundary(void)\n{")
+              ]
+              control_defer = plugin[
+                  plugin.index("void qemu_plugin_crucible_rr_control_boundary_defer(void)\n{"):
+                  plugin.index("static void qemu_plugin_rearm_deferred_control_boundary(void)\n{")
+              ]
+              control_rearm = plugin[
+                  plugin.index("static void qemu_plugin_rearm_deferred_control_boundary(void)\n{"):
+                  plugin.index("static bool qemu_plugin_quiesced_control_boundary_available(void)\n{")
+              ]
+              control_owner = plugin[
+                  plugin.index("static bool qemu_plugin_quiesced_control_boundary_available(void)\n{"):
+                  plugin.index("void qemu_plugin_crucible_rr_control_boundary_acknowledge")
+              ]
+              control_outstanding = plugin[
+                  plugin.index("bool qemu_plugin_crucible_control_boundary_outstanding(void)\n{"):
+                  plugin.index("void qemu_plugin_crucible_rr_control_boundary_defer(void)\n{")
               ]
               wake_handler = plugin[
                   plugin.index("static void qemu_plugin_wake_fd_read"):
@@ -2621,7 +2637,11 @@ in
                    1),
                   ("lifecycle dispatch event notification", control_complete,
                    r"if \(rr_lifecycle_cancel\) \{\s*"
+                   r"if \(qemu_plugin_crucible_vmstop_pending\(\)\) \{\s*"
+                   r"qemu_plugin_crucible_rr_control_boundary_defer\(\);\s*"
+                   r"\} else \{\s*"
                    r"qemu_plugin_crucible_rr_control_boundary_cancel\(\);\s*"
+                   r"\}\s*"
                    r"if \(first_cpu\) \{\s*"
                    r"qemu_cond_broadcast\(first_cpu->halt_cond\);\s*"
                    r"rr_crucible_sim_notify_dispatch_ceiling\(\);", 1),
@@ -2655,10 +2675,7 @@ in
                    r"QEMU_PLUGIN_WAKE_EVENT_DRAINED\);\s*\}\s*"
                    r"if \(single_threaded_rr &&\s*"
                    r"qemu_plugin_crucible_vmstop_quiesced\(\)\) \{\s*"
-                   r"if \(qemu_plugin_crucible_rr_control_boundary_"
-                   r"pending\(\)\) \{\s*"
-                   r"qemu_plugin_crucible_rr_control_boundary_cancel\(\);\s*"
-                   r"\}\s*qemu_plugin_schedule_control_boundary\(\);\s*"
+                   r"qemu_plugin_crucible_rr_control_boundary_defer\(\);\s*"
                    r"\} else if \(single_threaded_rr\) \{\s*"
                    r"qemu_plugin_request_rr_control_boundary\(\);\s*"
                    r"\} else if \(drained && first_cpu\) \{\s*"
@@ -2713,6 +2730,7 @@ in
                    r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY\);\s*"
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_pending, 0\);\s*"
+                   r"qemu_plugin_rearm_deferred_control_boundary\(\);\s*"
                    r"rr_crucible_sim_signal_time_advance_wake\(\);", 1),
                   ("time advance RR dispatch handles self directly",
                    time_advance_rr_dispatch_code,
@@ -2794,6 +2812,7 @@ in
                    r"QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY\);\s*"
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_pending, 0\);\s*"
+                   r"qemu_plugin_rearm_deferred_control_boundary\(\);\s*"
                    r"rr_crucible_sim_signal_time_advance_wake\(\);", 1),
                   ("time advance completion finalizes from RR idle",
                    time_advance_finalize_code,
@@ -3700,9 +3719,68 @@ in
                   ("active epoch adoption", plugin,
                    r"if \(active_token != 0\) \{\s*return active_token;", 1),
                   ("unclaimed request deferral", plugin,
-                   r"if \(rr_request_unacknowledged\) \{[^}]+"
+                   r"if \(rr_request_unacknowledged && !paused_owner\) \{[^}]+"
                    r"release_control_boundary_schedule\(schedule_token\);"
                    r"\s*return;", 1),
+                  ("deferred control retains atomic intent", control_defer,
+                   r"g_assert\(bql_locked\(\)\);\s*"
+                   r"qatomic_store_release\("
+                   r"&qemu_plugin_control_boundary_deferred, true\);\s*"
+                   r"if \(schedule_token != 0\) \{\s*"
+                   r"qemu_plugin_release_control_boundary_schedule\("
+                   r"schedule_token\);\s*\}.*?"
+                   r"qemu_plugin_rearm_deferred_control_boundary\(\);", 1),
+                  ("deferred control preserves generation counters", control_defer,
+                   r"qatomic_(?:store_release|cmpxchg)\(\s*"
+                   r"&qemu_plugin_rr_control_(?:request|ack|complete)_generation",
+                   0),
+                  ("deferred control rearms only at a valid owner", control_rearm,
+                   r"g_assert\(bql_locked\(\)\);\s*"
+                   r"if \(!qatomic_load_acquire\("
+                   r"&qemu_plugin_control_boundary_deferred\) \|\|\s*"
+                   r"!first_cpu \|\| qemu_force_shutdown_requested\(\) \|\|\s*"
+                   r"qatomic_load_acquire\(&qemu_plugin_time_advance_pending\)\) "
+                   r"\{\s*return;\s*\}\s*"
+                   r"if \(qemu_plugin_quiesced_control_boundary_available\(\)\) "
+                   r"\{\s*qemu_plugin_schedule_control_boundary\(\);\s*"
+                   r"\} else if \(!qemu_plugin_crucible_vmstop_pending\(\) &&\s*"
+                   r"runstate_is_running\(\)\) \{\s*"
+                   r"qatomic_store_release\("
+                   r"&qemu_plugin_control_boundary_deferred, false\);\s*"
+                   r"if \(!qemu_plugin_crucible_rr_control_boundary_pending\(\)\) "
+                   r"\{.*?qemu_plugin_request_rr_control_boundary\(\);\s*"
+                   r"\} else \{\s*qemu_plugin_schedule_control_boundary\(\);",
+                   1),
+                  ("paused control owner authenticates stopped precise RR",
+                   control_owner,
+                   r"g_assert\(bql_locked\(\)\);\s*"
+                   r"if \(!first_cpu \|\| !runstate_check\(RUN_STATE_PAUSED\) \|\|\s*"
+                   r"!qemu_plugin_crucible_vmstop_quiesced\(\) \|\|\s*"
+                   r"qemu_force_shutdown_requested\(\) \|\| "
+                   r"icount_enabled\(\) != ICOUNT_PRECISE \|\|\s*"
+                   r"!qemu_plugin_crucible_single_threaded_rr\(\)\) "
+                   r"\{\s*return false;\s*\}\s*"
+                   r"CPU_FOREACH\(cpu\) \{\s*"
+                   r"if \(cpu->stop \|\| cpu->unplug\) \{\s*"
+                   r"return false;\s*\}\s*\}\s*return true;", 1),
+                  ("outstanding control includes intent token and generation",
+                   control_outstanding,
+                   r"g_assert\(bql_locked\(\)\);\s*"
+                   r"return qatomic_load_acquire\("
+                   r"&qemu_plugin_control_boundary_deferred\) \|\|\s*"
+                   r"qatomic_load_acquire\("
+                   r"&qemu_plugin_control_boundary_scheduled\) != 0 \|\|\s*"
+                   r"qatomic_load_acquire\("
+                   r"&qemu_plugin_rr_control_request_generation\) !=\s*"
+                   r"qatomic_load_acquire\("
+                   r"&qemu_plugin_rr_control_complete_generation\);", 1),
+                  ("exact paused admission rejects outstanding control", monitor,
+                   r"qemu_plugin_crucible_vmstop_flush_status\(\) == 0 &&\s*"
+                   r"!qemu_plugin_crucible_control_boundary_outstanding\(\) &&",
+                   1),
+                  ("hot fork restart rejects outstanding control", hot_fork,
+                   r"if \(qemu_plugin_crucible_control_boundary_outstanding\(\)\) "
+                   r"\{\s*return -EBUSY;\s*\}", 1),
                   ("fixed request target", plugin,
                    r"if \(!\*rr_target_bound[^}]+\*rr_target_generation = "
                    r"rr_request_generation;[^}]+\*rr_target_bound = true;", 1),
