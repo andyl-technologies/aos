@@ -161,6 +161,7 @@ pub use mount_source_consumption::{
 const MAGIC: &[u8; 8] = b"AOSJRN01";
 const FORMAT_VERSION: u16 = 1;
 const HEADER_BYTES: usize = 72;
+const COMMIT_PAYLOAD_BYTES: usize = 36;
 const CHECKSUM_OFFSET: usize = 40;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.journal.transaction.v1\0";
 const FRAME_DOMAIN: &[u8] = b"aos.sandbox.journal.frame.v1\0";
@@ -5267,9 +5268,9 @@ pub(super) fn encoded_transaction_record_bytes(
         .records()
         .iter()
         .try_fold(0_u64, |total, record| {
-            let encoded = encode_record(record)?;
+            let layout = EncodedRecordLayout::of(record)?;
             total
-                .checked_add(encoded.len() as u64)
+                .checked_add(layout.payload_bytes as u64)
                 .ok_or(JournalError::JournalTooLarge)
         })
 }
@@ -5280,6 +5281,8 @@ pub(super) fn encoded_transaction_record_bytes(
 /// and their checksums. It does not inspect a journal, reserve space, or validate
 /// an owner's proposed transition.
 ///
+/// The shared encoder layouts are checked without allocating buffers or hashing.
+///
 /// # Errors
 ///
 /// Returns an error when a record length, record count, sequence, or aggregate
@@ -5287,9 +5290,29 @@ pub(super) fn encoded_transaction_record_bytes(
 pub fn encoded_transaction_append_bytes(
     transaction: &JournalTransaction,
 ) -> Result<u64, JournalError> {
-    encode_transaction(transaction, 0)?
-        .iter()
-        .try_fold(0_u64, |total, frame| total.checked_add(frame.len() as u64))
+    let record_count = u32::try_from(transaction.records.len())
+        .map_err(|_| JournalError::LimitExceeded("records per transaction"))?;
+    let begin = EncodedFrameLayout::new(record_count.to_le_bytes().len())?;
+    let mut total = Some(begin.frame_bytes as u64);
+    let mut sequence = 0_u64;
+    sequence = sequence
+        .checked_add(1)
+        .ok_or(JournalError::SequenceExhausted)?;
+
+    // The encoder validates every frame before folding its lengths. Preserve
+    // that precedence even after the aggregate can no longer fit in u64.
+    for record in &transaction.records {
+        let record_layout = EncodedRecordLayout::of(record)?;
+        let frame = EncodedFrameLayout::new(record_layout.payload_bytes)?;
+        total = total.and_then(|bytes| bytes.checked_add(frame.frame_bytes as u64));
+        sequence = sequence
+            .checked_add(1)
+            .ok_or(JournalError::SequenceExhausted)?;
+    }
+
+    let commit = EncodedFrameLayout::new(COMMIT_PAYLOAD_BYTES)?;
+    total
+        .and_then(|bytes| bytes.checked_add(commit.frame_bytes as u64))
         .ok_or(JournalError::JournalTooLarge)
 }
 
@@ -5534,7 +5557,7 @@ fn encode_transaction(
             .ok_or(JournalError::SequenceExhausted)?;
     }
 
-    let mut commit = Vec::with_capacity(36);
+    let mut commit = Vec::with_capacity(COMMIT_PAYLOAD_BYTES);
     commit.extend_from_slice(&record_count.to_le_bytes());
     commit.extend_from_slice(&transaction_digest.finalize());
     frames.push(encode_frame(
@@ -5552,19 +5575,18 @@ fn encode_frame(
     transaction_id: [u8; 16],
     payload: &[u8],
 ) -> Result<Vec<u8>, JournalError> {
-    let payload_length = u32::try_from(payload.len())
-        .map_err(|_| JournalError::LimitExceeded("frame payload bytes"))?;
+    let layout = EncodedFrameLayout::new(payload.len())?;
     let mut header = [0_u8; HEADER_BYTES];
     header[..8].copy_from_slice(MAGIC);
     header[8..10].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
     header[10] = kind as u8;
     header[12..20].copy_from_slice(&sequence.to_le_bytes());
     header[20..36].copy_from_slice(&transaction_id);
-    header[36..40].copy_from_slice(&payload_length.to_le_bytes());
+    header[36..40].copy_from_slice(&layout.payload_length.to_le_bytes());
     let checksum = frame_checksum(&header[..CHECKSUM_OFFSET], payload);
     header[CHECKSUM_OFFSET..].copy_from_slice(&checksum);
 
-    let mut frame = Vec::with_capacity(HEADER_BYTES + payload.len());
+    let mut frame = Vec::with_capacity(layout.frame_bytes);
     frame.extend_from_slice(&header);
     frame.extend_from_slice(payload);
     Ok(frame)
@@ -5584,19 +5606,73 @@ fn transaction_hasher() -> Sha256 {
     digest
 }
 
+/// Shares the encoder's length fields and payload width without copying bytes.
+struct EncodedRecordLayout {
+    key_length: u16,
+    value_length: u32,
+    payload_bytes: usize,
+}
+
+impl EncodedRecordLayout {
+    fn of(record: &JournalRecord) -> Result<Self, JournalError> {
+        Self::new(
+            record.key.len(),
+            record.value.as_ref().map(|value| value.len()),
+        )
+    }
+
+    fn new(key_bytes: usize, value_bytes: Option<usize>) -> Result<Self, JournalError> {
+        let key_length = u16::try_from(key_bytes)
+            .map_err(|_| JournalError::LimitExceeded("record key bytes"))?;
+        let value_length = match value_bytes {
+            Some(bytes) => u32::try_from(bytes)
+                .map_err(|_| JournalError::LimitExceeded("record value bytes"))?,
+            None => u32::MAX,
+        };
+
+        // Some(u32::MAX) retains its bytes despite sharing the DEL sentinel.
+        // Checked usize arithmetic avoids wrapping the capacity sum on 32-bit.
+        let payload_bytes = 7_usize
+            .checked_add(key_bytes)
+            .and_then(|bytes| bytes.checked_add(value_bytes.unwrap_or_default()))
+            .ok_or(JournalError::JournalTooLarge)?;
+
+        Ok(Self {
+            key_length,
+            value_length,
+            payload_bytes,
+        })
+    }
+}
+
+/// Shares the frame's u32 payload field and complete serialized width.
+struct EncodedFrameLayout {
+    payload_length: u32,
+    frame_bytes: usize,
+}
+
+impl EncodedFrameLayout {
+    fn new(payload_bytes: usize) -> Result<Self, JournalError> {
+        let payload_length = u32::try_from(payload_bytes)
+            .map_err(|_| JournalError::LimitExceeded("frame payload bytes"))?;
+        let frame_bytes = HEADER_BYTES
+            .checked_add(payload_bytes)
+            .ok_or(JournalError::JournalTooLarge)?;
+
+        Ok(Self {
+            payload_length,
+            frame_bytes,
+        })
+    }
+}
+
 fn encode_record(record: &JournalRecord) -> Result<Vec<u8>, JournalError> {
-    let key_length = u16::try_from(record.key.len())
-        .map_err(|_| JournalError::LimitExceeded("record key bytes"))?;
-    let value_length = match &record.value {
-        Some(value) => u32::try_from(value.len())
-            .map_err(|_| JournalError::LimitExceeded("record value bytes"))?,
-        None => u32::MAX,
-    };
+    let layout = EncodedRecordLayout::of(record)?;
     let value_bytes = record.value.as_deref().unwrap_or_default();
-    let mut payload = Vec::with_capacity(7 + record.key.len() + value_bytes.len());
+    let mut payload = Vec::with_capacity(layout.payload_bytes);
     payload.push(record.namespace as u8);
-    payload.extend_from_slice(&key_length.to_le_bytes());
-    payload.extend_from_slice(&value_length.to_le_bytes());
+    payload.extend_from_slice(&layout.key_length.to_le_bytes());
+    payload.extend_from_slice(&layout.value_length.to_le_bytes());
     payload.extend_from_slice(&record.key);
     payload.extend_from_slice(value_bytes);
     Ok(payload)
@@ -6175,6 +6251,165 @@ mod tests {
         open_protected_file, open_read_only_protected_file, protected_open_error,
         require_opened_directory_identity, traverse_protected_directory,
     };
+
+    #[test]
+    fn measured_widths_match_encoded_put_delete_and_empty_transactions() {
+        let cases = [
+            vec![],
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                vec![],
+                vec![],
+            )],
+            vec![JournalRecord::delete(
+                RecordNamespace::Operation,
+                b"deleted".to_vec(),
+            )],
+            vec![
+                JournalRecord::put(
+                    RecordNamespace::DesiredState,
+                    b"first".to_vec(),
+                    vec![1, 2],
+                ),
+                JournalRecord::delete(RecordNamespace::Effect, b"second".to_vec()),
+                JournalRecord::put(
+                    RecordNamespace::Operation,
+                    b"third".to_vec(),
+                    vec![],
+                ),
+            ],
+        ];
+
+        for (index, records) in cases.into_iter().enumerate() {
+            // Measurement, like encoding, does not perform owner admission or
+            // the separate transaction validator's nonempty/UUID checks.
+            let transaction = JournalTransaction {
+                id: [index as u8; 16],
+                records,
+            };
+            let frames = encode_transaction(&transaction, 0).unwrap();
+            let append_bytes = frames.iter().map(|frame| frame.len() as u64).sum::<u64>();
+            let record_bytes = transaction
+                .records()
+                .iter()
+                .map(|record| super::encode_record(record).unwrap().len() as u64)
+                .sum::<u64>();
+
+            assert_eq!(
+                super::encoded_transaction_append_bytes(&transaction).unwrap(),
+                append_bytes,
+            );
+            assert_eq!(
+                super::encoded_transaction_record_bytes(&transaction).unwrap(),
+                record_bytes,
+            );
+        }
+    }
+
+    #[test]
+    fn record_layout_preserves_length_order_and_delete_sentinel() {
+        use super::{EncodedFrameLayout, EncodedRecordLayout};
+
+        let deleted = EncodedRecordLayout::new(u16::MAX as usize, None).unwrap();
+        let empty_put = EncodedRecordLayout::new(u16::MAX as usize, Some(0)).unwrap();
+
+        assert_eq!(deleted.key_length, u16::MAX);
+        assert_eq!(deleted.value_length, u32::MAX);
+        assert_eq!(empty_put.value_length, 0);
+        assert_eq!(deleted.payload_bytes, empty_put.payload_bytes);
+        assert_eq!(deleted.payload_bytes, 7 + u16::MAX as usize);
+        assert!(matches!(
+            EncodedRecordLayout::new(usize::MAX, Some(usize::MAX)),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+
+        #[cfg(target_pointer_width = "64")]
+        {
+            let maximum_put = EncodedRecordLayout::new(0, Some(u32::MAX as usize)).unwrap();
+
+            assert_eq!(maximum_put.value_length, deleted.value_length);
+            assert_eq!(maximum_put.payload_bytes, 7 + u32::MAX as usize);
+            assert!(matches!(
+                EncodedRecordLayout::new(0, Some(u32::MAX as usize + 1)),
+                Err(JournalError::LimitExceeded("record value bytes")),
+            ));
+            assert!(matches!(
+                EncodedFrameLayout::new(maximum_put.payload_bytes),
+                Err(JournalError::LimitExceeded("frame payload bytes")),
+            ));
+            let maximum_frame = EncodedFrameLayout::new(u32::MAX as usize).unwrap();
+            assert_eq!(maximum_frame.frame_bytes, HEADER_BYTES + u32::MAX as usize);
+        }
+
+        #[cfg(target_pointer_width = "32")]
+        {
+            assert!(matches!(
+                EncodedRecordLayout::new(0, Some(u32::MAX as usize)),
+                Err(JournalError::JournalTooLarge),
+            ));
+            assert!(matches!(
+                EncodedFrameLayout::new(u32::MAX as usize),
+                Err(JournalError::JournalTooLarge),
+            ));
+        }
+    }
+
+    #[test]
+    fn both_measurements_preserve_record_key_error() {
+        let transaction = transaction(
+            1,
+            vec![JournalRecord::put(
+                RecordNamespace::DesiredState,
+                vec![1; u16::MAX as usize + 1],
+                vec![],
+            )],
+        );
+
+        assert!(matches!(
+            super::encoded_transaction_record_bytes(&transaction),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+        assert!(matches!(
+            super::encoded_transaction_append_bytes(&transaction),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+        assert!(matches!(
+            encode_transaction(&transaction, 0),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+    }
+
+    #[test]
+    fn encoder_retains_sequence_checks_without_post_commit_increment() {
+        let valid = transaction(
+            1,
+            vec![JournalRecord::delete(
+                RecordNamespace::DesiredState,
+                b"key".to_vec(),
+            )],
+        );
+        let invalid = transaction(
+            2,
+            vec![JournalRecord::delete(
+                RecordNamespace::DesiredState,
+                vec![1; u16::MAX as usize + 1],
+            )],
+        );
+
+        assert!(encode_transaction(&valid, u64::MAX - 2).is_ok());
+        assert!(matches!(
+            encode_transaction(&valid, u64::MAX - 1),
+            Err(JournalError::SequenceExhausted),
+        ));
+        assert!(matches!(
+            encode_transaction(&invalid, u64::MAX),
+            Err(JournalError::SequenceExhausted),
+        ));
+        assert!(matches!(
+            encode_transaction(&invalid, u64::MAX - 1),
+            Err(JournalError::LimitExceeded("record key bytes")),
+        ));
+    }
 
     #[test]
     fn operator_empty_provisioning_mode_never_enables_repair() {
