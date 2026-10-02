@@ -391,6 +391,18 @@ pub enum HubContainerGcCmd {
         #[arg(long)]
         yes: bool,
     },
+    /// Cancel one unapplied plan so it stops blocking registry deletion
+    Cancel {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        registry: String,
+        run_id: String,
+        /// Resource version of the planned run, from `gc get`
+        #[arg(long)]
+        if_version: String,
+        #[arg(long)]
+        idempotency_key: String,
+    },
     /// Requeue one failed frozen placement action after exact repair
     Requeue {
         #[command(flatten)]
@@ -434,6 +446,7 @@ pub enum HubContainerGcCmd {
         /// Exact run required for candidate, blocker, and placement-action lists.
         #[arg(long)]
         run_id: Option<String>,
+        /// Filter by state; expired and cancelled plans are `aborted` runs
         #[arg(long)]
         state: Option<String>,
         #[command(flatten)]
@@ -696,7 +709,7 @@ mod tests {
     }
 
     #[test]
-    fn container_gc_exposes_exact_plan_apply_get_and_bounded_lists() {
+    fn container_gc_exposes_exact_plan_apply_cancel_get_and_bounded_lists() {
         assert!(
             Cli::try_parse_from([
                 "aos",
@@ -786,6 +799,68 @@ mod tests {
             "--yes",
         ])
         .expect("GC requeue binds registry, run, action, CAS, and idempotency");
+        assert!(
+            Cli::try_parse_from([
+                "aos",
+                "hub",
+                "registry",
+                "container",
+                "gc",
+                "cancel",
+                "andyl/main",
+                "gc-1",
+                "--idempotency-key",
+                "cancel-1",
+            ])
+            .is_err(),
+            "GC cancel requires the reviewed run CAS version"
+        );
+        let cancel = Cli::try_parse_from([
+            "aos",
+            "hub",
+            "registry",
+            "container",
+            "gc",
+            "cancel",
+            "andyl/main",
+            "gc-1",
+            "--if-version",
+            "1",
+            "--idempotency-key",
+            "cancel-1",
+        ])
+        .expect("GC cancel binds registry, run, CAS, and idempotency");
+        let Commands::Hub {
+            command:
+                HubCmd::Registry {
+                    command:
+                        HubRegistryCmd::Container {
+                            command:
+                                HubContainerCmd::Gc {
+                                    command:
+                                        HubContainerGcCmd::Cancel {
+                                            registry,
+                                            run_id,
+                                            if_version,
+                                            idempotency_key,
+                                            ..
+                                        },
+                                },
+                        },
+                },
+        } = cancel.command
+        else {
+            panic!("expected Hub container GC cancel command");
+        };
+        assert_eq!(
+            (
+                registry.as_str(),
+                run_id.as_str(),
+                if_version.as_str(),
+                idempotency_key.as_str()
+            ),
+            ("andyl/main", "gc-1", "1", "cancel-1")
+        );
         Cli::try_parse_from([
             "aos",
             "hub",

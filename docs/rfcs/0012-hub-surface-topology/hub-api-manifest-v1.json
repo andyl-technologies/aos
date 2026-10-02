@@ -367,6 +367,13 @@
          "service" : "ContainerService"
       },
       {
+         "method" : "CancelContainerGcRun",
+         "path" : "aos.hub.v1.ContainerService/CancelContainerGcRun",
+         "request" : "CancelContainerGcRunRequest",
+         "response" : "ContainerGcRunResponse",
+         "service" : "ContainerService"
+      },
+      {
          "method" : "GetContainerGcRun",
          "path" : "aos.hub.v1.ContainerService/GetContainerGcRun",
          "request" : "GetContainerGcRunRequest",
