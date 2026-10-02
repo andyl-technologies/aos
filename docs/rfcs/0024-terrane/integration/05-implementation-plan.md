@@ -331,7 +331,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and reject the five negative inputs. All six exact groups pass the actual
   hermetic `collection-format-vectors` check, including independent reference
   reproduction. The preceding 474-test core checkpoint and strict Clippy and
-  rustdoc pass; full core qualification including these new groups is queued.
+  rustdoc pass. The updated full core Nextest run passes all 480 tests with
+  no skips; its strict Clippy and rustdoc stages remain in progress.
   The actual current aggregate still rejects the absent `format_properties`
   target. The complete corpus stays unqualified; no task or milestone advances.
   A further reference review found the unpublished internal-node model and
@@ -343,6 +344,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   independently encoded leaf models. Publication and Rust codec comparisons
   remain required. Deferred filter and memo payloads are CDDL descriptor inputs,
   not implementations of those branch features; no branch workline starts.
+  The independent `retirement-reference-generator` check now emits 34 inert
+  wire models for the eleven existing D-82 record schemas: 27 positive field
+  models and seven structural rejection inputs. Its actual hermetic run passes
+  fixed CBOR oracles, embedded-record digest/revision relationships and bounded
+  section reproduction. A separate read-only audit parses every emitted EDN
+  model, compares all wire bytes, and verifies preservation, tamper refusal and
+  duplicate/missing-heading refusal. Long text and byte literals use EDN
+  concatenation so wrapping preserves their values. Normative publication and
+  separately constructed Rust codec comparisons remain required; these inert
+  fields establish no current authority, completed wait or physical permission.
+  The format-property candidate's actual hermetic `core-fuzz` run passes all
+  46 public cases and four of its five required private cases. The final private
+  side-evidence case fails; inspection identifies an invalid positive fixture
+  with an empty shebang argument, which the existing codec correctly rejects.
+  Its original focused qualification remains queued. The task stays unmerged;
+  the invalid positive fixture and full qualification remain to be resolved.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -891,6 +908,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The owned disclosure cases pass in that run; strict native Clippy remains
   red. Strict native rustdoc passes with warnings and missing documentation
   denied. The full native suite and disclosure gate remain unqualified.
+  A subsequent isolated worker run passes both unchanged deadline cases and
+  three genuine disclosure regressions, including independently initialized
+  factories with identical issuer labels. Strict native rustdoc also passes.
+  Strict Clippy still fails on seven existing production and two test dead-code
+  paths. These focused results do not qualify the failing full native suite;
+  the remaining required disclosure cases and paired recovery stay incomplete.
   The reopened pure PROV-13 correction now propagates content and attribute
   acceptance errors only for predicates requiring that ancestry.
   Introduction-only Any, issuer and eligible Strict selectors keep independent

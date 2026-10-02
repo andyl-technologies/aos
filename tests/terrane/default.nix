@@ -187,4 +187,5 @@ in {
   integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
   integration.collection-format-vectors = import ./collection-vectors.nix {inherit sourceGate;};
   integration.foundation-reference-generator = import ./foundation-reference.nix {inherit sourceGate;};
+  integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
 }
