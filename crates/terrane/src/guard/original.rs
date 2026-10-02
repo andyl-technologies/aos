@@ -17,6 +17,10 @@
 mod control;
 #[cfg(unix)]
 pub(crate) use control::{ControlExclusion, RetainedControls};
+#[cfg(unix)]
+mod import;
+#[cfg(unix)]
+pub(crate) use import::retention_failure;
 mod verifier;
 pub(super) use verifier::OriginalVerifier;
 
@@ -357,6 +361,7 @@ pub(crate) struct BootstrapView<'a> {
 }
 
 /// Supplies an untrusted immutable commit association decoded by protected storage.
+#[derive(Clone, Copy)]
 pub(crate) struct AssociationView<'a> {
     /// Exact immutable authored commit identity.
     pub commit: &'a terrane_core::identity::Digest,
@@ -405,6 +410,8 @@ pub struct OriginalCommitContext {
     commit: terrane_core::identity::Digest,
     baseline: RetainedBootstrap,
     retention_owner: OriginalAuthority,
+    #[cfg(unix)]
+    imported: Option<import::ImportedEvidence>,
 }
 
 impl OriginalCommitContext {
@@ -567,6 +574,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             commit: *view.commit,
             baseline: baseline.clone(),
             retention_owner: authority.clone(),
+            imported: None,
         })
     }
 }
@@ -686,6 +694,14 @@ pub(super) fn consumed_pins(
 
     let baseline = context.baseline();
     let authority = baseline.authority();
+    #[cfg(unix)]
+    let imported_pins = match &context.imported {
+        Some(imported) if !imported.supplements_local => {
+            return imported.pins(&context.retention_owner);
+        }
+        Some(imported) => imported.pins(&context.retention_owner)?,
+        None => Vec::new(),
+    };
     if &context.retention_owner != authority {
         return Err(invalid());
     }
@@ -711,7 +727,7 @@ pub(super) fn consumed_pins(
     cbor::write_text(&mut association, baseline.reference());
     cbor::write_uint(&mut association, baseline.epoch());
     let owner = super::consumed::registration(authority);
-    [
+    let local_pins = [
         (
             ControlKind::Registration,
             "registration.cbor".into(),
@@ -735,5 +751,13 @@ pub(super) fn consumed_pins(
         pin.check_record(&bytes).map_err(|_| invalid())?;
         Ok(pin)
     })
-    .collect()
+    .collect::<Result<Vec<_>, StoreFailure>>();
+    #[cfg(unix)]
+    {
+        let mut pins = local_pins?;
+        pins.extend(imported_pins);
+        Ok(pins)
+    }
+    #[cfg(not(unix))]
+    local_pins
 }

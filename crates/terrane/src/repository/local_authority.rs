@@ -17,12 +17,13 @@ use crate::store::LocalFs;
 
 use super::Error;
 
+pub(crate) mod disclosure;
 pub(crate) mod import_binding;
 mod native;
 pub(crate) mod public_trust;
 pub(crate) mod retention;
 
-pub(super) use native::NativeRetention;
+pub(crate) use native::NativeRetention;
 
 /// Supplies explicit identity and ownership for a new local authority.
 pub struct LocalAuthorityParameters {

@@ -17,6 +17,10 @@ use super::{CheckedEvidence, CheckedMutation};
 #[path = "selected/cold_fork.rs"]
 pub(crate) mod cold_fork;
 
+#[path = "selected/disclosure.rs"]
+#[cfg(all(feature = "std", unix))]
+pub(crate) mod disclosure;
+
 #[cfg(not(feature = "send"))]
 use std::rc::Rc as SharedCheck;
 #[cfg(feature = "send")]
@@ -34,6 +38,21 @@ fn retain_final_check<S: crate::store::Store, C: Clock>(
     Ok(super::OwnedFinalCheck {
         check: SharedCheck::new(move || checks.recheck()),
     })
+}
+
+/// Retains genuine paired source rights through the selected destination effect.
+struct PairedSource<'operation, 'held> {
+    observed: &'operation SelectedObservation<'held>,
+    final_check: crate::selected_bridge::OwnedFinalCheck,
+    controls: crate::guard::RetainedControls,
+}
+
+/// Groups the operation's exact consumed evidence and selected handoff state.
+struct CandidateInputs<'operation, 'held> {
+    consumed: &'operation ConsumedResolver,
+    session: &'operation mut crate::ref_advance::WriterSession,
+    publication: &'operation mut crate::ref_advance::RetainedPublication,
+    paired: Option<PairedSource<'operation, 'held>>,
 }
 
 /// Retains local control exclusion with exact data consumed by a held operation.
@@ -100,7 +119,7 @@ where
     } = request;
     publication.validate_target(&target)?;
     coordinator.check_time(started)?;
-    let consumed = ConsumedResolver::new(concrete, authority)?;
+    let consumed = ConsumedResolver::new(coordinator.guard(), authority)?;
     consumed.registration(authority)?;
     let history = crate::guard::HistoryObservation::held(observed.identity()).tracked(&consumed);
     let requests = coordinator
@@ -166,11 +185,11 @@ where
 /// # Errors
 /// Preserves current-policy, original-context, storage and duration failures;
 /// rejects unknown retained history, stale selected configuration and epochs.
-pub(crate) async fn publish_candidate<F, B, V, C, R, D>(
+pub(crate) async fn publish_candidate<'held, F, B, V, C, R, D>(
     concrete: &Guard<FileBucket<F, B, V>, D>,
     authority: &OriginalAuthority,
-    coordinator: &crate::ref_advance::Coordinator<HeldBucket<'_, F, B, V, true>, C, R>,
-    observed: &SelectedObservation<'_>,
+    coordinator: &'held crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
+    observed: &SelectedObservation<'held>,
     consumed: &ConsumedResolver,
     session: &mut crate::ref_advance::WriterSession,
     publication: &mut crate::ref_advance::RetainedPublication,
@@ -182,9 +201,45 @@ where
     C: Clock + BucketBinding,
     R: LocalFs + BucketBinding,
 {
+    publish_candidate_inner(
+        concrete,
+        authority,
+        coordinator,
+        observed,
+        CandidateInputs {
+            consumed,
+            session,
+            publication,
+            paired: None,
+        },
+    )
+    .await
+}
+
+async fn publish_candidate_inner<'held, F, B, V, C, R, D>(
+    concrete: &Guard<FileBucket<F, B, V>, D>,
+    authority: &OriginalAuthority,
+    coordinator: &'held crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
+    observed: &SelectedObservation<'held>,
+    inputs: CandidateInputs<'_, 'held>,
+) -> Result<terrane_core::refs::RefRecord, crate::ref_advance::AdvanceError>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock + BucketBinding,
+    R: LocalFs + BucketBinding,
+{
     use terrane_core::gc::publication::evidence::CheckedLineage;
     use terrane_core::gc::publication::{CommittedSelection, SourceLineage};
     use terrane_core::refs::{RefClass, RefName};
+
+    let CandidateInputs {
+        consumed,
+        session,
+        publication,
+        paired,
+    } = inputs;
 
     let crate::ref_advance::RetainedPublication {
         admitted,
@@ -233,6 +288,10 @@ where
     };
     let proof = observed.identity();
     let history = crate::guard::HistoryObservation::held(proof).tracked(consumed);
+    if let Some(source) = &paired {
+        source.final_check.recheck()?;
+        source.observed.revalidate().await?;
+    }
     let next = coordinator
         .stage_observed_ref(
             session,
@@ -339,17 +398,34 @@ where
             .sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
         CheckedEvidence::Candidate { snapshot, lineage }
     };
-    let final_check = retain_final_check(coordinator.guard(), &requests, started, timing)?;
+    let destination_check = retain_final_check(coordinator.guard(), &requests, started, timing)?;
+    let (final_check, sources, controls) = match paired {
+        Some(source) => {
+            let source_check = source.final_check;
+            let final_check = crate::selected_bridge::OwnedFinalCheck {
+                check: SharedCheck::new(move || {
+                    destination_check.recheck()?;
+                    source_check.recheck()
+                }),
+            };
+            (
+                final_check,
+                vec![source.observed],
+                vec![retained_controls, source.controls],
+            )
+        }
+        None => (destination_check, Vec::new(), vec![retained_controls]),
+    };
     let permit = CheckedMutation {
         observed,
-        sources: Vec::new(),
+        sources,
         next: state,
         changes,
         evidence,
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
-            controls: vec![retained_controls],
+            controls,
         }),
     };
     #[cfg(test)]
@@ -384,10 +460,10 @@ fn invalid() -> StoreFailure {
 /// # Errors
 /// Rejects a stale selected Guard, a different physical original authority,
 /// unsupported foreign control owners, or changed protected canonical records.
-pub(crate) async fn hold_consumed_controls<'guard, F, B, V, C>(
+pub(crate) async fn hold_consumed_controls<'guard, F, B, V, C, const WRITABLE: bool>(
     guard: &'guard Guard<FileBucket<F, B, V>, C>,
     authority: &OriginalAuthority,
-    held: &HeldBucket<'_, F, B, V, true>,
+    held: &HeldBucket<'_, F, B, V, WRITABLE>,
     observed: &SelectedObservation<'_>,
     consumed: &ConsumedResolver,
 ) -> Result<LocalControlInputs<'guard, F>, StoreFailure>
@@ -407,6 +483,15 @@ where
             pattern: authority.root().display().to_string(),
         }));
     }
+    #[cfg(unix)]
+    guard
+        .check_retained_trust_controls(
+            authority,
+            &mut controls,
+            &terrane_core::gc::publication::evidence::GuardSnapshot::decode(&snapshot)
+                .map_err(|_| invalid())?,
+        )
+        .await?;
     let inputs = consumed.finish()?;
     let registration = crate::guard::consumed_registration(authority);
     for pin in &inputs.controls {
@@ -480,6 +565,15 @@ where
 
     let mut controls = guard
         .hold_original_registration(authority, observed.identity())
+        .await?;
+    #[cfg(unix)]
+    guard
+        .check_retained_trust_controls(
+            authority,
+            &mut controls,
+            &terrane_core::gc::publication::evidence::GuardSnapshot::decode(&snapshot)
+                .map_err(|_| invalid())?,
+        )
         .await?;
     let inputs = consumed.finish()?;
     for pin in &inputs.controls {

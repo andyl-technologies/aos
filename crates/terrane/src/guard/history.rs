@@ -1,13 +1,17 @@
 //! Authenticates stored commits against their signed original canonical root scope.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use terrane_core::auth::RequestRoot;
 use terrane_core::identity::Digest;
-use terrane_core::provenance::{self, EntryLocation, VerifiedCommit, VerifiedHistory};
+use terrane_core::provenance::{self, VerifiedCommit, VerifiedHistory};
+
+mod disclosure;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use disclosure::DisclosureSourceSelection;
 
 use super::{Guard, TreeEvidence, invalid};
-use crate::store::{Clock, Store, StoreErrorKind, StoreFailure};
+#[cfg(not(feature = "std"))]
+use crate::store::StoreErrorKind;
+use crate::store::{Clock, Store, StoreFailure};
 
 /// Borrows synchronization evidence without converting it into authorization.
 #[derive(Clone, Copy, Default)]
@@ -160,35 +164,35 @@ impl<S: Store, C: Clock> Guard<S, C> {
             .commit_context
             .as_ref()
             .ok_or_else(invalid)?;
-        // Complete disclosure validation owns audit-edge cuts. Refuse this
-        // ordinary loader before it can follow a private certified parent.
-        if commit
+        let has_disclosures = commit
             .profile_pair
             .entry_receipts
             .iter()
             .flatten()
-            .any(|receipt| receipt.disclosure_proof.is_some())
-        {
-            return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-        }
+            .any(|receipt| receipt.disclosure_proof.is_some());
+        // A certified candidate is authenticated against its signed claims only.
+        // Complete candidate validation checks actual root scope before exposing
+        // history; it alone determines whether any private parent is audit-only.
         let mut witnessed = self.authoring_roots(&evidence)?;
         let missing_candidate_claim = context.roots().iter().any(|claim| {
             !witnessed
                 .iter()
                 .any(|(path, domain)| path.as_slice() == claim.path() && domain == claim.domain())
         });
-        if missing_candidate_claim {
+        if !has_disclosures && missing_candidate_claim {
             let parent = commit.parents.first().ok_or_else(invalid)?;
             let previous =
                 TreeEvidence::load_commit(self.store(), *parent, self.config().min_chunk_size)
                     .await?;
             witnessed.extend(self.authoring_roots(&previous)?);
         }
-        if context.roots().iter().any(|claim| {
-            !witnessed
-                .iter()
-                .any(|(path, domain)| path.as_slice() == claim.path() && domain == claim.domain())
-        }) {
+        if !has_disclosures
+            && context.roots().iter().any(|claim| {
+                !witnessed.iter().any(|(path, domain)| {
+                    path.as_slice() == claim.path() && domain == claim.domain()
+                })
+            })
+        {
             return Err(invalid());
         }
         let roots = context
@@ -200,8 +204,14 @@ impl<S: Store, C: Clock> Guard<S, C> {
             })
             .collect::<Vec<_>>();
         let epochs = [(context.reference(), commit.provenance.writer_epoch)];
-        let commit = provenance::verify_history(commit, self.keys(), &roots, &epochs)
-            .map_err(|_| invalid())?;
+        #[cfg(all(feature = "std", unix))]
+        let historical_keys = self.original_commit(&identity)?.historical_keys()?;
+        #[cfg(all(feature = "std", unix))]
+        let keys = historical_keys.as_deref().unwrap_or(self.keys());
+        #[cfg(not(all(feature = "std", unix)))]
+        let keys = self.keys();
+        let commit =
+            provenance::verify_history(commit, keys, &roots, &epochs).map_err(|_| invalid())?;
         if commit.identity() != identity {
             return Err(invalid());
         }
@@ -227,100 +237,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         identity: Digest,
         observation: HistoryObservation<'_>,
     ) -> Result<VerifiedHistory, StoreFailure> {
-        let mut history = VerifiedHistory::new(self.config().min_chunk_size);
-        let mut pending = vec![identity];
-        let mut visited = BTreeSet::new();
-        let mut locations = Vec::new();
-        let mut domains = BTreeMap::new();
-        while let Some(identity) = pending.pop() {
-            if !visited.insert(identity) {
-                continue;
-            }
-            let verified = self.signed_tree(identity).await?;
-            #[cfg(feature = "std")]
-            if let Some(consumed) = observation.consumed {
-                consumed.issuer(&verified.commit)?;
-                consumed.view(identity, &verified.evidence, self.config().min_chunk_size)?;
-            }
-            domains.insert(identity, verified.evidence.default_domain.clone());
-            pending.extend(verified.commit.commit().parents.iter().copied());
-            pending.extend(provenance::source_commit_references(&verified.commit));
-            history
-                .insert_commit(verified.commit)
-                .map_err(|_| invalid())?;
-
-            // Core Trees contain local Rc sharing. Keep this CPU-only witness
-            // phase inside the iteration, before the next asynchronous fetch.
-            for root in &verified.evidence.roots {
-                let tree = verified
-                    .evidence
-                    .tree(*root, self.config().min_chunk_size)?;
-                let nodes = tree
-                    .nodes()
-                    .map(|node| (node.identity(), node.encoded().to_vec()))
-                    .collect::<Vec<_>>();
-                history.insert_tree(*root, &nodes).map_err(|_| invalid())?;
-                for entry in tree.iter() {
-                    locations.push((
-                        EntryLocation {
-                            commit: identity,
-                            root: *root,
-                            path: entry.key.clone(),
-                        },
-                        entry
-                            .entry
-                            .attrs
-                            .iter()
-                            .map(|attribute| attribute.name.to_owned())
-                            .collect::<Vec<_>>(),
-                    ));
-                }
-            }
-        }
-        // Canonical context verification requires the actual first parent to
-        // have checked scope first. No caller-supplied ordering or root label
-        // can mint that history authority.
-        let mut remaining = visited;
-        while !remaining.is_empty() {
-            let ready = remaining
-                .iter()
-                .filter(|identity| {
-                    history.commit(identity).is_some_and(|commit| {
-                        commit
-                            .commit()
-                            .parents
-                            .iter()
-                            .all(|parent| !remaining.contains(parent))
-                    })
-                })
-                .copied()
-                .collect::<Vec<_>>();
-            if ready.is_empty() {
-                return Err(invalid());
-            }
-            for identity in ready {
-                self.check_original_scope(
-                    &mut history,
-                    identity,
-                    domains.get(&identity).ok_or_else(invalid)?,
-                    observation,
-                )
-                .await?;
-                remaining.remove(&identity);
-            }
-        }
-
-        for (location, attributes) in locations {
-            history
-                .introducing_commit(&location)
-                .map_err(|_| invalid())?;
-            for name in attributes {
-                history
-                    .attribute_producer(&location, &name)
-                    .map_err(|_| invalid())?;
-            }
-        }
-        Ok(history)
+        self.complete_history_observed(identity, observation).await
     }
 
     #[cfg(feature = "std")]
@@ -341,7 +258,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         };
         let checked = match observation.held {
             Some(held) => {
-                self.check_original_commit_held(baseline, association, held)
+                self.recheck_original_commit_observed(baseline, association, held)
                     .await?
             }
             None => self.check_original_commit(baseline, association).await?,

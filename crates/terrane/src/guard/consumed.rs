@@ -9,7 +9,7 @@ use std::sync::Mutex;
 
 use terrane_core::gc::publication::evidence::{
     AuthorityGrant, ConfiguredRegistryInputs, ConsumedRootLayer, ConsumedRootPolicy,
-    ConsumedViewPolicy, ControlKind, GuardSnapshot, IssuerRow, LineageUsedInputs,
+    ConsumedViewPolicy, ControlKind, DisclosureRow, GuardSnapshot, IssuerRow, LineageUsedInputs,
     LocalOriginalRegistration, PhysicalRegistration, RequiredControlPin, SeededChunkProfile,
     TrustedGuardConfig,
 };
@@ -24,6 +24,9 @@ struct Consumed {
     controls: BTreeMap<Vec<u8>, RequiredControlPin>,
     views: BTreeMap<[u8; 32], ConsumedViewPolicy>,
     issuers: BTreeMap<(String, String), IssuerRow>,
+    #[cfg(unix)]
+    historical_issuers: BTreeMap<([u8; 32], [u8; 32]), (IssuerRow, RequiredControlPin)>,
+    disclosures: BTreeMap<(String, String, [u8; 32], u64), DisclosureRow>,
 }
 
 /// Accumulates checked consumption inside a single actual held observation.
@@ -96,10 +99,71 @@ impl ConsumedResolver {
         issuers.sort_by(|left, right| {
             (&left.issuer, &left.key_id).cmp(&(&right.issuer, &right.key_id))
         });
+        let mut issuer_map = BTreeMap::new();
+        for key in issuers {
+            if issuer_map
+                .insert((key.issuer.clone(), key.key_id.clone()), key)
+                .is_some()
+            {
+                return Err(invalid());
+            }
+        }
+        let mut disclosure_map = BTreeMap::new();
+        #[cfg(unix)]
+        for trust in guard.retained_public_trust()? {
+            // Foreign issuer labels have meaning only inside the exact import
+            // trust record. Flattening them here could replace or collide with
+            // a genuine independently configured local operation key.
+            for role in trust.disclosure_roles {
+                let row = DisclosureRow {
+                    repository: role.repository,
+                    domain: role.domain,
+                    public_key: role.public_key,
+                    not_before: role.not_before,
+                    not_after: role.not_after,
+                };
+                let selector = (
+                    row.repository.clone(),
+                    row.domain.clone(),
+                    row.public_key,
+                    row.not_before,
+                );
+                if disclosure_map
+                    .get(&selector)
+                    .is_some_and(|previous| previous != &row)
+                {
+                    return Err(invalid());
+                }
+                disclosure_map.insert(selector, row);
+            }
+        }
+        #[cfg(unix)]
+        for role in guard.configured_disclosure_roles()? {
+            let row = DisclosureRow {
+                repository: role.repository,
+                domain: role.domain,
+                public_key: role.public_key,
+                not_before: role.not_before,
+                not_after: role.not_after,
+            };
+            let selector = (
+                row.repository.clone(),
+                row.domain.clone(),
+                row.public_key,
+                row.not_before,
+            );
+            if disclosure_map
+                .get(&selector)
+                .is_some_and(|previous| previous != &row)
+            {
+                return Err(invalid());
+            }
+            disclosure_map.insert(selector, row);
+        }
         let snapshot = GuardSnapshot {
             registration: registration(authority),
-            issuers,
-            disclosures: Vec::new(),
+            issuers: issuer_map.into_values().collect(),
+            disclosures: disclosure_map.into_values().collect(),
             configuration,
             registries,
         };
@@ -188,6 +252,108 @@ impl ConsumedResolver {
             .map_err(|_| unavailable())?
             .issuers
             .insert((key.issuer.clone(), key.key_id.clone()), key);
+        Ok(())
+    }
+
+    /// Records a foreign issuer within its exact retained original import scope.
+    ///
+    /// Local operation and historical keys remain in the local snapshot. Foreign
+    /// public keys and retirement bounds are exhaustively retained through the
+    /// existing import-trust pin, with its import, binding and original context.
+    ///
+    /// # Errors
+    /// Rejects invalid historical tokens, missing scoped trust pins, contradictory
+    /// keys or retirement bounds and unavailable trace synchronization.
+    #[cfg(unix)]
+    pub(crate) fn historical_issuer(
+        &self,
+        commit: &terrane_core::provenance::VerifiedCommit,
+        original: &OriginalCommitContext,
+    ) -> Result<(), StoreFailure> {
+        let Some(keys) = original.historical_keys()? else {
+            return self.issuer(commit);
+        };
+        if original.commit() != &commit.identity() {
+            return Err(invalid());
+        }
+        let token = terrane_core::auth::Token::decode(
+            commit
+                .commit()
+                .provenance
+                .embedded_token
+                .as_deref()
+                .ok_or_else(invalid)?,
+        )
+        .map_err(|_| invalid())?;
+        let token = token
+            .verify(&keys, commit.commit().timestamp)
+            .map_err(|_| invalid())?;
+        let mut matching = keys.iter().filter(|key| {
+            key.issuer == token.authority().issuer && key.key_id == token.authority().key_id
+        });
+        let key = matching.next().ok_or_else(invalid)?;
+        if matching.next().is_some() {
+            return Err(invalid());
+        }
+        let row = IssuerRow {
+            issuer: key.issuer.clone(),
+            key_id: key.key_id.clone(),
+            public_key: key.public_key,
+            retired_at: key.retirement,
+        };
+        let pins = super::original::consumed_pins(original)?;
+        let mut trusts = pins
+            .into_iter()
+            .filter(|pin| pin.kind == ControlKind::ImportTrust);
+        let trust = trusts.next().ok_or_else(invalid)?;
+        if trusts.next().is_some() {
+            return Err(invalid());
+        }
+        self.original(original)?;
+        let selector = (*original.baseline().authority().id(), commit.identity());
+        let value = (row, trust);
+        let mut consumed = self.consumed.lock().map_err(|_| unavailable())?;
+        if consumed
+            .historical_issuers
+            .get(&selector)
+            .is_some_and(|prior| prior != &value)
+        {
+            return Err(invalid());
+        }
+        consumed.historical_issuers.insert(selector, value);
+        Ok(())
+    }
+
+    /// Records only a role selected by a completed disclosure boundary.
+    ///
+    /// # Errors
+    /// Rejects an absent configured row, ambiguous historical windows or poisoned state.
+    pub(crate) fn disclosure(
+        &self,
+        boundary: &terrane_core::provenance::VerifiedDisclosureBoundary,
+    ) -> Result<(), StoreFailure> {
+        let mut matching = self.snapshot.disclosures.iter().filter(|row| {
+            row.repository == boundary.authority_repository()
+                && row.domain == boundary.authority_domain()
+                && &row.public_key == boundary.authority_key()
+                && row.not_before <= boundary.observed_at()
+                && row.not_after.is_none_or(|end| boundary.observed_at() < end)
+        });
+        let row = matching.next().ok_or_else(invalid)?.clone();
+        if matching.next().is_some() {
+            return Err(invalid());
+        }
+        let selector = (
+            row.repository.clone(),
+            row.domain.clone(),
+            row.public_key,
+            row.not_before,
+        );
+        self.consumed
+            .lock()
+            .map_err(|_| unavailable())?
+            .disclosures
+            .insert(selector, row);
         Ok(())
     }
 
@@ -290,6 +456,12 @@ impl ConsumedResolver {
     /// Rejects invalid canonical records or poisoned synchronization.
     pub(crate) fn finish(&self) -> Result<LineageUsedInputs, StoreFailure> {
         let consumed = self.consumed.lock().map_err(|_| unavailable())?;
+        #[cfg(unix)]
+        for (_, trust) in consumed.historical_issuers.values() {
+            if !consumed.controls.values().any(|pin| pin == trust) {
+                return Err(invalid());
+            }
+        }
         let mut keyed = consumed
             .controls
             .values()
@@ -308,7 +480,7 @@ impl ConsumedResolver {
         let controls = keyed.into_iter().map(|(_, pin)| pin).collect();
         let inputs = LineageUsedInputs {
             issuers: consumed.issuers.values().cloned().collect(),
-            disclosures: self.snapshot.disclosures.clone(),
+            disclosures: consumed.disclosures.values().cloned().collect(),
             controls,
             registries: self.snapshot.registries.clone(),
             configuration: self.snapshot.configuration.clone(),
