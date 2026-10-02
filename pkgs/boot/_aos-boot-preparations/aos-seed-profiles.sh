@@ -110,6 +110,39 @@ validate_module_library_identity() {
   ' >/dev/null
 }
 
+validate_rooted_evaluation_descriptor() {
+  local root=$1 descriptor=$2 relative entry member physical target
+  case "$descriptor" in
+    /nix/store/*/*) ;;
+    *) return 1 ;;
+  esac
+  case "$descriptor/" in
+    *"//"*|*"/./"*|*"/../"*) return 1 ;;
+  esac
+  relative=${descriptor#/nix/store/}
+  entry=${relative%%/*}
+  member=${relative#*/}
+  validate_nix_store_root "/nix/store/$entry" || return 1
+
+  physical="$root/nix/store/$entry"
+  [ ! -L "$physical" ] && [ -d "$physical" ] || return 1
+  while [[ "$member" == */* ]]; do
+    physical="$physical/${member%%/*}"
+    member=${member#*/}
+    [ ! -L "$physical" ] && [ -d "$physical" ] || return 1
+  done
+  physical="$physical/$member"
+
+  # Bundle leaves point at absolute store-root files. Resolve that one link
+  # inside the mounted host store, not the initrd's separate /nix namespace.
+  if [ -L "$physical" ]; then
+    target=$(readlink "$physical") || return 1
+    validate_nix_store_root "$target" || return 1
+    physical="$root$target"
+  fi
+  [ ! -L "$physical" ] && [ -f "$physical" ]
+}
+
 state_version=$(read_meta state-version)
 native_executor=$(read_meta native-executor-ref)
 boot_contract=$(read_meta boot-artifact-contract)
@@ -149,16 +182,8 @@ validate_nix_store_root "$boot_contract" \
   || fail_image_identity "immutable boot contract root is malformed"
 validate_module_library_identity \
   || fail_image_identity "immutable native library NAR identity is malformed"
-case "$evaluation_descriptor" in
-  /nix/store/*/*) ;;
-  *) fail_image_identity "native evaluation descriptor is not an immutable store member" ;;
-esac
-case "$evaluation_descriptor/" in
-  *"//"*|*"/./"*|*"/../"*)
-    fail_image_identity "native evaluation descriptor is not normalized" ;;
-esac
-[ -f "/sysroot$evaluation_descriptor" ] \
-  || fail_image_identity "immutable native evaluation descriptor is missing"
+validate_rooted_evaluation_descriptor /sysroot "$evaluation_descriptor" \
+  || fail_image_identity "immutable native evaluation descriptor is missing or malformed"
 validate_nix_store_root "$native_executor" \
   || fail_image_identity "immutable native executor is not a canonical Nix store root"
 [ -n "$state_version" ] \
