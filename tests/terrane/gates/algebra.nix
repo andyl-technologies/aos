@@ -75,6 +75,8 @@ in {
     ${runTest "algebra::recipe::tests::recipe_decode_roundtrips_and_rejects_noncanonical_inputs"}
     ${runTest "algebra::recipe::tests::overlay_recipe_preserves_precedence"}
     ${runTest "algebra::recipe::tests::merge_recipe_preserves_policy_order"}
+    ${runTest "refs::codec::recipe_tests::commit_recipe_codec_preserves_registered_and_other_encodings"}
+    ${runTest "refs::codec::recipe_tests::commit_recipe_codec_rejects_invalid_registered_arguments"}
     printf 'PASS: pure merge, fold bindings, conflict policies and verified recipes\n' > "$out/result"
   '';
 
