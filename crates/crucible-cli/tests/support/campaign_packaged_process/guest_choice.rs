@@ -513,10 +513,13 @@ pub(super) fn create_guest_choice_campaign_with_timeout(
     let root = fixture._temporary.path();
     let lineage_input = root.join("guest-choice-lineage.toml");
     let lineage = root.join("guest-choice-lineage.bin");
+    let protocol_versions = toml::to_string(
+        &crucible_daemon::packaged_qemu_identity::packaged_qemu_protocol_versions(),
+    )?;
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = {CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5}\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = {CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5}\nexact_closure_schema = 5\n[protocol_versions]\n{protocol_versions}",
             json_string(compiled, "scenario")?,
             json_string(compiled, "scenario_artifact")?,
             json_string(compiled, "genesis")?,
