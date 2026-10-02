@@ -6,6 +6,7 @@ CDDL models for descriptor coverage; this tool implements neither feature.
 """
 
 import argparse
+from copy import deepcopy
 import hashlib
 from pathlib import Path
 import re
@@ -48,6 +49,24 @@ NEXT_KEY = bytes.fromhex(
 )
 
 
+def boundary_leaf(binary, entry):
+    """Finds the first fixed-key item that closes by TREE-21/TREE-22 arithmetic."""
+    padded = deepcopy(entry)
+    padded[10] = {b"user.fixture": bytes(4096)}
+    for number in range(256):
+        key = f"boundary-{number:03}.txt".encode("ascii")
+        item = [key, 0, padded]
+        encoded = encode(item)
+        size = len(encoded)
+        assert 4096 <= size < 32768
+        base = (1 << 20) + (size - 4096) * ((1 << 24) - (1 << 20)) // 28672
+        threshold = min(1 << 32, base * size // 8)
+        value = int.from_bytes(raw_digest(binary, encoded)[:4], "little")
+        if value < threshold:
+            return {1: 0, 2: [item]}, value, threshold
+    raise ValueError("fixed boundary fixture search did not find a profile cut")
+
+
 def models(binary):
     """Transcribes complete CDDL inputs without reading published wire fixtures."""
     payloads = {"chunk": b"hello, terrane\n"}
@@ -58,8 +77,11 @@ def models(binary):
     hello_wire, world_wire = encode(hello), encode(world)
     hello_hash = digest(binary, "terrane-node-v1", hello_wire)
     world_hash = digest(binary, "terrane-node-v1", world_wire)
+    boundary, _, _ = boundary_leaf(binary, entry)
+    boundary_wire = encode(boundary)
+    boundary_hash = digest(binary, "terrane-node-v1", boundary_wire)
     internal = {1: 1, 2: [
-        [b"hello.txt", hello_hash, 1, len(hello_wire)],
+        [boundary[2][0][0], boundary_hash, 1, len(boundary_wire)],
         [b"world.txt", world_hash, 1, len(world_wire)],
     ]}
     payloads["node"] = encode(internal)
@@ -113,6 +135,7 @@ def models(binary):
         for kind, domain in DOMAINS
     }
     nodes = {"foundation-leaf-hello": hello, "foundation-leaf-world": world,
+             "foundation-leaf-boundary": boundary,
              "foundation-internal-node": internal}
     return payloads, descriptors, nodes
 
@@ -144,10 +167,13 @@ def self_check(binary):
     assert digest(binary, "terrane-node-v1", encode(nodes["foundation-leaf-hello"])).hex() == (
         "9366ec79c4c37d11877e5767bab653177f4e80be8ed6aeb0cdcf4c3c20bbc392"
     )
-    assert len(descriptors) == 11 and len(nodes) == 3
+    assert len(descriptors) == 11 and len(nodes) == 4
+    boundary, value, threshold = boundary_leaf(binary, nodes["foundation-leaf-hello"][2][0][2])
+    assert value < threshold and nodes["foundation-leaf-boundary"] == boundary
+    assert len(encode(nodes["foundation-internal-node"][2])) < 4096
     for kind, _ in DOMAINS:
         assert descriptors[f"descriptor-{kind}"][3] == len(payloads[kind])
-    print("PASS: raw hash oracle, five preserved identities and 14 independent models")
+    print("PASS: raw hash oracle, five preserved identities and 15 independent models")
 
 
 def render(binary):
@@ -155,7 +181,10 @@ def render(binary):
     payloads, descriptors, nodes = models(binary)
     parts = [HEADING, "", textwrap.fill(
         "These TEST-2 witnesses cover all eleven registered immutable descriptor "
-        "domains and a level-one internal node with two real leaf models. "
+        "domains and a canonical level-one internal node with two leaf models. "
+        "The first leaf closes at a real TREE-21/TREE-22 profile boundary, "
+        "using a fixed 4,096-byte extended attribute; the second closes as "
+        "the final tail. The legacy hello leaf is reproduced separately. "
         "Each child count is one; its weight is the complete leaf's encoded "
         "size. Descriptor payloads are reproduced independently from CDDL and "
         "the pack field tables. Deferred filter and memo payloads are ordinary "

@@ -1562,6 +1562,27 @@ is added rather than editing history.
     qualification of this section does not qualify the complete golden corpus
     or native collection, grace, recovery or physical effects.
 
+- **[D-88] Publish complete immutable descriptors and a canonical internal tree.**
+  - **Status:** Decided
+  - **Decision:** Add eleven descriptor witnesses with their complete immutable
+    payload bytes and four node witnesses, including a level-one internal root.
+    The first child closes at an independently computed TREE-21/TREE-22 cut;
+    the second is the final tail. Preserve the existing hello leaf separately.
+    Compare exact descriptor fields and identities, independently constructed
+    node fields and the actual canonical builder's root and subtree summaries.
+  - **Rationale:** TEST-2 requires every registered immutable descriptor and an
+    internal node, but the reference did not contain complete witnesses for
+    them. Two tiny single-entry children do not reproduce the canonical
+    boundary rule. A fixed extended attribute produces a genuine profile cut
+    while keeping all fields and payloads completely described. Independent
+    primitive writers and public models avoid using the codecs as their own
+    oracle. Deferred filter and memo payloads exercise descriptor fields only.
+  - **Affects:** TEST-1 to TEST-3, OBJ-3, OBJ-4, OBJ-6, TREE-17, TREE-20 to TREE-23,
+    the golden-vector reference. Requirement IDs, schemas, identity domains
+    and existing bytes remain unchanged. This additive correction precedes
+    T1's initial encoding freeze and does not qualify the complete golden
+    corpus, deferred features or native publication authority.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -332,18 +332,26 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   hermetic `collection-format-vectors` check, including independent reference
   reproduction. The preceding 474-test core checkpoint and strict Clippy and
   rustdoc pass. The updated full core Nextest run passes all 480 tests with
-  no skips; its strict Clippy and rustdoc stages remain in progress.
+  no skips; its strict all-target Clippy and rustdoc stages also pass.
   The actual current aggregate still rejects the absent `format_properties`
   target. The complete corpus stays unqualified; no task or milestone advances.
   A further reference review found the unpublished internal-node model and
   complete eleven-domain descriptor coverage required by TEST-2. The independent
-  `foundation-reference-generator` check now emits eleven descriptors with
-  complete payload bytes and three node models, reproducing five preserved
-  identities. Its actual hermetic run and read-only reproduction, section-bound,
-  tamper and duplicate-heading checks pass. Child counts and weights match the
-  independently encoded leaf models. Publication and Rust codec comparisons
-  remain required. Deferred filter and memo payloads are CDDL descriptor inputs,
-  not implementations of those branch features; no branch workline starts.
+  `foundation-reference-generator` check initially emitted eleven descriptors
+  and three node models. Further review replaced its preliminary tiny-child
+  layout with an independently computed real profile cut and a final tail.
+  D-88 publishes the resulting eleven descriptors with complete payloads and
+  four node models, reproducing five preserved identities. All previous golden
+  bytes remain unchanged. The actual `foundation-format-vectors` hermetic check
+  reproduces the complete reference section and passes three exact public-model
+  groups: every descriptor, node fields/identities, and the canonical builder's
+  root with exact child counts/weights. Strict Clippy for the added test passes,
+  as do preservation, section-bound, tamper and duplicate-heading audits and
+  mandatory repository formatting. Full core build/Nextest/strict qualification
+  on these final published inputs is queued. The actual trunk aggregate still
+  rejects the absent `format_properties` target; complete golden/fuzz and native
+  qualification remain incomplete. Deferred filter and memo payloads are CDDL
+  descriptor inputs; no branch workline starts.
   The independent `retirement-reference-generator` check now emits 34 inert
   wire models for the eleven existing D-82 record schemas: 27 positive field
   models and seven structural rejection inputs. Its actual hermetic run passes
@@ -358,7 +366,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   46 public cases and four of its five required private cases. The final private
   side-evidence case fails; inspection identifies an invalid positive fixture
   with an empty shebang argument, which the existing codec correctly rejects.
-  Its original focused qualification remains queued. The task stays unmerged;
+  Its original focused qualification now confirms four private cases pass and
+  that same fixture fails with `InvalidValue`. The task stays unmerged;
   the invalid positive fixture and full qualification remain to be resolved.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
