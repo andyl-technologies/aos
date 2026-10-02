@@ -156,6 +156,14 @@ def check_bundle(assembly, stage, tree, directory, store):
     require(documents["admission-sha256"].decode().strip() == digest, "admission bytes changed")
 
 
+def check_root_mountpoints(root):
+    """Require the platform's baseline mountpoints in the actual immutable image."""
+    for path, mode in (("srv", 0o755), ("root", 0o700), ("home", 0o755)):
+        target = root / path
+        require(target.is_dir() and not target.is_symlink(), "image lacks directory mountpoint /" + path)
+        require(stat.S_IMODE(target.stat().st_mode) == mode, "image mountpoint mode differs: /" + path)
+
+
 def check_minimal_base(root):
     """Reject workload payloads in the actual production root filesystem."""
     optional_payload = re.compile(
@@ -185,6 +193,7 @@ def main():
     check_rejected_unit_mutations(initrd, contract)
     check_bundle(assembly, "initrd", initrd, "lib/aos/initrd/deployment", "nix/store")
     check_bundle(assembly, "host", root, "usr/lib/aos/host/deployment", "usr/lib/aos/nix/store")
+    check_root_mountpoints(root)
     check_minimal_base(root)
     # A runtime retained through a package dependency need not be a direct
     # closure root; verify the actual public executable in the archive.
