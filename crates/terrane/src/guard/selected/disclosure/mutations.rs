@@ -1,8 +1,8 @@
 //! Injects malformed certificates only into genuine native test publications.
 //!
-//! Actual source signing and current paired authorization run first. The outer
-//! destination signature is subsequently recomputed, so complete candidate
-//! verification must reject these mutations before any immutable transfer.
+//! Current paired authorization remains genuine for both pre-sign ancestry and
+//! post-sign binding mutations. Witness completion follows actual source signing;
+//! the destination then signs the complete candidate before boundary verification.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -34,11 +34,14 @@ pub(crate) enum CertificateMutation {
     Signature,
     /// Changes an independently copied attribute's producer claim.
     AttributeOrigin,
+    /// Adds an actual unrelated native commit before genuine source signing.
+    UnanchoredParent([u8; 32]),
 }
 
 struct Injection {
     mutation: CertificateMutation,
     observed: Arc<AtomicBool>,
+    prepared: AtomicBool,
 }
 
 /// Proves that a mutation reached the genuinely source-signed candidate.
@@ -74,16 +77,39 @@ pub(crate) fn corrupt_next_certificate(
         Injection {
             mutation,
             observed: Arc::clone(&observed),
+            prepared: AtomicBool::new(false),
         },
     );
     Ok(CertificateMutationWitness(observed))
+}
+
+/// Adds the actual unrelated parent before the dedicated signer sees the message.
+///
+/// # Errors
+/// Rejects unavailable synchronization or a parent already present in the message.
+pub(super) fn apply_before_sign(root: &Path, commit: &mut Commit) -> Result<(), StoreFailure> {
+    let pending = PENDING
+        .get_or_init(Mutex::default)
+        .lock()
+        .map_err(|_| invalid())?;
+    if let Some(injection) = pending.get(root)
+        && let CertificateMutation::UnanchoredParent(parent) = injection.mutation
+    {
+        if commit.parents.contains(&parent) {
+            return Err(invalid());
+        }
+        commit.parents.push(parent);
+        injection.prepared.store(true, Ordering::Release);
+    }
+    Ok(())
 }
 
 /// Applies and consumes the mutation armed for this actual destination.
 ///
 /// # Errors
 /// Rejects synchronization failure, timestamp overflow, or a candidate lacking
-/// the certificate, source selector, or attribute required by the armed mutation.
+/// the certificate, source selector, or attribute required by the armed mutation,
+/// or an ancestry mutation that did not run before actual source signing.
 pub(super) fn apply(root: &Path, commit: &mut Commit) -> Result<(), StoreFailure> {
     let Some(injection) = PENDING
         .get_or_init(Mutex::default)
@@ -94,6 +120,11 @@ pub(super) fn apply(root: &Path, commit: &mut Commit) -> Result<(), StoreFailure
         return Ok(());
     };
     match injection.mutation {
+        CertificateMutation::UnanchoredParent(parent) => {
+            if !injection.prepared.load(Ordering::Acquire) || !commit.parents.contains(&parent) {
+                return Err(invalid());
+            }
+        }
         CertificateMutation::Message => commit.message.push_str(" altered after source signing"),
         CertificateMutation::Timestamp => {
             commit.timestamp = commit.timestamp.checked_add(1).ok_or_else(invalid)?;
@@ -149,7 +180,9 @@ pub(super) fn apply(root: &Path, commit: &mut Commit) -> Result<(), StoreFailure
                         .ok_or_else(invalid)?;
                     *origin = EntryOrigin::Current;
                 }
-                CertificateMutation::Message | CertificateMutation::Timestamp => {
+                CertificateMutation::Message
+                | CertificateMutation::Timestamp
+                | CertificateMutation::UnanchoredParent(_) => {
                     return Err(invalid());
                 }
             }
