@@ -58,7 +58,8 @@
       passAsFile = ["bootstrapJSON"];
     } ''
       ${artifacts.buildPackages.systemd}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
-      cp -a ${baseUnits}/. "$out/"
+      # Keep the new output writable for its own metadata finalization.
+      cp -a --no-preserve=mode ${baseUnits}/. "$out/"
     '';
   networkInputs =
     lib.mapAttrsToList (name: effect: {

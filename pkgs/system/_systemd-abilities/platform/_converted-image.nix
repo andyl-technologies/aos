@@ -18,7 +18,8 @@ pkgs.mkDerivation {
       name = "install";
       script = ''
         mkdir -p "$out"
-        cp -a ${baseImage}/. "$out/"
+        # Additional artifacts and platform metadata belong to the new output.
+        cp -a --no-preserve=mode ${baseImage}/. "$out/"
 
         # Copy exact paths authored by the canonical provider serializer.
         # Delivery conversion never rewrites these authenticated facts.
