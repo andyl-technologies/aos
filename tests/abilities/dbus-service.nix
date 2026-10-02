@@ -24,6 +24,15 @@
       dependencies = {};
     };
   };
+  systemdRegistration = {options, ...}:
+    import ../../pkgs/system/_systemd-abilities/dbus-registrations.nix {
+      inherit lib options;
+      package = artifactLib.value (artifact "systemd");
+    };
+  standalone = lib.evalModules {
+    inherit lib;
+    modules = [../../lib/effects/module.nix systemdRegistration];
+  };
   evaluate = enable: openFileLimit:
     lib.evalPackageModules {
       scope = ["test" "native-dbus"];
@@ -32,6 +41,7 @@
         (record "dbus" ../../pkgs/system/_dbus)
       ];
       operatorModules = [
+        systemdRegistration
         {
           aos.services.dbus = {inherit enable;};
           aos.dbus.openFileLimit = openFileLimit;
@@ -71,6 +81,10 @@
     };
   };
 in
+  assert !(standalone.config.aos or {} ? dbus);
+  assert standalone.config.aos.activation.graph.order == [];
+  assert default.config.aos.dbus.policyDirectories == ["${payload "systemd"}/share/dbus-1/system.d" "${payload "polkit"}/share/dbus-1/system.d"];
+  assert default.config.aos.dbus.activationDirectories == ["${payload "systemd"}/share/dbus-1/system-services" "${payload "polkit"}/share/dbus-1/system-services"];
   assert service.bootstrap;
   assert service.activationOwner == "ability";
   assert service.activationAfter == [];
@@ -113,7 +127,9 @@ in
   assert file.input.content
   == lib.concatStringsSep "" [
     "<busconfig>\n<include>${payload "dbus"}/share/dbus-1/aos-system-base.conf</include>\n"
+    "<servicedir>${payload "systemd"}/share/dbus-1/system-services</servicedir>\n"
     "<servicedir>${payload "polkit"}/share/dbus-1/system-services</servicedir>\n"
+    "<includedir>${payload "systemd"}/share/dbus-1/system.d</includedir>\n"
     "<includedir>${payload "polkit"}/share/dbus-1/system.d</includedir>\n"
     "<includedir>/etc/dbus-1/system.d</includedir>\n<include ignore_missing=\"yes\">/etc/dbus-1/system-local.conf</include>\n</busconfig>\n"
   ];
