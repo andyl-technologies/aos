@@ -393,7 +393,7 @@ pub fn verify_native_deployment_attachments(
                 (
                     root_tree,
                     Path::new("usr/lib/aos/host/deployment").join(filename),
-                    Path::new("nix.lower/store"),
+                    Path::new("usr/lib/aos/nix/store"),
                 )
             };
             if digest_regular_file(&captured)?

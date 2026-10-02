@@ -648,6 +648,85 @@ mod tests {
     }
 
     #[test]
+    fn native_attachments_bind_the_current_archive_store_layout() -> Result<()> {
+        use std::os::unix::fs::symlink;
+
+        let temporary = fixture(RECIPE_SCHEMA_V3)?;
+        let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
+            Ok(format!("sha256:{}", "a".repeat(64)))
+        })?;
+        let initrd_tree = temporary.path().join("initrd-tree");
+        let root_tree = temporary.path().join("root-tree");
+        let host_store = root_tree.join("usr/lib/aos/nix/store");
+        let host_bundle = "11111111111111111111111111111111-host-deployment";
+
+        // Absolute runtime aliases must resolve against each archive's backing
+        // store, without requiring a mounted /nix overlay or host store access.
+        for (stage, tree, store, bundle, relative) in [
+            (
+                "initrd",
+                &initrd_tree,
+                "nix/store",
+                "00000000000000000000000000000000-initrd-deployment",
+                "lib/aos/initrd/deployment",
+            ),
+            (
+                "host",
+                &root_tree,
+                "usr/lib/aos/nix/store",
+                host_bundle,
+                "usr/lib/aos/host/deployment",
+            ),
+        ] {
+            let documents = tree.join(store).join(bundle);
+            fs::create_dir_all(&documents)?;
+            let alias = tree.join(relative);
+            fs::create_dir_all(alias.parent().context("fixture bundle lacks parent")?)?;
+            symlink(format!("/nix/store/{bundle}"), alias)?;
+            for (_, filename) in crate::assembly::native_deployment_files(stage) {
+                fs::copy(
+                    temporary
+                        .path()
+                        .join(format!("inputs/{stage}-deployment/{filename}")),
+                    documents.join(filename),
+                )?;
+            }
+        }
+
+        let verify = || -> Result<()> {
+            let captured_inputs = tempfile::tempdir()?;
+            crate::finalize::verify_native_deployment_attachments(
+                temporary.path(),
+                &assembly,
+                captured_inputs.path(),
+                &initrd_tree,
+                &root_tree,
+            )
+        };
+        verify()?;
+
+        let transaction = host_store.join(host_bundle).join("transaction.json");
+        let original = fs::read(&transaction)?;
+        fs::write(&transaction, b"changed embedded transaction")?;
+        let error = verify().expect_err("changed host deployment must fail custody checks");
+        assert!(
+            error
+                .to_string()
+                .contains("differs from embedded deployment")
+        );
+
+        fs::write(&transaction, original)?;
+        let relocated_store = root_tree.join("relocated-store");
+        fs::rename(&host_store, &relocated_store)?;
+        symlink(&relocated_store, &host_store)?;
+        assert!(
+            verify().is_err(),
+            "linked backing-store parents must fail closed"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn captures_initrd_contract_and_exact_archive_binding() -> Result<()> {
         let temporary = fixture(RECIPE_SCHEMA_V3)?;
         let assembly = capture_unsigned_assembly(temporary.path(), "release-2026.9.0", |_| {
