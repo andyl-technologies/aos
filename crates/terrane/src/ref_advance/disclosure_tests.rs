@@ -18,6 +18,8 @@ mod boundary_checks;
 #[cfg(unix)]
 mod conflicts;
 #[cfg(unix)]
+mod coverage;
+#[cfg(unix)]
 mod dictionaries;
 #[cfg(unix)]
 mod fresh_recovery;
@@ -61,6 +63,12 @@ async fn disclosure_projection_safe_conflict_resolution_certifies_selected_file(
 #[tokio::test]
 async fn disclosure_boundary_directory_marker_and_raw_symlink_have_limited_scope() {
     limited::certify_limited_entries().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_rejects_uncovered_siblings_attributes_and_unanchored_parents() {
+    coverage::reject_incomplete_boundaries().await;
 }
 
 #[cfg(unix)]
