@@ -73,18 +73,17 @@
           exit 1
         '';
       };
-      boot.initrd.systemd.services.aos-ability-initrd-controller = {
-        requires = [observerUnit];
-        after = [observerUnit];
-      };
     }
   ];
-  initrdController =
-    activatedSystem.config.boot.initrd.systemd.services.aos-ability-initrd-controller;
   selectedInitrd = activatedSystem.config.system.build.initrdDeploymentBundle.nativeTransaction;
+  initrdController =
+    (builtins.head (builtins.filter
+      (node: builtins.elem "boot-preparations.aos-ability-initrd-controller" node.identity)
+      (builtins.attrValues selectedInitrd.graph.nodes))).input;
   observerOrderedBeforeController =
-    builtins.elem observerUnit initrdController.requires
-    && builtins.elem observerUnit initrdController.after;
+    builtins.elem observerUnit initrdController.dependencies.requires
+    && builtins.elem observerUnit initrdController.dependencies.after
+    && builtins.elem "initrd-fs.target" initrdController.dependencies.before;
   observerAvailableInInitrd =
     builtins.elem
     (builtins.toString observer.package)
