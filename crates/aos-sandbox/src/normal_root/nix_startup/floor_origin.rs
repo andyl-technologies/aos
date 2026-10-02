@@ -16,7 +16,8 @@ use std::path::Path;
 use aos_sandbox_linux::pidfd::PidFd;
 
 use crate::production_operation_compiler::{
-    ControllerNixStartRecipeSelectorV2, NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2,
+    ControllerNixPublicDataLoanV2, ControllerNixStartRecipeSelectorV2,
+    NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2,
 };
 use crate::public_api_session::PinnedSystemdCredential;
 
@@ -236,18 +237,25 @@ impl ControllerNixSessionFloorOriginV2<'_> {
         Ok(self.selector.session_floor_pins())
     }
 
-    /// Borrows all twelve original public preimages in their existing order.
+    /// Lends guarded access to twelve original public preimages in fixed order.
     ///
-    /// The slices are neither copied nor detachable custody. They remain DATA
-    /// borrowed from the same retained selector; consumers must compare every
-    /// field and keep the genuine loan rather than treating a digest as proof.
+    /// The returned move-only loan retains the actual selector's guard. Its
+    /// preimages borrow that loan without copying or extracting lower DATA.
+    /// Drop it before another observation on this selector; other shared
+    /// observations refuse contention rather than blocking or reacquiring it.
+    /// This return type intentionally replaces the former bare slice array.
+    /// It is nonauthorizing DATA, not a floor, currentness or drain receipt.
     ///
     /// # Errors
     ///
-    /// Rejects changed or closed original startup/credential custody.
-    pub fn public_preimages(&mut self) -> Result<[&[u8]; 12], NixStartAdmissionErrorV2> {
+    /// Rejects changed/closed custody or unavailable guard access. Recheck can
+    /// fail before a DATA loan exists; the actual selector separately lends
+    /// its resident cause through retained_credential_failure, without retry.
+    pub fn public_preimages(
+        &mut self,
+    ) -> Result<ControllerNixPublicDataLoanV2<'_>, NixStartAdmissionErrorV2> {
         self.recheck()?;
-        Ok(self.selector.session_floor_public_preimages())
+        self.selector.session_floor_public_preimages()
     }
 
     /// Borrows the separate original node bytes outside the twelve-pin set.

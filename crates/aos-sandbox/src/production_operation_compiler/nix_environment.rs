@@ -17,8 +17,14 @@
 //!  "node":...,"deployment":...,"endpoint":...,"domain":...,
 //!  "domain_commitment":...,"disclosure":...}
 //! ```
+//!
+//! Retained admission keeps the same lower credential reservoir, including its
+//! original descriptors, behind one closed synchronization boundary. Public
+//! DATA and terminal causes borrow a move-only guard rather than detached
+//! preimages. The legacy consuming constructor retains its original storage
+//! and observation order. Neither route grants a physical floor or drain.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
 
 use aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1;
 use aos_sandbox_broker_session_protocol::manifest::{
@@ -42,7 +48,9 @@ use crate::controller_service::public_projection::{
     PublicProjectionKindV1, PublicProjectionResourceV1, PublicProjectionStoreV1,
 };
 use crate::normal_root::{ProductionControllerNixStartupCaptureV1, ProductionControllerNixStartupV1};
-use crate::public_api_session::PinnedSystemdCredential;
+use crate::public_api_session::{
+    ControllerNixPublicCredentialCustodyV1, PinnedSystemdCredential,
+};
 use crate::public_mutation_compiler::AuthorizedPublicMutationRequestV1;
 use crate::runtime_authority::{RuntimeAuthorityBindingV1, RuntimeAuthorityLimits, RuntimeAuthorityStore};
 use crate::runtime_scope::{CurrentRuntimeScopePolicy, RuntimeScopeHolder};
@@ -63,6 +71,10 @@ const CATALOG_DOMAIN: &[u8] = b"aos.sandbox.nix.recipe-catalog.v2\0";
 const MAXIMUM_CATALOG_BYTES: usize = 1_048_576;
 
 /// Reports failure to retain an authentic, bounded original Start continuation.
+///
+/// Retained-custody variants are additions to this exhaustive public enum.
+/// External exhaustive matches must account for them. Their actual nested
+/// causes remain in the same owner and are borrowed through its failure loan.
 #[derive(Debug, thiserror::Error)]
 pub enum NixStartAdmissionErrorV2 {
     /// Original installed startup custody changed or cannot be admitted.
@@ -86,6 +98,21 @@ pub enum NixStartAdmissionErrorV2 {
     /// Original/current identity, bounds, ledger or credential pins disagree.
     #[error("retained Nix Start admission is unavailable or inconsistent")]
     Invalid,
+    /// The same retained credential owner is permanently closed.
+    #[error("Controller Nix original credential custody is closed")]
+    CredentialCustodyClosed,
+    /// Another loan prevents access to the same retained credential owner.
+    #[error("Controller Nix original credential custody is already borrowed")]
+    CredentialCustodyContended,
+    /// An interrupted mutex owner cannot be borrowed without recovery.
+    #[error("Controller Nix original credential custody is poisoned")]
+    CredentialCustodyPoisoned,
+    /// An abandoned or unwinding observation permanently closed the owner.
+    #[error("Controller Nix original credential observation was interrupted")]
+    CredentialCustodyInterrupted,
+    /// The terminal owner cannot lend its original recorded cause.
+    #[error("Controller Nix original credential cause is unavailable")]
+    CredentialCauseUnavailable,
 }
 
 /// Owns original installed startup and twelve exact fixed PUBLIC credentials.
@@ -96,7 +123,7 @@ pub enum NixStartAdmissionErrorV2 {
 pub struct ControllerNixStartRecipeSelectorV2 {
     startup: Arc<ProductionControllerNixStartupV1>,
     pins: NixFixedDomainPinsDataV2,
-    credentials: [PinnedSystemdCredential; 12],
+    credentials: SelectorPublicCredentials,
     recipes: Vec<VerifiedNixRecipeArtifactV2>,
 }
 
@@ -109,11 +136,19 @@ impl std::fmt::Debug for ControllerNixStartRecipeSelectorV2 {
 /// Borrows the same first owning selector or nested Nix refusal.
 ///
 /// Diagnostics expose a fixed class only, not credential bytes or paths.
+/// Retained-credential variants extend this exhaustive public enum and require
+/// external exhaustive matches to be updated.
 pub enum ControllerNixSelectorFailureRefV2<'attempt> {
     /// The selector retains this actual credential/codec/policy cause.
     Selector(&'attempt NixStartAdmissionErrorV2),
     /// The same nested capture retains its actual lower cause.
     Nix(&'attempt crate::normal_root::NormalRootStartupErrorV1),
+    /// The plain admission reservoir retains this actual lower cause.
+    Credential(&'attempt (dyn std::error::Error + 'static)),
+    /// The completed selector lends its same guard-bound terminal cause.
+    CredentialLoan(ControllerNixPublicDataLoanV2<'attempt>),
+    /// Diagnosis is unavailable without recovering or replacing the owner.
+    CredentialUnavailable(NixStartAdmissionErrorV2),
     /// The original attempt is irreversibly closed.
     Closed,
 }
@@ -123,6 +158,10 @@ impl std::fmt::Debug for ControllerNixSelectorFailureRefV2<'_> {
         formatter.write_str(match self {
             Self::Selector(_) => "Controller Nix selector admission refused",
             Self::Nix(_) => "Controller Nix original startup refused",
+            Self::Credential(_) | Self::CredentialLoan(_) => {
+                "Controller Nix original credentials refused"
+            }
+            Self::CredentialUnavailable(_) => "Controller Nix original cause unavailable",
             Self::Closed => "Controller Nix selector admission closed",
         })
     }
@@ -131,21 +170,22 @@ impl std::fmt::Debug for ControllerNixSelectorFailureRefV2<'_> {
 enum SelectorAdmissionFailure {
     Selector(NixStartAdmissionErrorV2),
     Nix,
+    Credentials,
     Closed,
 }
 
 /// Retains one same-capture admission and every returned fixed public credential.
 ///
 /// Failed/abandoned/unwinding attempts abort before field release. This is not
-/// original credential-FD custody, funding, physical drain or public readiness.
+/// funding, physical drain or public readiness. The fixed lower reservoir owns
+/// returned credential descriptors and buffers before later checks.
 #[must_use]
 pub struct ControllerNixSelectorAdmissionV2 {
     capture: ProductionControllerNixStartupCaptureV1,
     controller_uid: u32,
     controller_gid: u32,
     node: NodeId,
-    credential_prefix: [Option<PinnedSystemdCredential>; 12],
-    credentials: Option<[PinnedSystemdCredential; 12]>,
+    credentials: Option<ControllerNixPublicCredentialCustodyV1>,
     pins: Option<NixFixedDomainPinsDataV2>,
     startup: Option<Arc<ProductionControllerNixStartupV1>>,
     recipes: Option<Vec<VerifiedNixRecipeArtifactV2>>,
@@ -156,23 +196,237 @@ pub struct ControllerNixSelectorAdmissionV2 {
     not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
 }
 
-// One fixed expression list supplies both storage dispositions. No caller
-// chooses a loader, name, index, policy or execution callback.
-macro_rules! selector_loads {
-    (legacy, $storage:ident, $credentials:ident, $( $index:literal => $load:expr ),+ $(,)?) => {
-        let $credentials = [$( $load? ),+];
-    };
-    (retained, $storage:ident, $credentials:ident, $( $index:literal => $load:expr ),+ $(,)?) => {
-        if $storage.credentials.is_some() || $storage.credential_prefix.iter().any(Option::is_some) {
-            return Err(SelectorAdmissionFailure::Closed);
+enum SelectorPublicCredentials {
+    Legacy([PinnedSystemdCredential; 12]),
+    Retained(RetainedControllerPublics),
+}
+
+// Only this fixed Controller owner is synchronized. A failure record never
+// becomes a permit, and no caller supplies a loader, endpoint or policy.
+struct RetainedControllerPublics {
+    original: Mutex<ControllerNixPublicCredentialCustodyV1>,
+    failure: OnceLock<PublicCredentialRefusal>,
+}
+
+#[derive(Debug, thiserror::Error)]
+enum PublicCredentialRefusal {
+    #[error("the original lower credential owner refused")]
+    Lower,
+    #[error("the original Nix startup refused")]
+    Startup(#[source] crate::normal_root::NormalRootStartupErrorV1),
+    #[error("the original credential owner is already borrowed")]
+    Contended,
+    #[error("the original credential owner is poisoned")]
+    Poisoned,
+    #[error("the original credential observation was interrupted")]
+    Interrupted,
+}
+
+impl RetainedControllerPublics {
+    fn new(original: ControllerNixPublicCredentialCustodyV1) -> Self {
+        Self {
+            original: Mutex::new(original),
+            failure: OnceLock::new(),
         }
-        $(
-            $storage.credential_prefix[$index] = Some($load.map_err(|cause| {
-                SelectorAdmissionFailure::Selector(NixStartAdmissionErrorV2::from(cause))
-            })?);
-        )+
-        $storage.assemble_credentials()?;
-        let $credentials = $storage.credentials.as_ref().ok_or(SelectorAdmissionFailure::Closed)?;
+    }
+
+    fn record(&self, cause: PublicCredentialRefusal) {
+        // Losing a later refusal cannot displace the actual first cause.
+        let _ = self.failure.set(cause);
+    }
+
+    fn refusal(&self) -> NixStartAdmissionErrorV2 {
+        match self.failure.get() {
+            Some(PublicCredentialRefusal::Contended) => {
+                NixStartAdmissionErrorV2::CredentialCustodyContended
+            }
+            Some(PublicCredentialRefusal::Poisoned) => {
+                NixStartAdmissionErrorV2::CredentialCustodyPoisoned
+            }
+            Some(PublicCredentialRefusal::Interrupted) => {
+                NixStartAdmissionErrorV2::CredentialCustodyInterrupted
+            }
+            _ => NixStartAdmissionErrorV2::CredentialCustodyClosed,
+        }
+    }
+
+    fn borrow(
+        &self,
+        disposition: PublicLoanDisposition,
+    ) -> Result<RetainedPublicGuard<'_>, NixStartAdmissionErrorV2> {
+        let diagnostic = matches!(disposition, PublicLoanDisposition::Diagnosis);
+        if !diagnostic && self.failure.get().is_some() {
+            return Err(self.refusal());
+        }
+
+        let original = match self.original.try_lock() {
+            Ok(original) => original,
+            Err(TryLockError::WouldBlock) => {
+                if !diagnostic {
+                    self.record(PublicCredentialRefusal::Contended);
+                }
+                return Err(NixStartAdmissionErrorV2::CredentialCustodyContended);
+            }
+            Err(TryLockError::Poisoned(_)) => {
+                if !diagnostic {
+                    self.record(PublicCredentialRefusal::Poisoned);
+                }
+                return Err(NixStartAdmissionErrorV2::CredentialCustodyPoisoned);
+            }
+        };
+        let guard = RetainedPublicGuard {
+            owner: self,
+            original,
+            disposition,
+        };
+
+        if !diagnostic && self.failure.get().is_some() {
+            // A concurrent refusal remains terminal even after lock acquisition.
+            return Err(guard.close());
+        }
+        Ok(guard)
+    }
+}
+
+#[derive(Clone, Copy)]
+enum PublicLoanDisposition {
+    Observation,
+    Data,
+    Diagnosis,
+}
+
+struct RetainedPublicGuard<'owner> {
+    owner: &'owner RetainedControllerPublics,
+    original: MutexGuard<'owner, ControllerNixPublicCredentialCustodyV1>,
+    disposition: PublicLoanDisposition,
+}
+
+impl RetainedPublicGuard<'_> {
+    fn fail(mut self, cause: PublicCredentialRefusal) -> NixStartAdmissionErrorV2 {
+        self.owner.record(cause);
+        self.original.fence();
+        self.disposition = PublicLoanDisposition::Data;
+        self.owner.refusal()
+    }
+
+    fn close(mut self) -> NixStartAdmissionErrorV2 {
+        self.original.fence();
+        self.disposition = PublicLoanDisposition::Data;
+        self.owner.refusal()
+    }
+
+    fn finish(mut self) -> Result<Self, NixStartAdmissionErrorV2> {
+        if self.owner.failure.get().is_some() {
+            return Err(self.close());
+        }
+        // This final read is the success linearization point, not revocation
+        // of earlier borrowed DATA or an atomic external policy snapshot.
+        self.disposition = PublicLoanDisposition::Data;
+        Ok(self)
+    }
+}
+
+impl Drop for RetainedPublicGuard<'_> {
+    fn drop(&mut self) {
+        let interrupted = matches!(self.disposition, PublicLoanDisposition::Observation)
+            || (matches!(self.disposition, PublicLoanDisposition::Data)
+                && std::thread::panicking());
+        if interrupted {
+            self.owner.record(PublicCredentialRefusal::Interrupted);
+            self.original.fence();
+        }
+    }
+}
+
+enum ControllerPublicLoan<'owner> {
+    Legacy(&'owner [PinnedSystemdCredential; 12]),
+    Retained(RetainedPublicGuard<'owner>),
+}
+
+/// Borrows original Controller public DATA or a terminal credential cause.
+///
+/// The move-only loan retains the same mutex guard on the retained route.
+/// References returned by its accessors borrow this loan, not a detached
+/// credential array. It is neither Send nor Sync and grants no currentness,
+/// admission, floor, descriptor access or drain. A terminal diagnostic loan
+/// cannot lend Ready preimages or resume the original owner.
+#[must_use = "keep this loan alive while comparing its original DATA or cause"]
+pub struct ControllerNixPublicDataLoanV2<'owner> {
+    original: ControllerPublicLoan<'owner>,
+    not_sync: std::marker::PhantomData<std::cell::Cell<()>>,
+}
+
+impl std::fmt::Debug for ControllerNixPublicDataLoanV2<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ControllerNixPublicDataLoanV2(<borrowed original custody>)")
+    }
+}
+
+impl<'owner> ControllerNixPublicDataLoanV2<'owner> {
+    fn new(original: ControllerPublicLoan<'owner>) -> Self {
+        Self {
+            original,
+            not_sync: std::marker::PhantomData,
+        }
+    }
+
+    fn publics(&self) -> Option<[&PinnedSystemdCredential; 12]> {
+        match &self.original {
+            ControllerPublicLoan::Legacy(original) => Some(original.each_ref()),
+            ControllerPublicLoan::Retained(guard) => {
+                if matches!(guard.disposition, PublicLoanDisposition::Diagnosis)
+                    || guard.owner.failure.get().is_some()
+                {
+                    return None;
+                }
+                guard.original.publics()
+            }
+        }
+    }
+
+    /// Borrows twelve original preimages in their fixed order without I/O.
+    ///
+    /// Returns None for terminal diagnosis or a concurrent original refusal.
+    /// These references cannot outlive this loan and are nonauthorizing DATA.
+    pub fn preimages(&self) -> Option<[&[u8]; 12]> {
+        self.publics().map(|publics| publics.map(PinnedSystemdCredential::bytes))
+    }
+
+    /// Borrows the actual first cause without moving or copying it.
+    ///
+    /// Nested Error::source references share this loan's lifetime. An absent
+    /// cause is not a freshness assertion; terminal borrow acquisition reports
+    /// unavailable cause custody rather than manufacturing an error.
+    pub fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        let ControllerPublicLoan::Retained(guard) = &self.original else {
+            return None;
+        };
+        match guard.owner.failure.get()? {
+            PublicCredentialRefusal::Lower => guard.original.failure().map(|cause| {
+                cause as &(dyn std::error::Error + 'static)
+            }),
+            PublicCredentialRefusal::Startup(cause) => Some(cause),
+            cause => Some(cause),
+        }
+    }
+}
+
+// Keep the literal legacy expression list. Retained admission selects the sole
+// lower fixed-name capture engine, then both routes borrow the same decoders.
+// No caller chooses a loader, name, index, policy or execution callback.
+macro_rules! selector_loads {
+    (legacy, $storage:ident, $originals:ident, $credentials:ident, $( $index:literal => $load:expr ),+ $(,)?) => {
+        let $originals = [$( $load? ),+];
+        let $credentials = $originals.each_ref();
+    };
+    (retained, $storage:ident, $originals:ident, $credentials:ident, $( $index:literal => $load:expr ),+ $(,)?) => {
+        let lower = $storage.credentials.as_mut().ok_or(SelectorAdmissionFailure::Closed)?;
+        if lower.capture().is_err() {
+            return Err(SelectorAdmissionFailure::Credentials);
+        }
+        let $credentials = $storage.credentials.as_ref()
+            .and_then(ControllerNixPublicCredentialCustodyV1::publics)
+            .ok_or(SelectorAdmissionFailure::Closed)?;
     };
 }
 
@@ -212,15 +466,16 @@ macro_rules! selector_startup {
 }
 
 macro_rules! selector_finish {
-    (legacy, $storage:ident, $startup:ident, $pins:ident, $credentials:ident, $recipes:ident) => {
+    (legacy, $storage:ident, $startup:ident, $pins:ident, $originals:ident, $recipes:ident) => {
         let owner = Self {
-            startup: $startup, pins: $pins, credentials: $credentials, recipes: $recipes,
+            startup: $startup, pins: $pins,
+            credentials: SelectorPublicCredentials::Legacy($originals), recipes: $recipes,
         };
         owner.recheck()?;
         owner.assignment_policy()?;
         Ok(owner)
     };
-    (retained, $storage:ident, $startup:ident, $pins:ident, $credentials:ident, $recipes:ident) => {
+    (retained, $storage:ident, $startup:ident, $pins:ident, $originals:ident, $recipes:ident) => {
         $storage.assemble_selector()?;
         let owner = $storage.completed.as_ref().ok_or(SelectorAdmissionFailure::Closed)?;
         owner.recheck().map_err(SelectorAdmissionFailure::Selector)?;
@@ -231,7 +486,7 @@ macro_rules! selector_finish {
 
 macro_rules! selector_admission_recipe {
     ($mode:ident, $storage:ident, $capture:ident, $uid:ident, $gid:ident, $node:ident) => {{
-        selector_loads!($mode, $storage, credentials,
+        selector_loads!($mode, $storage, originals, credentials,
             0 => PinnedSystemdCredential::load_nix_recipe_issuer_v2(),
             1 => PinnedSystemdCredential::load_nix_fixed_domain_pins_v2(),
             2 => PinnedSystemdCredential::load_nix_broker_session_manifest_v1(),
@@ -251,7 +506,7 @@ macro_rules! selector_admission_recipe {
         }
         selector_startup!($mode, $storage, $capture, pins, startup);
         selector_bind!($mode, $storage, recipes, decode_public_catalog(&credentials, &pins, $node));
-        selector_finish!($mode, $storage, startup, pins, credentials, recipes)
+        selector_finish!($mode, $storage, startup, pins, originals, recipes)
     }};
 }
 
@@ -259,8 +514,7 @@ impl ControllerNixSelectorAdmissionV2 {
     fn new(capture: ProductionControllerNixStartupCaptureV1, controller_uid: u32, controller_gid: u32, node: NodeId) -> Self {
         let mut owner = Self {
             capture, controller_uid, controller_gid, node,
-            credential_prefix: std::array::from_fn(|_| None),
-            credentials: None,
+            credentials: Some(ControllerNixPublicCredentialCustodyV1::new()),
             pins: None,
             startup: None,
             recipes: None,
@@ -309,7 +563,6 @@ impl ControllerNixSelectorAdmissionV2 {
     #[must_use]
     pub fn take_admitted_selector(&mut self) -> Option<ControllerNixStartRecipeSelectorV2> {
         if !self.attempted || self.first_failure.is_some() || self.completed.is_none()
-            || self.credential_prefix.iter().any(Option::is_some)
             || self.credentials.is_some() || self.pins.is_some()
             || self.startup.is_some() || self.recipes.is_some()
         {
@@ -321,12 +574,33 @@ impl ControllerNixSelectorAdmissionV2 {
     }
 
     fn failure_view(&self) -> ControllerNixSelectorFailureRefV2<'_> {
+        // A final bookend may fail after the same lower owner has moved into
+        // completed. Borrow it there; do not diagnose the emptied plain slot.
+        if let Some(completed) = &self.completed {
+            match completed.retained_credential_failure() {
+                Ok(Some(loan)) => {
+                    return ControllerNixSelectorFailureRefV2::CredentialLoan(loan);
+                }
+                Err(cause) => {
+                    return ControllerNixSelectorFailureRefV2::CredentialUnavailable(cause);
+                }
+                Ok(None) => {}
+            }
+        }
         match &self.first_failure {
             Some(SelectorAdmissionFailure::Selector(cause)) => ControllerNixSelectorFailureRefV2::Selector(cause),
             Some(SelectorAdmissionFailure::Nix) => match self.capture.first_failure() {
                 Some(cause) => ControllerNixSelectorFailureRefV2::Nix(cause),
                 None => ControllerNixSelectorFailureRefV2::Closed,
             },
+            Some(SelectorAdmissionFailure::Credentials) => {
+                let cause = self.credentials.as_ref()
+                    .and_then(ControllerNixPublicCredentialCustodyV1::failure);
+                match cause {
+                    Some(cause) => ControllerNixSelectorFailureRefV2::Credential(cause),
+                    None => ControllerNixSelectorFailureRefV2::Closed,
+                }
+            }
             Some(SelectorAdmissionFailure::Closed) | None => ControllerNixSelectorFailureRefV2::Closed,
         }
     }
@@ -338,37 +612,28 @@ impl ControllerNixSelectorAdmissionV2 {
         selector_admission_recipe!(retained, self, capture, controller_uid, controller_gid, node)
     }
 
-    fn assemble_credentials(&mut self) -> Result<(), SelectorAdmissionFailure> {
-        if self.credentials.is_some() || self.credential_prefix.iter().any(Option::is_none) {
-            return Err(SelectorAdmissionFailure::Closed);
-        }
-        let originals = std::mem::replace(
-            &mut self.credential_prefix, std::array::from_fn(|_| None),
-        );
-        match originals {
-            [Some(c0), Some(c1), Some(c2), Some(c3), Some(c4), Some(c5),
-             Some(c6), Some(c7), Some(c8), Some(c9), Some(c10), Some(c11)] => {
-                self.credentials = Some([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11]);
-                Ok(())
-            }
-            originals => {
-                self.credential_prefix = originals;
-                Err(SelectorAdmissionFailure::Closed)
-            }
-        }
-    }
-
     fn assemble_selector(&mut self) -> Result<(), SelectorAdmissionFailure> {
         if self.completed.is_some() || self.startup.is_none() || self.pins.is_none()
             || self.credentials.is_none() || self.recipes.is_none()
-            || self.credential_prefix.iter().any(Option::is_some)
+            || self.credentials.as_ref()
+                .and_then(ControllerNixPublicCredentialCustodyV1::publics).is_none()
         {
             return Err(SelectorAdmissionFailure::Closed);
         }
-        let originals = (self.startup.take(), self.pins.take(), self.credentials.take(), self.recipes.take());
+        let originals = (
+            self.startup.take(), self.pins.take(),
+            self.credentials.take(), self.recipes.take(),
+        );
         match originals {
             (Some(startup), Some(pins), Some(credentials), Some(recipes)) => {
-                self.completed = Some(ControllerNixStartRecipeSelectorV2 { startup, pins, credentials, recipes });
+                self.completed = Some(ControllerNixStartRecipeSelectorV2 {
+                    startup,
+                    pins,
+                    credentials: SelectorPublicCredentials::Retained(
+                        RetainedControllerPublics::new(credentials),
+                    ),
+                    recipes,
+                });
                 Ok(())
             }
             (startup, pins, credentials, recipes) => {
@@ -430,12 +695,90 @@ impl ControllerNixStartRecipeSelectorV2 {
     }
 
     fn recheck(&self) -> Result<(), NixStartAdmissionErrorV2> {
-        self.startup.recheck()?;
-        for credential in &self.credentials {
-            credential.recheck()?;
-        }
-        self.startup.recheck()?;
+        self.recheck_and_borrow_publics()?;
         Ok(())
+    }
+
+    fn recheck_and_borrow_publics(
+        &self,
+    ) -> Result<ControllerNixPublicDataLoanV2<'_>, NixStartAdmissionErrorV2> {
+        match &self.credentials {
+            SelectorPublicCredentials::Legacy(credentials) => {
+                self.startup.recheck()?;
+                for credential in credentials {
+                    credential.recheck()?;
+                }
+                self.startup.recheck()?;
+                Ok(ControllerNixPublicDataLoanV2::new(
+                    ControllerPublicLoan::Legacy(credentials),
+                ))
+            }
+            SelectorPublicCredentials::Retained(credentials) => {
+                // The original guard is prearmed before the first bookend.
+                let mut observation = credentials.borrow(PublicLoanDisposition::Observation)?;
+                if let Err(cause) = self.startup.recheck() {
+                    return Err(observation.fail(PublicCredentialRefusal::Startup(cause)));
+                }
+                if observation.original.recheck().is_err() {
+                    return Err(observation.fail(PublicCredentialRefusal::Lower));
+                }
+                if let Err(cause) = self.startup.recheck() {
+                    return Err(observation.fail(PublicCredentialRefusal::Startup(cause)));
+                }
+                let observation = observation.finish()?;
+                Ok(ControllerNixPublicDataLoanV2::new(
+                    ControllerPublicLoan::Retained(observation),
+                ))
+            }
+        }
+    }
+
+    fn borrow_publics(
+        &self,
+    ) -> Result<ControllerNixPublicDataLoanV2<'_>, NixStartAdmissionErrorV2> {
+        let original = match &self.credentials {
+            SelectorPublicCredentials::Legacy(credentials) => {
+                ControllerPublicLoan::Legacy(credentials)
+            }
+            SelectorPublicCredentials::Retained(credentials) => {
+                let guard = credentials.borrow(PublicLoanDisposition::Data)?;
+                if guard.original.publics().is_none() {
+                    return Err(guard.fail(PublicCredentialRefusal::Lower));
+                }
+                ControllerPublicLoan::Retained(guard)
+            }
+        };
+        Ok(ControllerNixPublicDataLoanV2::new(original))
+    }
+
+    /// Lends the same selector's terminal credential cause without observation.
+    ///
+    /// Legacy or no recorded retained refusal returns None without locking.
+    /// A terminal retained owner is borrowed with exactly one nonblocking lock
+    /// attempt. This remains usable after successful selector handoff; a DATA
+    /// observation may fail before it can return any public-preimage loan.
+    /// Diagnosis does not recheck, retry, replace custody or write a first cause.
+    ///
+    /// # Errors
+    /// Reports typed contention, poison or inconsistent cause availability.
+    /// Unavailable diagnosis leaves the actual original first cause resident;
+    /// it does not manufacture an I/O error or recover a poisoned guard.
+    pub fn retained_credential_failure(
+        &self,
+    ) -> Result<Option<ControllerNixPublicDataLoanV2<'_>>, NixStartAdmissionErrorV2> {
+        let SelectorPublicCredentials::Retained(credentials) = &self.credentials else {
+            return Ok(None);
+        };
+        if credentials.failure.get().is_none() {
+            return Ok(None);
+        }
+
+        let guard = credentials.borrow(PublicLoanDisposition::Diagnosis)?;
+        let loan = ControllerNixPublicDataLoanV2::new(ControllerPublicLoan::Retained(guard));
+        if loan.failure().is_none() {
+            return Err(NixStartAdmissionErrorV2::CredentialCauseUnavailable);
+        }
+        Ok(Some(loan))
     }
 
     pub(crate) fn recheck_session_floor_origin(&self) -> Result<(), NixStartAdmissionErrorV2> {
@@ -450,19 +793,27 @@ impl ControllerNixStartRecipeSelectorV2 {
         &self.pins
     }
 
-    pub(crate) fn session_floor_public_preimages(&self) -> [&[u8]; 12] {
-        self.credentials
-            .each_ref()
-            .map(|credential| credential.bytes())
+    pub(crate) fn session_floor_public_preimages(
+        &self,
+    ) -> Result<ControllerNixPublicDataLoanV2<'_>, NixStartAdmissionErrorV2> {
+        self.borrow_publics()
     }
 
-    fn commitments(&self) -> Vec<[u8; 32]> {
-        self.credentials.iter().map(|credential| Sha256::digest(credential.bytes()).into()).collect()
+    fn commitments(&self) -> Result<Vec<[u8; 32]>, NixStartAdmissionErrorV2> {
+        let loan = self.borrow_publics()?;
+        let credentials = loan.publics()
+            .ok_or(NixStartAdmissionErrorV2::CredentialCustodyClosed)?;
+
+        Ok(credentials.iter().map(|credential| {
+            Sha256::digest(credential.bytes()).into()
+        }).collect())
     }
 
     fn assignment_policy(&self) -> Result<CurrentRuntimeScopePolicy, NixStartAdmissionErrorV2> {
-        self.recheck()?;
-        assignment_policy_from_publics(&self.credentials, &self.pins)
+        let loan = self.recheck_and_borrow_publics()?;
+        let credentials = loan.publics()
+            .ok_or(NixStartAdmissionErrorV2::CredentialCustodyClosed)?;
+        assignment_policy_from_publics(&credentials, &self.pins)
     }
 
     /// Compares DATA from the independently retained fixed owner public set.
@@ -477,12 +828,13 @@ impl ControllerNixStartRecipeSelectorV2 {
         node: NodeId,
         identities: [u32; 4],
     ) -> Result<NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2> {
-        let pins = decode_public_domain_pins(credentials)?;
+        let publics = credentials.each_ref();
+        let pins = decode_public_domain_pins(&publics)?;
         if pins.node != node || pins.identities != identities {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
-        decode_public_catalog(credentials, &pins, node)?;
-        assignment_policy_from_publics(credentials, &pins)?;
+        decode_public_catalog(&publics, &pins, node)?;
+        assignment_policy_from_publics(&publics, &pins)?;
         Ok(pins)
     }
 
@@ -556,7 +908,7 @@ impl ControllerNixStartRecipeSelectorV2 {
             operation, request_digest, authority: authority.clone(),
             assignment: capture_assignment(journal, &binding)?,
             recipe: recipe.canonical_bytes().to_vec(), recipe_digest: recipe.digest(),
-            credential_commitments: self.commitments(),
+            credential_commitments: self.commitments()?,
             ordinary_effect: context.encode_plain().map_err(|_| NixStartAdmissionErrorV2::Invalid)?,
             desired_key: desired.0.clone(), desired_value: desired.1.clone(),
             original_resource_version: resource.resource_version.clone(),
@@ -577,7 +929,7 @@ impl ControllerNixStartRecipeSelectorV2 {
         carrier.authority.require_current_decision(current)?;
         self.recheck()?;
         journal.validate_held_protected_names()?;
-        if carrier.credential_commitments != self.commitments() {
+        if carrier.credential_commitments != self.commitments()? {
             return Err(NixStartAdmissionErrorV2::Invalid);
         }
         // Membership verifies the ORIGINAL artifact. It does not select a new
@@ -670,7 +1022,7 @@ impl ControllerNixStartRecipeSelectorV2 {
 }
 
 fn decode_public_domain_pins(
-    credentials: &[PinnedSystemdCredential; 12],
+    credentials: &[&PinnedSystemdCredential; 12],
 ) -> Result<NixFixedDomainPinsDataV2, NixStartAdmissionErrorV2> {
     NixFixedDomainPinsDataV2::decode(credentials[1].bytes())
         .map_err(|error| match error {
@@ -682,7 +1034,7 @@ fn decode_public_domain_pins(
 }
 
 fn decode_public_catalog(
-    credentials: &[PinnedSystemdCredential; 12],
+    credentials: &[&PinnedSystemdCredential; 12],
     pins: &NixFixedDomainPinsDataV2,
     node: NodeId,
 ) -> Result<Vec<VerifiedNixRecipeArtifactV2>, NixStartAdmissionErrorV2> {
@@ -706,7 +1058,7 @@ fn decode_public_catalog(
 }
 
 fn assignment_policy_from_publics(
-    credentials: &[PinnedSystemdCredential; 12],
+    credentials: &[&PinnedSystemdCredential; 12],
     pins: &NixFixedDomainPinsDataV2,
 ) -> Result<CurrentRuntimeScopePolicy, NixStartAdmissionErrorV2> {
     let policy_bytes = credentials[4].bytes();
@@ -748,7 +1100,7 @@ fn assignment_policy_from_publics(
 }
 
 fn plan_anchor_from_publics(
-    credentials: &[PinnedSystemdCredential; 12],
+    credentials: &[&PinnedSystemdCredential; 12],
     index: usize,
 ) -> Result<BrokerPlanTrustAnchor, NixStartAdmissionErrorV2> {
     let bytes = credentials[index].bytes();
@@ -1006,6 +1358,108 @@ fn decode_catalog(
         return Err(NixStartAdmissionErrorV2::Invalid);
     }
     Ok(recipes)
+}
+
+#[cfg(test)]
+mod credential_guard_tests {
+    use super::*;
+
+    // Empty lower slots and real state refusals construct no protected owner.
+    fn empty_publics() -> RetainedControllerPublics {
+        RetainedControllerPublics::new(ControllerNixPublicCredentialCustodyV1::new())
+    }
+
+    #[test]
+    fn observation_entry_does_not_record_interruption() {
+        let owner = empty_publics();
+        let guard = owner.borrow(PublicLoanDisposition::Observation).unwrap();
+
+        assert!(owner.failure.get().is_none());
+        drop(guard);
+
+        assert!(matches!(owner.failure.get(), Some(PublicCredentialRefusal::Interrupted)));
+    }
+
+    #[test]
+    fn terminal_loan_borrows_the_same_real_lower_state_cause() {
+        let owner = empty_publics();
+        let mut guard = owner.borrow(PublicLoanDisposition::Observation).unwrap();
+        assert!(guard.original.recheck().is_err());
+        let original = guard.original.failure().unwrap() as *const _;
+
+        assert!(matches!(guard.fail(PublicCredentialRefusal::Lower),
+            NixStartAdmissionErrorV2::CredentialCustodyClosed));
+        let guard = owner.borrow(PublicLoanDisposition::Diagnosis).unwrap();
+        let loan = ControllerNixPublicDataLoanV2::new(ControllerPublicLoan::Retained(guard));
+        let cause = loan.failure().unwrap().downcast_ref::<
+            crate::public_api_session::ControllerNixPublicCredentialErrorV1,
+        >().unwrap();
+
+        assert!(std::ptr::eq(cause, original));
+        assert!(loan.preimages().is_none());
+    }
+
+    #[test]
+    fn diagnostic_contention_never_replaces_first_refusal() {
+        let owner = empty_publics();
+        let held = owner.borrow(PublicLoanDisposition::Data).unwrap();
+        assert!(matches!(owner.borrow(PublicLoanDisposition::Observation),
+            Err(NixStartAdmissionErrorV2::CredentialCustodyContended)));
+        let original = owner.failure.get().unwrap() as *const _;
+
+        assert!(matches!(owner.borrow(PublicLoanDisposition::Diagnosis),
+            Err(NixStartAdmissionErrorV2::CredentialCustodyContended)));
+
+        assert!(std::ptr::eq(owner.failure.get().unwrap(), original));
+        drop(held);
+        assert!(matches!(owner.borrow(PublicLoanDisposition::Data),
+            Err(NixStartAdmissionErrorV2::CredentialCustodyContended)));
+    }
+
+    #[test]
+    fn observation_unwind_preserves_refusal_before_mutex_poison() {
+        let owner = empty_publics();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = owner.borrow(PublicLoanDisposition::Observation).unwrap();
+            panic!("interrupted empty credential observation");
+        }));
+
+        assert!(result.is_err());
+        assert!(matches!(owner.failure.get(), Some(PublicCredentialRefusal::Interrupted)));
+        let original = owner.failure.get().unwrap() as *const _;
+        assert!(matches!(owner.borrow(PublicLoanDisposition::Diagnosis),
+            Err(NixStartAdmissionErrorV2::CredentialCustodyPoisoned)));
+        assert!(std::ptr::eq(owner.failure.get().unwrap(), original));
+    }
+
+    #[test]
+    fn diagnostic_drop_lends_startup_cause_without_an_observation() {
+        let owner = empty_publics();
+        owner.record(PublicCredentialRefusal::Startup(
+            crate::normal_root::NormalRootStartupErrorV1::Profile,
+        ));
+        let Some(PublicCredentialRefusal::Startup(original)) = owner.failure.get() else {
+            panic!("missing original negative startup cause");
+        };
+        let guard = owner.borrow(PublicLoanDisposition::Diagnosis).unwrap();
+        let loan = ControllerNixPublicDataLoanV2::new(ControllerPublicLoan::Retained(guard));
+
+        let cause = loan.failure().unwrap().downcast_ref::<
+            crate::normal_root::NormalRootStartupErrorV1,
+        >().unwrap();
+        assert!(std::ptr::eq(cause, original));
+        assert!(loan.preimages().is_none());
+        drop(loan);
+
+        assert!(matches!(owner.failure.get(), Some(PublicCredentialRefusal::Startup(_))));
+    }
+
+    #[test]
+    fn shareable_selector_has_no_borrowed_guard_field() {
+        fn require_send_sync<T: Send + Sync>() {}
+
+        require_send_sync::<ControllerNixStartRecipeSelectorV2>();
+    }
 }
 
 #[cfg(test)]
