@@ -586,8 +586,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The full current-gate aggregate fails the retirement compatibility assertion
   in `index-generation-manifest`. Strict all-target Clippy remains red on 20
   production and two test diagnostics; warnings are not suppressed.
-  `prov-commit-verify` and `prov-disclosure-boundary` remain registered and fail
-  explicitly as pending. Durable certificates, original foreign authority,
+  `prov-commit-verify` and `prov-disclosure-boundary` now execute native
+  discovery and fail explicitly for the 19 missing required boundary cases.
+  Durable certificates, original foreign authority,
   and complete publication qualification remain incomplete; these focused
   passes do not qualify the task or milestone exit.
   — satisfies
@@ -767,12 +768,23 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   12-case hermetic signature gate, including four snapshot cases. Neither pure
   qualification establishes native tag
   publication or current ACL checks. Complete native disclosure/publication and
-  collection qualification remain incomplete; the current trunk aggregate
-  executes native tests and fails the retirement compatibility assertion in
-  `index-generation-manifest`.
-  — satisfies PROV-1 to PROV-25;
+  collection qualification remain incomplete. Earlier trunk aggregates failed
+  the retirement compatibility assertion in `index-generation-manifest`.
+  Native disclosure qualification now requires 19 exact end-to-end cases,
+  covering protected imports, historical keys, complete boundary validation,
+  independent current authority, destination-only reopening and safe special
+  entry materialization. Discovery and execution are checked separately;
+  missing, empty or ignored selections cannot qualify a gate. The actual
+  hermetic `prov-disclosure-boundary` build compiles the native test binary and
+  fails because all 19 required cases are absent. The current full aggregate
+  exits with failure at `prov-commit-verify` for those missing cases; neither
+  this earlier discovery failure nor pure qualification resolves the known
+  backend retirement failures. Mandatory Rust and repository formatting pass.
+  — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
-  `checks.terrane.gates.prov-selector-presets`.
+  `checks.terrane.gates.prov-selector-presets`,
+  `checks.terrane.gates.prov-commit-verify`,
+  `checks.terrane.gates.prov-disclosure-boundary`.
 - [ ] **T-DOM-1** Domain property semantics, cross-domain reference checks,
   dedup scoping, existence-oracle rules and durable disclosure evidence.
   Special tree, whiteout, conflict and index disclosure remain required;
