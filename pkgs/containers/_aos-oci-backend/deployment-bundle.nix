@@ -202,11 +202,28 @@
           ($locators[0][$qualification] // error("Unadmitted qualification artifact")) end))
     ' ${profileTemplate}/template.json > "$out/installed.json"
   '';
+  # Catalogs authenticate sibling outputs and available dependencies without
+  # installing them. Selected payload paths and operational graph coercions
+  # retain their own contexts; module sources remain authenticated inputs.
+  serializedResolved =
+    resolved
+    // {
+      artifacts = map (artifact: artifacts.metadata artifact // {inherit (artifact) path;}) resolved.artifacts;
+      modules = map (record:
+        record
+        // {
+          artifacts = {
+            package = artifacts.metadata record.artifacts.package;
+            dependencies = builtins.mapAttrs (_: artifacts.metadata) record.artifacts.dependencies;
+          };
+        })
+      resolved.modules;
+    };
   transaction = {
     schema = "aos.package.transaction";
     inherit scope system graph retire;
-    inherit (resolved) artifacts;
-    packages = resolved.modules;
+    inherit (serializedResolved) artifacts;
+    packages = serializedResolved.modules;
     inputs = builtins.map builtins.toString (lib.uniqueBy builtins.toString ([receipt] ++ graphInputs));
   };
   transactionFile = pkgs.writeTextFile {
@@ -217,7 +234,7 @@
   packagesFile = pkgs.writeTextFile {
     name = "aos-image-packages";
     destination = "/packages.json";
-    text = builtins.toJSON resolved;
+    text = builtins.toJSON serializedResolved;
   };
   metadata = {
     nativeTransaction = transaction;
