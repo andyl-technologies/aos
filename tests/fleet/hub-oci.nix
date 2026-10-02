@@ -354,11 +354,10 @@
         qualificationKeys = "hub-oci-qualification-keys";
       };
     };
-    environment.etc."tmpfiles.d/hub-oci-release-evidence.conf".text =
-      lib.concatStrings (lib.mapAttrsToList (name: credential: ''
-          C /run/credentials/@system/${name} 0600 root root - ${credential}/value
-        '')
-        releaseEvidenceCredentials);
+    environment.etc."tmpfiles.d/hub-oci-release-evidence.conf".text = lib.concatStrings (lib.mapAttrsToList (name: credential: ''
+        C /run/credentials/@system/${name} 0600 root root - ${credential}/value
+      '')
+      releaseEvidenceCredentials);
     aos.users.users.nginx = {
       uid = 803;
       group = "nginx";
