@@ -51,7 +51,7 @@ pub(super) fn commit(generator: &mut Generator, case: usize) -> refs::Commit {
             tree_format: 1,
             chunk_profile: "cdc-1m".into(),
             recipe: None,
-            conflicted: (case % 2 == 0).then_some(false),
+            conflicted: (case % 2 == 0).then_some(case % 4 == 0),
             lease: (case % 3 == 0).then(|| refs::Lease {
                 owner: "owner".into(),
                 expiry: u64::MAX,
@@ -150,7 +150,7 @@ fn commit_ref_reflog_and_annotation_models_preserve_optional_fields() {
                     refs::Retention::Ttl(u64::MAX),
                 ][case % 4],
             ),
-            conflicted: Some(false),
+            conflicted: Some(case % 2 == 0),
             snapshot: (case % 2 == 0).then(|| refs::SnapshotEnvelope {
                 tag: refs::RefName::parse("refs/tags/_/snapshot").unwrap(),
                 commit: record.commit,
@@ -193,10 +193,10 @@ fn bucket_capabilities_generations_and_tombstones_preserve_known_empty_inventory
             bucket::BucketCapabilities {
                 layout_version: if case % 2 == 0 { 1 } else { 2 },
                 create_if_absent: case % 2 == 0,
-                compare_and_swap: true,
-                ranges: true,
+                compare_and_swap: case % 3 == 0,
+                ranges: case % 4 == 0,
                 presign: case % 3 == 0,
-                multi_writer: false,
+                multi_writer: case % 5 == 0,
                 probed_at: generator.next(),
                 profile: bucket::StoreProfile {
                     identity: "terrane-v1".into(),
@@ -460,7 +460,7 @@ fn selected_reflogs_and_proof_sensitive_checkpoints_preserve_all_predecessor_for
             checkpoints: vec![],
             pending: vec![],
             expanded: vec![],
-            progress: vec![],
+            progress: vec![[0; 16], [255; 16]],
             objects: vec![],
         };
         for context in [
@@ -490,5 +490,138 @@ fn selected_reflogs_and_proof_sensitive_checkpoints_preserve_all_predecessor_for
         check_record!("proof-sensitive GC state", model.clone(), gc::GcState);
         model.pending[0].flags = 16;
         assert!(model.encode().is_err());
+    }
+}
+
+#[test]
+fn creation_journal_binding_models_cover_pack_index_trash_and_empty_identity_rejection() {
+    let mut generator = Generator::new(0x1fc8_392a_bb72_dbe5);
+    let pack = [1; 16];
+    let tombstone = bucket::Tombstone {
+        pack_id: pack,
+        cycle: 3,
+        tombstoned_at: u64::MAX,
+        removed_entries: 0,
+        epoch: 2,
+    }
+    .encode();
+    for (key, binding) in [
+        (
+            format!("objects/pack/01/{}.pack", "01".repeat(16)),
+            gc::ArtifactBinding::Pack {
+                digest: generator.bytes(),
+                size: u64::MAX,
+            },
+        ),
+        (
+            format!("objects/pack/01/{}.idx", "01".repeat(16)),
+            gc::ArtifactBinding::Index {
+                digest: generator.bytes(),
+                size: u64::MAX,
+            },
+        ),
+        (
+            format!("trash/3/{}", "01".repeat(16)),
+            gc::ArtifactBinding::Trash(tombstone),
+        ),
+    ] {
+        for length in [1, 128] {
+            let file_identity: Vec<_> = (0..length).map(|_| generator.next() as u8).collect();
+            for owned in [false, true] {
+                let model = gc::CreationJournal {
+                    key: key.clone(),
+                    nonce: generator.bytes(),
+                    state: if owned {
+                        gc::JournalState::DeleteOwned {
+                            binding: binding.clone(),
+                            file_identity: file_identity.clone(),
+                            operation_key: format!(
+                                "gc/3/delete/{}/{}",
+                                "01".repeat(16),
+                                "02".repeat(32)
+                            ),
+                            authorization: generator.bytes(),
+                        }
+                    } else {
+                        gc::JournalState::Committed {
+                            binding: binding.clone(),
+                            file_identity: file_identity.clone(),
+                        }
+                    },
+                };
+                check_record!("journal binding alternative", model, gc::CreationJournal);
+            }
+        }
+        let invalid = gc::CreationJournal {
+            key,
+            nonce: generator.bytes(),
+            state: gc::JournalState::Committed {
+                binding,
+                file_identity: vec![],
+            },
+        };
+        assert!(invalid.encode().is_err());
+    }
+}
+
+#[test]
+fn nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip() {
+    let mut generator = Generator::new(0x9d40_b8e2_5173_eebb);
+    for surface in ["sdk", "fuse", "erofs", "block", "virtiofs", "virtio-pmem", "nix-cache", "reapi", "gha-cache", "git", "oci", "browse", "api"] {
+        let mut model = commit(&mut generator, 1);
+        let locality = refs::Locality { region: Some("region".into()), zone: Some("zone".into()), host: Some("host".into()) };
+        let context = refs::CommitContext::from_request(&terrane_core::auth::Request {
+            reference: b"refs/heads/_/main", verb: terrane_core::auth::Verb::Commit,
+            roots: &[terrane_core::auth::RequestRoot { path: b"/", domain: "public" }],
+            now: 0, surface, locality: &locality, epochs: &[],
+        }).unwrap();
+        model.profile_pair.commit_context = Some(context);
+        let source = refs::EntrySource { commit: generator.bytes(), root: generator.bytes(), path: vec![0; 4096] };
+        for origin in [refs::EntryOrigin::Current, refs::EntryOrigin::Source(source.clone())] {
+            for attributes in [None, Some(vec![]), Some(vec![("a".into(), refs::EntryOrigin::Current), ("zz".into(), refs::EntryOrigin::Source(source.clone()))])] {
+                model.profile_pair.entry_receipts = Some(vec![refs::EntryReceipt {
+                    root: generator.bytes(), path: vec![0; 4096], origin: origin.clone(), attributes,
+                    reintroduced_from: None, disclosure_proof: None,
+                }]);
+                check_record!("receipt origin and authoring surface", model.clone(), refs::Commit);
+            }
+        }
+    }
+    for fields in 0..32 {
+        let mut record = head(1);
+        record.home = refs::Locality { region: (fields & 1 != 0).then(|| "region".into()), zone: (fields & 2 != 0).then(|| "zone".into()), host: (fields & 4 != 0).then(|| "host".into()) };
+        record.policy = Some(refs::RefPolicy {
+            multi_writer: (fields & 1 != 0).then_some(false),
+            merge_policies: (fields & 2 != 0).then(|| vec![refs::MergePolicy::KeepConflict]),
+            retention: (fields & 4 != 0).then_some(refs::Retention::Forever),
+            conflicted: (fields & 8 != 0).then_some(true),
+            snapshot: (fields & 16 != 0).then(|| refs::SnapshotEnvelope {
+                tag: refs::RefName::parse("refs/tags/_/tag").unwrap(), commit: record.commit, attestation: vec![0xa0], signer_key: "key".into(), signature: generator.bytes(),
+            }),
+        });
+        check_record!("ref policy optional fields", record, refs::RefRecord);
+    }
+    let mut model = commit(&mut generator, 0);
+    model.packs = Some(vec![]);
+    assert!(model.encode().is_err());
+}
+
+#[test]
+fn collector_kind_models_cover_all_registered_tags_and_flag_constraints() {
+    let mut generator = Generator::new(0x8e33_290f_b371_045c);
+    let mut model = gc::GcState {
+        cycle: generator.next(), epoch: generator.next(), phase: gc::Phase::Mark, snapshot_at: generator.next(),
+        checkpoints: vec![], pending: vec![], expanded: vec![], progress: vec![], objects: vec![],
+    };
+    for kind in 0..=9 {
+        let hash = [kind; 32];
+        let flags = if kind == 0 { 0 } else { 8 };
+        model.pending.push(gc::Pending { kind, hash, parent_cutoff: gc::ParentCutoff::Unbounded, flags, proof_context: None });
+        model.objects.push(gc::ExpandedObject { kind, hash, flags, proof_context: None });
+    }
+    check_record!("collector registered kinds", model.clone(), gc::GcState);
+    for (kind, flags) in [(0, 8), (1, 1), (1, 2), (1, 4), (10, 0)] {
+        let mut invalid = model.clone(); invalid.pending[0].kind = kind; invalid.pending[0].flags = flags;
+        assert!(invalid.encode().is_err());
     }
 }

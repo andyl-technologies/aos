@@ -11,7 +11,11 @@ fn generated_packs_indexes_and_shards_preserve_models_and_reject_bad_extents() {
         for meta in [false, true] {
             let header = Header::new(generator.bytes(), meta, false);
             byte_properties("pack header", &header.encode(), |input| {
-                Ok::<_, pack_format::Error>(Header::decode(input)?.encode())
+                // Header::decode is a prefix parser used on whole packs. Its
+                // canonical prefix is fixed-width; following body bytes survive.
+                let mut canonical = Header::decode(input)?.encode();
+                canonical.extend_from_slice(&input[pack_format::HEADER_SIZE..]);
+                Ok::<_, pack_format::Error>(canonical)
             });
             let mut records = vec![];
             let mut bodies = vec![];
@@ -182,4 +186,136 @@ fn generated_bundles_verify_content_identity_and_nested_metadata() {
     excessive_count.extend_from_slice(&[2, 0x9b]);
     excessive_count.extend_from_slice(&u64::MAX.to_be_bytes());
     assert!(pack_format::decode_bundle(&excessive_count).is_err());
+}
+
+#[test]
+fn pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip() {
+    let mut generator = Generator::new(0x7d8b_84f1_025a_7ce9);
+    for meta in [false, true] {
+        for compressed in [false, true] {
+            for discriminator in if meta { 1..=9 } else { 0..=2 } {
+                let header = Header::new(generator.bytes(), meta, compressed);
+                let body = if meta {
+                    vec![0xa1, 0, discriminator]
+                } else {
+                    let mut body = vec![discriminator];
+                    if discriminator == 2 {
+                        body.extend_from_slice(&generator.bytes::<32>());
+                    }
+                    body.extend_from_slice(&generator.bytes::<17>());
+                    body
+                };
+                let record = Record {
+                    hash: generator.bytes(),
+                    offset: 24,
+                    body_len: body.len() as u32,
+                    plaintext_len: if meta { body.len() as u32 } else { 17 },
+                    codec: if meta { 0 } else { discriminator },
+                    kind: if meta { discriminator } else { 0 },
+                    dictionary_id: 0,
+                };
+                let bytes =
+                    pack_format::encode_pack(header, &body, std::slice::from_ref(&record)).unwrap();
+                let view = PackView::decode(&bytes).unwrap();
+                assert_eq!(view.header(), header);
+                assert_eq!(view.records(), [record.clone()]);
+                let mut reserved = record.clone();
+                reserved.dictionary_id = u16::MAX;
+                assert!(pack_format::validate_record(&reserved, meta).is_err());
+                byte_properties("pack variant", &bytes, |input| {
+                    let view = PackView::decode(input)?;
+                    pack_format::encode_pack(
+                        view.header(),
+                        &input[24..view.index_offset()],
+                        view.records(),
+                    )
+                });
+                let index = pack_format::encode_index(std::slice::from_ref(&record));
+                assert_eq!(
+                    pack_format::decode_index(&index, header).unwrap(),
+                    [record.clone()]
+                );
+                let detached = [header.encode(), index].concat();
+                assert_eq!(
+                    pack_format::decode_detached_index(&detached).unwrap(),
+                    (header, vec![record.clone()])
+                );
+                let merged = vec![MergedRecord {
+                    pack: generator.bytes(),
+                    record,
+                    state: discriminator % 3,
+                }];
+                let shard = merged[0].record.hash[0];
+                let encoded = pack_format::encode_shard(&merged);
+                assert_eq!(pack_format::decode_shard(&encoded, shard).unwrap(), merged);
+            }
+        }
+    }
+
+    let kinds = [
+        IdentityKind::Chunk,
+        IdentityKind::Manifest,
+        IdentityKind::Node,
+        IdentityKind::Commit,
+        IdentityKind::Bundle,
+        IdentityKind::Filter,
+        IdentityKind::Index,
+        IdentityKind::Attribute,
+        IdentityKind::Policy,
+        IdentityKind::Memo,
+    ];
+    for merged in [false, true] {
+        let bodies: Vec<_> = (0..10)
+            .map(|kind| {
+                if kind == 6 {
+                    if merged {
+                        pack_format::encode_shard(&[])
+                    } else {
+                        [
+                            Header::new(generator.bytes(), true, true).encode(),
+                            pack_format::encode_index(&[]),
+                        ]
+                        .concat()
+                    }
+                } else if kind == 0 {
+                    generator.bytes::<23>().to_vec()
+                } else {
+                    vec![0xa1, 0, kind]
+                }
+            })
+            .collect();
+        let objects: Vec<_> = bodies
+            .iter()
+            .enumerate()
+            .map(|(kind, bytes)| BundleRecord {
+                kind: kind as u8,
+                hash: TERRANE_V1
+                    .calculate(kinds[kind], bytes)
+                    .unwrap()
+                    .terrane_v1_digest()
+                    .unwrap(),
+                bytes,
+            })
+            .collect();
+        let root = generator.bytes();
+        let bytes = pack_format::encode_bundle(&root, &objects);
+        assert_eq!(
+            pack_format::decode_bundle(&bytes).unwrap().objects(),
+            objects
+        );
+        cbor_properties("all bundle kinds", &bytes, |input| {
+            let view = pack_format::decode_bundle(input)?;
+            Ok::<_, pack_format::Error>(pack_format::encode_bundle(
+                view.root_commit(),
+                view.objects(),
+            ))
+        });
+        for object in &objects[1..] {
+            pack_format::validate_metadata(object.kind, object.bytes).unwrap();
+        }
+        for kind in [0, 10, 255] {
+            assert!(pack_format::validate_metadata(kind, &[0]).is_err());
+        }
+        assert!(pack_format::validate_metadata(6, b"TRIX").is_err());
+    }
 }
