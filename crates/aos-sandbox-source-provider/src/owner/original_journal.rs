@@ -4,7 +4,8 @@
 //! durable A, captured role pins and genuinely current B authenticate the same
 //! actual cuts; no archived image enters Ready or restores an original flight.
 //! The private producer child uses this sole archive/prepare/readback bridge
-//! for Applying, Requested and ChallengeIssued, stopping before Storage dispatch.
+//! for Applying, Requested, ChallengeIssued and the conditional StoragePrepared
+//! readback. No SourceRoot handoff, Complete, relay or settlement is enabled.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -48,6 +49,7 @@ use crate::recovery::original_source_capacity::authenticate_archived_complete_cu
 use crate::zfs_hold_verifier::ProtectedStorageZfsHoldVerifierV1;
 
 pub(super) mod producer;
+mod storage_offer;
 use producer::{OriginalProducerAppendV5, OriginalSourceProducerV5};
 
 #[derive(Default)]

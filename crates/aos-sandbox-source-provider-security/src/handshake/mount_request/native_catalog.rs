@@ -1146,7 +1146,7 @@ fn conservative_boot_ceiling(
         .ok_or(SourceProviderSecurityError::SessionContinuity)
 }
 
-fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecurityError> {
+pub(crate) fn kernel_clock() -> Result<RawPairedClockSample, SourceProviderSecurityError> {
     let boot = aos_sandbox_linux::boot::KernelBootId::current()
         .map_err(|_| SourceProviderSecurityError::SessionContinuity)?
         .into_bytes();

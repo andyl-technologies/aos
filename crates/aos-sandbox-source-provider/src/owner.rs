@@ -110,6 +110,20 @@ pub enum FixedProviderIngressProgressV1 {
     OriginalPairRetained,
 }
 
+/// Reports only the resident original Storage-offer checkpoint.
+///
+/// These observations grant no Source completion, descriptor handoff, retry,
+/// relay, settlement or permission to reconstruct a live owner from replay.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixedProviderOriginalStorageOfferProgressV5 {
+    /// The same original flight remains held before its phase-2 readback.
+    Pending,
+    /// The exact StoragePrepared checkpoint was read back under the same writer.
+    StoragePrepared,
+    /// The original flight is permanently closed with all returned debt held.
+    Closed,
+}
+
 /// Reports exact protected replay performed by the fixed provider owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FixedProviderOpenReportV1 {

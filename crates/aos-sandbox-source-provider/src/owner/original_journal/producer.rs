@@ -1,4 +1,4 @@
-//! Resident original Source producer, ending before any Storage dispatch.
+//! Resident original Source producer and its protected pre-dispatch checkpoints.
 //!
 //! Only the already retained fresh Root1/Acquire pair can start this lane. The
 //! actual Session, selected owner, first clock, challenge proposal and each
@@ -73,6 +73,12 @@ pub(in crate::owner) enum OriginalProducerErrorV5 {
     Signing(#[from] OriginalNativeSigningErrorV5),
     #[error("original Source current custody failed")]
     Security(#[from] aos_sandbox_source_provider_security::SourceProviderSecurityError),
+    #[error("original Source Storage observation failed")]
+    Storage(#[from] aos_sandbox_source_provider_security::OriginalStorageOfferErrorV5),
+    #[error("original Source Storage receipt comparison failed")]
+    Receipt(#[from] aos_sandbox_source_provider_protocol::StorageZfsHoldReceiptErrorV1),
+    #[error("original Source bounded retention failed")]
+    Retention(#[from] std::collections::TryReserveError),
 }
 
 impl core::fmt::Debug for OriginalProducerErrorV5 {
@@ -81,12 +87,13 @@ impl core::fmt::Debug for OriginalProducerErrorV5 {
     }
 }
 
-/// Names the three temporally distinct original protected crossings.
+/// Names the temporally distinct original protected crossings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::owner) enum OriginalProducerAppendV5 {
     Applying,
     Requested,
     ChallengeIssued,
+    StoragePrepared,
 }
 
 impl OriginalProducerAppendV5 {
@@ -95,6 +102,7 @@ impl OriginalProducerAppendV5 {
             Self::Applying => 0,
             Self::Requested => 1,
             Self::ChallengeIssued => 2,
+            Self::StoragePrepared => 3,
         }
     }
 }
@@ -114,11 +122,13 @@ pub(super) struct OriginalSourceProducerV5 {
     initial_owners: Option<JournalTransaction>,
     claims: Option<StorageZfsHoldTransportRequestV1>,
     unsigned: Option<StorageNativeAcquireRequestV2>,
-    signed: Option<SignedStorageNativeAcquireRequestV2>,
+    pub(super) signed: Option<SignedStorageNativeAcquireRequestV2>,
     provenance: Option<OriginalSourceProvenanceV5>,
-    staged: Option<StagedZfsHoldChallengeV1>,
-    appends: [Option<PreparedSourceOriginalV5>; 3],
+    pub(super) staged: Option<StagedZfsHoldChallengeV1>,
+    appends: [Option<PreparedSourceOriginalV5>; 4],
     checkpoint: OriginalProducerCheckpointV5,
+    pub(super) physical_plan: Option<crate::backend::AcquirePlanV1>,
+    pub(super) storage_offer: Option<super::storage_offer::OriginalStorageOfferV5>,
 }
 
 impl OriginalSourceProducerV5 {
@@ -129,7 +139,7 @@ impl OriginalSourceProducerV5 {
         self.appends[step.index()].as_mut().ok_or(ProviderLedgerError::Unavailable)
     }
 
-    fn readback(
+    pub(super) fn readback(
         &self,
         step: OriginalProducerAppendV5,
     ) -> Result<&OriginalSourceProtectedReadbackV5, ProviderLedgerError> {
@@ -137,7 +147,7 @@ impl OriginalSourceProducerV5 {
             .ok_or(ProviderLedgerError::Unavailable)
     }
 
-    fn park(
+    pub(super) fn park(
         &mut self,
         step: OriginalProducerAppendV5,
         transaction: JournalTransaction,
@@ -157,11 +167,11 @@ pub(in crate::owner) enum OriginalProducerObservationV5<'owner> {
     Closed,
 }
 
-// Unlike the first-birth archive guard, this guard spans all three crossings.
+// Unlike the first-birth archive guard, this guard spans every original crossing.
 // It never moves custody out of the owner, including during unwinding.
-struct OriginalProducerClosureGuardV5<'owner> {
-    owner: &'owner mut FixedProviderOwnerV1,
-    completed: bool,
+pub(super) struct OriginalProducerClosureGuardV5<'owner> {
+    pub(super) owner: &'owner mut FixedProviderOwnerV1,
+    pub(super) completed: bool,
 }
 
 impl Drop for OriginalProducerClosureGuardV5<'_> {
@@ -183,7 +193,7 @@ impl Drop for OriginalProducerClosureGuardV5<'_> {
 impl FixedProviderOwnerV1 {
     /// Advances only the genuine resident original to the pre-dispatch cut.
     ///
-    /// There is deliberately no public caller or activation route. Immutable
+    /// Only the genuine original offer path calls this producer. Immutable
     /// catalog input must match the already owned selection. A failure is kept
     /// inside the same owner; subsequent calls cannot restart or recapture time.
     pub(in crate::owner) fn advance_original_source_producer_v5(
@@ -222,7 +232,7 @@ impl FixedProviderOwnerV1 {
         }
     }
 
-    fn original_source_producer_v5(&self) -> Result<&OriginalSourceProducerV5, ProviderLedgerError> {
+    pub(super) fn original_source_producer_v5(&self) -> Result<&OriginalSourceProducerV5, ProviderLedgerError> {
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_ref() else {
             return Err(ProviderLedgerError::Unavailable);
         };
@@ -230,7 +240,7 @@ impl FixedProviderOwnerV1 {
             .ok_or(ProviderLedgerError::Unavailable)
     }
 
-    fn original_source_producer_mut_v5(
+    pub(super) fn original_source_producer_mut_v5(
         &mut self,
     ) -> Result<&mut OriginalSourceProducerV5, ProviderLedgerError> {
         let Some(FixedProviderOwnerStateV1::HeldReadOnly(held)) = self.state.as_mut() else {
@@ -240,7 +250,7 @@ impl FixedProviderOwnerV1 {
             .ok_or(ProviderLedgerError::Unavailable)
     }
 
-    fn require_original_producer_current_v5(&mut self) -> Result<(), OriginalProducerErrorV5> {
+    pub(super) fn require_original_producer_current_v5(&mut self) -> Result<(), OriginalProducerErrorV5> {
         let (root, acquire) = self.original_ingress.borrowed_pair_v5()?;
         let VerifiedProviderRequestV1::Acquire(verified) = acquire.verified() else {
             return Err(ProviderLedgerError::Equivocation.into());
@@ -329,18 +339,30 @@ impl FixedProviderOwnerV1 {
         Ok(())
     }
 
-    fn append_original_producer_step_v5(
+    pub(super) fn append_original_producer_step_v5(
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), OriginalProducerErrorV5> {
-        self.require_original_producer_current_v5()?;
+        self.require_original_producer_step_current_v5(step)?;
         self.prepare_original_journal_append_v5(step)?;
-        self.require_original_producer_current_v5()?;
+        self.require_original_producer_step_current_v5(step)?;
         self.preflight_original_journal_append_v5(step)?;
-        self.require_original_producer_current_v5()?;
+        self.require_original_producer_step_current_v5(step)?;
         self.commit_original_journal_append_v5(step)?;
-        self.require_original_producer_current_v5()?;
+        self.require_original_producer_step_current_v5(step)?;
         Ok(())
+    }
+
+    fn require_original_producer_step_current_v5(
+        &mut self,
+        step: OriginalProducerAppendV5,
+    ) -> Result<(), OriginalProducerErrorV5> {
+        if step == OriginalProducerAppendV5::StoragePrepared {
+            self.require_original_offer_current_v5()
+        } else {
+            // The original first three crossings retain their literal check.
+            self.require_original_producer_current_v5()
+        }
     }
 }
 
@@ -349,8 +371,10 @@ impl FixedProviderOwnerV1 {
         &mut self,
         rows: &[u8],
     ) -> Result<(), OriginalProducerErrorV5> {
-        let quartet = self.original_applying_quartet_v5()?;
-        self.original_source_producer_mut_v5()?.initial_owners = Some(quartet);
+        let (quartet, plan) = self.original_applying_quartet_v5()?;
+        let producer = self.original_source_producer_mut_v5()?;
+        producer.initial_owners = Some(quartet);
+        producer.physical_plan = Some(plan);
         let (root, acquire) = self.original_ingress.borrowed_pair_v5()?;
         let VerifiedProviderRequestV1::Acquire(verified) = acquire.verified() else {
             return Err(ProviderLedgerError::Equivocation.into());
@@ -469,7 +493,7 @@ impl FixedProviderOwnerV1 {
 
     fn original_applying_quartet_v5(
         &mut self,
-    ) -> Result<JournalTransaction, OriginalProducerErrorV5> {
+    ) -> Result<(JournalTransaction, crate::backend::AcquirePlanV1), OriginalProducerErrorV5> {
         let (_, acquire) = self.original_ingress.borrowed_pair_v5()?;
         let VerifiedProviderRequestV1::Acquire(verified) = acquire.verified() else {
             return Err(ProviderLedgerError::Equivocation.into());
@@ -596,11 +620,13 @@ impl FixedProviderOwnerV1 {
                 Some(encode_session_history(&session)),
             ),
         ];
-        owner_transaction_v5(b"original-source-applying-v5", records)
+        // The caller parks the same plan DATA alongside the unchanged quartet;
+        // retaining it adds no effect permit or extra fallible owner lookup.
+        Ok((owner_transaction_v5(b"original-source-applying-v5", records)?, plan))
     }
 }
 
-fn owner_transaction_v5(
+pub(super) fn owner_transaction_v5(
     purpose: &[u8],
     records: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 ) -> Result<JournalTransaction, OriginalProducerErrorV5> {
@@ -731,7 +757,7 @@ impl FixedProviderOwnerV1 {
                 )?;
                 SourceNativeHeldCompletionRecordV1::new(original, suffix)?
             }
-            OriginalProducerAppendV5::Applying => {
+            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };
@@ -763,7 +789,7 @@ impl FixedProviderOwnerV1 {
                     Some(issued),
                 )?;
             }
-            OriginalProducerAppendV5::Applying => {
+            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         }
@@ -771,7 +797,7 @@ impl FixedProviderOwnerV1 {
         let purpose: &[u8] = match step {
             OriginalProducerAppendV5::Requested => b"original-source-requested-v5",
             OriginalProducerAppendV5::ChallengeIssued => b"original-source-challenge-issued-v5",
-            OriginalProducerAppendV5::Applying => {
+            OriginalProducerAppendV5::Applying | OriginalProducerAppendV5::StoragePrepared => {
                 return Err(ProviderLedgerError::InvalidTransition("Applying is not a carrier").into());
             }
         };

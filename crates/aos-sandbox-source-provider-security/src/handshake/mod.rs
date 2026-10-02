@@ -4,6 +4,8 @@ mod mount_request;
 mod provider;
 mod root_mount;
 
+pub(crate) use mount_request::original_kernel_clock;
+
 use core::cell::Cell;
 
 pub use mount_request::{
