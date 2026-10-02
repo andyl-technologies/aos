@@ -11,10 +11,13 @@
 //!
 //! - planning and apply both require that no enabled route serves the
 //!   registry's OCI surface, so nothing a client can still resolve is deleted;
+//!   an enabled OCI namespace, or a default-registry binding on an enabled
+//!   instance OCI route, counts as such a route;
 //! - the indexer refuses to project container-release roots for a registry
 //!   whose retiring run is applying or complete, so a re-index cannot resurrect
 //!   signed-release roots underneath the collector.
 
+use crate::db::OCI_NAMESPACE_EXPOSURE_PREDICATE;
 use crate::backend::{CheckedStatement, Statement};
 
 /// SQL predicate selecting enabled routes that serve registry `?1`'s OCI
@@ -24,14 +27,16 @@ pub(super) const ENABLED_OCI_ROUTE_PREDICATE: &str = "route.registry_id = ?1
                        AND EXISTS (SELECT 1 FROM route_oci_capabilities capability
                          WHERE capability.route_id = route.id)";
 
-/// Guards a retiring apply transaction against a route re-enabled after review.
+/// Guards a retiring apply transaction against a route or namespace re-enabled
+/// after review.
 pub(super) fn oci_route_disabled_guard_statement(registry_id: i64) -> CheckedStatement {
     Statement::new(
         format!(
             "UPDATE oci_registry_state SET updated_at = updated_at
              WHERE registry_id = ?1
                AND NOT EXISTS (SELECT 1 FROM routes route
-                 WHERE {ENABLED_OCI_ROUTE_PREDICATE})"
+                 WHERE {ENABLED_OCI_ROUTE_PREDICATE})
+               AND NOT {OCI_NAMESPACE_EXPOSURE_PREDICATE}"
         ),
         vals![registry_id],
     )

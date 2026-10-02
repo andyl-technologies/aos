@@ -34,6 +34,7 @@ mod delivery_workflow;
 #[cfg(test)]
 mod delivery_workflow_tests;
 mod instance_settings;
+mod oci_namespaces;
 mod publication_manifest;
 mod registry_metadata;
 mod registry_policy;
@@ -10923,6 +10924,7 @@ impl RpcService {
             generation: 0,
             content_digest: None,
         });
+        let exposure = self.container_distribution_exposure(record.id).await?;
         Ok(pb::Registry {
             slug: record.slug.clone(),
             name: status.name.unwrap_or_default(),
@@ -10942,9 +10944,12 @@ impl RpcService {
             updated_at: record.updated_at,
             authorization_scope_key: record.scope_key.clone(),
             owner_scope_key: record.owner_scope_key.clone(),
-            oci_distribution_origin: self
-                .container_distribution_origin(record.id)
-                .await?
+            oci_distribution_origin: exposure
+                .as_ref()
+                .map(|exposure| exposure.origin.clone())
+                .unwrap_or_default(),
+            oci_repository_namespace: exposure
+                .and_then(|exposure| exposure.namespace)
                 .unwrap_or_default(),
         })
     }
