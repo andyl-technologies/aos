@@ -149,7 +149,7 @@
       else
         platform.testMachineModule {
           inherit bakeAgentUnit sshAuthorizedKey;
-          inherit (m) debugMac ip mac;
+          inherit (m) bootMode varProvisioning varSizeMiB debugMac ip mac;
           defaultAgentPackage = pkgs.aos-test-agent;
           inherit (pkgs) writeTextFile;
         };

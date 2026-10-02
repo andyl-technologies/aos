@@ -18,6 +18,7 @@
     stages = import ./stages.nix;
     frozenHandler = import ./frozen-handler.nix;
     bootConsumers = import ./boot-consumers.nix;
+    bakedTestStorage = import ./baked-test-storage.nix {inherit lib pkgs;};
     testDiskProvenance = import ./test-disk-provenance.nix;
     daemonConsumers = import ./daemon-consumers.nix;
     hubConsumer = import ./hub-consumer.nix;

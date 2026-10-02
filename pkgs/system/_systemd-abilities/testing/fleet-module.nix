@@ -4,6 +4,9 @@
   packages,
 }: {
   bakeAgentUnit,
+  bootMode,
+  varProvisioning,
+  varSizeMiB,
   debugMac,
   defaultAgentPackage,
   ip,
@@ -11,6 +14,7 @@
   sshAuthorizedKey ? null,
   writeTextFile,
 }: {config, ...}: let
+  storageLayout = import ./storage-layout.nix {inherit varProvisioning varSizeMiB;};
   agentPackage = config.aos.packages.aos-test-agent.package or defaultAgentPackage;
   agentPath = "${agentPackage}/share/aos-test-agent/aos-test-agent";
   runtimeAgentUnit = writeTextFile {
@@ -30,6 +34,9 @@
     '';
   };
 in {
+  aos.activation.stages.host.configuration =
+    lib.optional (bootMode == "kernel" && storageLayout.baked) storageLayout.configurationSource;
+
   # Fleet machines have no interactive console. Mask debug shells that would
   # corrupt the serial transport or delay switch-root during test shutdown.
   boot.initrd.systemd.maskedUnits = [
