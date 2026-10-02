@@ -1029,9 +1029,11 @@ in
       hub_cli cache integration list operations/build-cache --page-size 1 \
         >/tmp/cache-integration-list-empty.json
 
+      # Released 1.0.0 and 1.0.1 have verified snapshots; the exact 9.0.0
+      # selector names no release, so refreshing this policy must fail.
       reviewed cache-retention-set cache retention set operations/build-cache \
         --registry operations/maintenance --current-catalog --channel stable \
-        --recent-releases 2 --release 1.0.0 --semver '>=1.0.0,<2.0.0' \
+        --recent-releases 2 --release 9.0.0 --semver '>=1.0.0,<2.0.0' \
         --removal-grace 1h --if-version absent \
         >/tmp/cache-retention-set.json
       retention_version=$(resource_version /tmp/cache-retention-set.json)
