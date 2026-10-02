@@ -759,6 +759,26 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Generic canonical configuration retention does not claim registered profile
   execution, verified context binding or fold re-evaluation. Published-input
   and combined qualification remain pending; no task or milestone advances.
+  The rebased original-prefix and D-98 consumers now pass their actual
+  published-input auxiliaries: six and four exact groups, strict consumer
+  Clippy and both mandatory formatters, with all reviewed input blobs unchanged.
+  D-98's output matches all 2,623,525 normative bytes. Both inputs are reviewed
+  and included on the unpublished combined candidate. Its actual complete
+  `golden-vectors` check passes seventeen mandatory suites and all 28 assigned
+  sections. Independent closure review nevertheless finds five published
+  legacy identity/hash literals observed only as matching fixed constants:
+  manifest, commit and attribute identities, the unsigned Commit preimage hash
+  and the raw delete-authorization hash. A bounded literal reader and mutation
+  controls remain required before that passing gate establishes TEST-1 closure.
+  No production or normative byte change is needed for this observation fix.
+  The combined candidate's full core build, all 611 Nextest tests with zero
+  skips (run `6d54d2e1-c666-432b-af0f-356b96bdb773`), strict all-target Clippy,
+  warnings/missing-docs rustdoc and both mandatory formatters pass. All 46
+  temporary inputs and owning source/template bytes remained frozen through
+  every original terminal; exact comparison preceded removal or restoration.
+  Its actual full aggregate still fails the legacy state-1 compatibility case
+  in `index-generation-manifest`. That failure and the literal-observation gap
+  remain explicit; no formal task merge, checkbox or milestone advances.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1475,6 +1495,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Its exact combined case passes run `d7bec2fe-111d-49ba-8bcf-91db322d0c4a`,
   followed by both mandatory formatters. Eleven of nineteen boundary contracts
   now have reviewed passing evidence. Complete native gates remain required.
+  Two further original-control fixtures pass full review and combined exact
+  execution: independently retained original ref/ACL survives complete source
+  erasure and destination-only reopen, while canonical changed import policy
+  fails its exact retained binding; actual copied destination binding/trust and
+  a different genuine historical key are refused with unchanged whole heads.
+  Exact restoration succeeds after each refusal. The ACL negative is a changed
+  bound record, not a re-signed originally unauthorized Commit. The combined
+  run passes both cases (`adf2a80a-098d-4009-9ba1-2b1692a8d5ab`); both mandatory
+  formatters also pass on that source. Thirteen of nineteen boundary contracts
+  now have reviewed passing evidence; full native conformance remains open.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -1503,6 +1533,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The DOM-7/PROV-30 native index-rebuild case remains mandatory and unqualified;
   its operational dependency belongs to T-DRV-2. No branch workline is started,
   encoding is not frozen, and no pure-codec result substitutes for that case.
+  A read-only ordering audit identifies the resulting cycle: completed T1
+  is needed before B-derive, while this positive native case currently requires
+  T-DRV-2's rebuilding operation before T1 can exit. PROV-30/DOM-7 forbid index
+  certificates and permit safe materialization or authorized full-source
+  retention; they do not independently mandate native rebuild availability.
+  A D-n-backed task/gate scope correction remains required. Raw index refusal
+  and independent current attribute-producer checks remain T1 obligations;
+  no branch work, guessed binding carrier or weaker current-policy rule follows.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
