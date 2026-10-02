@@ -72,7 +72,11 @@ impl<'a> From<&'a CommitRequest> for CandidateRequest<'a> {
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {
-    async fn current_admin(
+    /// Checks current administrative authority without treating denial as a store failure.
+    ///
+    /// # Errors
+    /// Returns failures reading or validating the current authorization state.
+    pub(super) async fn current_admin(
         &self,
         reference: &str,
         token: &[u8],
