@@ -4,6 +4,7 @@
 //! signing authority remain separate. Only actual held native factories populate
 //! these private inputs; copied records and caller coordinates confer no rights.
 
+#[path = "disclosure/projection.rs"]
 mod projection;
 
 use crate::bucket::held::HeldBucket;
