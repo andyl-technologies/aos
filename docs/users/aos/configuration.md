@@ -251,10 +251,9 @@ generation:
 apm switch --dry-run
 ```
 
-By default, APM evaluates the staged runtime `host.nix` with the running
-image's base library and module ABI, and compares it with `current`. Use
-`--from ./host.nix` to preview edited input. `--diff-against` accepts
-`current`, `gen-N`, or an explicit manifest path.
+APM evaluates the complete operator worktree with the retained host input and
+running image's native module library, then compares it with the committed
+generation. Use `apm config add` or `apm config replace` to stage edited input.
 
 The human report includes `/etc` additions, changes, and removals; unit
 start/restart/stop actions; store paths to fetch; and the provider-resolution
@@ -268,14 +267,14 @@ apm --json switch --dry-run
 Apply a reviewed configuration with the same evaluator and checked activation:
 
 ```sh
-apm switch --from ./host.nix
+apm switch
 ```
 
-The switch also reconciles `aos.apm.desiredPackages`: authenticated rendered
-unit artifacts are attached to the candidate generation, selected package
-targets are enabled and started after the `/etc` swap, and targets removed from
-the desired set are stopped. Packages bundled in the image remain inert unless
-the active host configuration selects them.
+The switch also reconciles `aos.apm.desiredPackages`. Typed selection runs before
+authenticated package acquisition and complete native evaluation, so a module
+can name a new package and set its package-owned options together. Package
+selection and enabled effects commit in the same generation. Dependency modules
+and available sibling outputs do not install unused payloads.
 
 Selection prefers an authenticated configured registry. If no registry
 publishes a selected name, AOS may use the exact package and config companion
