@@ -36550,7 +36550,7 @@ mod publication_upload_limit_tests {
 }
 
 #[cfg(test)]
-mod cache_upload_tests {
+pub(crate) mod cache_upload_tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -36841,7 +36841,7 @@ mod cache_upload_tests {
         injected_service_with_sealer(fetch_behaviors, write_behaviors, vec![]).await
     }
 
-    pub(super) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
+    pub(crate) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
         let (service, database, _, _) = injected_service(vec![], vec![]).await;
         (service, database)
     }
