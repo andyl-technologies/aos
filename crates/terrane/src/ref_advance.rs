@@ -53,7 +53,9 @@ pub use crate::guard::{CommitRequest, StagedUpload};
 pub use coordinator::{
     AdvanceError, CommitTiming, Coordinator, FoldOutcome, TagAnnotation, WriterSession,
 };
-pub use disclosure::DisclosureUpload;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use disclosure::PreloadedSelection;
+pub use disclosure::{DisclosureCommitRequest, DisclosureCommitSelection, DisclosureUpload};
 pub(crate) use prepared::{PreparedAdvance, PublicationStep};
 pub use watch::{GuardedWatch, WatchClock};
 
