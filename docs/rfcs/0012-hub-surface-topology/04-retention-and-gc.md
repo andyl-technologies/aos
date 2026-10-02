@@ -453,11 +453,39 @@ cancels it with `ContainerService.CancelContainerGcRun`, which records
 version, fails closed for an `applying` run, whose recovery belongs to action
 requeue and finalization, and returns an already terminal run unchanged.
 
-Registry deletion and purge-fence admission count an `applying` run and an
-unexpired `planned` run as GC work. Apply rejects an expired plan, so an
-expired or aborted run, and the never-claimable actions frozen by any run that
-was not applied, do not block deletion; an operator who planned only to
-inspect blockers never waits for the expiry sweep.
+Only applied GC work blocks registry teardown: an `applying` run and the
+unfinished placement actions of a run that was applied. Apply rejects an
+expired plan, so an expired or aborted run, and the never-claimable actions
+frozen by any run that was not applied, never block. Reviewed purge-fence
+admission additionally counts an unexpired `planned` run, because it could
+still be applied behind the fence.
+
+The final identity deletion is a `delete_registry` topology operation. It
+removes no provider objects itself. Its blockers fall into two classes:
+
+- Operator blockers refuse the reviewed apply with `failed_precondition` and an
+  exact per-class count. These are repositories, catalog objects, active OCI
+  sessions or leases, active publications or uploads, retained binary-cache
+  roots, staged container objects, applying GC runs, unfinished actions of
+  applied GC runs, active untracked repairs, snapshot references, offline
+  placements or placements without a current write revision, and provider
+  objects listed by a current inventory.
+- Automatic steps are performed by the operation. It abandons every `planned`
+  GC run, expired or not, recording `abandoned by registry deletion
+  OPERATION_ID` and the run ids in the operation detail. This is the same
+  `planned` to `aborted` transition as cancellation, so the reviewed deletion
+  never waits for the expiry sweep or a separate cancel. It acquires an
+  operation-owned purge fence. It requests a scan of any placement that was
+  never observed `ready/complete`. It collects a fresh complete inventory of
+  every placement under that fence.
+
+Missing or stale inventories are therefore never a reason to refuse deletion:
+the operation proves emptiness itself, including for a registry that never
+published and so never entered the scheduled inventory sweep. The deletion
+transaction re-asserts every predicate. If one changed after the last readiness
+evaluation, the transaction reports the changed blocker breakdown instead of an
+affected-row mismatch. An operation that fails or is cancelled releases the
+fence it acquired.
 
 Physical delete capability is also independent of logical write authority.
 The current authority controls where new bytes may be published; it does not

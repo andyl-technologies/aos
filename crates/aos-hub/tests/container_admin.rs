@@ -135,8 +135,8 @@ impl RunningHub {
                 actor_id,
                 idempotency_key: idempotency_key.to_string(),
                 expected_resource_version: 0,
-                now: aos_hub_core::clock::now_unix_secs(),
                 retire_registry: false,
+                now: aos_hub_core::clock::now_unix_secs(),
             })
             .await
             .unwrap()

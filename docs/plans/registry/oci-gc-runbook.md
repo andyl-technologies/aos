@@ -77,9 +77,10 @@ upload, or changed placement identity must fail before an action is claimed.
 ### Discarding an unapplied plan
 
 A plan created only to inspect blockers or impact need not be applied. An
-unexpired `planned` run counts as GC work and blocks registry deletion, so
-cancel it once it is no longer needed instead of waiting for its review to
-expire. Read the run's `resource_version` with `gc get`, then:
+unexpired `planned` run counts as GC work and blocks purge-fence acquisition,
+so cancel it once it is no longer needed instead of waiting for its review to
+expire. Reviewed registry deletion abandons planned runs itself (see Registry
+deletion). Read the run's `resource_version` with `gc get`, then:
 
 ```sh
 aos hub registry container gc cancel REGISTRY RUN_ID \
@@ -95,9 +96,9 @@ then rejects the run. Retrying the command after the run is terminal returns
 it unchanged. An `applying` run cannot be cancelled: its physical work is
 recovered through action requeue and finalization (see Incident response).
 
-A planned run stops blocking registry deletion and purge-fence acquisition as
-soon as its fifteen-minute review expires, even before the maintenance sweep
-marks it `aborted`.
+A planned run stops blocking purge-fence acquisition as soon as its
+fifteen-minute review expires, even before the maintenance sweep marks it
+`aborted`.
 
 ## Untracked provider inventory repair
 
@@ -196,24 +197,89 @@ registry. Once a retiring run is applying or complete, indexing refuses to
 re-project container-release roots for that registry; the retirement is the
 reviewed intent and a re-index must not resurrect roots underneath the
 collector. Repeat plan/apply until a plan reports no candidates and the
-catalog is empty, cancel that final empty plan with `gc cancel` so it does not
-count as GC work, delete the now-empty repositories, then continue with the
-purge fence below.
+catalog is empty and delete the now-empty repositories. Then continue with
+registry deletion below. The deletion operation abandons the final empty plan
+itself, so it need not be cancelled first.
 
 On the Cloudflare deployment the deployment bucket is deleted through the
 Worker binding with a fenced head-then-delete rather than a provider-atomic
 conditional delete. The capability probe exercises that fence like every other
 backend, and a plan still fails closed without a valid observation.
 
-## Registry purge fence and final deletion
+## Registry deletion
 
-Final registry deletion requires a reviewed writer fence; the Hub never creates
-that fence implicitly inside `DeleteRegistry`. First verify that repositories,
-catalog objects, active sessions, GC work, untracked repairs, and snapshot
-references are empty. GC work counts applying runs and unexpired planned runs;
-cancel a leftover diagnostic plan with `gc cancel` rather than waiting for it
-to expire. Then use the registry resource version returned by
-`aos hub registry show REGISTRY` to review and acquire the fence:
+Registry deletion is one reviewed, self-driving operation. Plan it, read the
+readiness the plan reports, and apply it once:
+
+```sh
+aos hub registry delete REGISTRY --if-version REGISTRY_RESOURCE_VERSION
+
+aos hub registry delete REGISTRY \
+  --plan-id DELETE_PLAN_ID \
+  --confirm-hash SHA256_CONFIRMATION \
+  --idempotency-key DELETE_PLAN_IDEMPOTENCY_KEY \
+  --yes --wait
+```
+
+The console's registry Danger zone performs the same review and apply and then
+follows the operation. The plan's readiness has one of three verdicts:
+
+- `blocked`: an operator must act first. The plan lists every blocker class
+  with its exact count: repositories, catalog objects, active OCI sessions or
+  leases, active publications or uploads, retained binary-cache roots, staged
+  container objects, applying GC runs, unfinished placement actions of applied
+  GC runs, active untracked-object repairs, snapshot references, unavailable
+  placements, and provider objects listed by a current inventory. Actions
+  frozen by a plan that was never applied never block. Apply is refused with
+  `failed_precondition` and the same breakdown, nothing changes, and the
+  reviewed plan stays unconsumed, so the same review can be applied after the
+  blockers are resolved. A registry with a published container catalog is
+  retired first, as described above.
+- `automatic`: nothing needs an operator. The plan lists the steps the
+  operation performs itself.
+- `ready`: the fence and every post-fence inventory already exist.
+
+The operation then:
+
+1. Abandons every `planned` OCI GC run, expired or not, recording each run id
+   in the operation detail. This is the same transition as `gc cancel`: the
+   run becomes `aborted` with `abandoned by registry deletion OPERATION_ID`.
+   Applying runs always block, because their physical phase may still be
+   deleting objects.
+2. Acquires the registry purge fence under the same quiescence predicates as a
+   reviewed fence Begin. The fence's idempotency key is the operation id, so
+   the fence is owned by that operation. New OCI writers are refused from this
+   point on.
+3. Requests a placement scan for any placement that has never been observed
+   `ready/complete`, then collects a fresh provider inventory of every placement
+   under the fence. Native deployments collect it in the maintenance loop.
+   Worker deployments collect it in the topology job and enqueue a bounded
+   follow-up while work remains. A registry that never published, and so was
+   never inventoried by the scheduled sweep, is inventoried here on demand.
+4. Re-evaluates every blocker and deletes the registry in the same transaction
+   that marks the operation succeeded.
+
+`aos hub operation watch OPERATION_ID` and the operation detail show the current
+phase and the latest readiness breakdown. If a precondition changes while the
+operation runs, for example a publication starts or a fresh inventory lists
+objects, the operation fails with `failed_precondition` and the breakdown, and
+the fence it acquired is released. Cancelling the operation also releases its
+fence on the next controller pass. `RetryOperation` restarts a failed or
+cancelled deletion against the same reviewed registry version. If the registry
+changed since review, the retry fails and a new plan is required.
+
+Physical provider objects are never deleted by this operation. A placement
+whose fresh inventory still lists objects blocks deletion. Collect those objects
+through container GC, or review and apply untracked repairs, then delete again.
+
+### Manual purge fence
+
+The reviewed purge-fence workflow is still available. Use it when an operator
+wants to freeze writers before deciding on deletion. Unlike the deletion
+operation, fence admission does not abandon plans: it counts applying runs and
+unexpired planned runs as GC work. Cancel a leftover diagnostic plan with
+`gc cancel` first rather than waiting for it to expire. Then use the registry
+resource version returned by `aos hub registry show REGISTRY`:
 
 ```sh
 aos hub registry container gc purge-fence plan REGISTRY \
@@ -231,19 +297,12 @@ aos hub registry container gc purge-fence apply \
 aos hub registry container gc purge-fence status PURGE_FENCE_PLAN_ID
 ```
 
-The fence blocks new OCI writers. Wait for every placement to publish a new
-complete empty inventory whose generation began after that exact fence and
-whose selector matches its resource version and captured mutation epoch. The
-status is ready only when all bounded logical, provider, GC, session, snapshot,
-and post-fence inventory blocker counts are zero. Then use the existing
-reviewed `aos hub registry delete REGISTRY --if-version
-REGISTRY_RESOURCE_VERSION` workflow for final identity deletion.
-
-If deletion must be cancelled, review an Abort plan using the current fence
-resource version reported by status, then apply it with the same explicit
-confirmation and plan CAS flow. Abort reopens writers and invalidates all prior
-purge-readiness evidence; a later purge must acquire a new fence and collect
-new post-fence inventories.
+A deletion operation reuses a fence that is already held and never releases a
+fence it did not acquire. To cancel a manual fence, review an Abort plan using
+the current fence resource version reported by status, then apply it with the
+same explicit confirmation and plan CAS flow. Abort reopens writers and
+invalidates all prior purge-readiness evidence. A later deletion must acquire a
+new fence and collect new post-fence inventories.
 
 ## Logical and physical phases
 

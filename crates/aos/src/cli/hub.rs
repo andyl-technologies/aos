@@ -2919,13 +2919,15 @@ pub enum HubRegistryCmd {
         #[command(flatten)]
         mutation: HubMutationArgs,
     },
-    /// Plan registry deletion or apply a reviewed plan
+    /// Plan registry deletion or start the reviewed deletion operation
     Delete {
         #[command(flatten)]
         access: HubAccessArgs,
         registry: String,
         #[command(flatten)]
         mutation: HubMutationArgs,
+        #[command(flatten)]
+        operation: HubOperationArgs,
     },
     /// Manage the signed consumer cache stack
     CacheStack {

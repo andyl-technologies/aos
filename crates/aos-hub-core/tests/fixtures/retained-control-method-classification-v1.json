@@ -862,9 +862,9 @@
     "class": {
       "class": "apply",
       "pair": "delete_registry",
-      "outcome": "immediate"
+      "outcome": "operation"
     },
-    "external_effects": false
+    "external_effects": true
   },
   {
     "service": "OrganizationService",
