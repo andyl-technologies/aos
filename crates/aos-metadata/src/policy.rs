@@ -381,9 +381,96 @@ mod tests {
             Some(digest(host_module.as_bytes()))
         );
         assert_eq!(authorized.authorization.signer, None);
+        let encoded = serde_json::to_value(&authorized).expect("serialized authorization");
+        assert!(
+            encoded["authorization"]
+                .as_object()
+                .unwrap()
+                .contains_key("signer")
+        );
+        assert!(encoded["authorization"]["signer"].is_null());
         assert_eq!(
             authorized.facts.value["hostname"],
             serde_json::Value::String("provisioning-test".into())
         );
+    }
+
+    #[test]
+    #[ignore = "requires a source-built native metadata transaction"]
+    fn serialized_metadata_results_match_exported_native_contracts() {
+        let transaction_path = std::env::var("AOS_TEST_METADATA_TRANSACTION")
+            .expect("source-built native transaction fixture is required");
+        let transaction: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(transaction_path).expect("read source-built transaction"),
+        )
+        .expect("decode source-built transaction");
+        let graph = aos_ability_plan::module_graph::CheckedModuleGraph::decode(
+            &aos_contract::canonical::to_vec(&transaction["graph"]).unwrap(),
+        )
+        .expect("admit the exported native graph");
+        let effect = |operation: &str| {
+            graph
+                .graph()
+                .nodes
+                .values()
+                .find(|effect| {
+                    effect.identity.iter().rev().nth(2).map(String::as_str) == Some("metadata")
+                        && effect.identity.iter().rev().nth(1).map(String::as_str)
+                            == Some(operation)
+                })
+                .expect("metadata operation in exported graph")
+        };
+        let configuration = AuthorizationConfiguration {
+            schema: "aos.metadata.provisioning-authorization-configuration/v1".into(),
+            trust_mode: ProvisioningTrustMode::Platform,
+            trusted_config_keys: Vec::new(),
+        };
+        let library = BaseLibraryIdentity {
+            store_path: "/nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-base-lib".into(),
+            nar_hash: format!("sha256:{}", "00".repeat(32)),
+        };
+        let bootstrap = aos_net::BootstrapNetwork {
+            selector: aos_net::BootstrapLinkSelector::Name("eth0".into()),
+            addresses: vec!["192.0.2.10/24".into()],
+            gateway: None,
+            dns: Vec::new(),
+        }
+        .into_ability_value()
+        .expect("typed static network without a gateway");
+
+        for module in [None, Some("{}".to_string())] {
+            let acquired = AcquiredMetadata {
+                schema: "aos.metadata.acquired-provisioning-input/v1".into(),
+                platform_id: "qemu".into(),
+                host_module: module,
+                host_module_signature: None,
+                facts: crate::Facts::default(),
+            };
+            effect("acquire")
+                .check_results(&serde_json::json!({
+                    "acquired_metadata": acquired,
+                    "network_bootstrap": bootstrap,
+                }))
+                .expect("acquisition satisfies the actual Nix result contract");
+
+            let authorized = authorize_validated_input(&configuration, &acquired, &library)
+                .expect("authorize platform operator or fallback input");
+            let canonical_input =
+                String::from_utf8(aos_contract::canonical::to_vec(&authorized).unwrap()).unwrap();
+            let output = serde_json::json!({
+                "authorized_input": authorized,
+                "canonical_input": canonical_input,
+            });
+            effect("authorize")
+                .check_results(&output)
+                .expect("authorization satisfies the actual Nix result contract");
+
+            let mut omitted = output;
+            omitted["authorized_input"]["authorization"]
+                .as_object_mut()
+                .unwrap()
+                .remove("signer");
+            assert!(effect("authorize").check_results(&omitted).is_err());
+        }
     }
 }

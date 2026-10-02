@@ -6,7 +6,7 @@
 //! authorization and backend code. It deliberately defines no parallel serde
 //! document, defaults, method set, or schema validation policy.
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_ability_model::AbilityValue;
 use serde_json::{Map, Value};
 
@@ -104,9 +104,10 @@ impl BootstrapNetwork {
             "addresses".to_string(),
             Value::Array(self.addresses.into_iter().map(Value::String).collect()),
         );
-        if let Some(gateway) = self.gateway {
-            document.insert("gateway".to_string(), Value::String(gateway));
-        }
+        document.insert(
+            "gateway".to_string(),
+            self.gateway.map(Value::String).unwrap_or(Value::Null),
+        );
         document.insert(
             "dns".to_string(),
             Value::Array(self.dns.into_iter().map(Value::String).collect()),
@@ -133,6 +134,7 @@ fn string_list(document: &Map<String, Value>, field: &str) -> Result<Vec<String>
 fn optional_string(document: &Map<String, Value>, field: &str) -> Result<Option<String>> {
     document
         .get(field)
+        .filter(|value| !value.is_null())
         .map(|value| {
             value
                 .as_str()
@@ -177,5 +179,20 @@ mod tests {
         .expect("canonical value");
 
         assert!(BootstrapNetwork::from_validated(&value).is_err());
+    }
+
+    #[test]
+    fn absent_gateway_is_explicitly_null_and_round_trips() {
+        let bootstrap = BootstrapNetwork {
+            selector: BootstrapLinkSelector::Name("eth0".into()),
+            addresses: vec!["192.0.2.10/24".into()],
+            gateway: None,
+            dns: Vec::new(),
+        };
+        let value = bootstrap.clone().into_ability_value().unwrap();
+
+        assert!(value.as_json().as_object().unwrap().contains_key("gateway"));
+        assert!(value.as_json()["gateway"].is_null());
+        assert_eq!(BootstrapNetwork::from_validated(&value).unwrap(), bootstrap);
     }
 }
