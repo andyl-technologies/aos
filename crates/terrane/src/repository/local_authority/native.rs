@@ -20,7 +20,9 @@ use crate::{
 
 use super::{
     Error,
-    retention::{self, BootstrapRecord, CommitAssociation, ImportRecord, Record, RegistrationRecord},
+    retention::{
+        self, BootstrapRecord, CommitAssociation, ImportRecord, Record, RegistrationRecord,
+    },
     validate_ancestors, validate_private_directory,
 };
 
@@ -311,10 +313,14 @@ impl NativeRetention {
                     retention::read::<_, CommitAssociation>(fs, directory, self.owner_uid, name)
                         .await?,
                 );
+            } else if name.starts_with("disclosure-role-") {
+                // The concrete verifier independently checks configured role rows.
             } else if name.starts_with("import-binding-") || name.starts_with("import-trust-") {
                 // Paired rows are reread through their exact import selectors below.
             } else if name.starts_with("import-") {
-                imports.push(retention::read::<_, ImportRecord>(fs, directory, self.owner_uid, name).await?);
+                imports.push(
+                    retention::read::<_, ImportRecord>(fs, directory, self.owner_uid, name).await?,
+                );
             } else if name.ends_with(".cbor") && name != "registration.cbor" && name != "token.cbor"
             {
                 // Source retention requires the separate checked import factory.

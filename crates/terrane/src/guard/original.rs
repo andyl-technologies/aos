@@ -17,9 +17,9 @@
 mod control;
 #[cfg(unix)]
 pub(crate) use control::{ControlExclusion, RetainedControls};
-mod verifier;
 #[cfg(unix)]
 mod import;
+mod verifier;
 pub(super) use verifier::OriginalVerifier;
 
 use std::path::{Component, Path, PathBuf};
