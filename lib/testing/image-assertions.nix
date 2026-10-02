@@ -32,7 +32,7 @@
     {
       ok =
         healthy.config.aos.image.budgets.maxInitrdMiB
-        == 132
+        == 160
         && healthy.config.aos.image.budgets.maxBootExecutableMiB == 160
         && healthy.config.aos.image.budgets.maxFirmwarePartitionMiB == 384
         && healthy.config.aos.image.budgets.maxRuntimeClosureMiB == 768;
@@ -41,7 +41,7 @@
     {
       ok =
         foreign.config.aos.image.budgets.maxInitrdMiB
-        == 132
+        == 160
         && foreign.config.aos.image.budgets.maxBootExecutableMiB == 192
         && foreign.config.aos.image.budgets.maxFirmwarePartitionMiB == 416
         && foreign.config.aos.image.budgets.maxRuntimeClosureMiB == 896;
