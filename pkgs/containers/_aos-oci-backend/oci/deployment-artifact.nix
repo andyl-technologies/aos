@@ -95,6 +95,8 @@
     version = "1";
     src = null;
     buildDeps = [coreutils jq deploymentChecker];
+    deploymentInput = builtins.toJSON envelope;
+    passAsFile = ["deploymentInput"];
     phases = [
       {
         name = "assemble";
@@ -102,7 +104,7 @@
           set -eu
           mkdir -p "$out"
           ${common.jsonScript}
-          printf '%s' ${lib.escapeShellArg (builtins.toJSON envelope)} > deployment.input.json
+          cp "$deploymentInputPath" deployment.input.json
           write_compact_json deployment.input.json "$out/deployment.json"
           ${lib.optionalString (!aggregate) ''
             for name in transaction.json packages.json admission.json admission-sha256 module-library registration evaluation.json; do
