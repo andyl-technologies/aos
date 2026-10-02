@@ -19,7 +19,7 @@ use crate::registry_ops::config::{
     resolve_effective_release_cache_url, resolve_registry_name, resolve_upload_urls,
     warn_on_cache_gc,
 };
-use crate::registry_ops::git::{git, git_try};
+use crate::registry_ops::git::{git, git2_identity, git_try};
 use crate::registry_ops::publish::{
     publish_to_registry_directory, validate_release_publish_metadata,
     validate_release_publish_signing_identity,
@@ -661,7 +661,9 @@ impl PreparationCheckpoint {
             hex::encode(Sha256::digest(serde_json::to_vec(&inputs)?))
         );
         let repository = git2::Repository::open(directory)?;
-        let author = repository.signature()?;
+        // Resolve the identity like every other registry commit, so hermetic
+        // environments may supply it through GIT_AUTHOR_*/GIT_COMMITTER_*.
+        let author = git2_identity(&repository)?;
         Ok(Self {
             registry: registry.to_string(),
             source_branch: source_branch.to_string(),
@@ -1082,7 +1084,7 @@ async fn prepare_release_registry_tree(
             &key_id,
         )?;
         let repository = git2::Repository::open(dir)?;
-        let signature = repository.signature()?;
+        let signature = git2_identity(&repository)?;
         let identity = RegistryCommitIdentity {
             name: signature
                 .name()

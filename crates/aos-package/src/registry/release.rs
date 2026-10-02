@@ -2150,10 +2150,9 @@ mod tests {
             .object_format(git2::ObjectFormat::Sha256)
             .initial_head("master");
         let repository = Repository::init_opts(path, &options)?;
-        fs::write(
-            path.join("registry.toml"),
-            b"[registry]\nname = \"andyl/main\"\n",
-        )?;
+        // The committed manifest carries the local authoring name; only the
+        // release transaction uses the canonical `SCOPE/NAME` identity.
+        fs::write(path.join("registry.toml"), b"[registry]\nname = \"main\"\n")?;
         let mut index = repository.index()?;
         index.add_all(["registry.toml"], IndexAddOption::DEFAULT, None)?;
         index.write()?;

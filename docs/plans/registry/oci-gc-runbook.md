@@ -19,6 +19,14 @@ versions still match. The inventory must be newer than the planner's maximum
 inventory age. A provider name, bucket kind, or successful unconditional delete
 is not capability evidence.
 
+Provider inventory enumerates only the `oci/blobs/sha256/` namespace of each
+placement, one object per checkpoint, so its dispatch count tracks the number
+of blobs rather than the size of the co-located binary cache. Generations
+that were still collecting when a Hub predating blob-scoped listing was
+upgraded fail once (their stored failure reason is redacted, like every other
+inventory failure) and are replaced by a fresh generation on the next due
+pass; no operator action is required.
+
 The placement controller records a successful conditional-delete capability
 probe against the exact binding write revision and delete-credential
 generation. Planning and action claiming fail closed if that observation is

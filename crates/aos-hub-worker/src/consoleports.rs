@@ -111,7 +111,7 @@ impl aos_hub_core::topology_probe::StorageCredentialProbeProvider
                 status == 404 || (200..300).contains(&status)
             }
             "list" => {
-                let url = surface.list_url(None, 1, now)?;
+                let url = surface.list_url("", None, 1, now)?;
                 let response = self
                     .egress
                     .send(&url, "GET", None, None, None, None, None)
