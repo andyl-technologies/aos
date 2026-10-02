@@ -33,7 +33,7 @@
 /run/etc -d system_u:object_r:var_run_t
 /var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t
 /var/lib/aos/sandbox-nix-floor-provision -d system_u:object_r:aos_nix_offline_prepare_state_t
-/var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3) -- system_u:object_r:aos_nix_offline_prepare_state_t
+/var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3|approved-job-v3) -- system_u:object_r:aos_nix_offline_prepare_state_t
 /run/credentials/aos-sandbox-nix-floor-provision\.service -d system_u:object_r:aos_nix_offline_prepare_credential_t
 /run/credentials/aos-sandbox-nix-floor-provision\.service/(node-id|nix-floor-provision-approval-public-key-v3) -- system_u:object_r:aos_nix_offline_prepare_credential_t
 /var/lib/aos/sandbox/source-evidence -d system_u:object_r:aos_sandbox_policy_authority_state_t

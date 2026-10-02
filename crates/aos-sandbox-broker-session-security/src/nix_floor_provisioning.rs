@@ -1,9 +1,11 @@
-//! Manual offline preparation of unsigned Nix floor key candidates.
+//! Manual unsigned Nix key preparation and independently signed static inspection.
 //!
 //! The externally retained Core startup owns genuine selected launch and public
 //! approval delivery. This owner prepares candidates only: no TPM call, approval
 //! signature, physical journal, runtime credential or current Session exists.
 //! All originals and partially published files remain resident after failure.
+//! Static inspection reuses these candidate and protected-file engines; it does
+//! not initialize hardware, approve effects or establish session currentness.
 //!
 //! ```text
 //! candidate-private-v3: AOSNPK03/version3/reserved + four ID16/seed32 + 4 auth32
@@ -23,6 +25,10 @@ use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::{BrokerSessionSecurityError, entropy};
+
+mod approved_job;
+
+pub use approved_job::{NixApprovedJobInspectionAttemptV3, NixApprovedJobInspectionErrorV3};
 
 const JOB_NAME: &str = "sandbox-nix-floor-provision";
 const PRIVATE_NAME: &str = "candidate-private-v3";

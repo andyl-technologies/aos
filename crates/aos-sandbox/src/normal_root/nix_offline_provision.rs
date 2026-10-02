@@ -1,4 +1,4 @@
-//! Resident startup custody for the manual, prepare-keys-only offline unit.
+//! Resident startup custody for manual offline preparation and static inspection.
 //!
 //! No TPM device, approval signer, runtime floor or journal is opened here.
 //! Returned activation descriptors and parked partial observations stay in the
@@ -107,6 +107,21 @@ impl From<rustix::io::Errno> for OfflineNixPrepareStartupErrorV3 {
 
 type Error = OfflineNixPrepareStartupErrorV3;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OfflinePrepareModeV3 {
+    PrepareKeys,
+    InspectApprovedJob,
+}
+
+impl OfflinePrepareModeV3 {
+    const fn command(self) -> &'static str {
+        match self {
+            Self::PrepareKeys => "prepare-keys",
+            Self::InspectApprovedJob => "inspect-approved-job",
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
@@ -178,6 +193,7 @@ pub struct OfflineNixPrepareStartupV3 {
     initial: NixOfflinePrepareInitialTableV3,
     attempted: bool,
     usable: bool,
+    mode: Option<OfflinePrepareModeV3>,
     failure: Option<Error>,
     raw: Vec<File>,
     profile_file: Option<RetainedImmutableFileV1>,
@@ -210,6 +226,7 @@ impl OfflineNixPrepareStartupV3 {
             initial: NixOfflinePrepareInitialTableV3::new(),
             attempted: false,
             usable: false,
+            mode: None,
             failure: None,
             raw: Vec::new(),
             profile_file: None,
@@ -241,11 +258,25 @@ impl OfflineNixPrepareStartupV3 {
     /// Returns the resident first actual failure, or fences a repeat/interrupted
     /// observation. No original descriptor or partial read is moved out on error.
     pub fn capture_and_admit(&mut self) -> Result<(), &Error> {
+        self.capture_mode(OfflinePrepareModeV3::PrepareKeys)
+    }
+
+    /// Captures the same original startup for static approved-job inspection only.
+    ///
+    /// # Errors
+    /// Rejects repeated or interrupted capture, a different immutable selected
+    /// command, or any original launch, confinement or credential mismatch.
+    pub fn capture_and_admit_inspection(&mut self) -> Result<(), &Error> {
+        self.capture_mode(OfflinePrepareModeV3::InspectApprovedJob)
+    }
+
+    fn capture_mode(&mut self, mode: OfflinePrepareModeV3) -> Result<(), &Error> {
         if self.attempted {
             return self.refuse();
         }
         self.attempted = true;
         self.usable = false;
+        self.mode = Some(mode);
         let result = self.admit_inner();
         self.complete(result)
     }
@@ -256,7 +287,20 @@ impl OfflineNixPrepareStartupV3 {
     /// Returns and retains the first actual observation failure. The prearmed
     /// instance remains closed on an unwind; successful completion alone reopens it.
     pub fn recheck(&mut self) -> Result<(), &Error> {
-        if !self.usable {
+        self.recheck_mode(OfflinePrepareModeV3::PrepareKeys)
+    }
+
+    /// Rechecks the same original startup in its static inspection mode.
+    ///
+    /// # Errors
+    /// Fences a prepare-mode, absent, interrupted, failed or changed owner.
+    /// Success supplies no approval freshness, TPM floor or effect authority.
+    pub fn recheck_inspection(&mut self) -> Result<(), &Error> {
+        self.recheck_mode(OfflinePrepareModeV3::InspectApprovedJob)
+    }
+
+    fn recheck_mode(&mut self, mode: OfflinePrepareModeV3) -> Result<(), &Error> {
+        if !self.usable || self.mode != Some(mode) {
             return self.refuse();
         }
         self.usable = false;
@@ -270,6 +314,18 @@ impl OfflineNixPrepareStartupV3 {
     /// Rejects an absent, failed, interrupted or currently mismatching original.
     pub fn borrow_original(&mut self) -> Result<OfflineNixPrepareOriginV3<'_>, &Error> {
         if self.recheck().is_err() {
+            return Err(self.failure.get_or_insert(Error::Fenced));
+        }
+        Ok(OfflineNixPrepareOriginV3 { startup: self })
+    }
+
+    /// Borrows only the genuine original startup selected for static inspection.
+    ///
+    /// # Errors
+    /// Rejects a prepare-mode, absent, failed, interrupted or changed owner.
+    /// The mutable loan cannot change its mode or establish live currentness.
+    pub fn borrow_inspection(&mut self) -> Result<OfflineNixPrepareOriginV3<'_>, &Error> {
+        if self.recheck_inspection().is_err() {
             return Err(self.failure.get_or_insert(Error::Fenced));
         }
         Ok(OfflineNixPrepareOriginV3 { startup: self })
@@ -548,7 +604,12 @@ impl OfflineNixPrepareStartupV3 {
         let (values, unit) = self.flights.last().ok_or(Error::Rejected)?;
         let profile_path = self.profile_file.as_ref().ok_or(Error::Rejected)?.path();
         let profile = self.profile.as_ref().ok_or(Error::Rejected)?;
-        require_service(values, profile_path, &profile.executable.path)?;
+        require_service(
+            values,
+            profile_path,
+            &profile.executable.path,
+            self.mode.ok_or(Error::Rejected)?,
+        )?;
         let observed = service::immutable_observation(service::decode_unit(unit, UNIT)?)?;
         if let Some(original) = &self.observed {
             service::require_same(original, &observed)?;
@@ -678,7 +739,7 @@ impl Default for OfflineNixPrepareStartupV3 {
     }
 }
 
-/// Borrows the actual admitted startup for candidate preparation only.
+/// Borrows actual admitted startup in its retained, closed offline mode.
 ///
 /// The external startup owns originals and typed failures for the full loan.
 /// This neither approves generated candidates nor establishes a TPM floor.
@@ -695,11 +756,20 @@ impl OfflineNixPrepareOriginV3<'_> {
         self.startup.recheck()
     }
 
+    /// Rechecks only the genuine original selected for static inspection.
+    ///
+    /// # Errors
+    /// Returns the resident startup cause or fences a wrong-mode, failed or
+    /// interrupted loan. A prepare-mode loan never passes this observation.
+    pub fn recheck_inspection(&mut self) -> Result<(), &Error> {
+        self.startup.recheck_inspection()
+    }
+
     /// Copies only the independently delivered public node and approval originals.
     ///
     /// # Errors
     /// Rejects an interrupted or failed owner; secret or approval-signing bytes
-    /// are never supplied by this prepare-only mode.
+    /// are never supplied by either closed offline mode.
     pub fn public_originals(&self) -> Result<([u8; 16], [u8; 48]), Error> {
         if !self.startup.usable {
             return Err(Error::Fenced);
@@ -738,7 +808,12 @@ fn require_status(bytes: &[u8]) -> Result<(), Error> {
     Ok(())
 }
 
-fn require_service(values: &[OwnedValue], profile: &Path, executable: &str) -> Result<(), Error> {
+fn require_service(
+    values: &[OwnedValue],
+    profile: &Path,
+    executable: &str,
+    mode: OfflinePrepareModeV3,
+) -> Result<(), Error> {
     let [
         cgroup, files, extras, maximum, stored, context, bounding, ambient, nnp,
         securebits, start, pre, post, credentials, encrypted, set, set_encrypted,
@@ -770,7 +845,7 @@ fn require_service(values: &[OwnedValue], profile: &Path, executable: &str) -> R
         || command.pid != std::process::id()
         || command.argv.len() != 2
         || !matches!(command.argv.first(), Some(Value::Str(value)) if value.as_str() == executable)
-        || !matches!(command.argv.get(1), Some(Value::Str(value)) if value.as_str() == "prepare-keys")
+        || !matches!(command.argv.get(1), Some(Value::Str(value)) if value.as_str() == mode.command())
     {
         return Err(Error::Rejected);
     }
@@ -854,6 +929,34 @@ fn normalized_unit(bytes: &[u8], profile: &Path) -> Result<Vec<u8>, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_modes_have_only_the_two_literal_commands() {
+        assert_eq!(
+            OfflinePrepareModeV3::PrepareKeys.command(),
+            "prepare-keys",
+        );
+        assert_eq!(
+            OfflinePrepareModeV3::InspectApprovedJob.command(),
+            "inspect-approved-job",
+        );
+        assert_ne!(
+            OfflinePrepareModeV3::PrepareKeys,
+            OfflinePrepareModeV3::InspectApprovedJob,
+        );
+    }
+
+    #[test]
+    fn interrupted_inspection_cannot_make_either_origin_loan() {
+        let mut resident = OfflineNixPrepareStartupV3::new();
+        resident.attempted = true;
+        resident.mode = Some(OfflinePrepareModeV3::InspectApprovedJob);
+
+        assert!(resident.capture_and_admit_inspection().is_err());
+        assert!(resident.borrow_inspection().is_err());
+        assert!(resident.borrow_original().is_err());
+        assert!(matches!(resident.failure(), Some(Error::Fenced)));
+    }
 
     #[test]
     fn prepare_status_accepts_only_the_two_administrative_capabilities() {
