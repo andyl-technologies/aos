@@ -56,6 +56,7 @@ in
             ${pkgs.python3}/bin/python3 ${./_initrd-native-contract.py} \
               ${assembly} ${initrd}/initrd-stage-contract.json initrd-tree root-tree \
               ${lib.escapeShellArg (builtins.toString pkgs.aos.packageRuntime)} \
+              ${system.config.system.build.bootMetadataBinding}/binding.json \
               ${lib.escapeShellArg (builtins.toString pkgs.linux)} \
               ${lib.escapeShellArg (builtins.toString pkgs.aos)} \
               ${lib.escapeShellArg (builtins.toString pkgs.qemu)}
