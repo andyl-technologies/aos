@@ -162,9 +162,9 @@ fn walk(decoder: &mut Decoder<'_>, bytes: &[u8], variants: &mut Vec<Vec<u8>>) {
                 walk(decoder, bytes, variants);
                 pairs.push((pair_start, key_end, decoder.position()));
             }
-            if pairs.len() >= 2 {
-                let (first, key_end, end) = pairs[0];
-                let (second, second_key_end, second_end) = pairs[1];
+            for pair in pairs.windows(2) {
+                let (first, key_end, end) = pair[0];
+                let (second, second_key_end, second_end) = pair[1];
                 let mut reordered = bytes[..first].to_vec();
                 reordered.extend_from_slice(&bytes[second..second_end]);
                 reordered.extend_from_slice(&bytes[first..end]);
@@ -179,6 +179,10 @@ fn walk(decoder: &mut Decoder<'_>, bytes: &[u8], variants: &mut Vec<Vec<u8>>) {
         }
         7 => {
             decoder.simple().unwrap();
+            let mut widened = bytes[..start].to_vec();
+            widened.extend_from_slice(&[0xf8, initial & 31]);
+            widened.extend_from_slice(&bytes[start + 1..]);
+            variants.push(widened);
         }
         _ => unreachable!("generated subset value"),
     }
