@@ -378,33 +378,6 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             .await
     }
 
-    /// Installs exact import context under the caller's actual held destination.
-    ///
-    /// This acquires only protected configuration exclusion and returns the
-    /// checked context actually installed by the native verifier.
-    ///
-    /// # Errors
-    /// Rejects an unrelated or read-only holder, unavailable originals, changed
-    /// import controls, conflicting installed context and physical mismatches.
-    pub(crate) async fn load_original_import_held(
-        &self,
-        owner: &OriginalAuthority,
-        import: &ImportRecord,
-        held: &HeldIdentity<'_>,
-    ) -> Result<OriginalCommitContext, StoreFailure> {
-        let baseline = RetainedBootstrap {
-            authority: original_authority(import),
-            reference: import.baseline.reference.clone(),
-            epoch: import.baseline.epoch,
-            acl: import.baseline.acl.clone(),
-        };
-        if owner.root() != held.root() || owner.physical_identity() != held.physical_identity() {
-            return Err(invalid());
-        }
-        self.check_original_import_held(&baseline, import.association.view(), held)
-            .await
-    }
-
     /// Preserves local originals before considering supplemental protected trust.
     ///
     /// Missing supplemental data keeps an ordinary local context. Present data
@@ -464,6 +437,36 @@ pub(crate) fn retention_failure(error: crate::repository::Error) -> StoreFailure
 }
 
 impl<S, C> Guard<S, C> {
+    /// Installs exact import context under the caller's actual held destination.
+    ///
+    /// This acquires only protected configuration exclusion and returns the
+    /// checked context actually installed by the native verifier.
+    ///
+    /// # Errors
+    /// Rejects an unrelated or read-only holder, unavailable originals, changed
+    /// import controls, conflicting installed context and physical mismatches.
+    pub(crate) async fn load_original_import_held(
+        &self,
+        owner: &OriginalAuthority,
+        import: &ImportRecord,
+        held: &HeldIdentity<'_>,
+    ) -> Result<OriginalCommitContext, StoreFailure> {
+        let baseline = RetainedBootstrap {
+            authority: original_authority(import),
+            reference: import.baseline.reference.clone(),
+            epoch: import.baseline.epoch,
+            acl: import.baseline.acl.clone(),
+        };
+        if self.configured_original_authority()? != *owner
+            || owner.root() != held.root()
+            || owner.physical_identity() != held.physical_identity()
+        {
+            return Err(invalid());
+        }
+        self.check_original_import_held(&baseline, import.association.view(), held)
+            .await
+    }
+
     /// Returns roles loaded by the concrete factory from protected source configuration.
     ///
     /// A guard without native dispatch has no configured disclosure roles.
