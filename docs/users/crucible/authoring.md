@@ -165,7 +165,8 @@ The generated IDs cover nested world, plan, property, and artifact material.
 Never hand-update one hash after editing a structural sketch; regenerate the
 whole document.
 
-Run the result with explicit bounds and retain a canonical trace:
+After [provisioning the execution host](README.md#first-run), run the result
+with explicit bounds and retain a canonical trace:
 
 ```sh
 ./result/bin/crucible \
@@ -174,9 +175,8 @@ Run the result with explicit bounds and retain a canonical trace:
   --trace run.jsonl \
   run scenario.toml \
   --until virtual-time \
-  --max-virtual-time 30s \
-  --max-quanta 10000 \
-  --save-on fail
+  --max-virtual-time 1s \
+  --max-quanta 10000
 ```
 
 ## 8. Supply external artifacts

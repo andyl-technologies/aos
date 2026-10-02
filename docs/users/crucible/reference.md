@@ -14,7 +14,7 @@ Unknown TOML fields and unknown closed-vocabulary values are rejected. Generate 
 scenario through the Rust builder and `to_canonical_toml` whenever possible; its
 content-addressed IDs are computed values, not labels to invent by hand. See the
 [scenario authoring guide](scenarios.md) and the
-[Nginx/Curl tutorial](quickstart.md). For a conceptual walkthrough of causes,
+[representative-scenario quickstart](quickstart.md). For a conceptual walkthrough of causes,
 bindings, opportunities, and effects, start with
 [Signal-driven faults](signal-driven-faults.md).
 
@@ -47,7 +47,7 @@ Global options may appear before or after the subcommand.
 
 | Option | Accepted value and default | Purpose | Guide |
 | --- | --- | --- | --- |
-| `--seed <u64\|hex>` | Unsigned decimal, `0x` hexadecimal, or canonical seed text; otherwise `CRUCIBLE_SEED`, then scenario seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
+| `--seed <u64\|hex>` | Unsigned decimal, `0x` hexadecimal, or canonical seed text; otherwise `CRUCIBLE_SEED`, then one generated seed | Override the root entropy. | [Seed resolution](running.md#seed-resolution) |
 | `--backend <auto\|qemu>` | `auto` (default), `qemu` | Select or discover the local backend. Production builds expose QEMU only. | [Backend discovery](running.md#backend-discovery) |
 | `--daemon <addr>` | Host/port or HTTP endpoint | Send a supported lifecycle operation to a daemon instead of running locally. | [Daemon operation](daemon.md) |
 | `--daemon-ca <path>` | Requires `--daemon` and the other client TLS paths | Authenticate an HTTPS daemon with this CA certificate. | [Daemon operation](daemon.md#connect-a-client) |
@@ -57,6 +57,7 @@ Global options may appear before or after the subcommand.
 | `--qemu <path>` | Discovered when omitted | Override the packaged patched-QEMU executable. Must be paired with `--plugin`. | [Backend discovery](running.md#backend-discovery) |
 | `--plugin <path>` | Discovered when omitted | Override the matching QEMU plugin. Must be paired with `--qemu`. | [Backend discovery](running.md#backend-discovery) |
 | `--store <path>` | Command-specific default below `--artifact-dir` | Set the content-addressed store root. | [Artifacts and store](running.md#artifacts-and-store-layout) |
+| `--campaign-deployment <PATH>` | Otherwise `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, then `/etc/crucible/packaged-executor.toml` | Select the guarded local campaign-executor deployment; incompatible with a daemon route. | [Campaign setup](campaigns.md#start-the-single-host-owner) |
 | `--format <jsonl\|json\|table\|markdown>` | Terminal: `table`; non-terminal: `jsonl` | Select report rendering. `jsonl` and `json` are stable machine formats. | [Output formats](running.md#output-formats) |
 | `--trace <path>` | Standard output | Write the canonical event-log stream to a file. | [Output formats](running.md#output-formats) |
 | `--artifact-dir <path>` | `./.crucible` | Set the failure-artifact and default savepoint/report directory. | [Artifacts and store](running.md#artifacts-and-store-layout) |
@@ -132,6 +133,16 @@ Output-format values:
 | `fail` | Save only a failing outcome. |
 | `always` | Save passing, failing, and timeout outcomes. |
 | `never` | Do not create an outcome savepoint. |
+
+The current unattended local QEMU route admits only `never`; the other values
+are parsed but refused before execution. Use [`save`](#save) for an exported
+savepoint handle. See [lifecycle limits and timeout semantics](running.md#terminal-conditions-and-budgets)
+and [current execution refusals](support.md#current-execution-refusals) before
+treating an accepted CLI value as an implemented backend capability.
+
+For unattended local QEMU `--until property`, the discovery stop observes an
+assertion violation; run-supplied virtual-time and quantum limits do not enter
+that stop. Lifecycle and deployment limits remain in force.
 
 ### `verify`
 
