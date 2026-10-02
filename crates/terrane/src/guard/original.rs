@@ -19,6 +19,8 @@ mod control;
 pub(crate) use control::{ControlExclusion, RetainedControls};
 #[cfg(unix)]
 mod import;
+#[cfg(unix)]
+pub(crate) use import::retention_failure;
 mod verifier;
 pub(super) use verifier::OriginalVerifier;
 

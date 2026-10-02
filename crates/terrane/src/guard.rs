@@ -23,6 +23,8 @@ mod join;
 mod merge;
 #[cfg(feature = "std")]
 mod original;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use original::retention_failure;
 #[cfg(feature = "std")]
 pub(crate) use original::{ControlExclusion, RetainedControls};
 #[cfg(feature = "std")]
