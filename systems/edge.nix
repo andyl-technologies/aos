@@ -22,7 +22,9 @@
   aos.image.budgets = {
     maxRootMiB = 640;
     maxVerityMiB = 16;
-    maxInitrdMiB = 132;
+    # The recovery-capable runtime initrd measures 140 MiB on x86_64 with the
+    # complete aos, apm, and package-runtime CLIs; keep headroom for growth.
+    maxInitrdMiB = 160;
     maxDownloadMiB = 768;
     # VHD block allocation adds a small fixed overhead above 800 MiB on AArch64.
     maxConvertedDownloadMiB =
