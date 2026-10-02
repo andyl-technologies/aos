@@ -5,6 +5,17 @@
 }: let
   fixture = import ./_native-storage-evaluation.nix {inherit lib;};
   encrypted = fixture.evaluate {packages = [fixture.crypto];};
+  initrd = fixture.evaluate {
+    packages = [fixture.crypto];
+    modules = [
+      {
+        options.aos.boot.stage = lib.mkOption {
+          type = lib.types.enum ["host" "initrd"];
+          default = "initrd";
+        };
+      }
+    ];
+  };
   device = fixture.only encrypted "present";
   mapping = fixture.only encrypted "open";
   format = fixture.only encrypted "format";
@@ -24,6 +35,8 @@
   pool = fixture.only zfs "import";
   dataset = fixture.only zfs "mount";
 in
+  assert initrd.deployment.graph.nodes == {};
+  assert device.input.kind == "block";
   assert mapping.dependencies == [(fixture.identity device)];
   assert format.dependencies == [(fixture.identity mapping)];
   assert swap.dependencies == [(fixture.identity format)];

@@ -939,11 +939,15 @@ class Handler:
         path = absolute(self.value["path"])
         if action == "remove":
             return {}
-        exists = Path(path).exists() and stat.S_ISCHR(os.stat(path).st_mode)
+        kind = self.value.get("kind", "character")
+        predicates = {"character": stat.S_ISCHR, "block": stat.S_ISBLK}
+        if kind not in predicates:
+            raise ValueError("unsupported device node kind")
+        exists = Path(path).exists() and predicates[kind](os.stat(path).st_mode)
         if action == "observe":
             return {"status": "current", "outputs": {"resource": path}} if exists else {"status": "retry-safe"}
         if not exists:
-            raise ValueError("required device node is absent")
+            raise ValueError("required device node is absent or has the wrong kind")
         return {"resource": path}
 
 

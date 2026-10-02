@@ -3,10 +3,12 @@
 import importlib.util
 import json
 from pathlib import Path
+import stat
 import subprocess
 import sys
 import tempfile
 import tomllib
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -38,6 +40,66 @@ def invocation(ability, operation, value, revision="first", previous=None):
 
 
 class NativeHandlerTests(unittest.TestCase):
+    def test_required_character_device_is_present(self):
+        with tempfile.TemporaryDirectory() as root:
+            instance = handler_module.Handler(
+                invocation("device", "present", {"path": "/dev/null"}),
+                "unused", root, Path(root) / "state",
+            )
+
+            self.assertEqual(instance.device("apply"), {"resource": "/dev/null"})
+            self.assertEqual(instance.device("observe")["status"], "current")
+
+    def test_required_block_device_is_present(self):
+        with tempfile.TemporaryDirectory() as root:
+            value = {"path": "/dev/fixture-block", "kind": "block"}
+            instance = handler_module.Handler(
+                invocation("device", "present", value),
+                "unused", root, Path(root) / "state",
+            )
+
+            # Unit coverage does not create privileged device nodes on the host.
+            block_stat = SimpleNamespace(st_mode=stat.S_IFBLK | 0o600)
+            with patch.object(handler_module.os, "stat", return_value=block_stat):
+                self.assertEqual(instance.device("apply"), {"resource": value["path"]})
+                self.assertEqual(instance.device("observe")["status"], "current")
+
+    def test_required_device_rejects_wrong_kind_and_regular_files(self):
+        with tempfile.TemporaryDirectory() as root:
+            ordinary = Path(root) / "ordinary"
+            ordinary.write_text("not a device")
+            wrong_nodes = [
+                ("/dev/null", "block"),
+                (str(ordinary), "character"),
+                (str(ordinary), "block"),
+            ]
+
+            for path, kind in wrong_nodes:
+                with self.subTest(path=path, kind=kind):
+                    value = {"path": path, "kind": kind}
+                    instance = handler_module.Handler(
+                        invocation("device", "present", value),
+                        "unused", root, Path(root) / "state",
+                    )
+
+                    with self.assertRaisesRegex(ValueError, "wrong kind"):
+                        instance.device("apply")
+                    self.assertEqual(instance.device("observe")["status"], "retry-safe")
+
+    def test_required_device_rejects_absent_path(self):
+        with tempfile.TemporaryDirectory() as root:
+            for kind in ["character", "block"]:
+                with self.subTest(kind=kind):
+                    value = {"path": str(Path(root) / "missing"), "kind": kind}
+                    instance = handler_module.Handler(
+                        invocation("device", "present", value),
+                        "unused", root, Path(root) / "state",
+                    )
+
+                    with self.assertRaisesRegex(ValueError, "absent"):
+                        instance.device("apply")
+                    self.assertEqual(instance.device("observe")["status"], "retry-safe")
+
     def test_command_arguments_remain_literal(self):
         rendered = handler_module.realize_service(service())["units"]["example.service"]
         self.assertIn('"a b" "$$USER" "%%i"', rendered)
