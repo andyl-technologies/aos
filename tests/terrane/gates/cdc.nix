@@ -37,6 +37,8 @@ in {
     ${runTests}
     run_tests -p terrane-core codec::tests
     run_tests -p terrane codec::tests
+    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib guard::read::dictionary_tests::registered_dictionary_codecs_round_trip_through_guarded_content -- --exact
+    run_tests -p terrane --no-default-features --features tokio,surface-sdk --lib guard::read::dictionary_tests::dictionary_dependency_validation_precedes_plaintext_exposure -- --exact
     printf 'PASS: chunk envelope, frame, dictionary, and receiver checks\n' > "$out/result"
   '';
 

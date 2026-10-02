@@ -147,11 +147,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   configured profile. The actual six-case `descriptor-strict` gate and
   `core-no-std` pass. All 458 core tests, strict all-target core Clippy and
   rustdoc pass; no existing identity, descriptor bytes or store trait changes.
-- [x] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
+- [ ] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
   dictionary identities, canonical object manifests, and receiver-side
   validation. Content-class dictionary selection is completed jointly with
   T-DRV-1. D-81 corrects the registry to retain the stored profile seed;
-  all existing zero-seed golden values remain unchanged. — satisfies
+  all existing zero-seed golden values remain unchanged. Conformance is
+  reopened after read-only review confirms the native reader and disclosure
+  preloader reject dictionaries stored with a compressed codec. CDC-8 requires
+  acceptance of every registered codec for every chunk; CDC-9 treats dictionaries
+  as ordinary standalone final chunks. A bounded, identity-verified dictionary
+  reader and truthful decoded lengths remain required. No raw-only exception
+  exists in the normative specification; existing raw dictionary fixtures do
+  not qualify this case. No encoding or identity change is needed. The shared
+  `chunk-codec` gate now requires two exact guarded-reader cases for all
+  registered dictionary codecs and complete dependency validation before
+  exposing plaintext; their implementation remains on its task branch.
+  — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
   `checks.terrane.gates.cdc-boundaries`,
@@ -470,6 +481,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and three exact owning-codec groups; it fails explicitly until its input
   files exist. Frame decompression and native publication remain separate
   requirements; registration does not qualify them.
+  Both published-format auxiliary checks now also pass on the isolated combined
+  property/bootstrap/native candidate, including all six exact model groups and
+  strict template Clippy. The combined full core build, all 565 Nextest tests
+  across nine binaries with zero skips (run
+  `c3c4c9eb-d11b-442f-b010-0715ad346caa`), strict all-target Clippy and
+  warnings/missing-docs rustdoc pass. Temporary consumers were retained until
+  every original stage terminated. This establishes the combined core format
+  checkpoint, while the native aggregate and full golden corpus remain red.
+  A read-only owning-codec audit confirms TEST-2's enumerated minimum examples
+  have published complete consumers. Additional implemented format families
+  still need published witnesses or consumers: modern commit/ref projections,
+  selector AST and private evidence projections, permanent-retirement records
+  and further publication/control alternatives. `LocalGcReconciliation` has a
+  registered schema but no located owning codec; it remains an implementation
+  gap rather than an assumed branch deferral. Complete golden conformance is
+  still unproven, and the registered `golden-vectors` check remains pending.
   The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
