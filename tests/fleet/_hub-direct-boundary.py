@@ -112,16 +112,18 @@ def capture_direct_native_bodies(native, tools, observations,
             ("/var/lib/hybrid-native-outbound", "native-original"),
             ("/var/lib/hybrid-worker-boundary", "worker-received")}
     managed = re.fullmatch(r"/var/lib/hybrid-managed-(native|worker)/([0-9a-f]{32})/(inbound|outbound|boundary|native-outbound)", body_root)
+    external = re.fullmatch(r"/var/lib/hybrid-(native|worker)/external-oci/([0-9a-f]{32})/(inbound|outbound|boundary|native-outbound)", body_root)
+    layout = managed or external
     managed_roles = {("native", "inbound"): "native", ("native", "outbound"): "native-original",
         ("worker", "boundary"): "worker-received", ("worker", "native-outbound"): "worker-original"}
-    selected_role = managed_roles.get((managed[1], managed[3])) if managed else None
+    selected_role = managed_roles.get((layout[1], layout[3])) if layout else None
     if not ordinary and (selected_role is None or not re.fullmatch(
-            "managed-" + managed[2] + "-(?:[a-z][a-z0-9-]{0,63}-)?" + selected_role,
+            ("managed-" if managed else "external-oci-") + layout[2] + "-(?:[a-z][a-z0-9-]{0,63}-)?" + selected_role,
             capture_label)):
         raise ValueError("body capture root or role differs from the selected fixture")
     if len(observations) > NATIVE_RETAINED_ROLE_COUNT_LIMIT:
         raise ValueError("Native observation corpus exceeds its selected capture count")
-    if empty_response_observations is not None and not managed:
+    if empty_response_observations is not None and layout is None:
         raise ValueError("empty response observations require the separate Managed capture")
     captures, measured, incomplete = [], [], []
     corpus_bytes = 0

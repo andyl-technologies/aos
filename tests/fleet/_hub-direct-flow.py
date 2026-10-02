@@ -235,7 +235,7 @@ def observe_direct_native_trust(native, tools, artifacts, label):
 
 def observe_direct_initial_state(native, worker, s3, tools, process):
     """Capture real inventory, namespace and clocks before a new provider original."""
-    namespace = direct_namespace_readback(worker, tools["python"], process)
+    namespace = direct_namespace_readback(worker, tools["python"], process, namespace_kind="external_copy")
     namespace_sha = retain_direct_flow("initial-runtime-namespace.json", namespace)
     if namespace["objectIds"]:
         raise RuntimeError("selected new guard namespace already contains objects")
@@ -266,7 +266,9 @@ def observe_direct_initial_state(native, worker, s3, tools, process):
             "clockObservations": clock_sha}
 
 
-def direct_provider_observations(worker, s3, tools, selected):
+def direct_provider_observations(worker, s3, tools, selected, *,
+                                 observation_root="/var/lib/hybrid-worker/provider-observation",
+                                 artifact_label="provider"):
     """Run one independently selected ordinary provider original on Worker only."""
     review = direct_selected_bytes(selected["providerReviewFile"], 262144)
     policy = selected["privateStagePolicy"]
@@ -278,7 +280,12 @@ def direct_provider_observations(worker, s3, tools, selected):
     secret = re.search(r"Secret key:\s*(\S+)", key_info)
     if not access or not secret:
         raise RuntimeError("actual Garage material capture failed")
-    root = "/var/lib/hybrid-worker/provider-observation"
+    if observation_root != "/var/lib/hybrid-worker/provider-observation" and re.fullmatch(
+            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/provider-observation", observation_root) is None:
+        raise ValueError("Provider observations leave their selected private run")
+    if artifact_label != "provider" and re.fullmatch(r"external-oci-[0-9a-f]{32}-provider", artifact_label) is None:
+        raise ValueError("Provider observation retention label differs")
+    root = observation_root
     documents = {
         "credential.json": json.dumps({"access_key": access.group(1), "secret_key": secret.group(1),
             "region": "garage"}).encode(),
@@ -320,25 +327,32 @@ def direct_provider_observations(worker, s3, tools, selected):
     for document in outcome.pop("journalFiles"):
         if not re.fullmatch(r"[a-zA-Z0-9_.-]+", document["name"]):
             raise ValueError("provider journal filename escaped its capture")
-        retain_direct_flow("provider-journal-" + document["name"], base64.b64decode(document["body"], validate=True))
-    retain_direct_flow("provider-invocation.json", outcome)
-    retain_direct_flow("provider-run.log", read_direct_guest_file(worker, tools["python"], root + "/run.log", 1048576))
+        retain_direct_flow(artifact_label + "-journal-" + document["name"], base64.b64decode(document["body"], validate=True))
+    retain_direct_flow(artifact_label + "-invocation.json", outcome)
+    retain_direct_flow(artifact_label + "-run.log", read_direct_guest_file(worker, tools["python"], root + "/run.log", 1048576))
     if outcome["exitCode"] != 0:
         raise RuntimeError("new provider original failed; retained journal requires independent inspection")
     body = read_direct_guest_file(worker, tools["python"], root + "/observations.json", 1048576)
-    sha = retain_direct_flow("provider-observations.json", body)
+    sha = retain_direct_flow(artifact_label + "-observations.json", body)
     material = (access.group(1) + ":" + secret.group(1) + ":garage").encode()
     return body, sha, material
 
 
-def observe_direct_runtime_process(worker, tools, generation):
+def observe_direct_runtime_process(worker, tools, generation, *, worker_root="/var/lib/hybrid-worker", process=None):
     """Observe the exact live workerd child using the existing bounded sampler."""
+    if worker_root != "/var/lib/hybrid-worker" and re.fullmatch(
+            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}", worker_root) is None:
+        raise ValueError("Runtime process observation root differs")
+    selected_pid_file = worker_root + "/worker.pid"
+    if process is not None:
+        selected_pid_file = worker_root + "/installation/" + generation + "-runner.pid"
+        install_direct_guest_file(worker, tools["python"], selected_pid_file, str(process["pid"]).encode())
     arguments = [tools["python"], tools["processSampler"], "--pid-file",
-        "/var/lib/hybrid-worker/worker.pid", "--node-exe", tools["node"],
+        selected_pid_file, "--node-exe", tools["node"],
         "--workerd-exe", tools["workerd"]]
     actual = json.loads(private_guest_command(worker, shlex.join(arguments)))
     pid = actual["processes"]["workerd"]["pid"]
-    path = "/var/lib/hybrid-worker/installation/" + generation + "-workerd.pid"
+    path = worker_root + "/installation/" + generation + "-workerd.pid"
     install_direct_guest_file(worker, tools["python"], path, str(pid).encode())
     retain_direct_flow(generation + "-process-counters.json", actual)
     return actual, path
@@ -351,11 +365,16 @@ def run_direct_observer(worker, tools, executable, arguments, destination):
     return json.loads(body), retain_direct_flow(Path(destination).name, body)
 
 
-def observe_direct_installed_runtime(worker, tools, artifacts, process, identity):
+def observe_direct_installed_runtime(worker, tools, artifacts, process, identity, *, label=None,
+                                     worker_root="/var/lib/hybrid-worker", queue_names=None):
     """Bind the protected identity to live executable, NAR and queue readbacks."""
-    _, pid_file = observe_direct_runtime_process(worker, tools, process["generation"])
-    root = "/var/lib/hybrid-worker/installation"
-    installation_file = root + "/installation-report.json"
+    _, pid_file = observe_direct_runtime_process(worker, tools, process["generation"],
+        worker_root=worker_root, process=process if worker_root != "/var/lib/hybrid-worker" else None)
+    root = worker_root + "/installation"
+    if label is not None and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", label) is None:
+        raise ValueError("Installation observation label differs")
+    prefix = "" if label is None else label + "-"
+    installation_file = root + "/" + prefix + "installation-report.json"
     selected = {
         "identity-file": identity["identityFile"],
         "source-nar-file": artifacts["files"]["sourceNar"]["file"],
@@ -370,10 +389,12 @@ def observe_direct_installed_runtime(worker, tools, artifacts, process, identity
         worker, tools, tools["installationObserver"], arguments, installation_file,
     )
     queues = {}
-    for queue_class, queue_name in (("bulk", "fleet-direct-verify-bulk"),
-                                    ("metadata", "fleet-direct-verify-metadata")):
-        output = root + "/" + queue_class + "-configuration.json"
-        arguments = ["--startup-file", "/var/lib/hybrid-worker/queue-startup." + str(process["pid"]) + ".json",
+    selected_queues = queue_names or {"bulk": "fleet-direct-verify-bulk", "metadata": "fleet-direct-verify-metadata"}
+    if set(selected_queues) != {"bulk", "metadata"}:
+        raise ValueError("Runtime installation queue selection differs")
+    for queue_class, queue_name in selected_queues.items():
+        output = root + "/" + prefix + queue_class + "-configuration.json"
+        arguments = ["--startup-file", worker_root + "/queue-startup." + str(process["pid"]) + ".json",
             "--installation-file", installation_file, "--configuration-file", process["configurationFile"],
             "--runner-file", tools["runner"], "--queue-name", queue_name, "--queue-class", queue_class,
             "--output-file", output]
@@ -383,13 +404,16 @@ def observe_direct_installed_runtime(worker, tools, artifacts, process, identity
             "installationFile": installation_file, "queues": queues}
 
 
-def expose_direct_review_inputs(worker, tools, artifacts, process):
+def expose_direct_review_inputs(worker, tools, artifacts, process, *, label=None):
     """Retain independently usable files matching the actual guest installation."""
     root = Path("external-direct-flow")
+    if label is not None and re.fullmatch(r"[a-z][a-z0-9-]{0,31}", label) is None:
+        raise ValueError("Installed file retention label differs")
+    prefix = "" if label is None else label + "-"
     references = {}
     for name, path in (("sourceNar", tools["workerSourcePath"]),
                        ("distributionNar", tools["workerDistribution"])):
-        destination = root / (name + ".nar")
+        destination = root / (prefix + name + ".nar")
         descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb") as output:
             result = subprocess.run([tools["nixStore"], "--dump", path], stdout=output,
@@ -410,11 +434,11 @@ def expose_direct_review_inputs(worker, tools, artifacts, process):
             raise ValueError("selected host file differs from the installed guest artifact")
         references[name] = {"path": tools[name], "sha256": digest}
     configuration = read_direct_guest_file(worker, tools["python"], process["configurationFile"], 1048576)
-    sha = retain_direct_flow("installed-runtime-bindings.json", configuration)
+    sha = retain_direct_flow(prefix + "installed-runtime-bindings.json", configuration)
     if sha != process["configurationSha256"]:
         raise ValueError("actual runtime binding bytes changed after installation")
-    references["runtimeBindings"] = {"path": str((root / "installed-runtime-bindings.json").resolve()), "sha256": sha}
-    retain_direct_flow("actual-review-installed-file-references.json", {
+    references["runtimeBindings"] = {"path": str((root / (prefix + "installed-runtime-bindings.json")).resolve()), "sha256": sha}
+    retain_direct_flow(prefix + "actual-review-installed-file-references.json", {
         "version": 1, "files": references,
         "scope": "actual host files independently matched to the installed guest; no acceptance",
     })
@@ -569,7 +593,14 @@ def direct_page_samples(client, tools, count):
             "count": count}, timeout=count * 35 + 30))
 
 
-def prepare_direct_client_provider_policy(client, tools, credentials):
+def prepare_direct_client_provider_policy(client, tools, credentials, *,
+                                           policy_root="/var/lib/hybrid-client/provider-policy",
+                                           artifact_label="actual-client-provider-policy"):
+    if (policy_root != "/var/lib/hybrid-client/provider-policy" and re.fullmatch(
+            r"/var/lib/hybrid-client/external-oci/[0-9a-f]{32}/provider-policy", policy_root) is None
+            or (artifact_label != "actual-client-provider-policy" and re.fullmatch(
+                r"external-oci-[0-9a-f]{32}-client-policy", artifact_label) is None)):
+        raise ValueError("Client provider policy custody differs")
     """Authorize only the actual disposable provider address and public CA."""
     endpoint = credentials["binding"]["spec"]["s3"]["endpoint"]
     if endpoint["scheme"] != "https" or endpoint["port"] != 443:
@@ -578,7 +609,7 @@ def prepare_direct_client_provider_policy(client, tools, credentials):
         import hashlib, ipaddress, os, socket
         from pathlib import Path
 
-        root = Path('/var/lib/hybrid-client/provider-policy')
+        root = Path(selected['root'])
         root.mkdir(mode=0o700, exist_ok=False)
         addresses = sorted({record[4][0] for record in socket.getaddrinfo(
             selected['host'], 443, family=socket.AF_INET, type=socket.SOCK_STREAM)})
@@ -599,15 +630,14 @@ def prepare_direct_client_provider_policy(client, tools, credentials):
         print(json.dumps({'version': 1, 'policyFile': str(root / 'policy.json'),
             'policy': document, 'publicCaSha256': hashlib.sha256(certificate).hexdigest(),
             'scope': 'explicit local network reachability and public TLS trust; no provider readiness'}))
-    """, {"host": endpoint["dnsName"], "publicTrust": tools["s3PublicTrust"]}))
-    retain_direct_flow("actual-client-provider-policy.json", policy)
+    """, {"host": endpoint["dnsName"], "publicTrust": tools["s3PublicTrust"], "root": policy_root}))
+    retain_direct_flow(artifact_label + ".json", policy)
     return {**tools, "providerPolicyFile": policy["policyFile"]}
 
 
 def run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
                                    authority, process, identity, acceptance, database_machine):
     """Publish the real signed business corpus and retain runtime gates separately."""
-    tools = prepare_direct_client_provider_policy(client, tools, credentials)
     sources = {}
     for label, name in (("a", "external-direct"), ("b", "external-overlap")):
         sources[label] = prepare_direct_signed_surface(client, tools["python"], tools["apr"], tools["git"],
@@ -906,7 +936,7 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     )
     # Re-enumerate immediately before physical review. Credential controllers
     # may have executed their actual isolated write probes since startup.
-    fresh_namespace = direct_namespace_readback(worker, tools["python"], process)
+    fresh_namespace = direct_namespace_readback(worker, tools["python"], process, namespace_kind="external_copy")
     namespace_sha = retain_direct_flow("namespace-before-physical-authority.json", fresh_namespace)
     observations.update(guardNamespace=namespace_sha, credentialBootstrap=credential_sha,
         providerObservations=provider_sha, installation=installation_sha)
@@ -916,8 +946,13 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     address = private_guest_command(worker, tools["python"] + " -c " + shlex.quote(
         "import socket; print(socket.gethostbyname('native'))")).strip()
     service = issuer_service_binding(address, 8443, tools["fleetCaPem"], tools["issuerCertificateHost"])
+    verification_source = prepare_direct_verification_source(client, tools, credentials["organization"]["slug"])
+    verification_observer = direct_verification_observer_selection(
+        authority["exported"]["bootstrap"]["staging_prefix"], verification_source["original"])
+    tools = {**tools, "providerTimeoutSource": verification_source,
+        "providerTimeoutObserver": verification_observer}
     installed = install_direct_worker_consumers(worker, tools["python"], process["configurationFile"],
-        authority["consumerBindings"], service)
+        authority["consumerBindings"], service, verification_fault_observer=verification_observer)
     retain_direct_flow("bootstrap-runner-disposal.json", stop_direct_worker(worker, tools["python"], process))
     process = start_direct_worker(worker, tools, installed["configurationFile"], "qualified")
     wait_worker_transport(worker, tools["curl"], tools["python"], True,
@@ -935,8 +970,43 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     queue_restart, process = run_direct_queue_restart(worker, tools, process, identity,
         worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_CONFORMANCE_KEY"],
         authority["exported"]["bootstrap"]["selector"], bulk[0])
-    # The measured installation and review captures describe the new live
-    # runner, with the same artifact/configuration and retained persistent state.
+    # This first measurement supplies the real runtime reference required by
+    # the structural Copy domain. It is explicitly a preflight, not the final
+    # configuration or process that will be qualified for publication.
+    preflight_measured = observe_direct_installed_runtime(
+        worker, tools, artifacts, process, identity, label="runtime-preflight")
+    expose_direct_review_inputs(worker, tools, artifacts, process, label="runtime-preflight")
+    preflight = run_direct_prequalification(worker, tools["python"], tools["node"], tools["qualificationDriver"],
+        tools["workerUrl"], worker_controls["keyFiles"]["HUB_DIRECT_UPLOAD_CONFORMANCE_KEY"],
+        identity["identityFile"], authority["exported"]["bootstrap"]["selector"], bulk, metadata)
+    preflight_sha = retain_direct_flow("actual-runtime-preflight.json", preflight)
+    profile = prepare_current_runtime_profile(tools, identity, preflight_measured, {
+        **observations, "protectedIdentity": identity["identitySha256"],
+        "installation": preflight_measured["installationSha256"], "runtimePreflight": preflight_sha,
+        "bulkConfiguration": preflight_measured["queues"]["bulk"]["sha256"],
+        "metadataConfiguration": preflight_measured["queues"]["metadata"]["sha256"],
+    }, "external")
+    copy_contract = observe_external_copy_contract(worker, tools,
+        observation_root="/var/lib/hybrid-worker/provider-observation", report_sha256=provider_sha,
+        label="external")
+    listing = export_current_external_list(worker, tools, authority["exported"]["bootstrap"],
+        sql_url_file="/var/lib/hybrid-worker/operator/sql.url",
+        issuer_configuration_file="/var/lib/hybrid-worker/operator/issuer/issuer.json",
+        output="/var/lib/hybrid-worker/operator/list-export", label="external")
+    final_consumers = project_current_external_copy(authority["consumerBindings"],
+        authority["exported"]["bootstrap"], listing["value"], copy_contract,
+        profile["protectedProfileDigest"],
+        provider_concurrency=int(profile["runtime"]["maximumParallelProviderRequests"]))
+    final_installation = install_direct_worker_consumers(worker, tools["python"], process["configurationFile"],
+        final_consumers, service, verification_fault_observer=verification_observer,
+        configuration_label="copy-list")
+    retain_direct_flow("runtime-preflight-runner-disposal.json", stop_direct_worker(worker, tools["python"], process))
+    process = start_direct_worker(worker, tools, final_installation["configurationFile"], "final-qualified")
+    wait_worker_transport(worker, tools["curl"], tools["python"], True,
+                          observation_label="worker-final-qualified")
+    authority = {**authority, "consumerBindings": final_consumers}
+    # All final measurements are new observations of the final bindings and
+    # live process. The preflight installation never substitutes for these.
     measured = observe_direct_installed_runtime(worker, tools, artifacts, process, identity)
     expose_direct_review_inputs(worker, tools, artifacts, process)
     qualification = run_direct_prequalification(worker, tools["python"], tools["node"], tools["qualificationDriver"],
@@ -951,10 +1021,21 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
         "hydration": hydration["receiptSha256"], "authoritySynchronization": synchronized["receiptSha256"],
     })
     observe_direct_native_trust(native, tools, artifacts, "accepted-runtime")
+    # All ordinary publishers use this one genuine selected policy. Retain its
+    # paths in the caller so later verification/copy windows do not recreate it.
+    tools = prepare_direct_client_provider_policy(client, tools, credentials)
     publication = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
         authority, process, identity, acceptance, database_machine)
+    verification_timeout = run_direct_verification_timeout(client, native, worker, s3, tools,
+        controls, credentials, process)
     managed = run_managed_pair_window(client, native, worker, database_machine, tools,
         database_host, original_configuration, artifacts)
+    external_oci = {}
+    for isolation_case in ("same_worker", "source_worker"):
+        external_oci[isolation_case] = run_external_oci_pair_window(client, native, worker, s3,
+            database_machine, tools, database_host, original_configuration, artifacts,
+            worker_controls["reviewerPublicKey"], copy_isolation=isolation_case,
+            planned_run=tools["externalCopyCases"][isolation_case])
     issuer_lifecycle = run_direct_issuer_lifecycle(native, worker, tools, shared_controls, authority)
     issuer_cutoff = run_direct_issuer_cutoff(native, worker, tools, shared_controls, controls, authority)
     failures = run_direct_dependency_outages(client, native, worker, database_machine, tools, process)
@@ -968,4 +1049,5 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     return {"publication": publication, "queueRestart": queue_restart, "nativePrebody": prebody,
             "issuerLifecycle": issuer_lifecycle, "issuerCutoff": issuer_cutoff,
             "dependencyFailures": failures, "browserSession": browser,
-            "terminalColdRefusal": cold_refusal, "managedR2Window": managed, "leaseScale": lease_scale}
+            "terminalColdRefusal": cold_refusal, "managedR2Window": managed, "leaseScale": lease_scale,
+            "providerTimeout": verification_timeout, "externalOciCopyWindow": external_oci}

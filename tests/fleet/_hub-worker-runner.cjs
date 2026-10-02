@@ -12,6 +12,7 @@ function acceptanceRegistryServer(
   runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation,
   ociAnchorCreation, ociAcceptanceStaging, publicDocumentCacheObservation,
   managedCleanupFixtureInstallation, managedGcObservation,
+  copyNamespaceObservation,
 ) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
@@ -44,6 +45,16 @@ function acceptanceRegistryServer(
         if (request.version === 1 && fields === 'kind,version'
             && request.kind === 'namespace-readback') {
           socket.end(JSON.stringify(await namespaceObservation()) + '\n');
+          return;
+        }
+        if (request.version === 1 && fields === 'kind,version'
+            && request.kind === 'copy-namespace-readback') {
+          if (!copyNamespaceObservation) throw new Error('Copy namespace observation is not configured');
+          const body = JSON.stringify(await copyNamespaceObservation()) + '\n';
+          if (Buffer.byteLength(body) > 1024 * 1024) {
+            throw new Error('Copy namespace observation exceeds its bound');
+          }
+          socket.end(body);
           return;
         }
         if (request.version === 1 && fields === 'kind,version'
@@ -778,22 +789,24 @@ async function main() {
   const load = createRequire(path.join(
     toolingRoot, 'lib/node_modules/wrangler/node_modules/fleet-runner.cjs',
   ));
+  const miniflareApi = load('miniflare');
   const {
     Miniflare, QueuesOptionsSchema, QueueConsumerOptionsSchema,
     DurableObjectsOptionsSchema, getDurableObjectUniqueKey,
-  } = load('miniflare');
+  } = miniflareApi;
   const configurationBytes = readFileSync(configurationPath);
   const {
     certificatePath, privateKeyPath, queueObservationPath, namespaceObservationPath,
     acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled,
     ociSdkAcceptanceRegistryKey, publicDocumentCacheCase, publicDocumentCacheObserverPath,
-    managedGcObserverSelection, managedGcObserverPath, managedCleanupInstallerPath, ...options
+    managedGcObserverSelection, managedGcObserverPath, managedCleanupInstallerPath,
+    copyIsolationSelection, copyIsolationModulePath, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
     throw new Error('Reassess the actual emulator consumer invocation support');
   }
-  const runtime = new Miniflare({
+  const effectiveOptions = {
     ...options,
     modules: true,
     modulesRoot: path.dirname(options.scriptPath),
@@ -802,7 +815,22 @@ async function main() {
     https: true,
     httpsCert: readFileSync(certificatePath, 'utf8'),
     httpsKey: readFileSync(privateKeyPath, 'utf8'),
-  });
+  };
+  let copyIsolation;
+  if (copyIsolationSelection !== undefined || copyIsolationModulePath !== undefined) {
+    if (!copyIsolationSelection || typeof copyIsolationModulePath !== 'string'
+        || !copyIsolationModulePath.startsWith('/nix/store/')) {
+      throw new Error('Copy isolation requires an explicit immutable module and selection');
+    }
+    ociHashFile(copyIsolationModulePath, 128 * 1024);
+    const { createCopyIsolation } = require(copyIsolationModulePath);
+    copyIsolation = createCopyIsolation(miniflareApi, effectiveOptions, copyIsolationSelection);
+  }
+  const runtime = new Miniflare(copyIsolation ? copyIsolation.options : effectiveOptions);
+  const copyNamespaceObservation = copyIsolation
+    ? () => copyIsolation.namespaceReadback(runtime, {
+      configurationBytes, miniflareModulePath: load.resolve('miniflare'), runnerPath: __filename,
+    }) : undefined;
   const namespaceObservation = async () => {
     const parsed = DurableObjectsOptionsSchema.parse(options);
     const guard = parsed.durableObjects?.HYBRID_OBJECT_GUARD;
@@ -919,6 +947,7 @@ async function main() {
               }));
         },
         managedGcObserverSelection ? managedGcObservation : undefined,
+        copyNamespaceObservation,
       );
       await acceptanceServer.ready;
     }

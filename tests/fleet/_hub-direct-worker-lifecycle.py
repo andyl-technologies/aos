@@ -124,10 +124,16 @@ def stop_direct_worker(worker, python, process):
     """, process, timeout=45))
 
 
-def direct_namespace_readback(worker, python, process):
+def direct_namespace_readback(worker, python, process, *, socket_file="/var/lib/hybrid-worker/acceptance-control.sock",
+                              namespace_kind="managed"):
     """Capture actual selected namespace IDs from the exact live runner peer."""
-    return json.loads(direct_guest_python(worker, python, """
-        import os, socket, struct
+    if socket_file != "/var/lib/hybrid-worker/acceptance-control.sock" and re.fullmatch(
+            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/control\.sock", socket_file) is None:
+        raise ValueError("External namespace socket leaves its selected pair")
+    if namespace_kind not in {"managed", "external_copy"}:
+        raise ValueError("Namespace observation kind differs")
+    actual = json.loads(direct_guest_python(worker, python, """
+        import hashlib, os, secrets, socket, struct
         from pathlib import Path
 
         directory = Path('/proc') / str(selected['pid'])
@@ -136,16 +142,17 @@ def direct_namespace_readback(worker, python, process):
             raise ValueError('namespace runner identity changed')
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as peer:
             peer.settimeout(15)
-            peer.connect('/var/lib/hybrid-worker/acceptance-control.sock')
+            peer.connect(selected['socketFile'])
             pid, uid, _ = struct.unpack('3i', peer.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12))
             if pid != selected['pid'] or uid != selected['ownerUid']:
                 raise ValueError('namespace observer connected to another runner')
-            peer.sendall(b'{"version":1,"kind":"namespace-readback"}')
+            peer.sendall(json.dumps({'version':1,'kind':selected['requestKind']},
+                separators=(',',':')).encode())
             peer.shutdown(socket.SHUT_WR)
             body = bytearray()
             while block := peer.recv(4096):
                 body.extend(block)
-                if len(body) > 131072:
+                if len(body) > selected['maximum']:
                     raise ValueError('namespace readback exceeds bound')
         actual = json.loads(body)
         after = (directory / 'stat').read_text().rpartition(') ')[2].split()[19]
@@ -153,8 +160,27 @@ def direct_namespace_readback(worker, python, process):
                 or actual['runnerStartTicks'] != before
                 or actual['configurationSha256'] != selected['configurationSha256']):
             raise ValueError('namespace readback changed runtime identity')
+        if selected['requestKind'] == 'copy-namespace-readback':
+            evidence = Path(selected['socketFile']).parent / ('external-namespace-'+secrets.token_hex(16)+'.json')
+            descriptor = os.open(evidence, os.O_WRONLY|os.O_CREAT|os.O_EXCL, 0o600)
+            with os.fdopen(descriptor,'wb') as output:
+                output.write(body); output.flush(); os.fsync(output.fileno())
+            actual['rawReadback']={'file':str(evidence),'sha256':hashlib.sha256(body).hexdigest(),
+                'byteSize':str(len(body))}
         print(json.dumps(actual, sort_keys=True, separators=(',', ':')))
-    """, process, timeout=30))
+    """, {**process, "socketFile": socket_file,
+        "requestKind": "namespace-readback" if namespace_kind == "managed" else "copy-namespace-readback",
+        "maximum": 131072 if namespace_kind == "managed" else 1048576}, timeout=30))
+    if namespace_kind == "managed":
+        return actual
+    external = [row for row in actual["namespaces"]
+        if row["bindingName"] == "EXTERNAL_OBJECT_GUARD"]
+    if (len(external) != 1 or external[0]["className"] != "ExternalObjectGuard"
+            or external[0]["workerName"] != actual["sourceWorkerName"]
+            or not isinstance(external[0]["namespaceKey"], str)
+            or not isinstance(external[0]["objectIds"], list)):
+        raise ValueError("External namespace readback lacks its actual selected guard")
+    return {**actual, **external[0], "externalNamespaceReadback": actual}
 
 
 def initialize_direct_worker_controls(worker, python, reviewer_executable,
@@ -213,11 +239,30 @@ def initialize_direct_worker_controls(worker, python, reviewer_executable,
 
 
 def install_direct_worker_consumers(worker, python, previous_configuration,
-                                    consumer_bindings, issuer_binding):
+                                    consumer_bindings, issuer_binding, *, verification_fault_observer=None,
+                                    configuration_label=None):
     """Write reviewed consumer inputs while preserving persistence and artifact."""
-    if set(consumer_bindings) != {"HUB_EXTERNAL_OBJECT_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER"}:
+    if set(consumer_bindings) not in (
+            {"HUB_EXTERNAL_OBJECT_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER"},
+            {"HUB_EXTERNAL_OBJECT_CONSUMER", "HUB_EXTERNAL_STAGING_CONSUMER", "HUB_EXTERNAL_COPY_CONSUMER"}):
         raise ValueError("Worker consumer inputs differ from the closed fixture projection")
+    if configuration_label is not None and configuration_label != "copy-list":
+        raise ValueError("Final consumer configuration label differs")
+    destination_name = "configuration-consumers.json" if configuration_label is None else "configuration-copy-list.json"
     update = {"consumerBindings": consumer_bindings, "issuerBinding": issuer_binding}
+    if verification_fault_observer is not None:
+        domains = consumer_bindings["HUB_EXTERNAL_STAGING_CONSUMER"]["domains"]
+        if (len(domains) != 1 or not isinstance(verification_fault_observer, dict)
+                or set(verification_fault_observer) != {
+                    "version", "stagingPrefix", "expectedSourceSha256", "expectedSourceBytes"}
+                or type(verification_fault_observer["version"]) is not int
+                or verification_fault_observer["version"] != 1
+                or verification_fault_observer["stagingPrefix"] != domains[0]["staging_prefix"]
+                or re.fullmatch(r"[0-9a-f]{64}", verification_fault_observer["expectedSourceSha256"]) is None
+                or re.fullmatch(r"[1-9][0-9]{0,4}", verification_fault_observer["expectedSourceBytes"]) is None
+                or int(verification_fault_observer["expectedSourceBytes"]) > 65536):
+            raise ValueError("Verification observer differs from the actual installed staging domain")
+        update["verificationFaultObserver"] = verification_fault_observer
     encoded = base64.b64encode(json.dumps(update, separators=(",", ":")).encode()).decode()
     return json.loads(private_guest_command(worker, textwrap.dedent(f"""
         {shlex.quote(python)} - <<'INSTALL_WORKER_CONSUMERS'
@@ -234,10 +279,13 @@ def install_direct_worker_consumers(worker, python, previous_configuration,
         for name, value in update['consumerBindings'].items():
             configuration['bindings'][name] = json.dumps(value, sort_keys=True, separators=(',', ':'))
         configuration.setdefault('serviceBindings', {{}})['HUB_AUTHORITY_ISSUER'] = update['issuerBinding']
+        if 'verificationFaultObserver' in update:
+            configuration['bindings']['HUB_DIRECT_VERIFICATION_FAULT_OBSERVER'] = json.dumps(
+                update['verificationFaultObserver'],sort_keys=True,separators=(',',':'))
         if any(configuration.get(name) != value for name, value in identity.items()):
             raise ValueError('consumer installation changed namespace, artifact or queue identity')
         body = json.dumps(configuration, sort_keys=True, separators=(',', ':')).encode()
-        destination = root / 'configuration-consumers.json'
+        destination = root / {destination_name!r}
         descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'wb') as output:
             output.write(body)
@@ -253,10 +301,17 @@ def install_direct_worker_consumers(worker, python, previous_configuration,
 
 def inspect_direct_external_deployment(worker, python, hub_executable, exported,
                                        worker_url, native_origin_url, worker_name,
-                                       emulator_bucket, guard_key_file):
+                                       emulator_bucket, guard_key_file, *,
+                                       inspection_root="/var/lib/hybrid-worker/operator/deployment-inspection",
+                                       retention_label=None):
     """Capture the installed CLI's authenticated full actual External profile."""
     bootstrap = exported["bootstrap"]
-    root = "/var/lib/hybrid-worker/operator/deployment-inspection"
+    if inspection_root != "/var/lib/hybrid-worker/operator/deployment-inspection" and re.fullmatch(
+            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/operator/deployment-inspection", inspection_root) is None:
+        raise ValueError("External discovery root leaves its selected pair")
+    if retention_label is not None and re.fullmatch(r"external-oci-[0-9a-f]{32}", retention_label) is None:
+        raise ValueError("External discovery retention label differs")
+    root = inspection_root
     encoded = base64.b64encode(json.dumps([bootstrap["selector"]]).encode()).decode()
     arguments = [
         hub_executable, "worker", "inspect-hybrid-direct-upload", "--name", worker_name,
@@ -302,7 +357,8 @@ def inspect_direct_external_deployment(worker, python, hub_executable, exported,
         or identity["scriptVersion"] != "emulated-" + identity["sourceDigest"]
     ):
         raise RuntimeError("actual authenticated deployment differs from the External fixture")
-    destination = Path("external-direct-authority/deployment-identity.json")
+    destination = (Path("external-direct-authority/deployment-identity.json") if retention_label is None
+        else Path("external-direct-flow") / (retention_label + "-deployment-identity.json"))
     descriptor = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "wb") as output:
         output.write(body)

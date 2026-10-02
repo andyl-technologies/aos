@@ -34,6 +34,18 @@ def _coordinates(coordinates):
     if (origin.scheme != "https" or not origin.hostname or origin.username
             or origin.password or origin.path or origin.query or origin.fragment):
         raise ValueError("Managed producer requires an exact HTTPS origin")
+    _registry_slug(coordinates)
+
+
+def _registry_slug(coordinates):
+    """Keep each ordinary publisher in its explicitly selected fresh namespace."""
+    default = "managed-" + coordinates["runId"]
+    organization = coordinates.get("registryOrganizationSlug", default)
+    if organization not in {default, "external-" + coordinates["runId"]}:
+        raise ValueError("Container publisher organization leaves its selected run")
+    if organization.startswith("external-") and coordinates["workerOrigin"] != "https://localhost:4673":
+        raise ValueError("External container publisher addresses another logical pair")
+    return organization + "/containers"
 
 
 def _guest(client, tools, coordinates, action, **values):
@@ -60,9 +72,7 @@ def prepare_managed_container_source(client, tools, coordinates):
 def publish_managed_container(client, tools, controls, coordinates, registry, source, refresh_token):
     """Stage, index a signed sidecar, then commit the actual container tag."""
     slug = registry["slug"]
-    if not re.fullmatch(r"managed-[a-f0-9]{32}/containers", slug):
-        raise ValueError("Managed producer registry is outside its fresh run namespace")
-    if slug != "managed-" + coordinates["runId"] + "/containers":
+    if slug != _registry_slug(coordinates):
         raise ValueError("Managed producer registry differs from its run")
 
     stage = _guest(client, tools, coordinates, "stage", source=source,
@@ -184,7 +194,8 @@ def _container_arguments(tools, coordinates, source, slug, token):
         "container", "publish", "aos", authority + "/aos:managed-" + coordinates["runId"],
         "--release", finalized["release"], "--release-layout", finalized["layout"],
         "--signature-input", finalized["signature_input"], "--registry", slug,
-        "--registry-origin", coordinates["workerOrigin"], "--registry-token", token]
+        "--registry-origin", coordinates["workerOrigin"], "--registry-token", token,
+        "--hub", coordinates["workerOrigin"], "--token", token]
 
 
 def _prepare_documentation(root, environment, tools, registry_root):
@@ -305,7 +316,7 @@ def _publish_action(root, selected, environment):
     tools, coordinates, action = selected["tools"], selected["coordinates"], selected["action"]
     source = _source(root, selected)
     slug = selected["registry"]
-    if slug != "managed-" + coordinates["runId"] + "/containers":
+    if slug != _registry_slug(coordinates):
         raise ValueError("Managed publication registry changed")
     if action == "release":
         staged = json.loads((root / "stage-result.private.json").read_bytes())
@@ -365,10 +376,17 @@ def _publish_action(root, selected, environment):
         return result
 
     if action == "registry-upload":
-        result = _run(root, environment, action, [tools["aos"], "--json", "--progress", "off",
+        arguments = [tools["aos"], "--json", "--progress", "off",
             "--color", "never", "hub", "registry", "publish", "upload", slug,
             "--root", source["surfaceRoot"], "--hub", coordinates["workerOrigin"],
-            "--token", selected["token"]], json_output=True)
+            "--token", selected["token"]]
+        if _registry_slug(coordinates).startswith("external-"):
+            policy = tools["providerPolicyFile"]
+            if not isinstance(policy, str) or not policy.startswith(coordinates["clientRoot"].rsplit("/", 1)[0] + "/"):
+                raise ValueError("External sidecar requires the actual selected private provider policy")
+            arguments += ["--direct-provider-policy", policy,
+                "--direct-upload-journal", str(root / "registry-direct-upload.sqlite")]
+        result = _run(root, environment, action, arguments, json_output=True)
         publication = result["data"]
         if publication.get("state") != "ready":
             raise ValueError("Ordinary signed registry publication did not become ready")
@@ -428,7 +446,7 @@ def _request(root, label, method, url, token, body, expected_status, headers=Non
 
 def _distribution(root, selected):
     origin, slug, token = selected["coordinates"]["workerOrigin"], selected["registry"], selected["token"]
-    if slug != "managed-" + selected["coordinates"]["runId"] + "/containers":
+    if slug != _registry_slug(selected["coordinates"]):
         raise ValueError("Distribution fixture registry differs from the fresh run")
     published = json.loads((root / "publish-result.private.json").read_bytes())
     if published.get("verification") != "verified":

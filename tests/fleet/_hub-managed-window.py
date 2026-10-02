@@ -209,7 +209,8 @@ def run_managed_pair_window(client, native, worker, database, tools, database_ho
     cleanup_loss = prepare_managed_cleanup_loss(native, tools, prepared, worker_address)
     prepared = {**prepared, "cleanupLoss": cleanup_loss}
     boundaries = install_managed_storage_boundaries(native, worker, tools, run_id, worker_address, native_address)
-    boundaries = {**boundaries, **codec}
+    boundaries = {**boundaries, **codec,
+        "ingressObservationSources": tools["managedIngressObservationSources"]}
     startup = start_managed_pair(native, worker, client, tools, prepared,
         native_address, worker_address, boundaries)
     prepared = {**prepared, "cleanupLoss": startup["cleanupLoss"]}

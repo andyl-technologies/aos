@@ -239,7 +239,8 @@ def observe_direct_prequalification_phase(worker, tools, origin, control_key_fil
 
 def run_direct_prequalification(worker, python, node, driver_file, origin,
                                 control_key_file, identity_file, selector,
-                                bulk_originals, metadata_originals, wait_seconds=600):
+                                bulk_originals, metadata_originals, wait_seconds=600, *,
+                                operator_root="/var/lib/hybrid-worker/operator"):
     """Dispatch one fresh protected run and preserve terminal or incomplete facts."""
     if len(bulk_originals) != 3 or len(metadata_originals) != 4:
         raise ValueError("prequalification requires three bulk and four metadata originals")
@@ -250,7 +251,10 @@ def run_direct_prequalification(worker, python, node, driver_file, origin,
            for item in originals):
         raise ValueError("qualification sources require explicit Worker file paths")
     run_id = os.urandom(32).hex()
-    root = "/var/lib/hybrid-worker/operator/prequalification-" + run_id
+    if operator_root != "/var/lib/hybrid-worker/operator" and re.fullmatch(
+            r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/operator", operator_root) is None:
+        raise ValueError("External qualification custody root differs")
+    root = operator_root + "/prequalification-" + run_id
     manifest = {"provider": {"kind": "external", "selector": selector},
                 "objects": [{"file": item["file"], "metadata": item["metadata"]}
                             for item in originals]}

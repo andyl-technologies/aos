@@ -23,16 +23,48 @@ MANAGED_PROCESS_PIN_FIELDS = frozenset((
 def managed_window_selector(prepared, boundaries, label):
     """Select one explicit fresh pair without deriving authority from its fields."""
     selected = prepared.get("captureSelection")
-    if (not isinstance(selected, dict) or set(selected) != {"run", "sourceDigest", "nativeAddress"}
+    if (not isinstance(selected, dict) or set(selected) not in ({"run", "sourceDigest", "nativeAddress"},
+                {"run", "sourceDigest", "nativeAddress", "kind", "nativeRole"})
             or not re.fullmatch(r"[0-9a-f]{32}", selected["run"])
             or not re.fullmatch(r"[0-9a-f]{64}", selected["sourceDigest"])
             or boundaries.get("run") != selected["run"]
             or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", label)):
         raise ValueError("Managed window source, run or label differs")
+    if "kind" in selected and (selected["kind"] != "external_oci"
+            or selected["nativeRole"] not in {"ordinary_native", "controlled_external_oci_native"}):
+        raise ValueError("External window process role differs")
     address = ipaddress.ip_address(selected["nativeAddress"])
     if address.version != 4 or not address.is_private or address.is_loopback:
         raise ValueError("Managed selected Native address differs")
     return dict(selected)
+
+
+def selected_storage_window_roots(selected):
+    """Resolve only the two fixed, independently configured fixture layouts."""
+    run = selected["run"]
+    if selected.get("kind") == "external_oci":
+        return {"native": "/var/lib/hybrid-native/external-oci/" + run,
+            "worker": "/var/lib/hybrid-worker/external-oci/" + run,
+            "prefix": "external-oci-" + run}
+    return {"native": "/var/lib/hybrid-managed-native/" + run,
+        "worker": "/var/lib/hybrid-managed-worker/" + run, "prefix": "managed-" + run}
+
+
+def validate_selected_storage_logs(selected, processes, roots):
+    """Bind a separate helper lifetime to its own log without service relabeling."""
+    native_log = processes["native"]["logFile"]
+    worker_log = processes["worker"]["logFile"]
+    if selected.get("kind") == "external_oci":
+        native_label = ("native-bootstrap" if selected["nativeRole"] == "ordinary_native"
+            else "native-controlled")
+        allowed_workers = {"worker-bootstrap", "external-oci-installed", "external-oci-final"}
+        valid = native_log == roots["native"] + "/" + native_label + ".log" and any(
+            worker_log == roots["worker"] + "/" + label + ".log" for label in allowed_workers)
+    else:
+        valid = (native_log == roots["native"] + "/native-accepted.log"
+            and worker_log == roots["worker"] + "/worker.log")
+    if not valid:
+        raise ValueError("Selected storage process role or actual log differs")
 
 
 def observe_managed_process(machine, tools, selected):
@@ -119,11 +151,9 @@ def begin_managed_storage_window(native, worker, tools, prepared, processes, bou
                 raise ValueError("Managed launched proxy differs from its prepared configuration")
         observations[role] = observe_managed_process(machine, tools, processes[role])
     run = selected["run"]
-    native_root = "/var/lib/hybrid-managed-native/" + run
-    worker_root = "/var/lib/hybrid-managed-worker/" + run
-    if (processes["native"]["logFile"] != native_root + "/native-accepted.log"
-            or processes["worker"]["logFile"] != worker_root + "/worker.log"):
-        raise ValueError("Managed selected main process log differs")
+    roots = selected_storage_window_roots(selected)
+    native_root, worker_root = roots["native"], roots["worker"]
+    validate_selected_storage_logs(selected, processes, roots)
     positions = {}
     for name, machine, path in (
             ("nativeOutbound", native, native_root + "/outbound/requests.jsonl"),
@@ -139,7 +169,7 @@ def begin_managed_storage_window(native, worker, tools, prepared, processes, bou
         positions[name] = managed_private_log_position(machine, tools, path)
     token = {"version": 1, "selection": selected, "label": label,
         "processes": processes, "beforeProcesses": observations, "positions": positions}
-    retain_direct_flow("managed-" + run + "-" + label + "-window-begin.json", token)
+    retain_direct_flow(roots["prefix"] + "-" + label + "-window-begin.json", token)
     return token
 
 
@@ -149,7 +179,8 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
     if (token.get("version") != 1 or token.get("selection") != selected
             or token.get("label") != label or token.get("processes") != processes):
         raise ValueError("Managed window original selection changed")
-    prefix = "managed-" + selected["run"] + "-" + label
+    prefix = selected_storage_window_roots(selected)["prefix"] + "-" + label
+    codec_scope = "external-oci" if selected.get("kind") == "external_oci" else "managed"
     paths, receipts, observations = {}, {}, {}
     for role, machine in (("native", native), ("worker", worker),
             ("nativeProxy", native), ("workerProxy", worker)):
@@ -171,7 +202,9 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
     boundary = capture_direct_storage_boundary(native, worker, tools,
         paths["nativeOutbound"].read_text(), paths["workerReceived"].read_text(),
         worker_text, selected["sourceDigest"], selected["nativeAddress"],
-        managed_run=selected["run"], artifact_label=label)
+        managed_run=selected["run"] if "kind" not in selected else None,
+        external_run=selected["run"] if selected.get("kind") == "external_oci" else None,
+        artifact_label=label)
     boundary["captureProvenance"] = {"sourceDigest": selected["sourceDigest"],
         "nativeExecutableSha256": observations["native"]["executableSha256"],
         "run": selected["run"], "deploymentId": tools["deploymentId"],
@@ -200,7 +233,7 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
                 observations["native"]["executableSha256"])
             outbound_decoded = run_storage_workflow_codec_segments(boundaries["codecSelection"],
                 outbound_codec["selectedCodecSegments"], provenance["codecSourceSha256"],
-                selected["sourceDigest"], artifact_namespace="managed-outbound-" + label + "-" + selected["run"])
+                selected["sourceDigest"], artifact_namespace=codec_scope + "-outbound-" + label + "-" + selected["run"])
             records = storage_work_execute_receipts(paths["nativeLog"], processes["native"], file_provenance)
             execute_observed = join_storage_work_execute(
                 boundary["nativeOriginalBodies"]["bodies"], boundary["workerReceivedBodies"]["bodies"],
@@ -236,7 +269,7 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
                 observations["native"]["executableSha256"])
             ingress["decoded"] = run_storage_workflow_codec_segments(boundaries["codecSelection"],
                 ingress["codecInput"]["selectedCodecSegments"], provenance["codecSourceSha256"],
-                selected["sourceDigest"], artifact_namespace="managed-codec-" + label + "-" + selected["run"])
+                selected["sourceDigest"], artifact_namespace=codec_scope + "-codec-" + label + "-" + selected["run"])
     report = {"version": 1, "storageBoundary": boundary, "workerLogText": worker_text,
         "rawWindowReceipts": {name: {"file": str(paths[name]), **receipt}
             for name, receipt in receipts.items()}, "processObservations": observations,
@@ -300,8 +333,9 @@ def capture_managed_native_ingress(native, worker, tools, boundaries, paths, sel
     Every received row and unsupported original remains in the private corpus.
     """
     run = selected["run"]
-    worker_root = "/var/lib/hybrid-managed-worker/" + run + "/native-outbound"
-    native_root = "/var/lib/hybrid-managed-native/" + run + "/inbound"
+    roots = selected_storage_window_roots(selected)
+    worker_root = roots["worker"] + "/native-outbound"
+    native_root = roots["native"] + "/inbound"
     original_rows, original_completed, original_transfer = managed_ingress_completion_receipts(
         paths["workerOriginal"].read_text())
     received_rows, received_completed, received_transfer = managed_ingress_completion_receipts(

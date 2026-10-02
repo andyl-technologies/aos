@@ -19,7 +19,10 @@ import textwrap
 def provision_external_issuer(native, worker, python, openssl, installation,
                               timing_profile, clock_uncertainty, clock_commit_latency,
                               signing_key_id, renewal_key, certificate_file,
-                              private_key_file, expected_server_name):
+                              private_key_file, expected_server_name, *,
+                              issuer_root="/var/lib/hybrid-authority",
+                              worker_operator_root="/var/lib/hybrid-worker/operator",
+                              listen="127.0.0.1:8444", hub_root="/var/lib/aos-hub"):
     """Generate Native-only keys under an independently selected installation."""
     if set(installation) != {
         "format_version", "authority", "issuer_resource_id", "runtime_identity",
@@ -41,11 +44,19 @@ def provision_external_issuer(native, worker, python, openssl, installation,
     )):
         raise ValueError("issuer requires explicit signing and TLS identities")
 
-    root = "/var/lib/hybrid-authority"
+    if (issuer_root != "/var/lib/hybrid-authority" and re.fullmatch(
+            r"/var/lib/hybrid-native/external-oci/[0-9a-f]{32}/issuer", issuer_root) is None
+            or worker_operator_root != "/var/lib/hybrid-worker/operator" and re.fullmatch(
+                r"/var/lib/hybrid-worker/external-oci/[0-9a-f]{32}/operator", worker_operator_root) is None
+            or listen not in {"127.0.0.1:8444", "127.0.0.1:4680"}
+            or hub_root != "/var/lib/aos-hub" and re.fullmatch(
+                r"/var/lib/hybrid-native/external-oci/[0-9a-f]{32}/hub", hub_root) is None):
+        raise ValueError("issuer fixture root or fixed listener differs")
+    root = issuer_root
     configuration = {
-        "format_version": 1, "listen": "127.0.0.1:8444",
+        "format_version": 1, "listen": listen,
         "journal_file": root + "/journal.sqlite", "installation": installation,
-        "hub_root": "/var/lib/aos-hub", "hub_sqlite_file": None,
+        "hub_root": hub_root, "hub_sqlite_file": None,
         "policy": {"timing_profile": timing_profile},
         "clock_uncertainty": str(clock_uncertainty),
         "clock_commit_latency": str(clock_commit_latency), "issuance_enabled": True,
@@ -113,7 +124,7 @@ def provision_external_issuer(native, worker, python, openssl, installation,
         import base64, json, os
         from pathlib import Path
 
-        root = Path('/var/lib/hybrid-worker/operator/issuer')
+        root = Path({worker_operator_root + '/issuer'!r})
         root.mkdir(mode=0o700, parents=True, exist_ok=False)
         values = json.loads(base64.b64decode({encoded_metadata!r}, validate=True))
         for name, encoded in values.items():

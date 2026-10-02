@@ -88,6 +88,21 @@ class PairTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(ValueError):
                 self.configuration(selected=invalid)
 
+    def test_initial_profile_observation_cannot_select_another_placement_or_graph(self):
+        observer = {"version": 1, "capture_id": "a" * 32,
+            "placement_prefix": "qualification/oci-terminal-cleanup/" + "a" * 32,
+            "document_digest": "sha256:" + "e" * 64}
+        selected = {**self.selected, "ociProfileLoadObserverSelection": observer}
+        actual = self.configuration(selected=selected)
+        self.assertEqual(json.loads(actual["bindings"]["HUB_OCI_PROFILE_LOAD_OBSERVER"]), observer)
+        self.assertEqual(actual["ociSdkAcceptanceRegistryKey"], self.slot)
+        for changed in ({"version": True}, {"capture_id": "b" * 32},
+                {"placement_prefix": "qualification/other"}, {"document_digest": "e" * 64},
+                {"accepted": True}):
+            invalid = {**selected, "ociProfileLoadObserverSelection": {**observer, **changed}}
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                self.configuration(selected=invalid)
+
     def test_native_arguments_have_fresh_db_and_three_separate_activation_files(self):
         coordinates = pair.managed_pair_coordinates("a" * 32)
         files = {name: "/private/" + name for name in (

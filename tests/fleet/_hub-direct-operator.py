@@ -215,8 +215,14 @@ def read_operator_binding_pins(worker, postgres, database_host, binding,
 
 
 def provision_operator_reader(database_machine, worker, python, postgres, database_host,
-                              selected_tables=HYDRATION_METADATA_TABLES):
+                              selected_tables=HYDRATION_METADATA_TABLES, *,
+                              operator_root="/var/lib/hybrid-worker/operator",
+                              database_name="postgres", operator_role="fleet_direct_operator"):
     """Create a distinct live SQL reader and verify its actual privileges."""
+    _operator_root(operator_root)
+    if any(not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", value)
+           for value in (database_name, operator_role)):
+        raise ValueError("operator reader database or role is invalid")
     tables = tuple(selected_tables)
     if not set(HYDRATION_METADATA_TABLES).issubset(tables):
         raise ValueError("operator reader omitted required current metadata tables")
@@ -231,7 +237,7 @@ def provision_operator_reader(database_machine, worker, python, postgres, databa
         {shlex.quote(python)} - <<'OPERATOR_PRIVATE_PASSWORD'
         import os, secrets
         from pathlib import Path
-        root = Path('/var/lib/hybrid-worker/operator')
+        root = Path({operator_root!r})
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         os.chmod(root, 0o700)
         value = secrets.token_hex(32)
@@ -255,32 +261,32 @@ def provision_operator_reader(database_machine, worker, python, postgres, databa
         cat > "$sql_file" <<'OPERATOR_READER_SQL'
         BEGIN;
         SET LOCAL password_encryption = 'scram-sha-256';
-        CREATE ROLE fleet_direct_operator LOGIN PASSWORD '{password}'
+        CREATE ROLE {operator_role} LOGIN PASSWORD '{password}'
           NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
-        GRANT CONNECT ON DATABASE postgres TO fleet_direct_operator;
-        GRANT USAGE ON SCHEMA public TO fleet_direct_operator;
-        GRANT SELECT ON {grants} TO fleet_direct_operator;
+        GRANT CONNECT ON DATABASE {database_name} TO {operator_role};
+        GRANT USAGE ON SCHEMA public TO {operator_role};
+        GRANT SELECT ON {grants} TO {operator_role};
         COMMIT;
         OPERATOR_READER_SQL
-        {shlex.quote(postgres)}/psql -h 127.0.0.1 -U postgres -d postgres \\
+        {shlex.quote(postgres)}/psql -h 127.0.0.1 -U postgres -d {database_name} \\
           -v ON_ERROR_STOP=1 -f "$sql_file" > /dev/null 2>&1
     """))
     private_guest_command(worker, textwrap.dedent(f"""
         {shlex.quote(python)} - <<'OPERATOR_PRIVATE_URL'
         import os
         from pathlib import Path
-        root = Path('/var/lib/hybrid-worker/operator')
+        root = Path({operator_root!r})
         password = (root / 'sql-password').read_text()
         descriptor = os.open(root / 'sql.url', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'w') as output:
-            output.write('postgres://fleet_direct_operator:' + password + '@{database_host}:5432/postgres')
+            output.write('postgres://{operator_role}:' + password + '@{database_host}:5432/{database_name}')
             output.flush()
             os.fsync(output.fileno())
         OPERATOR_PRIVATE_URL
     """))
     actual = worker.succeed(textwrap.dedent(f"""
-        PGPASSWORD=$(cat /var/lib/hybrid-worker/operator/sql-password) \\
-          {shlex.quote(postgres)}/psql -h {database_host} -U fleet_direct_operator -d postgres \\
+        PGPASSWORD=$(cat {shlex.quote(operator_root + "/sql-password")}) \\
+          {shlex.quote(postgres)}/psql -h {database_host} -U {operator_role} -d {database_name} \\
           -v ON_ERROR_STOP=1 -At -F '|' -c \\
           "SELECT has_database_privilege(current_user, current_database(), 'CONNECT'),
            has_schema_privilege(current_user, 'public', 'USAGE'),
@@ -305,10 +311,10 @@ def provision_operator_reader(database_machine, worker, python, postgres, databa
         f"FROM (VALUES {selected_values}) AS selected(name)"
     )
     table_privileges = json.loads(private_guest_command(worker,
-        "PGPASSWORD=$(cat /var/lib/hybrid-worker/operator/sql-password) "
+        "PGPASSWORD=$(cat " + shlex.quote(operator_root + "/sql-password") + ") "
         + shlex.join([
-            postgres + "/psql", "-h", database_host, "-U", "fleet_direct_operator",
-            "-d", "postgres", "-v", "ON_ERROR_STOP=1", "-At", "-c", privilege_query,
+            postgres + "/psql", "-h", database_host, "-U", operator_role,
+            "-d", database_name, "-v", "ON_ERROR_STOP=1", "-At", "-c", privilege_query,
         ]), timeout=60,
     ))
     if (
@@ -320,10 +326,10 @@ def provision_operator_reader(database_machine, worker, python, postgres, databa
         raise AssertionError("actual operator SQL table grants differ from SELECT-only custody")
     return {
         "version": 1,
-        "role": "fleet_direct_operator",
+        "role": operator_role,
         "selected_tables": list(tables),
         "actual_table_privileges": table_privileges,
         "actual_connect_usage_select": True,
         "actual_write_ddl_superuser_createdb_createrole": False,
-        "sql_url_file": "/var/lib/hybrid-worker/operator/sql.url",
+        "sql_url_file": operator_root + "/sql.url",
     }

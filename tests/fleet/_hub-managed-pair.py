@@ -159,6 +159,19 @@ def managed_worker_configuration(original, selected, roles, registry_key,
             "Managed initial cache selection requires the actual canonical document and installed observer")
         configuration["publicDocumentCacheCase"] = copy.deepcopy(cache_case)
         configuration["publicDocumentCacheObserverPath"] = selected["publicDocumentCacheObserver"]
+    profile_observer = selected.get("ociProfileLoadObserverSelection")
+    if profile_observer is not None:
+        require_managed_pair(isinstance(profile_observer, dict) and set(profile_observer) == {
+                "version", "capture_id", "placement_prefix", "document_digest"}
+            and type(profile_observer["version"]) is int and profile_observer["version"] == 1
+            and profile_observer["capture_id"] == coordinates["runId"]
+            and profile_observer["placement_prefix"] == coordinates["gcPrefix"]
+            and re.fullmatch(r"sha256:[0-9a-f]{64}", profile_observer["document_digest"]),
+            "Initial profile observer must select the retained graph and reserved placement")
+        # The fresh upload key is allocated by the normal producer later. The
+        # observer grants no admission and must join that emitted key to SQL.
+        configuration["bindings"]["HUB_OCI_PROFILE_LOAD_OBSERVER"] = json.dumps(
+            profile_observer, separators=(",", ":"))
     return configuration
 
 
@@ -433,6 +446,7 @@ def observe_managed_pair(native, worker, tools, prepared, processes):
     identity_file = root + "/build-selected-identity.json"
     install_direct_guest_file(worker, tools["python"], identity_file, json.dumps({
         "sourceDigest": source, "scriptVersion": "emulated-" + source,
+        "publicOrigin": WORKER_ORIGIN,
     }, separators=(",", ":")).encode())
     native_observation = coordinates["nativeRoot"] + "/native-observation.json"
     native_configuration = coordinates["nativeRoot"] + "/native-observed-configuration.json"
@@ -480,7 +494,7 @@ def observe_managed_pair(native, worker, tools, prepared, processes):
             '--socket-file',str(root/'control.sock'), '--node-file',selected['node'],
             '--runner-file',selected['runner'],'--workerd-file',selected['workerd'],
             '--configuration-file',selected['configuration'],'--source-store-path',selected['source'],
-            '--miniflare-root',selected['miniflare'],'--identity-file',selected['identity'],
+            '--miniflare-root',selected['miniflare'],'--identity-file',str(root/'clock-0/source-identity.json'),
             '--wasm-file',selected['wasm'],'--shim-file',selected['shim'],'--report-file',str(namespace)]
         invoke(argv,'namespace',30)
         anchor_root = root/'anchor-original'

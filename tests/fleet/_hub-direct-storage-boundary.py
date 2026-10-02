@@ -326,16 +326,24 @@ def direct_control_completion_join(receipts, body, source_digest, proxy_complete
 
 def capture_direct_storage_boundary(native, worker, tools, native_text, worker_text,
                                     runtime_text, source_digest, native_address, managed_run=None,
-                                    artifact_label=None):
+                                    artifact_label=None, *, external_run=None):
     """Join every actual Native request to its independently received bytes."""
-    if managed_run is not None and not re.fullmatch(r"[0-9a-f]{32}", managed_run):
-        raise ValueError("Managed capture run identity differs")
-    if artifact_label is not None and (managed_run is None
+    if managed_run is not None and external_run is not None:
+        raise ValueError("Storage capture cannot select two physical layouts")
+    run = managed_run if managed_run is not None else external_run
+    if run is not None and not re.fullmatch(r"[0-9a-f]{32}", run):
+        raise ValueError("Storage capture run identity differs")
+    if artifact_label is not None and (run is None
             or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", artifact_label)):
-        raise ValueError("Managed capture artifact label differs")
-    native_root = "/var/lib/hybrid-native-outbound" if managed_run is None else "/var/lib/hybrid-managed-native/" + managed_run + "/outbound"
-    worker_root = "/var/lib/hybrid-worker-boundary" if managed_run is None else "/var/lib/hybrid-managed-worker/" + managed_run + "/boundary"
-    label = "" if managed_run is None else "managed-" + managed_run + "-"
+        raise ValueError("Storage capture artifact label differs")
+    if external_run is not None:
+        native_root = "/var/lib/hybrid-native/external-oci/" + run + "/outbound"
+        worker_root = "/var/lib/hybrid-worker/external-oci/" + run + "/boundary"
+        label = "external-oci-" + run + "-"
+    else:
+        native_root = "/var/lib/hybrid-native-outbound" if run is None else "/var/lib/hybrid-managed-native/" + run + "/outbound"
+        worker_root = "/var/lib/hybrid-worker-boundary" if run is None else "/var/lib/hybrid-managed-worker/" + run + "/boundary"
+        label = "" if run is None else "managed-" + run + "-"
     if artifact_label is not None:
         label += artifact_label + "-"
     native_raw, native_completed = direct_storage_completion_receipts(native_text)

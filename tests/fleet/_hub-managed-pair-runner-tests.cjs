@@ -8,12 +8,12 @@ const path = require('node:path');
 const test = require('node:test');
 const { acceptanceRegistryServer } = require('./_hub-worker-runner.cjs');
 
-async function fixture(callback, action, cleanupCallback) {
+async function fixture(callback, action, cleanupCallback, copyNamespaceCallback) {
   const directory = mkdtempSync(path.join(tmpdir(), 'managed-runner-socket-'));
   chmodSync(directory, 0o700);
   const socketPath = path.join(directory, 'control.sock');
   const server = acceptanceRegistryServer({}, socketPath, {}, undefined, undefined,
-    undefined, undefined, undefined, cleanupCallback, callback);
+    undefined, undefined, undefined, cleanupCallback, callback, copyNamespaceCallback);
   await server.ready;
   const exchange = request => new Promise((resolve, reject) => {
     const socket = connect(socketPath);
@@ -56,6 +56,26 @@ test('GC and cleanup callbacks remain separate in the composed runner', async ()
 test('optional absence refuses Managed routes', async () => {
   await fixture(undefined, async exchange => {
     assert.deepEqual(await exchange({ version: 1, kind: 'managed-gc-snapshot' }),
+      { version: 1, status: 'refused' });
+  });
+});
+
+test('External namespace callback preserves its report and refuses unsupported selections', async () => {
+  const reply = { version: 1, namespaces: [{ bindingName: 'EXTERNAL_OBJECT_GUARD',
+    className: 'ExternalObjectGuard', namespaceKey: 'actual-controlled-key', objectIds: [] }] };
+  let calls = 0;
+  await fixture(undefined, async exchange => {
+    assert.deepEqual(await exchange({ version: 1, kind: 'copy-namespace-readback' }), reply);
+    assert.deepEqual(await exchange({ version: 1, kind: 'copy-namespace-readback', extra: true }),
+      { version: 1, status: 'refused' });
+    assert.equal(calls, 1);
+  }, undefined, async () => {
+    calls += 1;
+    return reply;
+  });
+
+  await fixture(undefined, async exchange => {
+    assert.deepEqual(await exchange({ version: 1, kind: 'copy-namespace-readback' }),
       { version: 1, status: 'refused' });
   });
 });

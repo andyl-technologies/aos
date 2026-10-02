@@ -26,7 +26,7 @@ def run_storage_workflow_codec_segments(selection, bundle, codec_source_digest, 
     Any missing, refused or overflowing page leaves the whole selection unknown.
     """
     if (artifact_namespace != "storage-codec" and not re.fullmatch(
-            r"managed-codec-[a-z][a-z0-9-]{0,63}-[0-9a-f]{32}", artifact_namespace)):
+            r"(?:managed|external-oci)-(?:codec|outbound)-[a-z][a-z0-9-]{0,63}-[0-9a-f]{32}", artifact_namespace)):
         raise ValueError("storage codec artifact namespace differs")
     observer_prefix = "storage-codec-observer" if artifact_namespace == "storage-codec" else artifact_namespace
     outcomes, rows, terminal_bytes = [], [], 3

@@ -96,10 +96,13 @@ def managed_controller_token(client, tools, coordinates, secret):
 
 def configure_managed_distribution(client, worker, tools, prepared, processes, controls, setup,
                                    *, endpoint_origin=None, ingress_kind="ENDPOINT_INGRESS_KIND_LAYER7",
-                                   listener_observer=None):
+                                   listener_observer=None, organization_slug=None):
     """Use current normal plans and actual endpoint evidence for the root route."""
     coordinates = prepared["coordinates"]
     run = coordinates["runId"]
+    organization_slug = organization_slug or "managed-" + run
+    require_managed_pair(organization_slug in {"managed-" + run, "external-" + run},
+        "Selected ordinary route organization differs")
     origin = endpoint_origin or coordinates["workerOrigin"]
     parsed = urllib.parse.urlsplit(origin)
     require_managed_pair(parsed.scheme == "https" and parsed.hostname and parsed.port
@@ -108,7 +111,7 @@ def configure_managed_distribution(client, worker, tools, prepared, processes, c
         and ingress_kind in {"ENDPOINT_INGRESS_KIND_LAYER7", "ENDPOINT_INGRESS_KIND_HUB"},
         "Selected ordinary endpoint origin or ingress differs")
     organization = controls.call("OrganizationService", "GetOrganization", {
-        "slug": "managed-" + run,
+        "slug": organization_slug,
     })["organization"]
     owner = organization["ownerScopeKey"]
     domain = controls.reviewed("DomainService", "PlanCreateDomain", "CreateDomain", {
@@ -132,7 +135,7 @@ def configure_managed_distribution(client, worker, tools, prepared, processes, c
     require_managed_pair(endpoint["desiredGeneration"] == "1"
             and endpoint["stableId"] == coordinates["endpointId"],
             "Managed endpoint differs from the independently installed probe generation")
-    principal = "managed-" + run + "/endpoint-controller"
+    principal = organization_slug + "/endpoint-controller"
     controls.reviewed("IdentityService", "PlanCreateServiceAccount", "CreateServiceAccount", {
         "orgSlug": organization["slug"], "name": "endpoint-controller", "expectedResourceVersion": "",
     }, "managed-controller-" + run)

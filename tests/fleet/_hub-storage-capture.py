@@ -170,7 +170,7 @@ def capture_protected_headers(source, label, artifact_prefix=None):
     if label not in {"native-inbound", "native-outbound", "worker-received", "worker-original"}:
         raise ValueError("protected header observation role differs")
     if artifact_prefix is not None and not re.fullmatch(
-            r"managed-[0-9a-f]{32}-[a-z][a-z0-9-]{0,63}", artifact_prefix):
+            r"(?:managed|external-oci)-[0-9a-f]{32}-[a-z][a-z0-9-]{0,63}", artifact_prefix):
         raise ValueError("Managed protected header artifact namespace differs")
     projected = {}
     total_bytes = summary_bytes = 0

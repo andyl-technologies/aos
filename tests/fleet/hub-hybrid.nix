@@ -46,7 +46,24 @@
   };
   containerPublicationInputs = containerFixture.config.system.build.containers.aos.publicationInputs;
   managedCleanupNativeHelper = import ./_hub-managed-cleanup-native-helper.nix {inherit pkgs;};
+  verificationObservationHelper = import ./_hub-direct-verification-native-helper.nix {inherit pkgs;};
+  verificationObservationHelperProvenance = import ./_hub-direct-verification-helper-provenance.nix {
+    inherit pkgs;
+    runtimeSource =
+      if runtimeSource == null
+      then throw "External verification fixture needs its immutable runtimeSource"
+      else runtimeSource;
+    helper = verificationObservationHelper;
+    worker = workerDist;
+  };
   leaseScaleReplyCodec = import ./_hub-lease-scale-reply-codec.nix {inherit pkgs;};
+  storageBodyCodec = import ./_hub-storage-body-codec.nix {
+    inherit pkgs;
+    source =
+      if runtimeSource == null
+      then throw "External storage observation fixture needs its immutable runtimeSource"
+      else runtimeSource;
+  };
   # This dependent fixture measures the installed ELF after normal package fixup.
   # Its source coordinates and bytes receive independent tuple review before launch.
   managedCleanupHelperProvenance =
@@ -155,7 +172,11 @@
         ssl_certificate_key ${s3PrivateKey}/value;
         client_max_body_size 64m;
         location / {
-          proxy_pass http://127.0.0.1:3900;
+          proxy_pass http://127.0.0.1:${
+      if externalDirect
+      then "3903"
+      else "3900"
+    };
           proxy_set_header Host $http_host;
           proxy_http_version 1.1;
           proxy_request_buffering off;
@@ -180,9 +201,15 @@
   managedObservationProxies = import ./_hub-managed-storage-proxies.nix {
     inherit serverCertificate serverPrivateKey;
     managedCleanupLossUpstream = "http://127.0.0.1:4660";
+    managedOciProfileHoldUpstream = "http://127.0.0.1:4649";
   };
   managedNativeObservationProxyTemplate = writeFixture "hub-hybrid-fleet-managed-native-observation-template.conf" managedObservationProxies.nativeConfiguration;
   managedWorkerObservationProxyTemplate = writeFixture "hub-hybrid-fleet-managed-worker-observation-template.conf" managedObservationProxies.workerConfiguration;
+  externalOciObservationProxies = import ./_hub-external-oci-proxies.nix {
+    inherit serverCertificate serverPrivateKey;
+  };
+  externalOciNativeProxyTemplate = writeFixture "hub-hybrid-fleet-external-oci-native-template.conf" externalOciObservationProxies.nativeConfiguration;
+  externalOciWorkerProxyTemplate = writeFixture "hub-hybrid-fleet-external-oci-worker-template.conf" externalOciObservationProxies.workerConfiguration;
   databaseUrl =
     writeFixture
     "hub-hybrid-fleet-database-url"
@@ -264,7 +291,7 @@
         aos.security.pki.certificates = [caCertificate s3CaCertificate];
         aos.firewall.allowedTCP =
           [443]
-          ++ lib.optionals externalDirect [8443 8453 4644]
+          ++ lib.optionals externalDirect [8443 8453 4644 4673 4674 4677]
           ++ lib.optional (externalDirect && !separateDatabase) 5432;
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
@@ -295,7 +322,7 @@
     ../../systems/server-test.nix
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
-      aos.firewall.allowedTCP = [443] ++ lib.optionals externalDirect [8453 4643 4644];
+      aos.firewall.allowedTCP = [443] ++ lib.optionals externalDirect [8453 4643 4644 4673 4674];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
@@ -339,6 +366,15 @@
     cp ${./_hub-oci-sdk-anchor.py} "$out/_hub-oci-sdk-anchor.py"
     cp ${./_hub-oci-sdk-install.py} "$out/_hub-oci-sdk-install.py"
     cp ${./_hub-managed-container.py} "$out/_hub-managed-container.py"
+    cp ${./_hub-external-oci-setup.py} "$out/_hub-external-oci-setup.py"
+    cp ${./_hub-external-workflow-accounting.py} "$out/_hub-external-workflow-accounting.py"
+    cp ${./_hub-direct-boundary.py} "$out/_hub-direct-boundary.py"
+    cp ${./_hub-direct-runtime-observations.py} "$out/_hub-direct-runtime-observations.py"
+    cp ${./_hub-external-copy-window.py} "$out/_hub-external-copy-window.py"
+    cp ${./_hub-external-copy-isolation.cjs} "$out/_hub-external-copy-isolation.cjs"
+    cp ${./_hub-external-copy-lifetime.py} "$out/_hub-external-copy-lifetime.py"
+    cp ${./_hub-external-copy-partial-hold.mjs} "$out/_hub-external-copy-partial-hold.mjs"
+    cp ${./_hub-external-copy-closed-loss.mjs} "$out/_hub-external-copy-closed-loss.mjs"
     cp ${./_hub-worker-cache-observer.cjs} "$out/_hub-worker-cache-observer.cjs"
     cp ${./_hub-direct-read-parity.py} "$out/_hub-direct-read-parity.py"
     cp ${./_hub-index-parity.py} "$out/_hub-index-parity.py"
@@ -351,6 +387,13 @@
     cp ${./_hub-managed-cleanup-install.cjs} "$out/_hub-managed-cleanup-install.cjs"
     cp ${./_hub-managed-cleanup-loss.py} "$out/_hub-managed-cleanup-loss.py"
     cp ${./_hub-managed-cleanup-runtime.py} "$out/_hub-managed-cleanup-runtime.py"
+    cp ${./_hub-managed-cleanup-accounting.py} "$out/_hub-managed-cleanup-accounting.py"
+    cp ${./_hub-managed-workflow-accounting.py} "$out/_hub-managed-workflow-accounting.py"
+    cp ${./_hub-managed-cleanup-sql.py} "$out/_hub-managed-cleanup-sql.py"
+    cp ${./_hub-direct-provider-response-hold.mjs} "$out/_hub-direct-provider-response-hold.mjs"
+    cp ${./_hub-oci-profile-mismatch.py} "$out/_hub-oci-profile-mismatch.py"
+    cp ${./_hub-oci-profile-process.py} "$out/_hub-oci-profile-process.py"
+    cp ${./_hub-oci-profile-mismatch-listener.mjs} "$out/_hub-oci-profile-mismatch-listener.mjs"
     cp ${./_hub-direct-stale-index.py} "$out/_hub-direct-stale-index.py"
     cp ${./_hub-direct-stale-index-listener.mjs} "$out/_hub-direct-stale-index-listener.mjs"
     cp ${./_hub-direct-stale-index-process.py} "$out/_hub-direct-stale-index-process.py"
@@ -399,6 +442,10 @@
           };
         }
         // lib.optionalAttrs externalDirect {
+          EXTERNAL_OBJECT_GUARD = {
+            className = "ExternalObjectGuard";
+            useSQLite = true;
+          };
           HYBRID_DIRECT_UPLOAD = {
             className = "HybridDirectUpload";
             useSQLite = true;
@@ -435,6 +482,11 @@
         };
     }
     // lib.optionalAttrs externalDirect {
+      copyIsolationSelection = {
+        version = 1;
+        sourceWorkerName = "hub-hybrid-fleet";
+      };
+      copyIsolationModulePath = "${managedFixtureModules}/_hub-external-copy-isolation.cjs";
       queueObservationPath = "/var/lib/hybrid-worker/queue-startup";
       namespaceObservationPath = "/var/lib/hybrid-worker/namespace-startup";
       acceptanceSocketPath = "/var/lib/hybrid-worker/acceptance-control.sock";
@@ -522,6 +574,8 @@
         workerObservationProxyConfig
         managedNativeObservationProxyTemplate
         managedWorkerObservationProxyTemplate
+        externalOciNativeProxyTemplate
+        externalOciWorkerProxyTemplate
         installationObserver
         namespaceObserver
         queueObserver
@@ -536,7 +590,10 @@
         managedFixtureModules
         managedCleanupNativeHelper
         managedCleanupHelperProvenance
+        verificationObservationHelper
+        verificationObservationHelperProvenance
         leaseScaleReplyCodec
+        storageBodyCodec
         independentReview
         sqlObserver
       ];
@@ -619,7 +676,22 @@ in {
     + lib.optionalString externalDirect (
       builtins.readFile ./_hub-direct-controls.py
       + builtins.readFile ./_hub-managed-pair.py
+      + builtins.readFile ./_hub-external-oci-pair.py
+      + builtins.readFile ./_hub-external-oci-process.py
+      + builtins.readFile ./_hub-external-oci-direct.py
+      + builtins.readFile ./_hub-external-oci-business.py
+      + builtins.readFile ./_hub-external-oci-accounting.py
+      + builtins.readFile ./_hub-external-oci-teardown.py
+      + builtins.readFile ./_hub-external-copy-loss-setup.py
+      + builtins.readFile ./_hub-external-copy-cold.py
+      + builtins.readFile ./_hub-external-copy-cancel.py
+      + builtins.readFile ./_hub-external-copy-loss.py
+      + builtins.readFile ./_hub-external-oci-window.py
+      + builtins.readFile ./_hub-external-copy-window.py
+      + builtins.readFile ./_hub-external-copy-configuration.py
+      + builtins.readFile ./_hub-direct-runtime-profile.py
       + builtins.readFile ./_hub-managed-window.py
+      + builtins.readFile ./_hub-managed-profile-call.py
       + builtins.readFile ./_hub-managed-control.py
       + builtins.readFile ./_hub-managed-route.py
       + builtins.readFile ./_hub-managed-terminal-cleanup.py
@@ -627,6 +699,9 @@ in {
       + builtins.readFile ./_hub-managed-gc-window.py
       + builtins.readFile ./_hub-direct-issuer-scale-main.py
       + builtins.readFile ./_hub-direct-stale-index-setup.py
+      + builtins.readFile ./_hub-direct-provider-hold-setup.py
+      + builtins.readFile ./_hub-direct-verification-source.py
+      + builtins.readFile ./_hub-direct-verification-timeout.py
       + builtins.readFile ./_hub-direct-operator.py
       + builtins.readFile ./_hub-direct-configuration.py
       + builtins.readFile ./_hub-direct-review.py
@@ -652,6 +727,7 @@ in {
       + builtins.readFile ./_hub-direct-browser.py
       + builtins.readFile ./_hub-direct-storage-boundary.py
       + builtins.readFile ./_hub-storage-capture.py
+      + builtins.readFile ./_hub-storage-work-execute-observation.py
       + builtins.readFile ./_hub-storage-final-sql.py
       + builtins.readFile ./_hub-storage-workflow-assessment.py
       + builtins.readFile ./_hub-managed-storage-boundary.py
@@ -745,6 +821,22 @@ in {
             > /var/lib/hybrid-s3/nginx.log 2>&1 < /dev/null &
           echo $! > /var/lib/hybrid-s3/nginx-process.pid
       """), timeout=60)
+      ${lib.optionalString externalDirect ''
+        external_copy_cases = {case: secrets.token_hex(16)
+            for case in ("same_worker", "source_worker")}
+        retain_direct_flow("external-copy-initial-cases.json", external_copy_cases)
+        provider_hold = install_direct_provider_hold(s3, {
+            "python": "${pkgs.python3}/bin/python3",
+            "node": "${pkgs.nodejs}/bin/node",
+            "providerHoldListener": "${managedFixtureModules}/_hub-direct-provider-response-hold.mjs",
+        })
+        copy_partial_hold = install_direct_provider_hold(s3, {
+            "python": "${pkgs.python3}/bin/python3",
+            "node": "${pkgs.nodejs}/bin/node",
+            "externalCopyPartialHold": "${managedFixtureModules}/_hub-external-copy-partial-hold.mjs",
+        }, partial_prefixes=["/fleet-s3/.aos-direct-qualification/external-oci/" + run + "/registry/"
+            for run in external_copy_cases.values()])
+      ''}
       s3.wait_until_succeeds(f"{GARAGE} status > /dev/null", timeout=180)
       s3.succeed(textwrap.dedent(f"""
           set -eu
@@ -892,6 +984,13 @@ in {
             then "None"
             else builtins.toJSON (toString runtimeSource)
           },
+              "externalOciSetup": "${managedFixtureModules}/_hub-external-oci-setup.py",
+              "externalCopyIsolation": "${managedFixtureModules}/_hub-external-copy-isolation.cjs",
+              "externalCopyClosedLoss": "${managedFixtureModules}/_hub-external-copy-closed-loss.mjs",
+              "externalCopyLifetime": "${managedFixtureModules}/_hub-external-copy-lifetime.py",
+              "externalCopyCases": external_copy_cases,
+              "externalCopyPartialInstallation": copy_partial_hold,
+              "externalWorkflowAccounting": "${managedFixtureModules}/_hub-external-workflow-accounting.py",
               "managedContainerProducer": "${managedFixtureModules}/_hub-managed-container.py",
               "documentedPackage": {"storePath": "${pkgs.aos-hub}", "version": "${pkgs.aos-hub.version}",
                   "baseLib": "${containerFixture.config.aos.config.evalAtBoot.baseLib}"},
@@ -901,6 +1000,8 @@ in {
               "readWindowModule": "${managedFixtureModules}/_hub-direct-read-window.py",
               "managedCleanupNativeHelper": "${managedCleanupNativeHelper}/bin/aos-hub-managed-cleanup-contract",
               "managedCleanupNativeHelperProvenance": "${managedCleanupHelperProvenance}/provenance.json",
+              "verificationObservationHelper": "${verificationObservationHelper}/bin/aos-hub-worker-verification-observation",
+              "verificationObservationHelperProvenance": "${verificationObservationHelperProvenance}/provenance.json",
               "consoleAssetInputs": [
                   "${pkgs.aos-hub.src}/crates/aos-hub-core/src/web/static_assets/style.css",
                   "${pkgs.aos-hub.src}/crates/aos-hub-core/src/web/static_assets/app.js",
@@ -915,6 +1016,21 @@ in {
               "managedCleanupInstaller": "${managedFixtureModules}/_hub-managed-cleanup-install.cjs",
               "managedCleanupLossListener": "${managedFixtureModules}/_hub-managed-cleanup-loss.py",
               "managedCleanupRuntime": "${managedFixtureModules}/_hub-managed-cleanup-runtime.py",
+              "managedCleanupAccounting": "${managedFixtureModules}/_hub-managed-cleanup-accounting.py",
+              "managedWorkflowAccounting": "${managedFixtureModules}/_hub-managed-workflow-accounting.py",
+              "managedCleanupSql": "${managedFixtureModules}/_hub-managed-cleanup-sql.py",
+              "storageCodecSourceSha256": "${builtins.hashString "sha256" (builtins.concatStringsSep "" (map (name: builtins.readFile (runtimeSource + ("/tests/fleet/storage-body-codec/src/" + name))) ["main.rs" "files.rs" "classify.rs" "storage_work.rs" "ingress.rs" "controls.rs" "copy_request.rs" "copy_closed.rs"]))}",
+              "storageCodecExecutable": {"path": "${storageBodyCodec}/bin/aos-storage-body-codec",
+                  "sha256": hashlib.sha256(Path("${storageBodyCodec}/bin/aos-storage-body-codec").read_bytes()).hexdigest()},
+              "managedIngressObservationSources": {
+                  "nativeHandlerSourceSha256": "${builtins.hashString "sha256" ((builtins.readFile (pkgs.aos-hub.src + "/crates/aos-hub/src/server.rs")) + (builtins.readFile (pkgs.aos-hub.src + "/crates/aos-hub/src/server/hybrid_observation.rs")))}",
+                  "checkedContextSourceSha256": "${builtins.hashFile "sha256" (pkgs.aos-hub.src + "/crates/aos-hub-core/src/hybrid_ingress/observation.rs")}"},
+              "ociProfileController": "${managedFixtureModules}/_hub-oci-profile-mismatch.py",
+              "ociProfileProcess": "${managedFixtureModules}/_hub-oci-profile-process.py",
+              "ociProfileListener": "${managedFixtureModules}/_hub-oci-profile-mismatch-listener.mjs",
+              "curlBin": "${pkgs.curl}/bin/curl",
+              "providerHoldListener": "${managedFixtureModules}/_hub-direct-provider-response-hold.mjs",
+              "providerHoldInstallation": provider_hold,
               "staleIndexController": "${managedFixtureModules}/_hub-direct-stale-index.py",
               "staleIndexListener": "${managedFixtureModules}/_hub-direct-stale-index-listener.mjs",
               "staleIndexProcess": "${managedFixtureModules}/_hub-direct-stale-index-process.py",
@@ -926,6 +1042,10 @@ in {
                   "sha256": hashlib.sha256(Path("${managedWorkerObservationProxyTemplate}/value").read_bytes()).hexdigest()},
               "nativeObservationProxyConfiguration": "${nativeObservationProxyConfig}/value",
               "workerObservationProxyConfiguration": "${workerObservationProxyConfig}/value",
+              "externalOciNativeProxyTemplate": {"path": "${externalOciNativeProxyTemplate}/value",
+                  "sha256": hashlib.sha256(Path("${externalOciNativeProxyTemplate}/value").read_bytes()).hexdigest()},
+              "externalOciWorkerProxyTemplate": {"path": "${externalOciWorkerProxyTemplate}/value",
+                  "sha256": hashlib.sha256(Path("${externalOciWorkerProxyTemplate}/value").read_bytes()).hexdigest()},
               "managedNativeObservationProxyTemplate": {"path": "${managedNativeObservationProxyTemplate}/value",
                   "sha256": hashlib.sha256(Path("${managedNativeObservationProxyTemplate}/value").read_bytes()).hexdigest()},
               "managedWorkerObservationProxyTemplate": {"path": "${managedWorkerObservationProxyTemplate}/value",
@@ -973,8 +1093,16 @@ in {
           direct_tools["storageBoundaryInstallation"] = install_direct_storage_boundaries(native, worker, direct_tools)
           native.succeed("systemctl restart aos-hub.service", timeout=60)
           native.wait_for_unit("aos-hub.service", timeout=90)
-          run_external_direct_fleet(client, native, worker, s3, database_machine,
-              direct_tools, DATABASE_OPERATOR_HOST, "${workerOptions}/value")
+          direct_producer_error = None
+          try:
+              run_external_direct_fleet(client, native, worker, s3, database_machine,
+                  direct_tools, DATABASE_OPERATOR_HOST, "${workerOptions}/value")
+          except Exception as error:
+              direct_producer_error = error
+              raise
+          finally:
+              stop_direct_provider_listeners(s3, direct_tools,
+                  {"verification": provider_hold, "copy-partial": copy_partial_hold}, direct_producer_error)
         ''
       else
         import ./_hub-hybrid-legacy.nix {

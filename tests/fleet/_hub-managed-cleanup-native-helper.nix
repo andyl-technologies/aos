@@ -4,6 +4,8 @@
   native = pkgs.aos-hub;
   worker = pkgs.aos-hub-direct-guard-e2e.passthru.workerDist;
   selector = "storage_work::oci_cleanup::controlled::actual_managed_terminal_cleanup_pair";
+  externalOciSelector = "storage_work::external_oci::tests::fleet::actual_external_oci_fleet_origin";
+  externalOciSetupSelector = "storage_work::external_oci::tests::fleet_setup::actual_external_oci_fleet_setup";
   cargoCommand = "test --release --frozen --offline --no-run -p aos-hub --lib --features postgres,required-live-dialects -j$NIX_BUILD_CORES";
 in
   assert pkgs.stdenv.hostPlatform.isLinux && !pkgs.stdenv.isCross;
@@ -16,7 +18,7 @@ in
         src = native.src;
         name = "aos-vendor-0.1.0";
         sourceRoot = "source/crates";
-        hash = "sha256-bFrGLJz08aNxlYogCpbDOy9Oh7uFIcLXm4lMe5Ce9no=";
+        hash = "sha256-WGkOGTHCcEgqZb0Igesu7xXTnhmEifgKt1IS0ARGuCI=";
       };
       cargoBuildCommands = [cargoCommand];
       cargoEnv = {
@@ -63,12 +65,22 @@ in
           --list --ignored --exact '${selector}' \
           > "$out/nix-support/ignored-test-registration.txt"
         grep -Fx '${selector}: test' "$out/nix-support/ignored-test-registration.txt"
+        "$out/bin/aos-hub-managed-cleanup-contract" \
+          --list --ignored --exact '${externalOciSelector}' \
+          > "$out/nix-support/external-oci-test-registration.txt"
+        grep -Fx '${externalOciSelector}: test' "$out/nix-support/external-oci-test-registration.txt"
+        "$out/bin/aos-hub-managed-cleanup-contract" \
+          --list --ignored --exact '${externalOciSetupSelector}' \
+          > "$out/nix-support/external-oci-setup-test-registration.txt"
+        grep -Fx '${externalOciSetupSelector}: test' "$out/nix-support/external-oci-setup-test-registration.txt"
       '';
 
       # Ordinary fixup remains enabled. The tuple coordinator observes the final
       # installed ELF afterward; a pre-fixup digest would describe different bytes.
       passthru = {
         testSelector = selector;
+        externalOciTestSelector = externalOciSelector;
+        externalOciSetupTestSelector = externalOciSetupSelector;
         inherit cargoCommand;
         nativeFilteredSourceStorePath = toString native.src;
         workerFilteredSourceStorePath = toString worker.src;

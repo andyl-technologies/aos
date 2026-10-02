@@ -12,20 +12,24 @@
   nativeUpstreamCertificateName ? "aos.andyl.org",
   workerUpstream ? "https://127.0.0.1:4443",
   workerUpstreamCertificateName ? "localhost",
+  externalCopyClosedLossUpstream ? null,
   heldExecuteUpstream ? null,
   managedCleanupLossUpstream ? null,
+  managedOciProfileHoldUpstream ? null,
   includeManagedCleanupControls ? false,
   workerAdditionalHttp ? "",
   includeTransferCompletion ? false,
 }:
 assert heldExecuteUpstream == null || heldExecuteUpstream == "https://localhost:4650";
 assert managedCleanupLossUpstream == null || managedCleanupLossUpstream == "http://127.0.0.1:4660";
-let
+assert externalCopyClosedLossUpstream == null || externalCopyClosedLossUpstream == "http://127.0.0.1:4678";
+assert managedOciProfileHoldUpstream == null || managedOciProfileHoldUpstream == "http://127.0.0.1:4649"; let
   protectedHeaders = import ./_hub-protected-header-format.nix;
-  headerFormat = name: protectedHeaders {
-    inherit name;
-    includeManagedCleanup = includeManagedCleanupControls;
-  };
+  headerFormat = name:
+    protectedHeaders {
+      inherit name;
+      includeManagedCleanup = includeManagedCleanupControls;
+    };
   format = name: root: extra: ''
     log_format ${name} escape=json
       '{"procedure":"$uri","phase":"$http_x_aos_hybrid_upload_phase",'
@@ -38,7 +42,11 @@ let
       '"response_body_file":"${root}/response-bodies/$request_id",'
       '"method":"$request_method","response_content_type":"$sent_http_content_type",'
       '"request_transfer_encoding":"$http_transfer_encoding",'
-      '"response_content_encoding":"$sent_http_content_encoding"${extra}${if includeTransferCompletion then '',"request_completion":"$request_completion","upstream_response_bytes":"$upstream_response_length"'' else ""}}';
+      '"response_content_encoding":"$sent_http_content_encoding"${extra}${
+      if includeTransferCompletion
+      then '',"request_completion":"$request_completion","upstream_response_bytes":"$upstream_response_length"''
+      else ""
+    }}';
   '';
   capture = root: ''
     client_body_in_file_only on;
@@ -72,31 +80,31 @@ in {
       access_log ${nativeRoot}/requests.jsonl native_outbound;
       access_log ${nativeRoot}/protected-headers.jsonl native_outbound_headers;
       ${
-        if heldExecuteUpstream == null
-        then ""
-        else ''
-          # Baseline and loaded traffic use this same unarmed listener. It may
-          # hold one exact signed index original; capture and identity stay intact.
-          location = /_internal/storage/v1/execute {
-            ${capture nativeRoot}
-            ${forwarding heldExecuteUpstream "localhost"}
-            proxy_set_header x-aos-fleet-request-id $request_id;
-          }
-        ''
-      }
+      if heldExecuteUpstream == null
+      then ""
+      else ''
+        # Baseline and loaded traffic use this same unarmed listener. It may
+        # hold one exact signed index original; capture and identity stay intact.
+        location = /_internal/storage/v1/execute {
+          ${capture nativeRoot}
+          ${forwarding heldExecuteUpstream "localhost"}
+          proxy_set_header x-aos-fleet-request-id $request_id;
+        }
+      ''
+    }
       ${
-        if managedCleanupLossUpstream == null
-        then ""
-        else ''
-          # This initial unarmed listener may lose one fully consumed, verified
-          # cleanup reply. All original request bytes and correlation stay intact.
-          location = /_internal/storage/managed-oci-cleanup/v1 {
-            ${capture nativeRoot}
-            ${forwarding managedCleanupLossUpstream "localhost"}
-            proxy_set_header x-aos-fleet-request-id $request_id;
-          }
-        ''
-      }
+      if managedCleanupLossUpstream == null
+      then ""
+      else ''
+        # This initial unarmed listener may lose one fully consumed, verified
+        # cleanup reply. All original request bytes and correlation stay intact.
+        location = /_internal/storage/managed-oci-cleanup/v1 {
+          ${capture nativeRoot}
+          ${forwarding managedCleanupLossUpstream "localhost"}
+          proxy_set_header x-aos-fleet-request-id $request_id;
+        }
+      ''
+    }
       location / {
         ${capture nativeRoot}
         ${forwarding nativeUpstream nativeUpstreamCertificateName}
@@ -125,7 +133,32 @@ in {
         listen ${toString workerListenPort} ssl;
         server_name ${serverName};
         ssl_certificate ${serverCertificate}/value;
-        ssl_certificate_key ${serverPrivateKey}/value;
+        ssl_certificate_key ${serverPrivateKey}/value;${
+      if managedOciProfileHoldUpstream == null
+      then ""
+      else ''
+
+        # A and B are Worker-local listeners. The unarmed owner shares the
+        # ordinary path and may hold only one unchanged projection original.
+        location = /_internal/storage/oci-document-projection {
+          access_log ${workerRoot}/requests.jsonl worker_storage;
+          access_log ${workerRoot}/protected-headers.jsonl worker_storage_headers;
+          ${capture workerRoot}
+          ${forwarding managedOciProfileHoldUpstream "localhost"}
+        }
+      ''
+    }${
+      if externalCopyClosedLossUpstream == null
+      then ""
+      else ''
+        location = /_internal/storage/external-copy/v1 {
+          access_log ${workerRoot}/requests.jsonl worker_storage;
+          access_log ${workerRoot}/protected-headers.jsonl worker_storage_headers;
+          ${capture workerRoot}
+          ${forwarding externalCopyClosedLossUpstream "localhost"}
+        }
+      ''
+    }
         location /_internal/storage/ {
           access_log ${workerRoot}/requests.jsonl worker_storage;
           access_log ${workerRoot}/protected-headers.jsonl worker_storage_headers;
@@ -139,7 +172,33 @@ in {
           proxy_buffering off;
           ${forwarding workerUpstream workerUpstreamCertificateName}
         }
-      }
+      }${
+      if managedOciProfileHoldUpstream == null
+      then ""
+      else ''
+
+        # This independently observed audience belongs to the same pinned proxy
+        # master. The selected B runner alone may bind its upstream listener.
+        server {
+          listen 4648 ssl;
+          server_name localhost;
+          ssl_certificate ${serverCertificate}/value;
+          ssl_certificate_key ${serverPrivateKey}/value;
+          location /_internal/storage/ {
+            access_log ${workerRoot}/requests.jsonl worker_storage;
+            access_log ${workerRoot}/protected-headers.jsonl worker_storage_headers;
+            ${capture workerRoot}
+            ${forwarding "https://127.0.0.1:4647" "localhost"}
+          }
+          location / {
+            proxy_store off;
+            proxy_request_buffering off;
+            proxy_buffering off;
+            ${forwarding "https://127.0.0.1:4647" "localhost"}
+          }
+        }
+      ''
+    }
     }
   '';
 }
