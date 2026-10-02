@@ -210,7 +210,15 @@ impl NativeFilesystem {
     fn validate_path(&self, path: &Path, allow_symlink: bool) -> Result<()> {
         let roots = self.roots.iter().map(PathBuf::as_path).collect::<Vec<_>>();
         if allow_symlink {
-            ensure!(path.is_absolute() && path.components().all(|part| matches!(part, Component::RootDir | Component::Normal(_))) && !roots.contains(&path) && roots.iter().any(|root| path.starts_with(root)), "tree destination is not a normalized mutable entry path");
+            ensure!(
+                path.is_absolute()
+                    && path
+                        .components()
+                        .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+                    && !roots.contains(&path)
+                    && roots.iter().any(|root| path.starts_with(root)),
+                "tree destination is not a normalized mutable entry path"
+            );
             // The final entry is deliberately a link; every containing directory
             // still has to be opened without following links.
             open_directory_nofollow(path.parent().context("tree entry has no parent")?)?;
@@ -276,7 +284,8 @@ impl NativeFilesystem {
                     && invocation.effect.dependencies.contains(&other.id)
                     && input.parent_resource.as_ref() == Some(&other.id);
                 if authorized_parent {
-                    let metadata = fs::symlink_metadata(&other.path).context("inspecting explicitly authorized parent directory")?;
+                    let metadata = fs::symlink_metadata(&other.path)
+                        .context("inspecting explicitly authorized parent directory")?;
                     self.ensure_identity(&metadata, &other)?;
                 } else {
                     validate_storage_claim(&input.path, [other.path])?;
