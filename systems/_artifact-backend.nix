@@ -1,4 +1,7 @@
-##! Selects the native OCI artifact package for Linux image compositions.
+##! Admit image-builder contracts without installing their build-only payload.
 {pkgs, ...}: {
-  environment.systemPackages = [pkgs.aos-oci-backend];
+  aos.packages.aos-oci-backend = {
+    package = pkgs.aos-oci-backend;
+    enable = true;
+  };
 }

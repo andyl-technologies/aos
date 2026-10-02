@@ -5,7 +5,6 @@
   mkSystem,
 }: let
   fixtureAuthorities = {pkgs, ...}: {
-    aos.image.budgets.maxInitrdMiB = lib.mkForce 144;
     aos.profiles.canonicalRelease = {
       enable = true;
       publicAuthorities = {

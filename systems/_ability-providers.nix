@@ -1,6 +1,6 @@
-##! Package roots for the provider implementations selected by current systems.
-{pkgs, ...}: {
-  environment.systemPackages = [
+##! Admit provider contracts without installing unused implementations.
+{pkgs, ...}: let
+  providers = [
     pkgs.aos-filesystem-provider
     pkgs.cryptsetup
     pkgs.aos-cryptsetup-provider
@@ -12,4 +12,15 @@
     pkgs.aos-boot-preparation-provider
     pkgs.kmod
   ];
+in {
+  # Selected effects retain their handlers through the native graph. Merely
+  # making a contract available must not install every provider's payload.
+  aos.packages = builtins.listToAttrs (map (package: {
+      name = package.pname;
+      value = {
+        inherit package;
+        enable = true;
+      };
+    })
+    providers);
 }
