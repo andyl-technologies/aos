@@ -753,7 +753,7 @@ fn read_bounded_nofollow(path: &Path, maximum_bytes: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn snapshot_local_delivery_object(
+pub(super) fn snapshot_local_delivery_object(
     file: &StaticOriginFile,
     expected_size: u64,
     expected_sha256: &str,
@@ -1942,3 +1942,6 @@ mod tests {
         assert_eq!(file.cache_control, cache_control, "{relative_path}");
     }
 }
+
+/// Re-exports the immutable-only persistent draft uploader.
+pub use super::static_stage::stage_static_origin_to_all;

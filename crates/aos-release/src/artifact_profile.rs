@@ -25,7 +25,7 @@
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
-use crate::registry::{RegistryTier, registry_policy};
+use crate::registry::{RegistryTier, channel_kind, registry_policy};
 
 /// Evaluated client and support identity shared by a system's release artifacts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -53,7 +53,7 @@ pub struct ArtifactProfile {
     pub channel: String,
     /// Ed25519 public trust lines installed for the selected registry alias.
     pub trust_keys: Vec<String>,
-    /// User-visible lifecycle notice, required for testing artifacts.
+    /// User-visible lifecycle notice, required for testing and `edge` artifacts.
     pub warning: String,
 }
 
@@ -61,13 +61,15 @@ impl ArtifactProfile {
     /// Requires this artifact's client configuration to match its release destination.
     ///
     /// The baked default channel must have a kind the registry tier carries:
-    /// `edge` for testing registries, `candidate` or `stable` for `andyl/main`.
+    /// `edge` only for testing registries, any kind for `andyl/main`. Testing
+    /// artifacts and `edge` artifacts on any registry must carry a lifecycle
+    /// warning, because neither comes with a support promise.
     ///
     /// # Errors
     /// Returns an error for a disabled profile, a registry or tier crossover,
     /// a channel kind outside the tier, a different root epoch, a different
     /// client URL or alias, absent or malformed trust keys, or an absent
-    /// testing warning.
+    /// warning on a testing or `edge` artifact.
     pub fn require_release(&self, registry: &str) -> Result<()> {
         if !self.enabled {
             bail!("selected system does not enable a public release artifact profile");
@@ -108,8 +110,10 @@ impl ArtifactProfile {
                 bail!("artifact trust-key alias differs from its registry");
             }
         }
-        if policy.tier() == RegistryTier::Testing && self.warning.trim().is_empty() {
-            bail!("testing artifacts require a user-visible lifecycle warning");
+        let unsupported_stream =
+            policy.tier() == RegistryTier::Testing || channel_kind(&self.channel)? == "edge";
+        if unsupported_stream && self.warning.trim().is_empty() {
+            bail!("testing and edge artifacts require a user-visible lifecycle warning");
         }
         Ok(())
     }
@@ -207,7 +211,7 @@ mod tests {
             ("andyl/testing", "edge", true),
             ("andyl/testing", "candidate", false),
             ("andyl/testing-v2", "stable", false),
-            ("andyl/main", "edge", false),
+            ("andyl/main", "edge", true),
             ("andyl/main", "candidate", true),
             ("andyl/main", "stable", true),
             ("andyl/main", "stable-2026.3", true),
@@ -220,6 +224,19 @@ mod tests {
                 "{registry} {channel}"
             );
         }
+    }
+
+    #[test]
+    fn main_edge_artifacts_keep_their_warning_while_supported_channels_may_drop_it() {
+        let mut edge = profile("andyl/main");
+        edge.channel = "edge".into();
+        assert!(edge.require_release("andyl/main").is_ok());
+        edge.warning.clear();
+        assert!(edge.require_release("andyl/main").is_err());
+
+        let mut stable = profile("andyl/main");
+        stable.warning.clear();
+        assert!(stable.require_release("andyl/main").is_ok());
     }
 
     #[test]

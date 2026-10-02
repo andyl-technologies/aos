@@ -1,4 +1,4 @@
-//! `aos release step qualify-run`: one destination's qualification phase.
+//! `aos maintain release step qualify-run`: one destination's qualification phase.
 //!
 //! The destination's profile and the plan's change scope select the cases of
 //! the phase. Every case runs on its platform's native executor against the

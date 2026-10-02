@@ -82,7 +82,7 @@
         path = "${blake3Wasm}/blake3-wasm-2.1.5.tgz";
       }
     ];
-    hash = "sha256-Du5Ma+g7goX975yJSMj/b9tFF77ElZ4/xJbfWHZG+KQ=";
+    hash = "sha256-oK6QpByIno2gkoOQG2GZR7uUlHcCNJTyK5ueoINmyjM=";
   };
 
   sharpVips = callPackage ../../libs/_sharp-vips.nix {};

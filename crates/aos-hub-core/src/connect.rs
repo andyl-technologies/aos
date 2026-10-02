@@ -932,7 +932,8 @@ fn is_reserved_control_path(path: &str) -> bool {
         || registry_document_path(trimmed).is_some()
         || matches!(
             trimmed,
-            "_assets"
+            ".well-known/aos-deployment"
+                | "_assets"
                 | "account"
                 | "activate"
                 | "auth"
@@ -3283,6 +3284,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         apply_delete_webhook
     );
     // PublishService
+    r = rpc_route!(r, "/aos.hub.v1.PublishService/UpsertStagedRelease", upsert_staged_release);
+    r = rpc_route!(r, "/aos.hub.v1.PublishService/GetStagedRelease", get_staged_release);
+    r = rpc_route!(r, "/aos.hub.v1.PublishService/ListStagedReleases", list_staged_releases);
+    r = rpc_route!(r, "/aos.hub.v1.PublishService/FinalizeStagedRelease", finalize_staged_release);
+    r = rpc_route!(r, "/aos.hub.v1.PublishService/DiscardStagedRelease", discard_staged_release);
     r = rpc_route!(
         r,
         "/aos.hub.v1.PublishService/BeginRegistryPublication",
@@ -4692,6 +4698,7 @@ mod tests {
             "/",
             "/healthz",
             "/metrics",
+            "/.well-known/aos-deployment",
             "/oauth2/token",
             "/aos.hub.v1.RouteService/ListRoutes",
             "/-/org/acme/caches",
@@ -4714,6 +4721,8 @@ mod tests {
             "/objects/aa/bb",
             "/nar/archive.nar.zst",
             "/hash.narinfo",
+            "/.well-known/aos-deployment/",
+            "/.well-known/other",
         ] {
             assert!(
                 !is_reserved_control_path(serving_path),

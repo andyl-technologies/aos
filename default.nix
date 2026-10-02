@@ -857,12 +857,24 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     scenarios = releaseQualificationScenarios;
     caseScenarios = releaseQualificationCaseScenarios;
     scenarioFixtures = builtins.listToAttrs (lib.mapAttrsToList (scenarioId: scenario: {
-        name = "${scenario}/bin/aos-qualification-${scenarioId}";
+        # Attribute names are lookup keys; the scenario and fixture values
+        # retain the executable and archive roots in the executor closure.
+        name = builtins.unsafeDiscardStringContext "${scenario}/bin/aos-qualification-${scenarioId}";
         value = scenario.passthru.qualification.fixtureArchiveRoot;
       })
       nativeAbilityScenarios);
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
+  };
+  # The closure a maintainer machine installs: the CLI plus the executor for
+  # the platform it can qualify natively. `aos release` discovers its own
+  # closure and executors from this layout, so neither appears in the
+  # maintainer configuration.
+  releaseTooling = import ./pkgs/tools/aos/_release-tooling.nix {
+    inherit lib;
+    inherit (pkgs) runCommand runtimeShell;
+    aos = pkgs.aos;
+    executors = {${hostPlatform.system} = releaseQualificationExecutor;};
   };
 
   prefixAttrs = prefix: attrs:
@@ -1683,7 +1695,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in rec {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection containerImages containerDefinitions releaseQualificationExecutor allPackages;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
   # nix-build does not descend through arbitrary nested check attrsets. An
   # explicit list reaches every gate while stopping at derivations, whose
   # passthru attributes are metadata rather than additional checks.

@@ -871,7 +871,6 @@ async fn main() -> Result<()> {
                         aos_hub_core::topology_probe::SignedManifestRouteObservationProvider::from_signed_json(
                             &signed_manifest,
                             &public_key,
-                            now_secs(),
                             Arc::clone(&route_http),
                         )
                         .context("invalid signed route publication manifest")?,

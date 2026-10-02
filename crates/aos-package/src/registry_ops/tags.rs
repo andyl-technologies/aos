@@ -33,6 +33,7 @@ pub async fn tag(
     validate_git_ref_name(name)?;
     let registry_name = resolve_registry_name(config, registry)?;
     let dir = config.scope.registries_path().join(&registry_name);
+    ensure_release_tag_absent(&dir, name)?;
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     let tag_message = message.unwrap_or("AOS registry release");
 
@@ -78,16 +79,17 @@ pub async fn tag(
     Ok(())
 }
 
-/// `apr sign <TAG>` — re-signs an existing tag in place.
+/// `apr sign <TAG>` — re-signs an existing nonrelease tag in place.
 ///
 /// The tag is force-recreated against its current target commit with a
-/// fresh SSH signature, and the dumb-HTTP object store is refreshed.
+/// fresh SSH signature, and the dumb-HTTP object store is refreshed. Existing
+/// SemVer release tags are immutable and cannot be re-signed.
 ///
 /// # Errors
 ///
 /// Fails when no tag name is given, when the tag name is not a safe Git
 /// refname, when the tag cannot be resolved, when the signing key cannot be
-/// resolved, or when git tag signing fails.
+/// resolved, when the tag identifies an existing release, or when signing fails.
 pub async fn sign(
     config: &ApmConfig,
     tag: Option<&str>,
@@ -102,6 +104,7 @@ pub async fn sign(
         anyhow::anyhow!("`apr sign` now signs tag objects; pass the existing tag name to re-sign")
     })?;
     validate_git_ref_name(tag_name)?;
+    ensure_release_tag_absent(&dir, tag_name)?;
     let signing_key = resolve_producer_signing_key(config, &dir, &registry_name, key, key_id)?;
     let previous_tag_object = git(&dir, &["rev-parse", &format!("{tag_name}^{{tag}}")])
         .with_context(|| format!("resolving existing tag object for '{tag_name}'"))?;
@@ -150,8 +153,14 @@ pub async fn sign(
     Ok(())
 }
 
-/// Require the signed release tag for `version` to exist, returning the
-/// tag object id.
+/// Resolves the annotated release tag for `version`, returning its object id.
+///
+/// Callers verify its signature against the applicable registry trust set.
+///
+/// # Errors
+///
+/// Returns an error when the repository cannot be read or the release does
+/// not resolve to an annotated tag object.
 pub(in crate::registry_ops) fn assert_release_tag_exists(
     dir: &Path,
     version: &semver::Version,
@@ -162,13 +171,49 @@ pub(in crate::registry_ops) fn assert_release_tag_exists(
 }
 
 /// Resolve the commit a release tag points at.
-pub(in crate::registry_ops) fn release_commit(
-    dir: &Path,
-    version: &semver::Version,
-) -> Result<String> {
+///
+/// # Errors
+///
+/// Returns an error when the repository cannot be read or the release tag
+/// does not resolve to a commit.
+pub(crate) fn release_commit(dir: &Path, version: &semver::Version) -> Result<String> {
     let tag = version.to_string();
     git(dir, &["rev-parse", &format!("{tag}^{{commit}}")])
         .with_context(|| format!("resolving release tag '{tag}' commit"))
+}
+
+/// Reject replacement of an existing SemVer release tag reference.
+///
+/// This checks the reference itself, including lightweight and unsigned tags:
+/// repairing an invalid release requires a new version, preserving its identity.
+///
+/// # Errors
+///
+/// Returns an error when the release tag already exists, or its reference
+/// cannot be inspected.
+pub(in crate::registry_ops) fn ensure_release_tag_absent(dir: &Path, tag_name: &str) -> Result<()> {
+    if release_tag_version(tag_name).is_none() {
+        return Ok(());
+    }
+
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let refname = format!("refs/tags/{tag_name}");
+    match repo.find_reference(&refname) {
+        Ok(_) => bail!(
+            "release tag '{tag_name}' is immutable and cannot be replaced or re-signed; \
+             publish a replacement release with a new version"
+        ),
+        Err(error) if error.code() == git2::ErrorCode::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("inspecting release tag '{tag_name}'")),
+    }
+}
+
+/// Recognizes both canonical releases and aliases consumed by version tracking.
+pub(in crate::registry_ops) fn release_tag_version(tag_name: &str) -> Option<semver::Version> {
+    semver::Version::parse(tag_name)
+        .ok()
+        .or_else(|| crate::registry::git::parse_tag_as_semver(tag_name))
 }
 
 /// Create an SSH-signed annotated tag object.
@@ -177,6 +222,12 @@ pub(in crate::registry_ops) fn release_commit(
 /// the message — the same on-disk layout `git tag -s` produces and that
 /// [`crate::security::verify_tag_signature`] verifies (the signed payload is
 /// everything before the signature block).
+/// Existing SemVer release references are never replaced, even with `force`.
+///
+/// # Errors
+///
+/// Returns an error when an existing release would be replaced, the tag name
+/// or target is invalid, or signing and reference creation fail.
 pub(in crate::registry_ops) fn sign_tag(
     dir: &Path,
     tag_name: &str,
@@ -186,6 +237,7 @@ pub(in crate::registry_ops) fn sign_tag(
     force: bool,
 ) -> Result<()> {
     validate_git_ref_name(tag_name)?;
+    ensure_release_tag_absent(dir, tag_name)?;
     let message = message.unwrap_or("AOS registry release");
     ensure_commit_identity(dir)?;
 
@@ -230,15 +282,26 @@ pub(in crate::registry_ops) fn sign_tag(
         .write(git2::ObjectType::Tag, &payload)
         .context("writing tag object")?;
     let refname = format!("refs/tags/{tag_name}");
-    repo.reference(&refname, oid, force, &format!("apr tag {tag_name}"))
-        .with_context(|| format!("creating tag ref '{tag_name}'"))?;
+    // Release creation must also fail if another writer creates the reference
+    // after the preflight check and before this insertion.
+    let replace_existing = force && release_tag_version(tag_name).is_none();
+    repo.reference(
+        &refname,
+        oid,
+        replace_existing,
+        &format!("apr tag {tag_name}"),
+    )
+    .with_context(|| format!("creating tag ref '{tag_name}'"))?;
     Ok(())
 }
 
 /// Format a git timezone offset (`+HHMM`/`-HHMM`) from a [`git2::Time`].
-fn format_git_tz(when: git2::Time) -> String {
+pub(in crate::registry_ops) fn format_git_tz(when: git2::Time) -> String {
     let offset = when.offset_minutes();
     let sign = if offset < 0 { '-' } else { '+' };
     let abs = offset.abs();
     format!("{sign}{:02}{:02}", abs / 60, abs % 60)
 }
+
+#[cfg(test)]
+mod tests;

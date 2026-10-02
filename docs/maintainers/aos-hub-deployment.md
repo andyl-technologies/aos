@@ -345,8 +345,8 @@ variant (or an equivalent profile), while a release bound for production keeps
 the `aos-testing` variant and is exercised on staging through a cache override.
 
 ```sh
-bash ./aos-dev --release build container aos-testing-staging:oci --no-out-link
-bash ./aos-dev --release build build aos-testing-staging:unsignedImageAssembly --no-out-link
+aos-dev --release build container aos-testing-staging:oci --no-out-link
+aos-dev --release build build aos-testing-staging:unsignedImageAssembly --no-out-link
 ```
 
 ### Configure the direct staging CDN

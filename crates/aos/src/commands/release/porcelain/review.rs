@@ -1,4 +1,4 @@
-//! `aos release review`: sign the decision the release is waiting on.
+//! `aos maintain release review`: sign the decision the release is waiting on.
 //!
 //! The pending decision is the first, in destination order (staging first)
 //! and then hold-point order, of:

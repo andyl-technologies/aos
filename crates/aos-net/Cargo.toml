@@ -10,6 +10,7 @@ transfer = [
     "dep:async-trait",
     "dep:aws-config",
     "dep:aws-sdk-s3",
+    "dep:aws-types",
     "dep:bytes",
     "dep:digest",
     "dep:futures-util",
@@ -19,6 +20,7 @@ transfer = [
     "dep:serde",
     "dep:sha2",
     "dep:ssh2",
+    "dep:tempfile",
     "dep:tokio",
     "dep:tokio-util",
     "dep:tracing",
@@ -46,6 +48,7 @@ hex = { workspace = true, optional = true }
 # S3
 aws-sdk-s3 = { workspace = true, optional = true }
 aws-config = { workspace = true, optional = true }
+aws-types = { workspace = true, optional = true }
 
 # SSH/SFTP
 ssh2 = { workspace = true, optional = true }
@@ -64,6 +67,7 @@ anyhow = { workspace = true }
 tracing = { workspace = true, optional = true }
 
 # Misc
+tempfile = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
 
 [dev-dependencies]

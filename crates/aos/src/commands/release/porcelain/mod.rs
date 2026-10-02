@@ -1,4 +1,4 @@
-//! Maintainer porcelain: `aos release new / advance / status / explain /
+//! Maintainer porcelain: `aos maintain release new / advance / status / explain /
 //! review / fitness`.
 //!
 //! The porcelain operates one release from the maintainer configuration
@@ -61,6 +61,7 @@ use workdir::{ReleaseIndex, WorkDir};
 /// Returns an error when the command fails, or when it requires Nix.
 pub(super) async fn run_offline(command: &ReleaseCommand, printer: &Printer) -> Result<()> {
     match command {
+        ReleaseCommand::Publish(args) => advance::publish(args, printer).await,
         ReleaseCommand::Status(args) => status::run(args, printer),
         ReleaseCommand::Explain(args) => explain::run(args, printer),
         ReleaseCommand::Review(args) => review::run(args, printer).await,

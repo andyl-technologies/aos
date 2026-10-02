@@ -244,6 +244,16 @@ impl Database {
                              AND snapshot.delete_credential_generation IS NULL
                              AND binding.kind = 'local_fs')
                          OR delete_credential.validation_state = 'valid'))
+                   AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.registry_id = action.registry_id
+                       AND staged_object.sha256 = substr(action.digest, 8)
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?1))
                    AND NOT EXISTS (SELECT 1 FROM oci_tags tag
                      WHERE tag.registry_id = action.registry_id AND tag.digest = action.digest)
                    AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
@@ -337,6 +347,16 @@ impl Database {
                                    AND hold.purpose = snapshot.delete_credential_purpose
                                    AND hold.generation =
                                      snapshot.delete_credential_generation)))
+                           AND NOT EXISTS (
+                             SELECT 1 FROM staged_release_objects staged_object
+                             JOIN staged_release_revisions staged_revision
+                               ON staged_revision.registry_id = staged_object.registry_id
+                              AND staged_revision.stage_id = staged_object.stage_id
+                              AND staged_revision.revision = staged_object.revision
+                             WHERE staged_object.registry_id = oci_gc_placement_actions.registry_id
+                               AND staged_object.sha256 = substr(oci_gc_placement_actions.digest, 8)
+                               AND (staged_revision.retire_after IS NULL
+                                 OR staged_revision.retire_after > ?6))
                            AND NOT EXISTS (SELECT 1 FROM oci_tags tag
                              WHERE tag.registry_id = oci_gc_placement_actions.registry_id
                                AND tag.digest = oci_gc_placement_actions.digest)
@@ -759,6 +779,17 @@ impl Database {
                            ON link.registry_id = candidate.registry_id
                           AND link.digest = candidate.digest
                          WHERE candidate.run_id = ?1)
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_candidates candidate
+                         JOIN staged_release_objects staged_object
+                           ON staged_object.registry_id = candidate.registry_id
+                          AND staged_object.sha256 = substr(candidate.digest, 8)
+                         JOIN staged_release_revisions staged_revision
+                           ON staged_revision.registry_id = staged_object.registry_id
+                          AND staged_revision.stage_id = staged_object.stage_id
+                          AND staged_revision.revision = staged_object.revision
+                         WHERE candidate.run_id = ?1
+                           AND (staged_revision.retire_after IS NULL
+                             OR staged_revision.retire_after > ?4))
                        AND NOT EXISTS (SELECT 1 FROM oci_gc_candidates candidate
                          JOIN oci_tags tag ON tag.registry_id = candidate.registry_id
                           AND tag.digest = candidate.digest

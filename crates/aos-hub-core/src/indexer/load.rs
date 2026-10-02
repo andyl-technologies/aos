@@ -146,7 +146,10 @@ impl<'a> ObjectReader<'a> {
         self.loose_fetches.fetch_add(1, Ordering::Relaxed);
         let bytes = self
             .fetch
-            .fetch(&path)
+            .fetch_bounded(
+                &path,
+                usize::try_from(object::MAX_PUBLISHED_LOOSE_OBJECT_BYTES)?,
+            )
             .await?
             .with_context(|| format!("loose object {path} is missing from the surface"))?;
         let decoded = object::decode_loose(&bytes, Some(oid))?;

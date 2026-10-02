@@ -389,7 +389,7 @@ in
   assert builtins.all (requirement: lib.hasPrefix "ability-" requirement.id || !(requirement ? production_only)) contract.requirements;
   assert !(builtins.any (requirement: builtins.elem requirement.id ["operator-recovery" "production-recovery"]) contract.requirements);
   assert builtins.attrNames profiles == ["build" "functional" "smoke" "soak"];
-  assert builtins.length contract.destinations == 6;
+  assert builtins.length contract.destinations == 8;
   assert builtins.attrNames fitnessKinds == ["alert-delivery" "authority-recovery" "hub-restore" "key-rotation" "storage-restore"];
   assert profiles.build.requirements == ["build-integrity"];
   assert profiles.build.claims == "none";
@@ -408,8 +408,11 @@ in
   assert builtins.all (profile: profile.name == "soak" || !(profile.override.soak_seconds || profile.override.rings)) contract.profiles;
   assert builtins.all (profile: ringPartitions profile == [256] || profile.name == "soak") contract.profiles;
   assert builtins.all (kind: kind.checks != [] && kind.bindings != []) contract.fitness;
-  assert !(builtins.any (key: builtins.elem key ["testing/candidate" "testing/stable" "production/edge"]) (map (row: "${row.registry_tier}/${row.channel}") contract.destinations));
+  assert !(builtins.any (key: builtins.elem key ["testing/candidate" "testing/stable"]) (map (row: "${row.registry_tier}/${row.channel}") contract.destinations));
   assert builtins.elem "production/production/stable" destinationKeys;
+  assert builtins.elem "staging/production/edge" destinationKeys;
+  assert builtins.elem "production/production/edge" destinationKeys;
+  assert builtins.all (row: row.channel != "edge" || row.profile == (if row.surface == "staging" then "build" else "smoke")) contract.destinations;
   assert builtins.all (row: builtins.hasAttr row.profile profiles) contract.destinations;
   assert builtins.all (row: row.after == lib.optional (row.surface == "production") "staging") contract.destinations;
   assert rejects {qualification.profiles.build.requirements = lib.mkForce ["staging-delivery"];};
@@ -441,6 +444,8 @@ in
       after = ["staging"];
     };
   };
+  assert rejects {qualification.destinations."production/production/candidate".profile = lib.mkForce "smoke";};
+  assert rejects {qualification.destinations."production/production/edge".profile = lib.mkForce "build";};
     pkgs.writeTextFile {
       name = "aos-qualification-policy-check";
       destination = "/check-details-input.json";

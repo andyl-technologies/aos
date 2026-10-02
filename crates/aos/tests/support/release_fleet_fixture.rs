@@ -515,7 +515,7 @@ fn signed_manifest(plan_bytes: &[u8], manifest: ReleaseManifestV1) -> Result<Man
 /// Builds the candidate plan for both Hub surfaces and both candidate destinations.
 ///
 /// Destinations are filled by [`planned_destinations`], the same derivation
-/// `aos release step plan` applies to a request, so their profiles, gates,
+/// `aos maintain release step plan` applies to a request, so their profiles, gates,
 /// soak, and rings are exactly the contract's.
 fn release_plan(
     base_commit: &str,
@@ -796,7 +796,7 @@ fn signature_response(
 
 fn write_journal(path: PathBuf, plan: Sha256Digest, manifest: Sha256Digest) -> Result<()> {
     // Only the global build lifecycle is prepared; every destination entry is
-    // appended by the `aos release step` commands under test.
+    // appended by the `aos maintain release step` commands under test.
     let mut entries: Vec<JournalEntry> = Vec::new();
     for state in [
         ReleaseState::Planned,
@@ -1071,7 +1071,7 @@ fn fitness(arguments: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Returns the live identities `aos release step` derives for a Hub surface
+/// Returns the live identities `aos maintain release step` derives for a Hub surface
 /// when given the fleet's fitness flags.
 fn fleet_live_bindings(plan: &ReleasePlan, surface: &PlannedSurface) -> Result<LiveBindings> {
     Ok(LiveBindings {
@@ -1530,7 +1530,7 @@ mod tests {
             directory.display().to_string(),
         ])?;
 
-        // Load the store the way `aos release step publish` does.
+        // Load the store the way `aos maintain release step publish` does.
         let key = TrustedEd25519Key::from_encoded(
             RELEASE_KEY_ID,
             &fs::read(prepared.trust.join("release.pub"))?,

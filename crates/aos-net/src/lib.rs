@@ -99,8 +99,8 @@ pub use managed::{
 };
 #[cfg(feature = "transfer")]
 pub use multipart::{
-    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
-    MultipartSource, MultipartUploadRequest, MultipartUploadResult,
+    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionMissing,
+    MultipartSessionState, MultipartSource, MultipartUploadRequest, MultipartUploadResult,
 };
 pub use network_configuration::{BootstrapLinkSelector, BootstrapNetwork};
 #[cfg(feature = "transfer")]

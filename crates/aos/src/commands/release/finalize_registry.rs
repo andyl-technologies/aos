@@ -9,13 +9,18 @@ use std::time::Duration;
 use anyhow::{Context as _, Result, bail};
 use aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
 use aos_package::config::ApmConfig;
+use aos_package::registry::container_stage::prepare_container_stage;
 use aos_package::registry::release::{
     CanonicalRegistryEntryAuthor, INTENT_SCHEMA, RegistryCommitIdentity, RegistryGitObjectKind,
     RegistryGitSignature, RegistryGitSigningRequest, RegistryObjectSigner,
-    RegistryPackagePublication, RegistryReleaseIntent, RegistryReleaseTransaction,
-    require_active_signing_key,
+    RegistryPackagePublication, RegistryReleaseIntent, RegistryReleaseLifecycle,
+    RegistryReleaseTransaction, require_active_signing_key,
 };
 use aos_package::registry::support::SupportSectionWrite;
+use aos_package::registry::tuf::{
+    MetadataSigningIdentity, MetadataSigningRequest, REGISTRY_METADATA_SIGNATURE_NAMESPACE,
+    RegistryMetadataSigner,
+};
 use aos_package::registry_ops::{
     ContainerReleaseAttachment, load_container_release_attachment, local_registry_name,
 };
@@ -32,8 +37,8 @@ use aos_release::signing::{
 
 use crate::cli::{ReleaseFinalizeRegistryArgs, ReleasePrepareRegistryArgs};
 
-use super::capture;
 use super::signer::ExternalSigner;
+use super::{capture, container_binding};
 
 /// Authors every planned entry once and emits its exact review transaction.
 pub(super) async fn prepare(
@@ -47,7 +52,26 @@ pub(super) async fn prepare(
         args.container_release.as_deref(),
         args.container_signature_input.as_deref(),
     )?;
-    validate_container_plan_binding(container_release.as_ref(), &plan)?;
+    if let Some(attachment) = &container_release {
+        container_binding::validate(&attachment.release, &plan)?;
+    }
+    if container_release.is_none() && args.container_repository.is_some() {
+        bail!("container repository requires a signed container release and complete layout");
+    }
+    let container_graph = match (&container_release, &args.container_layout) {
+        (Some(attachment), Some(layout)) => Some(prepare_container_stage(
+            layout,
+            args.container_repository
+                .as_deref()
+                .unwrap_or(&attachment.release.identity.image),
+            &attachment.release,
+        )?),
+        (Some(_), None) => {
+            bail!("container release preparation requires its complete --container-layout")
+        }
+        (None, Some(_)) => bail!("container layout requires a signed container release"),
+        (None, None) => None,
+    };
 
     let provenance_key = read_key_spec(&args.provenance_key, "provenance")?;
     require_active_signing_key(&args.source_registry, &provenance_key.0, &provenance_key.1)?;
@@ -68,6 +92,23 @@ pub(super) async fn prepare(
         seen_nonces: BTreeSet::new(),
     };
 
+    let registry_key = read_key_spec(&args.registry_key, "registry catalog metadata")?;
+    require_active_signing_key(&args.source_registry, &registry_key.0, &registry_key.1)?;
+    let registry_requirement = signer_requirement(&plan, SignerRole::Registry, &registry_key.0)?;
+    let mut metadata_signer = ReleaseRegistrySigner {
+        external: ExternalSigner::new(
+            args.signer_executable.clone(),
+            Duration::from_secs(args.signer_timeout_seconds),
+        )?,
+        plan: &plan,
+        plan_digest,
+        role: SignerRole::Registry,
+        requirement: registry_requirement,
+        key: registry_key,
+        verification_identity: &args.registry_verification_identity,
+        seen_nonces: BTreeSet::new(),
+    };
+
     let intent = registry_intent(&plan, &report, plan_digest)?;
     let publications = publication_map(&plan)?;
     let config = ApmConfig::load(ProfileScope::User)?;
@@ -84,13 +125,15 @@ pub(super) async fn prepare(
             printer,
         );
         intent
-            .prepare_with_container_release(
+            .prepare_with_metadata_signer_and_container_graph(
                 &args.source_registry,
                 &args.output,
                 &mut author,
                 container_release
                     .as_ref()
                     .map(|attachment| attachment.canonical_bytes.as_slice()),
+                &mut metadata_signer,
+                container_graph.as_ref(),
             )
             .await?
     };
@@ -133,35 +176,44 @@ pub(super) async fn finalize(
         args.container_release.as_deref(),
         args.container_signature_input.as_deref(),
     )?;
-    validate_container_plan_binding(container_release.as_ref(), &plan)?;
+    if let Some(attachment) = &container_release {
+        container_binding::validate(&attachment.release, &plan)?;
+    }
     validate_prepared_container(&args.prepared_registry, container_release.as_ref())?;
 
-    let registry_key = read_key_spec(&args.registry_key, "registry")?;
-    require_active_signing_key(&args.prepared_registry, &registry_key.0, &registry_key.1)?;
-    let registry_requirement = signer_requirement(&plan, SignerRole::Registry, &registry_key.0)?;
-    let external = ExternalSigner::new(
-        args.signer_executable.clone(),
-        Duration::from_secs(args.signer_timeout_seconds),
-    )?;
-    let mut signer = ReleaseRegistrySigner {
-        external,
-        plan: &plan,
-        plan_digest,
-        role: SignerRole::Registry,
-        requirement: registry_requirement,
-        key: registry_key,
-        verification_identity: &args.registry_verification_identity,
-        seen_nonces: BTreeSet::new(),
-    };
+    let finalized = if let Some(finalized) =
+        RegistryReleaseLifecycle::resume_transaction(&transaction, &args.prepared_registry).await?
+    {
+        finalized
+    } else {
+        let registry_key = read_key_spec(&args.registry_key, "registry")?;
+        require_active_signing_key(&args.prepared_registry, &registry_key.0, &registry_key.1)?;
+        let registry_requirement =
+            signer_requirement(&plan, SignerRole::Registry, &registry_key.0)?;
+        let external = ExternalSigner::new(
+            args.signer_executable.clone(),
+            Duration::from_secs(args.signer_timeout_seconds),
+        )?;
+        let mut signer = ReleaseRegistrySigner {
+            external,
+            plan: &plan,
+            plan_digest,
+            role: SignerRole::Registry,
+            requirement: registry_requirement,
+            key: registry_key,
+            verification_identity: &args.registry_verification_identity,
+            seen_nonces: BTreeSet::new(),
+        };
 
-    let prepared = transaction.verify_prepared(&args.prepared_registry)?;
-    let identity = RegistryCommitIdentity {
-        name: args.git_name.clone(),
-        email: args.git_email.clone(),
-        unix_seconds: args.git_unix_seconds,
-        offset_minutes: args.git_offset_minutes,
+        let prepared = transaction.verify_prepared(&args.prepared_registry)?;
+        let identity = RegistryCommitIdentity {
+            name: args.git_name.clone(),
+            email: args.git_email.clone(),
+            unix_seconds: args.git_unix_seconds,
+            offset_minutes: args.git_offset_minutes,
+        };
+        prepared.finalize(&identity, &mut signer).await?
     };
-    let finalized = prepared.finalize(&identity, &mut signer).await?;
     let result = canonical::to_vec(&finalized)?;
     write_new_file(&args.result, &result)?;
 
@@ -171,15 +223,16 @@ pub(super) async fn finalize(
         "release": finalized.release,
         "commit": finalized.commit,
         "tag_object": finalized.tag_object,
-        "entry_count": prepared.entry_count,
-        "directory": prepared.directory,
+        "entry_count": transaction.entries.len(),
+        "directory": args.prepared_registry,
         "result": args.result,
     })) {
         return Ok(());
     }
     printer.success(&format!(
         "Finalized {} registry entries in signed commit {}",
-        prepared.entry_count, finalized.commit
+        transaction.entries.len(),
+        finalized.commit
     ));
     Ok(())
 }
@@ -248,45 +301,6 @@ fn require_new_path(path: &Path, description: &str) -> Result<()> {
         }
         Ok(_) => bail!("{description} already exists: {}", path.display()),
     }
-}
-
-fn validate_container_plan_binding(
-    attachment: Option<&ContainerReleaseAttachment>,
-    plan: &ReleasePlan,
-) -> Result<()> {
-    let Some(attachment) = attachment else {
-        return Ok(());
-    };
-    let package = plan
-        .packages
-        .iter()
-        .find(|package| package.name == attachment.release.identity.package)
-        .and_then(|package| package.publication.as_ref())
-        .context("container sidecar package is not publishable in the release plan")?;
-    if package.version != attachment.release.identity.package_version {
-        bail!("container sidecar package version differs from the release plan");
-    }
-
-    let attribute = &attachment.release.nix.definition.attribute;
-    let system_variant = attribute
-        .strip_prefix("systems.")
-        .and_then(|rest| rest.strip_suffix(".build.containers.aos"));
-    match system_variant {
-        Some(system_variant)
-            if plan
-                .images
-                .iter()
-                .any(|image| image.system_variant == system_variant) => {}
-        Some(system_variant) => bail!(
-            "container sidecar system variant '{system_variant}' is absent from the release plan"
-        ),
-        None if attribute == "containerImages.aos" && plan.images.len() == 1 => {}
-        None if attribute == "containerImages.aos" => bail!(
-            "legacy container definition attributes require exactly one planned system variant"
-        ),
-        None => bail!("container sidecar has an unsupported Nix definition attribute"),
-    }
-    Ok(())
 }
 
 fn validate_transaction_binding(
@@ -459,6 +473,48 @@ impl ProvenanceSigner for ReleaseRegistrySigner<'_> {
             provider_operation_id: response.provider_operation_id,
             armored_signature,
         })
+    }
+}
+
+#[async_trait::async_trait]
+impl RegistryMetadataSigner for ReleaseRegistrySigner<'_> {
+    fn signing_identities(&self) -> Vec<MetadataSigningIdentity> {
+        vec![MetadataSigningIdentity {
+            key_id: self.key.0.clone(),
+            key: self.key.1.clone(),
+            role_key: true,
+        }]
+    }
+
+    async fn sign_metadata(&mut self, request: MetadataSigningRequest) -> Result<String> {
+        let (catalog_registry, _, _) = aos_package::security::parse_signing_key(&self.key.1)?;
+        if request.registry != catalog_registry
+            || request.release != self.plan.version
+            || request.key_id != self.key.0
+        {
+            bail!("catalog metadata signing request differs from the frozen registry authority");
+        }
+        let signing_request = self.request(
+            SignerRole::Registry,
+            &request.payload,
+            SigningOperation::SignPayload,
+            SigningContext::CatalogTuf {
+                catalog_registry: request.registry,
+                metadata_role: request.role,
+                metadata_version: request.version,
+            },
+        )?;
+        let (_, signature) = self
+            .external
+            .sign_sshsig(
+                &signing_request,
+                &request.payload,
+                &self.key.1,
+                REGISTRY_METADATA_SIGNATURE_NAMESPACE,
+                self.verification_identity,
+            )
+            .await?;
+        Ok(signature)
     }
 }
 

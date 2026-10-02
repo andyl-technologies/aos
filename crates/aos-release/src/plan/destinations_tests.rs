@@ -1,7 +1,8 @@
 //! Plan-level destination, tier, and surface validation tests.
 
 use super::*;
-use crate::verify::tests::{hub_surfaces, qualification_fixture, testing_fixture};
+use crate::registry::MAIN_REGISTRY;
+use crate::verify::tests::{hub_surfaces, qualification_fixture, rebind, testing_fixture};
 
 #[test]
 fn testing_tier_rejects_candidate_releases() -> anyhow::Result<()> {
@@ -26,12 +27,32 @@ fn testing_tier_rejects_candidate_releases() -> anyhow::Result<()> {
 }
 
 #[test]
-fn production_tier_rejects_edge_releases_and_channels() -> anyhow::Result<()> {
+fn production_tier_plans_edge_versions_on_its_own_edge_destinations() -> anyhow::Result<()> {
     let (mut plan, _) = qualification_fixture()?;
     plan.version = "2026.9.0-dev.20260901.1".into();
     plan.release_class = ReleaseClass::Edge;
+    // A final version's candidate and stable destinations never accept an
+    // edge version: the class selects the edge cells and nothing else.
     assert!(plan.validate().is_err());
 
+    // The same edge release, with its edge signer and change scope, is valid
+    // on main and binds the same profiles that testing's edge binds.
+    let (mut plan, _) = testing_fixture()?;
+    plan.registry = MAIN_REGISTRY.into();
+    if let Some(predecessor) = &mut plan.qualification_predecessor {
+        predecessor.registry = plan.registry.clone();
+    }
+    rebind(&mut plan)?;
+    plan.validate()?;
+    assert_eq!(
+        plan.destinations
+            .iter()
+            .map(|destination| (destination.name.as_str(), destination.profile.as_str()))
+            .collect::<Vec<_>>(),
+        [("production/edge", "smoke"), ("staging/edge", "build")]
+    );
+
+    // Edge cells are closed to other classes, exactly like candidate cells.
     let (mut plan, _) = qualification_fixture()?;
     let destination = plan
         .destinations
