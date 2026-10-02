@@ -26,6 +26,8 @@ mod dictionaries;
 #[cfg(unix)]
 mod fresh_recovery;
 #[cfg(unix)]
+mod import_controls;
+#[cfg(unix)]
 mod limited;
 #[cfg(unix)]
 mod materialization;
@@ -38,6 +40,12 @@ mod original_acl;
 mod parents;
 #[cfg(unix)]
 mod producers;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_original_binding_rejects_copied_or_conflicting_import_controls() {
+    import_controls::reject_copied_controls().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
