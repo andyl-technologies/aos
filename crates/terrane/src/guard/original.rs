@@ -18,6 +18,8 @@ mod control;
 #[cfg(unix)]
 pub(crate) use control::{ControlExclusion, RetainedControls};
 mod verifier;
+#[cfg(unix)]
+mod import;
 pub(super) use verifier::OriginalVerifier;
 
 use std::path::{Component, Path, PathBuf};
@@ -405,6 +407,8 @@ pub struct OriginalCommitContext {
     commit: terrane_core::identity::Digest,
     baseline: RetainedBootstrap,
     retention_owner: OriginalAuthority,
+    #[cfg(unix)]
+    imported: Option<import::ImportedEvidence>,
 }
 
 impl OriginalCommitContext {
@@ -567,6 +571,7 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
             commit: *view.commit,
             baseline: baseline.clone(),
             retention_owner: authority.clone(),
+            imported: None,
         })
     }
 }
@@ -686,6 +691,10 @@ pub(super) fn consumed_pins(
 
     let baseline = context.baseline();
     let authority = baseline.authority();
+    #[cfg(unix)]
+    if let Some(imported) = &context.imported {
+        return imported.pins(&context.retention_owner);
+    }
     if &context.retention_owner != authority {
         return Err(invalid());
     }
