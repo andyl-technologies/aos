@@ -474,6 +474,11 @@ fn control_worker_teardown_handle() -> (
         header_address: std::ptr::from_ref(header.as_ref()) as usize,
         slot_address: std::ptr::from_ref(slot.as_ref()) as usize,
         wake_fd: wake_fd.as_raw_fd(),
+        control_callback_witness: None,
+        region_identity: crucible_shmem::SetupRegionBackingIdentity::from_parts(0, 1, 1)
+            .unwrap_or_else(|| panic!("valid diagnostic fixture identity")),
+        slot_index: 0,
+        process_generation: 1,
     };
     (handle, header, slot, wake_fd, wake_peer)
 }

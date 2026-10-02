@@ -19,6 +19,7 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
             continue;
         };
         if !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
+            && !line.starts_with(b"CRUCIBLE-CONTROL-LAST-V1 ")
             && !line.starts_with(b"CRUCIBLE-RR-CONTROL-DEFER-V1 ")
             && !line.starts_with(b"crucible_sim_rr_control_")
         {
@@ -30,6 +31,7 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
                     .bytes()
                     .all(|byte| byte == b' ' || byte.is_ascii_graphic())
                 && (valid_callback_row(row, child_process_id)
+                    || valid_last_callback_row(row, child_process_id)
                     || valid_defer_row(row)
                     || crate::spawn::valid_rr_control_boundary_row(row)
                     || (crate::spawn::valid_control_delivery_row(row)
@@ -152,9 +154,109 @@ fn valid_defer_row(row: &str) -> bool {
     fields.next().is_none()
 }
 
+fn valid_last_callback_row(row: &str, child_process_id: u32) -> bool {
+    let mut fields = row.split_ascii_whitespace();
+    if fields.next() != Some("CRUCIBLE-CONTROL-LAST-V1") {
+        return false;
+    }
+    let kind = value(&mut fields, "kind=");
+    if !matches!(kind, Some("last-callback" | "last-admitted"))
+        || value(&mut fields, "phase=") != Some("after-drain")
+        || !matches!(
+            value(&mut fields, "teardown="),
+            Some("host-quit" | "shared-shutdown" | "run-control-fault")
+        )
+        || value(&mut fields, "pid=").and_then(|pid| pid.parse::<u32>().ok())
+            != Some(child_process_id)
+    {
+        return false;
+    }
+    for key in ["device=", "inode=", "length="] {
+        if !value(&mut fields, key).is_some_and(unsigned::<u64>) {
+            return false;
+        }
+    }
+    if !value(&mut fields, "slot=").is_some_and(unsigned::<u32>)
+        || !value(&mut fields, "generation=").is_some_and(unsigned::<u64>)
+        || !value(&mut fields, "final_token=").is_some_and(unsigned::<u32>)
+    {
+        return false;
+    }
+    if fields.clone().next() == Some("observation=unavailable") {
+        fields.next();
+        return fields.next().is_none();
+    }
+    if !value(&mut fields, "callback=").is_some_and(unsigned::<u64>) {
+        return false;
+    }
+    let Some(raw) = value(&mut fields, "raw_icount=") else {
+        return false;
+    };
+    let Some(phase) = value(&mut fields, "callback_phase=") else {
+        return false;
+    };
+    let Some(reason) = value(&mut fields, "reason=") else {
+        return false;
+    };
+    if kind == Some("last-admitted") && !matches!(phase, "admitted" | "exit") {
+        return false;
+    }
+    let expected_mask = match (phase, reason) {
+        ("rejected", "hot-fork-held") => "1",
+        ("rejected", "teardown-closed") => "2",
+        ("rejected", "teardown-and-hot-fork") => "3",
+        ("rejected", "shared-shutdown") => "4",
+        _ => "0",
+    };
+    if value(&mut fields, "rejection_mask=") != Some(expected_mask) {
+        return false;
+    }
+    let remaining = fields.collect::<Vec<_>>().join(" ");
+    // Reuse the existing exact callback grammar; region fields add no authority.
+    valid_callback_row(
+        &format!(
+            "CRUCIBLE-CONTROL-CALLBACK-V1 phase={phase} reason={reason} pid={child_process_id} raw_icount={raw} {remaining}"
+        ),
+        child_process_id,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn final_callback_public_vector_is_retained_only_for_owned_pid_and_exact_schema() {
+        // Matches the GPL-side real callback emitter's public diagnostic vector.
+        let row = "CRUCIBLE-CONTROL-LAST-V1 kind=last-callback phase=after-drain teardown=host-quit pid=191 device=1 inode=2 length=4096 slot=0 generation=2 final_token=3 callback=1 raw_icount=7 callback_phase=exit reason=acknowledged rejection_mask=0 token_kind=observed token_before=2 token_after=3";
+        let summary = control_diagnostics_summary(format!("{row}\n").as_bytes(), 191);
+        assert!(summary.contains("accepted_rows=1 rejected_rows=0"));
+        assert!(summary.contains(row));
+        for invalid in [
+            row.replace("pid=191", "pid=192"),
+            row.replace("rejection_mask=0", "rejection_mask=2"),
+            row.replace("token_kind=observed", "token_kind=cached"),
+            row.replace("length=4096", "length=-1"),
+            row.replace("phase=after-drain", "phase=before-drain"),
+            format!("{row} unexpected=1"),
+        ] {
+            let summary = control_diagnostics_summary(format!("{invalid}\n").as_bytes(), 191);
+            assert!(summary.contains("accepted_rows=0 rejected_rows=1"));
+        }
+    }
+
+    #[test]
+    fn final_rejection_and_unavailable_rows_preserve_existing_tail_limits() {
+        let row = "CRUCIBLE-CONTROL-LAST-V1 kind=last-callback phase=after-drain teardown=host-quit pid=191 device=1 inode=2 length=4096 slot=0 generation=2 final_token=4510 callback=100 raw_icount=5859612126 callback_phase=rejected reason=hot-fork-held rejection_mask=1 token_kind=cached token_before=4509 token_after=unavailable";
+        assert!(valid_last_callback_row(row, 191));
+        assert!(!valid_last_callback_row(
+            &row.replace("kind=last-callback", "kind=last-admitted"),
+            191
+        ));
+        let unavailable = "CRUCIBLE-CONTROL-LAST-V1 kind=last-admitted phase=after-drain teardown=run-control-fault pid=191 device=1 inode=2 length=4096 slot=0 generation=2 final_token=4510 observation=unavailable\n";
+        let summary = control_diagnostics_summary(unavailable.repeat(40).as_bytes(), 191);
+        assert!(summary.contains("accepted_rows=40 rejected_rows=0 tail_rows=32 omitted_rows=8"));
+    }
 
     fn callback(token: u32) -> String {
         format!(
