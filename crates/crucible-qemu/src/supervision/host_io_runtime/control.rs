@@ -196,6 +196,7 @@ impl QemuLiveHostIoRuntime {
         // its own bounded policy interval. Neither interval enters canonical
         // state or changes the exact guest coordinate.
         let deadline = HostSupervisionDeadline::start(timeout);
+        self.wait_observation.begin_clamp(timeout);
         let mut last_observed_state;
         let mut boundary_acknowledged = false;
         let initial_fault_event_indices = self.fault_event_ring_indices()?;
@@ -263,6 +264,18 @@ impl QemuLiveHostIoRuntime {
             let Some(remaining) = deadline.remaining() else {
                 break;
             };
+            self.observe_pending_wait(
+                "clamp-ack-pending",
+                &observed,
+                Some(wait_observation::ClampExpectation {
+                    request,
+                    current_ps: snapshot.current_icount,
+                    idle_ps: expected_idle_wake_icount,
+                    acknowledgement_seen: boundary_acknowledged,
+                    device_progress,
+                }),
+                remaining,
+            );
             self.wait_for_poll_interval(remaining);
         }
 

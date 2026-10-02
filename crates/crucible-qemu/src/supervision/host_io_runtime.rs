@@ -54,6 +54,7 @@ mod control;
 mod deadline;
 mod device_service;
 mod performance;
+mod wait_observation;
 use boundary::*;
 
 /// A production host-I/O runtime backed by an independently mapped shared-memory view.
@@ -71,6 +72,7 @@ pub struct QemuLiveHostIoRuntime {
     vm_slot: u32,
     poll_interval: Duration,
     performance: performance::PerformanceDiagnostics,
+    wait_observation: wait_observation::WaitObservation,
     advance_wait_deadline: AdvanceWaitDeadline,
     /// Pre-wake generation for scheduler input that invalidated an idle report.
     scheduler_input_publish_generation: Option<u32>,
@@ -234,6 +236,7 @@ impl QemuLiveHostIoRuntime {
             vm_slot,
             poll_interval,
             performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
+            wait_observation: wait_observation::WaitObservation::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),
             scheduler_input_publish_generation: None,
             advance_stop_condition: crate::QemuQuantumStopCondition::Ceiling,
@@ -337,6 +340,7 @@ impl QemuLiveHostIoRuntime {
             .node_slot(self.vm_slot)
             .map_err(map_slot_error)?
             .snapshot();
+        self.wait_observation.begin(timeout);
         self.device_wake_publish_generation = None;
         self.checkpoint_idle_coordinate = checkpoint_idle_coordinate(&initial);
         if self.checkpoint_idle_coordinate.is_some() {
@@ -477,6 +481,7 @@ impl QemuLiveHostIoRuntime {
                 if remaining.is_zero() {
                     return Ok(QemuAsyncWaitOutcome::TimedOut);
                 }
+                self.observe_pending_wait("advance-pending", &snapshot, None, remaining);
                 self.wait_for_poll_interval(remaining);
             }
         }

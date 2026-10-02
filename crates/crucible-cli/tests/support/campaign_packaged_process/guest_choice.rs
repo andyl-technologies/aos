@@ -738,6 +738,7 @@ enum FlightDiagnostics {
 }
 
 pub(super) fn report_recent_control_callback_witness(service: &CampaignServiceChild) {
+    diagnostics::report_recent_host_wait_observations(service);
     // These flights retain the last 32 compact records even after many token
     // epochs or large serialized progress records. Reader failures cannot
     // replace the original execution failure.
