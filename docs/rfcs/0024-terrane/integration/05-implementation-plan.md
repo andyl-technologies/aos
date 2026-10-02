@@ -721,6 +721,25 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   All proposed models retain `authenticated = false`, empty executable
   evaluators and no runtime fold filter; this pure format prerequisite creates
   no verified resolution, trust evaluator or native policy permission.
+  The D-97 consumer now passes all six exact published-input auxiliary groups,
+  strict consumer Clippy and both mandatory formatters with unchanged reviewed
+  input blobs. Its complete output matches all 2,571,254 normative bytes.
+  The same auxiliary also passes on the combined candidate, with both formats
+  passing there. The combined candidate's full core build, all 601 Nextest
+  tests with zero skips (run `41bb292d-d0e8-4d97-a572-d62c9ab6fcee`), strict
+  all-target Clippy, warnings/missing-docs rustdoc and both mandatory formatters
+  now pass. All forty temporary inputs and their owning source/template bytes
+  remained frozen through every original terminal; exact comparison preceded
+  removal or restoration. No full native or milestone conformance follows.
+  `golden-vectors` now requires seventeen owning codec suites and a reviewed
+  section-to-consumer inventory, including original-prefix and outer-recipe
+  coverage. Missing current-milestone templates fail their owning checks.
+  Inventory checks reject missing/duplicate/unassigned sections, changed witness
+  counts and missing consumer dependencies; owning suites prove byte/model
+  equality. The complete gate remains unqualified while inputs are incomplete.
+  Its actual ROOT build now fails on the absent attribute-model template through
+  a mandatory owning dependency. That concrete failure replaces the old generic
+  pending gate; it does not qualify either the complete corpus or the aggregate.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1420,6 +1439,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Nine of nineteen boundary contracts now have reviewed passing evidence;
   full native gates and task merge remain open. An initial misspelled filter
   selected zero tests and is retained as a failing observation, not qualification.
+  Full review of the copied-attribute producer fixture verifies an actual
+  same-content metadata edit with a public producer distinct from its content
+  introducer, retained independent original authority, and precise refusal of
+  byte-identical attributes from a private producer on an existing public head.
+  Its paired stripped-attribute control and source-erased destination reopening
+  preserve the earlier public producer. The exact combined case passes run
+  `bc4e7509-9f93-4008-805f-a95ec7d547d8`, followed by both mandatory formatters.
+  Ten of nineteen boundary contracts now have reviewed passing evidence;
+  complete native qualification and formal task merge remain open.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,

@@ -12,8 +12,8 @@
     "gc::publication::cbor::tests::published::published_missing_genesis_inventory_rejects_independent_wire_inputs"
   ];
 
-  # This check proves only the additive D-84 corpus. The registered complete
-  # golden-vectors gate stays pending until all normative vectors are covered.
+  # This owning suite proves the additive D-84 corpus. Complete conformance
+  # additionally requires every other suite in the golden-vectors gate.
   runTest = name: ''
     cargo test --frozen --offline -p terrane-core --lib ${name} -- --exact > "$TMPDIR/vector-test.log"
     python3 - "$TMPDIR/vector-test.log" <<'PYTEST'
@@ -22,7 +22,7 @@
 
     output = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
     print(output)
-    if "test result: ok. 1 passed; 0 failed" not in output:
+    if "test result: ok. 1 passed; 0 failed; 0 ignored" not in output:
         raise SystemExit("required published-vector test did not execute successfully")
     PYTEST
   '';
