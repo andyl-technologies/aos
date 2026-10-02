@@ -54,8 +54,9 @@ enum Command {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let result = match Cli::parse().command {
-        Command::ProfileDigest { profile_file } =>
-            aos_hub::provider_conformance::export_provider_profile_digest(&profile_file),
+        Command::ProfileDigest { profile_file } => {
+            aos_hub::provider_conformance::export_provider_profile_digest(&profile_file)
+        }
         Command::CopyContract {
             report_file,
             journal_directory,

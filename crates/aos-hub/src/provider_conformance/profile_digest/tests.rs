@@ -6,12 +6,11 @@
 use super::*;
 use aos_hub_core::direct_upload::*;
 use aos_hub_core::storage_authority::{
-    control::StorageAuthorityPublication, lease::*,
-    ApproveStorageAuthorityAlias, AssociateStorageAuthorityBinding,
-    AttestStorageAuthorityExclusivity, CreatePhysicalStorageAuthority,
-    PhysicalStorageAuthorityId, SetStorageAuthorityAdmission,
-    StorageAuthorityAdmissionState, StorageAuthorityAliasSpec,
-    StorageAuthorityCredentialMember, StorageAuthorityHost,
+    control::StorageAuthorityPublication, lease::*, ApproveStorageAuthorityAlias,
+    AssociateStorageAuthorityBinding, AttestStorageAuthorityExclusivity,
+    CreatePhysicalStorageAuthority, PhysicalStorageAuthorityId, SetStorageAuthorityAdmission,
+    StorageAuthorityAdmissionState, StorageAuthorityAliasSpec, StorageAuthorityCredentialMember,
+    StorageAuthorityHost,
 };
 
 const EXECUTOR: &str = "qualified-executor";
@@ -181,7 +180,6 @@ fn runtime_reference() -> DirectRuntimeQualification {
     }
 }
 
-
 #[test]
 fn structural_projection_matches_shared_digest_and_refuses_unknown_bounds() {
     let selected = DirectProtectedExternalProfile::new(profile(), runtime_reference()).unwrap();
@@ -194,7 +192,10 @@ fn structural_projection_matches_shared_digest_and_refuses_unknown_bounds() {
 
     assert_eq!(result["version"], 1);
     assert_eq!(result["profile_sha256"], journal::digest(&bytes));
-    assert_eq!(result["protected_profile_digest"], selected.digest().unwrap());
+    assert_eq!(
+        result["protected_profile_digest"],
+        selected.digest().unwrap()
+    );
     assert_eq!(std::fs::read(&path).unwrap(), bytes);
 
     let mut unknown = serde_json::to_value(&selected).unwrap();
