@@ -196,3 +196,28 @@ proof. Native compilation establishes type/registration evidence only. Actual
 Miniflare record installation, normal terminal SQL/Delete probe, response loss,
 cold replay, SDK brackets and settlement require the accepted complete source
 and measured common artifacts. No custom R2 facade is used.
+
+## Native consumption observations
+
+The cleanup helper emits `nativeExchangeObservations` from a bounded subscriber
+attached to its actual cleanup and normal recovery futures. The scope is
+`actual_native_managed_cleanup_transport`; an overflow marks the capture
+incomplete. The invocation receipt pins the helper child PID, start ticks, UID,
+executable, original command/environment commitments, source selection and
+retained output. These facts belong to that helper, not the running Native
+service. No observations are synthesized for `authenticate_lost_reply`.
+
+Each cleanup call offers the actual canonical request under a fresh
+`x-aos-storage-call-id`. Numeric exchange rows count only response chunks exposed
+to Native. Unread error bodies, a deliberately lost reply, partial replies and
+failed authentication do not acquire an authenticated reply receipt. Offered
+request bytes are not delivery proof, and application chunk counts are not TLS
+wire measurements. A `managed_oci_cleanup_authenticated` receipt follows the
+existing physical reply authenticator. The independent
+`managed_oci_cleanup_delete_checked` context follows the existing final SQL,
+Delete, placement, binding and original-deadline checks, without extra queries.
+
+Listener-authenticated upstream completion remains a separate physical fact.
+It cannot substitute for bytes consumed by Native after the listener resets the
+downstream connection. Missing call IDs, incomplete helper observations, partial
+whole-window captures or absent current-context/provider joins remain unresolved.

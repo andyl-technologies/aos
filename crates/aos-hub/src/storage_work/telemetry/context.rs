@@ -51,6 +51,7 @@ impl ControlObservation {
                 | "external_oci_materialization_source_checked"
                 | "external_oci_materialization_control_checked"
                 | "external_oci_cleanup_delete_checked"
+                | "managed_oci_cleanup_delete_checked"
         ) || commitments.is_empty()
             || commitments.len() > 16
             || commitments.values().any(|value| {

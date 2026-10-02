@@ -8,6 +8,7 @@ use aos_hub_core::{
 };
 
 use super::HybridSurfaceWrites;
+use super::telemetry::{ExchangeTelemetry, STORAGE_CALL_ID_HEADER};
 
 impl HybridSurfaceWrites {
     pub(super) async fn cleanup_managed_oci_chunk(
@@ -107,38 +108,151 @@ impl HybridSurfaceWrites {
             )
             .filter(|seconds| *seconds > 0)
             .context("Managed cleanup deadline expired")?;
-        let exchange = async {
-            let response = self
-                .work
-                .http
-                .post(format!("{origin}{MANAGED_OCI_CLEANUP_PATH}"))
-                .header(MANAGED_OCI_CLEANUP_HEADER, signature)
-                .header("content-type", "application/json")
-                .body(body)
-                .timeout(std::time::Duration::from_secs(remaining))
-                .send()
-                .await
-                .map_err(|_| anyhow::anyhow!("Managed terminal cleanup exchange unknown"))?;
-            ensure!(
-                response.status() == reqwest::StatusCode::OK,
-                "Managed terminal cleanup refused or unknown"
-            );
-            let signature = response
-                .headers()
-                .get(MANAGED_OCI_CLEANUP_HEADER)
-                .context("Managed cleanup positive physical signature absent")?
-                .to_str()?
-                .to_owned();
-            let bytes =
-                super::read_bounded_response(response, MAX_MANAGED_OCI_CLEANUP_BYTES).await?;
-            ManagedOciCleanupReply::authenticate(&request, guard, &signature, &bytes)
-        };
-        let _positive = tokio::time::timeout(std::time::Duration::from_secs(remaining), exchange)
+        let mut exchange = ExchangeTelemetry::control(&request.nonce, "managed_oci_cleanup");
+        let url = format!("{origin}{MANAGED_OCI_CLEANUP_PATH}");
+        let operation = exchange_cleanup(
+            &self.work.http,
+            &url,
+            &request,
+            guard,
+            body,
+            signature,
+            remaining,
+            &mut exchange,
+        );
+        let positive = tokio::time::timeout(std::time::Duration::from_secs(remaining), operation)
             .await
             .context("Managed cleanup reply deadline expired; outcome remains unknown")??;
         check().await?;
+
+        // The existing checks above preserve the current terminal claim and
+        // credential-free Delete capability. This receipt performs no queries.
+        super::external_oci::observation::checked(
+            exchange.control_observation(),
+            "managed_oci_cleanup_delete_checked",
+            &[
+                (
+                    "requestSha256",
+                    super::external_oci::observation::digest(&request),
+                ),
+                (
+                    "replySha256",
+                    super::external_oci::observation::digest(&positive),
+                ),
+                (
+                    "uploadStateSha256",
+                    super::external_oci::observation::digest(&(
+                        &claim.upload().id,
+                        claim.upload().resource_version,
+                        &claim.upload().state,
+                        &claim.upload().cleanup_state,
+                        claim.upload().finished_at,
+                        claim.upload().staging_placement_id,
+                        claim.upload().staging_binding_id,
+                        claim.upload().staging_binding_write_revision,
+                    )),
+                ),
+                (
+                    "chunkStateSha256",
+                    super::external_oci::observation::digest(&(
+                        claim.chunk().ordinal,
+                        claim.chunk().byte_offset,
+                        claim.chunk().byte_size,
+                        claim.chunk().digest,
+                        &claim.chunk().staging_object_key,
+                        claim.chunk().created_at,
+                    )),
+                ),
+                (
+                    "placementStateSha256",
+                    super::external_oci::observation::digest(&(
+                        placement.id,
+                        placement.resource_version,
+                        placement.binding_id,
+                        placement.registry_id,
+                        &placement.prefix,
+                    )),
+                ),
+                (
+                    "bindingStateSha256",
+                    super::external_oci::observation::digest(&(
+                        binding.id,
+                        binding.resource_version,
+                        &binding.stable_id,
+                        &binding.kind,
+                        binding.is_instance_default,
+                        revision,
+                    )),
+                ),
+                (
+                    "deleteCapabilitySha256",
+                    super::external_oci::observation::digest(&(
+                        &capability.capability_fingerprint,
+                        capability.resource_version,
+                        capability.binding_resource_version,
+                        &capability.state,
+                        &capability.delete_credential_generation,
+                        &capability.delete_credential_purpose,
+                    )),
+                ),
+            ],
+        );
         Ok(true)
     }
+}
+
+/// Counts Native-exposed metadata bytes without interpreting upstream completion
+/// as consumption. Current SQL and the original cutoff remain the caller's checks.
+async fn exchange_cleanup(
+    http: &reqwest::Client,
+    url: &str,
+    request: &ManagedOciCleanupRequest,
+    guard: &aos_hub_core::storage_work::StorageWorkKey,
+    body: Vec<u8>,
+    signature: String,
+    remaining: u64,
+    exchange: &mut ExchangeTelemetry<'_>,
+) -> Result<ManagedOciCleanupReply> {
+    exchange.offer_control(MANAGED_OCI_CLEANUP_PATH, &body);
+    let response = http
+        .post(url)
+        .header(MANAGED_OCI_CLEANUP_HEADER, signature)
+        .header(STORAGE_CALL_ID_HEADER, exchange.transport_call_id())
+        .header("content-type", "application/json")
+        .body(body)
+        .timeout(std::time::Duration::from_secs(remaining))
+        .send()
+        .await
+        .map_err(|_| {
+            exchange.finish("transport_failed");
+            anyhow::anyhow!("Managed terminal cleanup exchange unknown")
+        })?;
+    if response.status() != reqwest::StatusCode::OK {
+        exchange.discard_status_response();
+        exchange.finish("http_rejected");
+        anyhow::bail!("Managed terminal cleanup refused or unknown");
+    }
+    let signature = response
+        .headers()
+        .get(MANAGED_OCI_CLEANUP_HEADER)
+        .context("Managed cleanup positive physical signature absent")
+        .and_then(|signature| {
+            signature
+                .to_str()
+                .context("Managed cleanup signature is not UTF-8")
+        })
+        .inspect_err(|_| exchange.finish("invalid_result"))?
+        .to_owned();
+    let bytes = super::read_observed_response(response, MAX_MANAGED_OCI_CLEANUP_BYTES, |length| {
+        exchange.observe_body(length)
+    })
+    .await
+    .inspect_err(|_| exchange.finish("response_read_failed"))?;
+    let reply = ManagedOciCleanupReply::authenticate(request, guard, &signature, &bytes)
+        .inspect_err(|_| exchange.finish("invalid_result"))?;
+    exchange.authenticated_control(&bytes);
+    exchange.finish("success");
+    Ok(reply)
 }
 
 async fn recheck(
@@ -278,3 +392,9 @@ pub(super) struct ControlledCleanup {
 
 #[cfg(all(test, target_os = "linux"))]
 mod controlled;
+
+#[cfg(test)]
+mod observation_tests;
+
+#[cfg(test)]
+mod observations;

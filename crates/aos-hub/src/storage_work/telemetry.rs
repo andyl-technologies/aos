@@ -152,6 +152,9 @@ impl<'a> ExchangeTelemetry<'a> {
             "external_oci_control" | "external_oci_source" | "external_oci_cleanup" => {
                 tracing::info!("external_oci_authenticated {encoded}");
             }
+            "managed_oci_cleanup" => {
+                tracing::info!("managed_oci_cleanup_authenticated {encoded}");
+            }
             _ => {}
         }
     }
@@ -165,6 +168,8 @@ impl Drop for ExchangeTelemetry<'_> {
         let _span = self.span.enter();
         self.emit_authenticated_control();
         tracing::info!(
+            transport_call_id = %self.transport_call_id,
+            offered_request_sha256 = self.control_body.as_ref().map(|body| body.request_sha256.as_str()).unwrap_or(""),
             plan_id = %self.plan_id,
             operation = self.operation,
             exchange_attempts = self.attempts,

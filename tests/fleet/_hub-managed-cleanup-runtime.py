@@ -153,6 +153,28 @@ def runner_command(selected, request, label):
         retained(root/'reply.private.json', bytes(response))
 
 
+def helper_process(process, root, executable_sha):
+    """Pin the actual helper child, separately from the Native service lifetime."""
+    proc = Path('/proc') / str(process.pid)
+    before = (proc/'stat').read_text().rpartition(') ')[2].split()
+    require(before[0] != 'Z' and before[1] == str(os.getpid())
+            and proc.stat().st_uid == os.getuid(),
+            'actual cleanup helper is not a live owned child')
+    command = (proc/'cmdline').read_bytes()
+    environment = (proc/'environ').read_bytes()
+    require(len(command) <= 65536 and len(environment) <= 65536,
+            'actual cleanup helper process metadata exceeds its bound')
+    with (proc/'exe').open('rb') as stream:
+        actual_sha = hashlib.file_digest(stream, 'sha256').hexdigest()
+    require(actual_sha == executable_sha, 'actual cleanup helper executable differs')
+    pin = {'pid': process.pid, 'startTicks': before[19], 'ownerUid': proc.stat().st_uid,
+           'executableSha256': actual_sha, 'commandLineSha256': hashlib.sha256(command).hexdigest(),
+           'environmentSha256': hashlib.sha256(environment).hexdigest()}
+    process_identity(pin)
+    return {**pin, 'commandLine': retained(root/'command-line.private', command),
+            'environment': retained(root/'environment.private', environment)}
+
+
 def helper(selected):
     """Select exactly one ignored test from the reviewed current-source ELF."""
     proof_bytes = bounded(selected['helperProvenance'], 65536)
@@ -177,18 +199,41 @@ def helper(selected):
     parameters = {**selected['input'], 'outputFile': str(root/'result.private.json')}
     retained(root/'input.private.json', encoded(parameters))
     environment = dict(os.environ, AOS_MANAGED_CLEANUP_CONTROLLED_INPUT=str(root/'input.private.json'))
-    process = subprocess.run([str(executable), TEST, '--exact', '--ignored', '--nocapture'],
-        env=environment, stdin=subprocess.DEVNULL, capture_output=True, check=False, timeout=90)
-    retained(root/'stdout', process.stdout)
-    retained(root/'stderr', process.stderr)
-    require(process.returncode == 0 and b'1 passed;' in process.stdout
-            and b'0 failed;' in process.stdout, "actual selected cleanup helper failed")
+    arguments = [str(executable), TEST, '--exact', '--ignored', '--nocapture']
+    started = {'unixNs': str(time.time_ns()), 'monotonicNs': str(time.monotonic_ns())}
+    process = subprocess.Popen(arguments, env=environment, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        invocation = helper_process(process, root, sha)
+        stdout, stderr = process.communicate(timeout=90)
+    except BaseException:
+        # This child belongs to this invocation. Retain failures without touching
+        # the Native service, listener, Worker, provider or another helper.
+        if process.poll() is None:
+            process.kill()
+        stdout, stderr = process.communicate()
+        retained(root/'stdout', stdout)
+        retained(root/'stderr', stderr)
+        raise
+    finished = {'unixNs': str(time.time_ns()), 'monotonicNs': str(time.monotonic_ns())}
+    stdout_ref = retained(root/'stdout', stdout)
+    stderr_ref = retained(root/'stderr', stderr)
+    invocation = {**invocation, 'version': 1, 'scope': 'actual_managed_cleanup_native_helper',
+                  'arguments': arguments, 'started': started, 'finished': finished,
+                  'stdout': stdout_ref, 'stderr': stderr_ref, 'exitCode': process.returncode,
+                  'commonSourceStorePath': proof['commonSourceStorePath'],
+                  'workerFilteredSourceStorePath': proof['workerFilteredSourceStorePath'],
+                  'provenanceSha256': hashlib.sha256(proof_bytes).hexdigest()}
+    invocation_ref = retained(root/'invocation.private.json', encoded(invocation))
+    require(process.returncode == 0 and b'1 passed;' in stdout
+            and b'0 failed;' in stdout, "actual selected cleanup helper failed")
     body = private(root/'result.private.json', 65536)
     value = json.loads(body)
     return {'value': value, 'input': parameters, 'receipt': {
         'path': str(root/'result.private.json'), 'sha256': hashlib.sha256(body).hexdigest(),
         'byteSize': len(body), 'testExecutableSha256': sha,
-        'provenanceSha256': hashlib.sha256(proof_bytes).hexdigest(), 'exitCode': process.returncode}}
+        'provenanceSha256': hashlib.sha256(proof_bytes).hexdigest(), 'exitCode': process.returncode,
+        'invocation': invocation_ref, 'helperProcess': invocation}}
 
 
 def arm(selected):

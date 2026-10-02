@@ -22,6 +22,8 @@ use aos_hub_core::oci_sdk_emulation::OciSdkEmulationProfile;
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
+use tracing::instrument::WithSubscriber as _;
+use tracing_subscriber::layer::SubscriberExt as _;
 
 #[derive(Clone, Copy, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
@@ -213,6 +215,7 @@ async fn actual_managed_terminal_cleanup_pair() -> Result<()> {
         );
     }
 
+    let observations = super::observations::Capture::default();
     let mut physical_reply = None;
     let mut authenticated_request_sha256 = None;
     let mut recovery = None;
@@ -310,11 +313,15 @@ async fn actual_managed_terminal_cleanup_pair() -> Result<()> {
                 aos_hub_core::clock::now_unix_secs(),
                 1000,
             )
+            .with_subscriber(tracing_subscriber::registry().with(observations.clone()))
             .await?;
             recovery = Some(summary);
             Ok(true)
         } else {
-            writes.cleanup_managed_oci_chunk(&claim).await
+            writes
+                .cleanup_managed_oci_chunk(&claim)
+                .with_subscriber(tracing_subscriber::registry().with(observations.clone()))
+                .await
         };
         match input.phase {
             Phase::DispatchUnknown => {
@@ -396,6 +403,9 @@ async fn actual_managed_terminal_cleanup_pair() -> Result<()> {
                 "expiredUploads": summary.expired_uploads,
                 "cleanedUploads": summary.cleaned_uploads,
             })),
+            "nativeExchangeObservations": matches!(
+                input.phase, Phase::DispatchUnknown | Phase::ReplayPositive | Phase::Settle
+            ).then(|| observations.snapshot()),
             "providerSdkCalls": null,
             "sqlCleanupSettled": settled,
         }),
