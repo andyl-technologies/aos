@@ -863,11 +863,12 @@ in {
     # service writes staged NARs beside these keys later, so the seeded
     # directories must belong to it.
     PUBLIC_PLACEMENT_ROOT = "/var/lib/aos-hub/storage/public"
+    # `nix-cache-info` is a prepared publication pointer that release
+    # finalization compares against the placement, so it is never seeded.
     SEEDED_NON_OCI_KEYS = [
         "0000000000000000000000000000000a.narinfo",
         "nar/0000000000000000000000000000000a.nar.zst",
         "nar/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.nar.zst",
-        "nix-cache-info",
         "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.narinfo",
     ]
     hub.succeed(textwrap.dedent(f"""
