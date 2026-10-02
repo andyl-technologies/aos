@@ -509,9 +509,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   wire byte/digest remain unchanged. The prepared three-group hermetic check,
   strict template Clippy and mandatory formatting pass. The shared auxiliary
   harness now requires independent reproduction of the normative whole file;
-  its reviewed input branch remains separate, and published-input qualification
-  is pending. This establishes no native codec, index or complete golden
-  conformance; no task or milestone advances.
+  its reviewed input branch remains separate. Its actual published-input check
+  now passes all three exact owning-codec groups and strict template Clippy.
+  The actual input-branch aggregate still rejects the absent `format_properties`
+  target. This establishes no native codec, index or complete golden conformance;
+  no task or milestone advances.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
