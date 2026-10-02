@@ -101,6 +101,15 @@ validate_rooted_executable() {
     && [ -x "$rooted_target" ]
 }
 
+validate_module_library_identity() {
+  # Native admission serializes Sha256Digest as canonical lowercase hex.
+  printf '%s' "$module_library" | jq -e '
+    type == "object" and (keys | sort) == ["nar_hash", "nar_size", "store_path"]
+    and (.nar_hash | type == "string" and length == 71 and test("^sha256:[0-9a-f]{64}$"))
+    and (.nar_size | type == "number" and . > 0 and floor == .)
+  ' >/dev/null
+}
+
 state_version=$(read_meta state-version)
 native_executor=$(read_meta native-executor-ref)
 boot_contract=$(read_meta boot-artifact-contract)
@@ -138,11 +147,8 @@ validate_nix_store_root "$module_library_root" \
   || fail_image_identity "immutable native module library root is malformed"
 validate_nix_store_root "$boot_contract" \
   || fail_image_identity "immutable boot contract root is malformed"
-printf '%s' "$module_library" | jq -e '
-  type == "object" and (keys | sort) == ["nar_hash", "nar_size", "store_path"]
-  and (.nar_hash | type == "string" and startswith("sha256-"))
-  and (.nar_size | type == "number" and . > 0 and floor == .)
-' >/dev/null || fail_image_identity "immutable native library NAR identity is malformed"
+validate_module_library_identity \
+  || fail_image_identity "immutable native library NAR identity is malformed"
 case "$evaluation_descriptor" in
   /nix/store/*/*) ;;
   *) fail_image_identity "native evaluation descriptor is not an immutable store member" ;;
