@@ -119,21 +119,35 @@ pub(super) async fn reject_special_projections() {
             destination_path: b"/file".to_vec(),
         }]
     };
-    for candidate in [&tree, &whiteout, &conflict, &index] {
+    for (candidate, needs_child, needs_manifest, needs_plaintext) in [
+        (&tree, true, false, true),
+        (&whiteout, false, false, false),
+        (&conflict, false, false, true),
+        (&index, false, true, true),
+    ] {
         let mut staged =
             materialization::stage_tree(request_file(Vec::new(), plaintext), candidate);
-        // Supply the real referenced public tree so the Tree case cannot pass
-        // by accidentally refusing an unavailable or invented child identity.
-        staged
-            .uploads
-            .extend(source_tree.nodes().map(|node| StagedUpload::Meta {
-                kind: IdentityKind::Node,
-                bytes: node.encoded().to_vec(),
-            }));
-        staged.uploads.push(StagedUpload::Meta {
-            kind: IdentityKind::Manifest,
-            bytes: manifest_bytes.clone(),
-        });
+        if !needs_plaintext {
+            staged
+                .uploads
+                .retain(|upload| !matches!(upload, StagedUpload::Chunk { .. }));
+        }
+        // Each refusal receives only its reachable canonical dependencies, so
+        // unrelated-upload rejection cannot substitute for the projection check.
+        if needs_child {
+            staged
+                .uploads
+                .extend(source_tree.nodes().map(|node| StagedUpload::Meta {
+                    kind: IdentityKind::Node,
+                    bytes: node.encoded().to_vec(),
+                }));
+        }
+        if needs_manifest {
+            staged.uploads.push(StagedUpload::Meta {
+                kind: IdentityKind::Manifest,
+                bytes: manifest_bytes.clone(),
+            });
+        }
         let mut proposal = destination_authority.commit_request(staged.commit, "sdk".into());
         proposal.uploads = staged.uploads;
         let rejected = destination
