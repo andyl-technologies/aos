@@ -435,10 +435,29 @@ Registry deletion requires an empty catalog, but signed releases and tags are
 permanent roots of ordinary collection. A reviewed *retiring* run drops the
 catalog-owned roots (signed releases, tags, retained tag history) and collects
 without grace. It fails closed while any enabled route serves the registry's
-OCI surface, at planning and inside the apply transaction, and once it is
-applying the indexer refuses to re-project container-release roots for that
-registry. Every physical deletion of a retiring run uses the same inventory,
+OCI surface, including an enabled registry OCI namespace or an enabled instance
+OCI route that names the registry as its default, at planning and inside the
+apply transaction, and once it is applying the indexer refuses to re-project
+container-release roots for that registry. Every physical deletion of a retiring run uses the same inventory,
 capability, and finalization fences as an ordinary run.
+
+An OCI GC run is `planned` after review, `applying` once apply tombstones its
+candidates and takes the registry GC lock, and `complete` after finalization;
+a plan that fails closed while planning is recorded as `failed`. An unapplied
+plan holds no lock, delete credential, or tombstone, and no worker can claim
+its frozen placement actions, so it ends in the terminal `aborted` state in one
+of two equivalent ways: its fifteen-minute review expires and the maintenance
+sweep records `review expired before apply`, or a registry configurator
+cancels it with `ContainerService.CancelContainerGcRun`, which records
+`cancelled by operator before apply`. Cancellation binds the run's resource
+version, fails closed for an `applying` run, whose recovery belongs to action
+requeue and finalization, and returns an already terminal run unchanged.
+
+Registry deletion and purge-fence admission count an `applying` run and an
+unexpired `planned` run as GC work. Apply rejects an expired plan, so an
+expired or aborted run, and the never-claimable actions frozen by any run that
+was not applied, do not block deletion; an operator who planned only to
+inspect blockers never waits for the expiry sweep.
 
 Physical delete capability is also independent of logical write authority.
 The current authority controls where new bytes may be published; it does not

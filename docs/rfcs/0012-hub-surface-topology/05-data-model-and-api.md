@@ -1702,6 +1702,75 @@ identity takeover. Only the live route/configuration stores renderable host/path
 text. The permanent reservation stores no tenant, surface, actor, endpoint,
 host, path, or URL plaintext and has no FK to deletable topology.
 
+### Instance OCI routes and registry OCI namespaces
+
+Instance-owned OCI root routes and per-registry namespace exposure live in two
+additive tables (migration 5, `oci_namespace_routes.sql`) instead of widening
+the `routes` check constraints:
+
+```text
+instance_oci_routes(
+  id PRIMARY KEY,
+  url_reservation_id REFERENCES route_url_reservations(id),
+  resource_version,
+  endpoint_id UNIQUE, endpoint_generation, endpoint_ingress_kind,
+  canonical_rendered_url,
+  access_policy_kind IN('public', 'hub_auth'),
+  access_policy_json, access_policy_digest,
+  default_registry_id REFERENCES registries(id),
+  enabled,
+  created_at, updated_at
+)
+
+registry_oci_namespaces(
+  registry_id PRIMARY KEY REFERENCES registries(id) ON DELETE CASCADE,
+  enabled, resource_version, created_at, updated_at
+)
+```
+
+An instance route has no surface, serves only OCI at base path `/`, and is
+ready when its endpoint's desired generation is healthy and its boundary is
+active and verified; it carries no route or access probes of its own. The
+`default_registry_id` reference is restrictive on purpose: a registry that still
+answers unnamespaced references cannot be deleted underneath the route. A
+missing `registry_oci_namespaces` row means the namespace is disabled.
+
+Resolution on an enabled instance route is deterministic: the longest enabled
+registry slug that is a leading segment prefix of the wire repository name
+wins and the remainder is the registry-local repository; otherwise the default
+registry serves the whole name; otherwise the name is unknown
+(`NAME_UNKNOWN`). A bare slug names no repository (`NAME_INVALID`). When a
+namespaced match exists and the default registry also has a repository of the
+full wire name, the request fails closed with `409 NAME_INVALID` rather than
+picking one. Token scopes must resolve to one registry. Challenges, `Location`
+and `Link` headers, and tag listings carry the wire name; tokens and catalog
+rows stay registry-local, so the registry's own placements and GC roots are
+unchanged. An enabled instance route takes precedence over a registry-bound
+root route of the same host for `/v2` requests.
+
+`ConvertRouteToInstanceOciRoute` turns a registry-bound hub-proxy root route
+that serves only OCI with a `public` or `hub_auth` policy into an instance
+route in place. It is a reviewed instance-scope plan with route-version CAS
+that reuses the route's `url_reservation_id`, binds the route's registry as the
+default registry, enables that registry's namespace, deletes the registry-bound
+route rows, and appends a `topology.route.converted` audit event. Unnamespaced
+references keep resolving through the default registry, so clients observe no
+gap.
+
+Creating an instance route ordinarily reserves its host root URL exactly like
+a tenant route. The reservation exists to protect tenants from identity
+takeover: once a tenant's host root was reserved, no other tenant may ever
+reuse it. The instance is not a tenant. `PlanCreateInstanceOciRoute` with
+`bindExistingReservation` therefore lets `IamAdmin` bind an already reserved
+("burned") host root to an instance route as an explicitly reviewed decision;
+the plan names the binding in its effects and the apply fails closed when the
+flag is absent and the reservation exists. The tenant rule is unchanged.
+
+Registry deletion fails closed while the registry's namespace is enabled or an
+enabled instance route names it as the default registry, both in preflight and
+inside the checked batch, and it never touches `instance_oci_routes`. Catalog
+retirement applies the same guard.
+
 `configuration_digest` covers the normalized endpoint generation, base path,
 surface, mode, exact target/policy/gateway tuple, access-policy digest,
 capabilities, and enabled posture. For an update whose rendered URL remains
@@ -2953,6 +3022,9 @@ row without proving the candidate is fenced and the observed writer is ready.
 - `CreateRoute`, `UpdateRoute`, `ReplaceRoute`, `EnableRoute`, `DisableRoute`,
   `DeleteRoute`
 - `SetRouteAdvertisement`, `ExplainRoute`; controller-only `CompleteRouteProbe`
+- Instance-scope `CreateInstanceOciRoute`, `UpdateInstanceOciRoute`,
+  `DeleteInstanceOciRoute`, `ConvertRouteToInstanceOciRoute`; registry-scope
+  `SetContainerNamespace`
 - `CreateGateway`, `UpdateGateway`, `PreviewGatewayRoutes`,
   `GrantGatewayScope`, `RevokeGatewayScope`,
   controller-only `ReportGateway`, `EnableGateway`, `DisableGateway`,

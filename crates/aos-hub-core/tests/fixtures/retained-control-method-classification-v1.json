@@ -377,6 +377,30 @@
   },
   {
     "service": "ContainerService",
+    "method": "GetContainerNamespace",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "PlanSetContainerNamespace",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "set_container_namespace" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
+    "method": "SetContainerNamespace",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "set_container_namespace", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "ContainerService",
     "method": "PlanRunContainerGc",
     "exposure": "public",
     "durability": "durable",
@@ -390,6 +414,14 @@
     "durability": "durable",
     "class": { "class": "apply", "pair": "run_container_gc", "outcome": "operation" },
     "external_effects": true
+  },
+  {
+    "service": "ContainerService",
+    "method": "CancelContainerGcRun",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "operation_lifecycle" },
+    "external_effects": false
   },
   {
     "service": "ContainerService",
@@ -2688,6 +2720,86 @@
     "exposure": "public",
     "durability": "durable",
     "class": { "class": "maintenance_replay" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "ListInstanceOciRoutes",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "GetInstanceOciRoute",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": { "class": "read" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "PlanCreateInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "create_instance_oci_route" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "CreateInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "create_instance_oci_route", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "PlanUpdateInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "update_instance_oci_route" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "UpdateInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "update_instance_oci_route", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "PlanDeleteInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "delete_instance_oci_route" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "DeleteInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "delete_instance_oci_route", "outcome": "immediate" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "PlanConvertRouteToInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "plan", "pair": "convert_route_to_instance_oci_route" },
+    "external_effects": false
+  },
+  {
+    "service": "InstanceService",
+    "method": "ConvertRouteToInstanceOciRoute",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "apply", "pair": "convert_route_to_instance_oci_route", "outcome": "immediate" },
     "external_effects": false
   },
   {

@@ -312,6 +312,34 @@ service InstanceService {
       returns (InstanceMaintenanceTriggerResponse);
   rpc SetInstanceSettings(ApplyTopologyPlanRequest)
       returns (GetInstanceSettingsResponse);
+  // Instance-owned OCI root routes serve every registry whose OCI namespace
+  // is enabled under `<host>/<registry-slug>/<repository>`. Every method
+  // requires iam.admin at the instance root.
+  rpc ListInstanceOciRoutes(ListInstanceOciRoutesRequest)
+      returns (ListInstanceOciRoutesResponse);
+  rpc GetInstanceOciRoute(GetTopologyResourceRequest)
+      returns (InstanceOciRouteResponse);
+  rpc PlanCreateInstanceOciRoute(PlanInstanceOciRouteMutationRequest)
+      returns (TopologyPlanResponse);
+  rpc CreateInstanceOciRoute(ApplyTopologyPlanRequest)
+      returns (InstanceOciRouteResponse);
+  rpc PlanUpdateInstanceOciRoute(PlanInstanceOciRouteMutationRequest)
+      returns (TopologyPlanResponse);
+  rpc UpdateInstanceOciRoute(ApplyTopologyPlanRequest)
+      returns (InstanceOciRouteResponse);
+  rpc PlanDeleteInstanceOciRoute(PlanDeleteTopologyResourceRequest)
+      returns (TopologyPlanResponse);
+  rpc DeleteInstanceOciRoute(ApplyDeleteTopologyResourceRequest)
+      returns (DeleteTopologyResourceResponse);
+  // Convert a registry-bound hub-proxy OCI route at a host root into an
+  // instance OCI route in place. The rendered URL and its permanent
+  // reservation are unchanged, the registry's namespace is enabled, and the
+  // registry becomes the route's default so unnamespaced references keep
+  // resolving until an operator clears it.
+  rpc PlanConvertRouteToInstanceOciRoute(PlanConvertRouteToInstanceOciRouteRequest)
+      returns (TopologyPlanResponse);
+  rpc ConvertRouteToInstanceOciRoute(ApplyTopologyPlanRequest)
+      returns (InstanceOciRouteResponse);
 }
 
 // SQL-backed configuration change-sets (RFC-0004 "Configuration
@@ -433,9 +461,22 @@ service ContainerService {
       returns (TopologyPlanResponse);
   rpc SetContainerRetentionPolicy(ApplyContainerMutationRequest)
       returns (ContainerRetentionPolicyResponse);
+  // Reviewed OCI exposure of one registry through instance OCI routes under
+  // its slug. Requires registry.configure on the registry.
+  rpc GetContainerNamespace(GetContainerNamespaceRequest)
+      returns (ContainerNamespaceResponse);
+  rpc PlanSetContainerNamespace(PlanSetContainerNamespaceRequest)
+      returns (TopologyPlanResponse);
+  rpc SetContainerNamespace(ApplyTopologyPlanRequest)
+      returns (ContainerNamespaceResponse);
   rpc PlanRunContainerGc(PlanRunContainerGcRequest)
       returns (ContainerGcPlanResponse);
   rpc RunContainerGc(ApplyContainerMutationRequest) returns (OperationResponse);
+  // Discards one unapplied reviewed GC plan so it stops blocking registry
+  // deletion. Applying runs cannot be cancelled; terminal runs are returned
+  // unchanged.
+  rpc CancelContainerGcRun(CancelContainerGcRunRequest)
+      returns (ContainerGcRunResponse);
   rpc GetContainerGcRun(GetContainerGcRunRequest)
       returns (ContainerGcRunResponse);
   rpc ListContainerGcRuns(ListContainerGcRunsRequest)
@@ -1322,6 +1363,26 @@ message PlanSetContainerRetentionPolicyRequest {
   string idempotency_key = 4;
 }
 
+// Reviewed OCI exposure of one registry under its slug on instance routes.
+message ContainerNamespace {
+  string registry = 1;
+  bool enabled = 2;
+  // Zero until the namespace has been set once.
+  string resource_version = 3;
+  int64 updated_at = 4;
+}
+
+message GetContainerNamespaceRequest { string registry = 1; }
+
+message ContainerNamespaceResponse { ContainerNamespace namespace = 1; }
+
+message PlanSetContainerNamespaceRequest {
+  string registry = 1;
+  bool enabled = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+}
+
 // Requests a reviewed garbage-collection generation bound to the effective
 // retention policy version, complete placement inventory, and mutation epoch.
 message PlanRunContainerGcRequest {
@@ -1337,6 +1398,16 @@ message PlanRunContainerGcRequest {
 message GetContainerGcRunRequest {
   string registry = 1;
   string run_id = 2;
+}
+
+// Cancels one planned (unapplied) GC run. The resource version binds the
+// exact reviewed run; replaying the request after the run reached a terminal
+// state returns that run unchanged.
+message CancelContainerGcRunRequest {
+  string registry = 1;
+  string run_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
 }
 
 message ListContainerGcRunsRequest {
@@ -1862,6 +1933,10 @@ message Registry {
   string owner_scope_key = 19;
   // Exact ready OCI route origin, including HTTP(S) scheme; empty until ready.
   string oci_distribution_origin = 20;
+  // Repository-name prefix clients must use on that origin when the registry
+  // is served through an instance OCI route under its slug; empty when the
+  // origin is registry-bound or serves this registry as its default.
+  string oci_repository_namespace = 21;
 }
 
 message ConsumerCacheStackEntry {
@@ -2710,6 +2785,60 @@ message TriggerInstanceMaintenanceRequest {
 
 message InstanceMaintenanceTriggerResponse {
   string job = 1;
+}
+
+// Desired configuration of one instance-owned OCI root route.
+message InstanceOciRouteSpec {
+  string endpoint_id = 1;
+  int64 endpoint_generation = 2;
+  // Only public and hub_auth policies are accepted.
+  DeliveryAccessPolicy access_policy = 3;
+  // Registry slug served for repository names without an enabled namespace
+  // prefix; empty serves none.
+  string default_registry = 4;
+  bool enabled = 5;
+}
+
+message InstanceOciRoute {
+  string stable_id = 1;
+  InstanceOciRouteSpec spec = 2;
+  // Immutable canonical host-root URL, including scheme.
+  string canonical_rendered_url = 3;
+  // Whether the endpoint chain currently admits Hub serving.
+  bool ready = 4;
+  string resource_version = 5;
+  int64 created_at = 6;
+  int64 updated_at = 7;
+}
+
+message InstanceOciRouteResponse { InstanceOciRoute route = 1; }
+
+message ListInstanceOciRoutesRequest {}
+
+message ListInstanceOciRoutesResponse { repeated InstanceOciRoute routes = 1; }
+
+message PlanInstanceOciRouteMutationRequest {
+  string stable_id = 1;
+  InstanceOciRouteSpec spec = 2;
+  // Required for updates; forbidden for creation.
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
+  // Update only: spec.endpoint_generation, spec.access_policy,
+  // spec.default_registry, spec.enabled.
+  repeated string update_mask = 5;
+  // Creation only: bind an existing permanent URL reservation for this host
+  // root instead of refusing it. Reservations stop one tenant from taking over
+  // another tenant's former URL; the instance is not a tenant.
+  bool bind_existing_reservation = 6;
+}
+
+message PlanConvertRouteToInstanceOciRouteRequest {
+  // Registry-bound hub-proxy route at a host root that serves only OCI.
+  string route_id = 1;
+  string expected_resource_version = 2;
+  // Stable id for the new instance route; generated when empty.
+  string stable_id = 3;
+  string idempotency_key = 4;
 }
 
 message GetInstanceSettingsRequest {}

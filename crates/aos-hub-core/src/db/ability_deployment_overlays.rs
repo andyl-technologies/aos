@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn native_report_migration_preserves_enrollment_and_replay_fence() {
-        const NATIVE_REPORT_MIGRATION_VERSION: usize = 7;
+        const NATIVE_REPORT_MIGRATION_VERSION: usize = 8;
         let migration_index = NATIVE_REPORT_MIGRATION_VERSION - 1;
 
         let connection = rusqlite::Connection::open_in_memory().unwrap();
