@@ -4,7 +4,7 @@
 //! Every actual dispatch and capability issuance still validates the physical
 //! guard's permanent floor. Cache eviction/expiry never settles provider work.
 
-use std::{cell::RefCell, collections::BTreeMap};
+use std::rc::Rc;
 
 use anyhow::{ensure, Result};
 use aos_hub_core::direct_upload::{
@@ -37,21 +37,13 @@ use super::{
     config::{self, Domain},
     executor::{call, executor_key, recovery_read, relative_key, validate_publication},
     protocol::{self, Intent, Operation, Reply},
+    renewal::{coordination_key, validate_roles, Renewals, VerifiedLease, Window, POLL_MILLIS},
 };
 
-const MAX_CACHED_COHORTS: usize = 32;
 const MAX_ISSUER_REPLY: usize = 64 * 1024;
 
-#[derive(Clone)]
-struct CachedLease {
-    token: String,
-    issued_at: i64,
-    not_after: i64,
-    last_observed_at: i64,
-}
-
 thread_local! {
-    static LEASE_CACHE: RefCell<BTreeMap<String, CachedLease>> = RefCell::new(BTreeMap::new());
+    static RENEWALS: Rc<Renewals> = Rc::default();
 }
 
 /// Acquires only the actual independently configured profile's existing read lease.
@@ -437,53 +429,73 @@ pub(in crate::external_object) async fn acquire_configured_lease(
             && installation.executor_identity == object.executor_identity,
         "renewal cohort is not independently configured"
     );
-    let cache_key = digest(&(
-        installation,
-        cache_prefix,
-        &object.issuer_key_id,
-        &object.issuer_public_key,
-        &object.timing_profile,
-        cohort,
-    ))?;
-    let clock = object.clock();
-    let latest = clock
-        .observed_at
-        .checked_add(clock.uncertainty)
-        .ok_or_else(|| anyhow::anyhow!("lease cache clock overflow"))?;
-    let cached = LEASE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if let Some(value) = cache.get_mut(&cache_key) {
-            if clock.observed_at >= value.last_observed_at
-                && value.issued_at <= latest
-                && latest
-                    .checked_add(5)
-                    .is_some_and(|next| next < value.not_after)
-            {
-                value.last_observed_at = clock.observed_at;
-                return Some(value.token.clone());
-            }
-        }
-        cache.remove(&cache_key);
-        None
-    });
-    if let Some(token) = cached {
-        return Ok(token);
-    }
+    // Check transport custody before lending either a cached or pending token.
+    // Material changes select a different private coordination identity.
+    let renewal = env.secret("HUB_AUTHORITY_RENEWAL_KEY")?.to_string();
+    let stage_key = env
+        .secret("HUB_EXTERNAL_STAGE_KEY")
+        .ok()
+        .map(|key| key.to_string());
+    validate_roles(
+        &renewal,
+        &env.secret("HUB_STORAGE_WORK_KEY")?.to_string(),
+        &env.secret("HUB_EXTERNAL_OBJECT_GUARD_KEY")?.to_string(),
+        stage_key.as_deref(),
+    )?;
+    let cache_key = coordination_key(
+        &(
+            installation,
+            cache_prefix,
+            &object.issuer_key_id,
+            &object.issuer_public_key,
+            &object.timing_profile,
+            object.clock_uncertainty,
+            cohort,
+        ),
+        &renewal,
+    )?;
+    let renewal_key = StorageWorkKey::new(renewal)?;
+    RENEWALS
+        .with(Rc::clone)
+        .acquire(
+            cache_key,
+            || Ok(object.clock()),
+            || worker::Delay::from(std::time::Duration::from_millis(POLL_MILLIS)),
+            |window| {
+                issue_lease(
+                    env,
+                    object,
+                    installation,
+                    cohort,
+                    cache_prefix,
+                    &renewal_key,
+                    window,
+                )
+            },
+        )
+        .await
+}
 
+async fn issue_lease(
+    env: &Env,
+    object: &ObjectConfig,
+    installation: &aos_hub_core::storage_authority::lease::control::IssuerInstallation,
+    cohort: &LeaseCohort,
+    cache_prefix: &str,
+    renewal_key: &StorageWorkKey,
+    window: Window,
+) -> Result<VerifiedLease> {
     let mut nonce = [0_u8; 32];
     rand::rngs::OsRng
         .try_fill_bytes(&mut nonce)
         .map_err(|_| anyhow::anyhow!("lease correlation randomness unavailable"))?;
-    let now = object.clock().observed_at;
+    let now = window.issued_at;
     let request = IssuerRequest {
         protocol_version: 1,
         installation: installation.clone(),
         nonce: hex::encode(nonce),
         issued_at: LeaseInteger::new(now)?,
-        expires_at: LeaseInteger::new(
-            now.checked_add(30)
-                .ok_or_else(|| anyhow::anyhow!("issuer deadline overflow"))?,
-        )?,
+        expires_at: LeaseInteger::new(window.expires_at)?,
         operation: IssuerOperation::Issue {
             cohort: cohort.clone(),
             requested_not_after: LeaseInteger::new(
@@ -498,16 +510,7 @@ pub(in crate::external_object) async fn acquire_configured_lease(
         body.len() <= MAX_ISSUER_REPLY,
         "bounded renewal request oversized"
     );
-    let renewal = env.secret("HUB_AUTHORITY_RENEWAL_KEY")?.to_string();
-    ensure!(
-        renewal != env.secret("HUB_STORAGE_WORK_KEY")?.to_string()
-            && renewal != env.secret("HUB_EXTERNAL_OBJECT_GUARD_KEY")?.to_string()
-            && env
-                .secret("HUB_EXTERNAL_STAGE_KEY")
-                .map_or(true, |key| renewal != key.to_string()),
-        "issuer renewal key must be independent"
-    );
-    let signature = sign_issuer_request(&StorageWorkKey::new(renewal)?, &body)?;
+    let signature = sign_issuer_request(renewal_key, &body)?;
     let headers = Headers::new();
     headers.set(STORAGE_WORK_SIGNATURE_HEADER, &signature)?;
     let mut init = RequestInit::new();
@@ -516,6 +519,7 @@ pub(in crate::external_object) async fn acquire_configured_lease(
         .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
     let provider =
         Request::new_with_init(&format!("https://authority{ISSUER_CONTROL_PATH}"), &init)?;
+    window.check(object.clock())?;
     let response = env
         .service("HUB_AUTHORITY_ISSUER")?
         .fetch_request(provider)
@@ -565,20 +569,10 @@ pub(in crate::external_object) async fn acquire_configured_lease(
         payload.cohort == *cohort && payload.timing_profile == object.timing_profile,
         "issuer lease differs from configured cohort"
     );
-    LEASE_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        if cache.len() >= MAX_CACHED_COHORTS {
-            cache.clear();
-        }
-        cache.insert(
-            cache_key,
-            CachedLease {
-                token: token.clone(),
-                issued_at: payload.issued_at.get(),
-                not_after: payload.not_after.get(),
-                last_observed_at: object.clock().observed_at,
-            },
-        );
-    });
-    Ok(token)
+    Ok(VerifiedLease {
+        token,
+        issued_at: payload.issued_at.get(),
+        not_after: payload.not_after.get(),
+        last_observed_at: object.clock().observed_at,
+    })
 }

@@ -8,6 +8,8 @@
 
 mod config;
 mod protocol;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod renewal;
 pub(super) mod state;
 
 #[cfg(target_arch = "wasm32")]
