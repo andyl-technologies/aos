@@ -136,6 +136,35 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         ))
         negative.append(Access(domain, "aos_method46_tpm_device_t", "chr_file", "open"))
 
+    # Actual Storage startup selects these read-only manager/task/fragment
+    # observations; these type-wide cells are not pathname or owner authority.
+    storage = "aos_sandbox_storage_t"
+    for target in ("init_exec_t", "systemd_unit_t", "etc_t"):
+        positive.extend(accesses(storage, target, "file", file_read))
+    positive.extend((
+        Access(storage, "init_t", "dir", "search"),
+        Access(storage, "init_t", "lnk_file", "read"),
+        Access(storage, "init_t", "file", "read"),
+    ))
+    for target in ("init_exec_t", "systemd_unit_t"):
+        negative.extend(accesses(storage, target, "file", (
+            *file_mutate, "execute", "execute_no_trans", "entrypoint", "map",
+            "ioctl", "relabelfrom", "relabelto",
+        )))
+    negative.extend(accesses(storage, "init_t", "file", (
+        *file_mutate, "getattr", "open", "map", "ioctl", "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(storage, "init_t", "dir", (
+        *dir_mutate, "getattr", "open", "read", "ioctl", "lock",
+        "relabelfrom", "relabelto",
+    )))
+    negative.extend(accesses(storage, "init_t", "lnk_file", (
+        "create", "getattr", "rename", "setattr", "unlink", "write",
+        "relabelfrom", "relabelto",
+    )))
+    for target in ("usr_t", "proc_t"):
+        negative.extend(accesses(storage, target, "file", file_read))
+
     # Gateway is not a writer-owning OWNERS role. The same checker observes
     # its sole explicit entry, transport/readback cells and authority denials.
     positive.extend(accesses(
