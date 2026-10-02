@@ -56,6 +56,13 @@ OPERATIONS = {
 }
 
 
+OPERATION_PROFILES = {
+    "privileged": None,
+    "restricted": "@system-service",
+    "system-service": "@system-service",
+}
+
+
 def quote(value, expand_environment=False):
     value = checked_text(value)
     escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace(
@@ -188,9 +195,11 @@ def hardening(unit, value):
     unit.add("SystemCallArchitectures", " ".join(map(token, policy["operation_architectures"])))
     allow = [OPERATIONS[o] for o in policy["operation_allow"]]
     deny = [OPERATIONS[o] for o in policy["operation_deny"]]
-    unit.add("SystemCallFilter", " ".join(allow) if allow else None)
+    # Profiles describe workloads; @privileged is a narrow syscall group,
+    # not an unrestricted workload. Explicit exceptions follow exclusions.
+    unit.add("SystemCallFilter", OPERATION_PROFILES[policy["operation_profile"]])
     unit.add("SystemCallFilter", "~" + " ".join(deny) if deny else None)
-    unit.add("SystemCallFilter", "@" + token(policy["operation_profile"]))
+    unit.add("SystemCallFilter", " ".join(allow) if allow else None)
     if policy["denied_operation_action"] == "return-permission-denied":
         unit.add("SystemCallErrorNumber", "EPERM")
 
