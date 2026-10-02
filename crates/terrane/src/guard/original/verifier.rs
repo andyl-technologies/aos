@@ -409,22 +409,26 @@ impl<
                     right.not_before,
                 ))
         });
-        let mut installed = self.original_verifier.write().map_err(|_| unavailable())?;
-        if installed
-            .as_ref()
-            .is_some_and(|old| old.authority != authority)
+
         {
-            return Err(invalid());
+            let mut installed = self.original_verifier.write().map_err(|_| unavailable())?;
+            if installed
+                .as_ref()
+                .is_some_and(|old| old.authority != authority)
+            {
+                return Err(invalid());
+            }
+
+            *installed = Some(OriginalVerifier {
+                authority: authority.clone(),
+                roles,
+                baseline,
+                commit,
+                publication,
+                tag,
+            });
         }
-        *installed = Some(OriginalVerifier {
-            authority: authority.clone(),
-            roles,
-            baseline,
-            commit,
-            publication,
-            tag,
-        });
-        drop(installed);
+
         for path in self
             .store
             .fs()

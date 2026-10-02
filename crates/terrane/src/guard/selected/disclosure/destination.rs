@@ -16,13 +16,15 @@ use crate::repository::local_authority::{
 use crate::selected_bridge::{CheckedEvidence, CheckedMutation, OwnedFinalCheck};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
 
-/// Borrows request data that still requires actual destination authorization.
+/// Borrows request data and preserves the original destination operation timing.
 pub(super) struct DestinationRequest<'request> {
     pub(super) reference: &'request str,
     pub(super) token: &'request [u8],
     pub(super) paths: &'request [Vec<u8>],
     pub(super) surface: &'request str,
     pub(super) expected: Option<&'request terrane_core::refs::RefRecord>,
+    pub(super) started: std::time::Duration,
+    pub(super) timing: crate::ref_advance::CommitTiming,
 }
 
 /// Selects the exact added public mappings while retaining both actual owners.
@@ -37,8 +39,6 @@ pub(super) async fn install<'held, F, B, V, C, D>(
     source_observed: &SelectedObservation<'held>,
     source: &mut DisclosureSource<'_, F>,
     request: DestinationRequest<'_>,
-    started: std::time::Duration,
-    timing: crate::ref_advance::CommitTiming,
 ) -> Result<(), StoreFailure>
 where
     F: LocalFs + BucketBinding + Sync,
@@ -76,7 +76,7 @@ where
     .await?;
     let previous_snapshot = controls.snapshot.clone();
     let destination_check =
-        super::super::retain_final_check(destination, &requests, started, timing)?;
+        super::super::retain_final_check(destination, &requests, request.started, request.timing)?;
     let source_check = source.final_check.clone();
     let final_check = OwnedFinalCheck {
         check: super::super::SharedCheck::new(move || {
@@ -193,8 +193,12 @@ where
         return Err(invalid());
     }
     after.operation(&refreshed)?;
-    let refreshed_check =
-        super::super::retain_final_check(destination, &[refreshed], started, timing)?;
+    let refreshed_check = super::super::retain_final_check(
+        destination,
+        &[refreshed],
+        request.started,
+        request.timing,
+    )?;
     let preceding_check = final_check;
     let final_check = OwnedFinalCheck {
         check: super::super::SharedCheck::new(move || {
