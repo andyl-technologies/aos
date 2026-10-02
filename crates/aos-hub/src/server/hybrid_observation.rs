@@ -209,6 +209,13 @@ impl IngressObservation {
     }
 
     pub(super) fn request_body(&self, body: Body) -> Body {
+        // Preserve a real empty inner stream even if its wrapper is never polled.
+        if body.is_end_stream() {
+            if let Ok(mut state) = self.0.lock() {
+                state.request.eof = true;
+            }
+        }
+
         Body::new(ObservedBody {
             inner: body,
             state: Arc::clone(&self.0),
@@ -236,6 +243,12 @@ impl IngressObservation {
             state.status = Some(response.status().as_u16());
         }
         let (parts, body) = response.into_parts();
+        if body.is_end_stream() {
+            if let Ok(mut state) = self.0.lock() {
+                state.reply.eof = true;
+            }
+        }
+
         let response = Response::from_parts(
             parts,
             Body::new(ObservedBody {

@@ -122,6 +122,46 @@ fn pre_body_refusal_does_not_claim_request_eof_or_actor_acceptance() {
     assert!(state.checks.is_none());
 }
 
+#[test]
+fn empty_request_and_reply_report_inner_eof_without_polling() {
+    let retained = Arc::new(Mutex::new(Vec::new()));
+    let writer = CapturedReceipt(Arc::clone(&retained));
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let dispatch = tracing::Dispatch::new(subscriber);
+    let _scope = tracing::dispatcher::set_default(&dispatch);
+    let observation = observation();
+    let request = observation.request_body(Body::empty());
+    let response = observation.response(Response::new(Body::empty()), "handler_completed");
+
+    assert!(request.is_end_stream());
+    assert!(response.body().is_end_stream());
+    drop(response);
+
+    // Retaining the unpolled request prevents its destructor from supplying
+    // the initial EOF fact after the reply has already emitted this receipt.
+    let raw = retained.lock().unwrap().clone();
+    let text = std::str::from_utf8(&raw).unwrap();
+    let (_, encoded) = text
+        .split_once("native_ingress_application_body_observation ")
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_str(encoded.trim()).unwrap();
+    for partition in ["requestConsumed", "replyOffered"] {
+        assert_eq!(value[partition]["exposedBytes"], "0");
+        assert_eq!(
+            value[partition]["exposedSha256"],
+            hex::encode(Sha256::digest(b""))
+        );
+        assert_eq!(value[partition]["eof"], true);
+        assert_eq!(value[partition]["failed"], false);
+    }
+    assert_eq!(value["bodyAuthenticated"], false);
+    drop(request);
+}
+
 #[derive(Clone)]
 struct CapturedReceipt(Arc<Mutex<Vec<u8>>>);
 
