@@ -38,7 +38,8 @@ in {
   socketOrdering = assert sockets.service_dependencies.after == ["libvirtd" "libvirtd-admin" "libvirtd-ro"];
   assert sockets.service_dependencies.wants == ["libvirtd" "libvirtd-admin" "libvirtd-ro"]; true;
   accessMembership = assert builtins.length config.aos.abilities.identity.operations.membership.effects.libvirt-access.input.members == 1; true;
-  automaticIdentities = assert config.aos.abilities.identity.operations.group.effects.libvirt-qemu.input.requested_id == null;
-  assert config.aos.abilities.identity.operations.principal.effects.libvirt-qemu.input.requested_id == null; true;
+  stableIdentities = assert config.aos.abilities.identity.operations.group.effects.libvirt-qemu.input.requested_id == 64054;
+  assert config.aos.abilities.identity.operations.principal.effects.libvirt-qemu.input.requested_id == 64054;
+  assert config.aos.abilities.identity.operations.group.effects.libvirt-access.input.requested_id == 64055; true;
   immutableConfigurationTree = assert lib.hasSuffix "/etc/libvirt" (builtins.head config.aos.filesystems.etcTrees).source; true;
 }
