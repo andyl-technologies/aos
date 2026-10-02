@@ -173,21 +173,21 @@
     identity = "fixture-executor";
     packageNames = ["fixture"];
     probes.fixture = packageProbe;
-    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+    trustKeys = ["andyl-experimental:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
   partialPackageExecutor = testing.mkQualificationPackageScenario {
     name = "qualification-package-scenario-partial-fixture";
     identity = "fixture-executor";
     packageNames = ["fixture" "missing"];
     probes.fixture = packageProbe;
-    trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+    trustKeys = ["andyl-experimental:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
   };
   rejectsPackageExecutor = packageNames: probes:
     !(builtins.tryEval (builtins.deepSeq (testing.mkQualificationPackageScenario {
         name = "qualification-package-scenario-invalid";
         identity = "fixture-executor";
         inherit packageNames probes;
-        trustKeys = ["andyl-testing:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
+        trustKeys = ["andyl-experimental:Ed25519:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="];
       })
       true))
     .success;
@@ -311,10 +311,10 @@ in
   assert recoveryPackage.execution
   == {
     kind = "recovery-image";
-    system_variant = "aos-testing";
+    system_variant = "aos-experimental";
   };
   assert builtins.all (rule:
-    (rule.execution or null) == null || rule.execution.system_variant == "aos-testing")
+    (rule.execution or null) == null || rule.execution.system_variant == "aos-experimental")
   contract.package_rules;
   assert builtins.all (phase: builtins.elem phase phases) ["build" "staging" "rollout" "complete"];
   assert builtins.length contract.targets == 4;
@@ -458,7 +458,16 @@ in
   assert builtins.elem "production/production/stable" destinationKeys;
   assert builtins.elem "staging/production/edge" destinationKeys;
   assert builtins.elem "production/production/edge" destinationKeys;
-  assert builtins.all (row: row.channel != "edge" || row.profile == (if row.surface == "staging" then "build" else "smoke")) contract.destinations;
+  assert builtins.all (row:
+    row.channel
+    != "edge"
+    || row.profile
+    == (
+      if row.surface == "staging"
+      then "build"
+      else "smoke"
+    ))
+  contract.destinations;
   assert builtins.all (row: builtins.hasAttr row.profile profiles) contract.destinations;
   assert builtins.all (row: row.after == lib.optional (row.surface == "production") "staging") contract.destinations;
   assert rejects {qualification.profiles.build.requirements = lib.mkForce ["staging-delivery"];};

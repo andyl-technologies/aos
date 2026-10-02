@@ -9,7 +9,7 @@
 //! production, so its images must bake the production Hub; staging exercises
 //! them with an explicit cache override. A staging-only plan (every
 //! destination on the staging surface) bakes the staging Hub instead, which
-//! is what the `aos-testing-staging` variant provides. A static surface has
+//! is what the `aos-experimental-staging` variant provides. A static surface has
 //! no Hub control origin, so only the registry binding applies.
 
 use anyhow::{Context as _, Result, bail};

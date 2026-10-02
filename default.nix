@@ -443,7 +443,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     probes = qualificationPackageProbesFor (
       qualificationPackageNamesByPlatform.${hostPlatform.system}
     );
-    trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
+    trustKeys = discoverSystems."aos-experimental".config.aos.release.trustKeys;
   };
   containerLifecycleScenario =
     if hostPlatform.isLinux
@@ -1587,7 +1587,7 @@ in rec {
       eval = import ./tests/containers/eval.nix {
         inherit pkgs lib mkSystem;
         serverModule = ./systems/server.nix;
-        testingModule = ./systems/aos-testing.nix;
+        experimentalModule = ./systems/aos-experimental.nix;
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};

@@ -6,9 +6,9 @@
   # Dedicated public Nix key from the testing authority inventory. An empty
   # or unavailable production testing cache may fall back to source builds.
   nixConfig = {
-    extra-substituters = ["https://cdn.aos.andyl.org/andyl/testing/"];
+    extra-substituters = ["https://cdn.aos.andyl.org/andyl/experimental/"];
     extra-trusted-public-keys = [
-      "andyl-testing-nix-cache-v1:BVpL2fjcLnu7pYwVUcnXZd6fi6SWYDrcy9+FIb+j6To="
+      "andyl-experimental-nix-cache-v1:1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I="
     ];
     fallback = true;
   };
@@ -105,7 +105,7 @@
       };
 
     productionContainer = coordinatedContainer "server";
-    testingContainer = coordinatedContainer "aos-testing";
+    experimentalContainer = coordinatedContainer "aos-experimental";
 
     # Flatten systems into flake packages:
     #   server-image-raw, server-image-qcow2, edge-image-raw, etc.
@@ -210,18 +210,18 @@
         ) (builtins.attrNames aos.containerImages)
       );
 
-    testingContainerPackages = system: aos: coordinated: let
-      container = aos.systems.aos-testing.build.defaultContainer;
+    experimentalContainerPackages = system: aos: coordinated: let
+      container = aos.systems.aos-experimental.build.defaultContainer;
       platform = container.platforms.${system};
     in {
-      container-aos-testing-oci = platform.ociLayout;
-      container-aos-testing-docker = platform.dockerArchive;
-      container-aos-testing-metadata = platform.metadata;
-      container-aos-testing-index = coordinated.ociIndex;
-      container-aos-testing-platform-index = container.ociIndex;
-      container-aos-testing-evidence = coordinated.evidence;
-      container-aos-testing-publication-inputs = coordinated.publicationInputs;
-      container-aos-testing-qualification = coordinated.check;
+      container-aos-experimental-oci = platform.ociLayout;
+      container-aos-experimental-docker = platform.dockerArchive;
+      container-aos-experimental-metadata = platform.metadata;
+      container-aos-experimental-index = coordinated.ociIndex;
+      container-aos-experimental-platform-index = container.ociIndex;
+      container-aos-experimental-evidence = coordinated.evidence;
+      container-aos-experimental-publication-inputs = coordinated.publicationInputs;
+      container-aos-experimental-qualification = coordinated.check;
     };
   in {
     aosSystems = genAttrs systems (system: (aosFor system).systems);
@@ -235,11 +235,11 @@
       system: let
         aos = aosFor system;
         production = productionContainer system;
-        testing = testingContainer system;
+        experimental = experimentalContainer system;
         individualPackages = pkgPackages aos;
         containers =
           containerPackages system aos production
-          // testingContainerPackages system aos testing;
+          // experimentalContainerPackages system aos experimental;
         allPackages = aos.pkgs.mkDerivation {
           pname = "aos-all-packages";
           version = "0";

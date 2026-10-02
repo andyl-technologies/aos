@@ -709,7 +709,7 @@ mod tests {
         let current = hub_types::RouteSpec {
             endpoint_id: "endpoint:cdn".into(),
             endpoint_generation: 3,
-            base_path: "/andyl/testing".into(),
+            base_path: "/andyl/experimental".into(),
             capabilities: Some(hub_types::RouteCapabilities {
                 serves_git: true,
                 ..Default::default()
@@ -739,7 +739,7 @@ mod tests {
 
         let updated = merge_route_spec(current, &input).unwrap();
 
-        assert_eq!(updated.base_path, "/andyl/testing");
+        assert_eq!(updated.base_path, "/andyl/experimental");
         assert_eq!(updated.endpoint_generation, 4);
         let Some(hub_types::route_target::Target::DirectGatewayPlacement(target)) =
             updated.target.and_then(|target| target.target)
