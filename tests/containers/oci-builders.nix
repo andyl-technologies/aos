@@ -171,7 +171,7 @@
   };
   # With one platform and identical empty index annotations, the composed
   # image-index blob is byte-identical to the input layout's index blob. This
-  # freezes verified same-digest reuse instead of a read-only overwrite.
+  # freezes the same digest after composing the exact manifest closure.
   singlePlatform = oci.mkMultiPlatformIndex {
     pname = "oci-fixture-single-platform";
     images = [amd64Image];
@@ -462,7 +462,25 @@ in
             ${singlePlatform}/index-descriptor.json \
             ${singlePlatform}/layout/blobs/sha256/$single_index_hex
           test "$(find ${singlePlatform}/layout/blobs/sha256 -name "$single_index_hex" | wc -l)" -eq 1 \
-            || fail "single-platform index did not reuse its identical input blob"
+            || fail "single-platform index did not retain its exact index digest"
+
+          # Source entry indexes are evidence of the input images, not members
+          # of the composed descriptor closure. Unknown extra blobs still fail.
+          for composed in ${multiPlatform} ${singlePlatform}; do
+            jq -r '.manifests[].digest | sub("^sha256:"; "")' \
+              "$composed/layout/index.json" > expected-blobs
+            jq -r '.manifests[].digest | sub("^sha256:"; "")' \
+              "$composed/image-index.json" > platform-manifests
+            while IFS= read -r manifest_hex; do
+              printf '%s\n' "$manifest_hex" >> expected-blobs
+              jq -r '(.config, .layers[]) | .digest | sub("^sha256:"; "")' \
+                "$composed/layout/blobs/sha256/$manifest_hex" >> expected-blobs
+            done < platform-manifests
+            sort -u expected-blobs > expected-blobs.sorted
+            find "$composed/layout/blobs/sha256" -type f -printf '%f\n' | sort > actual-blobs.sorted
+            cmp expected-blobs.sorted actual-blobs.sorted \
+              || fail "composed layout includes content outside its descriptor closure"
+          done
 
           base_digest=$(jq -r .digest ${baseLayerA}/descriptor.json)
           base_hex=''${base_digest#sha256:}

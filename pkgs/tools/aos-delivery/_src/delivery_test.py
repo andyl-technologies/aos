@@ -20,7 +20,7 @@ import delivery
 from transport import ARTIFACT_MEDIA_TYPE, Client, DeliveryError, encoded
 
 
-def fixture_layout(root):
+def fixture_layout(root, nested=False):
     """Creates a tiny real descriptor closure for cross-repository parsing."""
     root = Path(root)
     blobs = root / "blobs" / "sha256"
@@ -35,7 +35,16 @@ def fixture_layout(root):
     manifest = blob(encoded({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": config, "layers": []}), "application/vnd.oci.image.manifest.v1+json")
     manifest["annotations"] = {"org.opencontainers.image.ref.name": "aos-hub"}
     index = encoded({"schemaVersion": 2, "mediaType": "application/vnd.oci.image.index.v1+json", "manifests": [manifest]})
-    (root / "index.json").write_bytes(index)
+    if nested:
+        descriptor = blob(index, "application/vnd.oci.image.index.v1+json")
+        entry = encoded({
+            "schemaVersion": 2,
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "manifests": [descriptor],
+        })
+    else:
+        entry = index
+    (root / "index.json").write_bytes(entry)
     (root / "oci-layout").write_bytes(encoded({"imageLayoutVersion": "1.0.0"}))
     return artifact.digest(index)
 
@@ -253,6 +262,84 @@ class ProtocolTests(unittest.TestCase):
 
 
 class ProducerTests(unittest.TestCase):
+    def test_nested_index_preserves_published_digest_and_rejects_dangling_content(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "original"
+            published_digest = fixture_layout(source, nested=True)
+            entry_digest = artifact.digest((source / "index.json").read_bytes())
+            self.assertNotEqual(published_digest, entry_digest)
+
+            observed = artifact.normalize_layout(source, root / "normalized")
+            self.assertEqual(observed, published_digest)
+            descriptor = json.loads((root / "normalized/index.json").read_bytes())["manifests"][0]
+            self.assertEqual(descriptor["digest"], published_digest)
+
+            entry = json.loads((source / "index.json").read_bytes())
+            entry["manifests"][0]["size"] += 1
+            (source / "index.json").write_bytes(encoded(entry))
+            with self.assertRaisesRegex(DeliveryError, "content or size differs"):
+                artifact.normalize_layout(source, root / "wrong-size")
+            entry["manifests"][0]["size"] -= 1
+            (source / "index.json").write_bytes(encoded(entry))
+
+            dangling = b"unreferenced index or other content"
+            (source / "blobs/sha256" / artifact.digest(dangling).removeprefix("sha256:")).write_bytes(dangling)
+            with self.assertRaisesRegex(DeliveryError, "unreferenced or undeclared"):
+                artifact.normalize_layout(source, root / "refused")
+            self.assertFalse((root / "refused").exists())
+
+    def test_nested_index_provenance_requires_published_subject_before_scanning(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = root / "image"
+            published_digest = fixture_layout(image / "layout", nested=True)
+            entry_digest = artifact.digest((image / "layout/index.json").read_bytes())
+            evidence = root / "evidence/evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "sbom.payload.json").write_bytes(encoded({
+                "spdxVersion": "SPDX-2.3",
+                "packages": [{"name": "fixture"}],
+            }))
+            provenance = {
+                "_type": "https://in-toto.io/Statement/v1",
+                "predicateType": "https://aos.dev/attestations/container-build/v1",
+            }
+            declaration = root / "project.json"
+            declaration.write_bytes(encoded({
+                "name": artifact.APPLICATION,
+                "releaseGroups": {"native": {"components": [artifact.COMPONENT]}},
+            }))
+            database = root / "database.json"
+            database.write_bytes(encoded({
+                "valid": True,
+                "schemaVersion": "v6.1.9",
+                "built": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            }))
+            args = argparse.Namespace(
+                source_sha="a" * 40, declaration=str(declaration), image=str(image),
+                evidence=str(evidence.parent), cataloger="fixture-syft",
+                scanner="fixture-grype", database_status=str(database),
+                output=str(root / "bundle.tar"),
+            )
+
+            with mock.patch.object(artifact, "prove_source"), mock.patch.object(artifact.subprocess, "run", side_effect=RuntimeError("cataloger reached")) as scanner:
+                provenance["subject"] = [{
+                    "name": "container-image-index",
+                    "digest": {"sha256": entry_digest.removeprefix("sha256:")},
+                }]
+                (evidence / "provenance.payload.json").write_bytes(encoded(provenance))
+                with self.assertRaisesRegex(DeliveryError, "exact original index"):
+                    artifact.build_bundle(args)
+                scanner.assert_not_called()
+
+                provenance["subject"][0]["digest"]["sha256"] = published_digest.removeprefix("sha256:")
+                (evidence / "provenance.payload.json").write_bytes(encoded(provenance))
+                with self.assertRaisesRegex(RuntimeError, "cataloger reached"):
+                    artifact.build_bundle(args)
+                scanner.assert_called_once()
+            self.assertFalse(Path(args.output).exists())
+
     def test_layout_tampering_and_unassigned_files_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

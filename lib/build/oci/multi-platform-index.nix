@@ -138,6 +138,26 @@ in
               exit 1
             fi
 
+            # The input layout stores its entry index as a blob for source
+            # evidence. The composed layout names platform manifests directly,
+            # so that input index is not part of its descriptor closure.
+            jq -e '
+              .mediaType == ${builtins.toJSON common.indexMediaType}
+              and (.digest | test("^sha256:[0-9a-f]{64}$"))
+              and (.size | type == "number" and . >= 0 and floor == .)
+            ' "$image_path/index-descriptor.json" >/dev/null
+            input_index_digest=$(jq -r .digest "$image_path/index-descriptor.json")
+            input_index_hex=''${input_index_digest#sha256:}
+            input_index_size=$(jq -r .size "$image_path/index-descriptor.json")
+            test "$(sha256sum "$image_path/layout/index.json" | cut -d ' ' -f 1)" = "$input_index_hex"
+            test "$(stat -c %s "$image_path/layout/index.json")" -eq "$input_index_size"
+            cmp "$image_path/layout/index.json" "$image_path/layout/blobs/sha256/$input_index_hex"
+            jq -e --slurpfile descriptor "$image_path/manifest-descriptor.json" '
+              .schemaVersion == 2
+              and .mediaType == ${builtins.toJSON common.indexMediaType}
+              and .manifests == [$descriptor[0]]
+            ' "$image_path/layout/index.json" >/dev/null
+
             for source_blob in "$image_path/layout/blobs/sha256/"*; do
               test -f "$source_blob"
               blob_name=''${source_blob##*/}
@@ -152,6 +172,9 @@ in
               if [ "$source_hex" != "$blob_name" ]; then
                 echo "input layout contains a misnamed blob: $source_blob" >&2
                 exit 1
+              fi
+              if [ "$blob_name" = "$input_index_hex" ]; then
+                continue
               fi
               destination="$out/layout/blobs/sha256/$blob_name"
               if [ -e "$destination" ]; then

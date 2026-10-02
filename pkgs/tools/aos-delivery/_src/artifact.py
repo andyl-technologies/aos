@@ -154,7 +154,8 @@ def normalize_layout(source, destination):
         ):
             raise DeliveryError("OCI descriptor media type is outside the image schema")
 
-    visit(index["manifests"][0])
+    root_descriptor = index["manifests"][0]
+    visit(root_descriptor)
     if files.keys() != allowed:
         raise DeliveryError("OCI layout contains unreferenced or undeclared files")
     index["manifests"][0].setdefault("annotations", {})["org.opencontainers.image.ref.name"] = COMPONENT
@@ -163,6 +164,10 @@ def normalize_layout(source, destination):
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, target)
     (destination / "index.json").write_bytes(encoded(index))
+    # A composed AOS layout wraps the publishable index in its entry document.
+    # Build provenance names that verified index blob, not the transport entry.
+    if root_descriptor.get("mediaType") == "application/vnd.oci.image.index.v1+json":
+        return root_descriptor["digest"]
     return digest(files["index.json"].read_bytes())
 
 
