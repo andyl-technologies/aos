@@ -24,6 +24,16 @@ OFFLINE_PREPARE_EXECUTABLE = "aos_nix_offline_prepare_exec_t"
 OFFLINE_PREPARE_PROFILE = "aos_nix_offline_prepare_profile_t"
 OFFLINE_PREPARE_CREDENTIAL = "aos_nix_offline_prepare_credential_t"
 OFFLINE_PREPARE_STATE = "aos_nix_offline_prepare_state_t"
+
+# Known cells remain visible even when the selected principals are absent.
+# The closed selected recipe changes only the empty selector initializer;
+# neither type presence nor a runtime flag supplies an expected permission.
+SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS = (
+    ("aos_sandbox_mount_t", "init_exec_t"),
+    ("aos_source_provider_t", "init_exec_t"),
+)
+SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS = frozenset()
+
 ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
 NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
 ROOT_CUSTODY_CUTS = (

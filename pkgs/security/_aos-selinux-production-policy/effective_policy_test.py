@@ -8,6 +8,7 @@ import unittest
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import effective_policy
 
@@ -28,6 +29,10 @@ class FakeAttribute:
 
 class FakeTERuleNoFilename(AttributeError):
     """Matches the selected SETools exception for a generic transition."""
+
+
+class FakeInvalidType(ValueError):
+    """Models the native absence exception without an installed policy."""
 
 
 @dataclass(frozen=True)
@@ -52,6 +57,14 @@ class FakeRule:
 
     def __str__(self) -> str:
         return self.text
+
+
+@dataclass(frozen=True)
+class FakeXpermRule(FakeRule):
+    """Carries native-shaped selector DATA, including malformed observations."""
+
+    perms: frozenset[object] = frozenset()
+    xperm_type: str = "ioctl"
 
 
 class FakePolicy:
@@ -89,6 +102,7 @@ class FakePolicy:
             ]
             for transition in effective_policy.TRANSITIONS
         }
+        self.xperms: dict[effective_policy.Access, list[FakeXpermRule]] = {}
 
     def lookup_type(self, domain: str) -> FakeType:
         return FakeType(domain, domain in self.permissive)
@@ -103,7 +117,7 @@ class FakeQuery:
         self.policy.queries.append(criteria)
 
     def results(self) -> list[FakeRule]:
-        if self.criteria["ruletype"] == ["allow"]:
+        if self.criteria["ruletype"] in (["allow"], ["allowxperm"]):
             source = self.criteria.get("source")
             target = self.criteria.get("target")
             object_class = str(self.criteria["tclass"][0])
@@ -113,7 +127,12 @@ class FakeQuery:
                 self.policy.file_types if target == "file_type" else {str(target)}
             )
             matches = []
-            for access, rules in self.policy.allows.items():
+            records = (
+                self.policy.allows
+                if self.criteria["ruletype"] == ["allow"]
+                else self.policy.xperms
+            )
+            for access, rules in records.items():
                 if (
                     access.object_class != object_class
                     or access.permission != permission
@@ -131,8 +150,14 @@ class FakeQuery:
                         if access.target == "file_type"
                         else {access.target}
                     )
-                    if source is not None and str(source) not in sources:
-                        continue
+                    if source is not None:
+                        if self.criteria.get("source_regex"):
+                            if not any(
+                                re.search(str(source), str(member)) for member in sources
+                            ):
+                                continue
+                        elif str(source) not in sources:
+                            continue
                     if target is not None and not target_members.intersection(
                         concrete_target.expand()
                     ):
@@ -193,6 +218,9 @@ class FakeType:
     name: str
     ispermissive: bool = False
 
+    def expand(self) -> set[str]:
+        return {self.name}
+
     def __str__(self) -> str:
         return self.name
 
@@ -213,9 +241,13 @@ class FakeTypeAttributeQuery:
 
 FAKE_SETOOLS = SimpleNamespace(
     TERuleQuery=FakeQuery,
-    TERuletype=SimpleNamespace(allow="allow", type_transition="type_transition"),
+    TERuletype=SimpleNamespace(
+        allow="allow", allowxperm="allowxperm", type_transition="type_transition",
+    ),
     TypeAttributeQuery=FakeTypeAttributeQuery,
-    exception=SimpleNamespace(TERuleNoFilename=FakeTERuleNoFilename),
+    exception=SimpleNamespace(
+        TERuleNoFilename=FakeTERuleNoFilename, InvalidType=FakeInvalidType,
+    ),
 )
 
 
@@ -1648,6 +1680,242 @@ class EffectivePolicyTest(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "protected domain is permissive: init_t"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+
+class SelectedLauncherImageIoctlTest(unittest.TestCase):
+    """Checks closed offline image expectations without genuine FD authority."""
+
+    def _selected_policy(self) -> FakePolicy:
+        policy = FakePolicy()
+        cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
+        for source, target in cells:
+            access = effective_policy.Access(source, target, "file", "ioctl")
+            policy.allows[access] = [FakeRule("fixed base image ioctl")]
+            policy.xperms[access] = [FakeXpermRule(
+                "fixed image selector", perms=frozenset({0x6686}),
+            )]
+        return policy
+
+    def _check_selected(self, policy: FakePolicy) -> list[str]:
+        with patch.object(
+            effective_policy.owner_policy,
+            "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS",
+            frozenset({0x6686}),
+        ):
+            return effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, policy)
+
+    def test_default_data_and_actual_checker_tail_stay_closed(self) -> None:
+        owner = effective_policy.owner_policy
+        self.assertEqual(owner.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS, (
+            ("aos_sandbox_mount_t", "init_exec_t"),
+            ("aos_source_provider_t", "init_exec_t"),
+        ))
+        self.assertEqual(owner.SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS, frozenset())
+
+        policy = EffectivePolicyTest()._storage_policy()
+        evidence = effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+        self.assertFalse(any(line.startswith("allowxperm\t") for line in evidence))
+        self.assertEqual(evidence[-1], (
+            f"deny\t{effective_policy.NEGATIVE_ACCESS[-1].source}\t"
+            f"{effective_policy.NEGATIVE_ACCESS[-1].target}\t"
+            f"{effective_policy.NEGATIVE_ACCESS[-1].object_class}\t"
+            f"{effective_policy.NEGATIVE_ACCESS[-1].permission}"
+        ))
+        self.assertEqual(
+            [query["ruletype"] for query in policy.queries[-2:]],
+            [["allow"], ["allowxperm"]],
+        )
+
+    def test_exact_enabled_selectors_pass_in_fixed_pair_order(self) -> None:
+        policy = self._selected_policy()
+        cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
+        for rules in policy.xperms.values():
+            rules.append(rules[0])
+
+        evidence = self._check_selected(policy)
+
+        self.assertEqual(evidence, [
+            f"allowxperm\t{source}\t{target}\tfile\tioctl\t0x6686"
+            for source, target in cells
+        ])
+
+    def test_missing_or_inactive_positive_witness_fails(self) -> None:
+        for kind in ("base", "extended"):
+            for inactive in (False, True):
+                with self.subTest(kind=kind, inactive=inactive):
+                    policy = self._selected_policy()
+                    access = next(iter(policy.xperms))
+                    records = policy.allows if kind == "base" else policy.xperms
+                    records[access] = (
+                        [replace(records[access][0], active=False)] if inactive else []
+                    )
+
+                    with self.assertRaisesRegex(ValueError, "missing selected-launcher"):
+                        self._check_selected(policy)
+
+    def test_complete_selector_sets_reject_excess_in_any_branch(self) -> None:
+        selector_sets = (
+            frozenset({0x6685}),
+            frozenset({0x6685, 0x6686, 0x6687}),
+            frozenset(range(0x6600, 0x6700)),
+            frozenset({0xc0046686}),
+            frozenset({"0x6686"}),
+            frozenset(),
+        )
+        for selectors in selector_sets:
+            for active in (False, True):
+                with self.subTest(selectors=selectors, active=active):
+                    policy = self._selected_policy()
+                    access = next(iter(policy.xperms))
+                    policy.xperms[access].append(FakeXpermRule(
+                        "excess or malformed selector set", active=active, perms=selectors,
+                    ))
+
+                    with self.assertRaisesRegex(ValueError, "forbidden.*selectors"):
+                        self._check_selected(policy)
+
+    def test_both_attribute_axes_reject_foreign_pairs_in_any_branch(self) -> None:
+        for kind in ("base", "extended"):
+            for axis in ("source", "target"):
+                for active in (False, True):
+                    with self.subTest(kind=kind, axis=axis, active=active):
+                        policy = self._selected_policy()
+                        access = next(iter(policy.xperms))
+                        records = policy.allows if kind == "base" else policy.xperms
+                        members = (
+                            {access.source, "aos_sandbox_storage_t"}
+                            if axis == "source"
+                            else {access.target, "other_image_t"}
+                        )
+                        records[access].append(replace(
+                            records[access][0], active=active,
+                            **{axis: FakeTypeAttribute(members)},
+                        ))
+
+                        with self.assertRaisesRegex(ValueError, "forbidden.*grant"):
+                            self._check_selected(policy)
+
+    def test_exact_two_source_attribute_can_supply_both_cells(self) -> None:
+        policy = self._selected_policy()
+        access = next(iter(policy.xperms))
+        cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
+        source_attribute = FakeTypeAttribute({source for source, _ in cells})
+        policy.allows = {access: [FakeRule("two fixed sources", source=source_attribute)]}
+        policy.xperms = {access: [FakeXpermRule(
+            "two fixed sources", source=source_attribute, perms=frozenset({0x6686}),
+        )]}
+
+        self.assertEqual(len(self._check_selected(policy)), 2)
+
+    def test_default_rejects_base_and_extended_grants_even_if_inactive(self) -> None:
+        cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
+        for kind in ("base", "extended"):
+            for active in (False, True):
+                with self.subTest(kind=kind, active=active):
+                    policy = FakePolicy()
+                    source, target = cells[0]
+                    access = effective_policy.Access(source, target, "file", "ioctl")
+                    if kind == "base":
+                        policy.allows[access] = [FakeRule("default leak", active=active)]
+                    else:
+                        policy.xperms[access] = [FakeXpermRule(
+                            "default leak", active=active, perms=frozenset({0x6686}),
+                        )]
+
+                    with self.assertRaisesRegex(ValueError, "forbidden.*grant"):
+                        effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, policy)
+
+    def test_absent_default_types_still_scan_and_selected_absence_fails(self) -> None:
+        cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
+
+        class AbsentSourcesPolicy(FakePolicy):
+            def lookup_type(self, name: str) -> FakeType:
+                if name != "init_exec_t":
+                    raise FakeInvalidType(name)
+                return super().lookup_type(name)
+
+        policy = AbsentSourcesPolicy()
+        self.assertEqual(
+            effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, policy), [],
+        )
+        self.assertEqual(len(policy.queries), 2)
+        with self.assertRaisesRegex(ValueError, "missing selected-launcher image source"):
+            self._check_selected(policy)
+
+        source, target = cells[0]
+        policy.xperms[effective_policy.Access(source, target, "file", "ioctl")] = [
+            FakeXpermRule("unexpected retained rule", perms=frozenset({0x6686})),
+        ]
+        with self.assertRaisesRegex(ValueError, "forbidden.*grant"):
+            effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, policy)
+
+    def test_aliases_and_nonabsence_errors_are_not_hidden(self) -> None:
+        names = ("init_exec_t", "aos_sandbox_mount_t", "aos_source_provider_t")
+        for aliased_name in names:
+            class AliasedPolicy(FakePolicy):
+                def lookup_type(self, name: str) -> FakeType:
+                    return FakeType("substitute_t" if name == aliased_name else name)
+
+            with self.subTest(name=aliased_name):
+                with self.assertRaisesRegex(ValueError, "aliased"):
+                    effective_policy._check_selected_launcher_image_ioctls(
+                        FAKE_SETOOLS, AliasedPolicy(),
+                    )
+
+        class BrokenLookupPolicy(FakePolicy):
+            def lookup_type(self, name: str) -> FakeType:
+                raise RuntimeError("original lookup failure")
+
+        with self.assertRaisesRegex(RuntimeError, "original lookup failure"):
+            effective_policy._check_selected_launcher_image_ioctls(
+                FAKE_SETOOLS, BrokenLookupPolicy(),
+            )
+
+    def test_query_keeps_full_native_sets_and_wrong_pairs_cannot_satisfy_positive(self) -> None:
+        policy = self._selected_policy()
+        self._check_selected(policy)
+        for query in policy.queries:
+            self.assertEqual(query["perms"], ["ioctl"])
+            self.assertEqual(query["tclass"], ["file"])
+            self.assertEqual(query["target"], "init_exec_t")
+            self.assertIs(query["source_regex"], True)
+            self.assertIs(query["source_indirect"], True)
+            self.assertIs(query["target_indirect"], True)
+            self.assertNotIn("xperms", query)
+            self.assertNotIn("xperms_equal", query)
+            self.assertNotIn("boolean", query)
+            self.assertIsNone(re.search(str(query["source"]), "aos_sandbox_mount_t_other"))
+
+        for changed in ({"source": "other_t"}, {"target": "other_image_t"}):
+            with self.subTest(changed=changed):
+                policy = self._selected_policy()
+                access = next(iter(policy.xperms))
+                policy.xperms[replace(access, **changed)] = policy.xperms.pop(access)
+                with self.assertRaisesRegex(ValueError, "missing.*selectors"):
+                    self._check_selected(policy)
+
+    def test_original_check_failure_precedes_new_default_violation(self) -> None:
+        policy = EffectivePolicyTest()._storage_policy()
+        policy.allows[effective_policy.POSITIVE_ACCESS[0]] = []
+        cells = effective_policy.owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
+        source, target = cells[0]
+        policy.allows[effective_policy.Access(source, target, "file", "ioctl")] = [
+            FakeRule("later default image violation"),
+        ]
+
+        with self.assertRaisesRegex(ValueError, "missing effective allow"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+        self.assertFalse(any(query.get("source_regex") for query in policy.queries))
+
+    def test_full_native_command_is_not_a_mac_selector_expectation(self) -> None:
+        with patch.object(
+            effective_policy.owner_policy,
+            "SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS",
+            frozenset({0xc0046686}),
+        ):
+            with self.assertRaisesRegex(ValueError, "unsupported.*expectation"):
+                effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, FakePolicy())
 
 
 if __name__ == "__main__":
