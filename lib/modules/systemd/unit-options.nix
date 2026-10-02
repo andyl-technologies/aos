@@ -16,7 +16,7 @@
 #   - The switch-to-configuration `X-*` contract knobs were originally
 #     dropped (`restartTriggers`, `reloadTriggers`, `restartIfChanged`,
 #     `reloadIfChanged`, `stopIfChanged`, `notSocketActivated`,
-#     `startAt`). The live in-place `apm upgrade --system` path
+#     `startAt`). The live in-place `apm image upgrade` path
 #     (2026-05-27_apm_system_upgrade_refactor_v2 §6.4) restores a subset
 #     as first-class options: `restartIfChanged`, `reloadIfChanged`,
 #     `stopOnRemoval`, `stopOnReconfiguration`, `onlyManualStart`,
@@ -387,7 +387,7 @@ in rec {
         # switch-to-configuration `X-*` contract knobs (restored, spec §6.4)
         # ----------------------------------------------------------------
         #
-        # These drive the live `apm upgrade --system` reconciler. Each
+        # These drive the live `apm image upgrade` reconciler. Each
         # renders an `X-*` line into the unit's `[Unit]` section (see
         # `lib.nix`'s `unitConfig` mixin), gated so the default value
         # emits nothing — a default-config unit's rendered text is

@@ -1312,9 +1312,6 @@ fn installed_source_registry<'a>(package: &str, installed: &'a [InstalledMeta]) 
     fallback
 }
 
-/// Whether the install would be a no-op: every requested root is already
-/// installed explicitly *at the same store hash*, and every closure member
-/// has an installed-metadata record.
 // Partitioning preserves every requested root that still needs profile installation.
 // Keeping JSON emission outside this helper ensures mixed requests emit one result.
 fn partition_base_provided_closures(
@@ -1336,6 +1333,9 @@ fn partition_base_provided_closures(
     provided
 }
 
+/// Whether the install would be a no-op: every requested root is already
+/// installed explicitly *at the same store hash*, and every closure member
+/// has an installed-metadata record.
 fn requested_closures_already_installed(
     closures: &[ResolvedClosure],
     installed: &[InstalledMeta],
