@@ -45,6 +45,7 @@ in {
   absentVerificationSchemaIsSafe = !(absentSchema.config ? aos);
   directKernelInitrdMatchesImage = !kernelInitrd.aos.security.verity.enable && !kernelInitrd.aos.boot.substrateServices.verityEnabled;
   directKernelHostMatchesImage = !kernelHost.aos.security.verity.enable && !kernelHost.aos.boot.substrateServices.verityEnabled;
+  varMountWaitsWithoutDeviceCondition = (mountVar kernelInitrd).conditions == null;
   directKernelGuardDisabled = !kernelInitrd.aos.services."boot-identity.aos-boot-identity-guard".enable;
   directKernelNoMissingGuardRequirement = !(builtins.elem guard (mountVar kernelInitrd).dependencies.requires);
   directKernelNoMissingGuardOrdering = !(builtins.elem guard (mountVar kernelInitrd).dependencies.after);

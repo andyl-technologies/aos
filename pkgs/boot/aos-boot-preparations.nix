@@ -86,6 +86,7 @@ in
             destination="$out/bin/$(basename "$source" .sh)"
             sed -e 's|@bash@|${bash}|g' \
               -e 's|@package_runtime@|${packageRuntime}|g' \
+              -e 's|@util_linux@|${util-linux}|g' \
               "$source" > "$destination"
             chmod 0555 "$destination"
           done

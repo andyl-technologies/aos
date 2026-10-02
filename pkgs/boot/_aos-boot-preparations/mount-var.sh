@@ -26,7 +26,7 @@ if ! mountpoint -q /sysroot/var; then
       echo "mount-var: no device carries the system-state volume" >&2
       exit 1
     fi
-    fs_type=$(blkid -p -s TYPE -o value "$var_dev" 2>/dev/null || true)
+    fs_type=$(@util_linux@/sbin/blkid -p -s TYPE -o value "$var_dev" 2>/dev/null || true)
     if [ "$fs_type" != ext4 ]; then
       echo "mount-var: refusing $var_dev with filesystem type ${fs_type:-none}; expected ext4" >&2
       exit 1
