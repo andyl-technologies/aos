@@ -281,6 +281,45 @@
       uniq "$inventory_work.sorted" > "$inventory_work.allowed"
     }
 
+    validate_store_target_membership() {
+      allowed_store_paths="$1"
+      target="$2"
+
+      case "$target" in
+        /nix/store/*) ;;
+        *)
+          echo "metadata store target is not inside the Nix store: $target" >&2
+          return 1
+          ;;
+      esac
+      store_tail=''${target#/nix/store/}
+      store_name=''${store_tail%%/*}
+      store_root="/nix/store/$store_name"
+      store_hash=''${store_name%%-*}
+      case "$store_hash" in
+        *[!0123456789abcdfghijklmnpqrsvwxyz]*|"") return 1 ;;
+      esac
+      [ "''${#store_hash}" -eq 32 ] || return 1
+      case "$store_name" in
+        "$store_hash"-?*) ;;
+        *) return 1 ;;
+      esac
+      case "$target" in
+        *//*|*/./*|*/../*|*/.|*/..|*/) return 1 ;;
+      esac
+      admitted=0
+      while IFS= read -r allowed_store_path; do
+        if [ "$allowed_store_path" = "$store_root" ]; then
+          admitted=1
+          break
+        fi
+      done < "$allowed_store_paths"
+      if [ "$admitted" -ne 1 ]; then
+        echo "metadata store target is absent from the image closure: $target" >&2
+        return 1
+      fi
+    }
+
     validate_store_symlink_target() {
       allowed_store_paths="$1"
       target="$2"
@@ -293,20 +332,7 @@
           return 1
           ;;
       esac
-      store_tail=''${target#/nix/store/}
-      store_name=''${store_tail%%/*}
-      store_root="/nix/store/$store_name"
-      admitted=0
-      while IFS= read -r allowed_store_path; do
-        if [ "$allowed_store_path" = "$store_root" ]; then
-          admitted=1
-          break
-        fi
-      done < "$allowed_store_paths"
-      if [ "$admitted" -ne 1 ]; then
-        echo "metadata store target is absent from the image closure: $target" >&2
-        return 1
-      fi
+      validate_store_target_membership "$allowed_store_paths" "$target" || return 1
       if [ ! -f "$target" ] || [ -L "$target" ]; then
         echo "metadata store target is not a regular non-symlink file: $target" >&2
         return 1
@@ -315,6 +341,24 @@
         echo "metadata facade target is not executable: $target" >&2
         return 1
       fi
+    }
+
+    validate_store_directory_target() {
+      validate_store_target_membership "$1" "$2" || return 1
+      directory_path="$store_root"
+      directory_suffix=''${target#"$store_root"}
+      # Check every component so a directory symlink cannot escape custody.
+      while :; do
+        if [ ! -d "$directory_path" ] || [ -L "$directory_path" ]; then
+          echo "metadata store target is not a non-symlink directory: $directory_path" >&2
+          return 1
+        fi
+        [ -n "$directory_suffix" ] || break
+        directory_suffix=''${directory_suffix#/}
+        directory_component=''${directory_suffix%%/*}
+        directory_path="$directory_path/$directory_component"
+        directory_suffix=''${directory_suffix#"$directory_component"}
+      done
     }
   '';
 in {
