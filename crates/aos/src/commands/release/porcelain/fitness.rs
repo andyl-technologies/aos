@@ -1,4 +1,4 @@
-//! `aos release fitness run <kind>` and `aos release fitness status`.
+//! `aos maintain release fitness run <kind>` and `aos maintain release fitness status`.
 //!
 //! Fitness attestations are maintainer-wide: one store under the
 //! configuration's `fitness_root` (`<kind>/<performed_at>.json`) serves every
@@ -16,8 +16,9 @@
 //! Live binding values come from the configuration: `signer-roster` from
 //! `[signer.roles]` (the roster `new` freezes into plans), `surface` and
 //! `hub-schema` from `[surfaces.production]` (a Hub's deployment identity is
-//! also probed live), `tooling` from `tooling_closure`, and `alert-config`
-//! from `[alert]`.
+//! also probed live), `tooling` from the detected
+//! [tooling environment](super::super::tooling), and `alert-config` from
+//! `[alert]`.
 //!
 //! Neither command needs a frozen plan. Fitness kinds and profiles come from
 //! the newest release plan under `work_root` when one exists, else from that
@@ -348,7 +349,7 @@ pub(super) fn live_bindings(
         surface_kind: Some(surface.kind),
         hub_schema: surface.hub_schema.clone(),
         signer_roster: Some(signer_roster),
-        tooling: config.tooling_digest()?,
+        tooling: super::super::tooling::detected_digest()?,
         alert_config: config.alert_config_digest()?,
     })
 }
@@ -456,7 +457,7 @@ impl FitnessContext {
             (Err(_), None) => bail!(
                 "fitness attestations are verified against the release-evidence roster; \
                  configure [signer.roles.release-evidence] or create a release with \
-                 aos release new"
+                 aos maintain release new"
             ),
         };
 
@@ -471,7 +472,7 @@ impl FitnessContext {
 /// Returns the newest release directory under `work_root`, if any.
 ///
 /// A missing or empty `work_root` is the normal state before the first
-/// `aos release new`; the contract then comes from the Nix export.
+/// `aos maintain release new`; the contract then comes from the Nix export.
 fn newest_work(config: &MaintainerConfig) -> Option<WorkDir> {
     WorkDir::select(config, None).ok()
 }

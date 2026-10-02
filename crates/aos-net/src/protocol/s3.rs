@@ -14,6 +14,8 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+mod resume;
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use aws_sdk_s3::error::{ProvideErrorMetadata, SdkError};
@@ -21,12 +23,12 @@ use aws_sdk_s3::operation::head_object::HeadObjectError;
 use bytes::Bytes;
 use tokio::io::AsyncReadExt;
 
-use super::conditional::{precondition_failed_result, WritePrecondition, ETAG};
+use super::conditional::{ETAG, WritePrecondition, precondition_failed_result};
 use super::{ByteStream, Protocol};
 use crate::auth::Credential;
 use crate::multipart::{
-    MultipartAdmission, MultipartBackend, MultipartSessionState, MultipartSource,
-    MultipartUploadRequest,
+    MultipartAdmission, MultipartBackend, MultipartFailurePolicy, MultipartSessionState,
+    MultipartSource, MultipartUploadRequest,
 };
 use crate::transfer::{TransferEngine, TransferEngineConfig};
 use crate::types::{Method, TransferBody, TransferOutput, TransferRequest, TransferResult};
@@ -48,6 +50,65 @@ struct S3MultipartBackend<'a> {
     diagnostic: &'a str,
     headers: &'a [(String, String)],
     part_size: u64,
+    journal: resume::ResumeJournal,
+    checkpoint: Mutex<Option<resume::Checkpoint>>,
+    source_size: u64,
+    source_sha256: String,
+    already_complete: Mutex<bool>,
+}
+
+impl S3MultipartBackend<'_> {
+    async fn exact_final_object_exists(&self) -> Result<bool> {
+        use sha2::Digest as _;
+        let response = match self
+            .client
+            .get_object()
+            .bucket(self.bucket)
+            .key(self.key)
+            .send()
+            .await
+        {
+            Ok(response) => response,
+            Err(error)
+                if error
+                    .as_service_error()
+                    .is_some_and(|service| service.code() == Some("NoSuchKey")) =>
+            {
+                return Ok(false);
+            }
+            Err(error) => {
+                return Err(s3_operation_error(
+                    "GetObject recovery",
+                    &format!("{}/{}", self.bucket, self.key),
+                    self.diagnostic,
+                    error,
+                ));
+            }
+        };
+        let mut body = response.body.into_async_read();
+        let mut sha256 = sha2::Sha256::new();
+        let mut size = 0_u64;
+        let mut buffer = [0_u8; 128 * 1024];
+        loop {
+            let count = body.read(&mut buffer).await?;
+            if count == 0 {
+                break;
+            }
+            size = size
+                .checked_add(u64::try_from(count)?)
+                .context("S3 recovery object size overflow")?;
+            anyhow::ensure!(
+                size <= self.source_size,
+                "S3 recovery found conflicting object bytes"
+            );
+            sha256.update(&buffer[..count]);
+        }
+        anyhow::ensure!(
+            size == self.source_size && hex::encode(sha256.finalize()) == self.source_sha256,
+            "S3 recovery found conflicting object bytes"
+        );
+        Ok(true)
+    }
 }
 
 #[async_trait]
@@ -56,6 +117,74 @@ impl MultipartBackend for S3MultipartBackend<'_> {
     type Part = aws_sdk_s3::types::CompletedPart;
 
     async fn begin(&self, _size: u64) -> Result<MultipartAdmission<Self::Session>> {
+        if let Some(checkpoint) = self.journal.read()? {
+            let session = self
+                .client
+                .list_parts()
+                .bucket(self.bucket)
+                .key(self.key)
+                .upload_id(&checkpoint.upload_id)
+                .max_parts(1)
+                .send()
+                .await;
+            if let Err(error) = session {
+                if !error
+                    .as_service_error()
+                    .is_some_and(|service| service.code() == Some("NoSuchUpload"))
+                {
+                    return Err(s3_operation_error(
+                        "ListParts continuation",
+                        &format!("{}/{}", self.bucket, self.key),
+                        self.diagnostic,
+                        error,
+                    ));
+                }
+                if self.exact_final_object_exists().await? {
+                    self.journal.clear()?;
+                    *self
+                        .already_complete
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("S3 checkpoint lock poisoned"))? = true;
+                    return Ok(MultipartAdmission {
+                        session: checkpoint.upload_id,
+                        part_size: self.part_size,
+                        next_part_number: u32::try_from(self.source_size.div_ceil(self.part_size))?
+                            + 1,
+                        state: MultipartSessionState::Completing,
+                    });
+                }
+                self.journal.clear()?;
+                // NoSuchUpload confirms the provider discarded only this session.
+                // Admission below starts a fresh transfer of the identical object.
+            } else {
+                anyhow::ensure!(
+                    checkpoint.part_size == self.part_size && !checkpoint.upload_id.is_empty(),
+                    "S3 durable multipart geometry changed"
+                );
+                let mut next_part_number = 1;
+                for (part, etag) in &checkpoint.parts {
+                    anyhow::ensure!(
+                        *part == next_part_number && !etag.is_empty(),
+                        "S3 multipart checkpoint is invalid"
+                    );
+                    next_part_number = next_part_number
+                        .checked_add(1)
+                        .context("S3 multipart progress overflow")?;
+                }
+                let session = checkpoint.upload_id.clone();
+                *self
+                    .checkpoint
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("S3 checkpoint lock poisoned"))? =
+                    Some(checkpoint);
+                return Ok(MultipartAdmission {
+                    session,
+                    part_size: self.part_size,
+                    next_part_number,
+                    state: MultipartSessionState::Active,
+                });
+            }
+        }
         let location = format!("{}/{}", self.bucket, self.key);
         let create = self
             .client
@@ -71,6 +200,16 @@ impl MultipartBackend for S3MultipartBackend<'_> {
             .context("S3 CreateMultipartUpload returned no upload id")?
             .to_string();
 
+        let checkpoint = resume::Checkpoint {
+            upload_id: upload_id.clone(),
+            part_size: self.part_size,
+            parts: Vec::new(),
+        };
+        self.journal.write(&checkpoint)?;
+        *self
+            .checkpoint
+            .lock()
+            .map_err(|_| anyhow::anyhow!("S3 checkpoint lock poisoned"))? = Some(checkpoint);
         Ok(MultipartAdmission {
             session: upload_id,
             part_size: self.part_size,
@@ -110,28 +249,77 @@ impl MultipartBackend for S3MultipartBackend<'_> {
             .e_tag()
             .with_context(|| format!("S3 UploadPart returned no ETag for part {part_number}"))?;
 
+        let mut checkpoint = self
+            .checkpoint
+            .lock()
+            .map_err(|_| anyhow::anyhow!("S3 checkpoint lock poisoned"))?;
+        let checkpoint = checkpoint
+            .as_mut()
+            .context("S3 multipart session was not admitted")?;
+        anyhow::ensure!(
+            part_number == i32::try_from(checkpoint.parts.len())? + 1,
+            "S3 durable multipart receipts must be contiguous"
+        );
+        checkpoint
+            .parts
+            .push((u32::try_from(part_number)?, etag.to_owned()));
+        self.journal.write(checkpoint)?;
+
         Ok(aws_sdk_s3::types::CompletedPart::builder()
             .part_number(part_number)
             .e_tag(etag)
             .build())
     }
 
-    async fn complete(&self, upload_id: &Self::Session, parts: &[Self::Part]) -> Result<()> {
+    async fn complete(&self, upload_id: &Self::Session, _parts: &[Self::Part]) -> Result<()> {
+        if *self
+            .already_complete
+            .lock()
+            .map_err(|_| anyhow::anyhow!("S3 checkpoint lock poisoned"))?
+        {
+            return Ok(());
+        }
         let location = format!("{}/{}", self.bucket, self.key);
+        let accepted = self
+            .checkpoint
+            .lock()
+            .map_err(|_| anyhow::anyhow!("S3 checkpoint lock poisoned"))?
+            .as_ref()
+            .context("S3 multipart session was not admitted")?
+            .parts
+            .clone();
         let completed = aws_sdk_s3::types::CompletedMultipartUpload::builder()
-            .set_parts(Some(parts.to_vec()))
+            .set_parts(Some(
+                accepted
+                    .iter()
+                    .map(|(number, etag)| {
+                        aws_sdk_s3::types::CompletedPart::builder()
+                            .part_number(*number as i32)
+                            .e_tag(etag)
+                            .build()
+                    })
+                    .collect(),
+            ))
             .build();
-        self.client
+        let mut complete = self
+            .client
             .complete_multipart_upload()
             .bucket(self.bucket)
             .key(self.key)
             .upload_id(upload_id)
-            .multipart_upload(completed)
-            .send()
-            .await
-            .map_err(|error| {
-                s3_operation_error("CompleteMultipartUpload", &location, self.diagnostic, error)
-            })?;
+            .multipart_upload(completed);
+        for (name, value) in self.headers {
+            if name.eq_ignore_ascii_case("if-none-match") {
+                complete = complete.if_none_match(value);
+            }
+            if name.eq_ignore_ascii_case("if-match") {
+                complete = complete.if_match(value);
+            }
+        }
+        complete.send().await.map_err(|error| {
+            s3_operation_error("CompleteMultipartUpload", &location, self.diagnostic, error)
+        })?;
+        self.journal.clear()?;
         Ok(())
     }
 
@@ -149,6 +337,24 @@ impl MultipartBackend for S3MultipartBackend<'_> {
             })?;
         Ok(())
     }
+}
+
+/// Requires the SDK's native resolver, including service-specific profile overrides.
+fn native_aws_configuration(config: &aws_config::SdkConfig) -> Result<bool> {
+    Ok(configured_s3_endpoint(config)?.is_none())
+}
+
+/// Resolves the same service-before-global endpoint precedence as the SDK.
+fn configured_s3_endpoint(config: &aws_config::SdkConfig) -> Result<Option<String>> {
+    let key = aws_types::service_config::ServiceConfigKey::builder()
+        .service_id("S3")
+        .env("AWS_ENDPOINT_URL")
+        .profile("endpoint_url")
+        .build()?;
+    Ok(config
+        .service_config()
+        .and_then(|service| service.load_config(key))
+        .or_else(|| config.endpoint_url().map(str::to_owned)))
 }
 
 /// Describes where an S3 request is sent, for diagnostics.
@@ -237,7 +443,7 @@ pub struct S3Protocol {
     /// Part size for multi-part uploads, in bytes.
     part_size: u64,
     /// Clients cached by their resolved configuration.
-    clients: Mutex<BTreeMap<Option<S3ClientConfig>, aws_sdk_s3::Client>>,
+    clients: Mutex<BTreeMap<Option<S3ClientConfig>, (aws_sdk_s3::Client, bool, Option<String>)>>,
 }
 
 impl S3Protocol {
@@ -268,7 +474,10 @@ impl S3Protocol {
     /// Subsequent calls with the same `(region, profile, endpoint)`
     /// reuse the cached client (a cheap `Arc` clone) instead of
     /// re-running the credential chain.
-    async fn build_client(&self, auth: Option<&Credential>) -> Result<aws_sdk_s3::Client> {
+    async fn build_client(
+        &self,
+        auth: Option<&Credential>,
+    ) -> Result<(aws_sdk_s3::Client, bool, Option<String>)> {
         let key = match auth {
             Some(Credential::AwsSigV4 {
                 region,
@@ -307,7 +516,10 @@ impl S3Protocol {
 
     /// Builds a fresh S3 client, resolving the credential chain. Callers
     /// should prefer [`build_client`](Self::build_client), which caches.
-    async fn build_client_uncached(&self, auth: Option<&Credential>) -> Result<aws_sdk_s3::Client> {
+    async fn build_client_uncached(
+        &self,
+        auth: Option<&Credential>,
+    ) -> Result<(aws_sdk_s3::Client, bool, Option<String>)> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
         if let Some(Credential::AwsSigV4 {
@@ -321,14 +533,24 @@ impl S3Protocol {
                 config_loader = config_loader.profile_name(p);
             }
             let config = config_loader.load().await;
+            let native_aws = endpoint.is_none() && native_aws_configuration(&config)?;
             let mut s3_config = aws_sdk_s3::config::Builder::from(&config);
             if let Some(ref ep) = endpoint {
                 s3_config = s3_config.endpoint_url(ep).force_path_style(true);
             }
-            Ok(aws_sdk_s3::Client::from_conf(s3_config.build()))
+            Ok((
+                aws_sdk_s3::Client::from_conf(s3_config.build()),
+                native_aws,
+                endpoint.clone().or(configured_s3_endpoint(&config)?),
+            ))
         } else {
             let config = config_loader.load().await;
-            Ok(aws_sdk_s3::Client::new(&config))
+            let native_aws = native_aws_configuration(&config)?;
+            Ok((
+                aws_sdk_s3::Client::new(&config),
+                native_aws,
+                configured_s3_endpoint(&config)?,
+            ))
         }
     }
 
@@ -360,7 +582,7 @@ impl S3Protocol {
         request: &TransferRequest,
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
-        let client = self.build_client(auth).await?;
+        let (client, _, _) = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
         let target = s3_target(auth);
 
@@ -515,7 +737,7 @@ impl S3Protocol {
         request: &TransferRequest,
         auth: Option<&Credential>,
     ) -> Result<(TransferResult, ByteStream)> {
-        let client = self.build_client(auth).await?;
+        let (client, _, _) = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
         let target = s3_target(auth);
 
@@ -587,16 +809,15 @@ impl S3Protocol {
     /// multi-part upload; smaller files and byte bodies upload in one
     /// shot. Stream bodies are rejected on this path.
     ///
-    /// A conditional request (see [`super::conditional`]) always uses one
-    /// PutObject, whatever its size, because the precondition must be
-    /// evaluated atomically with the write. Conditional writes are meant for
-    /// small records; S3 caps a single PutObject at 5 GiB.
+    /// Native AWS multipart completion enforces the write precondition.
+    /// Custom providers use streamed conditional PutObject up to 5 GiB because
+    /// conditional multipart completion is not a portable S3 guarantee.
     async fn do_put(
         &self,
         request: &TransferRequest,
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
-        let client = self.build_client(auth).await?;
+        let (client, native_aws, endpoint) = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
         let target = s3_target(auth);
         let conditional = WritePrecondition::from_headers(&request.headers)?.is_some();
@@ -616,7 +837,20 @@ impl S3Protocol {
                     .with_context(|| format!("stat {}", path.display()))?;
                 let file_len = metadata.len();
 
-                if file_len > MULTIPART_THRESHOLD && !conditional {
+                if file_len > MULTIPART_THRESHOLD && (!conditional || native_aws) {
+                    let (size, digest) =
+                        resume::source_identity(&MultipartSource::File(path.clone()))?;
+                    anyhow::ensure!(
+                        size == file_len,
+                        "S3 source changed before multipart admission"
+                    );
+                    let namespace = serde_json::to_string(&(
+                        &endpoint,
+                        client.config().region().map(|region| region.as_ref()),
+                        &request.headers,
+                    ))?;
+                    let journal =
+                        resume::ResumeJournal::open(&namespace, &request.url, size, &digest)?;
                     let backend = S3MultipartBackend {
                         client: &client,
                         bucket: &bucket,
@@ -624,6 +858,11 @@ impl S3Protocol {
                         diagnostic: &target,
                         headers: &request.headers,
                         part_size: self.part_size,
+                        journal,
+                        checkpoint: Mutex::new(None),
+                        source_size: size,
+                        source_sha256: digest,
+                        already_complete: Mutex::new(false),
                     };
                     let maximum_in_flight_bytes = self
                         .part_size
@@ -633,33 +872,46 @@ impl S3Protocol {
                         request.url.clone(),
                         MultipartSource::File(path.clone()),
                     )
-                    .with_concurrency(MULTIPART_CONCURRENCY)
+                    .with_concurrency(1)
+                    .with_failure_policy(MultipartFailurePolicy::Preserve)
                     .with_maximum_in_flight_bytes(maximum_in_flight_bytes)
                     .with_part_limits(1, 5 * 1024 * 1024 * 1024, 10_000);
-                    TransferEngine::new(TransferEngineConfig::default())
+                    let uploaded = TransferEngine::new(TransferEngineConfig::default())
                         .upload_multipart(upload, &backend)
                         .await?;
+                    let current = self
+                        .do_head(&TransferRequest::head(&request.url), auth)
+                        .await?;
+                    anyhow::ensure!(
+                        current.status == 200,
+                        "S3 multipart object vanished after completion"
+                    );
 
                     return Ok(TransferResult {
                         status: 200,
-                        headers: Vec::new(),
+                        headers: current.headers,
                         bytes_transferred: file_len,
                         content_length: Some(file_len),
                         body: None,
                         hash: None,
-                        resumed: false,
+                        resumed: uploaded.resumed_bytes > 0,
                     });
                 }
 
-                // Small (or conditional) file: read and upload in one shot.
-                let data = tokio::fs::read(path)
+                anyhow::ensure!(
+                    file_len <= 5 * 1024 * 1024 * 1024,
+                    "custom S3 immutable uploads above 5 GiB require a provider with verified conditional multipart completion"
+                );
+                let body = aws_sdk_s3::primitives::ByteStream::from_path(path)
                     .await
-                    .with_context(|| format!("reading {}", path.display()))?;
-                single.send(data).await
+                    .with_context(|| format!("opening streaming S3 upload {}", path.display()))?;
+                single.send_body(body, file_len).await
             }
             Some(TransferBody::Bytes(data)) => single.send(data.clone()).await,
             Some(TransferBody::Stream(_)) => {
-                anyhow::bail!("stream body not directly supported for S3 put via Protocol::execute(); use TransferEngine");
+                anyhow::bail!(
+                    "stream body not directly supported for S3 put via Protocol::execute(); use TransferEngine"
+                );
             }
             None => single.send(Vec::new()).await,
         }
@@ -672,7 +924,7 @@ impl S3Protocol {
         request: &TransferRequest,
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
-        let client = self.build_client(auth).await?;
+        let (client, _, _) = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
         let target = s3_target(auth);
 
@@ -728,7 +980,7 @@ impl S3Protocol {
         request: &TransferRequest,
         auth: Option<&Credential>,
     ) -> Result<TransferResult> {
-        let client = self.build_client(auth).await?;
+        let (client, _, _) = self.build_client(auth).await?;
         let (bucket, key) = Self::parse_url(&request.url)?;
         let target = s3_target(auth);
 
@@ -776,12 +1028,20 @@ impl SinglePut<'_> {
     /// decides whether to re-read and retry.
     async fn send(&self, data: Vec<u8>) -> Result<TransferResult> {
         let data_len = data.len() as u64;
+        self.send_body(data.into(), data_len).await
+    }
+
+    async fn send_body(
+        &self,
+        body: aws_sdk_s3::primitives::ByteStream,
+        data_len: u64,
+    ) -> Result<TransferResult> {
         let put = self
             .client
             .put_object()
             .bucket(self.bucket)
             .key(self.key)
-            .body(data.into());
+            .body(body);
         let put = apply_put_object_headers(put, self.headers);
 
         match put.send().await {

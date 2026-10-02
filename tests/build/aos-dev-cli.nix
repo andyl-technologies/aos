@@ -16,7 +16,7 @@ pkgs.mkDerivation {
     {
       name = "check";
       script = ''
-        ${pkgs.bash}/bin/bash "$src/dev/tests/cli.bash" "$src" "$TMPDIR/aos-dev-test"
+        ${pkgs.bash}/bin/bash "$src/tools/dev/tests/cli.bash" "$src" "$TMPDIR/aos-dev-test"
         mkdir -p "$out"
         echo PASS > "$out/result"
       '';

@@ -13,7 +13,9 @@ current state into the target lives under
 > contradict, the design brief:
 > [`../plans/registry/design-brief.md`](../plans/registry/design-brief.md).
 > Rule of precedence: **for current state, the code wins; for intent, the brief
-> wins.**
+> wins for the original transport design. The later
+> [release-stage contract](release-stages.md) specifies unpublished candidates
+> and the maintainer command cutover; older plans do not override it.**
 
 ---
 
@@ -66,8 +68,8 @@ This reference set answers, for the AOS registry's **target state**:
   and required AOS-TUF metadata for moving-ref syncs (`tuf/root.json`,
   `targets.json`, `snapshot.json`, `timestamp.json`) with role thresholds,
   catalog hashes, and signed expiry.
-- *How it is published* — the producer pipeline (commit → sign tag →
-  pack/delta/zstd → `update-server-info` → advance partitions → upload), CDN
+- *How it is published* — the producer pipeline (author → stage and upload immutable objects → finalize signed
+  release → publish pointers → promote channels), CDN
   atomicity and concurrency.
 - *How it relates to prior art* — a structured comparison to the APT repository
   format, mapping flat-file indices/pdiff → git packs/thin-delta scheme and the percentage
@@ -86,7 +88,8 @@ It does **not** specify the implementation tasks; those are enumerated in the
 | **Dev-shell user** wanting a Nix substituter | [nix-cache-compatibility.md](nix-cache-compatibility.md) | [http-layout.md](http-layout.md) |
 | **Implementer** writing producer/consumer code | [current-state.md](current-state.md), [http-layout.md](http-layout.md) | [packs-and-deltas.md](packs-and-deltas.md), the [plan workstreams](../plans/registry/README.md) |
 | **Architect** evaluating the design | [architecture.md](architecture.md), [apt-comparison.md](apt-comparison.md) | [signing-and-trust.md](signing-and-trust.md), [design brief](../plans/registry/design-brief.md) |
-| **Security engineer** assessing trust | [signing-and-trust.md](signing-and-trust.md) | [publishing.md](publishing.md) |
+| **Security engineer** assessing trust | [signing-and-trust.md](signing-and-trust.md) | [release-stages.md](release-stages.md) | Stage identity and revisions, inventory/resume, workspace and discovery boundaries, shared transport services, and retention. |
+| [publishing.md](publishing.md) |
 
 ---
 
@@ -104,7 +107,8 @@ It does **not** specify the implementation tasks; those are enumerated in the
 | [versioning-and-channels.md](versioning-and-channels.md) | Semver (no `v` prefix), channels-as-branches, the frontier head, the 256-partition rollout, deterministic bucket selection, and anti-rollback. |
 | [packs-and-deltas.md](packs-and-deltas.md) | libgit2 full packs, pure-Rust thin packs, the guaranteed delta-scheme graph, client resolution + retention, and zstd transport compression. |
 | [signing-and-trust.md](signing-and-trust.md) | Signed tag objects (SSH Ed25519), name-binding, the `tag → tag → commit` chain, sha256, unsigned branch refs, AOS-TUF metadata freshness, and anti-rollback. |
-| [publishing.md](publishing.md) | The producer pipeline end-to-end (commit → sign → pack/delta/zstd → `update-server-info` → advance partitions → upload), CDN atomicity, and concurrency. |
+| [release-stages.md](release-stages.md) | Stage identity and revisions, inventory/resume, workspace and discovery boundaries, shared transport services, and retention. |
+| [publishing.md](publishing.md) | The producer pipeline end-to-end (author → stage/upload → finalize → publish pointers → promote channels), CDN atomicity, and concurrency. |
 | [nix-cache-compatibility.md](nix-cache-compatibility.md) | The Nix binary-cache superset served by the origin (narinfo / `nix-cache-info` / `nar/`) with a client-side substituter config and Ed25519-signed narinfo. |
 | [apt-comparison.md](apt-comparison.md) | A structured APT-format comparison: the signed-flat-file / `pool` / phased-rollout lineage mapped to the git-native + dumb-HTTP design. |
 
@@ -161,7 +165,8 @@ surface without conflicting.
 > native git origins, signed release/channel tag objects, sha256 object-store
 > helpers, channel partition commands, persisted semver rollout state,
 > AOS delta/full/fallback object resolution, static Nix-cache generation, static
-> origin upload, and the `apr release` producer orchestrator. See
+> origin upload, and the `apr release` producer orchestrator. [Release stages](release-stages.md)
+> explain the unpublished candidate and discovery boundaries. See
 > [current-state.md](current-state.md) for the grounded as-built state and
 > [architecture.md](architecture.md) for the target model.
 
@@ -177,6 +182,7 @@ surface without conflicting.
 | **Registry (target)** | A **bare git repository in sha256 object format, served as static files over dumb HTTP**. The package metadata *is* the git tree content. |
 | **Channel** | A named release line (e.g. `stable`, `testing`), modeled as a git **branch** (`refs/heads/<channel>`) whose head is the rollout **frontier**, and as **256 signed partition tag objects** (`/channels/<name>/00..ff`) for rollout. |
 | **Partition / bucket** | One of exactly **256** channel partitions (`00`–`ff`). A consumer self-selects one bucket on first channel sync from a registry-local random salt, persists the bucket index, and reuses it thereafter. The publisher advances partitions independently to control rollout. |
+| **Release stage** | An unpublished candidate with a stable id, compare-and-swap revision, and immutable artifact inventory; distinct from a staging deployment and a published release. |
 | **Release** | An immutable **semver** version (e.g. `1.1.0`, `1.0.0-beta+exp.sha.5114f85`, **no `v` prefix**). A signed git **tag** (`refs/tags/<semver>`) → commit, with its object store under `/releases/<major>/<minor>/<patch…>/`. |
 | **Frontier** | The newest release any channel partition targets; the value of the channel's branch head (`refs/heads/<channel>`). A stock `git pull <channel>` always gets the frontier. |
 | **Signed tag object** | A **pure signed pointer**: an annotated git tag carrying the standard tag fields (object, type, the tag **name**, tagger) + an SSH-format **Ed25519** signature + an OPTIONAL freeform human message — **no structured TOML payload**. Both channel partition tags and release tags are signed; `tag → tag → commit` chains (channel partition → semver → commit) are used. |
@@ -189,7 +195,7 @@ surface without conflicting.
 | **Anti-rollback** | A consumer keeps a monotonic floor and never moves to a release older than its current one. Aborting a bad rollout is **fix-forward** (publish a newer release, point partitions at it), never partition-decrement. |
 | **NAR** | Nix ARchive — the serialized form of a store path; the actual build artifact, stored content-addressed and zstd-compressed (`<hash>.nar.zst`) under the cache location (see **Binary-cache location** below: the committed `registry.toml` `[[caches]]`, the consumer's client-side `registries.d` override, or the origin itself). |
 | **Binary-cache location** | The NAR substituter is **not advertised in signed tags**. It lives in the committed git-repo-root `registry.toml` `[[caches]]` (authenticated transitively by the tag → commit → tree → file; see [repo-layout.md](repo-layout.md)), optionally overridden/supplemented by the consumer's client-side `registries.d/<name>.toml` (**higher priority wins**); a relative cache URL means the **origin itself**. An authenticated-but-wrong cache pointer still cannot serve bad bytes — NARs are content-addressed and SHA-256-verified. |
-| **`keys.toml`** | A **committed tree file** — the **trust roster** listing the active signing key(s) (`id` + `key`) + a `revoked` list, authenticated via the signed tag. Clients **consume it during sync** as the authoritative git-signature trusted-key set; a tag is valid when signed by **any active roster key**. It does **not** bootstrap trust (a key in a file authenticated by that key is circular) — bootstrap is the out-of-band anchor (see **Baked trust anchor**). AOS-TUF `root.json` adds role membership and thresholds for the release metadata layer, anchored initially to the same out-of-band trusted keys and thereafter to the previous accepted root. **Rotation** = publish `keys.toml` listing old + new keys (overlap window) in a commit signed by a currently-trusted key; clients pin the new key on next sync. **Retirement/revocation** = `apr keys retire` lists the key under `revoked` (signed by another active key) and re-signs affected tags; it propagates **in-band**. See [repo-layout.md](repo-layout.md) and [signing-and-trust.md](signing-and-trust.md). |
+| **`keys.toml`** | A **committed tree file** — the **trust roster** listing the active signing key(s) (`id` + `key`) + a `revoked` list, authenticated via the signed tag. Clients **consume it during sync** as the authoritative git-signature trusted-key set; a tag is valid when signed by **any active roster key**. It does **not** bootstrap trust (a key in a file authenticated by that key is circular) — bootstrap is the out-of-band anchor (see **Baked trust anchor**). AOS-TUF `root.json` adds role membership and thresholds for the release metadata layer, anchored initially to the same out-of-band trusted keys and thereafter to the previous accepted root. **Rotation** = publish `keys.toml` listing old + new keys (overlap window) in a commit signed by a currently-trusted key; clients pin the new key on next sync. **Retirement/revocation** = `apr keys retire` lists the key under `revoked` (signed by another active key) without replacing published semver identities; it propagates **in-band**. See [repo-layout.md](repo-layout.md) and [signing-and-trust.md](signing-and-trust.md). |
 | **narinfo / `nix-cache-info`** | The standard Nix binary-cache HTTP surface (`<storehash>.narinfo` per store path; the fixed `nix-cache-info` stub marking an origin as a cache) the origin **MAY** serve for stock `nix` substitution; a separate cache-role key signs narinfo. |
 | **Baked trust anchor** | The out-of-band root of trust, delivered by the image rather than discovered on the network. The `aos.apm.registries` module ([modules/base/apm-registries.nix](../../modules/base/apm-registries.nix)) writes `/etc/apm/registries.d/<name>.toml` (with `[registry.signing] public_key` = the first trust key) and `/etc/apm/trusted-keys.d/<name>.pub` (all trust keys) into the image, so `apm` verifies first contact with **no** manual `apr trust pin`. Updating it is an image rebuild; day-to-day key rotation reaches deployed machines in-band via the `keys.toml` roster. |
 | **No silent TOFU** | The registry sync path **does not** accept a signing key on first use. Bootstrap trust must arrive out-of-band — the baked anchor, an explicit `apr trust pin`, or the `[registry.signing] public_key` config anchor (consulted only when the store is empty). Signing is enforced by default (absent `[registry.signing]` verifies); `required = false` / `apm registry add --no-verify` is the only opt-out, intended for local dev registries. A `tofu_check` primitive still exists but is exercised only by tests. |

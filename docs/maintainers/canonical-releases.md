@@ -1,11 +1,11 @@
 # Canonical release coordinator
 
-Each registry carries its own channels. `andyl/testing`, and each
-`andyl/testing-vN` epoch, carries `edge` only. `andyl/main` carries
-`candidate` and `stable` and never publishes `edge`. Main requires strict build
-and publication provenance; testing isolates the experimental pipeline and its
-keys. Testing releases never become main releases by changing a channel or
-copying signed artifacts.
+Each registry carries its own channels. `andyl/main` carries `edge`,
+`candidate`, and `stable`. `andyl/testing`, and each `andyl/testing-vN` epoch,
+carries `edge` only. Main requires strict build and publication provenance for
+every channel; testing isolates the experimental pipeline and its keys. Testing
+releases never become main releases by changing a channel or copying signed
+artifacts.
 
 Disk images and OCI containers must configure APM for their exact publishing
 registry. The shared `aos.release` profile supplies the registry URL
@@ -25,7 +25,7 @@ A static surface has no Hub origin to bind. Package
 transactions, manifests, evidence, and channel receipts bind the same registry;
 packages inherit their client's configured registry when installed. Inspect the
 destinations and their obligations with
-`aos release step contract --registry andyl/testing` or
+`aos maintain release step contract --registry andyl/testing` or
 `--registry andyl/main` before starting a release.
 
 Start with the [release checklist](release-checklist.md) for the order of
@@ -45,11 +45,11 @@ defined in [Maintain the AOS trust model](trust-model.md).
 
 The command surface has two layers:
 
-- **Porcelain.** `aos release new`, `advance`, `status`, `explain`, `review`,
+- **Porcelain.** `aos maintain release new`, `advance`, `publish`, `status`, `explain`, `review`,
   and `fitness` operate a release from the
   [maintainer configuration](#maintainer-configuration) and a
   [work directory](#work-directory-layout). They are the normal interface.
-- **Steps.** `aos release step ...` exposes each fail-closed operation with
+- **Steps.** `aos maintain release step ...` exposes each fail-closed operation with
   explicit inputs. The porcelain calls the same functions in process; it never
   spawns itself. Use steps directly for recovery, audit, qualification
   snapshots, and inspection of captured evidence.
@@ -71,6 +71,45 @@ preset. It deliberately reports SELinux as excluded: the current immutable
 root is not pre-labeled, so enabling the existing policy would overstate the
 MAC boundary. SELinux may enter the production profile only with labeled-root
 construction and an enforcing boot qualification gate.
+
+## Stop after upload and publish the reviewed destination
+
+The registry pipeline distinguishes unpublished candidate upload from public
+release visibility and channel movement. A staging deployment is an environment;
+an unpublished stage is a candidate revision on either environment.
+
+Use the porcelain to retain a destination's uploaded immutable artifacts before
+publication:
+
+```sh
+aos maintain release advance --to staging/edge \
+  --stop-after-upload --work "$WORK" --config "$CONFIG"
+aos maintain release status --work "$WORK" --config "$CONFIG"
+aos maintain release explain --to staging/edge \
+  --work "$WORK" --config "$CONFIG"
+```
+
+After reviewing the retained inventory and destination obligations, publish the
+exact candidate:
+
+```sh
+aos maintain release publish --to staging/edge \
+  --work "$WORK" --config "$CONFIG"
+```
+
+Use `--stage-revision N` on `publish` to bind the inspected revision explicitly.
+An identical upload resume preserves its revision. If recomposition changes the
+candidate inventory, such as renewing its timestamp, repeat `advance
+--stop-after-upload --stage-revision N` with the observed current revision;
+without that precondition the changed candidate fails closed.
+
+Continue qualification and channel rollout with `advance`. Production still
+requires the exact staged bytes and the planned qualification evidence. Shared
+registry libraries drive both this AOS-specific orchestrator and the stable
+`apr release <version>` command. The previous `aos release` command is removed
+without a compatibility alias. See
+[registry release stages](../registry/release-stages.md) for discovery,
+concurrency, and retention boundaries.
 
 ## Configure the designated maintainer machine
 
@@ -99,7 +138,7 @@ the `aos-release-fitness` group so the release, backup, and monitor roles can
 each write there, and are signed with the release-evidence signer loaded from
 `fitnessCredentials`. Production destination profiles accept these machine-run
 attestations for at most 14 days; operator exercises are recorded manually
-with `aos release fitness run <kind>` and remain valid for 90 days.
+with `aos maintain release fitness run <kind>` and remain valid for 90 days.
 
 Every failed release, timestamp, backup, restore, or alert-check unit invokes
 the isolated alert service with only the failed unit name and alert-role
@@ -111,7 +150,7 @@ does not acquire the content-state lock.
 
 Deployment wrapper programs receive no command-line secrets. They resolve
 credential names beneath `$CREDENTIALS_DIRECTORY`, write only beneath their
-assigned state/runtime directories, and exec the documented `aos release`
+assigned state/runtime directories, and exec the documented `aos maintain release`
 commands. Keep staging and production upload credentials in different
 operator steps; do not place both in the manual service's credential set at
 the same time.
@@ -119,13 +158,13 @@ the same time.
 ## Porcelain commands
 
 ```text
-aos release new --registry R --version V --images PATH [--release-id ID] [--override DIR] [--work DIR] [--config PATH]
-aos release advance --to <destination> [--ring N] [--override DIR] [--accept-transaction] [--work DIR] [--config PATH]
-aos release status [--work DIR] [--config PATH]
-aos release explain --to <destination> [--work DIR] [--config PATH]
-aos release review [--reject --reason TEXT] [--work DIR] [--config PATH]
-aos release fitness run <kind> [--report PATH] [--config PATH]
-aos release fitness status [--config PATH]
+aos maintain release new --registry R --version V --images PATH [--release-id ID] [--override DIR] [--work DIR] [--config PATH]
+aos maintain release advance --to <destination> [--ring N] [--override DIR] [--accept-transaction] [--work DIR] [--config PATH]
+aos maintain release status [--work DIR] [--config PATH]
+aos maintain release explain --to <destination> [--work DIR] [--config PATH]
+aos maintain release review [--reject --reason TEXT] [--work DIR] [--config PATH]
+aos maintain release fitness run <kind> [--report PATH] [--config PATH]
+aos maintain release fitness status [--config PATH]
 ```
 
 A destination is `<surface role>/<channel>`, for example `staging/edge`,
@@ -134,6 +173,25 @@ plan. Every porcelain command accepts `--config PATH` to select the
 [maintainer configuration](#maintainer-configuration). Without `--work`,
 commands that act on a release select the most recently created release under
 the configuration's `work_root`; `new` defaults to `<work_root>/<release_id>`.
+
+### Release tooling environment
+
+The coordinator never reads its own store path or the qualification
+executors from the maintainer configuration. Both come from the installed
+tooling closure, the flake's `release-tooling` package: its `bin/aos`
+wrapper exports `AOS_RELEASE_TOOLING` naming the closure, and the closure
+carries one executor per platform it can qualify at
+`libexec/aos-release/executors/<platform>/{run,identity}`. Enter it with
+`nix develop .#release`, or install it as the `aos` every coordinator
+service wrapper runs.
+
+Without the wrapper, `aos maintain release` falls back to the `/nix/store/<name>`
+root containing its own executable. A binary outside the store, such as a
+development `cargo build`, has no closure: it can inspect state, but `new`,
+`advance`, and every qualification step refuse to run from it. The closure
+path is the `tooling` fitness binding, so all maintainer roles on a machine
+must run the same closure or the restore check's attestation will not match
+the operator's release.
 
 ### Maintainer configuration
 
@@ -153,7 +211,6 @@ contributor_authorization = "/etc/aos-release/release-contributor-authorization.
 retention_policy = "/etc/aos-release/release-retention-policy.md"
 restricted_operator_policy = "/etc/aos-release/restricted-operator-policy.md"
 predecessor_bundle = "/var/lib/aos-release-coordinator/predecessor"
-tooling_closure = "/nix/store/...-aos"
 trusted_keys = ["release-evidence-v1=/etc/aos-release/keys/release-evidence-v1.pub"]
 
 [git]
@@ -202,10 +259,6 @@ root = "/etc/aos-release/tuf/root.json"
 trusted_root_keys = ["root-v1=/etc/aos-release/keys/root-v1.pub"]
 trusted_root_threshold = 1
 
-[executors.x86_64-linux]
-path = "/nix/store/...-qualification-executor-x86_64-linux/bin/run"
-identity = "aos-x86_64-linux-qualification-v1"
-
 [reviewer]
 key_id = "release-evidence-v1"
 public_key = "/etc/aos-release/keys/release-evidence-v1.pub"
@@ -226,7 +279,6 @@ destination = "oncall@example.org"
 | `retention_policy` | Retention policy document whose digest the plan binds |
 | `restricted_operator_policy` | Restricted operator policy whose digest the plan binds without publishing it |
 | `predecessor_bundle` | Verified signed bundle of the preceding release, used for the qualification predecessor, image update cases, and change scoping |
-| `tooling_closure` | Store path of the installed `aos` tooling; its digest is the `tooling` fitness binding |
 | `trusted_keys` | Independently obtained `KEY_ID=PATH` manifest verification keys |
 | `git.name`, `git.email` | Required public author and committer of the registry release commit and tag. Both are published in the registry; use the maintaining organization's release identity, not a person's. The name may not contain control characters or angle brackets, and the email must be one address |
 | `surfaces.<role>.kind` | `hub` or `static` |
@@ -245,14 +297,12 @@ destination = "oncall@example.org"
 | `signer.roles.<role>.keys`, `threshold` | Multi-key form: a list of `{key_id, public_key, verification_identity}` tables and the number of distinct signatures required (default 1). Use either this form or the single-key form, not both |
 | `signer.roles.<role>.provider_revision` | Provider policy revision for this role; overrides `signer.provider_revision` |
 | `tuf.root`, `tuf.trusted_root_keys`, `tuf.trusted_root_threshold` | Authenticated current TUF root and its independent trust inputs |
-| `executors.<platform>.path`, `identity` | Installed qualification executor and its expected identity, one table per applicable platform |
-| `reviewer.key_id`, `public_key` | Release-evidence key used by `aos release review` and, when present, by `aos release fitness run` |
+| `reviewer.key_id`, `public_key` | Release-evidence key used by `aos maintain release review` and, when present, by `aos maintain release fitness run` |
 | `alert.program`, `alert.destination` | Alert delivery program and on-call destination; the section's digest is the `alert-config` fitness binding |
 
-`predecessor_bundle`, `tooling_closure`, `trusted_keys`, `[tuf]`,
-`[executors]`, `[reviewer]`, and `[alert]` may be omitted; a command that needs
-an omitted value refuses to run. The two surfaces must have different
-identities.
+`predecessor_bundle`, `trusted_keys`, `[tuf]`, `[reviewer]`, and `[alert]`
+may be omitted; a command that needs an omitted value refuses to run. The two
+surfaces must have different identities.
 
 Every `*_credential` key resolves to `$CREDENTIALS_DIRECTORY/<name>` or an
 absolute path, is read without following links, and is trimmed. No secret
@@ -261,7 +311,7 @@ appears in the file itself.
 ### Start a release
 
 ```sh
-aos release new --registry andyl/main --version 2026.10.0-rc.2 --images images.json
+aos maintain release new --registry andyl/main --version 2026.10.0-rc.2 --images images.json
 ```
 
 `--images PATH` is required. It names the reviewed Linux image decisions: a
@@ -296,9 +346,9 @@ anything, start a new release.
 ### Advance to a destination
 
 ```sh
-aos release advance --to staging/candidate
-aos release advance --to production/candidate
-aos release advance --to production/stable --ring 2
+aos maintain release advance --to staging/candidate
+aos maintain release advance --to production/candidate
+aos maintain release advance --to production/stable --ring 2
 ```
 
 `advance` computes the next step from the journal and the work directory, runs
@@ -357,9 +407,9 @@ When a step needs a person, `advance` prints one instruction beginning
   `--accept-transaction`, which records `registry/transaction-accepted.json`;
 - reviews of a prepared qualification report and, for a `soak` destination,
   completion approvals, both signed with
-  [`aos release review`](#review-pending-decisions);
+  [`aos maintain release review`](#review-pending-decisions);
 - fresh fitness attestations, recorded with
-  [`aos release fitness run`](#record-fitness-attestations); and
+  [`aos maintain release fitness run`](#record-fitness-attestations); and
 - observation windows: a ring's `observe_seconds` and the destination's soak.
 
 `advance` is idempotent. It skips steps whose outputs exist and whose journal
@@ -376,8 +426,8 @@ the cause is fixed, following the release checklist's
 ### Inspect progress
 
 ```sh
-aos release status
-aos release explain --to production/stable
+aos maintain release status
+aos maintain release explain --to production/stable
 ```
 
 `status` reconciles the release's journal offline. It prints a `State:` line
@@ -401,8 +451,8 @@ Neither command writes anything.
 ### Review pending decisions
 
 ```sh
-aos release review
-aos release review --reject --reason "container lifecycle log shows a retried stop"
+aos maintain release review
+aos maintain release review --reject --reason "container lifecycle log shows a retried stop"
 ```
 
 `review` finds the single decision the release is waiting on and signs it with
@@ -440,11 +490,11 @@ the override, so it must be supplied before anything is built:
 2. Obtain one signed envelope per release-evidence signer, for example with
    `aos-release-signer sign-evidence --key-id KEY --payload override.json
    --output approvals/override-1.json`, until the role threshold is reached.
-3. Run `aos release new ... --override approvals/`, or run `aos release new`
+3. Run `aos maintain release new ... --override approvals/`, or run `aos maintain release new`
    and then immediately:
 
    ```sh
-   aos release advance --to production/stable --override approvals/
+   aos maintain release advance --to production/stable --override approvals/
    ```
 
 `DIR` names the directory holding the signed envelopes. Either command verifies
@@ -458,9 +508,9 @@ rejected; start a new release instead.
 ### Record fitness attestations
 
 ```sh
-aos release fitness run authority-recovery --report /srv/aos-release/restricted/authority-recovery-2026-09-14.json
-aos release fitness run hub-restore < /srv/aos-release/restricted/hub-restore-2026-09-14.json
-aos release fitness status
+aos maintain release fitness run authority-recovery --report /srv/aos-release/restricted/authority-recovery-2026-09-14.json
+aos maintain release fitness run hub-restore < /srv/aos-release/restricted/hub-restore-2026-09-14.json
+aos maintain release fitness status
 ```
 
 `fitness run` reads one strict JSON `aos.release.fitness-report/v1` exercise
@@ -485,7 +535,7 @@ Neither `fitness run` nor `fitness status` needs a frozen plan. The fitness
 kinds and profiles come from the newest release plan under `work_root` when
 one exists, else from that work directory's `contract.json`, else from the
 repository's Nix contract export (the `step contract` leaf, so run the command
-from the AOS checkout before the first `aos release new`). Attestations are
+from the AOS checkout before the first `aos maintain release new`). Attestations are
 verified against the configured `[signer.roles.release-evidence]` keys; only
 when that table is absent does the newest plan's frozen roster apply, and with
 neither the command refuses to run. Without a plan, `fitness status` lists no
@@ -494,7 +544,8 @@ destinations.
 Binding values come from the configuration: `surface` and `hub-schema` from
 `[surfaces.production]` and its live deployment, `signer-roster` from the
 `[signer.roles]` tables that `new` freezes into each plan's signer list,
-`tooling` from `tooling_closure`, and `alert-config` from `[alert]`. The
+`tooling` from the [release tooling environment](#release-tooling-environment),
+and `alert-config` from `[alert]`. The
 maintainer machine's restore-check and alert-check services call
 `fitness run` for the automated kinds.
 
@@ -567,7 +618,7 @@ latest. Back up the whole directory with the other operator state.
 
 ## Step commands
 
-`aos release step` exposes the individual operations. Each takes explicit
+`aos maintain release step` exposes the individual operations. Each takes explicit
 inputs, verifies everything it consumes, and writes new outputs without
 replacing an existing path. The porcelain constructs the same arguments from
 the configuration and work directory.
@@ -601,7 +652,7 @@ consume it.
 
 ### Prepare a plan request
 
-`aos release new` derives the request from the maintainer configuration and
+`aos maintain release new` derives the request from the maintainer configuration and
 live state. For a manual plan, create a reviewed JSON object with schema
 `aos.release.plan-request/v1`. Unknown and duplicate fields are rejected. The
 request supplies:
@@ -664,7 +715,10 @@ Releases require the checked-out commit to be the local protected branch head
 and reachable from its protected local or remote reference. A plan that
 references an accepted [profile override](qualification.md#profile-overrides)
 may instead build a reviewed `dplecki/hotfix-*` branch whose head remains
-reachable from the protected branch. The requested source tag must not exist.
+reachable from the protected branch. The requested source tag must not exist,
+unless it already names the planned commit: a main edge release and a testing
+edge release of the same version share one `release/<version>` tag on one
+protected commit. A tag naming any other commit fails planning.
 
 Planning is read-only except for the named output. It refuses a dirty checkout
 and never replaces an existing output. The resulting file is canonical JSON;
@@ -694,7 +748,7 @@ relationship among the reserved values; retain all other required request
 fields. Any other missing-predecessor shape fails planning, and the reserved
 release id and source tag cannot be used by a plan that has a predecessor.
 
-Snapshots are not driven by `aos release new`. Run the ordinary `step plan`,
+Snapshots are not driven by `aos maintain release new`. Run the ordinary `step plan`,
 build, image-finalization, isolated-registry, cache, manifest, TUF,
 timestamp-refresh, and surface-composition steps. Use the same release-evidence
 and image authorities required by the contract. Do not run `bootstrap`,
@@ -761,7 +815,7 @@ length and canonical response, then a 64-bit transformed-output length and
 those bytes. Detached operations set the final length to zero:
 
 ```sh
-aos release step signer invoke \
+aos maintain release step signer invoke \
   --executable /opt/aos-signers/bin/provider-adapter \
   --request request.json \
   --payload payload.json \
@@ -813,7 +867,7 @@ ids come from restricted deployment configuration; they are never stored in
 the source repository or Nix output:
 
 ```sh
-aos release step finalize-image \
+aos maintain release step finalize-image \
   --plan release-plan.json \
   --assembly /nix/store/…-aos-image-production-unsigned-assembly-2026.9.0 \
   --signer-executable /opt/aos-signers/bin/provider-adapter \
@@ -844,23 +898,28 @@ command because their release matrix contains packages only.
 
 Author the isolated registry once, before review. `prepare-registry` derives
 every entry from the validated build report, obtains the planned provenance
-signatures, installs the exact finalized OCI sidecar, calculates all registry
-surface digests, and writes the canonical
+signatures, validates the complete OCI layout and records its typed descriptor
+graph with the exact finalized sidecar, regenerates and verifies
+registry catalog TUF metadata over the current authored files, calculates all
+registry surface digests, and writes the canonical
 `aos.registry-release-transaction/v1` review file. It leaves the retained
 registry clone uncommitted at the planned base ref.
 
 ```sh
-aos release step prepare-registry \
+aos maintain release step prepare-registry \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --container-release final-container/container-release.json \
   --container-signature-input final-container/signature-input.json \
+  --container-layout final-container/layout \
   --source-registry /srv/aos-registry/authoring \
   --output /var/lib/aos-release/2026.9.0/registry \
   --transaction registry-transaction.json \
   --signer-executable /opt/aos-signers/bin/provider-adapter \
   --provenance-key provenance-2026=/media/trust/provenance-2026.pub \
-  --provenance-verification-identity provider-provenance-slot
+  --provenance-verification-identity provider-provenance-slot \
+  --registry-key registry-2026=/media/trust/registry-2026.pub \
+  --registry-verification-identity provider-registry-slot
 ```
 
 Review the generated transaction and the retained registry diff together. Its
@@ -868,7 +927,25 @@ entries are strictly ordered by build artifact id, and its catalog,
 store-graph, and policy digests bind the complete authored tree. Do not edit or
 regenerate either input after review. Finalization revalidates the plan, build
 report, OCI input, every entry, the store graph, base ref, and all three surface
-digests before it requests either Git signature.
+digests before it requests either Git signature. Stale catalog metadata from
+the base commit cannot be carried into a changed candidate or removed to bypass
+verification.
+
+Catalog TUF uses the active registry roster authority and the committed catalog
+root's bootstrap and rotation rules. The source-built provider signs exact
+catalog-alias/role/version-bound JSON through `CatalogTuf` requests in the
+`aos-registry-tuf-v1` SSHSIG namespace. It does not use the distribution bundle's
+separate TUF authorities or its payload digest domains. The outer request binds
+the canonical Hub registry identity while the catalog context preserves the
+local alias consumed by APM. APR's file-key producer
+and this external provider path share metadata construction and verification;
+preparation freezes the resulting `tuf/` bytes in the transaction policy digest.
+The highest published root metadata version supplies rotation authority;
+each role's floor is its maximum version across all published tags. A hotfix
+on an older release line therefore continues metadata history even when its
+source workspace starts from an older release.
+The reviewed transaction also binds the optional complete container graph;
+finalization evidence carries that graph into the stage inventory.
 
 Each package/platform coordinate must contain exactly one `out` output. That
 output remains the installable `store_path`; every additional named output is
@@ -877,7 +954,7 @@ store-graph and static-cache root. Preparation fails closed on a missing,
 duplicate, or mismatched output binding.
 
 ```sh
-aos release step finalize-registry \
+aos maintain release step finalize-registry \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --transaction registry-transaction.json \
@@ -930,7 +1007,7 @@ contain the release tag. The output, transaction, and result paths must not
 exist. Entry authoring may write catalog, documentation, provenance,
 transparency, and store-graph files, but may not move a ref. Preparation
 atomically installs the complete uncommitted directory. When any planned
-destination's profile requires transaction review, `aos release advance` stops
+destination's profile requires transaction review, `aos maintain release advance` stops
 here until an operator accepts the transaction with `--accept-transaction`. Finalization operates
 on those reviewed bytes, creates one signed commit and annotated tag, and
 generates its static origin surface. Neither command modifies the authoring
@@ -942,7 +1019,7 @@ Generate the cache from the finalized isolated registry, not the mutable
 authoring clone:
 
 ```sh
-aos release step finalize-cache \
+aos maintain release step finalize-cache \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --registry /var/lib/aos-release/2026.9.0/registry \
@@ -985,7 +1062,7 @@ Run the assembler against the exact build, signed cache, finalized registry,
 image, and container outputs:
 
 ```sh
-aos release step assemble \
+aos maintain release step assemble \
   --plan release-plan.json \
   --build-report release-build/evidence/build-report.json \
   --sbom release-build/evidence/sbom.spdx.json \
@@ -1037,7 +1114,7 @@ qualification downloads that complete transitive graph from the staging
 surface's public read-back route.
 
 ```sh
-aos release step finalize \
+aos maintain release step finalize \
   --plan release-plan.json \
   --payload release-assembled/payload \
   --manifest-payload release-assembled/release-manifest-payload.json \
@@ -1079,7 +1156,7 @@ Copy the closed bundle, optional journal, and public verification keys to a
 machine that does not need Nix, Git, registry, surface, or network access. Then run:
 
 ```sh
-aos release step verify ./release-bundle \
+aos maintain release step verify ./release-bundle \
   --trusted-key release-2026=/media/keys/release-2026.pub \
   --journal ./release-journal.jsonl
 ```
@@ -1104,7 +1181,7 @@ so the driver runs this step for the first destination it publishes on each
 surface, after `step record` on the production surface:
 
 ```sh
-aos release step tuf \
+aos maintain release step tuf \
   --plan release-plan.json \
   --bundle finalized/bundle \
   --manifest-key release-1=/media/trust/release-1.pub \
@@ -1151,7 +1228,7 @@ manifest, the signed qualification, and the public report after the same
 verification `step publish` performs; nothing is authored.
 
 ```sh
-aos release step record \
+aos maintain release step record \
   --to production/candidate \
   --bundle release-final \
   --staging-receipt release-staging-candidate/receipt.json \
@@ -1186,7 +1263,7 @@ current signed root and snapshot, independently authenticated root keys, and
 exactly the timestamp-role signature threshold:
 
 ```sh
-aos release step timestamp refresh \
+aos maintain release step timestamp refresh \
   --to production/stable \
   --plan release-plan.json \
   --root 12.root.json \
@@ -1226,7 +1303,7 @@ registry/cache surface, full verified TUF set, and exact delegated manifest
 target:
 
 ```sh
-aos release step compose-surface \
+aos maintain release step compose-surface \
   --to production/stable \
   --plan release-plan.json \
   --bundle finalized/bundle \
@@ -1254,7 +1331,7 @@ temporary tree, fsyncs the result, and exposes it with a no-replace atomic
 rename. Then publish that closed surface:
 
 ```sh
-aos release step timestamp publish \
+aos maintain release step timestamp publish \
   --to production/stable \
   --plan release-plan.json \
   --root 12.root.json \
@@ -1293,7 +1370,7 @@ digest, public authority, and approval time.
 Install the reviewed base in staging first:
 
 ```sh
-aos release step bootstrap \
+aos maintain release step bootstrap \
   --plan release-plan.json \
   --registry-surface base-registry-surface \
   --environment staging \
@@ -1327,7 +1404,7 @@ It dispatches on the plan's surface kind: the Hub publication protocol for a
 `hub` surface, direct upload for a [static surface](#static-surfaces). Staging:
 
 ```sh
-aos release step publish \
+aos maintain release step publish \
   --to staging/candidate \
   --bundle release-bundle \
   --journal release-bundle/release-journal.jsonl \
@@ -1343,7 +1420,7 @@ Production additionally requires the staging receipt, the destination's signed
 staging-phase qualification, and the fitness attestations its profile names:
 
 ```sh
-aos release step publish \
+aos maintain release step publish \
   --to production/candidate \
   --bundle release-bundle \
   --journal release-staging-candidate/release-journal.jsonl \
@@ -1441,18 +1518,18 @@ offline-verified predecessor bundle. The executor recaptures those files into
 its private attempt directory and checks their lengths and hashes before the
 image scenario can use them.
 
-Run `aos release step qualification cases --to <destination>` first and retain its
+Run `aos maintain release step qualification cases --to <destination>` first and retain its
 `environment_profile_digests`. Review the compatibility scope and sources for
 each required target, then install the canonical assessment object as
 `/etc/aos-release/qualification-assessments/<target-id>.json` on the applicable
 Linux executor host. The built-in container lifecycle program refuses a
 missing, symlinked, or scope-mismatched assessment and records its own concrete
-execution inventory. Install the matching `qualification-executor-<platform>`
-flake output rather than copying an individual scenario script without its
-closure.
+execution inventory. Run the `release-tooling` closure that ships the
+matching executor rather than copying an individual scenario script without
+its closure.
 
 ```sh
-aos release step qualify-run \
+aos maintain release step qualify-run \
   --to production/candidate \
   --phase staging \
   --bundle release-bundle \
@@ -1511,7 +1588,7 @@ and current journal, as specified in
 [the shared guide](qualification.md#collect-review-and-sign):
 
 ```sh
-aos release step channel advance \
+aos maintain release step channel advance \
   --to production/stable \
   --ring 2 \
   --prior-generation 7 \
@@ -1561,7 +1638,7 @@ release, plan, manifest, the destination's publication receipt, the sorted
 digest of every channel receipt, the exact rolling journal-head digest, the
 frozen retention policy, affirmative corresponding-source retention,
 affirmative operational handoff, a public authority identity, and an RFC 3339
-UTC completion time. `aos release review` produces one such decision per
+UTC completion time. `aos maintain release review` produces one such decision per
 reviewer.
 
 When the destination's profile has a complete gate (`soak`), collect and sign
@@ -1570,7 +1647,7 @@ and current rolling journal. Then recheck the complete public rollout and close
 the destination:
 
 ```sh
-aos release step channel complete \
+aos maintain release step channel complete \
   --to production/stable \
   --qualification qualification-stable-complete \
   --qualification-key qualifier-2026=/media/keys/qualifier-2026.pub \
@@ -1607,7 +1684,7 @@ bytes. The output retains all receipts and appends the destination's sole
 Inspect any copied journal without initializing Nix or reaching a surface:
 
 ```sh
-aos release step status --journal release-stable-complete/release-journal.jsonl --plan plan.json
+aos maintain release step status --journal release-stable-complete/release-journal.jsonl --plan plan.json
 ```
 
 The command verifies the hash chain and every transition, then prints the

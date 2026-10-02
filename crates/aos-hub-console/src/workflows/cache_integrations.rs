@@ -23,6 +23,7 @@ use super::registry_configuration::RegistryConfiguration;
 use super::registry_containers::RegistryContainers;
 use super::registry_mirror::RegistryMirrorWorkflow;
 use super::registry_publication::RegistryPublicationWorkflow;
+use super::registry_staging::RegistryStaging;
 use super::resource_access::{ResourceAccessSurface, ResourceAccessWorkflow};
 use super::signing_keys::{SigningKeyTarget, SigningKeyWorkflow};
 
@@ -86,6 +87,10 @@ pub(super) fn CacheIntegrationWorkflow(route: ConsoleRoute, client: ApiClient) -
         .into_any(),
         (ConsoleScope::Registry { path }, "publish-history") => view! {
             <RegistryPublicationWorkflow client=client registry_id=path.clone()/>
+        }
+        .into_any(),
+        (ConsoleScope::Registry { path }, "staged-releases") => view! {
+            <RegistryStaging client=client registry=path.clone()/>
         }
         .into_any(),
         (ConsoleScope::Registry { path }, "containers") => view! {
