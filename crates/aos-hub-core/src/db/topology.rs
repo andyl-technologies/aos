@@ -2732,13 +2732,16 @@ impl Database {
                 bail!("IPv6 endpoint identity must contain sixteen bytes")
             }
         };
+        // One host commonly carries several endpoints on different ports or
+        // schemes, so bound the existence probe to a single row.
         Ok(self
             .backend
             .query_opt(
                 &format!(
                     "SELECT 1 FROM endpoints e
                      LEFT JOIN domains d ON d.id = e.domain_id
-                     WHERE {predicate}"
+                     WHERE {predicate}
+                     LIMIT 1"
                 ),
                 &vec![value],
             )
@@ -5763,6 +5766,40 @@ pub(super) mod tests {
             .get::<i64>(0)
             .unwrap();
         assert_eq!(pending, 1);
+    }
+
+    #[tokio::test]
+    async fn endpoint_host_exists_with_several_endpoints_on_one_host() {
+        let (db, _, _, _, _) = route_fixture().await;
+        let existing = db.endpoint("endpoint:route-probes").await.unwrap().unwrap();
+        let domain = existing.domain_stable_id.clone().unwrap();
+        let endpoint_spec = crate::db::EndpointRevisionSpec {
+            boundary_revision: 1,
+            ingress_kind: "hub".to_string(),
+            listener_configuration: "listener:route-probes-alternate".to_string(),
+            tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_string(),
+            probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+        };
+        db.create_endpoint(
+            "endpoint:route-probes-alternate",
+            &existing.owner_scope_key,
+            existing.org_id,
+            "https",
+            &crate::db::EndpointHostInput::Domain(domain),
+            8443,
+            "instance:public",
+            &endpoint_spec,
+            None,
+            "test",
+            "request:endpoint-route-probes-alternate",
+        )
+        .await
+        .unwrap();
+
+        let host = InboundEndpointHost::Domain("route-probes.example.test".to_string());
+        assert!(db.endpoint_host_exists(&host).await.unwrap());
+        let unknown = InboundEndpointHost::Domain("unknown.example.test".to_string());
+        assert!(!db.endpoint_host_exists(&unknown).await.unwrap());
     }
 
     #[tokio::test]
