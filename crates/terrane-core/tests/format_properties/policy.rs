@@ -93,6 +93,17 @@ fn property_values(name: PropertyName, value: u64) -> Vec<Vec<u8>> {
                 "elf", "shebang", "ar", "zstd", "gzip", "tar", "text", "other",
             ]),
         ]),
+        IndexRoots => {
+            values.push(vec![0xa0]);
+            let mut roots = vec![];
+            cbor::write_map(&mut roots, 2);
+            // Canonical text keys are ordered by encoded length, then bytes.
+            for (attribute, identity) in [("uid", value), ("hash.sha256", u64::MAX)] {
+                cbor::write_text(&mut roots, attribute);
+                cbor::write_text(&mut roots, &format!("{identity:064x}"));
+            }
+            values.push(roots);
+        }
         Index => values.extend([names(&[]), names(&["hash.sha256", "class.magic"])]),
         Merge => values.push(names(&[
             "prefer-ours",
@@ -152,7 +163,9 @@ fn registered_properties_cover_closed_vocabularies_quantities_and_inheritance_bi
                     name: name.as_str(),
                     value: &bytes,
                 };
-                if *name == PropertyName::Acl && inherit == Some(false) {
+                if (*name == PropertyName::Acl && inherit == Some(false))
+                    || (*name == PropertyName::IndexRoots && inherit != Some(false))
+                {
                     assert!(properties::validate_property(&property).is_err());
                     continue;
                 }
