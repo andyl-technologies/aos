@@ -14,7 +14,9 @@ use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
 /// Creates real independently generated signing credentials and protected state.
-async fn independent_factory() -> (
+async fn independent_factory(
+    domain: &str,
+) -> (
     NativeFixture<TokioLocalFs>,
     crate::repository::local_authority::LocalAuthority,
     std::path::PathBuf,
@@ -58,7 +60,8 @@ async fn independent_factory() -> (
     )
     .await
     .unwrap();
-    let guard_config = raw.guard().config().clone();
+    let mut guard_config = raw.guard().config().clone();
+    guard_config.storage_domain = domain.into();
     drop(raw);
     let bucket = FileBucket::open(config(root).await, TokioLocalFs, TokioClock, Validator)
         .await
@@ -89,8 +92,8 @@ async fn independent_factory() -> (
 async fn disclosure_paired_factories_keep_identical_labels_independent_after_source_erasure() {
     use super::{DisclosureCommitRequest, DisclosureCommitSelection};
 
-    let (source, source_authority, source_credentials) = independent_factory().await;
-    let (destination, destination_authority, _) = independent_factory().await;
+    let (source, source_authority, source_credentials) = independent_factory("public").await;
+    let (destination, destination_authority, _) = independent_factory("public").await;
     assert_eq!(
         source_authority.issuer_key().issuer,
         destination_authority.issuer_key().issuer
@@ -202,6 +205,344 @@ async fn disclosure_paired_factories_keep_identical_labels_independent_after_sou
             .unwrap(),
         plaintext
     );
+}
+
+/// Preserves a genuine file proposal while changing only its explicit root domain.
+fn private_file_request(parents: Vec<[u8; 32]>, plaintext: &[u8]) -> super::CommitRequest {
+    use terrane_core::tree_format::Attribute;
+
+    let mut proposal = request_file(parents, plaintext);
+    let content = TERRANE_V1
+        .calculate(IdentityKind::Chunk, plaintext)
+        .unwrap()
+        .terrane_v1_digest()
+        .unwrap();
+    let tree = Tree::build(
+        vec![LeafItem {
+            key: b"file".to_vec(),
+            entry: Entry {
+                kind: EntryKind::File {
+                    mode: 0o644,
+                    size: plaintext.len() as u64,
+                    content: ContentRef::Inline(content),
+                    link_id: None,
+                },
+                attrs: vec![Attribute {
+                    name: "note",
+                    value: b"\x61x",
+                }],
+                attrs_present: true,
+                xattrs: Vec::new(),
+                xattrs_present: false,
+                provenance: None,
+            },
+        }],
+        Some(vec![
+            Property {
+                name: "acl",
+                value: b"\x81\x82\x66writer\x18\x1f",
+            },
+            Property {
+                name: "domain",
+                value: b"\x6eprivate:writer",
+            },
+        ]),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    proposal.commit.tree = tree.root_identity();
+    proposal
+        .uploads
+        .retain(|upload| matches!(upload, StagedUpload::Chunk { .. }));
+    proposal
+        .uploads
+        .extend(tree.nodes().map(|node| StagedUpload::Meta {
+            kind: IdentityKind::Node,
+            bytes: node.encoded().to_vec(),
+        }));
+    proposal
+}
+
+#[tokio::test]
+async fn disclosure_boundary_reopens_after_source_and_signing_seed_erasure() {
+    use super::{DisclosureCommitRequest, DisclosureCommitSelection};
+
+    let (original, original_authority, original_credentials) = independent_factory("public").await;
+    let (source, source_authority, source_credentials) =
+        independent_factory("private:writer").await;
+    let (destination, destination_authority, _) = independent_factory("public").await;
+    assert_eq!(
+        original_authority.issuer_key().issuer,
+        source_authority.issuer_key().issuer
+    );
+    assert_eq!(
+        source_authority.issuer_key().key_id,
+        destination_authority.issuer_key().key_id
+    );
+    assert_ne!(
+        original_authority.issuer_key().public_key,
+        source_authority.issuer_key().public_key
+    );
+    assert_ne!(
+        source_authority.issuer_key().public_key,
+        destination_authority.issuer_key().public_key
+    );
+    let reference = "refs/heads/_/main";
+    let plaintext = b"public origin preserved across private descendants";
+    let mut original_session = original
+        .begin(reference, original_authority.token(), "sdk")
+        .await
+        .unwrap();
+    let initial = request_file(Vec::new(), plaintext);
+    let mut proposal = original_authority.commit_request(initial.commit, "sdk".into());
+    proposal.uploads = initial.uploads;
+    let public_head = original
+        .advance(&mut original_session, proposal)
+        .await
+        .unwrap();
+
+    let mut source_session = source
+        .begin(reference, source_authority.token(), "sdk")
+        .await
+        .unwrap();
+    let initial = private_file_request(Vec::new(), plaintext);
+    let mut proposal = source_authority.commit_request(initial.commit, "sdk".into());
+    proposal.uploads = initial.uploads;
+    let normalized = source
+        .advance_disclosure(
+            original.guard(),
+            &mut source_session,
+            DisclosureCommitRequest {
+                selections: vec![DisclosureCommitSelection {
+                    source_reference: reference.into(),
+                    source_commit: public_head.commit,
+                    source_path: b"/file".to_vec(),
+                    source_token: original_authority.token().to_vec(),
+                    destination_path: b"/file".to_vec(),
+                }],
+                proposal,
+            },
+        )
+        .await
+        .unwrap();
+
+    let snapshot = source
+        .guard()
+        .read_snapshot(reference, source_authority.token(), b"/file", "sdk")
+        .await
+        .unwrap();
+    let (location, _) = snapshot.history.locate(normalized.commit, b"file").unwrap();
+    let preserved = snapshot.history.entry(&location).unwrap();
+    let secret = b"private sibling must stay private";
+    let secret_identity = TERRANE_V1.calculate(IdentityKind::Chunk, secret).unwrap();
+    let secret_entry = Entry {
+        kind: EntryKind::File {
+            mode: 0o600,
+            size: secret.len() as u64,
+            content: ContentRef::Inline(secret_identity.terrane_v1_digest().unwrap()),
+            link_id: None,
+        },
+        attrs: Vec::new(),
+        attrs_present: false,
+        xattrs: Vec::new(),
+        xattrs_present: false,
+        provenance: None,
+    };
+    let tree = Tree::build(
+        vec![
+            LeafItem {
+                key: b"file".to_vec(),
+                entry: preserved,
+            },
+            LeafItem {
+                key: b"secret".to_vec(),
+                entry: secret_entry,
+            },
+        ],
+        Some(vec![
+            Property {
+                name: "acl",
+                value: b"\x81\x82\x66writer\x18\x1f",
+            },
+            Property {
+                name: "domain",
+                value: b"\x6eprivate:writer",
+            },
+        ]),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let mut private =
+        source_authority.commit_request(request(vec![normalized.commit]).commit, "sdk".into());
+    private.commit.tree = tree.root_identity();
+    private.uploads = tree
+        .nodes()
+        .map(|node| StagedUpload::Meta {
+            kind: IdentityKind::Node,
+            bytes: node.encoded().to_vec(),
+        })
+        .collect();
+    private.uploads.extend(
+        request_file(Vec::new(), secret)
+            .uploads
+            .into_iter()
+            .filter(|upload| matches!(upload, StagedUpload::Chunk { .. })),
+    );
+    let private_root = tree.root_identity();
+    drop(tree);
+    let private_head = source.advance(&mut source_session, private).await.unwrap();
+    assert_eq!(
+        source
+            .guard()
+            .read_snapshot(reference, source_authority.token(), b"/file", "sdk")
+            .await
+            .unwrap()
+            .history
+            .introducing_commit(&terrane_core::provenance::EntryLocation {
+                commit: private_head.commit,
+                root: private_root,
+                path: b"file".to_vec()
+            })
+            .unwrap(),
+        normalized.commit
+    );
+
+    let mut destination_session = destination
+        .begin(reference, destination_authority.token(), "sdk")
+        .await
+        .unwrap();
+    let selected = request_file(Vec::new(), plaintext);
+    let mut proposal = destination_authority.commit_request(selected.commit, "sdk".into());
+    proposal.uploads = selected.uploads;
+    let published = destination
+        .advance_disclosure(
+            source.guard(),
+            &mut destination_session,
+            DisclosureCommitRequest {
+                selections: vec![DisclosureCommitSelection {
+                    source_reference: reference.into(),
+                    source_commit: private_head.commit,
+                    source_path: b"/file".to_vec(),
+                    source_token: source_authority.token().to_vec(),
+                    destination_path: b"/file".to_vec(),
+                }],
+                proposal,
+            },
+        )
+        .await
+        .unwrap();
+    let private_commit_id = TERRANE_V1
+        .from_digest(IdentityKind::Commit, &private_head.commit)
+        .unwrap();
+    let private_node_id = TERRANE_V1
+        .from_digest(IdentityKind::Node, &private_root)
+        .unwrap();
+    let normalized_id = TERRANE_V1
+        .from_digest(IdentityKind::Commit, &normalized.commit)
+        .unwrap();
+    assert_eq!(
+        destination
+            .store()
+            .has(&[
+                private_commit_id,
+                private_node_id,
+                normalized_id,
+                secret_identity
+            ])
+            .await
+            .unwrap(),
+        vec![false; 4]
+    );
+    assert_eq!(
+        destination
+            .store()
+            .has(&[TERRANE_V1
+                .from_digest(IdentityKind::Commit, &public_head.commit)
+                .unwrap()])
+            .await
+            .unwrap(),
+        vec![true]
+    );
+
+    let erase = |root: &std::path::Path| {
+        root.with_file_name(format!(
+            "{}-original-control",
+            root.file_name().unwrap().to_string_lossy()
+        ))
+    };
+    let original_root = original.store().root().to_owned();
+    let original_control = erase(&original_root);
+    let source_root = source.store().root().to_owned();
+    let source_control = erase(&source_root);
+    let destination_root = destination.store().root().to_owned();
+    let destination_config = destination.guard().config().clone();
+    drop(snapshot);
+    drop(original_session);
+    drop(source_session);
+    drop(destination_session);
+    drop(original);
+    drop(source);
+    drop(original_authority);
+    drop(source_authority);
+    for path in [
+        original_root,
+        original_control,
+        original_credentials,
+        source_root,
+        source_control,
+        source_credentials,
+    ] {
+        tokio::fs::remove_dir_all(path).await.unwrap();
+    }
+    drop(destination);
+    let bucket = FileBucket::open(
+        config(destination_root).await,
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    let reopened = NativeFixture::reopen(Coordinator::new(
+        Guard::new(
+            bucket,
+            TokioClock,
+            vec![destination_authority.issuer_key().clone()],
+            destination_config,
+        ),
+        CommitTiming::new(
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        )
+        .unwrap(),
+        TokioLocalFs,
+    ))
+    .await;
+    let snapshot = reopened
+        .guard()
+        .read_snapshot(reference, destination_authority.token(), b"/file", "sdk")
+        .await
+        .unwrap();
+    assert_eq!(snapshot.commit.identity(), published.commit);
+    let (location, _) = snapshot.history.locate(published.commit, b"file").unwrap();
+    let EntryKind::File { content, size, .. } = snapshot.history.entry(&location).unwrap().kind
+    else {
+        panic!("selected projection is a file");
+    };
+    assert_eq!(
+        reopened
+            .guard()
+            .read_content(&snapshot, b"/file", content, size)
+            .await
+            .unwrap(),
+        plaintext
+    );
+    assert!(snapshot.history.commit(&private_head.commit).is_none());
+    assert!(snapshot.history.commit(&normalized.commit).is_none());
+    assert!(snapshot.history.commit(&public_head.commit).is_some());
 }
 
 #[tokio::test]
