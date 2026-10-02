@@ -48,8 +48,10 @@ impl ConsumedResolver {
             .map(|name| name.as_str().to_owned())
             .collect::<Vec<_>>();
         properties.sort();
+        let property_revision =
+            ConfiguredRegistryInputs::property_revision_for(&properties).map_err(|_| invalid())?;
         let registries = ConfiguredRegistryInputs {
-            property_revision: 1,
+            property_revision,
             behavioral_properties: properties,
             attribute_revision: 1,
             selector_revision: 1,

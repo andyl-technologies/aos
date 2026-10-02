@@ -210,13 +210,23 @@ reconstructed from current configuration or candidate properties.
 
 Configured registry inputs separate actual behavioral property names,
 registered attribute/selector/tree/chunk semantics and identity profile
-from trusted later preserve-only names. Revision 1 identifies the existing
-registered semantics in the corresponding specification files. Current
+from trusted later preserve-only names. Property semantics revisions are
+the exact immutable vocabularies in `property-registry.md` (PROP-30).
+Property revision 1 retains the pre-D-101 33 names; revision 2 adds only
+`index-roots`. Other represented semantics remain revision 1. Current
 closed property resolution has all registered behavioral names and an
 empty later-name set. Later preserve-only names acquire no behavior from
-their presence. Unknown semantic revisions refuse verification; names
+their presence, even when newer code recognizes them. Unknown semantic
+revisions refuse verification; names
 acquiring behavior require an explicit registered revision. No invented
 mutable current-property map replaces actual root-property evidence.
+
+Nested consumed-root/view records have no separate property revision. Their
+unfenced intrinsic checks retain the original revision-1 behavioral vocabulary
+and preserve other canonical names as data. Complete used-input and lineage
+records MUST apply their enclosing explicit behavioral/later-name fence before
+granting any newer property semantics. Nested decoding MUST NOT impose the
+latest compiled vocabulary ahead of that enclosing fence (PROP-30).
 
 Issuer rows are sorted uniquely by issuer/key ID. Disclosure rows are
 sorted uniquely by repository/domain/key/not-before. Validity ends are

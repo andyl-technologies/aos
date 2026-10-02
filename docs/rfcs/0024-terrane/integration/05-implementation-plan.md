@@ -260,7 +260,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   D-101 reopens completion for the new owner-local `index-roots` binding.
   Its pure validation is joint with T-DRV-3; actual verified index admission
   remains joint with T-DRV-2. Previous property behavior stays qualified,
-  but does not qualify PROP-29. — satisfies TREE-14, PROP-1 to PROP-29;
+  but does not qualify PROP-29. D-102 fixes immutable recorded property
+  vocabularies under PROP-30; its pure compatibility check is joint with
+  T-DRV-3 before combined requalification. — satisfies TREE-14,
+  PROP-1 to PROP-30;
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
@@ -335,9 +338,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Publish independently assembled format witnesses jointly with T-TEST-1.
   The shared property gate now requires the exact owning-root binding case;
   its absence must fail rather than qualify the new registry entry from old
-  property tests. — satisfies the format portions of PROP-29, DRV-12,
+  property tests. — satisfies the format portions of PROP-29, PROP-30, DRV-12,
   DRV-25, DRV-26, TEST-1 to TEST-3;
   `checks.terrane.integration.index-format`,
+  `checks.terrane.integration.property-registry`,
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.core-no-std`.
   D-101's shared prerequisite exposes the module and exact pure check
@@ -346,6 +350,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   augmented property gate and index-format check fail on the absent exact
   owner-binding case (zero selected tests), confirming no old suite can
   qualify the new format. Runtime index gates remain explicitly pending.
+  D-102's shared pure compatibility prerequisite preserves revision 1's exact
+  33 names and published bytes, registers revision 2's exact `index-roots`
+  extension, and keeps later names inert through nested and enclosing
+  consumed-record decoding. The current trace records the scalar revision
+  matching its exact compiled vocabulary; it grants no new authority.
+  The final source snapshot passes all 491 core tests with zero skipped
+  (Nextest run `9bde4201-6e20-46e2-82a6-d2d5d741bcce`), strict all-target
+  core Clippy and strict rustdoc, core and native builds, the four exact
+  `integration.property-registry` cases, `registry-complete`, `core-no-std`,
+  and both mandatory formatting commands. The actual current-trunk aggregate
+  exits 1 on the absent `format_properties` target in `core-fuzz`.
+  This qualifies only the pure revision compatibility prerequisite. Runtime
+  historical-revision propagation, combined index qualification and format
+  witness publication remain incomplete; no task checkbox advances.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,

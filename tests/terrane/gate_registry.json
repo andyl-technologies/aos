@@ -112,7 +112,7 @@
   {
     "name": "property-resolution",
     "owner": "08",
-    "requirements": "PROP-1, PROP-29"
+    "requirements": "PROP-1, PROP-29, PROP-30"
   },
   {
     "name": "publisher-sole-writer",
