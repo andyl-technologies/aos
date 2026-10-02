@@ -6,6 +6,7 @@
   mkCargoDummySource,
   fetchCargoVendor,
   protobuf,
+  systemd,
   stdenv,
   buildPackages,
 }: let
@@ -23,11 +24,14 @@
   };
   cargoEnv = {
     PROTOC = "${buildProtobuf}/bin/protoc";
+    # The historical name selects only PID1 comparison bytes here, not TPM
+    # authority. Both builds retain this exact runtime package through scrub.
+    AOS_METHOD46_TPM_PID1 = "${systemd}/lib/systemd/systemd";
   };
   cargoArtifactContract = {
     family = "aos-storaged-native";
     checkType = "debug";
-    nativeInputs = map toString [buildProtobuf];
+    nativeInputs = map toString [buildProtobuf systemd];
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-storaged-artifacts";
@@ -44,7 +48,7 @@
       "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-broker-session-security --lib --test api_surface"
     ];
     buildDeps = [buildProtobuf];
-    runtimeDeps = [];
+    runtimeDeps = [systemd];
   };
 in
   mkCargoPackage {
@@ -57,7 +61,7 @@ in
     cargoNextest = true;
     doCheck = true;
     buildDeps = [buildProtobuf];
-    runtimeDeps = [];
+    runtimeDeps = [systemd];
 
     postInstall = ''
       test -x "$out/bin/aos-storaged"
