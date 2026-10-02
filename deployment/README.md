@@ -44,11 +44,18 @@ ingress/storage keys. Qualify the actual installed source and unchanged runtime
 before enabling independently accepted provider work.
 
 `aos-delivery prove-source --source-proof local --source-sha FULL_SHA` observes
-the exact clean registered checkout. It requires the registered source branch
-and repository origin, exact HEAD and branch SHA, and no tracked, staged,
-untracked or ignored files. Keep build inputs and outputs outside that checkout.
+the exact clean registered checkout. Its closed source branches are
+`refs/heads/master` and `refs/heads/dplecki/hub-hybrid-topology`; the ref is
+derived from the actual symbolic HEAD rather than a caller-supplied value.
+It requires the registered repository origin, exact HEAD and branch SHA, and no
+tracked, staged, untracked or ignored files. Keep build inputs and outputs
+outside that checkout.
 Its JSON records the observed repository/ref, commit, tree and Git archive digest;
 it grants no CI identity, provider qualification or publication authority.
+A feature-branch proof remains a feature-branch identity, never a master proof.
+The bundle's `sourceRef` matches its actual local proof. Switching between the
+two admitted branches during proof or bundle construction is refused even when
+both branch tips name the same commit.
 
 Select the same explicit mode for local bundle construction:
 

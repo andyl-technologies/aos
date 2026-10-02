@@ -12,6 +12,12 @@ import subprocess
 from transport import DeliveryError
 
 
+REGISTERED_REFS = (
+    "refs/heads/master",
+    "refs/heads/dplecki/hub-hybrid-topology",
+)
+
+
 def git_environment():
     """Excludes ambient repository, replacement and global configuration state."""
     environment = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
@@ -46,14 +52,15 @@ def archive_digest(revision, *paths):
     return "sha256:" + value.hexdigest()
 
 
-def observe(revision, repository, source_ref):
+def observe(revision, repository):
     """Requires the exact clean registered checkout and returns its local proof."""
     if not re.fullmatch(r"[0-9a-f]{40}", revision):
         raise DeliveryError("source revision must be a full Git SHA")
 
     if git_output("rev-parse", "HEAD").decode().strip() != revision:
         raise DeliveryError("local source HEAD differs from the requested revision")
-    if git_output("symbolic-ref", "HEAD").decode().strip() != source_ref:
+    source_ref = git_output("symbolic-ref", "HEAD").decode().strip()
+    if source_ref not in REGISTERED_REFS:
         raise DeliveryError("local source is outside the registered source ref")
     if git_output("rev-parse", "--verify", source_ref).decode().strip() != revision:
         raise DeliveryError("local source ref differs from the requested revision")
@@ -91,15 +98,15 @@ def observe(revision, repository, source_ref):
     }
 
 
-def prove(revision, repository, source_ref):
+def prove(revision, repository):
     """Rechecks identity and cleanliness after reading the committed archive."""
-    proof = observe(revision, repository, source_ref)
-    if observe(revision, repository, source_ref) != proof:
+    proof = observe(revision, repository)
+    if observe(revision, repository) != proof:
         raise DeliveryError("local source changed during proof construction")
     return proof
 
 
 def recheck(proof):
     """Refuses source changes before an exclusive bundle output is created."""
-    if prove(proof["revision"], proof["repository"], proof["sourceRef"]) != proof:
+    if prove(proof["revision"], proof["repository"]) != proof:
         raise DeliveryError("local source proof changed during bundle construction")

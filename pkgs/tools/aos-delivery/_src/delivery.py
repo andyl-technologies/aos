@@ -254,7 +254,7 @@ def main(argv=None):
         return
     if args.command == "prove-source":
         if args.source_proof == "local":
-            proof = artifact.local_source.prove(args.source_sha, artifact.REPOSITORY, artifact.REF)
+            proof = artifact.local_source.prove(args.source_sha, artifact.REPOSITORY)
             print(encoded(proof).decode())
         else:
             artifact.prove_source(args.source_sha)

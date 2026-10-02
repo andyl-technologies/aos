@@ -50,7 +50,7 @@ class LocalSourceTests(unittest.TestCase):
         return subprocess.check_output(["git", *arguments], text=True, stderr=subprocess.PIPE)
 
     def proof(self):
-        return local_source.prove(self.revision, artifact.REPOSITORY, artifact.REF)
+        return local_source.prove(self.revision, artifact.REPOSITORY)
 
     def test_actual_tree_archive_and_explicit_cli_proof(self):
         proof = self.proof()
@@ -68,7 +68,7 @@ class LocalSourceTests(unittest.TestCase):
             artifact.build_bundle(args)
         self.assertFalse(Path(args.output).exists())
         with self.assertRaises(DeliveryError):
-            local_source.prove("a" * 40, artifact.REPOSITORY, artifact.REF)
+            local_source.prove("a" * 40, artifact.REPOSITORY)
 
         source = Path("crates/aos-proto/src/proto/aos/hub/source.proto")
         source.write_text("changed\n")
@@ -134,6 +134,24 @@ class LocalSourceTests(unittest.TestCase):
         with self.assertRaises(DeliveryError):
             self.proof()
 
+    def test_master_identity_and_same_commit_registered_ref_drift(self):
+        feature = self.proof()
+        self.assertEqual(feature["sourceRef"], artifact.REF)
+        self.git("switch", "-q", "-c", "master")
+        master = self.proof()
+        self.assertEqual(master["sourceRef"], "refs/heads/master")
+        self.assertEqual(master["revision"], feature["revision"])
+        self.assertEqual(master["tree"], feature["tree"])
+        self.assertEqual(master["archiveDigest"], feature["archiveDigest"])
+        with self.assertRaises(DeliveryError):
+            local_source.recheck(feature)
+        with mock.patch("sys.stdout", io.StringIO()) as output:
+            delivery.main(["prove-source", "--source-proof", "local", "--source-sha", self.revision])
+        self.assertEqual(json.loads(output.getvalue()), master)
+        self.git("switch", "-q", artifact.REF.removeprefix("refs/heads/"))
+        with self.assertRaises(DeliveryError):
+            local_source.recheck(master)
+
     def test_subdirectory_proof_checks_hidden_flags_across_repository(self):
         proof = self.proof()
         source = "crates/aos-proto/src/proto/aos/hub/source.proto"
@@ -167,6 +185,7 @@ class LocalSourceTests(unittest.TestCase):
         )
 
     def test_local_bundle_provenance_and_after_scan_source_refusal(self):
+        self.git("switch", "-q", "-c", "master")
         args = self.bundle_inputs()
         run = subprocess.run
         drift = False
@@ -177,8 +196,10 @@ class LocalSourceTests(unittest.TestCase):
                 Path(argv[5].removeprefix("spdx-json=")).write_bytes(encoded({"spdxVersion": "SPDX-2.3", "packages": [{"name": "fixture"}]}))
             elif argv[0] == "fixture-grype":
                 Path(argv[5]).write_bytes(encoded({"descriptor": {}, "matches": []}))
-                if drift:
+                if drift == "dirty":
                     Path("changed-during-scan").write_text("source contamination")
+                elif drift == "ref":
+                    self.git("switch", "-q", artifact.REF.removeprefix("refs/heads/"))
             else:
                 return run(argv, **kwargs)
 
@@ -190,6 +211,7 @@ class LocalSourceTests(unittest.TestCase):
                 manifest = json.load(bundle.extractfile("manifest.json"))
                 provenance = json.load(bundle.extractfile("attestations/" + artifact.COMPONENT + "/slsa-provenance.json"))
             self.assertEqual(manifest["sourceProof"], self.proof())
+            self.assertEqual(manifest["sourceRef"], "refs/heads/master")
             self.assertEqual(provenance["sourceProof"], manifest["sourceProof"])
             self.assertEqual(manifest["repositoryId"], 1156711779)
             self.assertEqual(manifest["ownerId"], 159484437)
@@ -198,8 +220,14 @@ class LocalSourceTests(unittest.TestCase):
             self.assertNotIn("runId", provenance)
             with self.assertRaises(FileExistsError):
                 artifact.build_bundle(args)
-            drift = True
+            drift = "dirty"
             args.output = str(self.root / "invalid.tar")
+            with self.assertRaises(DeliveryError):
+                artifact.build_bundle(args)
+            self.assertFalse(Path(args.output).exists())
+            Path("changed-during-scan").unlink()
+            drift = "ref"
+            args.output = str(self.root / "ref-drift.tar")
             with self.assertRaises(DeliveryError):
                 artifact.build_bundle(args)
             self.assertFalse(Path(args.output).exists())

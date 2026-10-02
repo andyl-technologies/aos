@@ -230,7 +230,7 @@ def build_bundle(args):
     """Produces a v2 application bundle only after actual scanning succeeds."""
     source_mode = getattr(args, "source_proof", "legacy")
     if source_mode == "local":
-        source_proof = local_source.prove(args.source_sha, REPOSITORY, REF)
+        source_proof = local_source.prove(args.source_sha, REPOSITORY)
     elif source_mode == "legacy":
         prove_source(args.source_sha)
         source_proof = None
@@ -350,7 +350,7 @@ def build_bundle(args):
             "repositoryId": 1156711779,
             "ownerId": 159484437,
             "sourceRevision": args.source_sha,
-            "sourceRef": REF,
+            "sourceRef": source_proof["sourceRef"] if source_proof else REF,
             "declarationDigest": digest(declaration),
             "configurationDigest": source_proof["archiveDigest"] if source_proof else archive_digest(args.source_sha),
             "apiSchemaDigest": (local_source.archive_digest if source_proof else archive_digest)(
