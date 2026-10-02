@@ -36,6 +36,7 @@ pub(crate) use handshake_custody::{
 };
 
 pub(crate) use credentials::{
+    ControllerNixPublicCredentialCustodyV1, ControllerNixPublicCredentialErrorV1,
     OfflinePrepareCredentialsV3,
     PinnedOperatorRecoveryKeyV1, PinnedSystemdCredential, load_entitlement_credentials,
 };
