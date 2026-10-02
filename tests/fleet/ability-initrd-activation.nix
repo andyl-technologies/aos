@@ -138,7 +138,7 @@ in {
           return view
 
       target.wait_for_unit("aos-ability-host-receiver.service", timeout=180)
-      target.wait_for_unit("aos-ability-host-controller.service", timeout=300)
+      target.wait_for_unit("aos-activate.service", timeout=300)
       target.succeed("systemctl is-active multi-user.target")
 
       held = read_json(f"{INTERRUPTION_STATE}/held-event.json")

@@ -4,6 +4,7 @@
   lib,
   package,
   dependencies,
+  options,
   ...
 }: let
   cfg = config.aos.boot.substrateServices;
@@ -14,6 +15,15 @@
   stage = config.aos.boot.stage;
   initrdStage = stage == "initrd";
   hostStage = stage == "host";
+  controlPlaneEnabled = ((options.aos.config.unitGraph or {}) ? enable) && config.aos.config.unitGraph.enable;
+  hostActivatorService =
+    if !hostStage
+    then null
+    else if controlPlaneEnabled
+    then "control-plane.aos-activate"
+    else if cfg.handoffEnabled
+    then "boot-preparations.aos-ability-host-controller"
+    else null;
   command = operation: {
     executable = {
       path = "${package}/bin/aos-boot-preparations";
@@ -582,7 +592,7 @@
     etcOverlaySetup
   ];
   handoffInitrdServices = [initrdController initrdHandoffBarrier initrdStoreHandoff];
-  handoffHostServices = [hostStoreSeed hostReceiver hostController];
+  handoffHostServices = [hostStoreSeed hostReceiver] ++ lib.optional (!controlPlaneEnabled) hostController;
   handoffPreparationResources =
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)
@@ -605,6 +615,14 @@ in {
     readOnly = true;
     internal = true;
     description = "Stage-visible directories retaining the exact native package transaction and resolution.";
+  };
+
+  options.aos.boot.hostActivatorService = lib.mkOption {
+    type = lib.types.nullOr lib.types.str;
+    readOnly = true;
+    internal = true;
+    visible = false;
+    description = "Selected package-owned service that applies the host deployment.";
   };
 
   options.aos.boot.handoffParameters = lib.mkOption {
@@ -693,12 +711,21 @@ in {
   config = lib.mkMerge [
     {
       aos.boot.preparationExecutable = "${package}/bin/aos-boot-preparations";
+      aos.boot.hostActivatorService = hostActivatorService;
       aos.services =
         (serviceConfigsFor initrdStage baseServices)
         // (serviceConfigsFor (initrdStage && cfg.enable) substrateServices)
         // (serviceConfigsFor (initrdStage && cfg.handoffEnabled) handoffInitrdServices)
         // (serviceConfigsFor (hostStage && cfg.handoffEnabled) handoffHostServices);
     }
+    (lib.mkIf (hostStage && cfg.handoffEnabled && controlPlaneEnabled) {
+      aos.services."control-plane.aos-activate".dependencies = {
+        after = lib.mkAfter [hostStageReceivedReadiness localFilesystemsReadiness];
+        requires = lib.mkAfter [hostStageReceivedReadiness localFilesystemsReadiness];
+        before = lib.mkAfter [multiUserReadiness];
+        required_by = lib.mkAfter [multiUserReadiness];
+      };
+    })
     (lib.mkIf (initrdStage && cfg.enable) {
       aos.abilities.network.operations.configure.effects.bootstrap.input = {
         authority = "image";

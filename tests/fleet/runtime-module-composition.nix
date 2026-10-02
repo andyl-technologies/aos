@@ -295,7 +295,7 @@ in {
           check_services(response)
           assert_payloads_immutable()
 
-      runtime.wait_for_unit("aos-ability-host-controller.service", timeout=600)
+      runtime.wait_for_unit("aos-activate.service", timeout=600)
       runtime.wait_for_unit("aos-ability-boundary-controller.service", timeout=180)
       runtime.succeed("test -S /run/aos-instrumentation/controller.sock")
       PAYLOADS = ${builtins.toJSON {
@@ -377,7 +377,7 @@ in {
       committed_descriptor = runtime.succeed(f"{COREUTILS}/readlink -f {PROFILE}/current/evaluation.json").strip()
       select_response("dirty-worktree-must-not-run")
       runtime.reboot(timeout=600)
-      runtime.wait_for_unit("aos-ability-host-controller.service", timeout=600)
+      runtime.wait_for_unit("aos-activate.service", timeout=600)
       check_services("nginx-runtime-power-loss")
       assert runtime.succeed(f"{COREUTILS}/readlink -f {PROFILE}/current/evaluation.json").strip() == committed_descriptor
       assert current_generation() >= committed

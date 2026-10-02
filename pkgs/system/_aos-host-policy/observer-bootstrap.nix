@@ -42,8 +42,14 @@
       implicit_dependencies = false;
     };
   };
+  stage = config.aos.boot.stage or "host";
+  handoffEnabled = config.aos.boot.substrateServices.handoffEnabled or false;
+  hostActivatorService = config.aos.boot.hostActivatorService or null;
+  dispatchKeys =
+    lib.optional (stage == "initrd" && handoffEnabled) "boot-preparations.aos-ability-initrd-controller"
+    ++ lib.optional (hostActivatorService != null) hostActivatorService;
   dispatchDependency = key: {
-    aos.services.${key}.dependencies = {
+    ${key}.dependencies = {
       after = lib.mkAfter serviceUnits;
       requires = lib.mkAfter serviceUnits;
     };
@@ -118,12 +124,10 @@ in {
         };
       })
     ]
-    ++ builtins.map (key: lib.mkIf (observer != null && projections != []) (dispatchDependency key)) [
-      "boot-preparations.aos-ability-initrd-controller"
-      "boot-preparations.aos-ability-host-controller"
-      "control-plane.aos-activate"
-    ]
     ++ [
+      {
+        aos.services = lib.mkIf (observer != null && projections != []) (lib.mkMerge (builtins.map dispatchDependency dispatchKeys));
+      }
       (lib.mkIf (enabled boundary && enabled crucible && (boundary.forwardSocketPath or null) != null) {
         aos.services."boundary-observer.controller".dependencies = {
           after = lib.mkAfter ["aos-ability-crucible.service"];
