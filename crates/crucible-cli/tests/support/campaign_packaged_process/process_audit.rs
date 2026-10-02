@@ -110,23 +110,23 @@ impl ProcessAudit {
             return Err("packaged flight observed no physical QEMU process".into());
         }
         let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            let remaining = self
+        let mut remaining = Vec::new();
+        let cleaned = wait_for_process_observation(deadline, || {
+            remaining = self
                 .observed
                 .iter()
                 .copied()
                 .filter(|pid| PathBuf::from(format!("/proc/{pid}")).exists())
                 .collect::<Vec<_>>();
             if remaining.is_empty() {
-                self.observed.clear();
-                self.guest_arguments.clear();
-                return Ok(());
+                return Ok(Some(()));
             }
-            if Instant::now() >= deadline {
-                return Err(format!("packaged service left QEMU processes {remaining:?}").into());
-            }
-            std::thread::sleep(PROCESS_OBSERVATION_INTERVAL);
-        }
+            Ok(None)
+        })?;
+        cleaned.ok_or_else(|| format!("packaged service left QEMU processes {remaining:?}"))?;
+        self.observed.clear();
+        self.guest_arguments.clear();
+        Ok(())
     }
 }
 

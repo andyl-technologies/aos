@@ -88,7 +88,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         materialization,
         "select-recovery",
     )?;
-    let retry = choice_at(&fixture, &selected_recovery, "campaign.retry-quanta")?;
+    let quanta_choice = choice_at(&fixture, &selected_recovery, "campaign.retry-quanta")?;
 
     if materialization {
         stage("retire-fork-source");
@@ -97,7 +97,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         service = guest_choice::start_materialization_flight_service(&fixture, &authority, None)?;
         assert_eq!(
             choice_at(&fixture, &selected_recovery, "campaign.retry-quanta")?,
-            retry
+            quanta_choice
         );
     }
     known = guest_choice::attempt_states(&fixture)?
@@ -105,7 +105,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         .collect();
     guest_choice::submit_choice(
         &fixture,
-        &retry,
+        &quanta_choice,
         "u64:7",
         if materialization {
             "boundary:single.selected"
@@ -366,7 +366,7 @@ fn wait_with_progress<T>(
     let started = Instant::now();
     let deadline = started + HOST_WATCHDOG;
     let mut next_progress = started;
-    loop {
+    let observation = wait_for_process_observation(deadline, || {
         let stderr = service.stderr_tail();
         if let Some(failure) = first_execution_failure(&stderr) {
             return Err(
@@ -379,7 +379,7 @@ fn wait_with_progress<T>(
             );
         }
         if let Some(value) = poll()? {
-            return Ok(value);
+            return Ok(Some(value));
         }
         if Instant::now() >= next_progress {
             let progress = stderr
@@ -396,11 +396,15 @@ fn wait_with_progress<T>(
             );
             next_progress = Instant::now() + Duration::from_secs(5);
         }
-        if Instant::now() >= deadline {
-            return Err(format!("single-guest operational host watchdog expired during {label}; deterministic virtual budget is {VIRTUAL_BUDGET_PS}ps; stderr={stderr}").into());
-        }
-        std::thread::sleep(PROCESS_OBSERVATION_INTERVAL);
-    }
+        Ok(None)
+    })?;
+    observation.ok_or_else(|| {
+        format!(
+            "single-guest operational host watchdog expired during {label}; deterministic virtual budget is {VIRTUAL_BUDGET_PS}ps; stderr={}",
+            service.stderr_tail()
+        )
+        .into()
+    })
 }
 
 fn first_execution_failure(stderr: &str) -> Option<&str> {
