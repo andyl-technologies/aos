@@ -55,9 +55,10 @@ request hash/count and shared original fingerprint. It does not authenticate a
 MAC, current SQL claim, clock, reply, or provider effect. Its private output
 contains the selected request context and must be retained privately.
 
-The ordered codec source commitment is `main.rs`, `files.rs`, `classify.rs`,
-`storage_work.rs`, `ingress.rs`, `controls.rs`, then `copy_request.rs`. A prior
-six-file codec or executable is not this helper.
+The current ordered codec source commitment is `main.rs`, `files.rs`,
+`classify.rs`, `storage_work.rs`, `ingress.rs`, `controls.rs`, `copy_request.rs`,
+then `copy_closed.rs`. The original request-only slice used seven files; its
+receipt does not cover this eight-file successor.
 
 The callback `await_source_progress(token, operationId)` supplies the exact
 request-only output as `originalValidationReceipt`, its typed `original`,
@@ -128,6 +129,59 @@ new readiness must be observed; Clock refusal remains refusal.
 Exact Apply replay is API idempotence only. A separate physical Closed replay
 needs an actual lost positive Worker reply before Native ACK, a genuine failed
 operation, cold restart and explicit retry, followed by independent current
-catalogue, permanent receipt and provider-effect observations. This capsule
-does not implement or claim that lost-positive-reply producer, a provider
-qualification, or an actual fleet cancellation/replay result.
+catalogue, permanent receipt and provider-effect observations. The original
+finite observer/cancellation slice did not implement the lost-positive-reply
+producer. Its bounded successor below supports that transport action; neither
+slice claims provider qualification or an actual fleet cancellation/replay.
+
+## Retained Closed reply loss
+
+The separate `copy-closed-reply` codec mode invokes the existing Core request
+and reply authenticators on the exact private envelopes and the selected
+literal StorageWork key. It samples UTC inside Rust. Its result scope is
+`authenticated_copy_closed_envelope_only`: canonical MAC domains, correlation,
+permission deadlines and positive progress shape under that key. Installed key,
+source/executable identity, qualified Clock, current SQL ownership and provider
+outcome still require independent joins. It does not sign or dispatch work.
+
+The complete codec source commitment preserves the existing order and appends
+the new child: `main.rs`, `files.rs`, `classify.rs`, `storage_work.rs`,
+`ingress.rs`, `controls.rs`, `copy_request.rs`, `copy_closed.rs`. Seven-file
+predecessor receipts retain their original scope.
+
+The test-only `_hub-external-copy-closed-loss.mjs` listener is installed before
+the selected tuple is measured: loopback 4678 forwards to the real Worker on
+4675 over strict HTTPS with SNI `localhost` and the initially selected Node CA
+environment. It never disables verification. Unarmed traffic streams unchanged.
+One private arm selects the actual
+shared original fingerprint and a loss ceiling no more than 35 seconds away.
+The listener retains the complete actual request/reply, signatures, utility
+selection and verification before destroying the downstream Closed response.
+Refused verification forwards the original response. The one-use selection
+cannot lose a later response after its positive action or unknown outcome.
+
+```json
+{
+  "version": 1,
+  "root": "<existing owner-private absolute directory>",
+  "deploymentId": "<actual deployment>",
+  "sourceDigest": "<selected source SHA256>",
+  "codecFile": "<same-source installed codec>",
+  "codecSha256": "<actual executable SHA256>",
+  "codecSourceSha256": "<ordered eight-file source SHA256>",
+  "keyFile": "<actual private literal key file>",
+  "keySha256": "<actual key file SHA256>"
+}
+```
+
+The private socket accepts only `arm` with `version`, `kind`, `captureId`,
+`originalSha256`, `lossUntilUnixMillis`, or `state` with `version` and `kind`.
+State reports retained file references, actual local action and unknowns;
+`nativeObservedLoss` and `providerSettlement` stay null. Actual Native failure,
+the real failed operation and CAS Retry after byte-identical cold restart,
+current trusted catalogue and retained provider/guard positive must be joined
+by the caller. API Apply replay does not establish physical no-redispatch.
+
+Controlled tests use known fixture keys and Core-generated envelopes with a
+local HTTP server. Their observed forwarding/loss proves only this transport
+helper, never real provider completion, cold replay or current SQL settlement.

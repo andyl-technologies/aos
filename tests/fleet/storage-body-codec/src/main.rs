@@ -1,11 +1,14 @@
 //! Bounded observations of Copy controls and Native OCI Distribution bodies.
 //!
-//! This fixture codec cannot authenticate a MAC, authorize an actor, dispatch
-//! provider work or assess Native bulk zero. Actual accepted-handler, source,
-//! purpose, SQL and provider observations must be joined independently.
+//! Ordinary body observations do not authenticate a MAC. The separate
+//! `copy-closed-reply` mode checks the existing Copy envelope MAC and current
+//! deadline under an explicitly selected private key. Neither mode authorizes
+//! an actor, dispatches work or assesses Native bulk zero. Actual installed-key,
+//! source, purpose, SQL and provider observations remain independent joins.
 
 mod classify;
 mod controls;
+mod copy_closed;
 mod copy_request;
 mod files;
 mod ingress;
@@ -133,6 +136,12 @@ fn main() {
         if args.len() == 3 && args[1] == "copy-request" {
             let selection = files::read_manifest(std::path::Path::new(&args[2]))?;
             let observation = copy_request::inspect(serde_json::from_slice(&selection)?)?;
+            println!("{}", serde_json::to_string(&observation)?);
+            return Ok(());
+        }
+        if args.len() == 3 && args[1] == "copy-closed-reply" {
+            let selection = files::read_manifest(std::path::Path::new(&args[2]))?;
+            let observation = copy_closed::inspect(serde_json::from_slice(&selection)?)?;
             println!("{}", serde_json::to_string(&observation)?);
             return Ok(());
         }

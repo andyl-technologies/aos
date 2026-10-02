@@ -88,6 +88,7 @@ pub(super) fn inspect(selection: Selection) -> Result<Observation> {
         include_bytes!("ingress.rs").as_slice(),
         include_bytes!("controls.rs").as_slice(),
         include_bytes!("copy_request.rs").as_slice(),
+        include_bytes!("copy_closed.rs").as_slice(),
     ] {
         source.extend_from_slice(file);
     }
