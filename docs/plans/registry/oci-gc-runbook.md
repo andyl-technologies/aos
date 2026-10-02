@@ -74,6 +74,32 @@ idempotency key returns the same operation. A different actor, expired plan,
 confirmation mismatch, stale policy/root/topology/inventory/epoch, new lease or
 upload, or changed placement identity must fail before an action is claimed.
 
+### Discarding an unapplied plan
+
+A plan created only to inspect blockers or impact need not be applied. An
+unexpired `planned` run counts as GC work and blocks purge-fence acquisition,
+so cancel it once it is no longer needed instead of waiting for its review to
+expire. Reviewed registry deletion abandons planned runs itself (see Registry
+deletion). Read the run's `resource_version` with `gc get`, then:
+
+```sh
+aos hub registry container gc cancel REGISTRY RUN_ID \
+  --if-version RUN_RESOURCE_VERSION \
+  --idempotency-key CANCEL_ID
+```
+
+Any operator with registry-configure permission may cancel the run, not only
+its author. The run moves to the terminal `aborted` state with the failure
+`cancelled by operator before apply`, the same state an expired review reaches
+(`review expired before apply`); `gc list --state aborted` shows both. Apply
+then rejects the run. Retrying the command after the run is terminal returns
+it unchanged. An `applying` run cannot be cancelled: its physical work is
+recovered through action requeue and finalization (see Incident response).
+
+A planned run stops blocking purge-fence acquisition as soon as its
+fifteen-minute review expires, even before the maintenance sweep marks it
+`aborted`.
+
 ## Untracked provider inventory repair
 
 An object in a current, complete provider inventory with no matching catalog
@@ -166,8 +192,9 @@ registry. Once a retiring run is applying or complete, indexing refuses to
 re-project container-release roots for that registry; the retirement is the
 reviewed intent and a re-index must not resurrect roots underneath the
 collector. Repeat plan/apply until a plan reports no candidates and the
-catalog is empty, delete the now-empty repositories, then continue with
-registry deletion below.
+catalog is empty and delete the now-empty repositories. Then continue with
+registry deletion below. The deletion operation abandons the final empty plan
+itself, so it need not be cancelled first.
 
 On the Cloudflare deployment the deployment bucket is deleted through the
 Worker binding with a fenced head-then-delete rather than a provider-atomic
@@ -195,9 +222,10 @@ follows the operation. The plan's readiness has one of three verdicts:
 - `blocked`: an operator must act first. The plan lists every blocker class
   with its exact count: repositories, catalog objects, active OCI sessions or
   leases, active publications or uploads, retained binary-cache roots, staged
-  container objects, applying GC runs, pending GC placement actions, active
-  untracked-object repairs, snapshot references, unavailable placements, and
-  provider objects listed by a current inventory. Apply is refused with
+  container objects, applying GC runs, unfinished placement actions of applied
+  GC runs, active untracked-object repairs, snapshot references, unavailable
+  placements, and provider objects listed by a current inventory. Actions
+  frozen by a plan that was never applied never block. Apply is refused with
   `failed_precondition` and the same breakdown, nothing changes, and the
   reviewed plan stays unconsumed, so the same review can be applied after the
   blockers are resolved. A registry with a published container catalog is
@@ -208,10 +236,11 @@ follows the operation. The plan's readiness has one of three verdicts:
 
 The operation then:
 
-1. Abandons planned OCI GC runs that were never applied, recording each run id
-   in the operation detail. An abandoned run is `aborted` with
-   `abandoned by registry deletion OPERATION_ID`. Applying runs always block,
-   because their physical phase may still be deleting objects.
+1. Abandons every `planned` OCI GC run, expired or not, recording each run id
+   in the operation detail. This is the same transition as `gc cancel`: the
+   run becomes `aborted` with `abandoned by registry deletion OPERATION_ID`.
+   Applying runs always block, because their physical phase may still be
+   deleting objects.
 2. Acquires the registry purge fence under the same quiescence predicates as a
    reviewed fence Begin. The fence's idempotency key is the operation id, so
    the fence is owned by that operation. New OCI writers are refused from this
@@ -241,7 +270,11 @@ through container GC, or review and apply untracked repairs, then delete again.
 ### Manual purge fence
 
 The reviewed purge-fence workflow is still available. Use it when an operator
-wants to freeze writers before deciding on deletion:
+wants to freeze writers before deciding on deletion. Unlike the deletion
+operation, fence admission does not abandon plans: it counts applying runs and
+unexpired planned runs as GC work. Cancel a leftover diagnostic plan with
+`gc cancel` first rather than waiting for it to expire. Then use the registry
+resource version returned by `aos hub registry show REGISTRY`:
 
 ```sh
 aos hub registry container gc purge-fence plan REGISTRY \

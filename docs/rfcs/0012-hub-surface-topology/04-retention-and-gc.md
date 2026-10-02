@@ -440,19 +440,40 @@ applying the indexer refuses to re-project container-release roots for that
 registry. Every physical deletion of a retiring run uses the same inventory,
 capability, and finalization fences as an ordinary run.
 
+An OCI GC run is `planned` after review, `applying` once apply tombstones its
+candidates and takes the registry GC lock, and `complete` after finalization;
+a plan that fails closed while planning is recorded as `failed`. An unapplied
+plan holds no lock, delete credential, or tombstone, and no worker can claim
+its frozen placement actions, so it ends in the terminal `aborted` state in one
+of two equivalent ways: its fifteen-minute review expires and the maintenance
+sweep records `review expired before apply`, or a registry configurator
+cancels it with `ContainerService.CancelContainerGcRun`, which records
+`cancelled by operator before apply`. Cancellation binds the run's resource
+version, fails closed for an `applying` run, whose recovery belongs to action
+requeue and finalization, and returns an already terminal run unchanged.
+
+Only applied GC work blocks registry teardown: an `applying` run and the
+unfinished placement actions of a run that was applied. Apply rejects an
+expired plan, so an expired or aborted run, and the never-claimable actions
+frozen by any run that was not applied, never block. Reviewed purge-fence
+admission additionally counts an unexpired `planned` run, because it could
+still be applied behind the fence.
+
 The final identity deletion is a `delete_registry` topology operation. It
 removes no provider objects itself. Its blockers fall into two classes:
 
 - Operator blockers refuse the reviewed apply with `failed_precondition` and an
   exact per-class count. These are repositories, catalog objects, active OCI
   sessions or leases, active publications or uploads, retained binary-cache
-  roots, staged container objects, applying GC runs, pending GC placement
-  actions, active untracked repairs, snapshot references, offline placements or
-  placements without a current write revision, and provider objects listed by a
-  current inventory.
-- Automatic steps are performed by the operation. It abandons planned GC runs
-  that were never applied, since apply moves a run out of `planned` atomically
-  and so no planned run has destructive work in flight. It acquires an
+  roots, staged container objects, applying GC runs, unfinished actions of
+  applied GC runs, active untracked repairs, snapshot references, offline
+  placements or placements without a current write revision, and provider
+  objects listed by a current inventory.
+- Automatic steps are performed by the operation. It abandons every `planned`
+  GC run, expired or not, recording `abandoned by registry deletion
+  OPERATION_ID` and the run ids in the operation detail. This is the same
+  `planned` to `aborted` transition as cancellation, so the reviewed deletion
+  never waits for the expiry sweep or a separate cancel. It acquires an
   operation-owned purge fence. It requests a scan of any placement that was
   never observed `ready/complete`. It collects a fresh complete inventory of
   every placement under that fence.
