@@ -173,6 +173,7 @@ aos_dev_cache_verify_mount() {
 }
 
 aos_dev_cache_probe_once() {
+  aos_dev_configure_nix
   local log status interrupted=false
   local -a compiler_probe_options=()
   if [[ ${aos_dev_accache:-false} == true ]]; then
@@ -184,7 +185,7 @@ aos_dev_cache_probe_once() {
   # Nix may report a user interruption with exit status 1 instead of 130.
   # Keep its diagnostics live and inspect the message before reporting the
   # failure. Redirect stdout after duplicating stderr into the pipe.
-  if nix-build "$aos_dev_root/dev/cache-mount-smoke.nix" \
+  if nix-build "$aos_dev_root/tools/dev/cache-mount-smoke.nix" \
       --argstr goCacheDir "$aos_dev_go_cache_path" \
       --argstr bazelCacheDir "$aos_dev_bazel_cache_path" \
       --argstr rustCacheDir "$aos_dev_rust_cache_path" \

@@ -62,6 +62,24 @@ AOS is built hermetically from source;
 new dependencies must be added to the AOS package graph rather than imported
 from nixpkgs.
 
+Load the development shell through direnv or `nix develop --accept-flake-config`.
+It puts `aos-dev` and the ordinary packaged `aos` CLI in PATH:
+
+```sh
+aos --help
+aos-dev run apm --help
+aos-dev run apr --help
+aos-dev cache init
+aos-dev build package crucible --no-out-link
+```
+
+Tool-running commands fetch or build ordinary packaged binaries on demand.
+Explicit development builds use shared compiler caches. The shell and script
+use the production testing binary cache with signature verification and source
+fallback; an empty cache still permits source builds. See
+[the development instructions](AGENTS.md#the-aos-dev-development-entry-point)
+for cache setup and incremental Rust builds.
+
 ## Project status
 
 AOS is under active development. Interfaces and disk formats may change before
