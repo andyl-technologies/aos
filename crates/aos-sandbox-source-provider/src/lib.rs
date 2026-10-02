@@ -98,6 +98,7 @@ pub use owner::{
     FixedProviderAuthenticatedSourceRequestV1, FixedProviderCatalogProgressV1,
     FixedProviderHeldReadOnlyObservationV1, FixedProviderHistoricalOutcomeV1,
     FixedProviderIngressProgressV1, FixedProviderOpenReportV1, FixedProviderOwnerStatusV1,
+    FixedProviderOriginalStorageOfferProgressV5,
     FixedProviderOwnerV1, FixedProviderRequestReadbackV1, ProtectedProviderMountRetryAuthorityV1,
 };
 pub use recovery::{

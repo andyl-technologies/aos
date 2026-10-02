@@ -112,6 +112,7 @@ pub use migration::{
     MountSourceStateMigrationRecoveryV2,
 };
 pub use storage_transport::{
+    OriginalStorageOfferErrorV5, OriginalStorageOfferTransportV5,
     ProductionSourceProviderStorageErrorV1, ProductionSourceProviderStorageOutcomeV1,
     ReceivedStorageNativeAcquireV3, exchange_signed_storage_native_acquire_v2,
     inspect_signed_storage_export_plan,

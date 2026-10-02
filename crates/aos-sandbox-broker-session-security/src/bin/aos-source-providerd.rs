@@ -3,7 +3,8 @@
 //! Startup installs a signed catalog locator from a named systemd credential.
 //! The service retains the fixed authenticated owner and answers fresh catalog
 //! challenges. A selected LocalLive Acquire may reach authenticated Storage
-//! readback; a native selected Acquire remains unavailable. Holder Inventory
+//! readback; a genuine native original pair may reach StoragePrepared only.
+//! Holder Inventory
 //! uses the fixed owner's durable admission and
 //! reopens every active source before claiming completeness. A cold selected
 //! reservation retries only its original signed plan; production backend
@@ -20,6 +21,7 @@ use aos_sandbox_broker_session_security::{
 };
 use aos_sandbox_source_provider::{
     FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1,
+    FixedProviderOriginalStorageOfferProgressV5, FixedProviderOwnerV1,
     NativeNoDispatchSettlementV1, ProviderLedgerError,
 };
 use aos_sandbox_source_provider_security::{
@@ -115,11 +117,13 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                             std::thread::sleep(Duration::from_millis(2));
                         }
                         FixedProviderIngressProgressV1::CatalogReplied => {}
-                        FixedProviderIngressProgressV1::OriginalRootPreparedRetained
-                        | FixedProviderIngressProgressV1::OriginalPairRetained => {
+                        FixedProviderIngressProgressV1::OriginalRootPreparedRetained => {
                             // No reservation, signing, nonce, bridge or dispatch
                             // capability is available from this classification.
                             std::thread::sleep(Duration::from_millis(2));
+                        }
+                        FixedProviderIngressProgressV1::OriginalPairRetained => {
+                            serve_original_storage_offer(&ingress, &mut owner);
                         }
                         FixedProviderIngressProgressV1::Recovery(query) => {
                             let mut storage = ProductionSourceProviderStorageReadbackV1;
@@ -200,6 +204,53 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                 ProductionBrokerSessionActivationErrorV1::Deadline,
             )) => continue,
             Err(error) => return Err(error.into()),
+        }
+    }
+}
+
+// The selected original owner never returns to the consuming legacy route.
+// Both an outer typed cause and all nested offer custody stay resident even
+// after expiry, ambiguous reply, readback refusal or a diagnostic panic.
+fn serve_original_storage_offer(
+    ingress: &ProductionSourceProviderIngressV1,
+    owner: &mut FixedProviderOwnerV1,
+) -> ! {
+    let mut first_failure = None;
+    let _crossing = OriginalStorageOfferDaemonCrossingV5;
+    let mut closed = false;
+    loop {
+        if !closed {
+            match ingress.advance_original_storage_offer(owner) {
+                Ok(FixedProviderOriginalStorageOfferProgressV5::Pending)
+                | Ok(FixedProviderOriginalStorageOfferProgressV5::StoragePrepared) => {}
+                Ok(FixedProviderOriginalStorageOfferProgressV5::Closed) => {
+                    closed = true;
+                    if let Some(cause) = owner.original_storage_offer_failure_v5() {
+                        eprintln!("original Storage offer remains closed: {cause}");
+                    }
+                }
+                Err(cause) => {
+                    first_failure = Some(cause);
+                    closed = true;
+                    owner.close_original_storage_offer_after_failure_v5();
+                    if let Some(cause) = &first_failure {
+                        eprintln!("original Storage offer remains closed: {cause}");
+                    }
+                }
+            }
+        }
+        // Do not drop an owning outer error after diagnostics or reuse a lane.
+        let _resident_cause = &first_failure;
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+struct OriginalStorageOfferDaemonCrossingV5;
+
+impl Drop for OriginalStorageOfferDaemonCrossingV5 {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
         }
     }
 }

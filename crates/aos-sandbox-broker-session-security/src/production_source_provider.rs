@@ -19,7 +19,8 @@ use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
 use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
 use aos_sandbox_source_provider::{
     FixedProviderCatalogProgressV1, FixedProviderIngressProgressV1, FixedProviderOpenReportV1,
-    FixedProviderOwnerStatusV1, FixedProviderOwnerV1, ProviderLedgerError,
+    FixedProviderOwnerStatusV1, FixedProviderOwnerV1,
+    FixedProviderOriginalStorageOfferProgressV5, ProviderLedgerError,
 };
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{FileType, Mode, OFlags, Stat, fstat, open, openat};
@@ -231,6 +232,33 @@ impl ProductionSourceProviderIngressV1 {
         })();
         if result.is_err() {
             owner.close_original_native_ingress_after_failure();
+        }
+        result
+    }
+
+    /// Advances the same retained original pair through StoragePrepared only.
+    ///
+    /// The protected locator and rows are comparison DATA. Only the genuine
+    /// owner's retained pair, first clock, selected owner and original writer
+    /// can admit this lane. It does not complete, deliver SourceRoot or relay.
+    ///
+    /// # Errors
+    ///
+    /// Rejects listener/catalog drift. The caller must retain the returned
+    /// first cause with the permanently closed original owner.
+    pub fn advance_original_storage_offer(
+        &self,
+        owner: &mut FixedProviderOwnerV1,
+    ) -> Result<FixedProviderOriginalStorageOfferProgressV5, ProductionSourceProviderIngressErrorV1> {
+        let result = (|| {
+            self.listener.validate_current()?;
+            let (publication, rows) = self.read_current_catalog_manifest()?;
+            let progress = owner.advance_original_storage_offer_v5(&publication, &rows);
+            self.listener.validate_current()?;
+            Ok(progress)
+        })();
+        if result.is_err() {
+            owner.close_original_storage_offer_after_failure_v5();
         }
         result
     }

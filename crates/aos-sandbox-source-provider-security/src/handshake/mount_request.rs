@@ -47,6 +47,8 @@ mod recovery;
 
 #[path = "mount_request/native_catalog.rs"]
 mod native_catalog;
+// Reuses the original later-sample adapter without exporting a clock permit.
+pub(crate) use native_catalog::kernel_clock as original_kernel_clock;
 pub(super) use native_catalog::custody::OriginalBoundaryV5;
 #[path = "mount_request/native_root_prepared.rs"]
 mod native_root_prepared;
