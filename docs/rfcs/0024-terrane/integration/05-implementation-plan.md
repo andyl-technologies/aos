@@ -408,11 +408,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and one private unverified token-field group. The actual task-branch check
   now passes all thirteen groups and strict all-target Clippy; every D-80 input
   has an independently constructed full model or primitive negative oracle.
-  Its full core suite passes all 547 tests with zero skips (run
-  `ddcbd96f-b1ff-4bae-ac87-976114964f1d`), build/strict Clippy/rustdoc/formatting
-  and `core-fuzz` also pass. Its actual aggregate still refuses the missing
-  bootstrap-fork selector; rebase onto D-89 and joint qualification remain
-  required. The task stays unmerged, and complete golden coverage remains open.
+  After rebasing onto D-89, its full core suite passes all 551 tests with zero
+  skips (run `82022eba-9aa3-4e6f-bcc2-f291228ada36`), build/strict Clippy/rustdoc/
+  formatting and `core-fuzz` also pass. Its actual aggregate still refuses the
+  missing bootstrap-fork selector. Full review of the eight-file legacy
+  addition finds complete positive model comparisons and independent negative
+  wires. The updated isolated joint candidate includes both the property and
+  bootstrap branches; its actual `prov-commit-signature` passes all twenty
+  required exact cases. Joint aggregate and native qualification remain
+  required. A new `namespace-reference-models` auxiliary harness reserves three
+  exact owning-codec groups for independent entry metadata and root properties;
+  it fails explicitly until the independent generator and model inputs exist.
+  The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
