@@ -52,7 +52,8 @@ impl DisclosureRoleRecord {
 pub(crate) struct PublicTrustRecord {
     /// Raw BLAKE3 digest of the exact canonical import record.
     pub(crate) import_digest: [u8; 32],
-    /// Source authority whose held configuration supplies these mappings.
+    /// Original authoring registration bound to the exact retained import.
+    /// Disclosure roles independently identify their actual physical disclosers.
     pub(crate) source_authority: [u8; 32],
     /// Physical destination authority that retains the checked mappings.
     pub(crate) destination_authority: [u8; 32],
