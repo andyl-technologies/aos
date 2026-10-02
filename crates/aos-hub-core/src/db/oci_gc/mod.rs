@@ -9,6 +9,7 @@
 
 use aos_oci_types::{MediaType, RepositoryName, Sha256Digest};
 
+mod cancel;
 mod inventory;
 mod inventory_model;
 mod plan;
@@ -24,6 +25,7 @@ mod worker;
 #[cfg(test)]
 mod tests;
 
+pub use cancel::*;
 pub use inventory::*;
 pub use plan::*;
 pub use purge_plan::*;
@@ -91,6 +93,9 @@ pub struct OciGcGenerationRecord {
     /// Authenticated actor that created and may apply the plan.
     pub actor_id: String,
     /// `planned`, `applying`, `complete`, `aborted`, or `failed`.
+    ///
+    /// `aborted` is terminal for a plan that expired or was cancelled before
+    /// apply; `last_error` records which.
     pub state: String,
     /// Registry mutation epoch frozen during planning.
     pub captured_mutation_epoch: i64,
@@ -267,7 +272,11 @@ pub struct OciRegistryPurgeBlockers {
     pub catalog_objects: u64,
     /// Active upload/publication/lease rows.
     pub active_sessions: u64,
-    /// Nonterminal GC runs or actions.
+    /// Applying runs, unexpired planned runs, and unfinished placement
+    /// actions of runs that were applied.
+    ///
+    /// An expired planned run can no longer be applied, and an aborted run
+    /// never will be, so neither (nor their never-claimable actions) blocks.
     pub gc_work: u64,
     /// Current provider-inventory keys still present and catalog-tracked.
     pub tracked_provider_objects: u64,
