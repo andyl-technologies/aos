@@ -13,9 +13,37 @@ import re
 from decimal import Decimal, ROUND_CEILING
 
 
+
+# The declared Linux Nginx rewrites argv into a complete master-process title.
+# Reuse this exact predicate at startup and at subsequent lifetime boundaries.
+DIRECT_NGINX_PROCESS_OBSERVATION = r"""
+def nginx_master_title(arguments):
+    if (not isinstance(arguments, list) or not arguments or len(arguments) > 32
+            or any(not isinstance(value, str) or not value or '\x00' in value
+                for value in arguments)):
+        raise ValueError('Nginx invocation differs')
+    title = 'nginx: master process ' + ' '.join(arguments)
+    if len(title.encode()) > 8192:
+        raise ValueError('Nginx expected master title exceeds its observation bound')
+    return title
+
+
+def nginx_observed_command(command, arguments):
+    expected = nginx_master_title(arguments).encode()
+    if (not isinstance(command, bytes) or len(command) > 65536
+            or len(command) <= len(expected) or not command.startswith(expected)
+            or any(command[len(expected):])):
+        raise ValueError('Nginx actual master title or NUL padding differs')
+    return {'invocationObservationMode': 'nginx_linux_master_title',
+        'expectedMasterTitle': expected.decode(), 'invocationArguments': arguments,
+        'commandLineSha256': hashlib.sha256(command).hexdigest(),
+        'commandLineBytes': str(len(command))}
+"""
+
+
 def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots):
     """Start the exact source-built TLS proxy and retain its actual lifetime."""
-    observed = json.loads(direct_guest_python(machine, tools["python"], """
+    observed = json.loads(direct_guest_python(machine, tools["python"], DIRECT_NGINX_PROCESS_OBSERVATION + """
         import hashlib, os, stat, subprocess, time
         from pathlib import Path
 
@@ -56,14 +84,16 @@ def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots)
         if process.poll() is not None:
             raise ValueError('actual observation proxy exited at startup')
         directory = Path('/proc') / str(process.pid)
-        command = (directory / 'cmdline').read_bytes().split(b'\\x00')[:-1]
-        if directory.stat().st_uid != os.getuid() or command != [os.fsencode(value) for value in arguments]:
-            raise ValueError('observation proxy owner or argv differs')
+        with (directory / 'cmdline').open('rb') as input:
+            command = input.read(65537)
+        identity = nginx_observed_command(command, arguments)
+        if directory.stat().st_uid != os.getuid():
+            raise ValueError('observation proxy owner differs')
         with (directory / 'exe').open('rb') as executable:
             executable_sha = hashlib.file_digest(executable, 'sha256').hexdigest()
         receipt = {'version': 1, 'pid': process.pid, 'ownerUid': os.getuid(),
             'startTicks': (directory / 'stat').read_text().rpartition(') ')[2].split()[19],
-            'executableSha256': executable_sha, 'arguments': arguments,
+            'executableSha256': executable_sha, 'arguments': arguments, **identity,
             'configurationSha256': hashlib.sha256(body).hexdigest(),
             'root': str(root), 'bodyRoots': selected['bodyRoots'],
             'scope': 'actual fixture TLS proxy lifetime; no protocol or provider acceptance'}
@@ -137,13 +167,15 @@ def observe_direct_boundary_lifetimes(native, worker, tools, stage):
     observed = {}
     for role, machine in (("native", native), ("worker", worker)):
         selected = tools["storageBoundaryInstallation"][role + "Proxy"]
-        receipt = json.loads(direct_guest_python(machine, tools["python"], """
+        receipt = json.loads(direct_guest_python(machine, tools["python"], DIRECT_NGINX_PROCESS_OBSERVATION + """
             import hashlib, os
             from pathlib import Path
 
             root = Path('/proc') / str(selected['pid'])
             before = (root / 'stat').read_text().rpartition(') ')[2].split()[19]
-            argv = (root / 'cmdline').read_bytes().split(b'\\x00')[:-1]
+            with (root / 'cmdline').open('rb') as input:
+                command = input.read(65537)
+            identity = nginx_observed_command(command, selected['invocationArguments'])
             with (root / 'exe').open('rb') as source:
                 executable = hashlib.file_digest(source, 'sha256').hexdigest()
             configuration = Path(selected['root']) / 'nginx.conf'
@@ -151,13 +183,13 @@ def observe_direct_boundary_lifetimes(native, worker, tools, stage):
             after = (root / 'stat').read_text().rpartition(') ')[2].split()[19]
             if (before != after or before != selected['startTicks']
                     or root.stat().st_uid != selected['ownerUid']
-                    or argv != [os.fsencode(value) for value in selected['arguments']]
+                    or any(identity[field] != selected[field] for field in identity)
                     or executable != selected['executableSha256']
                     or config_sha != selected['configurationSha256']):
                 raise ValueError('actual proxy lifetime or configuration changed')
             print(json.dumps({'pid': selected['pid'], 'startTicks': before,
                 'ownerUid': root.stat().st_uid, 'executableSha256': executable,
-                'configurationSha256': config_sha}))
+                'configurationSha256': config_sha, **identity}))
         """, selected, timeout=30))
         observed[role] = receipt
     retain_direct_flow("actual-proxy-lifetimes-" + stage + ".json", observed)
