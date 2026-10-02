@@ -1714,6 +1714,27 @@ is added rather than editing history.
     precedes T1's initial encoding freeze and does not qualify the complete
     corpus, policy verification or native ref operations.
 
+- **[D-95] Publish complete local reconciliation record witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 12 complete positive local-v1 reconciliation records,
+    68 independently assembled structural negatives and 11 exact decoder-bound
+    or late-validation inputs. Preserve every previous reference byte. These
+    non-content-addressed records receive no immutable descriptor or identity.
+  - **Rationale:** TEST-2 requires published vectors for implemented formats.
+    Independent CBOR primitives reproduce the existing five-field map and
+    complete nested tuples; separately constructed public models compare all
+    decoded fields. Malformed inputs bypass the rejecting encoder. Full
+    borrowed validation precedes retention of the fence key. Current fence
+    cycles may differ from original exclusion cycles; the existing registered
+    grammar supplies the key constraint without a new size limit. Represented
+    digests, incarnations and index identities establish no verified evidence,
+    current authority or permission for physical effects.
+  - **Affects:** TEST-1 to TEST-3, the GC-29 record-format prerequisite and
+    the golden-vector reference. Requirement IDs, schemas, identity domains
+    and existing bytes remain unchanged. This additive correction precedes
+    T1's initial encoding freeze and does not qualify the complete corpus,
+    native reconciliation or deletion operations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
