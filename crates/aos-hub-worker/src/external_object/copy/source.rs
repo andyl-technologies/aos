@@ -424,11 +424,16 @@ impl ExternalObjectGuard {
             #[cfg(feature = "do-e2e")]
             if let Operation::Range { original, .. } = &message.operation {
                 let trace = super::observation::Trace::from_env(
-                    &self.env, original, &body, super::observation::Role::SourceGuard,
+                    &self.env,
+                    original,
+                    &body,
+                    super::observation::Role::SourceGuard,
                 );
                 if let Some(trace) = &trace {
                     trace.admitted(1);
-                    if let Some(ticket) = &message.capacity_transfer { trace.transfer(ticket); }
+                    if let Some(ticket) = &message.capacity_transfer {
+                        trace.transfer(ticket);
+                    }
                 }
                 lifetime.observe(trace);
             }

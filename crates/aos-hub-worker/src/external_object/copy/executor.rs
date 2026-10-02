@@ -74,15 +74,27 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
         )?;
         #[cfg(feature = "do-e2e")]
         let trace = super::observation::Trace::from_env(
-            env, &work.original, &body, super::observation::Role::DestinationExecutor,
+            env,
+            &work.original,
+            &body,
+            super::observation::Role::DestinationExecutor,
         );
-        let execution = execute(env, &object, &work, &signal,
+        let execution = execute(
+            env,
+            &object,
+            &work,
+            &signal,
             #[cfg(feature = "do-e2e")]
             trace.as_ref(),
-        ).await;
+        )
+        .await;
         #[cfg(feature = "do-e2e")]
         if let Some(trace) = &trace {
-            trace.finish(if execution.is_ok() { "returned" } else { "refused" });
+            trace.finish(if execution.is_ok() {
+                "returned"
+            } else {
+                "refused"
+            });
         }
         let progress = execution?;
         ExternalCopyReply::new(&work, progress)?.sign(&key, &work)
@@ -262,7 +274,9 @@ async fn execute(
     };
     window.lifetime.retain_capacity(capacity)?;
     #[cfg(feature = "do-e2e")]
-    if let Some(trace) = trace { trace.admitted(if part { 2 } else { 1 }); }
+    if let Some(trace) = trace {
+        trace.admitted(if part { 2 } else { 1 });
+    }
     let write_secret = publication.credential_text(
         &StorageCredentialSelector {
             purpose: "write".into(),

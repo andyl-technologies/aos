@@ -119,13 +119,20 @@ impl Lifetime {
     }
 
     #[cfg(feature = "do-e2e")]
-    pub(super) fn observe_transfer(&self, ticket: &crate::direct_upload::provider_capacity::transfer::Ticket) {
-        if let Some(trace) = self.resources.trace.borrow().as_ref() { trace.transfer(ticket); }
+    pub(super) fn observe_transfer(
+        &self,
+        ticket: &crate::direct_upload::provider_capacity::transfer::Ticket,
+    ) {
+        if let Some(trace) = self.resources.trace.borrow().as_ref() {
+            trace.transfer(ticket);
+        }
     }
 
     #[cfg(feature = "do-e2e")]
     pub(super) fn observe_progress(&self, bytes: u64, eof: bool) {
-        if let Some(trace) = self.resources.trace.borrow().as_ref() { trace.progress(bytes, eof); }
+        if let Some(trace) = self.resources.trace.borrow().as_ref() {
+            trace.progress(bytes, eof);
+        }
     }
 
     /// Retains exact source-key ownership until EOF, error or native cancellation.
