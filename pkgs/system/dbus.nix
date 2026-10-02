@@ -282,8 +282,8 @@ in
           # Preserve upstream defaults for ordinary dbus-daemon --system users.
           # The native controller includes a separate base so local overrides
           # follow authenticated package policy in its generated configuration.
-          sed \
-            -e '/<includedir>system\.d<\/includedir>/d' \
+          sed -E \
+            -e '/<includedir>(\/etc\/dbus-1\/)?system\.d<\/includedir>/d' \
             -e '/<include.*system-local\.conf<\/include>/d' \
             "$out/share/dbus-1/system.conf" \
             > "$out/share/dbus-1/aos-system-base.conf"
@@ -311,13 +311,14 @@ in
           stock=${self}/share/dbus-1/system.conf
           native=${self}/share/dbus-1/aos-system-base.conf
           grep -F '<includedir>system.d</includedir>' "$stock"
+          grep -F '<includedir>/etc/dbus-1/system.d</includedir>' "$stock"
           grep -F 'system-local.conf</include>' "$stock"
           if grep -E 'system\.d</includedir>|system-local\.conf</include>' "$native"; then
             echo "Native D-Bus base includes local overrides before package policy" >&2
             exit 1
           fi
-          sed \
-            -e '/<includedir>system\.d<\/includedir>/d' \
+          sed -E \
+            -e '/<includedir>(\/etc\/dbus-1\/)?system\.d<\/includedir>/d' \
             -e '/<include.*system-local\.conf<\/include>/d' \
             "$stock" > expected
           cmp expected "$native"
