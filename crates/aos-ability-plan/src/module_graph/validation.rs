@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use aos_ability_model::{ABILITY_LIMITS_V1, AbilityValue, OptionType};
 use aos_contract::Sha256Digest;
 use serde_json::Value;
@@ -70,7 +70,8 @@ pub(super) fn check_graph(graph: &ModuleGraph) -> Result<()> {
         }
 
         let mut dependencies = BTreeSet::new();
-        check_input(&node.input, &node.input_type, graph, &mut dependencies)?;
+        check_input(&node.input, &node.input_type, graph, &mut dependencies)
+            .with_context(|| format!("input of effect {:?}", node.identity))?;
         for reference in &node.after {
             dependencies.insert(check_reference(reference, graph)?);
         }
@@ -241,13 +242,16 @@ fn check_input(
         (OptionType::Submodule { fields, open }, Value::Object(values)) => {
             ensure!(
                 *open || values.len() == fields.len(),
-                "input record fields do not match its contract"
+                "record field count {} does not match its contract ({})",
+                values.len(),
+                fields.len()
             );
             for (name, schema) in fields {
                 let field = values
                     .get(name)
                     .ok_or_else(|| anyhow::anyhow!("missing input field {name}"))?;
-                check_input(field, schema, graph, dependencies)?;
+                check_input(field, schema, graph, dependencies)
+                    .with_context(|| format!("field {name}"))?;
             }
         }
         (OptionType::AttrsOf { value: schema, .. }, Value::Object(values)) => {
