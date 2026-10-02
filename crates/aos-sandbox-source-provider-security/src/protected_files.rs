@@ -245,7 +245,7 @@ impl ProtectedPublicArchiveFileV5 {
 
 fn require_archive_name(name: &str) -> Result<(), SourceProviderSecurityError> {
     if name.len() != 66
-        || !matches!(name.get(..2), Some("e-") | Some("o-") | Some("c-"))
+        || !matches!(name.get(..2), Some("e-") | Some("o-") | Some("c-") | Some("s-"))
         || !name.as_bytes()[2..].iter().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
     {
         return Err(SourceProviderSecurityError::DirectoryPath);

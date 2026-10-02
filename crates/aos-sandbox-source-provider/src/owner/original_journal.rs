@@ -50,6 +50,7 @@ use crate::zfs_hold_verifier::ProtectedStorageZfsHoldVerifierV1;
 
 pub(super) mod producer;
 mod selected_execution;
+mod selected_archive;
 mod storage_offer;
 mod completion;
 use producer::{OriginalProducerAppendV5, OriginalSourceProducerV5};
@@ -391,10 +392,16 @@ impl FixedProviderOwnerV1 {
         journal.complete_source_original_replay_v5(&challenges)?;
         let authority = journal.claim_source_original_native_v5(&challenges)?;
         let replay = authority.replayed_origins()?;
-        authenticate_current_prefix(original, &replay, &challenges, authority.configured_limits(), &held.publication)?;
+        authenticate_current_prefix(
+            original, &replay, &challenges, authority.configured_limits(),
+            &held.publication, &self.backend_verifier,
+        )?;
 
         refresh_current(original, &mut held.session, &held.publication)?;
-        authenticate_current_prefix(original, &authority.replayed_origins()?, &challenges, authority.configured_limits(), &held.publication)?;
+        authenticate_current_prefix(
+            original, &authority.replayed_origins()?, &challenges, authority.configured_limits(),
+            &held.publication, &self.backend_verifier,
+        )?;
         let rows = replay.current_rows();
         Ok(super::held_readonly::FixedProviderHeldReadOnlyObservationV1 {
             owner_records: rows.keys().filter(|(namespace, _)| *namespace == RecordNamespace::SourceProviderAuthority).count(),
@@ -553,6 +560,7 @@ impl FixedProviderOwnerV1 {
             &subject,
             &challenges,
             authority.configured_limits(),
+            &self.backend_verifier,
         )?;
         held.session.current_projection()?;
         Ok(())
@@ -627,6 +635,7 @@ impl FixedProviderOwnerV1 {
             &subject,
             &challenges,
             authority.configured_limits(),
+            &self.backend_verifier,
         )?;
         authority.preflight(prepared)?;
         held.session.current_projection()?;
@@ -679,6 +688,7 @@ impl FixedProviderOwnerV1 {
             refresh_current(history, &mut held.session, &held.publication)?;
             authenticate_replay(
                 history, &authority.replayed_origins()?, &challenges, authority.configured_limits(),
+                &self.backend_verifier,
             )?;
             history.archive.as_ref().ok_or(ProviderLedgerError::Unavailable)?.validate_references(
                 retained.reference.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
@@ -794,9 +804,10 @@ fn authenticate_current_prefix(
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
     limits: aos_sandbox::JournalLimits,
     publication: &[u8],
+    backend: &crate::backend_verifier::ProtectedBackendVerifierV1,
 ) -> Result<(), ProviderLedgerError> {
     if !original.baseline_pending {
-        return authenticate_replay(original, replay, challenges, limits);
+        return authenticate_replay(original, replay, challenges, limits, backend);
     }
 
     // This exception is a current preappend baseline, not recovery of missing
@@ -830,6 +841,7 @@ fn authenticate_replay(
     replay: &SourceOriginalReplayViewV5<'_>,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
     limits: aos_sandbox::JournalLimits,
+    backend: &crate::backend_verifier::ProtectedBackendVerifierV1,
 ) -> Result<(), ProviderLedgerError> {
     if original.references.len() > replay.cuts().len() {
         return Err(ProviderLedgerError::Equivocation);
@@ -892,7 +904,13 @@ fn authenticate_replay(
         authenticate_archived_complete_cut_v5(cut.before_rows(), &before, current)?;
         authenticate_archived_complete_cut_v5(cut.after_rows(), &after, current)?;
         authenticate_native_rows(cut.after_rows(), &context, &mut original.controls,
-            &original.admissions, current, storage, challenges, limits)?;
+            &original.admissions, current, storage, challenges, limits,
+            &mut selected_archive::SelectedArchiveReplayV1 {
+                archive: &mut *archive,
+                admissions: replay.origins(),
+                origins: &original.origins,
+                backend,
+            })?;
         original.durable = Some(after);
     }
 
@@ -915,6 +933,7 @@ fn authenticate_candidate(
     subject: &SourceOriginalAppendSubjectV5,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
     limits: aos_sandbox::JournalLimits,
+    backend: &crate::backend_verifier::ProtectedBackendVerifierV1,
 ) -> Result<(), ProviderLedgerError> {
     let archive = original.archive.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
     archive.require_append_subject(reference, subject)?;
@@ -961,7 +980,13 @@ fn authenticate_candidate(
         return Err(ProviderLedgerError::Equivocation);
     }
     authenticate_native_rows(comparison.after(), &context, &mut controls, &admissions,
-        current, storage, challenges, limits)?;
+        current, storage, challenges, limits,
+        &mut selected_archive::SelectedArchiveReplayV1 {
+            archive: &mut *archive,
+            admissions: prepared.prospective_origins().unwrap_or(&[]),
+            origins: &original.origins,
+            backend,
+        })?;
     archive.revalidate()?;
     challenges.validate_current()?;
     Ok(())
@@ -1128,6 +1153,7 @@ fn authenticate_native_rows(
     storage: &ProtectedStorageZfsHoldVerifierV1,
     challenges: &SourceOriginalChallengeHistoryViewV5<'_>,
     limits: aos_sandbox::JournalLimits,
+    selected: &mut selected_archive::SelectedArchiveReplayV1<'_>,
 ) -> Result<(), ProviderLedgerError> {
     for ((namespace, key), value) in rows {
         if *namespace != RecordNamespace::SourceProviderAuthority {
@@ -1164,6 +1190,7 @@ fn authenticate_native_rows(
                 require_prepared_role(prepared, &preparation, current, storage)?;
                 verify_nested(prepared, &preparation, contexts, current, storage, limits, 0)?;
             }
+            selected.require_held_input(&held, storage)?;
         } else if value.get(8..10) == Some(&9_u16.to_be_bytes()) {
             let cold = SourcePreRequestedColdArchiveV1::from_canonical_bytes(key, value)
                 .map_err(|_| ProviderLedgerError::Equivocation)?;

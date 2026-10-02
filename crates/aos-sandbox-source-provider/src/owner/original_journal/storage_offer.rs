@@ -171,7 +171,7 @@ impl FixedProviderOwnerV1 {
     /// Borrows the actual first cause retained by the original producer/offer.
     #[must_use]
     pub fn original_storage_offer_failure_v5(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        if let Some(cause) = self.original_ingress.producer_failure_v5() {
+        if let Some(cause) = self.retained_original_producer_failure_v5() {
             return Some(cause);
         }
         self.original_source_producer_v5().ok()?.storage_offer.as_ref()?.failure()
