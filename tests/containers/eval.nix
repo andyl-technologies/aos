@@ -245,14 +245,14 @@ in
   assert experimentalAos.publication.repository == "aos-experimental";
   assert experimentalAos.publication.releaseIdentity == experimental.config.aos.system.version;
   assert experimentalAos.publication.referenceTag == "edge";
-  assert experimentalAos.runtime.environment.AOS_RELEASE_TIER == "experimental";
+  assert experimentalAos.runtime.environment.AOS_RELEASE_TIER == "testing";
   assert experimentalAos.runtime.environment.AOS_REGISTRY == "andyl/experimental";
   assert experimentalAos.runtime.environment.AOS_CHANNEL == "edge";
   assert experimental.config.aos.release.rootEpoch == 1;
   assert experimental.config.system.build.defaultContainer.definition.annotations."dev.andyl.aos.registry-root-epoch"
   == "1";
   assert experimental.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.title"
-  == "AOS Testing";
+  == "AOS Experimental";
   assert lib.hasInfix
   "not for production"
   experimental.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.description";
