@@ -23,6 +23,12 @@ async fn disclosure_paired_retry_recovers_exact_installed_imports_without_relaxi
     recovery::recover_cached_transition().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_paired_retry_refuses_unrelated_added_role_carriers() {
+    recovery::refuse_unrelated_transition().await;
+}
+
 #[tokio::test]
 async fn disclosure_boundary_manifest_and_multiple_source_certificates() {
     multiple::publish_independent_manifests().await;
