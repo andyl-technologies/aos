@@ -7,6 +7,14 @@
 # release candidate: publication to `staging/candidate`, staging-phase
 # qualification, publication to `production/candidate` (functional profile,
 # with fitness attestations), rollout qualification, and its single ring.
+#
+# Both Hubs start with the registry's topology row but no publication. The
+# release is the registry's first: `aos maintain release new --first-release`
+# derives its base from a single-commit authoring clone, and threshold-signed
+# bootstrap intents install that base on staging and then production with
+# `step bootstrap` before anything is published. Staging is reached through an
+# approved `aos hub login` profile; production through the maintainer
+# configuration's `token_credential`.
 {
   lib,
   mkSystem,
@@ -256,6 +264,55 @@ in {
           ), timeout=timeout))
 
 
+      def console_session(url):
+          # Signs in to the Hub console as root and returns its session cookie
+          # and CSRF token, which approve device logins and mint session tokens.
+          return publisher.succeed(textwrap.dedent(f"""
+              set -eu
+              headers=$(mktemp)
+              page=$(mktemp)
+              {CURL} -sS -D "$headers" -o /dev/null -X POST \\
+                --data-urlencode 'email=fleet-root@example.test' \\
+                --data-urlencode 'password=fleet-root-password' {url}/login/password
+              cookie=$(sed -n 's/^set-cookie: \\([^;]*\\).*/\\1/ip' "$headers" | head -n1)
+              {CURL} -sS -H "Cookie: $cookie" {url}/-/instance > "$page"
+              csrf=$(sed -n 's/.*name="aos-session-csrf" content="\\([^"]*\\)".*/\\1/p' "$page" | head -n1)
+              test -n "$cookie" && test -n "$csrf"
+              printf '%s\\n%s\\n' "$cookie" "$csrf"
+          """), timeout=120).splitlines()
+
+
+      def device_login(url, config_home):
+          # Runs the real `aos hub login` device ceremony and approves it as
+          # root, leaving a renewable profile for `url` active in config_home.
+          cookie, csrf = console_session(url)
+          publisher.succeed(textwrap.dedent(f"""
+              set -eu
+              mkdir -p {config_home}
+              output=$(mktemp)
+              AOS_CONFIG_HOME={config_home} {AOS} hub login --hub {url} >"$output" 2>&1 &
+              login=$!
+              code=
+              for attempt in $(seq 1 600); do
+                code=$(grep -Eo '[A-Z0-9]{{4}}-[A-Z0-9]{{4}}' "$output" | head -n1 || true)
+                test -n "$code" && break
+                kill -0 "$login" 2>/dev/null || {{ cat "$output" >&2; exit 1; }}
+                sleep 0.1
+              done
+              test -n "$code" || {{ kill "$login"; cat "$output" >&2; exit 1; }}
+              {CURL} -fsS -o /dev/null -X POST -H {shlex.quote("Cookie: " + cookie)} \\
+                -H 'Origin: {url}' --data-urlencode {shlex.quote("csrf=" + csrf)} \\
+                --data-urlencode "user_code=$code" --data-urlencode 'decision=approve' \\
+                {url}/activate
+              wait "$login" || {{ cat "$output" >&2; exit 1; }}
+              cat "$output"
+          """), timeout=180)
+          whoami = json.loads(publisher.succeed(
+              f"AOS_CONFIG_HOME={config_home} {AOS} --json hub whoami --hub {url}"
+          ))
+          assert whoami["data"]["email"] == "fleet-root@example.test", whoami
+
+
       def initialize_hub(machine, url, suffix):
           machine.succeed(textwrap.dedent(f"""
               systemctl stop aos-hub.service
@@ -395,52 +452,151 @@ in {
           set -eu
           export HOME=/var/lib/aos-release-publisher USER=publisher NIX_REMOTE=""
           export NIX_CONF_DIR="$HOME/.config/nix"
-          mkdir -p "$NIX_CONF_DIR" /var/tmp/base-surface /var/tmp/nars
+          mkdir -p "$NIX_CONF_DIR" /var/tmp/nars
           printf 'experimental-features = nix-command\\nsandbox = false\\nbuild-users-group =\\n' > "$NIX_CONF_DIR/nix.conf"
           git config --global user.name 'Fleet Release Publisher'
           git config --global user.email 'release-publisher@example.test'
           key="$HOME/.config/apm/keys/main-initial.key"
           {APR} create main --trust-key {shlex.quote(trust)} --trust-key-id initial --key "$key"
-          registry="$HOME/.local/share/apm/registries/main"
-          mkdir -p "$HOME/.config/apm/registries.d"
-          printf '[registry]\\nname = "main"\\nurl = "file://%s"\\n\\n[registry.signing_keys]\\ninitial = "%s"\\n' "$registry" "$key" > "$HOME/.config/apm/registries.d/main.toml"
-          {APR} release 1.0.0 --registry main --store-path ${builtins.elemAt matrixPackages 0} \\
-            --name fleet-base --description 'Release fleet base' --license Apache-2.0 \\
-            --maintainer release@example.test --key-id initial --channel candidate --init-channel \\
-            --cache-url {STAGING}/andyl/main/ --upload-url file:///var/tmp/base-surface
           for path in {' '.join(PACKAGES)}; do
             {NIX_STORE} --dump "$path" > "/var/tmp/nars/$(basename "$path").nar"
           done
       """), timeout=600)
-      head = publisher.succeed(f"{CAT} /var/tmp/base-surface/HEAD").strip()
-      assert head.startswith("ref: "), head
-      head_ref = head.removeprefix("ref: ")
-      refs = publisher.succeed(f"{CAT} /var/tmp/base-surface/info/refs").splitlines()
-      base_commit = next(line.split("\t", 1)[0] for line in refs if line.split("\t", 1)[1] == head_ref)
-      assert len(base_commit) == 64, base_commit
+      SOURCE_REGISTRY = "/var/lib/aos-release-publisher/.local/share/apm/registries/main"
 
+      # Both Hubs hold the registry's topology row and nothing else: a
+      # release cannot read a base from either, so it is the registry's first.
       for url, token in ((STAGING, staging_token), (PRODUCTION, production_token)):
-          result = json.loads(publisher.succeed(
-              f"{AOS} --json hub registry publish upload andyl/main --hub {url} "
-              f"--token {shlex.quote(token)} --root /var/tmp/base-surface",
-              timeout=600,
+          listed = json.loads(publisher.succeed(
+              hub_command(url, "registry publish list andyl/main", token)
           ))
-          assert result["data"]["state"] == "ready", result
+          assert not listed["data"].get("publications"), listed
 
-      nar_paths = [f"/var/tmp/nars/{path.rsplit('/', 1)[1]}.nar" for path in PACKAGES]
-      publisher.succeed(
-          " ".join([
-              FIXTURE, "prepare", "/var/tmp/base-surface", "/var/tmp/release-surface",
-              "/var/tmp/release-predecessor", "/var/tmp/release-trust", base_commit,
-              *map(shlex.quote, nar_paths),
-          ]),
-          timeout=300,
-      )
+      # Staging is reached only through an approved device-login profile.
+      HUB_CONFIG_HOME = "/var/lib/aos-release-publisher/hub-config"
+      device_login(STAGING, HUB_CONFIG_HOME)
+      OPERATOR = f"AOS_CONFIG_HOME={HUB_CONFIG_HOME} AOS_ROOT=/var/tmp/release-source {AOS}"
+
       release_key = "/var/tmp/release-trust/release.pub"
       qualification_key = "/var/tmp/release-trust/qualification.pub"
       staging_key = "/var/tmp/staging.pub"
       production_key = "/var/tmp/production.pub"
       channel_key = "/var/tmp/channel.pub"
+      CONFIG = "/var/tmp/release-config/maintainer.toml"
+      WORK = "/var/tmp/release-work"
+      maintainer_config = textwrap.dedent(f"""
+          schema_version = "aos.release.maintainer-config/v1"
+          work_root = "/var/tmp/release-work-root"
+          fitness_root = "/var/tmp/release-fitness-attestations"
+          registry = "andyl/main"
+          protected_branch = "master"
+          contributor_authorization = "/var/tmp/release-config/authorization.json"
+          retention_policy = "/var/tmp/release-config/fleet-retention-v1.md"
+          restricted_operator_policy = "/var/tmp/release-config/operator.md"
+
+          [git]
+          name = "AOS Release Fleet"
+          email = "release-fleet@example.test"
+
+          # No token_credential: the active `aos hub login` profile for this
+          # origin authenticates every staging operation.
+          [surfaces.staging]
+          kind = "hub"
+          origin = "{STAGING}"
+          identity = "fleet-staging-v1"
+          receipt_keys = ["staging-publication-v1={staging_key}"]
+
+          [surfaces.production]
+          kind = "hub"
+          origin = "{PRODUCTION}"
+          identity = "fleet-production-v1"
+          receipt_keys = ["production-publication-v1={production_key}"]
+          token_credential = "/var/tmp/release-config/production-token"
+
+          [signer]
+          executable = "{FIXTURE}"
+          provider_revision = "fleet-provider-v1"
+
+          [signer.roles.release-evidence]
+          key_id = "release-evidence-v1"
+          public_key = "/var/tmp/release-config/release-evidence-v1.pub"
+          verification_identity = "fleet-release-evidence-authority"
+      """)
+      publisher.succeed(textwrap.dedent(f"""
+          set -eu
+          mkdir -p /var/tmp/release-config /var/tmp/release-source {WORK}
+          cd /var/tmp/release-config
+          printf '%s\\n' '{{"authorized":true}}' > authorization.json
+          printf '# Fleet retention\\n' > fleet-retention-v1.md
+          printf '# Fleet operator policy\\n' > operator.md
+          printf '%s\\n' 'fleet-release-evidence-v1' > release-evidence-v1.pub
+          printf '%s\\n' {shlex.quote(production_token)} > production-token
+          chmod 0600 production-token
+          printf '%s' {shlex.quote(maintainer_config)} > maintainer.toml
+          printf '[]\\n' > images.json
+          # The fleet carries no AOS source checkout: `new` reuses the
+          # contract already exported into its work directory, exactly as a
+          # resumed `new` does, and --request-only stops before the
+          # Nix-evaluated planning leaf.
+          printf '%s\\n' 'throw "the release fleet has no AOS source checkout"' \\
+            > /var/tmp/release-source/default.nix
+          {FIXTURE} contract {WORK}/contract.json
+      """), timeout=120)
+
+      def new(flags, expect_success=True):
+          command = (
+              f"{OPERATOR} maintain release new --config {CONFIG} --work {WORK} "
+              "--registry andyl/main --version 2026.9.0-rc.1 --release-id aos-2026.9.0-rc.1 "
+              f"--images /var/tmp/release-config/images.json --request-only {flags}"
+          )
+          status, output = publisher.execute(command + " 2>&1", timeout=300)
+          print(output)
+          assert (status == 0) == expect_success, output
+          return output
+
+      # The ordinary path refuses an unbootstrapped staging surface and names
+      # the first-release input instead of inventing a base.
+      refused = new("", expect_success=False)
+      assert "--first-release --source-registry" in refused, refused
+
+      # A dirty authoring clone cannot supply the first base.
+      publisher.succeed(f"touch {SOURCE_REGISTRY}/stray")
+      refused = new(f"--first-release --source-registry {SOURCE_REGISTRY}", expect_success=False)
+      assert "not clean" in refused, refused
+      publisher.succeed(f"rm {SOURCE_REGISTRY}/stray")
+
+      print("==> planning the registry's first release from its root commit")
+      new(f"--first-release --source-registry {SOURCE_REGISTRY}")
+      request = json.loads(publisher.succeed(f"{CAT} {WORK}/request.json"))
+      base_commit = publisher.succeed(f"git -C {SOURCE_REGISTRY} rev-parse HEAD").strip()
+      assert len(base_commit) == 64, base_commit
+      assert request["first_release"] is True, request
+      assert request["registry_base_commit"] == base_commit, request
+      assert request["registry_base_generation"] == 0, request
+
+      # The base surface is the clone's root commit as a static origin.
+      publisher.succeed(textwrap.dedent(f"""
+          set -eu
+          export HOME=/var/lib/aos-release-publisher USER=publisher
+          mkdir -p /var/tmp/base-surface
+          {APR} origin upload --registry main --upload-url file:///var/tmp/base-surface
+      """), timeout=300)
+      head = publisher.succeed(f"{CAT} /var/tmp/base-surface/HEAD").strip()
+      assert head.startswith("ref: "), head
+      head_ref = head.removeprefix("ref: ")
+      refs = publisher.succeed(f"{CAT} /var/tmp/base-surface/info/refs").splitlines()
+      served = next(line.split("\t", 1)[0] for line in refs if line.split("\t", 1)[1] == head_ref)
+      assert served == base_commit, (served, base_commit)
+
+      nar_paths = [f"/var/tmp/nars/{path.rsplit('/', 1)[1]}.nar" for path in PACKAGES]
+      publisher.succeed(
+          " ".join([
+              FIXTURE, "prepare", "/var/tmp/base-surface", "/var/tmp/release-surface",
+              "/var/tmp/release-predecessor", "/var/tmp/release-trust", f"{WORK}/request.json",
+              *map(shlex.quote, nar_paths),
+          ]),
+          timeout=300,
+      )
       publisher.succeed(textwrap.dedent(f"""
           printf '%s\\n' '/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=' > {staging_key}
           printf '%s\\n' 'Zr5+Myx6RTMyvZ0Kf32wVfXF7xoGraZtmLOftoEMRzo=' > {production_key}
@@ -455,15 +611,45 @@ in {
       STAGING_RECEIPT_KEY = f"staging-publication-v1={staging_key}"
       PRODUCTION_RECEIPT_KEY = f"production-publication-v1={production_key}"
 
+      def bootstrap(environment, output, expect_success=True):
+          intent = f"/var/tmp/bootstrap-{environment}-intent.json"
+          publisher.succeed(
+              f"test -e {intent} || {FIXTURE} bootstrap-intent {PLAN} {environment} {intent}"
+          )
+          command = (
+              f"{OPERATOR} maintain release step bootstrap --plan {PLAN} "
+              f"--registry-surface /var/tmp/base-surface --environment {environment} "
+              f"--signed-intent {intent} --approval-key release-evidence-v1={release_key} "
+              f"--config {CONFIG} --output {output}"
+          )
+          status, printed = publisher.execute(command + " 2>&1", timeout=900)
+          print(printed)
+          assert (status == 0) == expect_success, printed
+          return printed
+
+      # Signed intents bind this exact plan, so the base goes to staging
+      # first, then production; neither surface accepts a second base.
+      print("==> bootstrapping the approved base on staging, then production")
+      for environment in ("staging", "production"):
+          output = f"/var/tmp/bootstrap-{environment}"
+          bootstrap(environment, output)
+          evidence = json.loads(publisher.succeed(f"{CAT} {output}/bootstrap-evidence.json"))
+          assert evidence["default_commit"] == base_commit, evidence
+          assert evidence["environment"] == environment, evidence
+      repeated = bootstrap("production", "/var/tmp/bootstrap-repeat", expect_success=False)
+      assert "already contains a publication" in repeated, repeated
+      refused = new(f"--first-release --source-registry {SOURCE_REGISTRY}", expect_success=False)
+      assert "without any publication" in refused, refused
+
       # The functional profile of production/candidate demands fresh
       # storage-restore, alert-delivery, authority-recovery, and hub-restore
       # attestations bound to the production Hub, the plan's signer roster,
       # and the live identities the fixture reports for these flags.
       fitness_flags = json.loads(publisher.succeed(
-          f"{FIXTURE} fitness {PLAN} /var/tmp/release-fitness"
+          f"{FIXTURE} fitness {PLAN} /var/tmp/release-fitness-attestations"
       ))
       FITNESS = " ".join([
-          "--fitness /var/tmp/release-fitness",
+          "--fitness /var/tmp/release-fitness-attestations",
           f"--tooling-digest {fitness_flags['tooling_digest']}",
           f"--alert-config-digest {fitness_flags['alert_config_digest']}",
           f"--hub-schema {fitness_flags['hub_schema']}",
@@ -473,14 +659,15 @@ in {
       # registry/cache snapshot. Cold two-vCPU Hub guests need explicit
       # headroom for that production-shaped object count; the narrower
       # qualification executors retain their separate 15-minute bound.
+      # Staging publication authenticates through the login profile.
       print("==> publishing the signed bundle to staging/candidate")
       publisher.succeed(textwrap.dedent(f"""
           set -eu
-          {AOS} release step verify {BUNDLE} {TRUSTED}
-          {AOS} release step publish --to staging/candidate --bundle {BUNDLE} \\
+          {AOS} maintain release step verify {BUNDLE} {TRUSTED}
+          {OPERATOR} maintain release step publish --to staging/candidate --bundle {BUNDLE} \\
             --journal /var/tmp/release-trust/release-journal.jsonl {TRUSTED} \\
             --receipt-key {STAGING_RECEIPT_KEY} \\
-            --token {shlex.quote(staging_token)} --output /var/tmp/staging-candidate
+            --config {CONFIG} --output /var/tmp/staging-candidate
       """), timeout=1800)
 
       def qualify(phase, publication, receipt_key, output, common="", collect=""):
@@ -488,7 +675,7 @@ in {
           # before the qualification authority signs it. `collect` flags
           # apply only while observations are gathered.
           command = textwrap.dedent(f"""
-          {AOS} release step qualify-run --to {DESTINATION} --phase {phase} \\
+          {AOS} maintain release step qualify-run --to {DESTINATION} --phase {phase} \\
             --bundle {BUNDLE} --publication-receipt {publication} {TRUSTED} \\
             --receipt-key {receipt_key} \\
             --executor x86_64-linux={FIXTURE} --executor aarch64-linux={FIXTURE} \\
@@ -520,7 +707,7 @@ in {
 
       print("==> publishing to production/candidate with staging continuity and fitness")
       publisher.succeed(textwrap.dedent(f"""
-          {AOS} release step publish --to {DESTINATION} --bundle {BUNDLE} \\
+          {AOS} maintain release step publish --to {DESTINATION} --bundle {BUNDLE} \\
             --journal /var/tmp/staging-candidate/release-journal.jsonl {TRUSTED} \\
             --receipt-key {PRODUCTION_RECEIPT_KEY} \\
             --predecessor-receipt /var/tmp/staging-candidate/receipt.json \\
@@ -539,7 +726,7 @@ in {
               common="--ring 1 --prior-generation 0 "
                      "--journal /var/tmp/production-candidate/release-journal.jsonl")
       publisher.succeed(textwrap.dedent(f"""
-          {AOS} release step channel advance --to {DESTINATION} --ring 1 --prior-generation 0 \\
+          {AOS} maintain release step channel advance --to {DESTINATION} --ring 1 --prior-generation 0 \\
             --bundle {BUNDLE} --journal /var/tmp/production-candidate/release-journal.jsonl \\
             --publication-receipt /var/tmp/production-candidate/receipt.json {TRUSTED} \\
             --receipt-key {PRODUCTION_RECEIPT_KEY} \\
@@ -550,7 +737,7 @@ in {
       """), timeout=1800)
 
       status = publisher.succeed(
-          f"{AOS} release step status --journal /var/tmp/production-rollout/release-journal.jsonl "
+          f"{AOS} maintain release step status --journal /var/tmp/production-rollout/release-journal.jsonl "
           f"--plan {PLAN}"
       ).splitlines()
       assert "State: finalized" in status, status
