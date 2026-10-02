@@ -43,22 +43,34 @@ def confined(root, relative, store, depth=0):
     return path
 
 
+def unit_values(contents, directive):
+    """Read a resettable list directive from its Unit section."""
+    section = None
+    values = []
+    for line in contents.splitlines():
+        if line.startswith("["):
+            section = line
+        elif section == "[Unit]" and line.startswith(directive + "="):
+            tokens = line.partition("=")[2].split()
+            values = values + tokens if tokens else []
+    return values
+
+
 def check_units(tree, contract):
     completion = contract["handoff"]["completion_target"]
+    switch_root = confined(
+        tree,
+        "etc/systemd/system/initrd-switch-root.target.d/50-aos-handoff.conf",
+        "nix/store",
+    ).read_text()
+    require(completion in unit_values(switch_root, "Requires"), "switch-root does not require handoff completion")
+    require(completion in unit_values(switch_root, "After"), "switch-root is not ordered after handoff completion")
     for name in contract["handoff"]["required_units"]:
         requirement = tree / "etc/systemd/system" / (completion + ".requires") / name
         require(requirement.is_symlink(), "missing handoff requirement")
         require(os.readlink(requirement) == "../" + name, "wrong handoff requirement")
         unit = confined(tree, "etc/systemd/system/" + name, "nix/store")
-        section = None
-        before = []
-        for line in unit.read_text().splitlines():
-            if line.startswith("["):
-                section = line
-            elif section == "[Unit]" and line.startswith("Before="):
-                tokens = line.partition("=")[2].split()
-                before = before + tokens if tokens else []
-        require(completion in before, "handoff unit lacks exact Before ordering")
+        require(completion in unit_values(unit.read_text(), "Before"), "handoff unit lacks exact Before ordering")
 
 
 def check_rejected_unit_mutations(tree, contract):
@@ -70,11 +82,33 @@ def check_rejected_unit_mutations(tree, contract):
         units = fixture / "etc/systemd/system"
         requirements = units / (completion + ".requires")
         requirements.mkdir(parents=True)
+        switch_root = units / "initrd-switch-root.target.d/50-aos-handoff.conf"
+        switch_root.parent.mkdir()
+        archived_switch_root = confined(
+            tree,
+            "etc/systemd/system/initrd-switch-root.target.d/50-aos-handoff.conf",
+            "nix/store",
+        ).read_bytes()
+        switch_root.write_bytes(archived_switch_root)
         for name in required_units:
             archived = confined(tree, "etc/systemd/system/" + name, "nix/store")
             (units / name).write_bytes(archived.read_bytes())
             (requirements / name).symlink_to("../" + name)
         check_units(fixture, contract)
+
+        for contents in [
+            "[Unit]\nAfter=" + completion + "\n",
+            "[Unit]\nRequires=" + completion + "\n",
+            "[Unit]\nRequires=" + completion + "\nRequires=\nAfter=" + completion + "\n",
+            "[Unit]\nRequires=" + completion + "-unrelated\nAfter=" + completion + "\n",
+        ]:
+            switch_root.write_text(contents)
+            try:
+                check_units(fixture, contract)
+            except ValueError:
+                continue
+            raise ValueError("handoff graph accepted incomplete switch-root prerequisites")
+        switch_root.write_bytes(archived_switch_root)
 
         unit = units / required_units[0]
         mutations = [

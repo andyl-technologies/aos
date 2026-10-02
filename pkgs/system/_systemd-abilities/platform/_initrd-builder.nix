@@ -706,6 +706,14 @@
             '')
             maskedUnits}
 
+          # A weak upstream Wants permits switch-root after a failed filesystem
+          # transaction. The selected handoff completion target must succeed.
+          mkdir -p root/etc/systemd/system/initrd-switch-root.target.d
+          printf '%s\n' '[Unit]' \
+            ${lib.escapeShellArg "Requires=${completionUnit}"} \
+            ${lib.escapeShellArg "After=${completionUnit}"} \
+            > root/etc/systemd/system/initrd-switch-root.target.d/50-aos-handoff.conf
+
           # The contract describes the rendered graph, so validate the actual
           # unit files and dependency links after every copy and mask step.
           ${requiredUnitChecks}
