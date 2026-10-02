@@ -15,6 +15,14 @@ in {
     ${runTest "context::prov_commit_context_rejects_tampered_scope_and_unvalidated_roots"}
     ${runTest "context::prov_commit_authored_requires_context_and_legacy_bytes_remain_explicit"}
     ${runTest "context::prov_commit_context_canonicalizes_unsigned_root_pairs_and_rejects_duplicates"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_copied_fork_widening_requires_original_destination_admin"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_copied_fork_retaining_or_narrowing_needs_only_original_commit"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_copied_fork_rejects_missing_or_mismatched_original_baseline"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_later_admin_does_not_repair_original_copied_fork_authority"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_same_ref_different_original_owner_requires_independent_comparison"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_explicit_same_ref_continuity_requires_parent_original_evidence"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_copied_fork_comparison_uses_only_view_root_policy_witness"}
+    ${runTest "root_context::bootstrap_fork::prov_commit_bootstrap_legacy_parent_requires_independent_original_candidate_baseline"}
     ${runTest "snapshot::prov_snapshot_signature_binds_exact_preimage_and_terminal_key"}
     ${runTest "snapshot::prov_snapshot_verification_rejects_wrong_target_scope_and_signature"}
     ${runTest "snapshot::prov_snapshot_tag_scope_accepts_admin_implication_and_rejects_commit_only"}

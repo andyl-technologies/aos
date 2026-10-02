@@ -806,6 +806,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   all-target Clippy, strict rustdoc and mandatory repository formatting pass.
   Actual hermetic signature and selector gates pass all 12 and 21 exact cases,
   including missing ancestry, introduction-only and inherited-root regressions.
+  Review identified an AUTH-28/PROV-4 gap for unchanged-root forks: graph
+  unchangedness skipped the destination's independent original bootstrap
+  comparison. The signature gate now requires eight exact historical bootstrap
+  regressions; the implementation remains on its task branch and absent
+  selectors fail the trunk check. Current admission is being checked separately;
+  current credentials cannot repair missing original Admin authorization.
   Reviewed annotated-tag signing and verification now bind the exact REF-20
   preimage, terminal key, expected tag/commit and source Tag/Admin scope.
   Earlier snapshot-only qualification passed all 303 trunk core tests and its
