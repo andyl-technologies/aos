@@ -18,6 +18,7 @@ impl QemuLiveHostIoRuntime {
             snapshot.control_boundary_ack,
         );
         if !block.worker.work_in_flight() {
+            self.performance.pin_call();
             let pin = block
                 .worker
                 .pin_next_request_completion()

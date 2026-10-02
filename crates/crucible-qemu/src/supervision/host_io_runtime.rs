@@ -53,6 +53,7 @@ mod boundary;
 mod control;
 mod deadline;
 mod device_service;
+mod performance;
 use boundary::*;
 
 /// A production host-I/O runtime backed by an independently mapped shared-memory view.
@@ -69,6 +70,7 @@ pub struct QemuLiveHostIoRuntime {
     wake: Arc<File>,
     vm_slot: u32,
     poll_interval: Duration,
+    performance: performance::PerformanceDiagnostics,
     advance_wait_deadline: AdvanceWaitDeadline,
     /// Pre-wake generation for scheduler input that invalidated an idle report.
     scheduler_input_publish_generation: Option<u32>,
@@ -148,7 +150,8 @@ pub trait QemuNinepFaultCoordinator: Send {
 }
 
 impl QemuLiveHostIoRuntime {
-    fn wait_for_poll_interval(&self, remaining: Duration) {
+    fn wait_for_poll_interval(&mut self, remaining: Duration) {
+        self.performance.pending_sleep();
         thread::sleep(self.poll_interval.min(remaining));
     }
 
@@ -230,6 +233,7 @@ impl QemuLiveHostIoRuntime {
             wake: Arc::new(wake),
             vm_slot,
             poll_interval,
+            performance: performance::PerformanceDiagnostics::from_environment(shmem_fd),
             advance_wait_deadline: AdvanceWaitDeadline::default(),
             scheduler_input_publish_generation: None,
             advance_stop_condition: crate::QemuQuantumStopCondition::Ceiling,
@@ -664,6 +668,7 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         self.advance_stop_condition = fence
             .map(|fence| fence.stop_condition)
             .unwrap_or(crate::QemuQuantumStopCondition::Ceiling);
+        self.performance.arm();
         Ok(())
     }
 

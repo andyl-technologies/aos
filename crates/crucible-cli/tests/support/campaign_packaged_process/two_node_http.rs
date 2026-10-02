@@ -34,7 +34,7 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
     println!("two_node_http_stage=start-runtime");
     let mut service =
         guest_choice::start_materialization_flight_service(&fixture, &authority, None)?;
-    let mut processes = process_audit::ProcessAudit::default();
+    let mut processes = process_audit::ProcessAudit::with_cpu_diagnostics(256);
 
     println!("two_node_http_virtual_budget_ticks={HTTP_VIRTUAL_BUDGET_TICKS}");
     println!("two_node_http_startup_host_watchdog_seconds=1800");
