@@ -29,6 +29,12 @@ async fn disclosure_paired_retry_refuses_unrelated_added_role_carriers() {
     recovery::refuse_unrelated_transition().await;
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_paired_publication_refuses_equal_subjects_of_different_kinds() {
+    recovery::refuse_cross_kind_pair().await;
+}
+
 #[tokio::test]
 async fn disclosure_boundary_manifest_and_multiple_source_certificates() {
     multiple::publish_independent_manifests().await;
@@ -37,6 +43,17 @@ async fn disclosure_boundary_manifest_and_multiple_source_certificates() {
 /// Creates real independently generated signing credentials and protected state.
 async fn independent_factory(
     domain: &str,
+) -> (
+    NativeFixture<TokioLocalFs>,
+    crate::repository::local_authority::LocalAuthority,
+    std::path::PathBuf,
+) {
+    independent_factory_kind(domain, terrane_core::refs::PrincipalKind::Human).await
+}
+
+async fn independent_factory_kind(
+    domain: &str,
+    principal_kind: terrane_core::refs::PrincipalKind,
 ) -> (
     NativeFixture<TokioLocalFs>,
     crate::repository::local_authority::LocalAuthority,
@@ -64,7 +81,7 @@ async fn independent_factory(
                 issuer: "local".into(),
                 key_id: "initial".into(),
                 subject: "writer".into(),
-                kind: terrane_core::refs::PrincipalKind::Human,
+                kind: principal_kind,
                 groups: Vec::new(),
                 not_after: u64::MAX,
                 not_before: None,

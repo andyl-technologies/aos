@@ -335,6 +335,65 @@ pub(super) async fn refuse_unrelated_transition() {
     );
 }
 
+pub(super) async fn refuse_cross_kind_pair() {
+    let (source, source_authority, _) = super::independent_factory("public").await;
+    let (destination, destination_authority, _) =
+        super::independent_factory_kind("public", terrane_core::refs::PrincipalKind::Service).await;
+    let reference = "refs/heads/_/main";
+    let bytes = b"an equal subject name cannot collapse distinct principal kinds";
+    let head = author_file(&source, &source_authority, reference, bytes).await;
+    let paths = [b"/file".to_vec()];
+    let read = source
+        .guard()
+        .authorize(
+            reference,
+            source_authority.token(),
+            Verb::Read,
+            &paths,
+            "sdk",
+        )
+        .await
+        .unwrap();
+    let commit = destination
+        .guard()
+        .authorize(
+            reference,
+            destination_authority.token(),
+            Verb::Commit,
+            &paths,
+            "sdk",
+        )
+        .await
+        .unwrap();
+    assert_eq!(read.subject(), commit.subject());
+    assert!(!read.same_principal(&commit));
+
+    let mut session = destination
+        .begin(reference, destination_authority.token(), "sdk")
+        .await
+        .unwrap();
+    assert!(
+        destination
+            .advance_disclosure(
+                source.guard(),
+                &mut session,
+                paired_request(
+                    &source_authority,
+                    &destination_authority,
+                    reference,
+                    head.commit,
+                    Vec::new(),
+                    bytes,
+                ),
+            )
+            .await
+            .is_err()
+    );
+    assert!(session.record().is_none());
+    assert!(destination.guard().original_commit(&head.commit).is_err());
+    assert_eq!(destination.store().ref_get(reference).await.unwrap(), None);
+}
+
 async fn author_file(
     source: &super::NativeFixture<TokioLocalFs>,
     authority: &crate::repository::local_authority::LocalAuthority,
