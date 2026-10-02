@@ -32,7 +32,6 @@ in
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) runtimeRoots) == 1;
   assert !(builtins.elem (builtins.toString pkgs.linux) runtimeRoots);
   assert !(builtins.elem (builtins.toString pkgs.aos) runtimeRoots);
-  assert builtins.elem (builtins.toString pkgs.aos.packageRuntime) runtimeRoots;
     pkgs.mkDerivation {
       pname = "aos-initrd-native-contract-check";
       version = "1";
@@ -54,6 +53,7 @@ in
               initrd-tree root-tree
             ${pkgs.python3}/bin/python3 ${./_initrd-native-contract.py} \
               ${assembly} ${initrd}/initrd-stage-contract.json initrd-tree root-tree \
+              ${lib.escapeShellArg (builtins.toString pkgs.aos.packageRuntime)} \
               ${lib.escapeShellArg (builtins.toString pkgs.linux)} \
               ${lib.escapeShellArg (builtins.toString pkgs.aos)} \
               ${lib.escapeShellArg (builtins.toString pkgs.qemu)}

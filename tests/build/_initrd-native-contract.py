@@ -124,7 +124,13 @@ def main():
     check_rejected_unit_mutations(initrd, contract)
     check_bundle(assembly, "initrd", initrd, "lib/aos/initrd/deployment", "nix/store")
     check_bundle(assembly, "host", root, "usr/lib/aos/host/deployment", "nix.lower/store")
-    for path in sys.argv[5:]:
+    # A runtime retained through a package dependency need not be a direct
+    # closure root; verify the actual public executable in the archive.
+    runtime = sys.argv[5]
+    require(runtime.startswith("/nix/store/") and "/" not in runtime.removeprefix("/nix/store/"), "runtime is not a store root")
+    runtime_executable = confined(initrd, runtime.removeprefix("/") + "/bin/aos-package-runtime", "nix/store")
+    require(runtime_executable.is_file() and runtime_executable.stat().st_mode & 0o111, "public native runtime is not executable")
+    for path in sys.argv[6:]:
         require(not (initrd / path.removeprefix("/")).exists(), "build-only output retained in initrd")
     require((initrd / "nix/var/nix/db").is_dir(), "initrd lacks writable native Nix state")
     require((initrd / "nix/var/nix/gcroots").is_dir(), "initrd lacks native retention directory")

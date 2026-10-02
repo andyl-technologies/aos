@@ -14,6 +14,7 @@
 ##!
 ##! Arguments:
 ##!   pkgs   — AOS package set
+##!   buildPackages — build-platform tools for unsigned assembly
 ##!   lib    — AOS library
 ##!   system — evaluated system configuration (from evalModules)
 ##!   name   — image name slug
@@ -21,6 +22,7 @@
 ##! Output: zstd-compressed disk bytes + portable public image-info.json
 {
   pkgs,
+  buildPackages,
   lib,
   system,
   name,
@@ -34,7 +36,6 @@
   rootfs,
   targetPlatform,
 }: let
-  buildPackages = pkgs.buildPackages;
   kernelParams = bootArtifacts.kernelParams;
   kernelParamsB = bootArtifacts.kernelParamsB;
 
@@ -199,7 +200,7 @@
           kernel_params_a=$(printf '%s roothash=%s aos.verity-uuid=%s' ${lib.escapeShellArg kernelParams} "$root_hash" "$verity_uuid")
           kernel_params_b=$(printf '%s roothash=%s aos.verity-uuid=%s' ${lib.escapeShellArg kernelParamsB} "$root_hash" "$verity_uuid")
 
-          ${pkgs.jq}/bin/jq -cS -n \
+          ${buildPackages.jq}/bin/jq -cS -n \
             --arg schema aos.image.assembly-recipe/v3 \
             --arg release ${lib.escapeShellArg version} \
             --arg platform ${lib.escapeShellArg targetPlatform.system} \
