@@ -203,7 +203,7 @@ impl RegistrySetup {
     fn add_command(&self, system: bool) -> Option<String> {
         let url = self.registry_url.as_deref()?;
         let mut command = format!(
-            "apm registry add {}{} --name {}",
+            "apm registry {}add {} --name {}",
             if system { "--system " } else { "" },
             shell_argument(url),
             shell_argument(&self.client_name)
@@ -3593,7 +3593,7 @@ mod tests {
             &anon(),
         );
 
-        assert!(html.contains("apm registry add --system https://download.example/demo/"));
+        assert!(html.contains("apm registry --system add https://download.example/demo/"));
         assert!(html.contains("apm image install aos-system --registry demo-2026.08"));
         assert!(!html.contains("apm install aos-system"));
     }
