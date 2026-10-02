@@ -5,7 +5,30 @@ let
     service = name;
     enable = true;
     activationOwner = "manager";
-    lifecycle.pre_start = [];
+    lifecycle = {
+      description = "Bootstrap ${name}";
+      execution_model = "foreground";
+      environment_files = [];
+      condition = [];
+      pre_start = [];
+      start = [
+        {
+          executable = {
+            path = "${import ./_fixture-payload.nix "observer"}/bin/controller";
+            arguments = [];
+          };
+          ignore_failure = false;
+        }
+      ];
+      post_start = [];
+      stop = [];
+      post_stop = [];
+      restart = "never";
+      restart_delay_millis = 0;
+      remain_after_exit = false;
+      start_timeout_millis = 90000;
+      stop_timeout_millis = 90000;
+    };
     dependencies = {
       after = [];
       requires = [];
@@ -100,16 +123,8 @@ let
                   activationOwner = "ability";
                 };
               daemon = (service "example") // {activationOwner = "ability";};
-              "ability-crucible.adapter" = {
-                enable = false;
-                activationOwner = "manager";
-                service = "aos-ability-crucible";
-              };
-              "boundary-observer.controller" = {
-                enable = false;
-                activationOwner = "manager";
-                service = "aos-ability-boundary-controller";
-              };
+              "ability-crucible.adapter" = (service "aos-ability-crucible") // {autoStart = false;};
+              "boundary-observer.controller" = (service "aos-ability-boundary-controller") // {autoStart = false;};
             }
             // lib.optionalAttrs (controllerKey != null) {
               ${controllerKey} =
@@ -146,6 +161,13 @@ in
   assert !(evaluated.config.aos.services ? "control-plane.aos-activate");
   assert !(absent.config.aos.services ? "control-plane.aos-activate");
   assert !(absent.config.aos.services ? "boot-preparations.aos-ability-host-controller");
-  assert projected."early.daemon".activationOwner == "ability";
+  assert projected."early.daemon".activation_owner == "ability";
+  assert builtins.all (name:
+    projected.${name}
+    == evaluated.config.aos.abilities.serviceManagement.operations.realize.effects.${name}.input
+    && projected.${name}.activation_owner == "manager"
+    && projected.${name}.enabled
+    && !projected.${name}.auto_start)
+  ["ability-crucible.adapter" "boundary-observer.controller"];
   assert !(projected ? "early.disabled");
   assert !(projected ? daemon); true

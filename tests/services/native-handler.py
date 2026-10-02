@@ -352,6 +352,39 @@ class NativeHandlerTests(unittest.TestCase):
         ])
         self.assertNotIn("SystemCallErrorNumber=", rendered)
 
+    def test_manager_observer_projection_preserves_native_units_and_enablement_links(self):
+        services = {
+            key: dict(
+                service(), service=name, activation_owner="manager", auto_start=False,
+            )
+            for key, name in {
+                "ability-crucible.adapter": "aos-ability-crucible",
+                "boundary-observer.controller": "aos-ability-boundary-controller",
+            }.items()
+        }
+        expected_links = {
+            f"multi-user.target.wants/{name}.service": f"../{name}.service"
+            for name in ["aos-ability-crucible", "aos-ability-boundary-controller"]
+        }
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            handler_module.render_services(services, units)
+
+            native_links = {}
+            for value in services.values():
+                rendered = handler_module.realize_service(value)
+                native_links.update(rendered["links"])
+                for name, text in rendered["units"].items():
+                    self.assertEqual((units / name).read_bytes(), text.encode())
+            image_links = {
+                str(path.relative_to(units)): os.readlink(path)
+                for path in units.rglob("*") if path.is_symlink()
+            }
+
+            self.assertEqual(native_links, expected_links)
+            self.assertEqual(image_links, native_links)
+
     def test_bootstrap_bus_adopts_exact_units_and_links_without_restart(self):
         with tempfile.TemporaryDirectory() as root:
             units = Path(root) / "units"
