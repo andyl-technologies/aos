@@ -8,8 +8,12 @@ use aos_hub_core::{
     hybrid_ingress::{
         decode_hybrid_ingress_observation, HybridOciChunkAdmission,
         HybridOciChunkCompletionRequest, HybridOciManifestAdmission, HybridOciManifestPreflight,
+        HYBRID_OCI_FINAL_AUTHORIZATION_PHASE,
     },
-    oci::{parse_oci_path, OciRequest},
+    oci::{
+        decode_hybrid_oci_upload_control_observation, parse_oci_path,
+        HybridOciUploadControlObservation, OciRequest,
+    },
     oci_projection::{guard::decode_oci_projection_observation, OciDocumentProjection},
     storage_authority::external_object::copy::{
         control::EXTERNAL_COPY_PATH,
@@ -50,6 +54,46 @@ pub(super) fn classify(
                 request.plan.plan_id,
             )
         }
+        aos_hub_core::storage_work::STORAGE_WORK_PATH => {
+            control_case(case)?;
+            let (request, class) = crate::storage_work::decode(request, reply, deployment)?;
+            (request.operation.kind(), class, request.plan_id)
+        }
+        aos_hub_core::storage_authority::external_object::oci::control::EXTERNAL_OCI_PATH => {
+            control_case(case)?;
+            let (request, _) = aos_hub_core::storage_authority::external_object::oci::observation::decode_external_oci_control_observation(request, reply, deployment)?;
+            (
+                "external_oci_control",
+                "external_oci_control_metadata",
+                request.nonce,
+            )
+        }
+        aos_hub_core::storage_authority::external_object::oci::source::OCI_SOURCE_PATH => {
+            control_case(case)?;
+            let (request, _) = aos_hub_core::storage_authority::external_object::oci::observation::decode_external_oci_source_observation(request, reply, deployment)?;
+            ensure!(
+                request.issuer.source_digest == source_digest,
+                "source implementation differs"
+            );
+            (
+                "external_oci_source",
+                "external_oci_source_metadata",
+                request.nonce,
+            )
+        }
+        aos_hub_core::storage_authority::external_object::oci::cleanup::OCI_CLEANUP_PATH => {
+            control_case(case)?;
+            let (request, _) = aos_hub_core::storage_authority::external_object::oci::observation::decode_external_oci_cleanup_observation(request, reply, deployment)?;
+            ensure!(
+                request.issuer.source_digest == source_digest,
+                "cleanup implementation differs"
+            );
+            (
+                "external_oci_cleanup",
+                "external_oci_cleanup_metadata",
+                request.nonce,
+            )
+        }
         aos_hub_core::oci_projection::guard::OCI_PROJECTION_PATH => {
             control_case(case)?;
             let (request, reply) = decode_oci_projection_observation(request, reply, deployment)?;
@@ -81,6 +125,7 @@ pub(super) fn classify(
         include_bytes!("main.rs").as_slice(),
         include_bytes!("files.rs").as_slice(),
         include_bytes!("classify.rs").as_slice(),
+        include_bytes!("storage_work.rs").as_slice(),
     ] {
         source.extend_from_slice(file);
     }
@@ -151,6 +196,29 @@ fn distribution(
     let mut payload = Payload::metadata();
     let metadata = "oci_distribution_control_metadata";
     let (operation, class) = match (&oci, case.method.as_str(), case.phase.as_deref()) {
+        (OciRequest::BlobUploadCollection { .. }, "POST", None)
+        | (OciRequest::BlobUpload { .. }, "GET" | "HEAD" | "DELETE" | "PUT", None)
+        | (OciRequest::BlobUpload { .. }, "PATCH", Some(HYBRID_OCI_FINAL_AUTHORIZATION_PHASE)) => {
+            let observed = decode_hybrid_oci_upload_control_observation(
+                &oci,
+                &case.method,
+                case.phase.as_deref(),
+                query,
+                request,
+                reply,
+                case.status,
+            )?;
+            let operation = match observed {
+                HybridOciUploadControlObservation::Start => "oci_upload_start",
+                HybridOciUploadControlObservation::Status => "oci_upload_status",
+                HybridOciUploadControlObservation::Cancel => "oci_upload_cancel",
+                HybridOciUploadControlObservation::Finalize { .. } => "oci_upload_finalize",
+                HybridOciUploadControlObservation::FinalAuthorization { .. } => {
+                    "oci_upload_final_authorize"
+                }
+            };
+            (operation, metadata)
+        }
         (OciRequest::Manifest { .. }, "PUT", Some("authorize")) => {
             ensure!(
                 query.is_none() && request.is_empty() && reply.is_empty() && case.status == 204,

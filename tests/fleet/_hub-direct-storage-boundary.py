@@ -41,7 +41,7 @@ def nginx_observed_command(command, arguments):
 """
 
 
-def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots):
+def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots, prepare_only=False):
     """Start the exact source-built TLS proxy and retain its actual lifetime."""
     observed = json.loads(direct_guest_python(machine, tools["python"], DIRECT_NGINX_PROCESS_OBSERVATION + """
         import hashlib, os, stat, subprocess, time
@@ -76,6 +76,19 @@ def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots)
         if checked.returncode:
             raise ValueError('actual observation proxy rejected its configuration; diagnostics retained')
         arguments = base + ['-g', 'daemon off;']
+        if selected['prepareOnly']:
+            with Path(selected['nginx']).open('rb') as executable:
+                executable_sha = hashlib.file_digest(executable, 'sha256').hexdigest()
+            print(json.dumps({'version': 1, 'preparedOnly': True,
+                'configurationFile': str(target), 'prefix': str(root) + '/',
+                'arguments': arguments, 'invocationArguments': arguments,
+                'invocationObservationMode': 'nginx_linux_master_title',
+                'expectedMasterTitle': nginx_master_title(arguments),
+                'configurationSha256': hashlib.sha256(body).hexdigest(),
+                'executableSha256': executable_sha, 'root': str(root),
+                'bodyRoots': selected['bodyRoots'],
+                'scope': 'actual validated source-built proxy configuration; no running process inferred'}))
+            raise SystemExit(0)
         descriptor = os.open(root / 'process.log', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'wb') as output:
             process = subprocess.Popen(arguments, stdin=subprocess.DEVNULL,
@@ -102,7 +115,7 @@ def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots)
             json.dump(receipt, output, sort_keys=True)
         print(json.dumps(receipt))
     """, {"root": root, "configuration": configuration, "bodyRoots": body_roots,
-            "nginx": tools["nginx"]}, timeout=45))
+            "nginx": tools["nginx"], "prepareOnly": prepare_only}, timeout=45))
     return observed
 
 
@@ -312,22 +325,33 @@ def direct_control_completion_join(receipts, body, source_digest, proxy_complete
 
 
 def capture_direct_storage_boundary(native, worker, tools, native_text, worker_text,
-                                    runtime_text, source_digest, native_address):
+                                    runtime_text, source_digest, native_address, managed_run=None,
+                                    artifact_label=None):
     """Join every actual Native request to its independently received bytes."""
+    if managed_run is not None and not re.fullmatch(r"[0-9a-f]{32}", managed_run):
+        raise ValueError("Managed capture run identity differs")
+    if artifact_label is not None and (managed_run is None
+            or not re.fullmatch(r"[a-z][a-z0-9-]{0,63}", artifact_label)):
+        raise ValueError("Managed capture artifact label differs")
+    native_root = "/var/lib/hybrid-native-outbound" if managed_run is None else "/var/lib/hybrid-managed-native/" + managed_run + "/outbound"
+    worker_root = "/var/lib/hybrid-worker-boundary" if managed_run is None else "/var/lib/hybrid-managed-worker/" + managed_run + "/boundary"
+    label = "" if managed_run is None else "managed-" + managed_run + "-"
+    if artifact_label is not None:
+        label += artifact_label + "-"
     native_raw, native_completed = direct_storage_completion_receipts(native_text)
     worker_raw, worker_completed = direct_storage_completion_receipts(worker_text, True)
     originals = native_control_observations(
-        "\n".join(json.dumps(row) for row in native_raw), "/var/lib/hybrid-native-outbound",
+        "\n".join(json.dumps(row) for row in native_raw), native_root,
     )
     original_observations, original_bodies = capture_direct_native_bodies(
-        native, tools, originals, "/var/lib/hybrid-native-outbound", "native-original",
+        native, tools, originals, native_root, label + "native-original",
     )
     received, correlations, unrelated = [], {}, []
     for raw in worker_raw:
         if set(raw) != NATIVE_OBSERVATION_FIELDS | {"origin_request_id", "caller"}:
             raise ValueError("Worker storage receipt schema differs")
         origin, caller = raw.pop("origin_request_id"), raw.pop("caller")
-        parsed = native_control_observations(json.dumps(raw), "/var/lib/hybrid-worker-boundary")
+        parsed = native_control_observations(json.dumps(raw), worker_root)
         if caller != native_address:
             unrelated.append({"requestId": raw["request_id"],
                 "callerSha256": hashlib.sha256(caller.encode()).hexdigest(),
@@ -339,7 +363,7 @@ def capture_direct_storage_boundary(native, worker, tools, native_text, worker_t
         received.extend(parsed)
         correlations[raw["request_id"]] = origin
     received_observations, received_bodies = capture_direct_native_bodies(
-        worker, tools, received, "/var/lib/hybrid-worker-boundary", "worker-received",
+        worker, tools, received, worker_root, label + "worker-received",
     )
     by_origin = {}
     for body in received_bodies["bodies"]:
@@ -430,5 +454,5 @@ def capture_direct_storage_boundary(native, worker, tools, native_text, worker_t
         "nonNativeWorkerRequests": unrelated, "nativeBulkBytes": None,
         "actualNativeRequests": len(originals), "capturedWorkerRequests": len(received),
         "scope": "independent original/received byte equality and actual authenticated Worker completions; typed projection classification pending"}
-    retain_direct_flow("actual-native-storage-boundary.json", report)
+    retain_direct_flow("actual-" + label + "native-storage-boundary.json", report)
     return report

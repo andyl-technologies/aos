@@ -717,17 +717,26 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         storage_boundary["workerReceivedBodies"]["bodies"],
         identity["identity"]["sourceDigest"], tools["deploymentId"])
     storage_codec_reference = None
+    storage_workflow_assessment = None
     if storage_codec_input is not None:
         body = json.dumps(storage_codec_input, sort_keys=True).encode()
         name = "actual-storage-codec-selection.json"
         storage_codec_reference = {"file": str(Path("external-direct-flow") / name),
             "sha256": retain_direct_flow(name, body), "byteSize": len(body)}
+        final_sql = join_storage_final_sql(storage_transports,
+            storage_final_sql_receipts(native_copy_log.read_text(), native_copy_capture))
+        final_sql["externalAdmissionActorObservations"] = join_external_admission_actor(final_sql,
+            external_admission_actor_receipts(native_copy_log.read_text(), native_copy_capture))
+        retain_direct_flow("actual-storage-final-sql-contexts.json", final_sql)
+        storage_workflow_assessment = assess_selected_storage_workflow(storage_codec_input,
+            identity["identity"]["sourceDigest"], native_copy_capture, final_sql)
     workflow_capture = {"version": 1, "protectedHeaders": protected_headers,
         "headerLogWindows": header_windows, "nativeJournalWindow": native_copy_window,
         "nativeProcess": {name: native_copy_capture[name] for name in
             ("pid", "startTicks", "executableSha256")},
         "authenticatedStorageTransports": storage_transports,
         "storageCodecSelection": storage_codec_reference,
+        "storageWorkflowAssessment": storage_workflow_assessment,
         "providerApplicationBodies": {"rawReportSha256": provider_window["sha256"],
             "observedReceiptCount": len(provider_boundary["receipts"]),
             "groups": provider_boundary["groups"], "unknownCallers": provider_boundary["unknownCallers"]},

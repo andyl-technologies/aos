@@ -1,9 +1,16 @@
 # Storage body observation codec
 
 This source-built fixture classifies exact captured application bodies using
-the production Copy and stored OCI projection decoders. Distribution controls
+the production Copy, External OCI and stored OCI projection decoders. Distribution controls
 use the shared ingress observation decoder, exact private phases and closed
 DTOs. It authenticates no MAC and grants no current permission.
+
+The Managed GC allowlist is `ListPage`, `Head`, `HashOciRange` and
+`DeleteIfMatches` on the exact storage-work route. It uses the Native
+`test-support` facade for the unchanged shared result correlation/budget checks,
+and the shared observation-shape validator. Debug assertions must remain
+enabled; stripping debug sections does not change those semantics. No synthetic
+historical clock is passed. Probe, raw range, content and other operations refuse.
 
 Build through the AOS development environment, then run the binary directly:
 
@@ -47,5 +54,26 @@ accepted ingress observations, current SQL actor/profile/purpose evidence and
 fully attributed provider observations. Missing evidence keeps
 `nativeBulkBytes` null. JSON shape, successful HTTP status and this codec's
 output alone establish neither authentication nor Native bulk zero. Additional
-Distribution/bootstrap routes and embedded descriptor `data` object bodies
-remain unsupported until explicitly reviewed.
+Distribution routes outside the explicit phase allowlist and embedded descriptor
+`data` object bodies remain unsupported. Empty upload creation, status,
+cancellation and final completion use the actual shared query parsers. The
+`authorize-final` reply is the closed two-boolean routing hint, bounded to 1 KiB;
+it does not establish IAM, a selected writer or successful completion.
+
+The separate Managed collector is `_hub-managed-storage-window.py`. Its
+`begin_managed_storage_window`/`finish_managed_storage_window` callbacks pin the
+four actual Native, Worker and proxy processes before and after fixed private
+file windows. Plain Native logs have no event timestamp: collection brackets
+are retained separately, and their parsed transport clock stays null. The
+per-capture `classify_managed_storage_capture` callback executes an independently
+selected current helper against the original and consumed request/reply files,
+then reopens their exact commitments before returning typed plan/result data.
+Its local decoder receipt does not authenticate a handler or validate action
+SQL. Those joins, installed purpose and provider observations remain required.
+
+The Managed Worker proxy independently retains its original requests to Native
+on port 4644, alongside Native's received requests. Both exact body pairs and
+compact ingress pairs must match before selected Distribution decoding runs.
+Every unsupported, unrelated, missing or ambiguous row remains accounted for;
+successful shape decoding alone leaves `nativeBulkBytes` null. The proxy's
+completion UTC and private file collection brackets are distinct observations.

@@ -16,6 +16,43 @@ static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 struct Fixture(PathBuf);
 
 impl Fixture {
+    fn upload_control(
+        &self,
+        method: &str,
+        query: &str,
+        phase: Option<&str>,
+        reply: &[u8],
+        status: u16,
+    ) -> Manifest {
+        let mut manifest = self.manifest(b"", reply, false);
+        let case = &mut manifest.cases[0];
+        case.method = method.into();
+        case.path_and_query = format!("/v2/aos/blobs/uploads/{}{}", "a".repeat(32), query);
+        case.phase = phase.map(str::to_owned);
+        case.status = status;
+        let assertion = HybridIngressAssertion {
+            version: 1,
+            deployment_id: "fixture".into(),
+            issued_at: 100,
+            expires_at: 130,
+            request_id: "fixture-original".into(),
+            scheme: "https".into(),
+            authority: "storage.test".into(),
+            method: case.method.clone(),
+            path_and_query: case.path_and_query.clone(),
+            body_sha256: body_sha256(b""),
+            upload_phase: case.phase.clone(),
+            client_ip: "127.0.0.1".into(),
+        };
+        let compact = HybridIngressKey::new([1; 32])
+            .unwrap()
+            .sign(&assertion)
+            .unwrap();
+        case.original_ingress = Some(self.body("upload-original-ingress", compact.as_bytes()));
+        case.received_ingress = Some(self.body("upload-received-ingress", compact.as_bytes()));
+        manifest
+    }
+
     fn new() -> Self {
         let directory = std::env::temp_dir().join(format!(
             "aos-body-codec-{}-{}",
@@ -86,6 +123,49 @@ impl Fixture {
             cases: vec![case],
         }
     }
+}
+
+#[test]
+fn final_authorization_uses_exact_ingress_query_and_closed_routing_hint() {
+    let fixture = Fixture::new();
+    let query = format!("?digest=sha256%3A{}", "d".repeat(64));
+    let reply = br#"{"external":true,"completion_only":false}"#;
+    let manifest = fixture.upload_control("PATCH", &query, Some("authorize-final"), reply, 200);
+    let rows = inspect(manifest).unwrap();
+    assert_eq!(rows[0].operation, "oci_upload_final_authorize");
+    assert_eq!(rows[0].payload.request_raw_object_bytes, "0");
+    for defect in ["phase", "query", "raw", "unknown"] {
+        let mut manifest =
+            fixture.upload_control("PATCH", &query, Some("authorize-final"), reply, 200);
+        let case = &mut manifest.cases[0];
+        match defect {
+            "phase" => case.phase = Some("complete".into()),
+            "query" => case.path_and_query.push_str("&digest=bad"),
+            "raw" => {
+                case.original_request = fixture.body("raw-original", b"raw blob");
+                case.received_request = fixture.body("raw-received", b"raw blob");
+            }
+            "unknown" => {
+                case.received_reply =
+                    fixture.body("unknown-reply", br#"{"external":true,"permission":true}"#)
+            }
+            _ => unreachable!(),
+        }
+        assert!(inspect(manifest).is_err(), "{defect}");
+    }
+}
+
+#[test]
+fn exact_empty_upload_status_cancel_and_final_are_metadata_observations() {
+    let fixture = Fixture::new();
+    for method in ["GET", "HEAD", "DELETE"] {
+        let rows = inspect(fixture.upload_control(method, "", None, b"", 204)).unwrap();
+        assert_eq!(rows[0].class, "oci_distribution_control_metadata");
+    }
+    let query = format!("?digest=sha256%3A{}", "d".repeat(64));
+    let rows = inspect(fixture.upload_control("PUT", &query, None, b"", 201)).unwrap();
+    assert_eq!(rows[0].operation, "oci_upload_finalize");
+    assert!(inspect(fixture.upload_control("PUT", &query, None, b"unexpected", 201)).is_err());
 }
 
 impl Drop for Fixture {
@@ -176,6 +256,7 @@ fn stored_projection_uses_shared_original_incarnation_and_source_correlation() {
         version: 1,
         deployment_id: "fixture".into(),
         protected_profile_digest: "c".repeat(64),
+        source: aos_hub_core::oci_projection::OciProjectionSource::Managed,
         issuer: MirrorGuardIssuer {
             source_digest: "b".repeat(64),
             script_version: "fixture-script".into(),

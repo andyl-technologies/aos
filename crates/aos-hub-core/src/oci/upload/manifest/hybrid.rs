@@ -420,6 +420,9 @@ impl RpcService {
                     )
                 })?;
             authenticated.recheck(self, registry, repository).await?;
+            if let Ok(actor) = authenticated.external_original() {
+                super::super::observations::external_admission("manifest", &permit, &actor);
+            }
             Some(permit)
         } else {
             None

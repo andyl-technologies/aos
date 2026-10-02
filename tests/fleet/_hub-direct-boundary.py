@@ -105,15 +105,24 @@ def observe_direct_provider_callers(s3, tools):
 
 def capture_direct_native_bodies(native, tools, observations,
                                 body_root="/var/lib/hybrid-native-observations",
-                                capture_label="native"):
+                                capture_label="native", empty_response_observations=None):
     """Retain exact actual private files and resolve lengths from measured bytes."""
-    if (body_root, capture_label) not in {
+    ordinary = (body_root, capture_label) in {
             ("/var/lib/hybrid-native-observations", "native"),
             ("/var/lib/hybrid-native-outbound", "native-original"),
-            ("/var/lib/hybrid-worker-boundary", "worker-received")}:
+            ("/var/lib/hybrid-worker-boundary", "worker-received")}
+    managed = re.fullmatch(r"/var/lib/hybrid-managed-(native|worker)/([0-9a-f]{32})/(inbound|outbound|boundary|native-outbound)", body_root)
+    managed_roles = {("native", "inbound"): "native", ("native", "outbound"): "native-original",
+        ("worker", "boundary"): "worker-received", ("worker", "native-outbound"): "worker-original"}
+    selected_role = managed_roles.get((managed[1], managed[3])) if managed else None
+    if not ordinary and (selected_role is None or not re.fullmatch(
+            "managed-" + managed[2] + "-(?:[a-z][a-z0-9-]{0,63}-)?" + selected_role,
+            capture_label)):
         raise ValueError("body capture root or role differs from the selected fixture")
     if len(observations) > NATIVE_RETAINED_ROLE_COUNT_LIMIT:
         raise ValueError("Native observation corpus exceeds its selected capture count")
+    if empty_response_observations is not None and not managed:
+        raise ValueError("empty response observations require the separate Managed capture")
     captures, measured, incomplete = [], [], []
     corpus_bytes = 0
     for observation in observations:
@@ -129,6 +138,17 @@ def capture_direct_native_bodies(native, tools, observations,
                 if observation["request_transfer_encoding"] or observation["request_body_bytes"] not in {None, 0}:
                     raise ValueError("Native request body is missing despite an observed framing declaration")
                 body = b""
+            elif direction == "response" and managed_completed_empty_response(
+                    observation, (empty_response_observations or {}).get(identifier)):
+                # nginx stores only 200 replies. These separate access facts
+                # measure a completed empty upstream and client body; status
+                # alone never supplies the missing application bytes.
+                body = b""
+                captured["emptyResponseObservation"] = {
+                    "kind": "measured_completed_empty_transport", "requestId": identifier,
+                    "status": observation["status"], "upstreamStatus": observation["upstream_status"],
+                    "responseBodyBytes": observation["response_body_bytes"],
+                    **empty_response_observations[identifier]}
             else:
                 prefix = body_root + "/" + (
                     "client-body/" if direction == "request" else "response-bodies/"
@@ -168,6 +188,19 @@ def capture_direct_native_bodies(native, tools, observations,
         "scope": "actual Native request and response files; codec classification is independent"}
     retain_direct_flow("actual-" + capture_label + "-private-body-receipts.json", receipt)
     return measured, receipt
+
+
+def managed_completed_empty_response(observation, completion):
+    """Recognize measured completed empty replies, without accepting authority."""
+    return (isinstance(completion, dict)
+        and set(completion) == {"requestCompletion", "upstreamResponseBytes"}
+        and completion["requestCompletion"] == "OK"
+        and type(completion["upstreamResponseBytes"]) is int
+        and completion["upstreamResponseBytes"] == 0
+        and observation["status"] in {201, 202, 204}
+        and observation["upstream_status"] == observation["status"]
+        and observation["response_body_bytes"] == 0
+        and not observation["response_content_encoding"])
 
 
 def join_direct_native_control_bodies(body_receipts, events):
@@ -229,8 +262,9 @@ def capture_direct_native_originals(native, tools, publications):
     if len(identifiers) != 2 or any(not re.fullmatch(r"[0-9a-f]{32}", value) for value in identifiers):
         raise ValueError("Native original observation requires both actual publication identities")
     output = json.loads(direct_guest_python(native, tools["python"], """
-        import hashlib, os, re, subprocess
+        import hashlib, os, pwd, re, stat, subprocess
         from pathlib import Path
+        from urllib.parse import parse_qsl, quote, unquote, urlsplit, urlunsplit
 
         if not re.fullmatch(r'[a-z0-9-]{1,128}', selected['deploymentId']):
             raise ValueError('selected deployment is not a bounded SQL identity')
@@ -245,10 +279,35 @@ def capture_direct_native_originals(native, tools, publications):
         query += "AND publication_id IN (" + ','.join("'" + value + "'" for value in selected['publicationIds'])
         query += ") ORDER BY session_id; COMMIT;"
         environment = dict(os.environ)
-        environment['PGDATABASE'] = Path(selected['databaseUrlFile']).read_text().strip()
+        descriptor = os.open(selected['databaseUrlFile'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, 'rb') as database_file:
+            first = os.fstat(database_file.fileno())
+            if (not stat.S_ISREG(first.st_mode) or first.st_mode & 0o077
+                    or first.st_uid not in {0, os.getuid(), pwd.getpwnam('aos-hub').pw_uid}
+                    or first.st_size > 65536):
+                raise ValueError('selected database URI custody differs')
+            database_bytes = database_file.read(65537)
+            last = os.fstat(database_file.fileno())
+        if (len(database_bytes) != first.st_size
+                or any(getattr(first, field) != getattr(last, field) for field in (
+                    'st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns'))):
+            raise ValueError('selected database URI changed')
+        database = urlsplit(database_bytes.decode().strip())
+        if (database.scheme not in {'postgres', 'postgresql'} or not database.hostname
+                or database.fragment or not database.path.startswith('/') or len(database.path) == 1
+                or any(key.lower() in {'password', 'passfile', 'sslpassword'}
+                    for key, value in parse_qsl(database.query))):
+            raise ValueError('selected database URI is unsupported')
+        host = database.netloc.rpartition('@')[2]
+        if database.username is not None:
+            host = quote(unquote(database.username), safe='') + '@' + host
+        if database.password is not None:
+            environment['PGPASSWORD'] = unquote(database.password)
+        database_uri = urlunsplit((database.scheme, host, database.path, database.query, ''))
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, 'wb') as output:
-            result = subprocess.run([selected['psql'], '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', query],
+            result = subprocess.run([selected['psql'], '-d', database_uri,
+                '-X', '-qAt', '-v', 'ON_ERROR_STOP=1', '-c', query],
                 stdout=output, stderr=subprocess.PIPE, env=environment, timeout=120, check=False)
             output.flush()
             os.fsync(output.fileno())
@@ -257,6 +316,8 @@ def capture_direct_native_originals(native, tools, publications):
         print(json.dumps({'version': 1, 'path': str(path), 'sha256': digest, 'byteSize': path.stat().st_size,
             'exitCode': result.returncode, 'stderrSha256': hashlib.sha256(result.stderr).hexdigest(),
             'publicationIds': selected['publicationIds'],
+            'databaseUrlFileSha256': hashlib.sha256(database_bytes).hexdigest(),
+            'databaseUrlFileBytes': str(len(database_bytes)),
             'scope': 'one readonly Native SQL metadata snapshot; no provider material or object bytes'}))
     """, {"deploymentId": tools["deploymentId"], "publicationIds": identifiers,
             "databaseUrlFile": tools["nativeDatabaseUrlFile"], "psql": tools["postgres"] + "/psql"}, timeout=150))

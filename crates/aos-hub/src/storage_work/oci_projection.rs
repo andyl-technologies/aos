@@ -65,9 +65,9 @@ impl HybridSurfaceFetch {
                 .checked_add(30)
                 .context("OCI projection deadline overflow")?,
         };
-        let proof = self
+        let (proof, observation) = self
             .work
-            .exchange_oci_projection(&origin, key, &lookup)
+            .exchange_oci_projection_observed(&origin, key, &lookup)
             .await?;
 
         // The remote proof cannot authorize a changed SQL writer or profile.
@@ -91,6 +91,55 @@ impl HybridSurfaceFetch {
                 && self.work.oci_projection_identity(&origin)?.0 == profile_digest,
             "OCI writer or provider qualification changed during readback"
         );
+        if let Some(observation) = observation {
+            let facts = (|| {
+                let mut commitments = std::collections::BTreeMap::from([
+                    (
+                        "placementStateSha256",
+                        super::telemetry::context::fact_digest(&(
+                            placement.id,
+                            placement.resource_version,
+                            placement.binding_id,
+                            &placement.prefix,
+                        ))?,
+                    ),
+                    (
+                        "bindingStateSha256",
+                        super::telemetry::context::fact_digest(&(
+                            binding.id,
+                            binding.resource_version,
+                            &binding.stable_id,
+                            &binding.kind,
+                        ))?,
+                    ),
+                    (
+                        "lookupSha256",
+                        super::telemetry::context::fact_digest(&lookup)?,
+                    ),
+                    (
+                        "storedObjectSha256",
+                        super::telemetry::context::fact_digest(proof.object())?,
+                    ),
+                    (
+                        "descriptorSha256",
+                        super::telemetry::context::fact_digest(&lookup.descriptor)?,
+                    ),
+                    ("profileDigest", profile_digest.clone()),
+                ]);
+                if let Some(accepted) = &self.work.oci_sdk_emulation {
+                    let effect = accepted.document_effect().ok()?;
+                    commitments.insert("purposeEvidenceSha256", effect.acceptance_digest.clone());
+                    commitments.insert(
+                        "documentEffectSha256",
+                        super::telemetry::context::fact_digest(&effect)?,
+                    );
+                }
+                Some(commitments)
+            })();
+            if let Some(commitments) = facts {
+                observation.after_sql("managed_oci_current_sql", commitments);
+            }
+        }
         Ok(Some(proof))
     }
 }
@@ -157,9 +206,9 @@ impl HybridSurfaceFetch {
         };
         let _capacity = self.work.in_flight.acquire().await?;
         let origin = self.work.executor_origin()?;
-        let proof = self
+        let (proof, observation) = self
             .work
-            .exchange_oci_projection(&origin, &runtime.guard, &lookup)
+            .exchange_oci_projection_observed(&origin, &runtime.guard, &lookup)
             .await?;
         let placement = self
             .db
@@ -184,6 +233,46 @@ impl HybridSurfaceFetch {
                     .digest()?
                     == lookup.protected_profile_digest,
             "external OCI document current authority changed"
+        );
+        super::external_oci::observation::checked(
+            observation,
+            "external_oci_projection_writer_checked",
+            &[
+                (
+                    "placementStateSha256",
+                    super::external_oci::observation::digest(&(
+                        placement.id,
+                        placement.resource_version,
+                        placement.binding_id,
+                        &placement.prefix,
+                    )),
+                ),
+                (
+                    "bindingStateSha256",
+                    super::external_oci::observation::digest(&(
+                        binding.id,
+                        binding.resource_version,
+                        &binding.stable_id,
+                        &binding.kind,
+                    )),
+                ),
+                (
+                    "lookupSha256",
+                    super::external_oci::observation::digest(&lookup),
+                ),
+                (
+                    "storedObjectSha256",
+                    super::external_oci::observation::digest(proof.object()),
+                ),
+                (
+                    "descriptorSha256",
+                    super::external_oci::observation::digest(&lookup.descriptor),
+                ),
+                (
+                    "profileDigest",
+                    Some(lookup.protected_profile_digest.clone()),
+                ),
+            ],
         );
         Ok(Some(proof))
     }

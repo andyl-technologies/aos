@@ -128,7 +128,12 @@ impl HybridSurfaceWrites {
             .checked_sub(latest(runtime)?)
             .filter(|seconds| *seconds > 0)
             .context("OCI cleanup deadline expired")?;
+        let mut exchange = crate::storage_work::telemetry::ExchangeTelemetry::control(
+            &request.nonce,
+            "external_oci_cleanup",
+        );
         let operation = async {
+            exchange.offer_control(OCI_CLEANUP_PATH, &body);
             let response = self
                 .work
                 .http
@@ -138,6 +143,10 @@ impl HybridSurfaceWrites {
                     OCI_CLEANUP_PATH
                 ))
                 .header(OCI_CLEANUP_SIGNATURE_HEADER, signature)
+                .header(
+                    crate::storage_work::telemetry::STORAGE_CALL_ID_HEADER,
+                    exchange.transport_call_id(),
+                )
                 .header("content-type", "application/json")
                 .body(body)
                 .timeout(std::time::Duration::from_secs(remaining as u64))
@@ -154,8 +163,15 @@ impl HybridSurfaceWrites {
                 .context("OCI cleanup positive guard signature absent")?
                 .to_str()?
                 .to_owned();
-            let body = super::read_bounded_response(response, MAX_OCI_CLEANUP_BYTES).await?;
-            OciCleanupReply::authenticate(&request, &runtime.guard, &signature, &body)
+            let body = super::read_observed_response(response, MAX_OCI_CLEANUP_BYTES, |length| {
+                exchange.observe_body(length)
+            })
+            .await?;
+            let reply = OciCleanupReply::authenticate(&request, &runtime.guard, &signature, &body)
+                .inspect_err(|_| exchange.finish("invalid_result"))?;
+            exchange.authenticated_control(&body);
+            exchange.finish("success");
+            Ok::<_, anyhow::Error>(reply)
         };
         let _positive =
             tokio::time::timeout(std::time::Duration::from_secs(remaining as u64), operation)
@@ -164,6 +180,52 @@ impl HybridSurfaceWrites {
                     "terminal OCI cleanup reply deadline expired; outcome remains unknown",
                 )??;
         check().await?;
+        super::observation::checked(
+            exchange.control_observation(),
+            "external_oci_cleanup_delete_checked",
+            &[
+                ("requestSha256", super::observation::digest(&request)),
+                ("replySha256", super::observation::digest(&_positive)),
+                (
+                    "uploadStateSha256",
+                    super::observation::upload_digest(claim.upload()),
+                ),
+                (
+                    "chunkStateSha256",
+                    super::observation::chunk_digest(claim.chunk()),
+                ),
+                (
+                    "placementStateSha256",
+                    super::observation::digest(&(
+                        placement.id,
+                        placement.resource_version,
+                        &placement.prefix,
+                    )),
+                ),
+                (
+                    "bindingStateSha256",
+                    super::observation::digest(&(
+                        binding.id,
+                        binding.resource_version,
+                        &binding.stable_id,
+                    )),
+                ),
+                (
+                    "deleteCredentialSha256",
+                    super::observation::digest(&(
+                        credential.generation,
+                        &credential.validation_state,
+                    )),
+                ),
+                (
+                    "deleteCapabilitySha256",
+                    super::observation::digest(&(
+                        &capability.capability_fingerprint,
+                        capability.resource_version,
+                    )),
+                ),
+            ],
+        );
         Ok(true)
     }
 }

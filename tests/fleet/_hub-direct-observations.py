@@ -43,8 +43,9 @@ NATIVE_OBSERVATION_FIELDS = frozenset((
 
 def native_control_observations(text, body_root="/var/lib/hybrid-native-observations"):
     """Read closed numeric proxy records without inventing missing body sizes."""
-    if body_root not in {"/var/lib/hybrid-native-observations",
-            "/var/lib/hybrid-native-outbound", "/var/lib/hybrid-worker-boundary"}:
+    if (body_root not in {"/var/lib/hybrid-native-observations",
+            "/var/lib/hybrid-native-outbound", "/var/lib/hybrid-worker-boundary"}
+            and not re.fullmatch(r"/var/lib/hybrid-managed-(?:native/[0-9a-f]{32}/(?:inbound|outbound)|worker/[0-9a-f]{32}/(?:boundary|native-outbound))", body_root)):
         raise ValueError("body observation directory is not selected")
     observations = []
     for line in text.splitlines():

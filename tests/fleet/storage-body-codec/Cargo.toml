@@ -7,6 +7,7 @@ publish = false
 [workspace]
 
 [dependencies]
+aos-hub = { path = "../../../crates/aos-hub", features = ["test-support"] }
 aos-hub-core = { path = "../../../crates/aos-hub-core" }
 aos-oci-types = { path = "../../../crates/aos-oci-types" }
 anyhow = "1"

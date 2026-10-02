@@ -3,7 +3,21 @@
 {
   serverCertificate,
   serverPrivateKey,
-}: let
+  nativeRoot ? "/var/lib/hybrid-native-outbound",
+  workerRoot ? "/var/lib/hybrid-worker-boundary",
+  nativeListenPort ? 443,
+  workerListenPort ? 443,
+  serverName ? "aos.andyl.org",
+  nativeUpstream ? "https://worker:443",
+  nativeUpstreamCertificateName ? "aos.andyl.org",
+  workerUpstream ? "https://127.0.0.1:4443",
+  workerUpstreamCertificateName ? "localhost",
+  heldExecuteUpstream ? null,
+  workerAdditionalHttp ? "",
+  includeTransferCompletion ? false,
+}:
+assert heldExecuteUpstream == null || heldExecuteUpstream == "https://localhost:4650";
+let
   protectedHeaders = import ./_hub-protected-header-format.nix;
   format = name: root: extra: ''
     log_format ${name} escape=json
@@ -17,7 +31,7 @@
       '"response_body_file":"${root}/response-bodies/$request_id",'
       '"method":"$request_method","response_content_type":"$sent_http_content_type",'
       '"request_transfer_encoding":"$http_transfer_encoding",'
-      '"response_content_encoding":"$sent_http_content_encoding"${extra}}';
+      '"response_content_encoding":"$sent_http_content_encoding"${extra}${if includeTransferCompletion then '',"request_completion":"$request_completion","upstream_response_bytes":"$upstream_response_length"'' else ""}}';
   '';
   capture = root: ''
     client_body_in_file_only on;
@@ -38,23 +52,34 @@
     proxy_set_header Host $http_host;
     proxy_http_version 1.1;
   '';
-  nativeRoot = "/var/lib/hybrid-native-outbound";
-  workerRoot = "/var/lib/hybrid-worker-boundary";
 in {
   nativeHttp = ''
     ${format "native_outbound" nativeRoot ""}
     ${protectedHeaders "native_outbound_headers"}
     server {
-      listen 443 ssl;
-      server_name aos.andyl.org;
+      listen ${toString nativeListenPort} ssl;
+      server_name ${serverName};
       ssl_certificate ${serverCertificate}/value;
       ssl_certificate_key ${serverPrivateKey}/value;
       client_max_body_size 0;
       access_log ${nativeRoot}/requests.jsonl native_outbound;
       access_log ${nativeRoot}/protected-headers.jsonl native_outbound_headers;
+      ${
+        if heldExecuteUpstream == null
+        then ""
+        else ''
+          # Baseline and loaded traffic use this same unarmed listener. It may
+          # hold one exact signed index original; capture and identity stay intact.
+          location = /_internal/storage/v1/execute {
+            ${capture nativeRoot}
+            ${forwarding heldExecuteUpstream "localhost"}
+            proxy_set_header x-aos-fleet-request-id $request_id;
+          }
+        ''
+      }
       location / {
         ${capture nativeRoot}
-        ${forwarding "https://worker:443" "aos.andyl.org"}
+        ${forwarding nativeUpstream nativeUpstreamCertificateName}
         # Correlation only; this header grants no authentication or authority.
         proxy_set_header x-aos-fleet-request-id $request_id;
       }
@@ -69,6 +94,7 @@ in {
       ${format "worker_storage" workerRoot '',"origin_request_id":"$http_x_aos_fleet_request_id","caller":"$remote_addr"''}
       ${protectedHeaders "worker_storage_headers"}
       access_log off;
+      ${workerAdditionalHttp}
       client_max_body_size 0;
       client_body_temp_path ${workerRoot}/client-body;
       proxy_temp_path ${workerRoot}/proxy-temp;
@@ -76,22 +102,22 @@ in {
       uwsgi_temp_path ${workerRoot}/uwsgi-temp;
       scgi_temp_path ${workerRoot}/scgi-temp;
       server {
-        listen 443 ssl;
-        server_name aos.andyl.org;
+        listen ${toString workerListenPort} ssl;
+        server_name ${serverName};
         ssl_certificate ${serverCertificate}/value;
         ssl_certificate_key ${serverPrivateKey}/value;
         location /_internal/storage/ {
           access_log ${workerRoot}/requests.jsonl worker_storage;
           access_log ${workerRoot}/protected-headers.jsonl worker_storage_headers;
           ${capture workerRoot}
-          ${forwarding "https://127.0.0.1:4443" "localhost"}
+          ${forwarding workerUpstream workerUpstreamCertificateName}
         }
         location / {
           # Public object traffic is not spooled by the metadata observer.
           proxy_store off;
           proxy_request_buffering off;
           proxy_buffering off;
-          ${forwarding "https://127.0.0.1:4443" "localhost"}
+          ${forwarding workerUpstream workerUpstreamCertificateName}
         }
       }
     }

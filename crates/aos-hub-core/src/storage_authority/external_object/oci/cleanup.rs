@@ -215,6 +215,18 @@ impl OciCleanupRequest {
     /// # Errors
     /// Refuses expired, foreign, unbounded or malformed requests.
     pub fn validate(&self, deployment: &str, latest: i64) -> Result<()> {
+        self.validate_checked(deployment, Some(latest))
+    }
+
+    /// Checks a retained cleanup envelope without accepting current Delete authority.
+    ///
+    /// # Errors
+    /// Refuses invalid original, issuer, fixed window, deployment or byte budget.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_checked(deployment, None)
+    }
+
+    fn validate_checked(&self, deployment: &str, latest: Option<i64>) -> Result<()> {
         self.original.validate()?;
         self.scope.guard_name()?;
         ensure!(
@@ -225,8 +237,7 @@ impl OciCleanupRequest {
                 && (1..30).contains(&self.clock_uncertainty_seconds)
                 && digest_string(&self.nonce)
                 && self.issued_at > 0
-                && self.issued_at <= latest
-                && latest < self.expires_at
+                && latest.is_none_or(|now| self.issued_at <= now && now < self.expires_at)
                 && self
                     .expires_at
                     .checked_sub(self.issued_at)

@@ -54,11 +54,15 @@ def observe_direct_native_executable(native, tools, expected_sha256):
     return observed
 
 
-def run_direct_native_codec_observer(selection, manifest, segment_label=None):
+def run_direct_native_codec_observer(selection, manifest, segment_label=None,
+                                     artifact_prefix="native-codec-observer"):
     """Execute only the selected held, hashed source-built observational binary."""
     if segment_label is not None and not re.fullmatch(r"segment-[0-9]{6}", segment_label):
         raise ValueError("codec segment artifact label differs")
-    prefix = "native-codec-observer" + ("-" + segment_label if segment_label else "")
+    if (artifact_prefix not in {"native-codec-observer", "storage-codec-observer"}
+            and not re.fullmatch(r"managed-codec-[a-z][a-z0-9-]{0,63}-[0-9a-f]{32}", artifact_prefix)):
+        raise ValueError("codec artifact namespace differs")
+    prefix = artifact_prefix + ("-" + segment_label if segment_label else "")
     reference = selection["observerExecutable"]
     if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
             or not Path(reference["path"]).is_absolute()

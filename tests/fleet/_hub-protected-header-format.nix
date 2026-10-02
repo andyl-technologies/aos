@@ -7,13 +7,13 @@ name: ''
     default "";
     "" $request_uri;
     "~^aos_hybrid_manifest_upload=[0-9a-f]{32}$" $request_uri;
-    "~^digest=sha256:[0-9a-f]{64}$" $request_uri;
+    "~^(digest=sha256(:|%3[Aa])[0-9a-f]{64}|size=(0|[1-9][0-9]{0,19})|aos_operation_id=[0-9a-f]{64})(&(digest=sha256(:|%3[Aa])[0-9a-f]{64}|size=(0|[1-9][0-9]{0,19})|aos_operation_id=[0-9a-f]{64})){0,2}$" $request_uri;
   }
   map $args ${"$"}${name}_query_class {
     default unsupported;
     "" absent;
     "~^aos_hybrid_manifest_upload=[0-9a-f]{32}$" retained;
-    "~^digest=sha256:[0-9a-f]{64}$" retained;
+    "~^(digest=sha256(:|%3[Aa])[0-9a-f]{64}|size=(0|[1-9][0-9]{0,19})|aos_operation_id=[0-9a-f]{64})(&(digest=sha256(:|%3[Aa])[0-9a-f]{64}|size=(0|[1-9][0-9]{0,19})|aos_operation_id=[0-9a-f]{64})){0,2}$" retained;
   }
   map ${"$"}${name}_query_class ${"$"}${name}_ingress {
     default "";
@@ -21,7 +21,7 @@ name: ''
     retained $http_x_aos_hybrid_ingress;
   }
   log_format ${name} escape=json
-    '{"version":"2","request_id":"$request_id",'
+    '{"version":"3","request_id":"$request_id",'
     '"origin_request_id":"$http_x_aos_fleet_request_id",'
     '"path_and_query":"${"$"}${name}_target","query_class":"${"$"}${name}_query_class",'
     '"method":"$request_method",'
@@ -31,5 +31,11 @@ name: ''
     '"request_signature":"$http_x_aos_storage_work_signature",'
     '"reply_signature":"$sent_http_x_aos_storage_work_signature",'
     '"oci_request_signature":"$http_x_aos_oci_projection_signature",'
-    '"oci_reply_signature":"$sent_http_x_aos_oci_projection_signature"}';
+    '"oci_reply_signature":"$sent_http_x_aos_oci_projection_signature",'
+    '"external_oci_request_signature":"$http_x_aos_external_oci_signature",'
+    '"external_oci_reply_signature":"$sent_http_x_aos_external_oci_receipt_signature",'
+    '"external_oci_source_request_signature":"$http_x_aos_external_oci_source_signature",'
+    '"external_oci_source_reply_signature":"$sent_http_x_aos_external_oci_source_signature",'
+    '"external_oci_cleanup_request_signature":"$http_x_aos_external_oci_cleanup_signature",'
+    '"external_oci_cleanup_reply_signature":"$sent_http_x_aos_external_oci_cleanup_signature"}';
 ''

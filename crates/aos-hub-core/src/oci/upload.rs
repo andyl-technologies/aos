@@ -11,6 +11,7 @@
 mod direct;
 mod external_allocation;
 mod manifest;
+pub(super) mod observations;
 
 use std::collections::BTreeMap;
 
@@ -669,6 +670,9 @@ impl RpcService {
                     unavailable_response("external OCI workflow qualification unavailable", false)
                 })?;
             authenticated.recheck(self, registry, repository).await?;
+            if let Ok(actor) = authenticated.external_original() {
+                observations::external_admission("chunk", &permit, &actor);
+            }
             (key, Some(permit))
         } else {
             (

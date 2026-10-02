@@ -130,6 +130,9 @@
     }
   );
   workerObservationProxyConfig = writeFixture "hub-hybrid-fleet-worker-observation-nginx.conf" storageObservationProxies.workerConfiguration;
+  managedObservationProxies = import ./_hub-managed-storage-proxies.nix {inherit serverCertificate serverPrivateKey;};
+  managedNativeObservationProxyTemplate = writeFixture "hub-hybrid-fleet-managed-native-observation-template.conf" managedObservationProxies.nativeConfiguration;
+  managedWorkerObservationProxyTemplate = writeFixture "hub-hybrid-fleet-managed-worker-observation-template.conf" managedObservationProxies.workerConfiguration;
   databaseUrl =
     writeFixture
     "hub-hybrid-fleet-database-url"
@@ -433,6 +436,8 @@
         workerDist.src
         nativeObservationProxyConfig
         workerObservationProxyConfig
+        managedNativeObservationProxyTemplate
+        managedWorkerObservationProxyTemplate
         installationObserver
         namespaceObserver
         queueObserver
@@ -550,6 +555,10 @@ in {
       + builtins.readFile ./_hub-direct-browser.py
       + builtins.readFile ./_hub-direct-storage-boundary.py
       + builtins.readFile ./_hub-storage-capture.py
+      + builtins.readFile ./_hub-storage-final-sql.py
+      + builtins.readFile ./_hub-storage-workflow-assessment.py
+      + builtins.readFile ./_hub-managed-storage-boundary.py
+      + builtins.readFile ./_hub-managed-storage-window.py
       + builtins.readFile ./_hub-index-parity.py
       + builtins.readFile ./_hub-runtime-parity.py
       + builtins.readFile ./_hub-direct-index-parity.py
@@ -755,6 +764,10 @@ in {
               "nginx": "${pkgs.nginx}/bin/nginx",
               "nativeObservationProxyConfiguration": "${nativeObservationProxyConfig}/value",
               "workerObservationProxyConfiguration": "${workerObservationProxyConfig}/value",
+              "managedNativeObservationProxyTemplate": {"path": "${managedNativeObservationProxyTemplate}/value",
+                  "sha256": hashlib.sha256(Path("${managedNativeObservationProxyTemplate}/value").read_bytes()).hexdigest()},
+              "managedWorkerObservationProxyTemplate": {"path": "${managedWorkerObservationProxyTemplate}/value",
+                  "sha256": hashlib.sha256(Path("${managedWorkerObservationProxyTemplate}/value").read_bytes()).hexdigest()},
               "nixStore": "${pkgs.nix}/bin/nix-store", "nixBin": "${pkgs.nix}/bin",
               "workerSourcePath": "${workerDist.src}", "workerDistribution": "${workerDist}",
               "wasm": "${workerDist}/index.wasm", "shim": "${workerDist}/shim.mjs",

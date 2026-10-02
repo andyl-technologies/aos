@@ -18,6 +18,21 @@ impl RemoteStorageWorkClient {
         key: &StorageWorkKey,
         lookup: &OciProjectionLookup,
     ) -> Result<VerifiedOciProjection> {
+        Ok(self
+            .exchange_oci_projection_observed(origin, key, lookup)
+            .await?
+            .0)
+    }
+
+    pub(in crate::storage_work) async fn exchange_oci_projection_observed(
+        &self,
+        origin: &str,
+        key: &StorageWorkKey,
+        lookup: &OciProjectionLookup,
+    ) -> Result<(
+        VerifiedOciProjection,
+        Option<crate::storage_work::telemetry::context::ControlObservation>,
+    )> {
         let mut exchange = ExchangeTelemetry::control(&lookup.nonce, "OciDocumentProjection");
         let result = self
             .oci_projection_http(origin, key, lookup, &mut exchange)
@@ -25,7 +40,7 @@ impl RemoteStorageWorkClient {
         if result.is_ok() {
             exchange.finish("success");
         }
-        result
+        result.map(|value| (value, exchange.control_observation()))
     }
 
     async fn oci_projection_http(

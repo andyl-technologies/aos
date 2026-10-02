@@ -57,8 +57,8 @@ impl HybridSurfaceWrites {
             .map(|chunk| {
                 let fetch = &fetch;
                 async move {
-                    let reply = fetch
-                        .read_external_source(
+                    let (reply, observation) = fetch
+                        .read_external_source_observed(
                             &chunk.staging_object_key,
                             &OciBytes {
                                 sha256: chunk.digest.encoded(),
@@ -72,6 +72,14 @@ impl HybridSurfaceWrites {
                         reply.original.actor.account == selected.actor.account
                             && reply.original.actor.token_id == selected.actor.token_id,
                         "OCI materialization source belongs to another authenticated actor"
+                    );
+                    super::observation::materialization(
+                        observation,
+                        selected,
+                        "external_oci_materialization_source_checked",
+                        &reply.original,
+                        &reply.closed,
+                        "source_positive",
                     );
                     Ok::<_, anyhow::Error>(OciSourceOriginal {
                         key: reply.original.scope.full_key,
@@ -126,16 +134,33 @@ impl HybridSurfaceWrites {
             selected.actor.clone(),
             OciControl::RecoverOriginal,
         )?;
-        let recovered = self.work.exchange_external_oci(&request).await?;
+        let (recovered, observation) = self.work.exchange_external_oci_observed(&request).await?;
         selected.check_current(&self.db).await?;
-        let original = recovered.retained_original.unwrap_or(request.original);
         ensure!(
             recovered.pending_effect_digest.is_none(),
             "OCI materialization original has an unknown effect"
         );
-        if let Some(closed) = recovered.closed {
-            return evidence(&expected, closed);
+        if let Some(closed) = &recovered.closed {
+            let positive = evidence(&expected, closed.clone())?;
+            super::observation::materialization(
+                observation,
+                selected,
+                "external_oci_materialization_control_checked",
+                &request,
+                &recovered,
+                "retained_positive",
+            );
+            return Ok(positive);
         }
+        super::observation::materialization(
+            observation,
+            selected,
+            "external_oci_materialization_control_checked",
+            &request,
+            &recovered,
+            "original_resolved",
+        );
+        let original = recovered.retained_original.unwrap_or(request.original);
         let mut first = 0;
         while first < sources.len() {
             selected.check_current(&self.db).await?;
@@ -177,11 +202,19 @@ impl HybridSurfaceWrites {
                 end += 1;
             }
             request.validate(&self.work.deployment_id, super::latest(runtime)?)?;
-            let reply = self.work.exchange_external_oci(&request).await?;
+            let (reply, observation) = self.work.exchange_external_oci_observed(&request).await?;
             selected.check_current(&self.db).await?;
             ensure!(
                 reply.pending_effect_digest.is_none(),
                 "OCI source installation is unresolved"
+            );
+            super::observation::materialization(
+                observation,
+                selected,
+                "external_oci_materialization_control_checked",
+                &request,
+                &reply,
+                "sources_installed",
             );
             first = end;
         }
@@ -207,18 +240,35 @@ impl HybridSurfaceWrites {
                 selected.actor.clone(),
                 OciControl::Compose { maximum_parts: 8 },
             )?;
-            let reply = self.work.exchange_external_oci(&request).await?;
+            let (reply, observation) = self.work.exchange_external_oci_observed(&request).await?;
             selected.check_current(&self.db).await?;
             ensure!(
                 reply.pending_effect_digest.is_none(),
                 "OCI provider effect remains unknown"
             );
-            if let Some(closed) = reply.closed {
-                return evidence(&expected, closed);
+            if let Some(closed) = &reply.closed {
+                let positive = evidence(&expected, closed.clone())?;
+                super::observation::materialization(
+                    observation,
+                    selected,
+                    "external_oci_materialization_control_checked",
+                    &request,
+                    &reply,
+                    "composed_positive",
+                );
+                return Ok(positive);
             }
             ensure!(
                 reply.next_part > prior_parts,
                 "OCI bounded materialization made no positive progress"
+            );
+            super::observation::materialization(
+                observation,
+                selected,
+                "external_oci_materialization_control_checked",
+                &request,
+                &reply,
+                "part_progress",
             );
             prior_parts = reply.next_part;
         }

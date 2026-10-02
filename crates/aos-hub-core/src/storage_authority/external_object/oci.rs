@@ -31,6 +31,9 @@ pub mod admission;
 /// Bounded, purpose-specific independently reviewed producer evidence.
 pub mod qualification;
 
+/// Bounded historical control observations without MAC or execution authority.
+pub mod observation;
+
 /// Independently authenticated compact physical progress and closure receipts.
 pub mod reply;
 

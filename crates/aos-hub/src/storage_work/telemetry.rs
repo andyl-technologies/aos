@@ -11,10 +11,12 @@ use std::time::Instant;
 use aos_hub_core::storage_work::StorageWorkPlan;
 use sha2::{Digest as _, Sha256};
 
+pub(super) mod context;
+
 /// Correlates one HTTP call without authenticating or authorizing its contents.
 pub(super) const STORAGE_CALL_ID_HEADER: &str = "x-aos-storage-call-id";
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthenticatedControlBody {
     version: u8,
@@ -101,6 +103,19 @@ impl<'a> ExchangeTelemetry<'a> {
         }
     }
 
+    /// Carries successful transport facts without asserting later SQL acceptance.
+    pub(super) fn control_observation(&self) -> Option<context::ControlObservation> {
+        let body = self.control_body.as_ref()?;
+        if self.outcome != "success" || body.reply_sha256.is_empty() {
+            return None;
+        }
+        Some(context::ControlObservation::new(
+            body.clone(),
+            self.dispatcher.clone(),
+            self.span.clone(),
+        ))
+    }
+
     pub(super) fn observe_body(&mut self, length: usize) {
         self.observed_body_bytes = self.observed_body_bytes.saturating_add(length as u64);
     }
@@ -133,6 +148,9 @@ impl<'a> ExchangeTelemetry<'a> {
             }
             "OciDocumentProjection" => {
                 tracing::info!("oci_projection_authenticated {encoded}");
+            }
+            "external_oci_control" | "external_oci_source" | "external_oci_cleanup" => {
+                tracing::info!("external_oci_authenticated {encoded}");
             }
             _ => {}
         }
@@ -195,6 +213,20 @@ pub(super) mod tests {
     }
 
     impl RecordedEvents {
+        pub(in crate::storage_work) fn final_sql(&self) -> Vec<serde_json::Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|fields| {
+                    fields
+                        .get("message")
+                        .and_then(|message| message.strip_prefix("storage_final_sql_checked "))
+                        .map(|encoded| serde_json::from_str(encoded).unwrap())
+                })
+                .collect()
+        }
+
         pub(in crate::storage_work) fn authenticated_controls(&self) -> Vec<serde_json::Value> {
             self.0
                 .lock()

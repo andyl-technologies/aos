@@ -36,6 +36,8 @@ use super::{
     RemoteStorageWorkClient,
 };
 
+mod context;
+
 impl RemoteStorageWorkClient {
     /// Queries installed copy metadata and its genuine retained owner once.
     ///
@@ -45,6 +47,16 @@ impl RemoteStorageWorkClient {
         &self,
         request: &CopyMetadataRequest,
     ) -> Result<CopyMetadataReply> {
+        Ok(self.external_copy_metadata_observed(request).await?.0)
+    }
+
+    async fn external_copy_metadata_observed(
+        &self,
+        request: &CopyMetadataRequest,
+    ) -> Result<(
+        CopyMetadataReply,
+        Option<super::telemetry::context::ControlObservation>,
+    )> {
         let mut exchange =
             ExchangeTelemetry::control(&request.plan.plan_id, "external_copy_metadata");
         let result = async {
@@ -71,7 +83,7 @@ impl RemoteStorageWorkClient {
         if result.is_ok() {
             exchange.finish("success");
         }
-        result
+        result.map(|value| (value, exchange.control_observation()))
     }
 
     /// Sends one fresh claim permission without retrying an ambiguous effect.
@@ -82,6 +94,16 @@ impl RemoteStorageWorkClient {
         &self,
         request: &ExternalCopyRequest,
     ) -> Result<CopyProgress> {
+        Ok(self.external_copy_control_observed(request).await?.0)
+    }
+
+    async fn external_copy_control_observed(
+        &self,
+        request: &ExternalCopyRequest,
+    ) -> Result<(
+        CopyProgress,
+        Option<super::telemetry::context::ControlObservation>,
+    )> {
         let mut exchange =
             ExchangeTelemetry::control(&request.plan.plan_id, "external_copy_control");
         let result = async {
@@ -110,7 +132,7 @@ impl RemoteStorageWorkClient {
         if result.is_ok() {
             exchange.finish("success");
         }
-        result
+        result.map(|value| (value, exchange.control_observation()))
     }
 
     async fn copy_exchange(
@@ -215,7 +237,7 @@ impl HybridSurfaceWrites {
             path.into(),
             now,
         )?;
-        let reply = self.work.external_copy_metadata(&query).await?;
+        let (reply, observation) = self.work.external_copy_metadata_observed(&query).await?;
         let latest = self
             .current_copy(operation, source, destination, false)
             .await?;
@@ -230,6 +252,14 @@ impl HybridSurfaceWrites {
         );
         self.check_snapshot(&current, &selector.snapshot_revision)
             .await?;
+        context::after_sql(
+            observation,
+            &current,
+            None,
+            None,
+            &reply.profile.profile_digest,
+            &selector.snapshot_revision,
+        );
         Ok(reply.retained)
     }
 
@@ -278,7 +308,8 @@ impl HybridSurfaceWrites {
             path.into(),
             now,
         )?;
-        let metadata = self.work.external_copy_metadata(&query).await?;
+        let (metadata, metadata_observation) =
+            self.work.external_copy_metadata_observed(&query).await?;
         self.recheck_catalogue(source, path, &catalogue).await?;
         self.recheck_copy(&current, operation, claim_token, source, destination)
             .await?;
@@ -314,6 +345,14 @@ impl HybridSurfaceWrites {
             }
             if retained.progress.phase == CopyPhase::Closed {
                 self.recheck_catalogue(source, path, &catalogue).await?;
+                context::after_sql(
+                    metadata_observation,
+                    &current,
+                    query.claim.as_ref(),
+                    catalogue.as_ref(),
+                    &retained.original.profile_digest,
+                    &retained.original.snapshot_revision,
+                );
                 return Ok(Some(retained.original.source_object.bytes.get() as u64));
             }
             ensure!(
@@ -388,6 +427,14 @@ impl HybridSurfaceWrites {
             original.source_object.bytes.get() > 0,
             "empty external copy is not qualified"
         );
+        context::after_sql(
+            metadata_observation,
+            &current,
+            query.claim.as_ref(),
+            catalogue.as_ref(),
+            &original.profile_digest,
+            &original.snapshot_revision,
+        );
         // Create + ordered parts + Complete. Each iteration is a new metadata
         // permission over the same original; it never invents another upload.
         for _ in 0..original
@@ -421,7 +468,8 @@ impl HybridSurfaceWrites {
                 CopyControl::Advance,
                 aos_hub_core::clock::now_unix_secs(),
             )?;
-            let progress = self.work.external_copy_control(&request).await?;
+            let (progress, observation) =
+                self.work.external_copy_control_observed(&request).await?;
             self.recheck_catalogue(source, path, &catalogue).await?;
             self.recheck_copy(&current, operation, claim_token, source, destination)
                 .await?;
@@ -434,11 +482,27 @@ impl HybridSurfaceWrites {
             );
             if progress.phase == CopyPhase::Closed {
                 self.recheck_catalogue(source, path, &catalogue).await?;
+                context::after_sql(
+                    observation,
+                    &current,
+                    Some(&request.claim),
+                    catalogue.as_ref(),
+                    &original.profile_digest,
+                    &original.snapshot_revision,
+                );
                 return Ok(Some(original.source_object.bytes.get() as u64));
             }
             ensure!(
                 progress.phase != CopyPhase::Aborted,
                 "copy original was aborted"
+            );
+            context::after_sql(
+                observation,
+                &current,
+                Some(&request.claim),
+                catalogue.as_ref(),
+                &original.profile_digest,
+                &original.snapshot_revision,
             );
         }
         anyhow::bail!("external copy exceeded its original bounded action count")

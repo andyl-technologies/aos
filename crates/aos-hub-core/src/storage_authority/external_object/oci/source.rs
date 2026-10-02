@@ -72,6 +72,18 @@ impl OciSourceLookup {
     /// # Errors
     /// Refuses unsafe paths, foreign identity, expiry or excessive metadata.
     pub fn validate(&self, deployment: &str, latest_now: i64) -> Result<()> {
+        self.validate_checked(deployment, Some(latest_now))
+    }
+
+    /// Checks intrinsic retained source shape without accepting a live read.
+    ///
+    /// # Errors
+    /// Refuses foreign or malformed writer/source/window, paths or byte budget.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_checked(deployment, None)
+    }
+
+    fn validate_checked(&self, deployment: &str, latest_now: Option<i64>) -> Result<()> {
         self.writer.validate()?;
         self.expected.validate()?;
         self.scope.guard_name()?;
@@ -81,7 +93,7 @@ impl OciSourceLookup {
             && (1..30).contains(&self.clock_uncertainty_seconds)
             && digest_string(&self.binding_spec_revision) && digest_string(&self.profile_digest)
             && digest_string(&self.nonce) && self.issued_at > 0
-            && self.issued_at <= latest_now && latest_now < self.expires_at
+            && latest_now.is_none_or(|now| self.issued_at <= now && now < self.expires_at)
             && self.expires_at.checked_sub(self.issued_at).is_some_and(|age| age > 0 && age <= 30),
             "external OCI source identity or deadline differs");
         let prefix = crate::keymap::r2_key(&self.writer.binding_prefix, &self.writer.placement_prefix);
@@ -157,7 +169,19 @@ impl OciSourceReply {
     /// # Errors
     /// Refuses another writer, source, upload, implementation or positive receipt.
     pub fn validate_for(&self, lookup: &OciSourceLookup, latest_now: i64) -> Result<()> {
-        lookup.validate(&lookup.deployment_id, latest_now)?;
+        self.validate_checked(lookup, Some(latest_now))
+    }
+
+    /// Correlates retained source facts without verifying MAC or present authority.
+    ///
+    /// # Errors
+    /// Refuses source/original substitution, invalid closure, time or excess bytes.
+    pub fn validate_observation_for(&self, lookup: &OciSourceLookup) -> Result<()> {
+        self.validate_checked(lookup, None)
+    }
+
+    fn validate_checked(&self, lookup: &OciSourceLookup, latest_now: Option<i64>) -> Result<()> {
+        lookup.validate_checked(&lookup.deployment_id, latest_now)?;
         self.original.validate()?;
         self.closed.bytes.validate()?;
         self.closed.incarnation.validate(lookup.scope.physical_authority_id.as_str())?;
@@ -170,7 +194,9 @@ impl OciSourceReply {
             && lookup.upload_id.as_ref().is_none_or(|id| id == &self.original.upload.upload_id)
             && self.closed.bytes == lookup.expected && digest_string(&self.closed.receipt_digest)
             && crate::surface_write::strong_if_match_etag(&self.closed.etag)? == self.closed.etag
-            && self.observed_at >= lookup.issued_at && self.observed_at <= latest_now,
+            && self.observed_at >= lookup.issued_at
+            && latest_now.is_none_or(|now| self.observed_at <= now)
+            && (latest_now.is_some() || self.observed_at < lookup.expires_at),
             "OCI source reply differs from exact current selection");
         ensure!(serde_json::to_vec(self)?.len() <= MAX_OCI_SOURCE_BYTES,
             "OCI source reply exceeds budget");

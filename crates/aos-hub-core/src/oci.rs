@@ -12,6 +12,9 @@ mod upload;
 pub(crate) use upload::parse_start_query;
 
 pub use upload::{recover_expired_oci_work, OciRecoverySummary};
+pub use upload::observations::{
+    decode_hybrid_oci_upload_control_observation, HybridOciUploadControlObservation,
+};
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

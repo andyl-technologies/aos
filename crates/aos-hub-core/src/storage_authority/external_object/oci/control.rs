@@ -119,6 +119,20 @@ impl ExternalOciRequest {
     /// Refuses foreign deployment, malformed or excessive phases, rollback,
     /// changed actor identity or renewed upload deadlines, noncanonical fields or oversized controls.
     pub fn validate(&self, deployment: &str, now: i64) -> Result<()> {
+        self.validate_checked(deployment, Some(now))
+    }
+
+    /// Checks historical intrinsic shape without accepting current permission.
+    ///
+    /// This neither authenticates a signature nor grants physical dispatch.
+    ///
+    /// # Errors
+    /// Refuses foreign originals, malformed actor/window/phase or excess bytes.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_checked(deployment, None)
+    }
+
+    fn validate_checked(&self, deployment: &str, now: Option<i64>) -> Result<()> {
         self.original.validate()?;
         self.actor.validate()?;
         ensure!(
@@ -128,8 +142,8 @@ impl ExternalOciRequest {
                 && digest_string(&self.nonce)
                 && digest_string(&self.snapshot_revision)
                 && self.issued_at > 0
-                && self.issued_at <= now
-                && self.expires_at > now
+                && now.is_none_or(|now| self.issued_at <= now)
+                && now.is_none_or(|now| self.expires_at > now)
                 && self.expires_at > self.issued_at
                 && self
                     .expires_at

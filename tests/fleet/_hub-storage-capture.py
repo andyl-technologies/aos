@@ -8,15 +8,23 @@ actor, purpose artifact, provider partition or permission to perform new work.
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
+import stat
 
 
-PROTECTED_HEADER_FIELDS = frozenset((
+PROTECTED_HEADER_V2_FIELDS = frozenset((
     "version", "request_id", "origin_request_id", "path_and_query", "method",
     "phase", "status", "ingress", "request_signature", "reply_signature", "query_class",
     "transport_call_id", "oci_request_signature", "oci_reply_signature",
 ))
+EXTERNAL_OCI_SIGNATURE_FIELDS = frozenset((
+    "external_oci_request_signature", "external_oci_reply_signature",
+    "external_oci_source_request_signature", "external_oci_source_reply_signature",
+    "external_oci_cleanup_request_signature", "external_oci_cleanup_reply_signature",
+))
+PROTECTED_HEADER_FIELDS = PROTECTED_HEADER_V2_FIELDS | EXTERNAL_OCI_SIGNATURE_FIELDS
 STORAGE_AUTHENTICATED_FIELDS = frozenset((
     "version", "route", "planId", "operation", "requestSha256", "replySha256",
     "requestBytes", "replyBytes", "transportCallId",
@@ -26,10 +34,37 @@ COPY_CAPTURE_ROUTES = {
     "/_internal/storage/external-copy-metadata/v1": "external_copy_metadata",
 }
 OCI_CAPTURE_ROUTE = "/_internal/storage/oci-document-projection"
-STORAGE_CAPTURE_ROUTES = {**COPY_CAPTURE_ROUTES, OCI_CAPTURE_ROUTE: "OciDocumentProjection"}
+EXTERNAL_OCI_CAPTURE_ROUTES = {
+    "/_internal/storage/external-oci/v1": "external_oci_control",
+    "/_internal/storage/external-oci-source/v1": "external_oci_source",
+    "/_internal/storage/external-oci-cleanup/v1": "external_oci_cleanup",
+}
+STORAGE_CAPTURE_ROUTES = {**COPY_CAPTURE_ROUTES, **EXTERNAL_OCI_CAPTURE_ROUTES,
+    OCI_CAPTURE_ROUTE: "OciDocumentProjection"}
+STORAGE_SIGNATURE_FIELDS = {
+    **{route: ("request_signature", "reply_signature") for route in COPY_CAPTURE_ROUTES},
+    OCI_CAPTURE_ROUTE: ("oci_request_signature", "oci_reply_signature"),
+    "/_internal/storage/external-oci/v1": ("external_oci_request_signature", "external_oci_reply_signature"),
+    "/_internal/storage/external-oci-source/v1": ("external_oci_source_request_signature", "external_oci_source_reply_signature"),
+    "/_internal/storage/external-oci-cleanup/v1": ("external_oci_cleanup_request_signature", "external_oci_cleanup_reply_signature"),
+}
+
+
+def storage_transport_body_limit(route, side):
+    if route == OCI_CAPTURE_ROUTE and side == "replyBytes":
+        return 4 * 1024 * 1024 + 64 * 1024
+    if route == "/_internal/storage/external-oci/v1" and side == "replyBytes":
+        return 16 * 1024
+    if route == "/_internal/storage/external-oci-source/v1":
+        return 32 * 1024
+    if route == "/_internal/storage/external-oci-cleanup/v1":
+        return 16 * 1024
+    return 64 * 1024
+
 AUTHENTICATED_EVENT_ROUTES = {
     "external_copy_authenticated": COPY_CAPTURE_ROUTES,
     "oci_projection_authenticated": {OCI_CAPTURE_ROUTE: "OciDocumentProjection"},
+    "external_oci_authenticated": EXTERNAL_OCI_CAPTURE_ROUTES,
 }
 
 # Two stock publications each contain 12,535 metadata objects and 3 large originals.
@@ -99,7 +134,7 @@ def finish_native_copy_capture(native, tools, selected):
         with os.fdopen(descriptor, 'wb') as output, os.fdopen(errors, 'wb') as error:
             result = subprocess.run(['journalctl', '--no-pager', '--output=json',
                 '--output-fields=__REALTIME_TIMESTAMP,_PID,_EXE,_SYSTEMD_UNIT,MESSAGE',
-                r'--grep=^\\[INFO\\] message=(external_copy_authenticated|oci_projection_authenticated) ',
+                r'--grep=^\\[INFO\\] message=(external_copy_authenticated|oci_projection_authenticated|external_oci_authenticated|storage_final_sql_checked|external_oci_admission_actor_checked) ',
                 '--unit=aos-hub.service', '--after-cursor=' + selected['journalCursor']],
                 stdout=output, stderr=error, check=False, timeout=45)
             output.flush()
@@ -116,15 +151,18 @@ def finish_native_copy_capture(native, tools, selected):
     return path, receipt
 
 
-def capture_protected_headers(source, label):
+def capture_protected_headers(source, label, artifact_prefix=None):
     """Stream retained rows and store only allowlisted compact controls.
 
     Paths are read one bounded line at a time. String inputs serve controlled
     fixtures only; the main window passes an already retained private path.
     Retained summaries have separate record and serialized-byte ceilings.
     """
-    if label not in {"native-inbound", "native-outbound", "worker-received"}:
+    if label not in {"native-inbound", "native-outbound", "worker-received", "worker-original"}:
         raise ValueError("protected header observation role differs")
+    if artifact_prefix is not None and not re.fullmatch(
+            r"managed-[0-9a-f]{32}-[a-z][a-z0-9-]{0,63}", artifact_prefix):
+        raise ValueError("Managed protected header artifact namespace differs")
     projected = {}
     total_bytes = summary_bytes = 0
     for line, byte_size in _protected_header_lines(source):
@@ -132,9 +170,11 @@ def capture_protected_headers(source, label):
         if total_bytes > PROTECTED_HEADER_LOG_BYTE_LIMIT or len(projected) >= PROTECTED_HEADER_RECORD_LIMIT:
             raise ValueError("protected header corpus exceeds its bound")
         raw = _closed_review_json(line)
-        if not isinstance(raw, dict) or set(raw) != PROTECTED_HEADER_FIELDS:
+        if (not isinstance(raw, dict) or (raw.get("version") == "2" and set(raw) != PROTECTED_HEADER_V2_FIELDS)
+                or (raw.get("version") == "3" and set(raw) != PROTECTED_HEADER_FIELDS)
+                or raw.get("version") not in {"2", "3"}):
             raise ValueError("protected header capture shape differs")
-        if (raw["version"] != "2" or not re.fullmatch(r"[0-9a-f]{32}", raw["request_id"])
+        if (not re.fullmatch(r"[0-9a-f]{32}", raw["request_id"])
                 or raw["request_id"] in projected
                 or not re.fullmatch(r"(?:[0-9a-f]{32})?", raw["origin_request_id"])
                 or not re.fullmatch(r"(?:[0-9a-f]{32})?", raw["transport_call_id"])
@@ -153,8 +193,8 @@ def capture_protected_headers(source, label):
             raise ValueError("protected target is not bounded")
         files = {}
         for field in ("path_and_query", "ingress", "request_signature", "reply_signature",
-                "oci_request_signature", "oci_reply_signature"):
-            value = raw[field]
+                "oci_request_signature", "oci_reply_signature", *sorted(EXTERNAL_OCI_SIGNATURE_FIELDS)):
+            value = raw.get(field, "")
             if not isinstance(value, str) or len(value.encode()) > 16 * 1024:
                 raise ValueError("protected compact control exceeds its bound")
             if field.endswith("signature") and value and not re.fullmatch(r"[0-9a-f]{64}", value):
@@ -165,6 +205,8 @@ def capture_protected_headers(source, label):
             if value:
                 body = value.encode()
                 name = "protected-" + label + "-" + raw["request_id"] + "." + field
+                if artifact_prefix is not None:
+                    name = artifact_prefix + "-" + name
                 digest = retain_direct_flow(name, body)
                 files[field] = {"file": str(Path("external-direct-flow") / name),
                     "sha256": digest, "byteSize": len(body)}
@@ -198,27 +240,80 @@ def _protected_header_lines(source):
             yield line.decode("utf-8"), len(line)
 
 
-def authenticated_storage_transport_receipts(text, native_process):
+def observed_native_messages(source, native_process, file_provenance=None):
+    """Read exact journal records or a separately pinned plain Native log.
+
+    Plain logs expose no event wall clock. Their real file collection brackets
+    remain custody observations only; no journald timestamp is manufactured.
+    """
+    if file_provenance is None:
+        for line in source.splitlines():
+            if len(line.encode()) > PROTECTED_HEADER_ROW_BYTE_LIMIT:
+                raise ValueError("Native journal row exceeds its bound")
+            raw = _closed_review_json(line)
+            if (raw.get("_PID") != str(native_process["pid"])
+                    or raw.get("_EXE") != native_process["executablePath"]
+                    or raw.get("_SYSTEMD_UNIT") != "aos-hub.service"
+                    or not re.fullmatch(r"[1-9][0-9]{0,19}", raw.get("__REALTIME_TIMESTAMP", ""))):
+                raise ValueError("Native journal event has a foreign process")
+            yield raw.get("MESSAGE"), raw["__REALTIME_TIMESTAMP"]
+        return
+    if (not isinstance(source, Path) or not isinstance(file_provenance, dict)
+            or set(file_provenance) != {"beforeProcess", "afterProcess", "window"}):
+        raise ValueError("Native plain log lacks its exact process/window provenance")
+    before, after, window = (file_provenance[name] for name in (
+        "beforeProcess", "afterProcess", "window"))
+    for field in ("pid", "ownerUid", "startTicks", "executableSha256", "commandLineSha256",
+            "commandLineBytes", "environmentSha256"):
+        if before[field] != after[field] or before[field] != native_process[field]:
+            raise ValueError("Native plain log process changed inside the window")
+    if (window["file"] != str(source) or window["before"]["path"] != native_process["logFile"]
+            or window["after"]["path"] != native_process["logFile"]
+            or any(window["before"][field] != window["after"][field]
+                for field in ("device", "inode"))):
+        raise ValueError("Native plain log selected file/window differs")
+    expected = window["capturedBytes"]
+    if (type(expected) is not int or not 0 <= expected <= PROTECTED_HEADER_LOG_BYTE_LIMIT
+            or expected != window["after"]["byteSize"] - window["before"]["byteSize"]):
+        raise ValueError("Native plain log window length differs")
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    digest, count = hashlib.sha256(), 0
+    with os.fdopen(descriptor, "rb") as stream:
+        first = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(first.st_mode) or first.st_uid != os.geteuid()
+                or first.st_mode & 0o077 or first.st_size != expected):
+            raise ValueError("Native retained plain log custody differs")
+        while True:
+            line = stream.readline(PROTECTED_HEADER_ROW_BYTE_LIMIT + 1)
+            if not line:
+                break
+            count += len(line)
+            if (len(line) > PROTECTED_HEADER_ROW_BYTE_LIMIT or count > expected
+                    or not line.endswith(b"\n")):
+                raise ValueError("Native plain log row is oversized or incomplete")
+            digest.update(line)
+            yield line.decode().rstrip("\n"), None
+        last = os.fstat(stream.fileno())
+    if (count != expected or digest.hexdigest() != window["sha256"]
+            or any(getattr(first, field) != getattr(last, field) for field in (
+                "st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))):
+        raise ValueError("Native retained plain log changed")
+
+
+def authenticated_storage_transport_receipts(text, native_process, file_provenance=None):
     """Read post-authentication events from the selected actual Native journal.
 
     The collector checks the process lifetime and executable on both sides of
     the journal read. A parsed event never establishes SQL or provider facts.
     """
     receipts = []
-    for line in text.splitlines():
-        raw = _closed_review_json(line)
-        message = raw.get("MESSAGE")
+    for message, observed_at in observed_native_messages(text, native_process, file_provenance):
         selected = [("[INFO] message=" + event + " ", routes)
             for event, routes in AUTHENTICATED_EVENT_ROUTES.items()
             if isinstance(message, str) and message.startswith("[INFO] message=" + event + " ")]
         if not selected:
             continue
         prefix, routes = selected[0]
-        if (raw.get("_PID") != str(native_process["pid"])
-                or raw.get("_EXE") != native_process["executablePath"]
-                or raw.get("_SYSTEMD_UNIT") != "aos-hub.service"
-                or not re.fullmatch(r"[1-9][0-9]{0,19}", raw.get("__REALTIME_TIMESTAMP", ""))):
-            raise ValueError("authenticated transport event has a foreign process")
         encoded = message[len(prefix):]
         _, end = json.JSONDecoder().raw_decode(encoded)
         suffix = encoded[end:]
@@ -230,17 +325,17 @@ def authenticated_storage_transport_receipts(text, native_process):
                 or value["route"] not in routes
                 or value["operation"] != routes[value["route"]]
                 or not re.fullmatch(r"[0-9a-f]{32}", value["transportCallId"])
-                or not re.fullmatch(r"[0-9a-f]{64}" if value["route"] == OCI_CAPTURE_ROUTE
-                    else r"[0-9a-f]{32}", value["planId"])):
+                or not re.fullmatch(r"[0-9a-f]{32}" if value["route"] in COPY_CAPTURE_ROUTES
+                    else r"[0-9a-f]{64}", value["planId"])):
             raise ValueError("authenticated storage receipt shape differs")
         for field in ("requestSha256", "replySha256"):
             if not re.fullmatch(r"[0-9a-f]{64}", value[field]):
                 raise ValueError("authenticated storage body commitment differs")
         for field in ("requestBytes", "replyBytes"):
-            maximum = (4 * 1024 * 1024 + 64 * 1024) if value["route"] == OCI_CAPTURE_ROUTE and field == "replyBytes" else 64 * 1024
+            maximum = storage_transport_body_limit(value["route"], field)
             if type(value[field]) is not int or not 0 <= value[field] <= maximum:
                 raise ValueError("authenticated storage byte count differs")
-        receipts.append({**value, "nativeCompletedAtUnixMicros": raw["__REALTIME_TIMESTAMP"]})
+        receipts.append({**value, "nativeCompletedAtUnixMicros": observed_at})
         if len(receipts) > PROTECTED_HEADER_RECORD_LIMIT:
             raise ValueError("authenticated storage receipt corpus exceeds its bound")
     return receipts
@@ -302,8 +397,7 @@ def join_authenticated_storage_transports(originals, received, original_headers,
         equal = True
         route_digest = hashlib.sha256(original["procedure"].encode()).hexdigest()
         equal &= first["queryClass"] == second["queryClass"] == "absent"
-        signature_fields = ("oci_request_signature", "oci_reply_signature") if original["procedure"] == OCI_CAPTURE_ROUTE \
-            else ("request_signature", "reply_signature")
+        signature_fields = STORAGE_SIGNATURE_FIELDS[original["procedure"]]
         for field in (*signature_fields, "path_and_query"):
             before, after = first["files"][field], second["files"][field]
             if before is None or after is None or (before["sha256"], before["byteSize"]) != (

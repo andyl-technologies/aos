@@ -6,6 +6,7 @@
 
 mod classify;
 mod files;
+mod storage_work;
 
 #[cfg(test)]
 mod tests;
