@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::ref_advance::{CommitRequest, DisclosureCommitRequest, DisclosureCommitSelection};
+use crate::store::{RefStore, StoreErrorKind};
 use terrane_core::algebra::{Roots, flatten};
 use terrane_core::identity::Digest;
 
@@ -61,6 +62,22 @@ fn stage_tree(mut proposal: CommitRequest, tree: &Tree<'_>) -> CommitRequest {
     proposal
 }
 
+fn stage_graft(
+    parent: Digest,
+    plaintext: &[u8],
+    graft: &Tree<'_>,
+    child: &Tree<'_>,
+) -> CommitRequest {
+    let mut staged = stage_tree(request_file(vec![parent], plaintext), graft);
+    staged
+        .uploads
+        .extend(child.nodes().map(|node| StagedUpload::Meta {
+            kind: IdentityKind::Node,
+            bytes: node.encoded().to_vec(),
+        }));
+    staged
+}
+
 pub(super) async fn certify_flattened_files() {
     let (source, source_authority, _) = independent_factory("private:writer").await;
     let (destination, destination_authority, _) = independent_factory("public").await;
@@ -70,15 +87,18 @@ pub(super) async fn certify_flattened_files() {
         .calculate(IdentityKind::Chunk, plaintext)
         .unwrap();
     let child = Tree::build(
-        vec![LeafItem {
-            key: b"file".to_vec(),
-            entry: entry(EntryKind::File {
-                mode: 0o644,
-                size: plaintext.len() as u64,
-                content: ContentRef::Inline(content.terrane_v1_digest().unwrap()),
-                link_id: None,
-            }),
-        }],
+        [b"file".as_slice(), b"second".as_slice()]
+            .into_iter()
+            .map(|path| LeafItem {
+                key: path.to_vec(),
+                entry: entry(EntryKind::File {
+                    mode: 0o644,
+                    size: plaintext.len() as u64,
+                    content: ContentRef::Inline(content.terrane_v1_digest().unwrap()),
+                    link_id: None,
+                }),
+            })
+            .collect(),
         properties(true),
         262144,
         TreeUse::Ordinary,
@@ -106,26 +126,63 @@ pub(super) async fn certify_flattened_files() {
         TreeUse::Ordinary,
     )
     .unwrap();
-    let mut staged = stage_tree(request_file(vec![child_head.commit], plaintext), &graft);
-    staged
-        .uploads
-        .extend(child.nodes().map(|node| StagedUpload::Meta {
-            kind: IdentityKind::Node,
-            bytes: node.encoded().to_vec(),
-        }));
-    let mut preparation = source_authority.commit_request(staged.commit.clone(), "sdk".into());
-    preparation.uploads =
-        stage_tree(request_file(vec![child_head.commit], plaintext), &graft).uploads;
-    preparation
-        .uploads
-        .extend(child.nodes().map(|node| StagedUpload::Meta {
-            kind: IdentityKind::Node,
-            bytes: node.encoded().to_vec(),
-        }));
-    source
-        .prepare_advance(&mut source_session, preparation)
-        .await
-        .expect("canonical graft preparation must preserve genuine current authority");
+    // Retained-root receipts do not replace either current Commit authority or
+    // domain compatibility. Both refusals leave the actual whole head intact.
+    let staged = stage_graft(child_head.commit, plaintext, &graft, &child);
+    let mut denied = source_authority.commit_request(staged.commit, "sdk".into());
+    denied.uploads = staged.uploads;
+    let terminal = [0x6a; 32];
+    denied.token = terrane_core::auth::Token::decode(source_authority.token())
+        .unwrap()
+        .attenuate(
+            terrane_core::auth::Attenuation {
+                not_after: None,
+                not_before: None,
+                grants: Some(vec![
+                    terrane_core::auth::Grant::new(
+                        reference.into(),
+                        terrane_core::auth::Verbs::new(1).unwrap(),
+                    )
+                    .unwrap(),
+                ]),
+                caveats: Vec::new(),
+            },
+            &denied.terminal_secret,
+            terrane_core::auth::public_key_from_secret(&terminal),
+        )
+        .unwrap()
+        .encode();
+    denied.terminal_secret = terminal;
+    assert!(matches!(source.advance(&mut source_session, denied).await,
+        Err(crate::ref_advance::AdvanceError::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { verb: "commit", .. })));
+    assert_eq!(
+        source.store().ref_get(reference).await.unwrap(),
+        Some(child_head.clone())
+    );
+    let incompatible = Tree::build(
+        graft
+            .iter()
+            .map(|item| LeafItem {
+                key: item.key.clone(),
+                entry: item.entry.clone(),
+            })
+            .collect(),
+        properties(false),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let staged = stage_graft(child_head.commit, plaintext, &incompatible, &child);
+    let mut denied = source_authority.commit_request(staged.commit, "sdk".into());
+    denied.uploads = staged.uploads;
+    assert!(matches!(source.advance(&mut source_session, denied).await,
+        Err(crate::ref_advance::AdvanceError::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { verb: "commit", .. })));
+    assert_eq!(
+        source.store().ref_get(reference).await.unwrap(),
+        Some(child_head.clone())
+    );
+
+    let staged = stage_graft(child_head.commit, plaintext, &graft, &child);
     let mut proposal = source_authority.commit_request(staged.commit, "sdk".into());
     proposal.uploads = staged.uploads;
     let graft_head = source.advance(&mut source_session, proposal).await.unwrap();
@@ -220,16 +277,20 @@ pub(super) async fn certify_flattened_files() {
             &mut destination_session,
             DisclosureCommitRequest {
                 proposal,
-                selections: [b"/mount".as_slice(), b"/mount/file".as_slice()]
-                    .into_iter()
-                    .map(|path| DisclosureCommitSelection {
-                        source_reference: reference.into(),
-                        source_commit: flattened_head.commit,
-                        source_path: path.to_vec(),
-                        source_token: source_authority.token().to_vec(),
-                        destination_path: path.to_vec(),
-                    })
-                    .collect(),
+                selections: [
+                    b"/mount".as_slice(),
+                    b"/mount/file".as_slice(),
+                    b"/mount/second".as_slice(),
+                ]
+                .into_iter()
+                .map(|path| DisclosureCommitSelection {
+                    source_reference: reference.into(),
+                    source_commit: flattened_head.commit,
+                    source_path: path.to_vec(),
+                    source_token: source_authority.token().to_vec(),
+                    destination_path: path.to_vec(),
+                })
+                .collect(),
             },
         )
         .await
@@ -244,12 +305,40 @@ pub(super) async fn certify_flattened_files() {
         )
         .await
         .unwrap();
-    for path in [b"mount".as_slice(), b"mount/file".as_slice()] {
+    let receipts = retained
+        .history
+        .commit(&published.commit)
+        .unwrap()
+        .commit()
+        .profile_pair
+        .entry_receipts
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        receipts
+            .iter()
+            .filter(|receipt| receipt.disclosure_proof.is_some())
+            .count(),
+        3
+    );
+    for path in [
+        b"mount".as_slice(),
+        b"mount/file".as_slice(),
+        b"mount/second".as_slice(),
+    ] {
         let (location, _) = retained.history.locate(published.commit, path).unwrap();
         assert_eq!(
             retained.history.introducing_commit(&location).unwrap(),
             published.commit
         );
+        let receipt = receipts
+            .iter()
+            .find(|receipt| receipt.path == path)
+            .unwrap();
+        let selected = receipt.reintroduced_from.as_ref().unwrap();
+        assert_eq!(selected.commit, flattened_head.commit);
+        assert_eq!(selected.path, path);
+        assert!(receipt.disclosure_proof.is_some());
     }
     assert_eq!(
         destination

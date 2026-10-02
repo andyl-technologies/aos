@@ -332,7 +332,16 @@ impl<S: Store, C: Clock> Guard<S, C> {
             let tree = candidate.tree(occurrence.root, self.config().min_chunk_size)?;
             let old_occurrence = previous_occurrences
                 .iter()
-                .find(|old| old.path == occurrence.path);
+                .find(|old| old.path == occurrence.path)
+                .or_else(|| {
+                    // A newly grafted occurrence can reuse a complete root from
+                    // the verified first parent at another path. Its unchanged
+                    // entries and attributes retain that actual source; the new
+                    // descriptor and graft authority were checked independently.
+                    previous_occurrences
+                        .iter()
+                        .find(|old| old.root == occurrence.root)
+                });
             let old_tree = match (previous.as_ref(), old_occurrence) {
                 (Some(previous), Some(old)) => {
                     Some(previous.tree(old.root, self.config().min_chunk_size)?)
