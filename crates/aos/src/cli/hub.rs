@@ -721,6 +721,33 @@ pub enum HubInstanceCmd {
         #[command(subcommand)]
         command: HubInstanceTopologyDefaultsCmd,
     },
+    /// Run scheduled maintenance jobs on demand
+    Maintenance {
+        #[command(subcommand)]
+        command: HubInstanceMaintenanceCmd,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum HubInstanceMaintenanceCmd {
+    /// Enqueue one scheduled maintenance job now instead of waiting for the tick
+    Trigger {
+        #[command(flatten)]
+        access: HubAccessArgs,
+        /// Maintenance job to enqueue immediately
+        #[arg(long, value_parser = [
+            "dispatch_maintenance",
+            "run_topology_probes",
+            "recover_cache_writes",
+            "recover_oci_uploads",
+            "run_cache_gc",
+            "rebuild_directory",
+            "inventory_oci_providers",
+            "probe_oci_conditional_deletes",
+            "run_oci_gc",
+        ])]
+        job: String,
+    },
 }
 
 #[derive(Subcommand)]

@@ -61,6 +61,7 @@ use crate::clock;
 use crate::db::{Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget};
 use crate::domain::iam::{self, claims_principal, token_allows};
 use crate::domain::{Permission, Principal, PrincipalKind, Role, Scope};
+use crate::jobs::Job;
 use crate::fetch::{SurfaceFetch, SurfaceProvider};
 use crate::keymap;
 use crate::lease::PublishLease;
@@ -2598,6 +2599,12 @@ pub struct RpcService {
     pub identity_domain_verifier: Option<Arc<dyn crate::topology_probe::IdentityDomainVerifier>>,
     /// Runtime-owned active and retained route-reservation HMAC keys.
     pub route_reservation_keyring: Option<Arc<dyn RouteReservationKeyring>>,
+    /// Durable queue that runs scheduled maintenance jobs on demand.
+    ///
+    /// `None` (the default) makes `TriggerContainerMaintenance` unavailable;
+    /// the Worker wires its Cloudflare queue so operators can run the OCI
+    /// probe, inventory, and GC jobs without waiting for the cron schedule.
+    pub maintenance_jobs: Option<Arc<dyn crate::jobs::Queue>>,
     /// Restricted deployment authority for release and channel evidence.
     pub release_evidence: Option<Arc<dyn crate::release_evidence::ReleaseEvidenceAuthority>>,
     /// Serializes memory-bounded Git pack/index verification within the process or Worker isolate.
@@ -10159,6 +10166,7 @@ impl RpcService {
             domain_probe_terminator: None,
             identity_domain_verifier: None,
             route_reservation_keyring: None,
+            maintenance_jobs: None,
             release_evidence: None,
             pack_validation: pack_validation_gate(),
         }
@@ -10237,6 +10245,13 @@ impl RpcService {
         keyring: Arc<dyn RouteReservationKeyring>,
     ) -> Self {
         self.route_reservation_keyring = Some(keyring);
+        self
+    }
+
+    /// Attaches the durable queue used to run maintenance jobs on demand.
+    #[must_use]
+    pub fn with_maintenance_jobs(mut self, queue: Arc<dyn crate::jobs::Queue>) -> Self {
+        self.maintenance_jobs = Some(queue);
         self
     }
 
@@ -18978,6 +18993,57 @@ impl RpcService {
             resource_version: instance_settings_digest(&settings)?,
             settings: Some(instance_settings_to_pb(&settings)),
         })
+    }
+
+    /// Enqueues one scheduled maintenance job immediately.
+    ///
+    /// Maintenance normally runs on the deployment's tick. Registry
+    /// retirement and incident response need the probe, inventory, GC, and
+    /// recovery jobs between reviewed steps, so an instance administrator may
+    /// run any scheduled job on demand. Each job still applies its own durable
+    /// fences and bounded page size; the OCI jobs additionally require the
+    /// garbage-collection rollout.
+    ///
+    /// # Errors
+    ///
+    /// Returns authentication or authorization errors, an invalid-argument
+    /// error for an unknown job, an unavailable error when the runtime has no
+    /// durable queue or the job's rollout is disabled, and an internal error
+    /// when the queue rejects the job.
+    pub async fn trigger_instance_maintenance(
+        &self,
+        auth: Option<&str>,
+        req: pb::TriggerInstanceMaintenanceRequest,
+    ) -> Result<pb::InstanceMaintenanceTriggerResponse, RpcError> {
+        let claims = self.require_claims(auth)?;
+        self.require_permission(&claims, Permission::IamAdmin, &Scope::root())
+            .await?;
+        let job = match req.job.as_str() {
+            "dispatch_maintenance" => Job::DispatchMaintenance,
+            "run_topology_probes" => Job::RunTopologyProbes,
+            "recover_cache_writes" => Job::RecoverCacheWrites,
+            "recover_oci_uploads" => Job::RecoverOciUploads,
+            "run_cache_gc" => Job::RunCacheGc,
+            "rebuild_directory" => Job::RebuildDirectory,
+            "inventory_oci_providers" => Job::InventoryOciProviders,
+            "probe_oci_conditional_deletes" => Job::ProbeOciConditionalDeletes,
+            "run_oci_gc" => Job::RunOciGc,
+            _ => {
+                return Err(RpcError::invalid(
+                    "job must name one scheduled maintenance job (see TriggerInstanceMaintenanceRequest)",
+                ));
+            }
+        };
+        if !job.enabled_for(self.container_rollout) {
+            return Err(RpcError::Unavailable(
+                "this deployment has not enabled OCI garbage collection".into(),
+            ));
+        }
+        let queue = self.maintenance_jobs.as_ref().ok_or_else(|| {
+            RpcError::Unavailable("this deployment cannot schedule maintenance on demand".into())
+        })?;
+        queue.enqueue(&job).await.map_err(RpcError::internal)?;
+        Ok(pb::InstanceMaintenanceTriggerResponse { job: req.job })
     }
 
     /// Persists an immutable, exact-version instance-settings plan.
