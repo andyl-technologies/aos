@@ -21,6 +21,9 @@ mod durable_run_state;
 #[path = "tests/trigger_deadlines.rs"]
 mod trigger_deadlines;
 
+#[path = "tests/held_stop.rs"]
+mod held_stop;
+
 fn hash(domain: &str) -> ContentHash {
     ContentHash::from_canonical_material("debug-runtime-evidence-test", domain)
 }
@@ -1014,6 +1017,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         signal_fault_branches: VecDeque::new(),
         promote_signal_fault_campaign_choices: false,
         pending_live_network_prefix: None,
+        pending_held_host_outcomes: None,
         launch_configs: BTreeMap::new(),
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),

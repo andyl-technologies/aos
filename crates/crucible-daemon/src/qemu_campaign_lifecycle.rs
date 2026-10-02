@@ -348,6 +348,27 @@ pub trait QemuFreshAttemptLifecycleOwner {
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError>;
 
+    /// Projects a retained guest pause into the shared scheduler clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pause overflows or its admitted mapping is absent.
+    fn pending_selectable_request_time(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<VirtualTime, SchedulerError> {
+        let ticks = pending
+            .pending()
+            .trap_tick_ps()
+            .checked_add(
+                crucible_protocol::selectable_catalog_plan::SELECTABLE_NATIVE_HANDOFF_TICKS_PS,
+            )
+            .ok_or_else(|| SchedulerError::BoundaryViolation {
+                message: String::from("guest selectable pause boundary overflowed"),
+            })?;
+        Ok(VirtualTime { ticks })
+    }
+
     /// Applies one exact semantic reply at the authoritative scheduler frontier.
     ///
     /// # Errors
@@ -538,6 +559,13 @@ impl QemuFreshAttemptLifecycleOwner for ProductionVmLifecycleLoop {
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
         ProductionVmLifecycleLoop::drain_pending_selectable_requests(self)
+    }
+
+    fn pending_selectable_request_time(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<VirtualTime, SchedulerError> {
+        ProductionVmLifecycleLoop::pending_selectable_request_time(self, pending)
     }
 
     fn apply_selectable_reply(
@@ -826,6 +854,18 @@ impl QemuFreshAttemptLifecycle<'_> {
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
         self.owner.drain_pending_selectable_requests()
+    }
+
+    /// Projects a retained guest pause into the shared scheduler clock.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the pause overflows or its admitted mapping is absent.
+    pub fn pending_selectable_request_time(
+        &self,
+        pending: &QemuNodeSelectablePendingRequest,
+    ) -> Result<VirtualTime, SchedulerError> {
+        self.owner.pending_selectable_request_time(pending)
     }
 
     /// Applies one exact semantic reply at the authoritative scheduler frontier.

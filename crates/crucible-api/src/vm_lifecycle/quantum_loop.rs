@@ -30,6 +30,12 @@ use debug_policy::trusted_debug_listener;
 use host_concurrent::merge_host_concurrent_outcomes;
 pub(super) const MAX_PRODUCTION_QEMU_HOST_WORKERS: usize = 64;
 
+pub(super) struct PendingHeldHostOutcomes {
+    pub(super) released_configuration: Configuration,
+    pub(super) outcomes: Vec<QuantumOutcome>,
+    pub(super) publication_started: bool,
+}
+
 pub(super) struct PendingLiveNetworkPrefix {
     decisions: Vec<Decision>,
     appends: Vec<SchedulerEventLogAppend>,
@@ -96,6 +102,59 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         &mut self,
         mut request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
+        // These are already completed physical RUNs, not another scheduler RUN.
+        // Publish them before any boundary mutation or new control admission.
+        if let Some(pending) = &self.pending_held_host_outcomes {
+            if pending.publication_started {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "held peer publication failed after effects; retirement is required",
+                    ),
+                });
+            }
+            if request.configuration != pending.released_configuration
+                || !request.control.is_empty()
+            {
+                return Err(SchedulerError::BoundaryViolation {
+                    message: String::from(
+                        "held peer publication changed its released parent or control",
+                    ),
+                });
+            }
+            self.node_launcher
+                .check_operational_boundary()
+                .map_err(|error| {
+                    attempt_boundary_scheduler_error("publish retained physical outcomes", error)
+                })?;
+            let outcomes = pending.outcomes.clone();
+            if let Some(pending) = &mut self.pending_held_host_outcomes {
+                pending.publication_started = true;
+            }
+            let operation = (|| {
+                let outcome = merge_host_concurrent_outcomes(outcomes)?;
+                let prefix = PendingLiveNetworkPrefix {
+                    decisions: Vec::new(),
+                    appends: Vec::new(),
+                    discoveries: Vec::new(),
+                    signal_fault_frontier_start: self.inner.loop_impl().search_frontiers().len(),
+                };
+                if self.inner.live_network_preselection().is_some() {
+                    self.pending_live_network_prefix = Some(prefix);
+                    self.capture_debug_runtime_evidence()?;
+                    Ok(outcome)
+                } else {
+                    self.finish_quantum_after_backend(outcome, prefix)
+                }
+            })();
+            let result = combine_attempt_quantum_boundary(
+                operation,
+                self.node_launcher.check_operational_boundary(),
+            );
+            if result.is_ok() {
+                self.pending_held_host_outcomes.take();
+            }
+            return result;
+        }
         if self.inner.selected_live_network_preselection() {
             if request.configuration != *self.inner.loop_impl().configuration()
                 || !request.control.is_empty()
@@ -1883,6 +1942,7 @@ impl ProductionVmLifecycleLoop {
         terminal_nodes: &BTreeSet<NodeId>,
         boundary: &mut dyn FnMut() -> Result<(), SchedulerError>,
     ) -> Result<ContentHash, ExactCheckpointTransactionError> {
+        self.require_published_host_continuation()?;
         boundary()?;
         if !self.continuation_branches.is_empty() {
             return Err(SchedulerError::BoundaryViolation {

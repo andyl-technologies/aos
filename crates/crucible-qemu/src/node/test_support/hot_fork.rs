@@ -534,7 +534,9 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
     ) -> Result<QemuLogicalTimeCalibration, QemuNodeChannelError> {
         Ok(QemuLogicalTimeCalibration {
             logical_icount: self.current_icount.retired,
-            raw_icount: 0,
+            // Scripted RUN coordinates use the fixture's fixed instruction rate;
+            // the remainder remains the logical calibration offset.
+            raw_icount: self.current_icount.retired / crucible::SIM_TICKS_PER_INSTRUCTION,
         })
     }
 

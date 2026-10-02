@@ -472,6 +472,7 @@ fn lifecycle_without_backends(
         signal_fault_branches: VecDeque::new(),
         promote_signal_fault_campaign_choices: false,
         pending_live_network_prefix: None,
+        pending_held_host_outcomes: None,
         launch_configs: BTreeMap::new(),
         block_bindings: BTreeMap::new(),
         ninep_bindings: BTreeMap::new(),

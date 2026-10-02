@@ -270,7 +270,14 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                             }));
                             let backend = one.nodes.remove(run.node());
                             let pending = one.pending_selectable_requests.remove(run.node());
-                            (run.node().clone(), backend, pending, operation)
+                            let parked_marker = one.parked_campaign_markers.remove(run.node());
+                            (
+                                run.node().clone(),
+                                backend,
+                                pending,
+                                parked_marker,
+                                operation,
+                            )
                         })
                     })
                     .collect::<Vec<_>>()
@@ -281,7 +288,7 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
 
             let mut first_error = None;
             for joined in completed {
-                let (node, backend, pending, operation) = match joined {
+                let (node, backend, pending, parked_marker, operation) = match joined {
                     Ok(completed) => completed,
                     Err(_) => {
                         first_error.get_or_insert_with(|| BackendError::Rejected {
@@ -302,6 +309,10 @@ impl ConcurrentSimulationBackend for QemuNodeSet {
                 if let Some(pending) = pending {
                     self.pending_selectable_requests
                         .insert(node.clone(), pending);
+                }
+                if let Some(parked_marker) = parked_marker {
+                    self.parked_campaign_markers
+                        .insert(node.clone(), parked_marker);
                 }
                 match operation {
                     Ok(Ok(outcome)) => outcomes.push(outcome),
