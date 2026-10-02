@@ -2,6 +2,9 @@
 
 use super::*;
 
+#[path = "network_output/retained_stop.rs"]
+mod retained_stop;
+
 struct OutputFixture {
     slot: NodeSlot,
     outbound: RingHeader,
@@ -109,6 +112,38 @@ fn live_tx_refuses_when_native_exact_stop_is_not_admitted() -> Result<(), Box<dy
 }
 
 #[test]
+fn network_output_stop_survives_a_resume_before_original_frame_consumption()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = OutputFixture::new()?;
+    let state = fixture.state()?;
+    state.on_vcpu_init(0)?;
+    state.try_halted_vcpus()?.mark_halted(0)?;
+    let original_ack = fixture.slot.snapshot().control_boundary_ack;
+
+    // The SDK callback models successful native admission only. The selected
+    // native RR ordering is audited separately; this exercises the real Rust
+    // producer and registered resume implementation over their original slot.
+    state.on_network_tx(20, b"frame")?;
+    state.on_vcpu_resume(0, 20)?;
+
+    let stopped = fixture.slot.snapshot();
+    assert_eq!(stopped.status, STATUS_IDLE);
+    assert_eq!(stopped.current_icount, 1_000);
+    assert_eq!(stopped.idle_wake_icount, 1_000);
+    assert_eq!(stopped.logical_time_raw_icount, 20);
+    assert_eq!(stopped.max_advance_icount, 2_000);
+    assert_eq!(stopped.control_boundary_ack, original_ack);
+    assert_eq!(fixture.outbound.read_index(), 0);
+    assert_eq!(fixture.outbound.write_index(), 1);
+    assert_eq!(fixture.outbound_entries[0].src_node, 0);
+    assert_eq!(fixture.outbound_entries[0].delivery_icount, 1_000);
+    assert_eq!(fixture.outbound_entries[0].seq, 0);
+    assert_eq!(fixture.outbound_entries[0].payload()?, b"frame");
+    assert_eq!(TEST_REQUEST_VMSTOP_CALLS.get(), 1);
+    Ok(())
+}
+
+#[test]
 fn network_output_resume_retries_a_busy_idle_reservation_after_the_control_ack()
 -> Result<(), Box<dyn std::error::Error>> {
     let _runtime_state = crate::runtime::isolate_runtime_state_for_test();
@@ -119,6 +154,11 @@ fn network_output_resume_retries_a_busy_idle_reservation_after_the_control_ack()
     TEST_CLOCK_DEADLINE_PS.set(-1);
     LAST_QUEUED_ADVANCE_TICK.set(-1);
     state.on_network_tx(20, b"reply")?;
+
+    // The host consumes the authenticated output report before publishing a
+    // new RUN. The native runstate stop can still await its own release below.
+    let consumed = fixture.outbound.dequeue(&fixture.outbound_entries)?;
+    assert!(consumed.is_some());
     let next_ceiling = authorize_advance_ceiling(1_000, 2_500, None)?;
     fixture
         .slot
