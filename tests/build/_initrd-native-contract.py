@@ -88,6 +88,13 @@ def check_bundle(assembly, stage, tree, directory, store):
     if stage == "host":
         names.append("installed.json")
     documents = {}
+    if stage == "host":
+        destination = tree / directory
+        require(destination.is_dir() and not destination.is_symlink(), "host bundle is not a copied directory")
+        require(
+            not any(entry.name.endswith("-aos-profile-system-deployment") for entry in destination.iterdir()),
+            "host bundle contains a nested bundle alias",
+        )
     for name in names:
         captured = (assembly / "inputs" / (stage + "-deployment") / name).read_bytes()
         embedded = confined(tree, directory + "/" + name, store).read_bytes()
