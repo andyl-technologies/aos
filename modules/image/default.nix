@@ -336,9 +336,10 @@ in {
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
-      # The recovery-capable runtime is 129 MiB after development-input pruning.
-      # Keep its measured allowance below the independent UKI and ESP budgets.
-      maxInitrdMiB = positiveMiB 132 "Maximum initrd artifact size before it is embedded in a UKI.";
+      # The recovery-capable runtime initrd measures 140 MiB on x86_64 after
+      # development-input pruning. Keep its allowance below the independent
+      # UKI and ESP budgets.
+      maxInitrdMiB = positiveMiB 160 "Maximum initrd artifact size before it is embedded in a UKI.";
       # AArch64 carries an uncompressed kernel image, making its UKIs 183 MiB.
       maxUkiMiB = positiveMiB (
         if targetPlatform.constraints.cpu == "aarch64"
