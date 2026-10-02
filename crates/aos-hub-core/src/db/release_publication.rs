@@ -1982,12 +1982,21 @@ mod tests {
         create_channel(&db, bundle.registry_id, 1, "edge").await;
         drop(db);
 
-        // Rewind to the baseline: the successor ledger is additive, so a v1
-        // database is exactly this schema without it. The retained operation
-        // lives in the frozen baseline ledger.
+        // Rewind to the baseline: every later migration is additive, so a v1
+        // database is exactly this schema without their objects. The
+        // retained operation lives in the frozen baseline ledger.
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
-            .execute_batch("DROP TABLE release_channel_advances")
+            .execute_batch(
+                "DROP TABLE release_channel_advances;
+                 DROP TABLE staged_release_store_roots;
+                 DROP TABLE staged_release_objects;
+                 DROP TABLE staged_release_revision_chunks;
+                 DROP TABLE staged_release_revisions;
+                 DROP TABLE staged_releases;
+                 DROP TABLE registry_public_catalog_heads;
+                 ALTER TABLE oci_gc_runs DROP COLUMN retire_registry;",
+            )
             .unwrap();
         connection
             .execute(
@@ -2019,7 +2028,7 @@ mod tests {
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, super::super::MIGRATIONS.len() as i64);
         let retained = db
             .release_channel_operation(bundle.registry_id, "edge", 1)
             .await
