@@ -28,6 +28,14 @@ mod limited;
 #[cfg(unix)]
 mod materialization;
 mod multiple;
+#[cfg(unix)]
+mod occurrences;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_nested_and_repeated_root_occurrences_check_actual_domains() {
+    occurrences::certify_repeated_roots().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
