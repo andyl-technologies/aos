@@ -920,7 +920,7 @@ pub(super) fn run_local_qemu_interactive_workflow(
         .enable_all()
         .build()?;
     let report = runtime.block_on(run_control_client_workflow_stdin_async(
-        &client, run_plan, false,
+        &client, run_plan, false, true,
     ))?;
     let mut outcome =
         finish_run_workflow_outcome(thin_plan, backend_plan, ergonomics_plan, run_plan, report)?;

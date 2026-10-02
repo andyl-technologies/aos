@@ -14,10 +14,15 @@ pub(super) use save_boundary::*;
 mod save_validation;
 pub(super) use save_validation::*;
 
+#[path = "control/interactive_terminal.rs"]
+mod interactive_terminal;
+use interactive_terminal::*;
+
 pub(super) async fn run_control_client_workflow_stdin_async<C>(
     client: &C,
     run_plan: &RunInvocationPlan,
     announce_remote_session: bool,
+    collect_terminal_fingerprints: bool,
 ) -> Result<RunWorkflowReport, CliError>
 where
     C: ControlClient + Sync,
@@ -28,6 +33,7 @@ where
         InteractiveCommandDriver::Stdin,
         announce_remote_session,
         false,
+        collect_terminal_fingerprints,
     )
     .await
 }
@@ -43,6 +49,8 @@ pub(super) struct InteractiveTerminalEvidence {
     pub(super) snapshot: Box<crucible_session::EngineSnapshot>,
     /// Canonical signal-fault trace queried immediately before stopping.
     pub(super) resolved_effect_trace: Option<Vec<u8>>,
+    /// Original samples taken while the paused terminal nodes remain owned.
+    pub(super) fingerprints: Vec<crucible::FingerprintSample>,
 }
 
 pub(super) async fn run_control_client_workflow_with_interactive_driver<C>(
@@ -51,6 +59,7 @@ pub(super) async fn run_control_client_workflow_with_interactive_driver<C>(
     interactive_driver: InteractiveCommandDriver<'_>,
     announce_remote_session: bool,
     reject_pending_branch_choices: bool,
+    collect_terminal_fingerprints: bool,
 ) -> Result<RunWorkflowReport, CliError>
 where
     C: ControlClient + Sync,
@@ -156,46 +165,66 @@ where
             }
             None
         }
-        RunExecutionMode::Interactive => match interactive_driver {
-            InteractiveCommandDriver::Preparsed(commands) => {
-                let mut terminal_evidence = None;
-                for command in commands {
-                    let resolved_effect_trace = if *command == SessionCommandKind::Stop {
-                        query_resolved_effect_trace(
-                            &control,
-                            &mut command_id,
-                            &mut acknowledged_commands,
-                        )
-                        .await?
-                    } else {
-                        None
-                    };
-                    let response = acknowledge_stream_command_payload(
+        RunExecutionMode::Interactive => {
+            let sampling_plan = collect_terminal_fingerprints.then_some(run_plan);
+            let result = match interactive_driver {
+                InteractiveCommandDriver::Preparsed(commands) => {
+                    async {
+                        let mut terminal_evidence = None;
+                        for command in commands {
+                            let fingerprints = if *command == SessionCommandKind::Stop {
+                                interactive_terminal_fingerprints(
+                                    &control,
+                                    &mut command_id,
+                                    &mut acknowledged_commands,
+                                    sampling_plan,
+                                )
+                                .await?
+                            } else {
+                                Vec::new()
+                            };
+                            let resolved_effect_trace = if *command == SessionCommandKind::Stop {
+                                query_resolved_effect_trace(
+                                    &control,
+                                    &mut command_id,
+                                    &mut acknowledged_commands,
+                                )
+                                .await?
+                            } else {
+                                None
+                            };
+                            let response = acknowledge_stream_command_payload(
+                                &control,
+                                &mut command_id,
+                                cli_stream_command(*command)?,
+                                &mut acknowledged_commands,
+                            )
+                            .await?;
+                            if *command == SessionCommandKind::Stop {
+                                terminal_evidence = Some(InteractiveTerminalEvidence {
+                                    snapshot: terminal_snapshot_from_stop_response(response)?,
+                                    resolved_effect_trace,
+                                    fingerprints,
+                                });
+                                break;
+                            }
+                        }
+                        Ok(terminal_evidence)
+                    }
+                    .await
+                }
+                InteractiveCommandDriver::Stdin => {
+                    drive_interactive_stdin_commands(
                         &control,
                         &mut command_id,
-                        cli_stream_command(*command)?,
                         &mut acknowledged_commands,
+                        sampling_plan,
                     )
-                    .await?;
-                    if *command == SessionCommandKind::Stop {
-                        terminal_evidence = Some(InteractiveTerminalEvidence {
-                            snapshot: terminal_snapshot_from_stop_response(response)?,
-                            resolved_effect_trace,
-                        });
-                        break;
-                    }
+                    .await
                 }
-                terminal_evidence
-            }
-            InteractiveCommandDriver::Stdin => {
-                drive_interactive_stdin_commands(
-                    &control,
-                    &mut command_id,
-                    &mut acknowledged_commands,
-                )
-                .await?
-            }
-        },
+            };
+            finish_interactive_capture(client, created.session, result).await?
+        }
     };
 
     let mut state_updates = Vec::new();
@@ -229,6 +258,9 @@ where
             &mut acknowledged_commands,
         )
         .await?;
+    }
+    if let Some(evidence) = interactive_terminal_evidence.as_ref() {
+        execution_fingerprints.extend(evidence.fingerprints.iter().cloned());
     }
     if interactive_terminal_evidence.is_some() && run_plan.collect_execution_fingerprints {
         query_execution_fingerprint(
@@ -446,6 +478,7 @@ pub(super) async fn drive_interactive_stdin_commands(
     control: &crucible_api::ClientControlStream,
     command_id: &mut u64,
     acknowledged_commands: &mut Vec<SessionCommandKind>,
+    sampling_plan: Option<&RunInvocationPlan>,
 ) -> Result<Option<InteractiveTerminalEvidence>, CliError> {
     let stdin = io::stdin();
     let mut stdout = io::stdout();
@@ -455,6 +488,7 @@ pub(super) async fn drive_interactive_stdin_commands(
         acknowledged_commands,
         stdin.lock(),
         &mut stdout,
+        sampling_plan,
     )
     .await
 }
@@ -465,6 +499,7 @@ pub(super) async fn drive_interactive_command_reader<R, W>(
     acknowledged_commands: &mut Vec<SessionCommandKind>,
     reader: R,
     writer: &mut W,
+    sampling_plan: Option<&RunInvocationPlan>,
 ) -> Result<Option<InteractiveTerminalEvidence>, CliError>
 where
     R: BufRead,
@@ -477,6 +512,17 @@ where
             continue;
         };
         let model_command = cli_stream_command(command)?;
+        let fingerprints = if command == SessionCommandKind::Stop {
+            interactive_terminal_fingerprints(
+                control,
+                command_id,
+                acknowledged_commands,
+                sampling_plan,
+            )
+            .await?
+        } else {
+            Vec::new()
+        };
         let resolved_effect_trace = if command == SessionCommandKind::Stop {
             query_resolved_effect_trace(control, command_id, acknowledged_commands).await?
         } else {
@@ -501,6 +547,7 @@ where
             terminal_evidence = Some(InteractiveTerminalEvidence {
                 snapshot: terminal_snapshot_from_stop_response(response)?,
                 resolved_effect_trace,
+                fingerprints,
             });
         }
         writer.flush()?;
