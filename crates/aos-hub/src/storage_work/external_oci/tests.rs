@@ -39,6 +39,10 @@ mod route;
 #[path = "tests/fleet.rs"]
 mod fleet;
 
+#[cfg(target_os = "linux")]
+#[path = "tests/fleet_setup.rs"]
+mod fleet_setup;
+
 const MATERIAL: &[u8] = b"fixture-access:fixture-secret:fixture-region";
 const CANDIDATE: &str = "fixture-oci-candidate-independent-role-key";
 const INGRESS: &str = "fixture-oci-ingress-independent-role-key";

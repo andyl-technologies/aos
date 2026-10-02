@@ -28,7 +28,15 @@ CREDENTIAL_CUSTODY_METADATA_TABLES = HYDRATION_METADATA_TABLES + (
 )
 
 
-def install_operator_provider_versions(worker, python, material, version_references):
+def _operator_root(root):
+    """Keep optional private custody paths below the Worker fixture root."""
+    if (not isinstance(root, str) or not root.startswith("/var/lib/hybrid-worker/")
+            or any(part in {"", ".", ".."} for part in root.split("/")[1:])):
+        raise ValueError("operator custody root is invalid")
+
+
+def install_operator_provider_versions(worker, python, material, version_references,
+                                      *, operator_root="/var/lib/hybrid-worker/operator"):
     """Keep actual immutable provider values and their manifest on Worker only."""
     if not isinstance(material, bytes) or not material or len(material) > 65536:
         raise ValueError("provider material has an invalid size")
@@ -40,6 +48,7 @@ def install_operator_provider_versions(worker, python, material, version_referen
     if any(not isinstance(value, str) or not value.endswith("/v1") for value in references.values()):
         raise ValueError("fixture provider references require explicit first versions")
 
+    _operator_root(operator_root)
     encoded_material = base64.b64encode(material).decode()
     encoded_references = base64.b64encode(json.dumps(references).encode()).decode()
     result = json.loads(private_guest_command(worker, textwrap.dedent(f"""
@@ -47,7 +56,7 @@ def install_operator_provider_versions(worker, python, material, version_referen
         import base64, hashlib, json, os
         from pathlib import Path
 
-        root = Path('/var/lib/hybrid-worker/operator/provider-versions')
+        root = Path({operator_root + '/provider-versions'!r})
         root.mkdir(mode=0o700, parents=True, exist_ok=False)
         material = base64.b64decode({encoded_material!r}, validate=True)
         references = json.loads(base64.b64decode({encoded_references!r}, validate=True))
@@ -99,14 +108,16 @@ def private_guest_command(machine, command, timeout=60):
 
 def stage_queued_provider_credential(worker, python, bootstrap_executable, operation_id,
                                      purpose, deployment_id, worker_url,
-                                     storage_work_key_file, manifest_file):
+                                     storage_work_key_file, manifest_file,
+                                     *, operator_root="/var/lib/hybrid-worker/operator"):
     """Stage only the genuine queued credential original through the installed tool."""
     if purpose not in {"read", "write", "presign", "list", "delete"}:
         raise ValueError("invalid provider credential purpose")
-    output = "/var/lib/hybrid-worker/operator/credential-stage-" + purpose
+    _operator_root(operator_root)
+    output = operator_root + "/credential-stage-" + purpose
     arguments = [
         bootstrap_executable, "--database-url-file",
-        "/var/lib/hybrid-worker/operator/sql.url", "stage-credential",
+        operator_root + "/sql.url", "stage-credential",
         "--operation-id", operation_id, "--deployment-id", deployment_id,
         "--worker-url", worker_url, "--storage-work-key-file", storage_work_key_file,
         "--secret-version-manifest", manifest_file, "--retention-seconds", "86400",
@@ -129,8 +140,14 @@ def stage_queued_provider_credential(worker, python, bootstrap_executable, opera
     }
 
 
-def read_operator_binding_pins(worker, postgres, database_host, binding):
+def read_operator_binding_pins(worker, postgres, database_host, binding,
+                               *, operator_root="/var/lib/hybrid-worker/operator",
+                               database_name="postgres", operator_role="fleet_direct_operator"):
     """Read current numeric identity, validated heads and selected writer through SQL."""
+    _operator_root(operator_root)
+    if any(not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", value)
+           for value in (database_name, operator_role)):
+        raise ValueError("operator SQL database or reader role is invalid")
     stable_id = binding["stableId"]
     if not re.fullmatch(r"[A-Za-z0-9:._-]{1,64}", stable_id):
         raise ValueError("invalid fixture binding stable identity")
@@ -165,10 +182,10 @@ def read_operator_binding_pins(worker, postgres, database_host, binding):
         WHERE b.stable_id = '{stable_id}'
     """).strip()
     arguments = [postgres + "/psql", "-h", database_host,
-                 "-U", "fleet_direct_operator", "-d", "postgres",
+                 "-U", operator_role, "-d", database_name,
                  "-v", "ON_ERROR_STOP=1", "-At", "-c", query]
     body = private_guest_command(worker,
-        "PGPASSWORD=$(cat /var/lib/hybrid-worker/operator/sql-password) "
+        "PGPASSWORD=$(cat " + shlex.quote(operator_root + "/sql-password") + ") "
         + shlex.join(arguments), timeout=60,
     )
     if len(body.encode()) > 65536:
