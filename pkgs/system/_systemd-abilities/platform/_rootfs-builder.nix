@@ -295,6 +295,9 @@ in
               # mountpoint to exist before stage-2 boot. /var was already above;
               # /boot would otherwise be missing in production.
               mkdir -p rootfs/boot
+              # Preserve the platform's persistent-data mountpoint. Native
+              # storage mounts /var/srv here after the immutable root is read-only.
+              mkdir -m 0755 rootfs/srv
               mkdir -m 0700 rootfs/root
               mkdir -m 0755 rootfs/home
               # Root-owned APM authoring config lives on the read-only rootfs,
