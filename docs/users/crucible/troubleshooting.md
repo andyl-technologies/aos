@@ -7,10 +7,11 @@ message or event log does.
 
 ### QEMU or plugin was not found
 
-Build and invoke the complete package closure:
+Build and invoke the complete package closure from the repository root in
+`nix develop` or its direnv environment:
 
 ```sh
-nix build .#pkg-crucible
+aos-dev build package crucible
 ./result/bin/crucible selftest
 ```
 
@@ -28,9 +29,9 @@ Do not add an arbitrary host QEMU to `PATH`; Crucible does not consult it.
 ### Build marker or ABI mismatch
 
 QEMU and the plugin must come from the same Crucible package set. Rebuild
-`pkg-crucible` rather than mixing outputs from different commits or copying only
-the shared object. The CLI validates the QEMU build ID, atomic-patch hash,
-shared-memory ABI, and plugin ABI before launch.
+the complete `crucible` package rather than mixing outputs from different
+commits or copying only the shared object. The CLI validates the QEMU build ID,
+atomic-patch hash, shared-memory ABI, and plugin ABI before launch.
 
 ### Kernel or root image is missing
 
@@ -45,6 +46,24 @@ CRUCIBLE_RUN_STATE_ROOT
 
 `CRUCIBLE_RUN_STATE_ROOT` must name a writable directory that persists across
 CLI restarts. Use `CRUCIBLE_INITRD` only when the guest requires one.
+
+### Campaign deployment or host-resource admission failed
+
+Local QEMU runs require a provisioned deployment selected by the global
+`--campaign-deployment PATH`, `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, or
+`/etc/crucible/packaged-executor.toml`. The file must meet the exact ownership,
+mode, and version requirements in [campaign setup](campaigns.md#start-the-single-host-owner).
+The same setup describes the dedicated cgroup-v2 root, ext4 project quotas,
+reserved project IDs, and child credentials. Package installation does not
+create them, and an arbitrary temporary directory is not an alternative.
+
+### Execution shape or capability is refused
+
+Unattended local QEMU runs reject `--save-on fail` and `--save-on always`.
+Use the default `never` and the dedicated `save` command for durable handles.
+Check the [current execution refusals](support.md#current-execution-refusals)
+for due inputs, native preemption commands, and linked advances without a safe
+positive tick. These are capability failures; raising a timeout cannot fix them.
 
 ## Exit `5`: scenario, artifact, store, or I/O input
 
@@ -102,16 +121,17 @@ a Crucible correctness failure, not an expected scenario outcome.
 ### Daemon or backend crashed
 
 Run the same scenario locally with the packaged backend. If local execution
-works but the daemon route fails, remember that the current daemon uses the
-quiescent development lifecycle rather than production QEMU.
+works but the daemon route fails, confirm the daemon was started with
+`--production-qemu`. Its default quiescent lifecycle is for API testing.
 
 ## Exit `2`: timeout
 
-The run reached `--max-virtual-time`, `--max-quanta`, or a fixed local-QEMU
-lifecycle bound. A timeout is not a property violation. Decide whether the
-budget is the intended assertion or only a safety bound, then increase the
-user-configurable budget or select a different terminal condition. Raising
-`--max-quanta` does not raise the fixed 40-billion-instruction per-node ceiling.
+The run reached a modeled virtual-time or scheduler-quantum bound. A timeout is
+not a property violation. Decide whether the budget is the intended assertion
+or only a safety bound, then adjust the user-configurable budget or terminal
+condition within the [lifecycle limits](running.md#terminal-conditions-and-budgets).
+A host step deadline or campaign watchdog is an operational failure, not a
+modeled timeout finding; inspect its backend diagnostic instead.
 
 Check duration syntax: only positive integral `ticks`, `ns`, `us`, `ms`, and `s`
 values are accepted.

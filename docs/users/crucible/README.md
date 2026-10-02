@@ -64,15 +64,19 @@ support guarantee.
 
 ## Build and smoke-test the package
 
-Build the complete hermetic closure from the repository root:
+From the repository root, enter the development shell with `nix develop`
+(or use the repository's direnv configuration), then build the complete suite:
 
 ```sh
-nix build .#pkg-crucible
+aos-dev build package crucible
 ```
 
 The result includes the `crucible` CLI, patched QEMU, matching plugin, Crucible
 kernel, and fixture root image. The CLI has compile-time paths to the matching
 artifacts, so a packaged invocation normally needs no discovery flags.
+`aos-dev` is the repository's source-built development entry point at
+`tools/dev/aos-dev`. The command above creates `./result`; omitting the output
+link with `--no-out-link` requires using the returned store path instead.
 
 Run the live QEMU self-test before authoring or investigating a scenario:
 
@@ -84,6 +88,22 @@ The production command runs the live QEMU gates by default. It fails closed if
 it cannot discover and validate a matched QEMU/plugin pair.
 
 ## First run
+
+Local QEMU runs require a durable `CRUCIBLE_RUN_STATE_ROOT` and a provisioned
+campaign-executor deployment. An administrator must supply the dedicated
+cgroup-v2 and ext4 project-quota roots described in
+[campaign setup](campaigns.md#start-the-single-host-owner). Building the package
+does not provision these host resources. Select the owner-only deployment file
+with `--campaign-deployment`, `CRUCIBLE_CAMPAIGN_DEPLOYMENT`, or the default
+`/etc/crucible/packaged-executor.toml`.
+
+After provisioning, set the paths for this shell:
+
+```sh
+mkdir -p .crucible/run-state
+export CRUCIBLE_RUN_STATE_ROOT="$PWD/.crucible/run-state"
+export CRUCIBLE_CAMPAIGN_DEPLOYMENT=/path/to/campaign-executor.toml
+```
 
 Run the built-in happy-path scenario with an explicit seed:
 
@@ -125,9 +145,9 @@ The usual progression is:
 
 ## Guide map
 
-Start with the [Nginx/Curl tutorial](quickstart.md). It builds the runtime and a
-workload guest, generates a two-node scenario through the public Rust API, and
-runs that scenario on the live QEMU backend.
+Start with the [representative-scenario quickstart](quickstart.md). It builds
+the suite, generates a three-VM nginx, curl, and I/O-probe scenario through the
+public Rust API, and installs its content-addressed I/O objects before execution.
 
 For deeper work:
 
@@ -192,7 +212,7 @@ For deeper work:
 |---|---|---|
 | Audit whether a feature is documented | [Feature coverage](coverage.md) | Implementation registry and coverage tests |
 | Decide whether a surface is operationally supported | [Support boundaries](support.md) | [Reference](reference.md) |
-| Build and run a first workload | [Nginx/Curl tutorial](quickstart.md) | [Running Crucible](running.md) |
+| Build and run a first workload | [Representative-scenario quickstart](quickstart.md) | [Running Crucible](running.md) |
 | Generate a signal-driven scenario | [Authoring fault scenarios](authoring.md) | [Signals and bindings](reference.md#plans-signals-bindings-and-faults) |
 | Declare fault-addressable objects | [Fault topology reference](topology.md) | [Canonical scenario reference](reference.md#canonical-scenario-document) |
 | Simulate network failures | [Network faults](network-faults.md) | [Effect registry](reference.md#exhaustive-effect-registry) |

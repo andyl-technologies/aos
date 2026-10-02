@@ -11,12 +11,14 @@ multi-host executor fanout. A campaign repository has one authoritative local
 reference owner. The built-in store uses a SQLite immutable-object leaf and
 durable directory refs; an explicit store deployment may use a composed graph.
 
-Release qualification uses the checked
+The repository defines release qualification in the
 [automated packaged-QEMU matrix](../../rfcs/0020-crucible-campaigns/14-automated-release-validation.md).
-Its determinism gate runs a three-VM nginx, curl, and I/O-probe scenario under
+Its determinism gate exercises a three-VM nginx, curl, and I/O-probe scenario under
 live TCG with same-host one-, two-, and four-core profiles and bounded scheduling
-and I/O jitter. It authenticates byte-identical artifacts and results. Separate
-required product gates run the five-VM Envoy campaign and its finding lifecycle.
+and I/O jitter. It checks byte-identical artifacts and results. Separate
+product gates exercise the five-VM Envoy campaign and its finding lifecycle.
+The presence of a gate does not establish that a particular package revision
+passed it; retain the matching result when qualifying a deployment.
 
 ## What is implemented
 
@@ -55,12 +57,11 @@ The selected packaged-executor file still passes the strict ownership, mode,
 cgroup, project-quota, and resource-limit checks described below. If no
 capability is available, the command fails before launching QEMU and names all
 three configuration methods. Standard local production-QEMU
-`save --at virtual-time --max-virtual-time DURATION` commands use the same
-resolution order and campaign owner. Marker saves, standard unattended resume,
-and unchanged forks targeting virtual time or stopped completion also use
-campaign ownership. Quiescence and property saves, interactive control,
-quiescence/property continuations and divergent recipes use their explicit current
-session owner.
+`save` commands use the same resolution order and campaign owner for
+virtual-time, marker, quiescence, and property boundaries. Standard unattended
+resume and unchanged forks targeting virtual time or stopped completion also
+use campaign ownership. Interactive control, quiescence/property continuations,
+and divergent recipes use their explicit current session owner.
 
 A campaign-backed virtual-time save executes the semantic attempt and then
 replays that attempt once to capture and authenticate the exact reached
@@ -111,10 +112,11 @@ artifacts.
 
 ## Build and validate inputs
 
-Build the complete suite first:
+Build the complete suite from the repository root in `nix develop` or its
+direnv environment:
 
 ```sh
-nix build .#pkg-crucible
+aos-dev build package crucible
 ```
 
 Generate the RFC-0020 worked-network reference fixture into a new private
@@ -519,7 +521,7 @@ creation, inspection, derivation, and lifecycle mutations without planner or
 debugger component authority:
 
 ```sh
-nix build .#pkg-jq -o result-jq
+aos-dev build package jq -o result-jq
 
 FLIGHT="$(mktemp -d)"
 install -d -m 700 "$FLIGHT/state" "$FLIGHT/socket"

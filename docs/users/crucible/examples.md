@@ -23,13 +23,14 @@ signal bindings, node restart policy, and quantified properties. The
 Build the complete package and run its public self-test surface first:
 
 ```sh
-nix build .#pkg-crucible
+aos-dev build package crucible
 ./result/bin/crucible selftest
 ```
 
 Repository checks are hermetic and supply the matched QEMU, plugin, guest
 assets, and process contract. Do not run certification examples with a
 host-built QEMU or a separately sourced plugin.
+Run `aos-dev` from the repository root in `nix develop` or its direnv environment.
 
 When adapting an example, treat guest payloads, instruction ceilings, and
 machine-readable `key=value` output as fixture details. Reuse the typed world,

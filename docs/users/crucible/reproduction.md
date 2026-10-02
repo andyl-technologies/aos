@@ -164,9 +164,13 @@ Save at virtual time:
 ./result/bin/crucible \
   save scenario.toml \
   --at virtual-time \
-  --max-virtual-time 20s \
+  --max-virtual-time 1ms \
   --label before-election
 ```
+
+Local QEMU saves require the [provisioned deployment and durable run-state root](README.md#first-run).
+The example coordinate is within the CLI's five-second lifecycle ceiling;
+choose a boundary within the admitted limits for your scenario.
 
 Virtual-time saves pause after each scheduler quantum and export only at the
 exact requested coordinate. A backend that cannot advance virtual time or that
