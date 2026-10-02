@@ -19,7 +19,7 @@ use crate::pidfd::PidFd;
 use super::{
     ChildGuard, CleanupDisposition, FixedProcessRequest, OutputStream, ProcessStatus, SpawnedProcess,
     decode_status, kernel_error, set_nonblocking,
-    wait_status_blocking,
+    wait_status_blocking, wait_status_once,
 };
 use super::session::FixedProcessSessionError;
 
@@ -50,13 +50,13 @@ pub enum FixedProcessStopV1 {
     Completed,
     /// The leader exited before exchange completion.
     ChildExitedBeforeExchange,
-    /// The original absolute monotonic deadline expired.
+    /// The original absolute supervisor deadline expired.
     TimedOut,
     /// Standard output crossed its byte ceiling.
     StdoutLimit,
     /// Standard error crossed its byte ceiling.
     StderrLimit,
-    /// A concrete process or exchange error was returned.
+    /// A process/exchange failure or selected drive cancellation was observed.
     Error,
     /// Unwinding interrupted the call; the original panic was not converted.
     Unwound,
@@ -224,6 +224,14 @@ impl FixedProcessCaptureV1 {
         &mut self,
         request: FixedProcessRequest<'_>,
     ) -> std::result::Result<(), FixedProcessRetainedSessionError<E>> {
+        self.prepare_limits(request.maximum_stdout_bytes, request.maximum_stderr_bytes)
+    }
+
+    pub(super) fn prepare_limits<E>(
+        &mut self,
+        maximum_stdout_bytes: usize,
+        maximum_stderr_bytes: usize,
+    ) -> std::result::Result<(), FixedProcessRetainedSessionError<E>> {
         if self.observation.dispatch != FixedProcessDispatchV1::NoChildProduced {
             return Err(FixedProcessRetainedSessionError::Session(
                 FixedProcessSessionError::Process {
@@ -233,9 +241,8 @@ impl FixedProcessCaptureV1 {
             ));
         }
 
-        request
-            .maximum_stdout_bytes
-            .checked_add(request.maximum_stderr_bytes)
+        maximum_stdout_bytes
+            .checked_add(maximum_stderr_bytes)
             .ok_or_else(|| FixedProcessRetainedSessionError::Session(
                 FixedProcessSessionError::Process {
                     source: Error::invalid(
@@ -247,10 +254,10 @@ impl FixedProcessCaptureV1 {
             ))?;
 
         self.stdout
-            .try_reserve_exact(request.maximum_stdout_bytes)
+            .try_reserve_exact(maximum_stdout_bytes)
             .map_err(FixedProcessRetainedSessionError::CaptureAllocation)?;
         self.stderr
-            .try_reserve_exact(request.maximum_stderr_bytes)
+            .try_reserve_exact(maximum_stderr_bytes)
             .map_err(FixedProcessRetainedSessionError::CaptureAllocation)?;
         self.errors
             .try_reserve_exact(CLEANUP_ERRORS)
@@ -350,6 +357,34 @@ impl<E: std::error::Error + Send + Sync + 'static> std::error::Error
 }
 
 /// Keeps child ownership, pipe buffers and the external capture loan together.
+enum CaptureDestination<'a> {
+    Local,
+    Retained(RetainedCapture<'a>),
+}
+
+enum RetainedCapture<'a> {
+    Borrowed(&'a mut FixedProcessCaptureV1),
+    Resident(FixedProcessCaptureV1),
+}
+
+impl CaptureDestination<'_> {
+    fn as_mut(&mut self) -> Option<&mut FixedProcessCaptureV1> {
+        match self {
+            Self::Local => None,
+            Self::Retained(RetainedCapture::Borrowed(capture)) => Some(capture),
+            Self::Retained(RetainedCapture::Resident(capture)) => Some(capture),
+        }
+    }
+
+    fn as_ref(&self) -> Option<&FixedProcessCaptureV1> {
+        match self {
+            Self::Local => None,
+            Self::Retained(RetainedCapture::Borrowed(capture)) => Some(capture),
+            Self::Retained(RetainedCapture::Resident(capture)) => Some(capture),
+        }
+    }
+}
+
 pub(super) struct SessionRun<'a> {
     // Legacy locals dropped stderr, then stdout, then the child guard. Retain
     // that order even when a callback unwinds through the shared run owner.
@@ -357,8 +392,10 @@ pub(super) struct SessionRun<'a> {
     pub(super) stdout: OutputStream,
     pub(super) guard: ChildGuard,
     pub(super) exec_status: Option<crate::uapi::FixedExecStatusReader>,
-    capture: Option<&'a mut FixedProcessCaptureV1>,
+    capture: CaptureDestination<'a>,
     cleanup_passes: u8,
+    terminal: Option<[TerminalCaptureState; 2]>,
+    terminal_settled: bool,
 }
 
 impl<'a> SessionRun<'a> {
@@ -368,8 +405,10 @@ impl<'a> SessionRun<'a> {
             stdout,
             stderr,
             exec_status: None,
-            capture: None,
+            capture: CaptureDestination::Local,
             cleanup_passes: 0,
+            terminal: None,
+            terminal_settled: false,
         }
     }
 
@@ -378,6 +417,35 @@ impl<'a> SessionRun<'a> {
         process: FixedProcessRequest<'_>,
         capture: &'a mut FixedProcessCaptureV1,
     ) -> Self {
+        Self::retained_destination(
+            spawned, process.maximum_stdout_bytes, process.maximum_stderr_bytes,
+            RetainedCapture::Borrowed(capture),
+        )
+    }
+
+    pub(super) fn resident(
+        spawned: SpawnedProcess,
+        maximum_stdout_bytes: usize,
+        maximum_stderr_bytes: usize,
+        capture: FixedProcessCaptureV1,
+    ) -> SessionRun<'static> {
+        SessionRun::retained_destination(
+            spawned, maximum_stdout_bytes, maximum_stderr_bytes,
+            RetainedCapture::Resident(capture),
+        )
+    }
+
+    fn retained_destination(
+        spawned: SpawnedProcess,
+        maximum_stdout_bytes: usize,
+        maximum_stderr_bytes: usize,
+        mut destination: RetainedCapture<'a>,
+    ) -> Self {
+        // The closed retained destination makes the post-fork handoff infallible.
+        let capture = match &mut destination {
+            RetainedCapture::Borrowed(capture) => &mut **capture,
+            RetainedCapture::Resident(capture) => capture,
+        };
         capture.observation.dispatch = FixedProcessDispatchV1::ChildOwned;
         capture.observation.stdout = FixedProcessCapturedStreamV1::Incomplete;
         capture.observation.stderr = FixedProcessCapturedStreamV1::Incomplete;
@@ -386,18 +454,20 @@ impl<'a> SessionRun<'a> {
             stdout: OutputStream {
                 descriptor: spawned.stdout,
                 bytes: std::mem::take(&mut capture.stdout),
-                maximum: process.maximum_stdout_bytes,
+                maximum: maximum_stdout_bytes,
                 closed: false,
             },
             stderr: OutputStream {
                 descriptor: spawned.stderr,
                 bytes: std::mem::take(&mut capture.stderr),
-                maximum: process.maximum_stderr_bytes,
+                maximum: maximum_stderr_bytes,
                 closed: false,
             },
             exec_status: spawned.exec_status,
-            capture: Some(capture),
+            capture: CaptureDestination::Retained(destination),
             cleanup_passes: 0,
+            terminal: None,
+            terminal_settled: false,
         }
     }
 
@@ -419,13 +489,13 @@ impl<'a> SessionRun<'a> {
     }
 
     pub(super) fn stop(&mut self, stop: FixedProcessStopV1) {
-        if let Some(capture) = &mut self.capture {
+        if let Some(capture) = self.capture.as_mut() {
             capture.observation.stop = stop;
         }
     }
 
     pub(super) fn limit(&mut self, stdout: bool) {
-        if let Some(capture) = &mut self.capture {
+        if let Some(capture) = self.capture.as_mut() {
             let observation = &mut capture.observation;
             if stdout {
                 observation.stdout = FixedProcessCapturedStreamV1::Truncated;
@@ -438,7 +508,7 @@ impl<'a> SessionRun<'a> {
     }
 
     pub(super) fn exec_confirmed(&mut self) {
-        if let Some(capture) = &mut self.capture {
+        if let Some(capture) = self.capture.as_mut() {
             capture.observation.dispatch = FixedProcessDispatchV1::ExecConfirmed;
         }
     }
@@ -451,24 +521,24 @@ impl<'a> SessionRun<'a> {
                 ..
             }
         ) {
-            if let Some(capture) = &mut self.capture {
+            if let Some(capture) = self.capture.as_mut() {
                 capture.observation.dispatch = FixedProcessDispatchV1::ExecRejected;
             }
         }
     }
 
     pub(super) fn retains_output(&self) -> bool {
-        self.capture.is_some()
+        self.capture.as_ref().is_some()
     }
 
     pub(super) fn cleanup_error_returned(&mut self) {
-        if let Some(capture) = &mut self.capture {
+        if let Some(capture) = self.capture.as_mut() {
             capture.observation.returned_cleanup_error = true;
         }
     }
 
     pub(super) fn cancel_and_reap(&mut self) -> Result<ProcessStatus> {
-        let Some(capture) = &mut self.capture else {
+        let Some(capture) = self.capture.as_mut() else {
             return self.guard.cancel_and_reap();
         };
 
@@ -481,11 +551,104 @@ impl<'a> SessionRun<'a> {
             (None, None) => Err(Error::invalid("fixed process cleanup", "omitted terminal status")),
         }
     }
+
+    pub(super) fn capture(&self) -> Option<&FixedProcessCaptureV1> {
+        self.capture.as_ref()
+    }
+
+    pub(super) fn record_driven_error(&mut self, source: Error) {
+        if let Some(capture) = self.capture.as_mut() {
+            capture.record_error(source);
+        }
+    }
+
+    pub(super) fn take_ended_capture(&mut self) -> Option<FixedProcessCaptureV1> {
+        if self.guard.armed || !self.terminal_settled {
+            return None;
+        }
+        if !matches!(self.capture, CaptureDestination::Retained(RetainedCapture::Resident(_))) {
+            return None;
+        }
+        match std::mem::replace(&mut self.capture, CaptureDestination::Local) {
+            CaptureDestination::Retained(RetainedCapture::Resident(capture)) => Some(capture),
+            _ => None,
+        }
+    }
+
+    /// Signals only once during borrowed driving. Parent Drop owns the second
+    /// original fallback pass; Pending waits never repeat this signal stage.
+    pub(super) fn signal_driven_cleanup(&mut self) -> Result<()> {
+        if !self.guard.armed || self.cleanup_passes != 0 {
+            return Ok(());
+        }
+        self.cleanup_passes = 1;
+        let Some(capture) = self.capture.as_mut() else {
+            return self.guard.cancel();
+        };
+        let mut first = None;
+        let signals = self.guard.cancel_with_disposition(CleanupDisposition::Retained {
+            first: &mut first, capture,
+        });
+        record_cleanup_result(signals, &mut first, capture);
+        match first {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    /// Calls the sole exact-child wait engine without blocking or reaping any
+    /// other child. The common observer owns ECHILD/disarm and status semantics.
+    pub(super) fn poll_driven_reap(&mut self) -> Result<Option<ProcessStatus>> {
+        let result = match wait_status_once(self.guard.pid, rustix::process::WaitOptions::NOHANG) {
+            Ok(status) => Ok(status),
+            Err(rustix::io::Errno::INTR) => Ok(None),
+            Err(error) => Err(kernel_error("reap fixed process", error)),
+        };
+        let Some(capture) = self.capture.as_mut() else {
+            return Err(Error::invalid("fixed process driven capture", "is absent"));
+        };
+        let mut first = None;
+        let status = observe_wait_result(&mut self.guard, capture, result, &mut first);
+        match first {
+            Some(error) => Err(error),
+            None => Ok(status),
+        }
+    }
+
+    /// Takes one finite terminal read, keeping stdout-before-stderr priority.
+    pub(super) fn settle_driven_capture_once(&mut self) -> bool {
+        if self.terminal_settled {
+            return true;
+        }
+        let states = self.terminal.get_or_insert_with(|| [
+            TerminalCaptureState::new(), TerminalCaptureState::new(),
+        ]);
+        let Some(capture) = self.capture.as_mut() else {
+            return false;
+        };
+        if !states[0].finished {
+            terminal_capture_once(
+                &mut self.stdout, &mut capture.observation.stdout, &mut capture.errors,
+                &mut states[0],
+            );
+        } else if !states[1].finished {
+            terminal_capture_once(
+                &mut self.stderr, &mut capture.observation.stderr, &mut capture.errors,
+                &mut states[1],
+            );
+        }
+        if states[0].finished && states[1].finished {
+            capture.stdout = std::mem::take(&mut self.stdout.bytes);
+            capture.stderr = std::mem::take(&mut self.stderr.bytes);
+            self.terminal_settled = true;
+        }
+        self.terminal_settled
+    }
 }
 
 impl Drop for SessionRun<'_> {
     fn drop(&mut self) {
-        let Some(capture) = &mut self.capture else {
+        let Some(capture) = self.capture.as_mut() else {
             return;
         };
 
@@ -503,16 +666,30 @@ impl Drop for SessionRun<'_> {
         // All attempts are now accounted for. In particular, ECHILD must not
         // reach ChildGuard's numerical signaling fallback on a recycled PID.
         self.guard.armed = false;
-        terminal_capture(
-            &mut self.stdout,
-            &mut capture.observation.stdout,
-            &mut capture.errors,
-        );
-        terminal_capture(
-            &mut self.stderr,
-            &mut capture.observation.stderr,
-            &mut capture.errors,
-        );
+        if self.terminal_settled {
+            return;
+        }
+        if let Some(states) = &mut self.terminal {
+            finish_terminal_capture(
+                &mut self.stdout, &mut capture.observation.stdout, &mut capture.errors,
+                &mut states[0],
+            );
+            finish_terminal_capture(
+                &mut self.stderr, &mut capture.observation.stderr, &mut capture.errors,
+                &mut states[1],
+            );
+        } else {
+            terminal_capture(
+                &mut self.stdout,
+                &mut capture.observation.stdout,
+                &mut capture.errors,
+            );
+            terminal_capture(
+                &mut self.stderr,
+                &mut capture.observation.stderr,
+                &mut capture.errors,
+            );
+        }
 
         capture.stdout = std::mem::take(&mut self.stdout.bytes);
         capture.stderr = std::mem::take(&mut self.stderr.bytes);
@@ -531,8 +708,20 @@ fn observed_cleanup(
     });
     record_cleanup_result(signals, &mut first, capture);
 
-    let status = match wait_status_blocking(guard.pid) {
-        Ok(raw) => {
+    let result = wait_status_blocking(guard.pid).map(Some);
+    let status = observe_wait_result(guard, capture, result, &mut first);
+    (first, status)
+}
+
+/// Sole decoder/bookend for blocking and nonblocking exact-child observations.
+fn observe_wait_result(
+    guard: &mut ChildGuard,
+    capture: &mut FixedProcessCaptureV1,
+    result: Result<Option<rustix::process::WaitStatus>>,
+    first: &mut Option<Error>,
+) -> Option<ProcessStatus> {
+    match result {
+        Ok(Some(raw)) => {
             guard.armed = false;
             capture.observation.reaped = true;
             if raw.exited() || raw.signaled() {
@@ -543,7 +732,7 @@ fn observed_cleanup(
                         Some(status)
                     }
                     Err(error) => {
-                        record_cleanup_result(Err(error), &mut first, capture);
+                        record_cleanup_result(Err(error), first, capture);
                         None
                     }
                 }
@@ -553,12 +742,13 @@ fn observed_cleanup(
                         field: "fixed process status",
                         message: std::mem::take(&mut capture.invalid_wait_message),
                     }),
-                    &mut first,
+                    first,
                     capture,
                 );
                 None
             }
         }
+        Ok(None) => None,
         Err(error) => {
             if matches!(
                 &error,
@@ -568,12 +758,10 @@ fn observed_cleanup(
                 guard.armed = false;
                 capture.observation.ownership_lost = true;
             }
-            record_cleanup_result(Err(error), &mut first, capture);
+            record_cleanup_result(Err(error), first, capture);
             None
         }
-    };
-
-    (first, status)
+    }
 }
 
 pub(super) fn record_cleanup_result(
@@ -596,52 +784,90 @@ fn terminal_capture(
     completeness: &mut FixedProcessCapturedStreamV1,
     errors: &mut Vec<Error>,
 ) {
-    if stream.closed {
-        if *completeness != FixedProcessCapturedStreamV1::Truncated {
-            *completeness = FixedProcessCapturedStreamV1::Eof;
+    finish_terminal_capture(stream, completeness, errors, &mut TerminalCaptureState::new());
+}
+
+struct TerminalCaptureState {
+    prepared: bool,
+    reads_left: usize,
+    interrupts: usize,
+    finished: bool,
+}
+
+impl TerminalCaptureState {
+    const fn new() -> Self {
+        Self { prepared: false, reads_left: 0, interrupts: 0, finished: false }
+    }
+}
+
+fn finish_terminal_capture(
+    stream: &mut OutputStream,
+    completeness: &mut FixedProcessCapturedStreamV1,
+    errors: &mut Vec<Error>,
+    state: &mut TerminalCaptureState,
+) {
+    while !state.finished {
+        terminal_capture_once(stream, completeness, errors, state);
+    }
+}
+
+/// Shares the old finite read/interrupt budget; a driving yield never resets it.
+fn terminal_capture_once(
+    stream: &mut OutputStream,
+    completeness: &mut FixedProcessCapturedStreamV1,
+    errors: &mut Vec<Error>,
+    state: &mut TerminalCaptureState,
+) {
+    if state.finished {
+        return;
+    }
+    if !state.prepared {
+        if stream.closed {
+            if *completeness != FixedProcessCapturedStreamV1::Truncated {
+                *completeness = FixedProcessCapturedStreamV1::Eof;
+            }
+            state.finished = true;
+            return;
         }
-        return;
+        if let Err(error) = set_nonblocking(&stream.descriptor) {
+            errors.push(error);
+            state.finished = true;
+            return;
+        }
+        let remaining = stream.maximum.saturating_sub(stream.bytes.len());
+        state.reads_left = remaining / OUTPUT_CHUNK
+            + usize::from(remaining % OUTPUT_CHUNK != 0) + 1;
+        state.prepared = true;
     }
 
-    if let Err(error) = set_nonblocking(&stream.descriptor) {
-        errors.push(error);
-        return;
-    }
-
-    let remaining = stream.maximum.saturating_sub(stream.bytes.len());
-    let reads = remaining / OUTPUT_CHUNK + usize::from(remaining % OUTPUT_CHUNK != 0) + 1;
-    let mut interrupts = 0;
     let mut chunk = [0; OUTPUT_CHUNK];
-    let mut reads_left = reads;
-
-    while reads_left > 0 && interrupts < CLEANUP_INTERRUPTS {
-        match rustix::io::read(&stream.descriptor, &mut chunk) {
-            Ok(0) => {
-                stream.closed = true;
-                if *completeness != FixedProcessCapturedStreamV1::Truncated {
-                    *completeness = FixedProcessCapturedStreamV1::Eof;
-                }
-                break;
+    match rustix::io::read(&stream.descriptor, &mut chunk) {
+        Ok(0) => {
+            stream.closed = true;
+            if *completeness != FixedProcessCapturedStreamV1::Truncated {
+                *completeness = FixedProcessCapturedStreamV1::Eof;
             }
-            Ok(count) => {
-                reads_left -= 1;
-                let available = stream.maximum.saturating_sub(stream.bytes.len());
-                let retained = available.min(count);
-                stream.bytes.extend_from_slice(&chunk[..retained]);
-                if retained != count {
-                    *completeness = FixedProcessCapturedStreamV1::Truncated;
-                    break;
-                }
-            }
-            Err(rustix::io::Errno::AGAIN) => break,
-            Err(rustix::io::Errno::INTR) => {
-                interrupts += 1;
-            }
-            Err(error) => {
-                errors.push(kernel_error("read fixed process session output", error));
-                break;
+            state.finished = true;
+        }
+        Ok(count) => {
+            state.reads_left -= 1;
+            let available = stream.maximum.saturating_sub(stream.bytes.len());
+            let retained = available.min(count);
+            stream.bytes.extend_from_slice(&chunk[..retained]);
+            if retained != count {
+                *completeness = FixedProcessCapturedStreamV1::Truncated;
+                state.finished = true;
             }
         }
+        Err(rustix::io::Errno::AGAIN) => state.finished = true,
+        Err(rustix::io::Errno::INTR) => state.interrupts += 1,
+        Err(error) => {
+            errors.push(kernel_error("read fixed process session output", error));
+            state.finished = true;
+        }
+    }
+    if state.reads_left == 0 || state.interrupts == CLEANUP_INTERRUPTS {
+        state.finished = true;
     }
 }
 

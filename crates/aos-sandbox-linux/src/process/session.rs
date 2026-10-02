@@ -4,6 +4,10 @@
 //! nonblocking control descriptor. It keeps the child pidfd retained, runs a
 //! caller-defined nonblocking exchange, drains both output pipes concurrently,
 //! and owns cancellation and reaping until the complete operation terminates.
+//!
+//! Synchronous control adapters and the resident output-only child module share
+//! one bounded kernel-turn engine here. Legacy MONOTONIC polling and callback
+//! contracts remain separate from the child's borrowed BOOTTIME driving loans.
 
 use std::fmt;
 use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
@@ -20,6 +24,14 @@ use super::capture::{
 use super::{
     ChildGuard, FixedProcessOutput, FixedProcessRequest, OutputStream, PreparedInvocation,
     ProcessStatus, SpawnedProcess, kernel_error, monotonic_now, validate_exclusive_reaping_owner,
+};
+
+mod driven;
+pub use driven::{
+    FixedProcessBoottimeCutV1, FixedProcessDrivenCauseV1, FixedProcessDrivenDebtV1,
+    FixedProcessDrivenInputsV1, FixedProcessDrivenPartsV1, FixedProcessDrivenProgressV1, FixedProcessDrivenSessionV1,
+    FixedProcessDrivingLoanV1, FixedProcessPreparedInvocationV1, FixedProcessWaitViewV1,
+    prepare_fixed_process_driven_invocation_v1,
 };
 
 /// Configures one fixed child process and its parent-side control descriptor.
@@ -860,6 +872,121 @@ where
     })
 }
 
+struct KernelState<T> {
+    state: SessionState<T>,
+    initial_info: Option<PidFdInfo>,
+    began: bool,
+}
+
+impl<T> KernelState<T> {
+    fn pending() -> Self {
+        Self {
+            state: SessionState::pending(),
+            initial_info: None,
+            began: false,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum KernelDeadline {
+    Monotonic(Duration),
+    Boottime(u64),
+}
+
+impl KernelDeadline {
+    fn expired(self) -> Result<bool> {
+        match self {
+            Self::Monotonic(deadline) => Ok(deadline_expired(deadline)),
+            Self::Boottime(deadline) => Ok(crate::uapi::boottime_nanoseconds()? >= deadline),
+        }
+    }
+}
+
+enum KernelTurn<T> {
+    Progressed,
+    Waiting,
+    Reaped(Option<T>),
+    Cancelled(FixedProcessRetainedSessionOutcome<T>),
+}
+
+enum KernelFailure<E> {
+    Process(Error),
+    Clock(Error),
+    Exchange(E),
+}
+
+/// The selected captured profile has no control descriptor or callback.
+enum KernelExchange<'a, X: FixedProcessSessionExchange> {
+    Legacy {
+        exchange: &'a mut X,
+        control: BorrowedFd<'a>,
+        deadline: Duration,
+    },
+    Captured {
+        output: Option<X::Output>,
+        timer: BorrowedFd<'a>,
+    },
+}
+
+impl<X: FixedProcessSessionExchange> KernelExchange<'_, X> {
+    fn start(
+        &mut self,
+        guard: &ChildGuard,
+        info: Option<PidFdInfo>,
+    ) -> std::result::Result<ExchangeStep<X::Output>, KernelFailure<X::Error>> {
+        match self {
+            Self::Legacy { exchange, control, deadline } => {
+                let child = live_child(guard, info, *deadline).map_err(KernelFailure::Process)?;
+                exchange.start(&child, *control).map_err(KernelFailure::Exchange)
+            }
+            Self::Captured { output, .. } => output.take()
+                .map(ExchangeStep::Complete)
+                .ok_or_else(|| KernelFailure::Process(Error::invalid(
+                    "fixed process captured state", "start was already consumed",
+                ))),
+        }
+    }
+
+    fn advance(
+        &mut self,
+        guard: &ChildGuard,
+        info: Option<PidFdInfo>,
+        ready: FixedProcessControlReadiness,
+    ) -> std::result::Result<ExchangeStep<X::Output>, KernelFailure<X::Error>> {
+        match self {
+            Self::Legacy { exchange, control, deadline } => {
+                let child = live_child(guard, info, *deadline).map_err(KernelFailure::Process)?;
+                exchange.advance(&child, *control, ready).map_err(KernelFailure::Exchange)
+            }
+            Self::Captured { .. } => Err(KernelFailure::Process(Error::invalid(
+                "fixed process captured state", "has no control exchange",
+            ))),
+        }
+    }
+
+    fn poll(
+        &self,
+        run: &SessionRun<'_>,
+        state: &SessionState<X::Output>,
+    ) -> Result<SessionReadiness> {
+        match self {
+            Self::Legacy { control, deadline, .. } => poll_session(
+                &run.guard, &run.stdout, &run.stderr, *control, state.interest,
+                state.leader_exited, *deadline, run.exec_status.as_ref(),
+            ),
+            Self::Captured { timer, .. } => probe_captured_session(run, state.leader_exited, *timer),
+        }
+    }
+
+    fn cancel_leader(&self, run: &mut SessionRun<'_>) -> Result<()> {
+        match self {
+            Self::Legacy { .. } => run.guard.cancel(),
+            Self::Captured { .. } => run.signal_driven_cleanup(),
+        }
+    }
+}
+
 fn supervise_session_core<X>(
     run: &mut SessionRun<'_>,
     control: BorrowedFd<'_>,
@@ -872,249 +999,228 @@ fn supervise_session_core<X>(
 where
     X: FixedProcessSessionExchange,
 {
-    let mut state = SessionState::pending();
-    let mut initial_info = None;
-    let mut began = false;
+    let mut kernel = KernelState::pending();
+    let mut exchange = KernelExchange::Legacy { exchange, control, deadline };
+
+    loop {
+        match advance_session_kernel(
+            run, &mut kernel, KernelDeadline::Monotonic(deadline), &mut exchange,
+        ) {
+            Ok(KernelTurn::Progressed | KernelTurn::Waiting) => {}
+            Ok(KernelTurn::Reaped(output)) => return finish_reaped(run, output),
+            Ok(KernelTurn::Cancelled(outcome)) => return finish_cancelled(run, outcome),
+            Err(KernelFailure::Process(source) | KernelFailure::Clock(source)) => {
+                return fail_process(run, source);
+            }
+            Err(KernelFailure::Exchange(source)) => return fail_exchange(run, source),
+        }
+    }
+}
+
+/// Performs one iteration of the sole child/output/exec/control engine.
+/// Legacy driving immediately repeats Progressed; the resident profile yields.
+fn advance_session_kernel<X>(
+    run: &mut SessionRun<'_>,
+    kernel: &mut KernelState<X::Output>,
+    deadline: KernelDeadline,
+    exchange: &mut KernelExchange<'_, X>,
+) -> std::result::Result<KernelTurn<X::Output>, KernelFailure<X::Error>>
+where
+    X: FixedProcessSessionExchange,
+{
+    let KernelState { state, initial_info, began } = kernel;
     let retention = if run.retains_output() {
         OutputRetention::Prefix
     } else {
         OutputRetention::Legacy
     };
 
-    loop {
-        if !began && run.exec_status.is_none() {
-            if !(run.retains_output() && state.leader_exited) {
-                initial_info = Some(match run.guard.pidfd().and_then(PidFd::info) {
-                    Ok(info) => info,
-                    Err(source) => return fail_process(run, source),
-                });
+    let mut progressed = false;
 
-                if deadline_expired(deadline) {
-                    return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
+    if !*began && run.exec_status.is_none() {
+        if !(run.retains_output() && state.leader_exited) {
+            *initial_info = Some(match run.guard.pidfd().and_then(PidFd::info) {
+                Ok(info) => info,
+                Err(source) => return Err(KernelFailure::Process(source)),
+            });
+
+            if deadline.expired().map_err(KernelFailure::Clock)? {
+                return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::TimedOut));
+            }
+            match child_is_alive(&run.guard) {
+                Ok(true) => {}
+                Ok(false) => state.mark_leader_exited(),
+                Err(source) => return Err(KernelFailure::Process(source)),
+            }
+            if !state.leader_exited {
+                let step = exchange.start(&run.guard, *initial_info)?;
+                state.apply(step);
+                if deadline.expired().map_err(KernelFailure::Clock)? {
+                    return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::TimedOut));
                 }
                 match child_is_alive(&run.guard) {
                     Ok(true) => {}
                     Ok(false) => state.mark_leader_exited(),
-                    Err(source) => return fail_process(run, source),
-                }
-                if !state.leader_exited {
-                    let step = {
-                        let child = match live_child(&run.guard, initial_info, deadline) {
-                            Ok(child) => child,
-                            Err(source) => return fail_process(run, source),
-                        };
-                        exchange.start(&child, control)
-                    };
-                    match step {
-                        Ok(step) => state.apply(step),
-                        Err(source) => return fail_exchange(run, source),
-                    }
-                    if deadline_expired(deadline) {
-                        return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
-                    }
-                    match child_is_alive(&run.guard) {
-                        Ok(true) => {}
-                        Ok(false) => state.mark_leader_exited(),
-                        Err(source) => return fail_process(run, source),
-                    }
-                }
-                let early_exit_cleanup = if state.leader_exited {
-                    run.guard.cancel()
-                } else {
-                    Ok(())
-                };
-                if let Err(source) = early_exit_cleanup {
-                    return fail_process(run, source);
+                    Err(source) => return Err(KernelFailure::Process(source)),
                 }
             }
-            began = true;
-        }
-        if state.leader_exited
-            && run.stdout.closed
-            && run.stderr.closed
-            && run.exec_status.is_none()
-        {
-            return finish_reaped(run, state.exchange);
-        }
-        if deadline_expired(deadline) {
-            return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
-        }
-
-        let ready = match poll_session(
-            &run.guard,
-            &run.stdout,
-            &run.stderr,
-            control,
-            state.interest,
-            state.leader_exited,
-            deadline,
-            run.exec_status.as_ref(),
-        ) {
-            Ok(ready) => ready,
-            Err(source) => return fail_process(run, source),
-        };
-
-        if ready.stdout && !run.stdout.closed {
-            match drain_output_once(&mut run.stdout, retention) {
-                Ok(OutputDrain::Open | OutputDrain::Closed) => {}
-                Ok(OutputDrain::LimitExceeded) => {
-                    run.limit(true);
-                    return finish_cancelled(
-                        run,
-                        FixedProcessRetainedSessionOutcome::OutputLimitExceeded,
-                    );
-                }
-                Err(source) => return fail_process(run, source),
-            }
-        }
-        if ready.stderr && !run.stderr.closed {
-            match drain_output_once(&mut run.stderr, retention) {
-                Ok(OutputDrain::Open | OutputDrain::Closed) => {}
-                Ok(OutputDrain::LimitExceeded) => {
-                    run.limit(false);
-                    return finish_cancelled(
-                        run,
-                        FixedProcessRetainedSessionOutcome::OutputLimitExceeded,
-                    );
-                }
-                Err(source) => return fail_process(run, source),
-            }
-        }
-        if deadline_expired(deadline) {
-            return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
-        }
-
-        if run.exec_status.is_some() {
-            if ready.exec_status {
-                let status = match run.exec_status.as_mut() {
-                    Some(status) => status.read_once(),
-                    None => Ok(false),
-                };
-                match status {
-                    Ok(true) => {
-                        run.exec_status = None;
-                        match child_is_alive(&run.guard) {
-                            Ok(true) => run.exec_confirmed(),
-                            Ok(false) => state.mark_leader_exited(),
-                            Err(source) => return fail_process(run, source),
-                        }
-                    }
-                    Ok(false) => {}
-                    Err(source) => {
-                        run.exec_failed(&source);
-                        return fail_process(run, source);
-                    }
-                }
-            }
-            if ready.leader {
-                state.mark_leader_exited();
-                if let Err(source) = run.guard.cancel() {
-                    return fail_process(run, source);
-                }
-            }
-            // Exec EOF is not proof of entry if the leader died before it.
-            // The same loop continues output collection without a callback.
-            continue;
-        }
-
-        if ready.leader {
-            state.mark_leader_exited();
-            if let Err(source) = run.guard.cancel() {
-                return fail_process(run, source);
-            }
-        }
-        if state.leader_exited || state.exchange.is_some() {
-            continue;
-        }
-        if ready.control_invalid {
-            return fail_process(
-                run,
-                Error::invalid(
-                    "fixed process control descriptor",
-                    "poll reported an invalid descriptor",
-                ),
-            );
-        }
-        if ready.control_error {
-            return fail_process(
-                run,
-                Error::invalid(
-                    "fixed process control descriptor",
-                    "poll reported a terminal I/O error",
-                ),
-            );
-        }
-
-        let Some(interest) = state.interest else {
-            return fail_process(
-                run,
-                Error::invalid(
-                    "fixed process exchange state",
-                    "pending exchange omitted control interest",
-                ),
-            );
-        };
-        let hup_read = ready.control_hangup && interest.includes_readable();
-        let readable = ready.control_readable || hup_read;
-        let writable = ready.control_writable && !ready.control_hangup;
-        if readable || writable {
-            if deadline_expired(deadline) {
-                return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
-            }
-            match child_is_alive(&run.guard) {
-                Ok(true) => {}
-                Ok(false) => {
-                    state.mark_leader_exited();
-                    if let Err(source) = run.guard.cancel() {
-                        return fail_process(run, source);
-                    }
-                    continue;
-                }
-                Err(source) => return fail_process(run, source),
-            }
-
-            let step = {
-                let child = match live_child(&run.guard, initial_info, deadline) {
-                    Ok(child) => child,
-                    Err(source) => return fail_process(run, source),
-                };
-                exchange.advance(
-                    &child,
-                    control,
-                    FixedProcessControlReadiness {
-                        readable,
-                        writable,
-                    },
-                )
+            let early_exit_cleanup = if state.leader_exited {
+                exchange.cancel_leader(run)
+            } else {
+                Ok(())
             };
-            match step {
-                Ok(step) => state.apply(step),
-                Err(source) => return fail_exchange(run, source),
-            }
-            if deadline_expired(deadline) {
-                return finish_cancelled(run, FixedProcessRetainedSessionOutcome::TimedOut);
-            }
-            match child_is_alive(&run.guard) {
-                Ok(true) => {}
-                Ok(false) => {
-                    state.mark_leader_exited();
-                    if let Err(source) = run.guard.cancel() {
-                        return fail_process(run, source);
-                    }
-                }
-                Err(source) => return fail_process(run, source),
+            if let Err(source) = early_exit_cleanup {
+                return Err(KernelFailure::Process(source));
             }
         }
-        if ready.control_hangup && state.exchange.is_none() {
-            return fail_process(
-                run,
-                Error::invalid(
-                    "fixed process control descriptor",
-                    "hung up before exchange completion",
-                ),
-            );
+        *began = true;
+        progressed = true;
+    }
+    if state.leader_exited
+        && run.stdout.closed
+        && run.stderr.closed
+        && run.exec_status.is_none()
+    {
+        return Ok(KernelTurn::Reaped(state.exchange.take()));
+    }
+    if deadline.expired().map_err(KernelFailure::Clock)? {
+        return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::TimedOut));
+    }
+
+    let ready = exchange.poll(run, state).map_err(KernelFailure::Process)?;
+    progressed |= ready.has_any();
+
+    if ready.stdout && !run.stdout.closed {
+        match drain_output_once(&mut run.stdout, retention) {
+            Ok(OutputDrain::Open | OutputDrain::Closed) => {}
+            Ok(OutputDrain::LimitExceeded) => {
+                run.limit(true);
+                return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::OutputLimitExceeded));
+            }
+            Err(source) => return Err(KernelFailure::Process(source)),
         }
     }
+    if ready.stderr && !run.stderr.closed {
+        match drain_output_once(&mut run.stderr, retention) {
+            Ok(OutputDrain::Open | OutputDrain::Closed) => {}
+            Ok(OutputDrain::LimitExceeded) => {
+                run.limit(false);
+                return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::OutputLimitExceeded));
+            }
+            Err(source) => return Err(KernelFailure::Process(source)),
+        }
+    }
+    if deadline.expired().map_err(KernelFailure::Clock)? {
+        return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::TimedOut));
+    }
+
+    if run.exec_status.is_some() {
+        if ready.exec_status {
+            let status = match run.exec_status.as_mut() {
+                Some(status) => status.read_once(),
+                None => Ok(false),
+            };
+            match status {
+                Ok(true) => {
+                    run.exec_status = None;
+                    match child_is_alive(&run.guard) {
+                        Ok(true) => run.exec_confirmed(),
+                        Ok(false) => state.mark_leader_exited(),
+                        Err(source) => return Err(KernelFailure::Process(source)),
+                    }
+                }
+                Ok(false) => {}
+                Err(source) => {
+                    run.exec_failed(&source);
+                    return Err(KernelFailure::Process(source));
+                }
+            }
+        }
+        if ready.leader {
+            state.mark_leader_exited();
+            if let Err(source) = exchange.cancel_leader(run) {
+                return Err(KernelFailure::Process(source));
+            }
+        }
+        // Exec EOF is not proof of entry if the leader died before it.
+        // The same loop continues output collection without a callback.
+        return Ok(if progressed { KernelTurn::Progressed } else { KernelTurn::Waiting });
+    }
+
+    if ready.leader {
+        state.mark_leader_exited();
+        if let Err(source) = exchange.cancel_leader(run) {
+            return Err(KernelFailure::Process(source));
+        }
+    }
+    if state.leader_exited || state.exchange.is_some() {
+        return Ok(if progressed { KernelTurn::Progressed } else { KernelTurn::Waiting });
+    }
+    if ready.control_invalid {
+        return Err(KernelFailure::Process(Error::invalid(
+                "fixed process control descriptor",
+                "poll reported an invalid descriptor",
+            )));
+    }
+    if ready.control_error {
+        return Err(KernelFailure::Process(Error::invalid(
+                "fixed process control descriptor",
+                "poll reported a terminal I/O error",
+            )));
+    }
+
+    let Some(interest) = state.interest else {
+        return Err(KernelFailure::Process(Error::invalid(
+                "fixed process exchange state",
+                "pending exchange omitted control interest",
+            )));
+    };
+    let hup_read = ready.control_hangup && interest.includes_readable();
+    let readable = ready.control_readable || hup_read;
+    let writable = ready.control_writable && !ready.control_hangup;
+    if readable || writable {
+        if deadline.expired().map_err(KernelFailure::Clock)? {
+            return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::TimedOut));
+        }
+        match child_is_alive(&run.guard) {
+            Ok(true) => {}
+            Ok(false) => {
+                state.mark_leader_exited();
+                if let Err(source) = exchange.cancel_leader(run) {
+                    return Err(KernelFailure::Process(source));
+                }
+                return Ok(KernelTurn::Progressed);
+            }
+            Err(source) => return Err(KernelFailure::Process(source)),
+        }
+
+        let step = exchange.advance(
+            &run.guard,
+            *initial_info,
+            FixedProcessControlReadiness { readable, writable },
+        )?;
+        state.apply(step);
+        if deadline.expired().map_err(KernelFailure::Clock)? {
+            return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::TimedOut));
+        }
+        match child_is_alive(&run.guard) {
+            Ok(true) => {}
+            Ok(false) => {
+                state.mark_leader_exited();
+                if let Err(source) = exchange.cancel_leader(run) {
+                    return Err(KernelFailure::Process(source));
+                }
+            }
+            Err(source) => return Err(KernelFailure::Process(source)),
+        }
+    }
+    if ready.control_hangup && state.exchange.is_none() {
+        return Err(KernelFailure::Process(Error::invalid(
+                "fixed process control descriptor",
+                "hung up before exchange completion",
+            )));
+    }
+    Ok(if progressed { KernelTurn::Progressed } else { KernelTurn::Waiting })
 }
 
 fn live_child<'a>(
@@ -1280,6 +1386,14 @@ struct SessionReadiness {
     control_invalid: bool,
 }
 
+impl SessionReadiness {
+    fn has_any(&self) -> bool {
+        self.leader || self.stdout || self.stderr || self.exec_status
+            || self.control_readable || self.control_writable || self.control_hangup
+            || self.control_error || self.control_invalid
+    }
+}
+
 fn poll_session(
     guard: &ChildGuard,
     stdout: &OutputStream,
@@ -1339,18 +1453,7 @@ fn poll_session(
     let mut ready = SessionReadiness::default();
     if let Some(index) = leader_index {
         let flags = descriptors[index].revents();
-        let allowed = rustix::event::PollFlags::IN
-            | rustix::event::PollFlags::RDNORM
-            | rustix::event::PollFlags::HUP;
-        if flags.intersects(rustix::event::PollFlags::ERR | rustix::event::PollFlags::NVAL)
-            || !flags.difference(allowed).is_empty()
-        {
-            return Err(Error::MalformedKernelResponse {
-                object: "fixed process pidfd poll",
-                message: "kernel reported invalid or unexpected readiness flags".to_owned(),
-            });
-        }
-        ready.leader = flags.intersects(allowed);
+        ready.leader = validate_leader_readiness(flags)?;
     }
     if let Some(index) = stdout_index {
         ready.stdout = validate_output_readiness(descriptors[index].revents())?;
@@ -1374,6 +1477,83 @@ fn poll_session(
         ready.control_hangup = control.hangup;
         ready.control_error = control.error;
         ready.control_invalid = control.invalid;
+    }
+    Ok(ready)
+}
+
+fn validate_leader_readiness(flags: rustix::event::PollFlags) -> Result<bool> {
+    let allowed = rustix::event::PollFlags::IN
+        | rustix::event::PollFlags::RDNORM
+        | rustix::event::PollFlags::HUP;
+    if flags.intersects(rustix::event::PollFlags::ERR | rustix::event::PollFlags::NVAL)
+        || !flags.difference(allowed).is_empty()
+    {
+        return Err(Error::MalformedKernelResponse {
+            object: "fixed process pidfd poll",
+            message: "kernel reported invalid or unexpected readiness flags".to_owned(),
+        });
+    }
+    Ok(flags.intersects(allowed))
+}
+
+/// Zero-time probe using only original safe borrows and the legacy validators.
+/// Inactive slots borrow the same timer with empty interests, never a raw -1 FD.
+fn probe_captured_session(
+    run: &SessionRun<'_>,
+    leader_exited: bool,
+    timer: BorrowedFd<'_>,
+) -> Result<SessionReadiness> {
+    use rustix::event::{PollFd, PollFlags};
+
+    let mut descriptors = std::array::from_fn::<_, 5, _>(|_| {
+        PollFd::from_borrowed_fd(timer, PollFlags::empty())
+    });
+    if !leader_exited {
+        descriptors[0] = PollFd::from_borrowed_fd(
+            run.guard.pidfd()?.as_fd(), PollFlags::IN | PollFlags::RDNORM,
+        );
+    }
+    if !run.stdout.closed {
+        descriptors[1] = PollFd::from_borrowed_fd(
+            run.stdout.descriptor.as_fd(), PollFlags::IN | PollFlags::HUP,
+        );
+    }
+    if !run.stderr.closed {
+        descriptors[2] = PollFd::from_borrowed_fd(
+            run.stderr.descriptor.as_fd(), PollFlags::IN | PollFlags::HUP,
+        );
+    }
+    if let Some(status) = &run.exec_status {
+        descriptors[3] = PollFd::from_borrowed_fd(
+            status.descriptor.as_fd(), PollFlags::IN | PollFlags::HUP,
+        );
+    }
+    descriptors[4] = PollFd::from_borrowed_fd(timer, PollFlags::IN);
+    let timeout = rustix::event::Timespec::default();
+    match rustix::event::poll(&mut descriptors, Some(&timeout)) {
+        Ok(_) => {}
+        Err(rustix::io::Errno::INTR) => return Ok(SessionReadiness::default()),
+        Err(error) => return Err(kernel_error("poll fixed process session", error)),
+    }
+
+    let mut ready = SessionReadiness::default();
+    if !leader_exited {
+        ready.leader = validate_leader_readiness(descriptors[0].revents())?;
+    }
+    if !run.stdout.closed {
+        ready.stdout = validate_output_readiness(descriptors[1].revents())?;
+    }
+    if !run.stderr.closed {
+        ready.stderr = validate_output_readiness(descriptors[2].revents())?;
+    }
+    if run.exec_status.is_some() {
+        ready.exec_status = validate_output_readiness(descriptors[3].revents())?;
+    }
+    if !descriptors[4].revents().difference(PollFlags::IN).is_empty() {
+        return Err(Error::MalformedKernelResponse {
+            object: "fixed process deadline poll",
+            message: "kernel reported invalid or unexpected readiness flags".to_owned(),
+        });
     }
     Ok(ready)
 }

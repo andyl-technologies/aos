@@ -29,6 +29,8 @@ use crate::immutable_image::git_helper::{FixedGitHelperImagesV1, GitHelperImageE
 use super::GitObjectFormatV1;
 
 mod plan;
+mod driven;
+pub(super) use driven::wait_for_process_turn_v1;
 pub(super) use plan::{GitHelperInspectionV1, GitHelperLimitsV1};
 use plan::{GitHelperPlanErrorV1, PLAN_BYTES};
 
@@ -48,6 +50,7 @@ pub(super) struct GitHelperAttemptCustodyV1<'directory> {
     attempted: bool,
     first_error: Option<GitHelperErrorV1>,
     outcome: Option<FixedProcessRetainedSessionOutcome<()>>,
+    driven: Option<driven::GitDrivenPreparationV1>,
 }
 
 impl<'directory> GitHelperAttemptCustodyV1<'directory> {
@@ -75,6 +78,7 @@ impl<'directory> GitHelperAttemptCustodyV1<'directory> {
             attempted: false,
             first_error: None,
             outcome: None,
+            driven: None,
         }
     }
 
@@ -100,7 +104,11 @@ impl<'directory> GitHelperAttemptCustodyV1<'directory> {
         }
     }
 
-    fn run_original(&mut self) -> Result<FixedProcessRetainedSessionOutcome<()>, GitHelperErrorV1> {
+    fn prepare_originals(
+        &mut self,
+        cut: Option<aos_sandbox_linux::process::FixedProcessBoottimeCutV1>,
+    ) -> Result<(), GitHelperErrorV1> {
+        driven::check_cut(cut)?;
         self.images.recheck().map_err(GitHelperErrorV1::Image)?;
         let bytes = plan::encode(
             self.verb,
@@ -113,6 +121,7 @@ impl<'directory> GitHelperAttemptCustodyV1<'directory> {
         .map_err(GitHelperErrorV1::Plan)?;
         self.plan_bytes = Some(bytes);
 
+        driven::check_cut(cut)?;
         let plan_original = SealedReadOnlyCredential::create(
             "aos-git-helper-plan-v1",
             &bytes,
@@ -122,6 +131,7 @@ impl<'directory> GitHelperAttemptCustodyV1<'directory> {
         self.plan_original = Some(plan_original);
 
         if !self.input.is_empty() {
+            driven::check_cut(cut)?;
             let input_original = SealedReadOnlyCredential::create(
                 "aos-git-helper-input-v1",
                 &self.input,
@@ -130,6 +140,12 @@ impl<'directory> GitHelperAttemptCustodyV1<'directory> {
             .map_err(GitHelperErrorV1::Sealed)?;
             self.input_original = Some(input_original);
         }
+
+        Ok(())
+    }
+
+    fn run_original(&mut self) -> Result<FixedProcessRetainedSessionOutcome<()>, GitHelperErrorV1> {
+        self.prepare_originals(None)?;
 
         // Neither endpoint is delivered to the child or used as an ingress,
         // acknowledgement or authority carrier. The sole supervisor requires a
@@ -251,6 +267,10 @@ pub(super) enum GitHelperErrorV1 {
     Io(#[source] std::io::Error),
     #[error("Git helper role allocation failed")]
     Allocation(#[source] std::collections::TryReserveError),
+    #[error("Git helper original mechanical clock or preparation failed")]
+    Process(#[source] aos_sandbox_linux::Error),
+    #[error("Git helper original mechanical clock or cut failed")]
+    Clock(#[source] aos_sandbox_linux::Error),
     #[error("Git helper retained supervisor failed")]
     Supervisor(#[source] FixedProcessRetainedSessionError<Infallible>),
     #[error("Git helper private staging invariant failed")]

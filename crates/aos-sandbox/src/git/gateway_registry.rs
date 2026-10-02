@@ -443,6 +443,19 @@ impl GatewayReadyLoanV1<'_> {
     pub(super) async fn recheck(&mut self) -> Result<(), GitHttpErrorV1> {
         self.request.recheck().await
     }
+
+    /// Loans the same current original checks without an immediately ready loop.
+    pub(super) fn poll_while_child_parked(
+        &mut self,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<std::convert::Infallible, GitHttpErrorV1>> {
+        self.request.poll_while_child_parked(context)
+    }
+
+    /// Projects the original immutable endpoint, not a newly selected cut.
+    pub(super) fn original_deadline_boottime(&self) -> u64 {
+        self.request.original_deadline_boottime()
+    }
 }
 
 #[cfg(test)]
