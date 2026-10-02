@@ -58,7 +58,7 @@ use super::resolve::{ResolvedClosure, collect_unique_metas, resolve_multiple};
 use super::store::{closure_paths, create_gc_roots, filter_missing};
 use super::sysroot_lock::{self, IgnoreSysrootLock};
 use super::types::{
-    ApmMeta, InstalledMeta, PackageMeta, package_requires_provenance,
+    ApmMeta, InstalledMeta, PackageMeta, RegistryRootConfig, package_requires_provenance,
     validate_attestation_provenance_ref, validate_registry_name,
 };
 use super::verify::verify_downloads;
@@ -930,7 +930,7 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
 ) -> Result<usize> {
     let mut verified = 0;
     let mut transparency_logs = HashMap::<String, String>::new();
-    let mut trusted_keys = HashMap::<String, Vec<provenance::TrustedProvenanceKey>>::new();
+    let mut trusted_keys = HashMap::<String, RegistryProvenanceTrust>::new();
 
     for (registry_name, meta) in entries {
         let Some(provenance_ref) = meta.attestation.provenance.as_deref() else {
@@ -953,9 +953,9 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
         };
         let key_id = provenance::verify_package_statement(
             meta,
-            registry_name,
+            &registry_trusted_keys.registry_name,
             &jsonl,
-            registry_trusted_keys,
+            &registry_trusted_keys.keys,
         )
         .with_context(|| format!("verifying provenance artifact {}", path.display()))?;
         let transparency_log = match transparency_logs.entry(registry_name.to_string()) {
@@ -979,7 +979,7 @@ fn verify_package_provenance_entries_from_cache_inner<'a>(
                     )
                 })?;
         provenance::verify_key_allowed_for_transparency_sequence(
-            registry_trusted_keys,
+            &registry_trusted_keys.keys,
             &key_id,
             sequence,
         )
@@ -1030,12 +1030,35 @@ fn read_provenance_artifact(
     )
 }
 
+/// Binds provenance verification to the identity in the cached registry manifest.
+struct RegistryProvenanceTrust {
+    registry_name: String,
+    keys: Vec<provenance::TrustedProvenanceKey>,
+}
+
 fn read_registry_provenance_trusted_keys(
     registry_cache_root: &Path,
-    registry_name: &str,
-) -> Result<Vec<provenance::TrustedProvenanceKey>> {
-    let (path, content) =
-        read_registry_cache_artifact(registry_cache_root, registry_name, "keys.toml", "keys.toml")?;
+    registry_alias: &str,
+) -> Result<RegistryProvenanceTrust> {
+    let (manifest_path, manifest) = read_registry_cache_artifact(
+        registry_cache_root,
+        registry_alias,
+        "registry.toml",
+        "registry manifest",
+    )?;
+    let manifest: RegistryRootConfig = toml::from_str(&manifest)
+        .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let registry_name = manifest.registry.name;
+    validate_registry_name(&registry_name)?;
+
+    // Cache directories and operator policies use the local alias. Signing
+    // keys and builder identities belong to the committed registry identity.
+    let (path, content) = read_registry_cache_artifact(
+        registry_cache_root,
+        registry_alias,
+        "keys.toml",
+        "keys.toml",
+    )?;
     let roster: keys::KeysToml =
         toml::from_str(&content).with_context(|| format!("parsing {}", path.display()))?;
     if roster.schema != keys::KEYS_TOML_SCHEMA {
@@ -1103,7 +1126,10 @@ fn read_registry_provenance_trusted_keys(
             retired_before_sequence: Some(retired_before_sequence),
         });
     }
-    Ok(trusted)
+    Ok(RegistryProvenanceTrust {
+        registry_name,
+        keys: trusted,
+    })
 }
 
 fn read_registry_cache_artifact(
@@ -1774,17 +1800,35 @@ fn print_summary(
         }
     }
 
-    let download_size: u64 = resolved
-        .iter()
-        .map(|r| r.narinfo.file_size.unwrap_or(0))
-        .sum();
-    let installed_size: u64 = all_metas.iter().map(|m| m.nar_size).sum();
+    printer.plain(&install_size_summary(resolved, all_metas));
+}
 
-    printer.plain(&format!(
-        "Need to download {} / {} installed.",
-        format_size(download_size),
-        format_size(installed_size),
-    ));
+/// Distinguish transfer bytes from total package size and local package reuse.
+fn install_size_summary(resolved: &[ResolvedDownload], all_metas: &[&PackageMeta]) -> String {
+    let download_size: Option<u64> = resolved.iter().map(|item| item.narinfo.file_size).sum();
+    let download_size = download_size
+        .map(format_size)
+        .unwrap_or_else(|| "unknown".to_string());
+    let package_size: u64 = all_metas.iter().map(|meta| meta.nar_size).sum();
+    let downloads: HashSet<&str> = resolved
+        .iter()
+        .map(|item| item.req.store_path.as_str())
+        .collect();
+    let reused = all_metas
+        .iter()
+        .filter(|meta| !downloads.contains(meta.store_path.as_str()))
+        .count();
+
+    let mut summary = format!(
+        "Need to download {download_size}.\nPackage size including dependencies: {}.",
+        format_size(package_size),
+    );
+    if reused > 0 {
+        summary.push_str(&format!(
+            "\nReusing {reused} package(s) already available locally."
+        ));
+    }
+    summary
 }
 
 /// Build `DownloadRequest`s for the missing packages.
@@ -1906,6 +1950,54 @@ mod tests {
     use sha2::{Digest, Sha256};
 
     const TEST_PROVENANCE_KEY_ID: &str = "builder";
+
+    fn summary_download(store_path: &str, file_size: Option<u64>) -> ResolvedDownload {
+        let mut info = narinfo::parse(&format!(
+            "StorePath: {store_path}\nURL: nar/test.nar\nNarHash: sha256:test\nNarSize: 656\n"
+        ))
+        .unwrap();
+        info.file_size = file_size;
+        ResolvedDownload {
+            req: DownloadRequest {
+                store_path: store_path.to_string(),
+                mirror_url: "https://cache.example.test".to_string(),
+                fallback_mirrors: Vec::new(),
+            },
+            narinfo: info,
+        }
+    }
+
+    #[test]
+    fn install_summary_explains_documentation_only_downloads_and_local_reuse() {
+        let mut package = sample_package("xz", "5.8.3", "/nix/store/root-xz");
+        package.nar_size = 993336;
+        let docs = summary_download("/nix/store/docs-xz.json", Some(656));
+
+        let summary = install_size_summary(&[docs], &[&package]);
+
+        assert_eq!(
+            summary,
+            "Need to download 656 B.\nPackage size including dependencies: 970.1 KiB.\nReusing 1 package(s) already available locally.",
+        );
+    }
+
+    #[test]
+    fn install_summary_does_not_claim_downloaded_packages_are_reused() {
+        let package = sample_package("xz", "5.8.3", "/nix/store/root-xz");
+        let download = summary_download(&package.store_path, Some(332180));
+
+        let summary = install_size_summary(&[download], &[&package]);
+
+        assert!(summary.starts_with("Need to download 324.4 KiB."));
+        assert!(!summary.contains("Reusing"));
+    }
+
+    #[test]
+    fn install_summary_reports_unknown_download_sizes_instead_of_zero() {
+        let download = summary_download("/nix/store/root-xz", None);
+
+        assert!(install_size_summary(&[download], &[]).starts_with("Need to download unknown."));
+    }
 
     #[test]
     fn format_size_bytes() {
@@ -2160,6 +2252,11 @@ mod tests {
     fn write_test_provenance_keys(root: &Path, registry_name: &str) {
         let registry_root = root.join(registry_name);
         std::fs::create_dir_all(&registry_root).unwrap();
+        std::fs::write(
+            registry_root.join("registry.toml"),
+            format!("[registry]\nname = {registry_name:?}\n"),
+        )
+        .unwrap();
         let keypair = crate::sshkey::Ed25519Keypair::from_seed([42_u8; 32]);
         keys::write_keys_toml(
             &registry_root,
@@ -2404,6 +2501,111 @@ mod tests {
         .unwrap();
 
         assert_eq!(count, 1);
+    }
+
+    fn aliased_provenance_fixture(root: &Path) -> PackageMeta {
+        let meta = attested_sample_package();
+        let registry_root = root.join("test-reg");
+        let path = registry_root.join(meta.attestation.provenance.as_deref().unwrap());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let jsonl = provenance_statement(&meta);
+        std::fs::write(path, &jsonl).unwrap();
+        write_test_provenance_keys(root, "test-reg");
+        write_transparency_log(root, "test-reg", &meta, &jsonl);
+        std::fs::rename(registry_root, root.join("local-alias")).unwrap();
+        meta
+    }
+
+    fn verify_aliased_provenance(root: &Path, meta: PackageMeta) -> Result<usize> {
+        let mut closure = sample_closure(meta.clone(), vec![meta]);
+        closure.registry_name = "local-alias".to_string();
+        verify_install_provenance_from_cache(root, &[closure])
+    }
+
+    #[test]
+    fn verify_install_provenance_uses_committed_identity_for_local_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+
+        assert_eq!(verify_aliased_provenance(tmp.path(), meta).unwrap(), 1);
+    }
+
+    #[test]
+    fn verify_install_provenance_keeps_root_owner_policy_bound_to_local_alias() {
+        let tmp = TempDir::new().unwrap();
+        let mut meta = aliased_provenance_fixture(tmp.path());
+        add_owned_root(&mut meta, "firewall");
+        let signers = HashSet::from([TEST_PROVENANCE_KEY_ID.to_string()]);
+        let entries = [("local-alias", &meta)];
+        let canonical_policy = HashMap::from([("test-reg".to_string(), signers.clone())]);
+
+        let error = verify_package_provenance_entries_from_cache_inner(
+            tmp.path(),
+            entries,
+            &canonical_policy,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("operator allowlist"));
+
+        let alias_policy = HashMap::from([("local-alias".to_string(), signers)]);
+        let count =
+            verify_package_provenance_entries_from_cache_inner(tmp.path(), entries, &alias_policy)
+                .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_foreign_key_namespace_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        std::fs::write(
+            tmp.path().join("local-alias/registry.toml"),
+            "[registry]\nname = \"foreign-reg\"\n",
+        )
+        .unwrap();
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(error.to_string().contains("expected 'foreign-reg'"));
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_foreign_builder_identity_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        // The same public key is trusted in another registry, but the signed
+        // builder still names test-reg. A valid signature cannot cross domains.
+        write_test_provenance_keys(tmp.path(), "local-alias");
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(format!("{error:#}").contains("builder"), "{error:#}");
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_missing_manifest_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        std::fs::remove_file(tmp.path().join("local-alias/registry.toml")).unwrap();
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(error.to_string().contains("reading registry manifest"));
+    }
+
+    #[test]
+    fn verify_install_provenance_rejects_symlink_manifest_under_alias() {
+        let tmp = TempDir::new().unwrap();
+        let meta = aliased_provenance_fixture(tmp.path());
+        let manifest = tmp.path().join("local-alias/registry.toml");
+        let outside = tmp.path().join("outside.toml");
+        std::fs::rename(&manifest, &outside).unwrap();
+        std::os::unix::fs::symlink(outside, manifest).unwrap();
+
+        let error = verify_aliased_provenance(tmp.path(), meta).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("registry manifest path 'registry.toml' must not contain symlinks"),
+            "{error:#}",
+        );
     }
 
     #[test]

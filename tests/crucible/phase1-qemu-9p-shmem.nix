@@ -339,7 +339,7 @@ in
             cat > stock-9p-negative.c <<'STOCK_NEGATIVE'
             #include <stddef.h>
             #include <stdint.h>
-            #include "qemu/qemu-plugin.h"
+            #include "plugins/qemu-plugin.h"
 
             int main(void)
             {
@@ -373,7 +373,7 @@ in
             grep -q 'qemu_system_shutdown_request(SHUTDOWN_CAUSE_HOST_ERROR)' hw/9pfs/virtio-9p-device.c
             ! grep -Eq 'main_loop_wait|aio_poll|aio_bh_poll' hw/9pfs/virtio-9p-device.c
 
-            mkdir -p fixture-src/hw/9pfs fixture/include/fsdev fixture/include/hw/virtio fixture/include/hw fixture/include/qemu fixture/include/system
+            mkdir -p fixture-src/hw/9pfs fixture/include/fsdev fixture/include/hw/virtio fixture/include/hw/core fixture/include/qemu fixture/include/system
             cp hw/9pfs/virtio-9p-device.c fixture-src/hw/9pfs/virtio-9p-device.c
 
             cat > fixture/include/qemu/osdep.h <<'OSDEP_FIXTURE'
@@ -394,6 +394,7 @@ in
             #include <sys/uio.h>
 
             #define g_autofree
+            #define coroutine_fn
             #define g_assert assert
             #define QEMU_PACKED __attribute__((packed))
             #define QEMU_BUILD_BUG_ON(condition) \
@@ -637,10 +638,11 @@ in
                 const char *name;
                 const char *parent;
                 size_t instance_size;
-                void (*class_init)(ObjectClass *klass, void *data);
+                void (*class_init)(ObjectClass *klass, const void *data);
             } TypeInfo;
 
             #define TYPE_VIRTIO_DEVICE "virtio-device"
+            #define VIRTQUEUE_MAX_SIZE 1024
             #define VIRTIO_ID_9P 9
             #define VIRTIO_9P_MOUNT_TAG 0
             #define DEVICE_CATEGORY_STORAGE 0
@@ -675,7 +677,7 @@ in
             #endif
             VIRTIO_ACCESS_FIXTURE
 
-            cat > fixture/include/hw/qdev-properties.h <<'QDEV_FIXTURE'
+            cat > fixture/include/hw/core/qdev-properties.h <<'QDEV_FIXTURE'
             #ifndef HW_QDEV_PROPERTIES_H
             #define HW_QDEV_PROPERTIES_H
 
@@ -779,6 +781,8 @@ in
                                               struct iovec **piov,
                                               unsigned int *pniov, size_t size);
                 void (*push_and_notify)(V9fsPDU *pdu);
+                size_t (*msize_limit)(V9fsState *s);
+                size_t (*response_buffer_size)(V9fsPDU *pdu);
             };
 
             struct V9fsVirtioState {

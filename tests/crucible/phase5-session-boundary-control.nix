@@ -9,7 +9,10 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
-  gateControlResponsive = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  gateControlResponsive = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  };
   apiGateControlResponsive = builtins.readFile ../../crates/crucible-api/tests/gate_control_responsive.rs;
   daemonGateControlResponsive = builtins.readFile ../../crates/crucible-daemon/tests/gate_control_responsive.rs;
   schedulerLib = import ./_crucible-scheduler-source.nix {inherit lib;};

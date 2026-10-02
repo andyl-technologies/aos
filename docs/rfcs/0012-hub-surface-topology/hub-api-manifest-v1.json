@@ -1928,6 +1928,41 @@
          "service" : "ChannelService"
       },
       {
+         "method" : "UpsertStagedRelease",
+         "path" : "aos.hub.v1.PublishService/UpsertStagedRelease",
+         "request" : "UpsertStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "GetStagedRelease",
+         "path" : "aos.hub.v1.PublishService/GetStagedRelease",
+         "request" : "GetStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "ListStagedReleases",
+         "path" : "aos.hub.v1.PublishService/ListStagedReleases",
+         "request" : "ListStagedReleasesRequest",
+         "response" : "ListStagedReleasesResponse",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "FinalizeStagedRelease",
+         "path" : "aos.hub.v1.PublishService/FinalizeStagedRelease",
+         "request" : "FinalizeStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
+      },
+      {
+         "method" : "DiscardStagedRelease",
+         "path" : "aos.hub.v1.PublishService/DiscardStagedRelease",
+         "request" : "DiscardStagedReleaseRequest",
+         "response" : "StagedRelease",
+         "service" : "PublishService"
+      },
+      {
          "method" : "BeginRegistryPublication",
          "path" : "aos.hub.v1.PublishService/BeginRegistryPublication",
          "request" : "BeginRegistryPublicationRequest",

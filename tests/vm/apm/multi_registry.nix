@@ -46,7 +46,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
   '';
   mkPriorityTool = {
     version,
@@ -269,6 +269,12 @@ in {
           "$APR" "$@"
       }
 
+      maintainer_publish() {
+        HOME=/tmp USER=root \
+        XDG_DATA_HOME=/tmp/.local/share XDG_CACHE_HOME=/tmp/.cache \
+          publish_vm_package "$@"
+      }
+
       publish_priority_registry() {
         registry="$1"
         store_path="$2"
@@ -276,9 +282,11 @@ in {
         cache_dir="$4"
         cache_url="$5"
 
-        maintainer_apr create "$registry"
+        HOME=/tmp USER=root \
+        XDG_CONFIG_HOME=/tmp/.config XDG_DATA_HOME=/tmp/.local/share \
+          create_publish_registry "$registry"
         reg_dir="$REG_STORAGE/$registry"
-        maintainer_apr publish "$store_path" \
+        maintainer_publish "$store_path" \
           --name priority-tool \
           --version "$version" \
           --description "Priority-selected package from $registry" \
@@ -308,7 +316,7 @@ in {
         cache_url="$5"
 
         reg_dir="$REG_STORAGE/$registry"
-        maintainer_apr publish "$store_path" \
+        maintainer_publish "$store_path" \
           --name priority-tool \
           --version "$version" \
           --description "Priority-selected package from $registry" \
@@ -335,7 +343,7 @@ in {
         cache_url="$4"
 
         reg_dir="$REG_STORAGE/$registry"
-        maintainer_apr publish "$store_path" \
+        maintainer_publish "$store_path" \
           --name priority-client \
           --version 1.0.0 \
           --description "Client package depending on $registry priority-tool" \
@@ -362,7 +370,7 @@ in {
         cache_url="$4"
 
         reg_dir="$REG_STORAGE/$registry"
-        maintainer_apr publish "$store_path" \
+        maintainer_publish "$store_path" \
           --name same-version-tool \
           --version 1.0.0 \
           --description "Same-version package from $registry" \
@@ -389,7 +397,7 @@ in {
         cache_url="$4"
 
         reg_dir="$REG_STORAGE/$registry"
-        maintainer_apr publish "$store_path" \
+        maintainer_publish "$store_path" \
           --name switch-tool \
           --version 1.0.0 \
           --description "Source-switch package from $registry" \

@@ -13,6 +13,9 @@
 //! server-rendered management fallback.
 
 pub mod route;
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod staging;
 
 #[cfg(target_arch = "wasm32")]
 pub mod app;

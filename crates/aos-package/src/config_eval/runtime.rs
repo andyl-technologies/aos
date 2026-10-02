@@ -573,7 +573,7 @@ pub(crate) fn immutable_lower_store_path(path: &str) -> Result<std::path::PathBu
     {
         bail!("image catalog contains malformed store path {path:?}");
     }
-    Ok(Path::new("/nix.lower/store").join(name))
+    Ok(Path::new("/usr/lib/aos/nix/store").join(name))
 }
 
 pub(crate) fn local_store_identity_at(identity: &str, read_path: &Path) -> Result<(String, u64)> {

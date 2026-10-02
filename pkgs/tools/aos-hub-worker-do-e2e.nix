@@ -1116,7 +1116,7 @@ in
         rootfsDeps = [self];
         memory = 2048;
         testScript = ''
-          ${nix}/bin/nix-store --load-db < /aos-registration
+          ${nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
           export NIX_REMOTE=""
           ${self}/bin/aos-hub-worker-do-e2e
         '';

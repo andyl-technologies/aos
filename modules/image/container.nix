@@ -100,7 +100,7 @@
     ];
   };
   defaultAosDefinition =
-    (import ../../containers/aos.nix {
+    (import ./_container-definition.nix {
       inherit lib pkgs evidenceOverrides;
       goldenRoots = config.environment.systemPackages;
       aosSystem = pkgs.stdenv.hostPlatform.system;

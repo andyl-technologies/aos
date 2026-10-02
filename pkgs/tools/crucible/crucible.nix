@@ -304,10 +304,11 @@
 
     postInstall = ''
       test -x "$out/bin/crucible"
+      cargoTargetRoot="''${CARGO_TARGET_DIR:-target}"
       cp ${
         if stdenv.isCross
-        then ''"target/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
-        else "target/release/examples/crucible-debugger-live-fixture"
+        then ''"$cargoTargetRoot/$CARGO_BUILD_TARGET/release/examples/crucible-debugger-live-fixture"''
+        else ''"$cargoTargetRoot/release/examples/crucible-debugger-live-fixture"''
       } \
         "$out/bin/crucible-debugger-live-fixture"
       ${

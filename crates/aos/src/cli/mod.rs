@@ -353,12 +353,7 @@ pub enum Commands {
     },
     /// Manage generic sandboxes and filesystem views
     Sandbox(sandbox::SandboxArgs),
-    /// Plan, build, verify, and publish canonical AOS releases
-    Release {
-        #[command(subcommand)]
-        command: ReleaseCommand,
-    },
-    /// Inspect and advance local package-maintenance campaigns
+    /// Inspect and advance package maintenance and canonical releases
     Maintain(MaintainArgs),
     /// Run downloaded AOS images locally with QEMU
     Vm {

@@ -231,7 +231,7 @@
           NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$root/var/nix" \
             ${nixStoreBin} --init || true
           NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$root/var/nix" \
-            ${nixStoreBin} --load-db < /aos-registration
+            ${nixStoreBin} --load-db < /usr/lib/aos/nix-registration
         }
 
         init_mock_nix_db "$AOS_ROOT"

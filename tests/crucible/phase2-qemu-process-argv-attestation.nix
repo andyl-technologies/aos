@@ -467,7 +467,8 @@ in
               -I${qemuPackage}/include process-argv-probe.c \
               -o process-argv-probe.so
             cc -O2 -Wall -Wextra -Werror $cflags \
-              process-argv-launcher.c $libs -o process-argv-launcher
+              process-argv-launcher.c $libs -Wl,-rpath,${pkgs.glib}/lib \
+              -o process-argv-launcher
             if cc -fPIC -shared -O2 -Wall -Wextra -Werror \
               -Werror=implicit-function-declaration $cflags \
               stock-process-argv-probe.c \
@@ -498,8 +499,11 @@ in
                 echo "$mode QEMU unexpectedly accepted the rejecting probe" >&2
                 exit 1
               fi
-              test -s "$expected"
-              test -s "$observed"
+              if [ ! -s "$expected" ] || [ ! -s "$observed" ]; then
+                echo "$mode attestation probe did not produce its evidence (status=$status)" >&2
+                tail -n 40 "$stdout" "$stderr" >&2
+                exit 1
+              fi
               if ! cmp -s "$expected" "$observed"; then
                 echo "$mode process argv attestation mismatch" >&2
                 echo "expected:" >&2

@@ -32,7 +32,7 @@
       }
       {
         label = "world content address domain";
-        needle = "\"crucible.model.world.v1\"";
+        needle = "\"crucible.model.world.v4\"";
       }
       {
         label = "world canonical bytes";
@@ -44,11 +44,11 @@
       }
       {
         label = "plan content address domain";
-        needle = "\"crucible.model.plan.v1\"";
+        needle = "\"crucible.model.plan.v5\"";
       }
       {
-        label = "plan entries accessor";
-        needle = "pub fn entries(&self) -> &[PlanEntry]";
+        label = "plan event graph accessor";
+        needle = "pub const fn event_graph(&self) -> &EventGraph";
       }
       {
         label = "properties content hash accessor";
@@ -82,11 +82,11 @@
       }
       {
         label = "test checks world BLAKE3 domain";
-        needle = "\"crucible.model.world.v1\"";
+        needle = "\"crucible.model.world.v4\"";
       }
       {
         label = "test checks plan BLAKE3 domain";
-        needle = "\"crucible.model.plan.v1\"";
+        needle = "\"crucible.model.plan.v5\"";
       }
       {
         label = "test checks properties BLAKE3 domain";
@@ -178,7 +178,7 @@ in
               --manifest-path crates/Cargo.toml \
               -p crucible \
               --lib \
-              spatial_components_have_independent_content_addresses_and_cross_reuse \
+              tests::spatial_components:: \
               -- --test-threads=1
           '';
         }

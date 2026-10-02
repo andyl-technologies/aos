@@ -83,7 +83,7 @@
       );
     symlinkFarmPkgs = [];
     postPopulate = ''
-      ln -s ../nix.lower/store rootfs/nix/store
+      ln -s ../usr/lib/aos/nix/store rootfs/nix/store
       cat > rootfs/init <<'INIT'
       #!${targetPackages.bash}/bin/bash
       set -euxo pipefail

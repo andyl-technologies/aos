@@ -118,7 +118,7 @@ in
           require_fixed "$S11_RESULT" "accelerator=sim,thread=single"
           require_fixed "$S11_RESULT" "vcpus=4"
           require_fixed "$S11_RESULT" "rr_switch_quantum=4096"
-          require_fixed "$S11_RESULT" "horizon_icount=4000000000"
+          require_fixed "$S11_RESULT" "horizon_icount=8000000000"
           require_fixed "$S11_RESULT" "workload_affinity_active=true"
           require_fixed "$S11_RESULT" "extended_fingerprint_match=true"
           require_fixed "$S11_RESULT" "fallback=smp1_not_needed"
@@ -140,7 +140,7 @@ in
           require_fixed "$decision_doc" "checks.crucible.phase0.s11MultiVcpuFingerprint"
           require_fixed "$decision_doc" "\`s11_result_status=PASS\`"
           require_fixed "$decision_doc" "\`s11_rr_switch_quantum=4096\`"
-          require_fixed "$decision_doc" "\`s11_horizon_icount=4000000000\`"
+          require_fixed "$decision_doc" "\`s11_horizon_icount=8000000000\`"
           require_fixed "$decision_doc" "\`s11_extended_fingerprint_match=true\`"
 
           mkdir -p "$out"
@@ -179,7 +179,7 @@ in
             echo s11_decision_entry_consumed=true
             echo s11_result_status=PASS
             echo s11_rr_switch_quantum=4096
-            echo s11_horizon_icount=4000000000
+            echo s11_horizon_icount=8000000000
             echo s11_extended_fingerprint_match=true
             echo live_preemption_rr_switch_quantum=4096
             echo live_preemption_deterministic_under_scheduler_preemption=true

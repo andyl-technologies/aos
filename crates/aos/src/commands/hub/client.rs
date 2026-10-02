@@ -4,25 +4,17 @@ use crate::cli::HubAccessArgs;
 use anyhow::Result;
 use aos_remote::HubClient;
 
-// A concurrent object queue must not consume one rotating refresh credential
-// more than once or resolve another request's active profile between steps.
-static PROFILE_RESOLUTION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Resolves renewable profile credentials for one pinned release destination.
+/// Resolves authenticated renewable credentials for a pinned release destination.
 ///
 /// # Errors
 ///
-/// Returns an error when credentials cannot be refreshed or when the selected
-/// destination has no authenticated profile or explicit access token.
+/// Returns an error when no explicit token or matching profile is available,
+/// or when credential refresh or client configuration fails.
 pub(in crate::commands) async fn release_hub_client(
     origin: &str,
     token: Option<&str>,
 ) -> Result<HubClient> {
-    let (hub, token) = resolve_credentials(Some(origin), token).await?;
-    let token = token.ok_or_else(|| {
-        anyhow::anyhow!("release publication requires authenticated Hub credentials")
-    })?;
-    HubClient::connect_with_token(&hub, &token)
+    aos_package::hub_auth::authenticated_hub_client(origin, token).await
 }
 
 /// Builds a hub client: token-authenticated when a JWT is supplied, else
@@ -58,20 +50,7 @@ pub(super) async fn hub_client<H: HubArgument + ?Sized>(
     hub: &H,
     token: Option<&str>,
 ) -> Result<HubClient> {
-    let (hub, token) = resolve_credentials(hub.as_optional_hub(), token).await?;
-    match token {
-        Some(token) => HubClient::connect_with_token(&hub, &token),
-        None => HubClient::connect_anonymous(&hub),
-    }
-}
-
-async fn resolve_credentials(
-    origin: Option<&str>,
-    token: Option<&str>,
-) -> Result<(String, Option<String>)> {
-    let _guard = PROFILE_RESOLUTION.lock().await;
-    crate::commands::hub_auth::prepare_hub_access(origin, token).await?;
-    crate::commands::hub_auth::resolve_access(origin, token)
+    aos_package::hub_auth::hub_client(hub.as_optional_hub(), token).await
 }
 
 /// Resolves the Hub endpoint and credential for one container-admin command.

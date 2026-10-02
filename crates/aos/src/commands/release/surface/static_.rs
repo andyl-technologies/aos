@@ -45,7 +45,8 @@ use url::Url;
 use super::readback;
 use super::{
     ChannelAdvance, ChannelExpectation, PublicationRequest, PublishedSurface, SignedReceipt,
-    SurfaceClient, SurfaceObject, SurfaceSigners, TimestampPublication, TimestampReceipt,
+    StagedSurface, SurfaceClient, SurfaceObject, SurfaceSigners, TimestampPublication,
+    TimestampReceipt,
 };
 use crate::commands::hub::publication::inventory::{
     PinnedPublication, publication_default_commit, publication_from_root,
@@ -145,21 +146,23 @@ impl StaticSurface {
                 continue;
             }
             let snapshot = named_snapshot(pinned, object)?;
-            self.backend
-                .put_static_file(
-                    &object.path,
-                    snapshot.path(),
-                    Some(&object.media_type),
-                    Some(if immutable {
-                        IMMUTABLE_CACHE_CONTROL
-                    } else {
-                        MUTABLE_CACHE_CONTROL
-                    }),
-                    None,
-                    Some(&object.sha256),
-                )
-                .await
-                .with_context(|| format!("uploading static surface object {}", object.path))?;
+            if immutable {
+                aos_package::registry::transport::RegistryStorage::new(self.backend.as_ref())
+                    .put_object(&object.path, snapshot.path(), &object.sha256)
+                    .await?;
+            } else {
+                self.backend
+                    .put_static_file(
+                        &object.path,
+                        snapshot.path(),
+                        Some(&object.media_type),
+                        Some(MUTABLE_CACHE_CONTROL),
+                        None,
+                        Some(&object.sha256),
+                    )
+                    .await
+                    .with_context(|| format!("uploading static surface object {}", object.path))?;
+            }
             if (index + 1) % 1000 == 0 {
                 printer.info(&format!(
                     "Uploaded {}/{total} static surface objects",
@@ -305,6 +308,180 @@ impl SurfaceClient for StaticSurface {
         let selected: Vec<_> = pinned.request.objects.iter().collect();
         self.upload(&pinned, &selected, printer).await?;
         published(&pinned, None)
+    }
+
+    async fn stage_surface(
+        &self,
+        root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
+        printer: &Printer,
+    ) -> Result<StagedSurface> {
+        revision.validate()?;
+        if let Some(graph) = &revision.container {
+            aos_package::registry::container_stage::verify_container_stage_objects(
+                graph,
+                &root.join("oci/blobs/sha256"),
+            )?;
+        }
+        let pinned = publication_from_root(root, &self.registry)?;
+        let mut objects = Vec::new();
+        // Static origins retain complete OCI graphs as immutable digest bytes.
+        // The root is an owned verified projection; backends hash each source
+        // again before admission, without retaining one open file per object.
+        for declared in &revision.inventory {
+            let object = RegistryPublicationObjectInput {
+                path: declared.path.clone(),
+                sha256: declared
+                    .sha256
+                    .strip_prefix("sha256:")
+                    .context("stage object has no SHA-256")?
+                    .into(),
+                byte_size: i64::try_from(declared.byte_size)?,
+                kind: "immutable".into(),
+                media_type: declared.media_type.clone(),
+            };
+            objects.push(aos_package::registry::transport::ImmutableUpload {
+                path: object.path.clone(),
+                source: root.join(&object.path),
+                sha256: object.sha256.clone(),
+                byte_size: u64::try_from(object.byte_size)?,
+                phase: if object.path.starts_with("images/")
+                    && !object.path.ends_with("image-info.json")
+                {
+                    aos_package::registry::transport::ImmutableUploadPhase::ImageDisk
+                } else if object.path.starts_with("publication-receipts/") {
+                    aos_package::registry::transport::ImmutableUploadPhase::Receipt
+                } else {
+                    aos_package::registry::transport::ImmutableUploadPhase::Catalog
+                },
+            });
+        }
+        aos_package::registry::transport::upload_immutable_inventory(
+            &objects,
+            &[(&self.planned.origin, self.backend.as_ref())],
+            printer,
+        )
+        .await?;
+        let mut publication = published(&pinned, None)?;
+        publication.objects.retain(|object| !object.mutable);
+        for object in revision
+            .inventory
+            .iter()
+            .filter(|object| object.path.starts_with("oci/"))
+        {
+            publication.objects.push(SurfaceObject {
+                path: object.path.clone(),
+                sha256: object
+                    .sha256
+                    .strip_prefix("sha256:")
+                    .context("stage object has no SHA-256")?
+                    .into(),
+                byte_size: object.byte_size,
+                mutable: false,
+                media_type: object.media_type.clone(),
+            });
+        }
+        self.read_back(&publication.objects).await?;
+        Ok(StagedSurface {
+            publication,
+            record: aos_registry_surface::staging::StageRecord {
+                revision: revision.clone(),
+                state: aos_registry_surface::staging::StageState::Ready,
+                released_version: None,
+            },
+        })
+    }
+
+    async fn finalize_stage(
+        &self,
+        root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
+        base_commit: &str,
+        _printer: &Printer,
+    ) -> Result<PublishedSurface> {
+        revision.validate()?;
+        let pinned = publication_from_root(root, &self.registry)?;
+        anyhow::ensure!(
+            pinned.request.default_commit == base_commit,
+            "candidate publication differs from the approved registry base"
+        );
+        let objects = revision
+            .inventory
+            .iter()
+            .map(|object| {
+                Ok(SurfaceObject {
+                    path: object.path.clone(),
+                    sha256: object
+                        .sha256
+                        .strip_prefix("sha256:")
+                        .context("stage object has no SHA-256")?
+                        .into(),
+                    byte_size: object.byte_size,
+                    mutable: false,
+                    media_type: object.media_type.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.read_back(&objects).await?;
+        // Validate every current pointer before exposing any prepared pointer.
+        let mut pointers = Vec::new();
+        for pointer in &revision.publication {
+            let current = self
+                .backend
+                .get_static_object(&pointer.path, MAX_REFS_BYTES)
+                .await?;
+            let expected = match current {
+                Some((bytes, _)) if bytes == pointer.bytes => continue,
+                Some((bytes, version)) => {
+                    anyhow::ensure!(
+                        pointer.expected_sha256.as_deref()
+                            == Some(
+                                format!("sha256:{}", Sha256Digest::of_bytes(bytes).hex()).as_str()
+                            ),
+                        "candidate pointer changed before publication: {}",
+                        pointer.path
+                    );
+                    Expectation::Version(version)
+                }
+                None => {
+                    anyhow::ensure!(
+                        pointer.expected_sha256.is_none(),
+                        "candidate pointer disappeared before publication: {}",
+                        pointer.path
+                    );
+                    Expectation::Absent
+                }
+            };
+            pointers.push((pointer, expected));
+        }
+        pointers.sort_by_key(|(pointer, _)| {
+            aos_package::registry::transport::pointer_upload_rank(&pointer.path)
+        });
+        for (pointer, expectation) in pointers {
+            let source = temporary_file(&pointer.bytes)?;
+            match self
+                .backend
+                .put_static_file_conditional(
+                    &pointer.path,
+                    source.path(),
+                    Some(aos_package::registry::surface_keymap::content_type(
+                        &pointer.path,
+                    )),
+                    Some(MUTABLE_CACHE_CONTROL),
+                    expectation,
+                )
+                .await?
+            {
+                ConditionalOutcome::Written(_) => {}
+                ConditionalOutcome::PreconditionFailed { .. } => bail!(
+                    "candidate pointer changed during publication: {}",
+                    pointer.path
+                ),
+            }
+        }
+        let publication = published(&pinned, None)?;
+        self.read_back(&publication.objects).await?;
+        Ok(publication)
     }
 
     async fn read_back(&self, objects: &[SurfaceObject]) -> Result<()> {
@@ -645,7 +822,7 @@ mod tests {
         };
         let result = StaticSurface::connect(
             planned,
-            "andyl/testing",
+            "andyl/experimental",
             &aos_cache::backend::AuthOptions::default(),
             None,
         )

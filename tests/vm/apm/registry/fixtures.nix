@@ -45,7 +45,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
   '';
   setupAltNixPublishEnv = ''
     export AOS_ROOT=/tmp/aos-alt-root
@@ -64,7 +64,7 @@
     NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
       nix-store --init || true
     NIX_STORE_DIR=/nix/store NIX_STATE_DIR="$AOS_NIX_STATE_DIR" \
-      nix-store --load-db < /aos-registration
+      nix-store --load-db < /usr/lib/aos/nix-registration
   '';
   mkRegistryTool = {
     pname,

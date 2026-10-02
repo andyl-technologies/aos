@@ -12,7 +12,7 @@
 ##! /etc is an empty mountpoint (the runtime overlay mounts on top in
 ##! stage-1); /run/etc is also an empty mountpoint
 ##! (run-etc-setup.service mounts a tmpfs there). The seed pointer
-##! at `/aos-toplevel` is what aos-seed-profiles.service reads on
+##! at `/usr/lib/aos/toplevel` is what aos-seed-profiles.service reads on
 ##! first boot to populate apm's profile state, breaking the
 ##! initrd→toplevel→initrd derivation cycle that direct interpolation
 ##! of `${config.system.build.toplevel}` in initrd service scripts
@@ -257,14 +257,14 @@ in
               # unmerged-bin taint fires when /usr/sbin isn't a symlink
               # into /usr/bin (see src/core/taint.c's test_usr_unmerged).
               #
-              # The image's Nix closure lives at /nix.lower/store; /nix is an
+              # The image's Nix closure lives at /usr/lib/aos/nix/store; /nix is an
               # empty mountpoint where nix-overlay-setup.service stacks an
-              # overlayfs in the initrd (lowerdir=/nix.lower, upperdir on the
-              # /var partition). At runtime, /nix/store/... and /nix.lower/store/...
+              # overlayfs in the initrd (lowerdir=/usr/lib/aos/nix, upperdir on the
+              # /var partition). At runtime, /nix/store/... and /usr/lib/aos/nix/store/...
               # both resolve to the closure — the former through the overlay
               # (matching the path embedded in every binary's RUNPATH and
               # shebang), the latter directly on disk for inspection.
-              mkdir -p rootfs/nix.lower/store
+              mkdir -p rootfs/usr/lib/aos/nix/store
               mkdir -p rootfs/nix
               mkdir -p rootfs/usr/lib/aos
               printf 'aos.config-bundle/v1\n' > rootfs/usr/lib/aos/configuration-capabilities
@@ -312,7 +312,7 @@ in
                   printf '\r    [%d/%d]' "$count" "$total"
                 fi
                 if [ -e "$p" ]; then
-                  cp -a "$p" rootfs/nix.lower/store/
+                  cp -a "$p" rootfs/usr/lib/aos/nix/store/
                 else
                   echo ""
                   echo "    WARN: store path does not exist: $p" >&2
@@ -415,21 +415,21 @@ in
               # ── 7. /run/current-system → toplevel ───────────────────────────
               ln -sfnT "$TOPLEVEL" rootfs/run/current-system
 
-              # ── 8. /aos-toplevel seed pointer ──────────────────────────────
+              # ── 8. Image toplevel seed pointer ────────────────────────────
               # First-boot bootstrap: aos-seed-profiles.service reads this
               # symlink to populate /var/lib/profiles/system/gen-1/toplevel
               # without referencing config.system.build.toplevel directly
               # (which would create an initrd→toplevel→initrd cycle). The
-              # rootfs already references the toplevel via /nix.lower/store,
+              # rootfs already references the toplevel via /usr/lib/aos/nix/store,
               # so adding the symlink doesn't introduce a new derivation
               # edge. See spec v12 §6.1.
-              ln -sfn "$TOPLEVEL" rootfs/aos-toplevel
+              ln -sfn "$TOPLEVEL" rootfs/usr/lib/aos/toplevel
 
-              # ── 9. /aos-registration Nix DB seed ───────────────────────────
+              # ── 9. Nix database seed ─────────────────────────────────────
               # Stage-2 loads this plain text `nix-store --load-db` stream to
               # register the image closure without canonicalising/chowning store
               # contents. Copy the bytes instead of symlinking the derivation.
-              cp "$REGINFO/registration" rootfs/aos-registration
+              cp "$REGINFO/registration" rootfs/usr/lib/aos/nix-registration
 
               # /etc/machine-id no longer touched here — stage-1's
               # aos-machine-id.service generates /var/etc/machine-id on

@@ -696,7 +696,7 @@ in
           '';
         }
         {
-          name = "verify-qemu10-coverage-callback-ordering";
+          name = "verify-qemu-coverage-callback-ordering";
           script = ''
             set -eu
             qemu_source="$TMPDIR/qemu-coverage-ordering-source"
@@ -710,17 +710,17 @@ in
                 destroyed = NR
               }
               in_flush && /qht_reset\(&plugin.dyn_cb_arr_ht\)/ { reset = NR }
-              in_flush && /plugin_cb__simple\(QEMU_PLUGIN_EV_FLUSH\)/ { notified = NR }
+              in_flush && /plugin_cb__udata\(QEMU_PLUGIN_EV_FLUSH\)/ { notified = NR }
               END {
                 exit !(destroyed && reset && notified &&
                        destroyed < notified && reset < notified)
               }
             ' "$qemu_tree/plugins/core.c"
-            grep -q 'tb_flush() takes care of running the flush in an exclusive context' \
-              "$qemu_tree/include/exec/tb-flush.h"
-            grep -q 'if (cpu_in_serial_context(cpu))' \
+            grep -q 'cpu_in_serial_context checks cpu_in_exclusive_context' \
               "$qemu_tree/accel/tcg/tb-maint.c"
-            grep -q 'async_safe_run_on_cpu(cpu, do_tb_flush' \
+            grep -q 'current_cpu && cpu_in_serial_context(current_cpu)' \
+              "$qemu_tree/accel/tcg/tb-maint.c"
+            grep -q 'async_safe_run_on_cpu(cs, do_tb_flush' \
               "$qemu_tree/accel/tcg/tb-maint.c"
             awk '
               /icount_start_insn = gen_tb_start\(db, cflags\)/ { prologue = NR }
@@ -846,8 +846,8 @@ in
             coverage_signal=guest-pc-folded-into-fixed-map
             callback_api=stock-qemu-tb-translation-execution-and-flush-plus-exact-entry-helper
             callback_test_evidence=rust-callback-model-and-executable-c-abi-arithmetic-model
-            qemu10_flush_ordering=dynamic-callback-arrays-destroyed-and-reset-before-plugin-flush-callback
-            qemu10_flush_context=serialized-or-async-exclusive
+            qemu_flush_ordering=dynamic-callback-arrays-destroyed-and-reset-before-plugin-flush-callback
+            qemu_flush_context=serialized-or-async-exclusive
             exact_entry_math=committed-plus-budget-minus-remaining-minus-tb-insns
             exact_entry_edge_evidence=first-chained-post-refill-next-rr-vcpu-model-plus-early-exit-source-order
             live_qemu_proof=checks.crucible.phase6.basicBlockCoverage

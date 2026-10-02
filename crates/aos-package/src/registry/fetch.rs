@@ -1,8 +1,9 @@
 //! Consumer-side object fetch resolution for the git-native registry.
 //!
 //! Given a target release, this module decides how to bring the release's
-//! git objects into the local registry repo with the least transfer. Three
-//! mechanisms are tried in order:
+//! git objects into the local registry repo with the least transfer. A complete,
+//! content-verified local release needs no transfer. Otherwise three mechanisms
+//! are tried in order:
 //!
 //! 1. **AOS thin deltas** -- producer-published `delta-<base>.pack.zst`
 //!    files under `releases/<release>/objects/pack/`, usable when the
@@ -20,11 +21,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result, bail};
-use tokio::io::AsyncWriteExt as _;
+use anyhow::{Context, Result};
 
-use crate::download::join_cache_url;
 use crate::registry::pack;
+use crate::registry::transport::{RegistryRead, RegistryTransport};
 use aos_core::output::{Printer, TransferProgress};
 
 /// The ordered fetch steps chosen to materialize a target release.
@@ -33,7 +33,8 @@ pub struct FetchPlan {
     /// The release the plan materializes.
     pub target: semver::Version,
     /// Steps to execute in order; later steps may depend on earlier ones
-    /// (e.g. a delta applied on top of a full-pack anchor).
+    /// (e.g. a delta applied on top of a full-pack anchor). Empty when the
+    /// complete release is already available locally.
     pub steps: Vec<FetchStep>,
 }
 
@@ -206,7 +207,8 @@ pub fn plan_from_artifacts(
 
 /// Resolve and fetch objects for a target release.
 ///
-/// The resolver first tries AOS-only thin deltas, then a stock-git full-pack
+/// A complete, content-verified local release returns without network access.
+/// Otherwise the resolver tries AOS-only thin deltas, then a stock-git full-pack
 /// anchor, and finally delegates to `git fetch` for the dumb-HTTP loose-object
 /// correctness floor. Unusable artifacts (corrupt download, failed index)
 /// are reported as warnings and the next mechanism is tried; fetched packs
@@ -240,12 +242,40 @@ pub(crate) async fn resolve_objects_with_progress(
     printer: &Printer,
     progress: Option<&TransferProgress>,
 ) -> Result<FetchPlan> {
+    // Ref synchronization may already have fetched this complete release.
+    // Check the content-addressed graph, not just the tag or retained-version
+    // marker, so an incomplete or damaged local cache still gets repaired.
+    let repo_path = repo_dir.to_path_buf();
+    let release_ref = format!("refs/tags/{target}");
+    let missing = tokio::task::spawn_blocking(move || {
+        super::repo::missing_objects_blocking(&repo_path, &[release_ref])
+    })
+    .await
+    .context("release object-walk task panicked")??;
+    if missing.is_empty() {
+        return Ok(FetchPlan {
+            target: target.clone(),
+            steps: Vec::new(),
+        });
+    }
+
+    let transport = match RegistryTransport::new(origin) {
+        Ok(transport) => transport,
+        Err(_) => {
+            let fallback = git_fetch_release(repo_dir, origin, target, progress).await?;
+            return Ok(FetchPlan {
+                target: target.clone(),
+                steps: vec![fallback],
+            });
+        }
+    };
+
     for base in deltas_at(target) {
         if !retained.contains(&base) {
             continue;
         }
         set_phase(progress, "Downloading registry delta");
-        match fetch_delta(repo_dir, origin, target, &base, progress).await {
+        match fetch_delta(repo_dir, &transport, target, &base, progress).await {
             Ok(Some(step)) => {
                 printer.info(&format!(
                     "Fetched registry delta {base} -> {target} via AOS pack"
@@ -266,12 +296,12 @@ pub(crate) async fn resolve_objects_with_progress(
 
     let anchor = anchor_for(target);
     set_phase(progress, "Downloading registry release pack");
-    match fetch_full_pack(repo_dir, origin, &anchor, progress).await {
+    match fetch_full_pack(repo_dir, &transport, &anchor, progress).await {
         Ok(Some(full_step)) => {
             let mut steps = vec![full_step];
             if anchor != *target {
                 set_phase(progress, "Downloading registry delta");
-                match fetch_delta(repo_dir, origin, target, &anchor, progress).await {
+                match fetch_delta(repo_dir, &transport, target, &anchor, progress).await {
                     Ok(Some(delta_step)) => steps.push(delta_step),
                     Ok(None) => {
                         let fallback =
@@ -315,7 +345,7 @@ pub(crate) async fn resolve_objects_with_progress(
 /// published neither variant.
 async fn fetch_delta(
     repo_dir: &Path,
-    origin: &str,
+    transport: &dyn RegistryRead,
     target: &semver::Version,
     base: &semver::Version,
     progress: Option<&TransferProgress>,
@@ -330,8 +360,11 @@ async fn fetch_delta(
         } else {
             pack_path.clone()
         };
-        if !download_optional_to_file(origin, &relative, &download_path, progress).await? {
+        if !download_optional_to_file(transport, &relative, &download_path, progress).await? {
             continue;
+        }
+        if let Some(progress) = progress {
+            progress.activity_phase("Indexing registry delta");
         }
         if compressed {
             pack::zstd_decompress(&download_path, None)
@@ -355,13 +388,13 @@ async fn fetch_delta(
 /// the release publishes no full pack.
 async fn fetch_full_pack(
     repo_dir: &Path,
-    origin: &str,
+    transport: &dyn RegistryRead,
     version: &semver::Version,
     progress: Option<&TransferProgress>,
 ) -> Result<Option<FetchStep>> {
     let release = release_path(version);
     let info_path = format!("releases/{release}/objects/info/packs");
-    let Some(info) = get_optional(origin, &info_path, progress).await? else {
+    let Some(info) = get_optional(transport, &info_path, progress).await? else {
         return Ok(None);
     };
     let info = String::from_utf8(info).context("release objects/info/packs is not UTF-8")?;
@@ -371,8 +404,12 @@ async fn fetch_full_pack(
 
     let pack_relative = format!("releases/{release}/objects/pack/{pack_name}");
     let pack_path = local_pack_path(repo_dir, &pack_name)?;
-    if !download_optional_to_file(origin, &pack_relative, &pack_path, progress).await? {
+    if !download_optional_to_file(transport, &pack_relative, &pack_path, progress).await? {
         return Ok(None);
+    }
+
+    if let Some(progress) = progress {
+        progress.activity_phase("Indexing registry release pack");
     }
 
     // libgit2's pack writer regenerates and verifies the index, so the
@@ -408,86 +445,27 @@ async fn git_fetch_release(
     Ok(FetchStep::GitFetchFallback { refspec })
 }
 
-/// GET a static origin file, mapping HTTP 404 to `Ok(None)`.
+/// Reads optional pack metadata through the shared registry byte transport.
 async fn get_optional(
-    origin: &str,
+    transport: &dyn RegistryRead,
     relative: &str,
     progress: Option<&TransferProgress>,
 ) -> Result<Option<Vec<u8>>> {
-    let url = join_cache_url(origin, relative);
-    let response = reqwest::get(&url)
-        .await
-        .with_context(|| format!("fetching {url}"))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(None);
+    let bytes = transport.read_optional(relative, 1024 * 1024).await?;
+    if let (Some(progress), Some(bytes)) = (progress, bytes.as_ref()) {
+        progress.inc(bytes.len() as u64);
     }
-    if !response.status().is_success() {
-        bail!("GET {url} failed with {}", response.status());
-    }
-    let body = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading {url}"))?;
-    if let Some(progress) = progress {
-        progress.inc(body.len() as u64);
-    }
-    Ok(Some(body.to_vec()))
+    Ok(bytes)
 }
 
-/// GET a static origin file directly to `dest`, mapping HTTP 404 to `Ok(false)`.
+/// Streams an optional pack using the shared registry byte transport.
 async fn download_optional_to_file(
-    origin: &str,
+    transport: &dyn RegistryRead,
     relative: &str,
     dest: &Path,
     progress: Option<&TransferProgress>,
 ) -> Result<bool> {
-    let url = join_cache_url(origin, relative);
-    let mut response = reqwest::get(&url)
-        .await
-        .with_context(|| format!("fetching {url}"))?;
-    if response.status() == reqwest::StatusCode::NOT_FOUND {
-        return Ok(false);
-    }
-    if !response.status().is_success() {
-        bail!("GET {url} failed with {}", response.status());
-    }
-
-    let parent = dest
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("download destination has no parent: {}", dest.display()))?;
-    tokio::fs::create_dir_all(parent)
-        .await
-        .with_context(|| format!("creating {}", parent.display()))?;
-    let tmp = tempfile::Builder::new()
-        .prefix(".tmp-download-")
-        .tempfile_in(parent)
-        .with_context(|| format!("creating temporary download in {}", parent.display()))?
-        .into_temp_path();
-    let mut file = tokio::fs::File::create(&tmp)
-        .await
-        .with_context(|| format!("creating {}", tmp.display()))?;
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .with_context(|| format!("reading {url}"))?
-    {
-        if let Some(progress) = progress {
-            progress.inc(chunk.len() as u64);
-        }
-        file.write_all(&chunk)
-            .await
-            .with_context(|| format!("writing {}", tmp.display()))?;
-    }
-    file.flush()
-        .await
-        .with_context(|| format!("flushing {}", tmp.display()))?;
-    drop(file);
-    if dest.exists() {
-        std::fs::remove_file(dest).with_context(|| format!("removing {}", dest.display()))?;
-    }
-    tmp.persist(dest)
-        .map_err(|err| anyhow::anyhow!("persisting {}: {err}", dest.display()))?;
-    Ok(true)
+    transport.download_optional(relative, dest, progress).await
 }
 
 fn set_phase(progress: Option<&TransferProgress>, phase: &str) {
@@ -501,7 +479,13 @@ fn parse_info_packs(content: &str) -> Vec<String> {
     content
         .lines()
         .filter_map(|line| line.trim().strip_prefix("P "))
-        .filter(|name| name.starts_with("pack-") && name.ends_with(".pack"))
+        .filter(|name| {
+            name.strip_prefix("pack-")
+                .and_then(|hash| hash.strip_suffix(".pack"))
+                .is_some_and(|hash| {
+                    hash.len() == 64 && hash.bytes().all(|byte| byte.is_ascii_hexdigit())
+                })
+        })
         .map(ToString::to_string)
         .collect()
 }
@@ -551,6 +535,62 @@ mod tests {
         );
     }
 
+    fn local_release(repo_dir: &Path) -> git2::Oid {
+        let repo = git2::Repository::init_bare(repo_dir).unwrap();
+        let blob = repo.blob(b"package metadata").unwrap();
+        let mut builder = repo.treebuilder(None).unwrap();
+        builder.insert("package.toml", blob, 0o100644).unwrap();
+        let tree = repo.find_tree(builder.write().unwrap()).unwrap();
+        let signature = git2::Signature::now("Test", "test@example.test").unwrap();
+        let commit = repo
+            .commit(Some("HEAD"), &signature, &signature, "release", &tree, &[])
+            .unwrap();
+        let object = repo.find_object(commit, None).unwrap();
+        repo.tag_lightweight("1.0.0", &object, false).unwrap();
+        blob
+    }
+
+    #[tokio::test]
+    async fn complete_local_release_needs_no_origin_requests() {
+        let tmp = tempfile::tempdir().unwrap();
+        local_release(tmp.path());
+        let printer = Printer::new(0, true, false);
+
+        let plan = resolve_objects(
+            tmp.path(),
+            "http://127.0.0.1:1",
+            &version("1.0.0"),
+            &[],
+            &printer,
+        )
+        .await
+        .unwrap();
+
+        assert!(plan.steps.is_empty());
+    }
+
+    #[tokio::test]
+    async fn existing_release_tag_does_not_hide_missing_objects() {
+        let tmp = tempfile::tempdir().unwrap();
+        let blob = local_release(tmp.path()).to_string();
+        std::fs::remove_file(tmp.path().join("objects").join(&blob[..2]).join(&blob[2..])).unwrap();
+        let printer = Printer::new(0, true, false);
+
+        let result = resolve_objects(
+            tmp.path(),
+            "http://127.0.0.1:1",
+            &version("1.0.0"),
+            &[version("1.0.0")],
+            &printer,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "an incomplete release must still require an origin"
+        );
+    }
+
     #[test]
     fn deltas_at_minor_bases() {
         assert_eq!(
@@ -587,9 +627,12 @@ mod tests {
 
     #[test]
     fn parse_info_packs_reads_git_format_lines() {
+        let pack = format!("pack-{}.pack", "a".repeat(64));
         assert_eq!(
-            parse_info_packs("P pack-abc.pack\nP pack-def.idx\n\n"),
-            vec!["pack-abc.pack".to_string()]
+            parse_info_packs(&format!(
+                "P {pack}\nP pack-def.idx\nP pack-../escape.pack\n\n"
+            )),
+            vec![pack]
         );
     }
 

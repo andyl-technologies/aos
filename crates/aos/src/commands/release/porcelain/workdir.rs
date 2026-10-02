@@ -1,6 +1,6 @@
 //! The per-release work directory driven by the porcelain.
 //!
-//! `aos release new` creates `<work_root>/<release_id>/`; every later
+//! `aos maintain release new` creates `<work_root>/<release_id>/`; every later
 //! porcelain command selects it with `--work DIR`, or else the newest release
 //! under the configuration's `work_root`. Leaf commands write their outputs
 //! into this tree without replacing an existing path; the only file the
@@ -192,7 +192,7 @@ impl WorkDir {
         };
         if !work.index_path().exists() {
             bail!(
-                "{} is not a release work directory (no {INDEX_FILE}); run aos release new",
+                "{} is not a release work directory (no {INDEX_FILE}); run aos maintain release new",
                 work.root.display()
             );
         }
@@ -324,6 +324,18 @@ impl WorkDir {
     /// Returns the offline verification record.
     pub(super) fn verification(&self) -> PathBuf {
         self.join("verification.json")
+    }
+
+    /// Returns immutable upload evidence retained before a destination is published.
+    pub(super) fn staged_upload(&self, destination: &str) -> PathBuf {
+        self.join("publish")
+            .join(destination_slug(destination))
+            .join("uploaded")
+    }
+
+    /// Returns the durable evidence for an uploaded unpublished candidate.
+    pub(super) fn staged_upload_record(&self, destination: &str) -> PathBuf {
+        self.staged_upload(destination).join("staged-upload.json")
     }
 
     /// Returns the publication output of one destination.
@@ -584,7 +596,7 @@ fn newest_release(work_root: &Path) -> Result<WorkDir> {
     }
     let (_, path) = newest.with_context(|| {
         format!(
-            "no release under {}; run aos release new or pass --work",
+            "no release under {}; run aos maintain release new or pass --work",
             work_root.display()
         )
     })?;
@@ -667,7 +679,7 @@ mod tests {
     fn index(created_at: &str) -> ReleaseIndex {
         ReleaseIndex {
             schema_version: WORK_INDEX.to_owned(),
-            registry: "andyl/testing".to_owned(),
+            registry: "andyl/experimental".to_owned(),
             version: "2026.9.0-dev.20260929.1".to_owned(),
             release_id: "release-2026.9.0-dev.20260929.1".to_owned(),
             config_digest: digest_string(b"config"),

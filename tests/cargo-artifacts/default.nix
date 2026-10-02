@@ -1,5 +1,6 @@
 ##! Regression checks for reusable Cargo dependency artifacts.
 {pkgs}: let
+  cachePermissions = import ./cache-permissions.nix {inherit pkgs;};
   # Keep these as paths inside the flake source. mkCargoDummySource performs
   # the filtered copy whose identity this regression test compares; wrapping
   # them in another builtins.path can leave an unrealized intermediate store
@@ -38,6 +39,9 @@
     inherit cargoDeps;
     cargoArtifacts = artifacts;
     cargoArtifactContract = contract;
+    # This check exercises the immutable dependency seed. Development target
+    # caches deliberately replace that seed and have their own permission gate.
+    sharedBuildCache = false;
     doCheck = false;
   };
 in
@@ -47,7 +51,7 @@ in
       pname = "cargo-artifacts-check";
       version = "1";
       src = null;
-      buildDeps = [consumer pkgs.jq];
+      buildDeps = [consumer cachePermissions pkgs.jq];
       phases = [
         {
           name = "check";
@@ -67,5 +71,5 @@ in
           '';
         }
       ];
-      passthru = {inherit artifacts consumer dummyA dummyB dummyManifestChange;};
+      passthru = {inherit artifacts cachePermissions consumer dummyA dummyB dummyManifestChange;};
     }

@@ -1082,7 +1082,6 @@ mod entry {
                 let direct = aos_hub_core::topology_probe::SignedManifestRouteObservationProvider::from_signed_json(
                     &manifest.to_string(),
                     &public_key.to_string(),
-                    aos_hub_core::clock::now_unix_secs(),
                     Arc::clone(&route_http),
                 )
                 .map_err(|error| worker::Error::RustError(format!("route publication manifest: {error:#}")))?;
@@ -1177,11 +1176,11 @@ mod entry {
         )));
         if let Ok(keys) = env.var("HUB_REGISTRY_CACHE_PUBLIC_KEYS") {
             service = service
-                .with_registry_cache_public_keys(
-                    serde_json::from_str(&keys.to_string()).map_err(|error| {
+                .with_registry_cache_public_keys(serde_json::from_str(&keys.to_string()).map_err(
+                    |error| {
                         worker::Error::RustError(format!("registry cache public keys: {error}"))
-                    })?,
-                )
+                    },
+                )?)
                 .map_err(|error| {
                     worker::Error::RustError(format!("registry cache public keys: {error:#}"))
                 })?;
@@ -2484,7 +2483,6 @@ mod entry {
                 let direct = match aos_hub_core::topology_probe::SignedManifestRouteObservationProvider::from_signed_json(
                     &manifest.to_string(),
                     &public_key.to_string(),
-                    aos_hub_core::clock::now_unix_secs(),
                     route_http,
                 ) {
                     Ok(direct) => direct,

@@ -191,12 +191,11 @@ in
     # Bundle the source trees the on-host eval imports. `--no-preserve=mode` so
     # the copied files are writable enough for the store (the originals are
     # read-only store paths). Modules reference `../../pkgs/...` and
-    # `../../lib/...` and pure container definitions, so these trees must be present even
-    # though no package is built.
+    # `../../lib/...`, so these trees must be present even though no package
+    # is built. The container recipe is bundled with the image modules.
     cp -rL --no-preserve=mode ${../../lib} "$out/lib"
     cp -rL --no-preserve=mode ${../../modules} "$out/modules"
     cp -rL --no-preserve=mode ${../../systems} "$out/systems"
-    cp -rL --no-preserve=mode ${../../containers} "$out/containers"
     cp -rL --no-preserve=mode ${../../pkgs} "$out/pkgs"
 
     ${pkgs.sed}/bin/sed \

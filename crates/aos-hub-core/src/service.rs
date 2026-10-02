@@ -38,6 +38,9 @@ mod publication_manifest;
 mod registry_metadata;
 mod registry_policy;
 mod release_publication;
+mod staged_releases;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod staged_releases_tests;
 #[cfg(test)]
 mod release_publication_tests;
 mod surface_topology;
@@ -8451,7 +8454,7 @@ impl RpcService {
         &self,
         surface: SurfaceTarget,
         owner_scope_key: &str,
-        spec: pb::RouteSpec,
+        mut spec: pb::RouteSpec,
     ) -> Result<(crate::db::RouteSpec, String, crate::db::EndpointRecord), RpcError> {
         if spec.surface.as_ref() != Some(&self.route_surface_message(surface).await?) {
             return Err(RpcError::invalid(
@@ -8470,7 +8473,7 @@ impl RpcService {
             .await
             .map_err(RpcError::internal)?
             .ok_or_else(|| RpcError::not_found("endpoint generation"))?;
-        let base_path = Self::normalize_route_base_path(&spec.base_path)?;
+        let mut base_path = Self::normalize_route_base_path(&spec.base_path)?;
         let target = spec
             .target
             .and_then(|target| target.target)
@@ -8536,6 +8539,24 @@ impl RpcService {
                     .await
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("gateway generation"))?;
+                // A direct route is reachable only through its gateway, so
+                // its path and policy derive from the gateway generation and
+                // placement unless the caller pins them explicitly. The
+                // database rejects any other path, so deriving here lets a
+                // client omit what it cannot choose.
+                if base_path.is_empty() {
+                    base_path = crate::db::join_route_segments(
+                        &gateway.spec.client_base_path,
+                        &placement.prefix,
+                    )
+                    .map_err(|error| RpcError::invalid(format!("direct route path: {error:#}")))?;
+                }
+                if spec.access_policy.is_none() {
+                    spec.access_policy = Some(
+                        serde_json::from_str(&gateway.spec.access_policy_json)
+                            .map_err(RpcError::internal)?,
+                    );
+                }
                 gateway_id = Some(gateway.gateway_id);
                 gateway_generation = Some(gateway.generation);
                 target_binding_id = Some(placement.binding_id);
@@ -10906,6 +10927,10 @@ impl RpcService {
             updated_at: record.updated_at,
             authorization_scope_key: record.scope_key.clone(),
             owner_scope_key: record.owner_scope_key.clone(),
+            oci_distribution_origin: self
+                .container_distribution_origin(record.id)
+                .await?
+                .unwrap_or_default(),
         })
     }
 
@@ -25114,6 +25139,18 @@ impl RpcService {
         registry: &crate::db::RegistryRecord,
         object: &crate::db::RegistryPublicationUploadObjectRecord,
     ) -> Result<(), RpcError> {
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&publication.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if matches!(state.as_str(), "discarded" | "superseded") {
+                return Err(RpcError::FailedPrecondition(
+                    "staged release inventory is retired".into(),
+                ));
+            }
+        }
         if object.object_kind == "immutable" && publication.state != "preparing" {
             return Err(RpcError::FailedPrecondition(
                 "immutable upload phase is closed".into(),
@@ -25121,6 +25158,18 @@ impl RpcService {
         }
         if object.object_kind != "mutable_pointer" {
             return Ok(());
+        }
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&publication.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if state != "releasing" {
+                return Err(RpcError::FailedPrecondition(
+                    "staged release pointers require explicit finalization".into(),
+                ));
+            }
         }
         if !self
             .db
@@ -25179,7 +25228,38 @@ impl RpcService {
         Ok(())
     }
 
+    /// Reads required upload destinations without changing publication watermarks.
     async fn registry_publication_required_placements(
+        &self,
+        publication_id: &str,
+    ) -> Result<Vec<crate::db::SurfacePlacementRecord>, RpcError> {
+        let progress = self
+            .db
+            .registry_publication_placement_records(publication_id)
+            .await
+            .map_err(RpcError::internal)?;
+        let mut placements = Vec::new();
+        for required in progress.iter().filter(|placement| placement.required) {
+            let placement = self
+                .db
+                .surface_placement(required.placement_id)
+                .await
+                .map_err(RpcError::internal)?
+                .ok_or_else(|| {
+                    RpcError::FailedPrecondition("required placement disappeared".into())
+                })?;
+            placements.push(placement);
+        }
+        if placements.is_empty() {
+            return Err(RpcError::FailedPrecondition(
+                "publication has no required placements".into(),
+            ));
+        }
+        Ok(placements)
+    }
+
+    /// Opens mutable watermark advances only for an admitted object upload.
+    async fn prepare_registry_publication_upload_placements(
         &self,
         publication_id: &str,
         object_kind: &str,
@@ -25289,7 +25369,10 @@ impl RpcService {
             return Err(RpcError::Internal);
         }
         let mut current = self
-            .registry_publication_required_placements(&upload.publication_id, &object.object_kind)
+            .prepare_registry_publication_upload_placements(
+                &upload.publication_id,
+                &object.object_kind,
+            )
             .await?;
         current.sort_by_key(|placement| placement.id);
         if current.len() != backends.len()
@@ -25349,7 +25432,10 @@ impl RpcService {
             return Err(RpcError::Internal);
         }
         let required = self
-            .registry_publication_required_placements(&upload.publication_id, &object.object_kind)
+            .prepare_registry_publication_upload_placements(
+                &upload.publication_id,
+                &object.object_kind,
+            )
             .await?;
         if required.len() != backends.len() {
             return Err(RpcError::FailedPrecondition(
@@ -25494,7 +25580,7 @@ impl RpcService {
         }
 
         let placements = self
-            .registry_publication_required_placements(
+            .prepare_registry_publication_upload_placements(
                 &publication.publication_id,
                 &object.object_kind,
             )
@@ -26135,7 +26221,7 @@ impl RpcService {
 
         let mut uploads = Vec::new();
         for placement in self
-            .registry_publication_required_placements(publication_id, &object.object_kind)
+            .prepare_registry_publication_upload_placements(publication_id, &object.object_kind)
             .await?
         {
             let writer = self
@@ -26331,6 +26417,18 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if !matches!(state.as_str(), "releasing" | "released") {
+                return Err(RpcError::FailedPrecondition(
+                    "staged release publication requires explicit finalization".into(),
+                ));
+            }
+        }
         if publication.state == "ready" {
             // A retry is also the explicit recovery path when publication
             // succeeded but its derived index did not. Returning immediately
@@ -26535,6 +26633,18 @@ impl RpcService {
         let scope = self.registry_scope(&registry).await?;
         self.require_permission(&claims, Permission::Publish, &scope)
             .await?;
+        if let Some(state) = self
+            .db
+            .staged_publication_state(&req.publication_id)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            if state == "releasing" {
+                return Err(RpcError::FailedPrecondition(
+                    "frozen staged release finalization must be resumed".into(),
+                ));
+            }
+        }
         if publication.state == "failed" {
             self.lease.release(registry.id, &req.publication_id).await;
             return self

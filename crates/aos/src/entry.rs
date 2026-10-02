@@ -6,7 +6,7 @@ use std::{ffi::OsStr, ffi::OsString, io::Write};
 use anyhow::{Result, bail};
 use clap::Parser;
 
-use crate::cli::{ApmCli, AprCli, Cli, ColorChoice, Commands, ProgressChoice};
+use crate::cli::{ApmCli, AprCli, Cli, ColorChoice, Commands, MaintainCommand, ProgressChoice};
 use crate::commands;
 use aos_core::error::AosError;
 use aos_core::nix::NixRunner;
@@ -19,6 +19,16 @@ pub async fn aos_main() {
     let (progress, color) = maintenance_output_policy(&cli);
     let printer = printer(cli.verbose, cli.quiet, cli.json, progress, color);
     if let Commands::Maintain(args) = &cli.command {
+        if let Some(MaintainCommand::Release { command }) = &args.command {
+            let result = tokio::select! {
+                result = run_release(&cli, command, &printer) => result,
+                signal = tokio::signal::ctrl_c() => match signal {
+                    Ok(()) => Err(anyhow::anyhow!("release interrupted; retained outputs can be resumed")),
+                    Err(error) => Err(error.into()),
+                },
+            };
+            exit_with_result(result, &printer);
+        }
         let result = tokio::select! {
             result = commands::maintain::run(&cli, args, &printer) => result,
             signal = tokio::signal::ctrl_c() => match signal {
@@ -39,6 +49,40 @@ pub async fn aos_main() {
         process::exit(exit_code);
     }
     exit_with_result(run(&cli, &printer).await, &printer);
+}
+
+/// Dispatches canonical releases independently of package maintenance state.
+async fn run_release(
+    cli: &Cli,
+    command: &crate::cli::ReleaseCommand,
+    printer: &Printer,
+) -> Result<()> {
+    validate_release_options(cli)?;
+    validate_container_runtime(&cli.command)?;
+    if commands::release::requires_nix(command) {
+        let nix = NixRunner::new(cli.verbose, cli.quiet)?;
+        commands::release::run_with_nix(command, &nix, printer).await
+    } else {
+        commands::release::run_offline(command, printer).await
+    }
+}
+
+/// Rejects campaign-specific controls before a release reads state or initializes Nix.
+fn validate_release_options(cli: &Cli) -> Result<()> {
+    let Commands::Maintain(args) = &cli.command else {
+        return Ok(());
+    };
+    if args.jsonl {
+        bail!(
+            "release commands do not use maintenance --jsonl; use aos --json maintain release for release JSON output"
+        );
+    }
+    if args.state_dir.is_some() {
+        bail!(
+            "release commands do not use maintenance --state-dir; select release state with --work"
+        );
+    }
+    Ok(())
 }
 
 /// Resolves accessibility and machine-output modes before constructing a printer.
@@ -288,14 +332,6 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         return commands::sandbox::run(cli, args).await;
     }
 
-    // Release steps that need no Nix evaluation (verification, signing,
-    // publication, qualification) run without constructing a Nix environment.
-    if let Commands::Release { command } = &cli.command
-        && !commands::release::requires_nix(command)
-    {
-        return commands::release::run_offline(command, printer).await;
-    }
-
     // Local VM runs use downloaded artifacts and host-side QEMU tools.
     if let Commands::Vm { command } = &cli.command {
         return commands::vm::run(command, printer);
@@ -386,9 +422,6 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
             *min_speed,
         ),
         Commands::Fmt { check, files } => commands::fmt::run(&nix, printer, *check, files),
-        Commands::Release { command } => {
-            commands::release::run_with_nix(command, &nix, printer).await
-        }
         Commands::Maintain(_) => unreachable!(),
         Commands::Doc {
             source,
@@ -475,6 +508,34 @@ mod tests {
 
     fn parse(args: &[&str]) -> Cli {
         Cli::try_parse_from(args).expect("test command line should parse")
+    }
+
+    #[test]
+    fn release_rejects_campaign_controls_before_state_access() {
+        for (option, value, guidance) in [
+            ("--jsonl", None, "--json"),
+            ("--state-dir", Some("/missing/campaign"), "--work"),
+        ] {
+            let mut args = vec!["aos", "maintain", option];
+            if let Some(value) = value {
+                args.push(value);
+            }
+            args.extend(["release", "status"]);
+            let cli = parse(&args);
+            let error =
+                validate_release_options(&cli).expect_err("campaign controls must be rejected");
+            assert!(error.to_string().contains(guidance));
+        }
+        let cli = parse(&[
+            "aos",
+            "--json",
+            "maintain",
+            "release",
+            "status",
+            "--work",
+            "release-work",
+        ]);
+        assert!(validate_release_options(&cli).is_ok());
     }
 
     #[test]

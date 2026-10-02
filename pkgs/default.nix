@@ -165,7 +165,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     version = (builtins.parseDrvName bootstrap.name).version;
   in
     assert version == package.version;
-      (withDistributionMeta package.meta bootstrap) // {inherit version;};
+      (withDistributionMeta package.meta bootstrap)
+      // {
+        inherit (package) pname;
+        inherit version;
+      };
 
   exposeRenderer = import ./build-support/_expose-renderer.nix {
     inherit lib;
@@ -894,6 +898,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       && !(args.installCargoArtifacts or false)
       && !isToolchainName (args.pname or args.name or "");
     cargoTargetKey = builtins.hashString "sha256" (builtins.toJSON {
+      # Earlier trees can contain CMake directories whose modes defeat the
+      # inherited ACL. Start a fresh tree when introducing exit-time repair.
+      cachePermissionsVersion = 1;
       inherit cargoArtifactContract;
       cargoDeps = toString args.cargoDeps;
       cargoRoot = args.cargoRoot or ".";

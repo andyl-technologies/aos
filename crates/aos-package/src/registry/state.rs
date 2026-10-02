@@ -18,6 +18,8 @@
 //! ```toml
 //! [registry.state]
 //! last_commit = "abc123def456"
+//! selected_channel = "stable"
+//! default_channel = "stable"
 //! floor = "1.4.2"
 //! bucket = 183
 //! retained = ["1.0.0", "1.4.0", "1.4.2"]

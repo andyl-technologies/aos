@@ -3293,7 +3293,8 @@ impl Database {
             validate_store_hash(&object.store_hash)?;
             statements.push(
                 Statement::new(
-                    "INSERT INTO cache_gc_plan_objects
+                    format!(
+                        "INSERT INTO cache_gc_plan_objects
                      (cache_id, plan_id, cache_object_id, store_hash,
                       expected_object_version, expected_unreferenced_since,
                       eligibility_reason, logical_bytes)
@@ -3320,11 +3321,15 @@ impl Database {
                              WHERE active.cache_id = ?1
                                AND active.lifecycle_state = 'active')
                              > policy.soft_max_objects))
+                       AND NOT EXISTS ({staged_roots}
+                         SELECT 1 FROM retained WHERE cache_object_id = object.id)
                        AND NOT EXISTS (SELECT 1 FROM cache_gc_marks mark
                          JOIN cache_gc_plans plan ON plan.generation_id = mark.generation_id
                            AND plan.cache_id = mark.cache_id
                          WHERE plan.cache_id = ?1 AND plan.plan_id = ?2
                            AND mark.cache_object_id = object.id)",
+                        staged_roots = staged_store_closure("?1", "?9"),
+                    ),
                     vals![
                         input.cache_id,
                         input.plan_id,
@@ -3880,11 +3885,13 @@ impl Database {
         validate_stable_key(generation_id, "cache GC generation id")?;
         let statements = vec![
             Statement::new(
-                "UPDATE cache_gc_generations SET state = 'complete',
+                format!(
+                    "UPDATE cache_gc_generations SET state = 'complete',
                    scanned_object_count = (SELECT COUNT(*) FROM cache_objects
                      WHERE cache_id = ?1 AND lifecycle_state = 'active'),
                    root_count = (SELECT COUNT(*) FROM cache_gc_generation_roots
-                     WHERE cache_id = ?1 AND generation_id = ?2),
+                     WHERE cache_id = ?1 AND generation_id = ?2)
+                     + (SELECT COUNT(*) FROM ({staged_seeds}) staged_seed),
                    marked_object_count = (SELECT COUNT(*) FROM cache_gc_marks
                      WHERE cache_id = ?1 AND generation_id = ?2),
                    coverage_error_count = (SELECT COUNT(*)
@@ -3977,6 +3984,11 @@ impl Database {
                       AND mark.cache_object_id = object.id
                      WHERE root.cache_id = ?1 AND root.generation_id = ?2
                        AND (object.id IS NULL OR mark.cache_object_id IS NULL))
+                   AND NOT EXISTS ({staged_closure}
+                     SELECT 1 FROM retained
+                     WHERE NOT EXISTS (SELECT 1 FROM cache_gc_marks staged_mark
+                       WHERE staged_mark.cache_id = ?1 AND staged_mark.generation_id = ?2
+                         AND staged_mark.cache_object_id = retained.cache_object_id))
                    AND NOT EXISTS (
                      SELECT 1 FROM cache_gc_marks mark
                      JOIN cache_objects object ON object.id = mark.cache_object_id
@@ -4002,6 +4014,9 @@ impl Database {
                      WHERE mark.cache_id = ?1 AND mark.generation_id = ?2
                        AND (referenced.id IS NULL
                          OR referenced_mark.cache_object_id IS NULL))",
+                    staged_seeds = staged_cache_seeds("?1", "cache_gc_generations.cutoff_at"),
+                    staged_closure = staged_store_closure("?1", "cache_gc_generations.cutoff_at"),
+                ),
                 vals![cache_id, generation_id, completed_at],
             )
             .expecting(1),
@@ -6257,7 +6272,8 @@ impl Database {
 
         let mut statements = vec![
             Statement::new(
-                "INSERT INTO cache_gc_apply_claims
+                format!(
+                    "INSERT INTO cache_gc_apply_claims
                  (cache_id, plan_id, claim_id, expected_epoch,
                   manifest_digest, actor_scope_digest, confirmation_hash,
                   claimed_at)
@@ -6296,6 +6312,12 @@ impl Database {
                    AND state.inventory_generation = generation.inventory_generation
                    AND state.topology_generation = generation.topology_version
                    AND policy.resource_version = generation.gc_policy_version
+                   AND NOT EXISTS ({staged_roots}
+                     SELECT 1 FROM retained
+                     JOIN cache_gc_plan_objects staged_candidate
+                       ON staged_candidate.cache_object_id = retained.cache_object_id
+                     WHERE staged_candidate.cache_id = plan.cache_id
+                       AND staged_candidate.plan_id = plan.plan_id)
                    AND NOT EXISTS (SELECT 1 FROM cache_write_tickets ticket
                      WHERE ticket.cache_id = plan.cache_id AND (
                        ticket.active_cache_slot = 1 OR
@@ -6435,6 +6457,8 @@ impl Database {
                                    AND action.expected_size IS NULL))
                                AND existing.expected_inventory_generation
                                  = action.expected_inventory_generation)))))",
+                    staged_roots = staged_store_closure("plan.cache_id", "?5"),
+                ),
                 vals![
                     input.plan_id,
                     input.claim_id,
@@ -6769,7 +6793,8 @@ impl Database {
         )
         .expecting(1);
         let statement = Statement::new(
-            "UPDATE object_deletion_jobs SET state = 'running',
+            format!(
+                "UPDATE object_deletion_jobs SET state = 'running',
                attempt_count = attempt_count + 1, next_attempt_at = NULL,
                error_class = NULL, error = NULL, started_at = COALESCE(started_at, ?4),
                finished_at = NULL,
@@ -6791,6 +6816,11 @@ impl Database {
                   AND prior.cache_id = prior_link.cache_id
                  WHERE link.cache_id = ?1 AND link.job_id = ?2
                    AND prior.state <> 'succeeded')
+               AND NOT EXISTS ({staged_roots}
+                 SELECT 1 FROM retained
+                 JOIN cache_objects staged_object ON staged_object.id = retained.cache_object_id
+                 WHERE staged_object.narinfo_surface_object_id = object_deletion_jobs.surface_object_id
+                    OR staged_object.nar_surface_object_id = object_deletion_jobs.surface_object_id)
                AND (phase <> 'nar' OR NOT EXISTS (
                  SELECT 1 FROM cache_objects object
                  JOIN object_placements narinfo_presence
@@ -6802,6 +6832,8 @@ impl Database {
                    AND object.nar_surface_object_id
                      = object_deletion_jobs.surface_object_id
                    AND narinfo_presence.state <> 'missing'))",
+                staged_roots = staged_store_closure("?1", "?4"),
+            ),
             vals![cache_id, job_id, expected_version, now],
         )
         .expecting(1);
@@ -9508,7 +9540,8 @@ impl Database {
         }
         if generation_state.as_deref() != Some("complete") {
             let closure = Statement::new(
-                "INSERT INTO cache_gc_marks
+                format!(
+                    "INSERT INTO cache_gc_marks
              (cache_id, generation_id, cache_object_id)
              WITH RECURSIVE closure(cache_object_id) AS (
                SELECT object.id
@@ -9517,6 +9550,8 @@ impl Database {
                  AND object.store_hash = root.store_hash
                  AND object.lifecycle_state = 'active'
                WHERE root.cache_id = ?1 AND root.generation_id = ?2
+               UNION
+               {staged_seeds}
                UNION
                SELECT edge.referenced_cache_object_id
                FROM closure reachable
@@ -9532,6 +9567,11 @@ impl Database {
              WHERE NOT EXISTS (SELECT 1 FROM cache_gc_marks existing
                WHERE existing.cache_id = ?1 AND existing.generation_id = ?2
                  AND existing.cache_object_id = closure.cache_object_id)",
+                    staged_seeds = staged_cache_seeds(
+                        "?1",
+                        "(SELECT cutoff_at FROM cache_gc_generations WHERE cache_id = ?1 AND generation_id = ?2)",
+                    ),
+                ),
                 vals![cache_id, generation_id],
             )
             .unchecked();
@@ -10761,6 +10801,56 @@ impl Database {
     }
 }
 
+/// Rechecks staged roots and their dependency closure inside a deletion fence.
+///
+/// Cache identities can be shared by registries. A stage therefore retains its
+/// store hash in every cache holding that identity, including retired revisions
+/// until their grace deadline. The expressions are fixed SQL supplied by callers.
+fn staged_store_closure(cache_expression: &str, now_expression: &str) -> String {
+    format!(
+        "WITH RECURSIVE retained(cache_object_id) AS (
+           {seeds}
+           UNION
+           SELECT edge.referenced_cache_object_id
+           FROM retained reachable
+           JOIN cache_object_references edge
+             ON edge.cache_object_id = reachable.cache_object_id
+            AND edge.cache_id = {cache_expression}
+         )",
+        seeds = staged_cache_seeds(cache_expression, now_expression),
+    )
+}
+
+/// Includes partial inventories before a complete store-root list is available.
+fn staged_cache_seeds(cache_expression: &str, now_expression: &str) -> String {
+    format!(
+        "SELECT object.id AS cache_object_id
+         FROM staged_release_store_roots root
+         JOIN staged_release_revisions revision
+           ON revision.registry_id = root.registry_id
+          AND revision.stage_id = root.stage_id
+          AND revision.revision = root.revision
+         JOIN cache_objects object
+           ON object.store_hash = root.store_hash AND object.cache_id = {cache_expression}
+         WHERE revision.retire_after IS NULL OR revision.retire_after > {now_expression}
+         UNION
+         SELECT object.id AS cache_object_id
+         FROM staged_release_objects inventory
+         JOIN staged_release_revisions revision
+           ON revision.registry_id = inventory.registry_id
+          AND revision.stage_id = inventory.stage_id
+          AND revision.revision = inventory.revision
+         JOIN surface_objects physical ON physical.object_key = inventory.object_key
+         JOIN cache_objects object
+           ON object.cache_id = physical.cache_id
+          AND (object.nar_surface_object_id = physical.id
+            OR object.narinfo_surface_object_id = physical.id)
+         WHERE object.cache_id = {cache_expression}
+           AND (inventory.object_key LIKE 'nar/%' OR inventory.object_key LIKE '%.narinfo')
+           AND (revision.retire_after IS NULL OR revision.retire_after > {now_expression})"
+    )
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
@@ -11378,6 +11468,286 @@ mod tests {
             .await
             .unwrap();
         db
+    }
+
+    async fn stage_cache_fixture(db: &Database, stage_id: &str, root_hash: Option<&str>) -> i64 {
+        use aos_registry_surface::staging::{
+            STAGE_SCHEMA, StageObject, StageRevision, inventory_digest,
+        };
+
+        let registry_id = db
+            .register_registry("cache-staged-retention", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+        let inventory = if root_hash.is_some() {
+            vec![]
+        } else {
+            vec![StageObject {
+                path: "nar/shared.nar".into(),
+                sha256: format!("sha256:{}", "e".repeat(64)),
+                byte_size: 10,
+                kind: "nar".into(),
+                media_type: "application/octet-stream".into(),
+            }]
+        };
+        let revision = StageRevision {
+            schema: STAGE_SCHEMA.into(),
+            id: stage_id.into(),
+            registry: registry.slug,
+            revision: 1,
+            release_id: "1.0.0".into(),
+            source_branch: "maintainer/candidate".into(),
+            commit: "c".repeat(64),
+            container: None,
+            inventory_digest: inventory_digest(&inventory).unwrap(),
+            inventory,
+            publication: vec![],
+            store_roots: root_hash
+                .map(|hash| format!("/nix/store/{hash}-fixture"))
+                .into_iter()
+                .collect(),
+        };
+        db.upsert_staged_release(registry_id, &revision, 0, None, 100)
+            .await
+            .unwrap();
+        registry_id
+    }
+
+    async fn seed_staged_cache_graph(db: &Database) {
+        use crate::db::SetSurfaceObject;
+
+        let nar = db
+            .create_surface_object(&SetSurfaceObject {
+                surface: SurfaceTarget::BinaryCache(1),
+                object_key: "nar/shared.nar".into(),
+                content_hash: Some("sha256:file".into()),
+                size: Some(10),
+                object_kind: "immutable".into(),
+                mutable_publication_id: None,
+            })
+            .await
+            .unwrap();
+        db.backend.execute(
+                    "INSERT INTO cache_nar_objects
+                     (cache_id, nar_surface_object_id, nar_hash, nar_size, file_hash, file_size, compression)
+                     VALUES (1, ?1, 'sha256:nar', 10, 'sha256:file', 10, 'none')",
+                    &vals![nar.id],
+                ).await.unwrap();
+        for (index, hash, references) in [(1, "a".repeat(32), 1), (2, "b".repeat(32), 0)] {
+            let narinfo = db
+                .create_surface_object(&SetSurfaceObject {
+                    surface: SurfaceTarget::BinaryCache(1),
+                    object_key: format!("{hash}.narinfo"),
+                    content_hash: Some("sha256:narinfo".into()),
+                    size: Some(1),
+                    object_kind: "immutable".into(),
+                    mutable_publication_id: None,
+                })
+                .await
+                .unwrap();
+            db.backend
+                .execute(
+                    "INSERT INTO cache_objects
+                         (id, cache_id, store_hash, store_name, narinfo_surface_object_id,
+                          nar_surface_object_id, nar_hash, nar_size, file_hash, file_size,
+                          compression, reference_count, published_at)
+                         VALUES (?1, 1, ?2, 'fixture', ?3, ?4, 'sha256:nar', 10,
+                           'sha256:file', 10, 'none', ?5, 1)",
+                    &vals![index, hash, narinfo.id, nar.id, references],
+                )
+                .await
+                .unwrap();
+        }
+        db.backend
+            .execute(
+                "INSERT INTO cache_object_references
+                     (cache_id, cache_object_id, referenced_store_hash, referenced_cache_object_id)
+                     VALUES (1, 1, ?1, 2)",
+                &vals!["b".repeat(32)],
+            )
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn staged_cache_roots_retain_dependency_and_shared_nar_until_discard_grace() {
+        assert_stage_cache_retention(false).await;
+    }
+
+    #[tokio::test]
+    async fn staged_nar_inventory_without_store_roots_retains_shared_objects() {
+        assert_stage_cache_retention(true).await;
+    }
+
+    async fn assert_stage_cache_retention(inventory_only: bool) {
+        let db = gc_fixture().await;
+        seed_staged_cache_graph(&db).await;
+        let root_hash = "a".repeat(32);
+        let registry_id = stage_cache_fixture(
+            &db,
+            "candidate",
+            (!inventory_only).then_some(root_hash.as_str()),
+        )
+        .await;
+
+        let protected = db
+            .build_cache_gc_plan_topology(
+                1,
+                "actor",
+                "user:1",
+                "active-stage",
+                "request-active",
+                200,
+                300,
+            )
+            .await
+            .unwrap();
+        assert!(protected.objects.is_empty());
+        assert!(protected.actions.is_empty());
+
+        db.discard_staged_release(registry_id, "candidate", 1, 300)
+            .await
+            .unwrap();
+        let in_grace = db
+            .build_cache_gc_plan_topology(
+                1,
+                "actor",
+                "user:1",
+                "discard-grace",
+                "request-grace",
+                400,
+                500,
+            )
+            .await
+            .unwrap();
+        assert!(in_grace.objects.is_empty());
+
+        // Grace expiration removes the stage roots. Ordinary cache GC first
+        // observes unreferenced identities, then waits its own configured grace.
+        let first_unreferenced = 300 + crate::db::STAGED_RELEASE_GRACE_SECONDS;
+        let observed = db
+            .build_cache_gc_plan_topology(
+                1,
+                "actor",
+                "user:1",
+                "expired-stage",
+                "request-expired",
+                first_unreferenced,
+                first_unreferenced + 100,
+            )
+            .await
+            .unwrap();
+        assert!(observed.objects.is_empty());
+        let eligible = db
+            .build_cache_gc_plan_topology(
+                1,
+                "actor",
+                "user:1",
+                "eligible-stage",
+                "request-eligible",
+                first_unreferenced + 3600,
+                first_unreferenced + 3700,
+            )
+            .await
+            .unwrap();
+        assert_eq!(eligible.objects.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn staged_cache_root_admission_invalidates_an_older_gc_plan() {
+        assert_stage_admission_invalidates_plan(false).await;
+    }
+
+    #[tokio::test]
+    async fn staged_nar_inventory_without_store_roots_invalidates_an_older_gc_plan() {
+        assert_stage_admission_invalidates_plan(true).await;
+    }
+
+    async fn assert_stage_admission_invalidates_plan(inventory_only: bool) {
+        let db = gc_fixture().await;
+        seed_staged_cache_graph(&db).await;
+        db.backend
+            .execute(
+                "UPDATE cache_gc_state SET destructive_enabled = 1 WHERE cache_id = 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        db.backend
+            .execute(
+                "UPDATE cache_objects SET unreferenced_since = 1 WHERE cache_id = 1",
+                &[],
+            )
+            .await
+            .unwrap();
+        let plan = db
+            .build_cache_gc_plan_topology(
+                1,
+                "actor",
+                "user:1",
+                "before-stage",
+                "before-stage-request",
+                4000,
+                4100,
+            )
+            .await
+            .unwrap();
+        assert_eq!(plan.objects.len(), 2);
+        let actor_scope: String = db
+            .backend
+            .query_opt(
+                "SELECT actor_scope_digest FROM cache_gc_plans WHERE plan_id = ?1",
+                &vals![plan.plan_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+
+        let root_hash = "a".repeat(32);
+        stage_cache_fixture(
+            &db,
+            "new-root",
+            (!inventory_only).then_some(root_hash.as_str()),
+        )
+        .await;
+        let current = db
+            .backend
+            .query_opt(
+                "SELECT epoch, root_generation FROM cache_gc_state WHERE cache_id = 1",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(current.get::<i64>(0).unwrap() > plan.expected_epoch);
+        assert!(current.get::<i64>(1).unwrap() > plan.root_generation);
+        assert!(
+            db.apply_cache_gc_plan_topology(&ApplyCacheGcPlan {
+                plan_id: plan.plan_id,
+                claim_id: "stale-stage-claim".into(),
+                operation_id: "stale-stage-operation".into(),
+                actor_scope_digest: actor_scope,
+                confirmation_hash: plan.confirmation_hash,
+                now: 4020,
+            })
+            .await
+            .is_err()
+        );
+        let active = db
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM cache_objects WHERE cache_id = 1 AND lifecycle_state = 'active'",
+                &[],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<i64>(0)
+            .unwrap();
+        assert_eq!(active, 2);
     }
 
     async fn install_inventory_placement(db: &Database) {

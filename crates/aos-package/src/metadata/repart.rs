@@ -389,11 +389,9 @@ fn render_partition(name: &str, partition: &PartitionSpec, topology: &Topology) 
     let format = if is_member {
         None
     } else {
-        match topology
-            .volumes
-            .iter()
-            .find(|volume| volume.source == topology::VolumeSource::Partition && volume.name == name)
-        {
+        match topology.volumes.iter().find(|volume| {
+            volume.source == topology::VolumeSource::Partition && volume.name == name
+        }) {
             Some(volume) if volume.encryption == Encryption::Tpm2 => None,
             Some(volume) => volume.filesystem.as_deref(),
             None => partition.format.as_deref(),

@@ -251,7 +251,7 @@ in {
       export NIX_CONF_DIR=/etc/aos/packages/nix-daemon
       export NIX_REMOTE=local
       ${pkgs.nix}/bin/nix-store --init --option build-users-group ""
-      ${pkgs.nix}/bin/nix-store --load-db < /aos-registration
+      ${pkgs.nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
 
       start_daemon() {
         ${pkgs.nix}/bin/nix-daemon --daemon > /tmp/daemon.log 2>&1 &

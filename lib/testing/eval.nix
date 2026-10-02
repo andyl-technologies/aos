@@ -495,7 +495,7 @@
     then throw "aos-eval.service must bind the immutable base library read-only"
     else if
       !(containsStr
-        "readlink /sysroot/aos-toplevel"
+        "readlink /sysroot/usr/lib/aos/toplevel"
         system.config.boot.initrd.systemd.services."etc-overlay-setup".script)
     then throw "the boot /etc lower must come from the image that actually booted"
     else if
@@ -847,6 +847,7 @@
       aos.apm.registries.example = {
         url = "https://registry.example/aos";
         trustKeys = [anchorKey anchorKeyRotated];
+        rootOwnerSigners = ["release-provenance"];
         caches = [
           {
             url = "https://cache.example/aos";
@@ -879,6 +880,7 @@
     [registry.signing]
     required = true
     public_key = "${anchorKey}"
+    root_owner_signers = ["release-provenance"]
   '';
   expectedTrustedKeys = ''
     ${anchorKey}
@@ -889,6 +891,8 @@
   apmRegistriesContent =
     if actualRegistryToml != expectedRegistryToml
     then throw "aos.apm.registries generated unexpected registries.d content:\n${actualRegistryToml}"
+    else if system.config.aos.apm.registries.andyl.rootOwnerSigners != []
+    then throw "registry shared-root signers must default to no authorization"
     else if actualTrustedKeys != expectedTrustedKeys
     then throw "aos.apm.registries generated unexpected trusted-keys.d content:\n${actualTrustedKeys}"
     # Force the anchored system's toplevel so its assertions and /etc

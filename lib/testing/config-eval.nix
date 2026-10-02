@@ -176,6 +176,9 @@ in
           eval_store="local?root=$eval_store_root"
 
           export AOS_ROOT="$eval_state"
+          # Keep canonical logical store paths while the local store URI
+          # redirects their physical storage into this writable test root.
+          export AOS_NIX_STORE_DIR=/nix/store
           export AOS_PROFILE_ROOT="$profile_root"
           export APM_SYSTEM_CONFIG_DIR="$config_root"
           export AOS_NIX_EVAL_CACHE_ROOT="$cache_root"

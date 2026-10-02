@@ -485,6 +485,8 @@ in
             : > exec-cpu-common-placeholder
             mkdir -p exec tcg
             : > exec/cpu-common.h
+            mkdir -p accel/tcg
+            : > accel/tcg/cpu-loop.h
             : > tcg/startup.h
             : > accel/tcg/tcg-accel-ops.h
             : > accel/tcg/tcg-accel-ops-rr.h
@@ -672,6 +674,10 @@ in
             typedef void (*qemu_plugin_vcpu_udata_cb_t)(unsigned int vcpu_index,
                                                         void *userdata);
 
+            typedef void (*qemu_plugin_vcpu_discon_cb_t)(unsigned int vcpu_index,
+                                                         uint64_t from_pc, uint64_t to_pc,
+                                                         void *userdata);
+
             /**
              * qemu_plugin_uninstall() - Uninstall a plugin
              * @id: this plugin's opaque ID
@@ -706,7 +712,7 @@ in
             int qemu_plugin_advance_time_ns(int64_t time);
 
             /**
-             * qemu_plugin_net_inject() - inject an inbound frame into the default NIC
+             * qemu_plugin_net_inject() - injects an inbound frame into the default NIC
              * @data: Ethernet frame bytes
              * @len: byte length of @data
              */
@@ -720,7 +726,7 @@ in
             #ifndef QEMU_PLUGIN_H
             #define QEMU_PLUGIN_H
 
-            #include "qemu/qemu-plugin.h"
+            #include "plugins/qemu-plugin.h"
 
             typedef struct CPUState CPUState;
             typedef void GArray;
@@ -897,6 +903,7 @@ in
             #include "qemu/notify.h"
             #include "qemu/guest-random.h"
             #include "exec/cpu-common.h"
+            #include "accel/tcg/cpu-loop.h"
             #include "tcg/startup.h"
             #include "tcg-accel-ops.h"
             #include "tcg-accel-ops-rr.h"
@@ -936,7 +943,7 @@ in
               cat > "stock-plugin-runtime-negative-$symbol.c" <<STOCK_NEGATIVE
             #include <stddef.h>
             #include <stdint.h>
-            #include "qemu/qemu-plugin.h"
+            #include "plugins/qemu-plugin.h"
 
             int main(void)
             {
@@ -958,7 +965,21 @@ in
             done
 
             for patch in ${builtins.concatStringsSep " " allPatchNames}; do
-              if [ "$patch" = 0025-crucible-sim-idle-callbacks.patch ]; then
+              if [ "$patch" = 0014-crucible-plugin-tcg-exec-cb.patch ]; then
+                # Scheduler accounting is exercised by the full-source gates;
+                # this fixture owns the public callbacks and their API bodies.
+                gawk '
+                  /^diff --git / {
+                    selected_file = ($3 == "a/include/plugins/qemu-plugin.h" ||
+                                     $3 == "a/include/qemu/plugin.h" ||
+                                     $3 == "a/accel/tcg/tcg-accel-ops-rr.c" ||
+                                     $3 == "a/accel/tcg/icount-common.c" ||
+                                     $3 == "a/plugins/api-system.c")
+                  }
+                  selected_file { print }
+                ' "${patchDir}/$patch" > focused-tcg-exec.patch
+                patch --batch --fuzz=0 -p1 < focused-tcg-exec.patch
+              elif [ "$patch" = 0025-crucible-sim-idle-callbacks.patch ]; then
                 # Preserve only the public/internal callback API and its
                 # implementation. The RR-loop behavior has its own focused
                 # microtest and requires the full QEMU scheduler fixture.

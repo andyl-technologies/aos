@@ -6,14 +6,14 @@
 //! {
 //!   "enabled": true,
 //!   "tier": "testing",
-//!   "registry": "andyl/testing",
+//!   "registry": "andyl/experimental",
 //!   "rootEpoch": 1,
-//!   "clientName": "andyl-testing",
+//!   "clientName": "andyl-experimental",
 //!   "registryOrigin": "https://cdn.aos.andyl.org",
 //!   "hubUrl": "https://aos.andyl.org",
-//!   "url": "https://cdn.aos.andyl.org/andyl/testing/",
+//!   "url": "https://cdn.aos.andyl.org/andyl/experimental/",
 //!   "channel": "edge",
-//!   "trustKeys": ["andyl-testing:Ed25519:<OpenSSH public-key blob>"],
+//!   "trustKeys": ["andyl-experimental:Ed25519:<OpenSSH public-key blob>"],
 //!   "warning": "Experimental image; not for production workloads."
 //! }
 //! ```
@@ -25,7 +25,7 @@
 use anyhow::{Context as _, Result, bail};
 use serde::Deserialize;
 
-use crate::registry::{RegistryTier, registry_policy};
+use crate::registry::{RegistryTier, channel_kind, registry_policy};
 
 /// Evaluated client and support identity shared by a system's release artifacts.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -53,7 +53,7 @@ pub struct ArtifactProfile {
     pub channel: String,
     /// Ed25519 public trust lines installed for the selected registry alias.
     pub trust_keys: Vec<String>,
-    /// User-visible lifecycle notice, required for testing artifacts.
+    /// User-visible lifecycle notice, required for testing and `edge` artifacts.
     pub warning: String,
 }
 
@@ -61,13 +61,15 @@ impl ArtifactProfile {
     /// Requires this artifact's client configuration to match its release destination.
     ///
     /// The baked default channel must have a kind the registry tier carries:
-    /// `edge` for testing registries, `candidate` or `stable` for `andyl/main`.
+    /// `edge` only for testing registries, any kind for `andyl/main`. Testing
+    /// artifacts and `edge` artifacts on any registry must carry a lifecycle
+    /// warning, because neither comes with a support promise.
     ///
     /// # Errors
     /// Returns an error for a disabled profile, a registry or tier crossover,
     /// a channel kind outside the tier, a different root epoch, a different
     /// client URL or alias, absent or malformed trust keys, or an absent
-    /// testing warning.
+    /// warning on a testing or `edge` artifact.
     pub fn require_release(&self, registry: &str) -> Result<()> {
         if !self.enabled {
             bail!("selected system does not enable a public release artifact profile");
@@ -108,8 +110,10 @@ impl ArtifactProfile {
                 bail!("artifact trust-key alias differs from its registry");
             }
         }
-        if policy.tier() == RegistryTier::Testing && self.warning.trim().is_empty() {
-            bail!("testing artifacts require a user-visible lifecycle warning");
+        let unsupported_stream =
+            policy.tier() == RegistryTier::Testing || channel_kind(&self.channel)? == "edge";
+        if unsupported_stream && self.warning.trim().is_empty() {
+            bail!("testing and edge artifacts require a user-visible lifecycle warning");
         }
         Ok(())
     }
@@ -190,10 +194,10 @@ mod tests {
 
     #[test]
     fn artifact_destinations_cannot_cross_registry_or_epoch_boundaries() {
-        for registry in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
+        for registry in ["andyl/main", "andyl/experimental", "andyl/experimental-v2"] {
             let artifact = profile(registry);
             assert!(artifact.require_release(registry).is_ok());
-            for other in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
+            for other in ["andyl/main", "andyl/experimental", "andyl/experimental-v2"] {
                 if other != registry {
                     assert!(artifact.require_release(other).is_err());
                 }
@@ -204,10 +208,10 @@ mod tests {
     #[test]
     fn baked_channels_follow_the_registry_tier() {
         for (registry, channel, allowed) in [
-            ("andyl/testing", "edge", true),
-            ("andyl/testing", "candidate", false),
-            ("andyl/testing-v2", "stable", false),
-            ("andyl/main", "edge", false),
+            ("andyl/experimental", "edge", true),
+            ("andyl/experimental", "candidate", false),
+            ("andyl/experimental-v2", "stable", false),
+            ("andyl/main", "edge", true),
             ("andyl/main", "candidate", true),
             ("andyl/main", "stable", true),
             ("andyl/main", "stable-2026.3", true),
@@ -223,14 +227,27 @@ mod tests {
     }
 
     #[test]
+    fn main_edge_artifacts_keep_their_warning_while_supported_channels_may_drop_it() {
+        let mut edge = profile("andyl/main");
+        edge.channel = "edge".into();
+        assert!(edge.require_release("andyl/main").is_ok());
+        edge.warning.clear();
+        assert!(edge.require_release("andyl/main").is_err());
+
+        let mut stable = profile("andyl/main");
+        stable.warning.clear();
+        assert!(stable.require_release("andyl/main").is_ok());
+    }
+
+    #[test]
     fn testing_clients_cannot_fall_back_to_main_or_drop_their_warning() {
-        let valid = profile("andyl/testing");
+        let valid = profile("andyl/experimental");
         for change in [
             |profile: &mut ArtifactProfile| {
                 profile.url = "https://cdn.aos.andyl.org/andyl/main/".into()
             },
             |profile: &mut ArtifactProfile| {
-                profile.url = "https://aos.andyl.org/andyl/testing/".into()
+                profile.url = "https://aos.andyl.org/andyl/experimental/".into()
             },
             |profile: &mut ArtifactProfile| profile.client_name = "andyl".into(),
             |profile: &mut ArtifactProfile| profile.channel = "unknown".into(),
@@ -245,7 +262,7 @@ mod tests {
         ] {
             let mut invalid = valid.clone();
             change(&mut invalid);
-            assert!(invalid.require_release("andyl/testing").is_err());
+            assert!(invalid.require_release("andyl/experimental").is_err());
         }
     }
 }

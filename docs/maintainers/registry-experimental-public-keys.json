@@ -1,0 +1,162 @@
+{
+  "schema": "aos.public-key-inventory/v1",
+  "registry": "andyl/experimental",
+  "root_epoch": 1,
+  "created_at": "20261002T015252Z",
+  "custodian": "Andyl release maintainers",
+  "review_by": "2027-01-01",
+  "keys": [
+    {
+      "key_id": "experimental-v1",
+      "role": "registry",
+      "trust_key": "andyl-experimental:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIPYTer3cRwGWxUbdiEA2FRYkWlY9YmSHkCRyZEKtCXp4",
+      "algorithm": "Ed25519",
+      "public_key_sha256": "107011bc537cb59129ce5dd3f80dce4532b6ba8a307aa1e17e3d47312da2836c",
+      "fingerprint_encoding": "OpenSSH public-key blob",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-tuf-root-v1",
+      "role": "tuf-root",
+      "public_key_base64": "9snCUlBdpYZ6Pp59HAJLbShQ6bv/0OrjzRe8Xi60TEg=",
+      "public_key_sha256": "ae07aa95f10c890b227e073af6e0c6947fbe291d8cf072843c32a532cdc8b265",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-tuf-targets-v1",
+      "role": "tuf-targets",
+      "public_key_base64": "KmSyRUTmDiF/sThPSa3pck/H6XTiTgk5eiMtrNboJWU=",
+      "public_key_sha256": "82ed539168a9f1e7d0b53c7da9d2377012f88db0ba6e389a59d01f8e3118a1e1",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-tuf-stable-v1",
+      "role": "tuf-stable",
+      "public_key_base64": "rysoURFHtSNxZe/vn139Tzo8bffkUD4XHnWoQnUo/fQ=",
+      "public_key_sha256": "d6aab71d9c8ac43b863531e71829242a46efb836c6125c6363990e38fd05e068",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-tuf-candidate-v1",
+      "role": "tuf-candidate",
+      "public_key_base64": "zUI4M00icLzmWfkHZDsu+lt/dWWIaTh6GXAgDzt1C7Y=",
+      "public_key_sha256": "bf6583167b53ea5c9f54de287c4c41ad4ba07d672cbed7692fce8624c8bed6a8",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-tuf-edge-v1",
+      "role": "tuf-edge",
+      "public_key_base64": "TPpmsa8V/ffmCpob9Yxy6V8x5aSGALj8oXPd1r2MlWw=",
+      "public_key_sha256": "fff7447db4f9254fb7cfb55a14225961ec057c1a51d211f8bfff506c7e760084",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-tuf-snapshot-v1",
+      "role": "tuf-snapshot",
+      "public_key_base64": "/VJUvZ5BlTXxCW+hxL2gfZ3fMzI2+/2KcErtEGD4/iU=",
+      "public_key_sha256": "7567a6bdb413bf87d229e0f1e281a422adead41b671f5b8a0c011da23cd5c9cb",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-tuf-timestamp-v1",
+      "role": "tuf-timestamp",
+      "public_key_base64": "dlO9vrQg3HKffkvnnTo6tkGVBvWGR7EhEE2QlU9E+LU=",
+      "public_key_sha256": "342ff4b5cbb3c92a3c177a96ae49bd9d054ea84e4d08e923d35155f3f1bb1025",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-channel-edge-v1",
+      "role": "channel-edge",
+      "public_key_base64": "RrTrs4XiuMRLPmEOjfpH9pfI7CgrH/vW208E4VkutDU=",
+      "public_key_sha256": "a5756b9305264895b6b7f6712e8203c10e20602feb2d0f3cef021fc20842d176",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-nix-cache-v1",
+      "role": "nix-cache",
+      "public_key_base64": "1eydap438KfoN+1wAumCXOewnzzg2Cc5mq9WwEb9z/I=",
+      "public_key_sha256": "8d0cd80d6a61f2e54c019abf16a5b88dfe5c2ef7701b8e1907a930aa82682226",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-release-evidence-v1",
+      "role": "release-evidence",
+      "public_key_base64": "DJcdNGo6eKNhRjMtLKfV3TsiA3I+nPR6v2tUKA4ISVw=",
+      "public_key_sha256": "adc948f4ef7c30010cd1084d42ef0cc9ac5f73ede0256764ea2402faa1667edf",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "andyl-experimental-qualification-v1",
+      "role": "qualification",
+      "public_key_base64": "HVmPbmfv2E5q+jSOyH20AuDPxpcAV3PD9uxzOJNM0k4=",
+      "public_key_sha256": "5f331805ac264019fa1a1eca01308212b3fbdf13041bf001c97a88f3ee5c9ed0",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "prepared",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "aos-hub-production-publication-v1",
+      "role": "hub-publication-receipt",
+      "public_key_base64": "cN4PP/wQ6vWKikoI0EgV6iMS87fmxEcCCYvcRtSI/zI=",
+      "public_key_sha256": "436ae5b8f1166433fc8ad109db8193be5efa98a1976309262d90e253f40f37d6",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "configured",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "aos-hub-production-channel-v1",
+      "role": "hub-channel-receipt",
+      "public_key_base64": "aZ5EAS70wKLqDbi2d300v10zmpokKpXSxGQziU72WpM=",
+      "public_key_sha256": "97989ea77e4e75079f051f1ed420f452f90a6be32ec272b239ec7484802b3afc",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "configured",
+      "successor_key_id": null
+    },
+    {
+      "key_id": "aos-hub-production-domain-probe-v1",
+      "role": "hub-domain-probe",
+      "public_key_base64": "f7O5n6hmnY3Ac38gxUKR5Tu7hH1I+AAdC3hQSVrViNo=",
+      "public_key_sha256": "d06cb9ce1aac3801552b545c69c3219676df965132a75ee14a92244853564ea8",
+      "algorithm": "Ed25519",
+      "fingerprint_encoding": "raw Ed25519 public key",
+      "status": "configured",
+      "successor_key_id": null,
+      "endpoint_id": "endpoint:286ae94fd33d4e65abb888431fa4795b",
+      "endpoint_generation": 1
+    }
+  ]
+}

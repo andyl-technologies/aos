@@ -98,13 +98,6 @@ in
       # cannot produce dylibs, while the guest binary itself links statically.
     '';
 
-    preInstall = ''
-      # With CARGO_BUILD_TARGET set, final artifacts live under
-      # target/<triple>/release; the generic install phase scans
-      # target/release, so surface the guest binary there.
-      cp "target/$CARGO_BUILD_TARGET/release/crucible-guest" target/release/
-    '';
-
     postInstall = ''
       test -x "$out/bin/crucible-guest"
       if patchelf --print-interpreter "$out/bin/crucible-guest" > "$TMPDIR/crucible-guest.interpreter" 2>/dev/null; then
