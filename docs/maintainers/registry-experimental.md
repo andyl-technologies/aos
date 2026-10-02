@@ -42,6 +42,14 @@ at `https://aos.andyl.org`. A CDN attachment alone does not activate delivery:
 the explicit delivery workflow must verify the storage publication and route
 before advertising that URL.
 
+The production Hub serves OCI through an instance-owned root route, and the
+experimental registry is exposed on it as the `andyl/experimental` namespace.
+Container references therefore carry the registry slug:
+`<host>/andyl/experimental/aos:<tag>`, so `TESTING_OCI_REFERENCE` is
+`<host>/andyl/experimental/aos:<edge version>` and `aos container publish`
+strips the `andyl/experimental/` prefix when it records the Hub repository.
+Generic clients pull `<host>/andyl/experimental/aos:<tag>` unchanged.
+
 While a requested CDN destination is pending, browse pages withhold consumer
 setup commands instead of enrolling new clients on the outgoing Hub route.
 After activation, public OCI blob GETs may redirect to the CDN when the exact

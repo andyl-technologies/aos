@@ -474,6 +474,47 @@ A surface may have any number of routes. Exactly one route may be canonical
 for each protocol audience when setup snippets require a single URL. Other
 routes remain simultaneously usable.
 
+### Instance OCI routes and registry namespaces
+
+Standard Distribution clients request `https://<host>/v2/<name>/...` at the
+host root, so a registry-bound OCI route can only sit at an endpoint's root and
+binds that whole host to one registry. An *instance OCI route* is owned by the
+deployment instead of a tenant surface:
+
+```text
+InstanceOciRoute
+  id
+  endpoint id + immutable generation
+  base_path = /
+  capabilities = oci
+  access_policy = public | hub_auth
+  default_registry (optional)
+  enabled
+  ready (derived from the endpoint chain)
+```
+
+It serves only OCI, is administered at the instance scope by `IamAdmin`, and
+owns its host root URL reservation on behalf of the instance. Each registry
+carries an explicit, reviewed *OCI namespace* exposure state. A request
+`/v2/<name>/...` on an enabled instance route resolves `<name>` through the
+registry slugs whose namespaces are enabled: the longest slug that is a leading
+segment prefix of `<name>` wins and the remaining segments are the repository
+within that registry, so the canonical reference is
+`<host>/<registry-slug>/<repository>:<tag>` like `ghcr.io/<org>/<repo>`. A name
+without an enabled slug prefix falls back to the route's default registry, when
+one is bound, as a repository of that registry. A name that could belong both to
+the default registry's catalog and to another registry's namespace is refused
+with a Distribution error rather than resolved by preference. Reads and writes
+then use the resolved registry's own placements exactly as a registry-bound
+route would.
+
+An enabled instance OCI route takes precedence over any registry-bound route at
+the same host root for `/v2` requests; a registry-bound root route that serves
+only OCI can be converted into an instance route in place, keeping the
+reservation. A registry's enabled namespace, or its role as a route's default
+registry, is treated like an enabled registry-bound OCI route by catalog
+retirement and by registry deletion, which never touches instance routes.
+
 ## Gateways
 
 A gateway is a reusable direct mapping over a binding:

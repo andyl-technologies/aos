@@ -123,11 +123,37 @@ pub fn container_upload_state_directory(
         .join(hex::encode(digest.finalize())))
 }
 
+/// Joins a registry OCI namespace and a registry-local repository into the
+/// Distribution wire name.
+///
+/// A registry exposed through an instance-owned OCI route serves its
+/// repositories under its own slug, so `aos` in registry `andyl/experimental`
+/// travels as `andyl/experimental/aos`. Without a namespace the local name is
+/// the wire name.
+///
+/// # Errors
+///
+/// Returns an error when the joined name violates the repository grammar.
+pub fn namespaced_repository(
+    namespace: Option<&str>,
+    repository: &RepositoryName,
+) -> Result<RepositoryName> {
+    match namespace.filter(|namespace| !namespace.is_empty()) {
+        Some(namespace) => Ok(RepositoryName::parse(&format!(
+            "{namespace}/{}",
+            repository.as_str()
+        ))?),
+        None => Ok(repository.clone()),
+    }
+}
+
 /// Uploads retained candidate bytes into their real Distribution repository.
 ///
 /// The candidate must already exist before transfer begins. Its checkpoint
 /// directory persists upload locations and server-confirmed offsets, making
 /// an interrupted transfer resumable without changing the candidate revision.
+/// `namespace` is the registry OCI namespace the Distribution origin serves
+/// the candidate's repository under, if any.
 ///
 /// # Errors
 ///
@@ -137,6 +163,7 @@ pub async fn upload_container_stage(
     candidate: &StageRevision,
     object_directory: &Path,
     origin: &str,
+    namespace: Option<&str>,
     token: Option<String>,
     state_directory: &Path,
 ) -> Result<ReleaseGraphPushResult> {
@@ -144,11 +171,22 @@ pub async fn upload_container_stage(
         object_directory.to_path_buf(),
         state_directory.to_path_buf(),
     );
-    upload_container_stage_with_options(candidate, object_directory, origin, token, &options, &[])
-        .await
+    upload_container_stage_with_options(
+        candidate,
+        object_directory,
+        origin,
+        namespace,
+        token,
+        &options,
+        &[],
+    )
+    .await
 }
 
 /// Uploads retained OCI bytes with the caller's cancellation and progress hooks.
+///
+/// Mount sources are Distribution wire names on the same origin and already
+/// carry any namespace prefix.
 ///
 /// # Errors
 ///
@@ -158,6 +196,7 @@ pub async fn upload_container_stage_with_options(
     candidate: &StageRevision,
     object_directory: &Path,
     origin: &str,
+    namespace: Option<&str>,
     token: Option<String>,
     options: &PushOptions,
     mount_sources: &[RepositoryName],
@@ -183,9 +222,10 @@ pub async fn upload_container_stage_with_options(
         !authority.is_empty(),
         "OCI candidate origin lacks a registry authority"
     );
+    let wire_repository = namespaced_repository(namespace, &graph.repository)?;
     let reference = RegistryReference::parse(&format!(
         "{}/{}@{}",
-        authority, graph.repository, graph.release.oci.index.digest,
+        authority, wire_repository, graph.release.oci.index.digest,
     ))?;
     let client = RegistryClient::new(&reference, Some(origin.as_str()), token)?;
     let layout = retained_container_layout(graph, object_directory)?;

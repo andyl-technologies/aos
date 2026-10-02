@@ -211,24 +211,31 @@ async fn upload_registry_publication_with_commit(
                     },
                 )
                 .await?;
-            let origin = topology
+            let registry = topology
                 .registry
-                .context("Hub registry topology is absent")?
-                .oci_distribution_origin;
+                .context("Hub registry topology is absent")?;
+            let origin = registry.oci_distribution_origin;
             anyhow::ensure!(
                 !origin.is_empty(),
                 "registry has no acknowledged OCI Distribution route"
             );
+            // The Hub reports the namespace the origin serves this registry
+            // under; checkpoints key on the wire name the bytes travel to.
+            let namespace = Some(registry.oci_repository_namespace.as_str())
+                .filter(|namespace| !namespace.is_empty());
+            let wire_repository =
+                super::container_stage::namespaced_repository(namespace, &container.repository)?;
             let (_, token) =
                 crate::hub_auth::resolve_access(access.hub.as_deref(), access.token.as_deref())?;
             let state_directory = super::container_stage::container_upload_state_directory(
                 &origin,
-                &container.repository,
+                &wire_repository,
             )?;
             super::container_stage::upload_container_stage(
                 revision,
                 &root.join("oci/blobs/sha256"),
                 &origin,
+                namespace,
                 token,
                 &state_directory,
             )
