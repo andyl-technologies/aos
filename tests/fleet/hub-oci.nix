@@ -878,6 +878,43 @@ in {
     """))
     inventory_seeded_at = int(hub.succeed("date +%s").strip())
 
+    def http_status(machine, url, accept="text/html"):
+        return machine.succeed(
+            f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
+            f"-H {shlex.quote('Accept: ' + accept)} {shlex.quote(url)}"
+        ).strip()
+
+    # A registry with no delivery route on any host is still browsable on the
+    # control authority. Its page and the instance home both say that this
+    # host does not deliver it; machine clients and absent slugs still 404.
+    unrouted_trust = publisher.succeed(textwrap.dedent(f"""
+        set -eu
+        export HOME=/var/lib/aos-oci-publisher USER=publisher
+        output=$({APR} keys generate initial --registry unrouted 2>&1)
+        printf '%s\n' "$output" >&2
+        printf '%s\n' "$output" | ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
+    """), timeout=120).strip()
+    assert unrouted_trust.startswith("unrouted:Ed25519:"), unrouted_trust
+    reviewed(
+        publisher,
+        "unrouted-registry-create",
+        "registry create --org acme --name unrouted --visibility public "
+        f"--trust-key {shlex.quote(unrouted_trust)}",
+        token,
+    )
+    unrouted_page = consumer.succeed(f"{CURL} -fsS {HUB}/acme/unrouted/")
+    assert "no public route on this host yet" in unrouted_page, unrouted_page
+    assert unrouted_trust in unrouted_page, unrouted_page
+    instance_home = consumer.succeed(f"{CURL} -fsS {HUB}/")
+    unrouted_row = next(
+        row for row in instance_home.split("<tr")
+        if 'href="/acme/unrouted/"' in row
+    )
+    assert "no route on this host" in unrouted_row, unrouted_row
+    assert http_status(consumer, f"{HUB}/acme/unrouted/-/packages") == "200"
+    assert http_status(consumer, f"{HUB}/acme/unrouted/", "application/json") == "404"
+    assert http_status(consumer, f"{HUB}/acme/absent/") == "404"
+
     endpoints = [
         ("oci-public", "https://hub:8443", "hub-oci-public"),
         ("oci-private", "https://192.168.50.11:8443", "hub-oci-private"),
@@ -943,6 +980,10 @@ in {
             hub_command(f"route list registry:acme/{slug}", token)
         ))["data"]["routes"]
         route = next(item for item in routes if item["stable_id"] == route_id)
+        if slug == "containers":
+            # `route add` creates the registry's only route disabled.
+            disabled_page = consumer.succeed(f"{CURL} -fsS {HUB}/acme/containers/")
+            assert "delivery route is disabled" in disabled_page, disabled_page
         reviewed(
             publisher,
             f"{route_id}-enable",
