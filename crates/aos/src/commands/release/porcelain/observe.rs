@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use anyhow::{Context as _, Result, bail};
+use aos_release::canonical;
 use aos_release::digest::Sha256Digest;
 use aos_release::manifest::ManifestEnvelopeV1;
 use aos_release::plan::{PlannedDestination, SurfaceRole};
@@ -23,6 +24,7 @@ use aos_release::registry::registry_policy;
 use aos_release::signing::SignerRole;
 use aos_release::state::ReleaseState;
 
+use super::super::bootstrap::{BOOTSTRAP_EVIDENCE, BOOTSTRAP_EVIDENCE_FILE, BootstrapEvidence};
 use super::super::capture;
 use super::super::journal::Journal;
 use super::super::surface::{key_map, receipt_payload};
@@ -243,6 +245,10 @@ pub(super) fn destination(
             None => after_blocker(session, observation, destination)?,
             Some(_) => None,
         },
+        bootstrap_blocker: match state {
+            None => bootstrap_blocker(session, destination.surface)?,
+            Some(_) => None,
+        },
         fitness_blocker: if needs_gate {
             fitness_blocker(session, destination)
         } else {
@@ -263,6 +269,67 @@ pub(super) fn destination(
         completion_threshold: evidence_threshold(session),
         completion_approvals,
     })
+}
+
+/// Returns the bootstrap instruction while a first release's base is missing.
+///
+/// `step bootstrap` installs its output directory atomically, and only after
+/// the surface accepted the parentless base publication and it was read back
+/// in full, so a complete `bootstrap/<role>/` naming the planned base commit
+/// is the observation. The publication leaf still refuses a surface without
+/// a compare-and-swap parent, whatever this directory holds.
+///
+/// # Errors
+/// Returns an error for a bootstrap directory without evidence, or evidence
+/// for another environment or base commit.
+fn bootstrap_blocker(session: &Session, role: SurfaceRole) -> Result<Option<String>> {
+    if !session.first_release {
+        return Ok(None);
+    }
+    let directory = session.work.bootstrap(role);
+    let path = directory.join(BOOTSTRAP_EVIDENCE_FILE);
+    if !path.is_file() {
+        if directory.exists() {
+            bail!(
+                "{} exists without {BOOTSTRAP_EVIDENCE_FILE}; it is not step bootstrap output",
+                directory.display()
+            );
+        }
+        return Ok(Some(bootstrap_instruction(session, role, &directory)));
+    }
+
+    let evidence: BootstrapEvidence = canonical::from_slice(
+        &capture::control_file(&path, "registry bootstrap evidence")?,
+        "registry bootstrap evidence",
+    )?;
+    if evidence.schema_version != BOOTSTRAP_EVIDENCE
+        || evidence.environment != role.as_str()
+        || evidence.default_commit != session.plan.registry_base_commit
+    {
+        bail!(
+            "{} records a bootstrap of another surface or base than the plan's {} base {}",
+            path.display(),
+            role,
+            session.plan.registry_base_commit
+        );
+    }
+    Ok(None)
+}
+
+/// Renders the `step bootstrap` invocation a first release waits for.
+fn bootstrap_instruction(session: &Session, role: SurfaceRole, output: &Path) -> String {
+    format!(
+        "this first release's base {} is not installed on the {role} surface: sign \
+         registry-bootstrap intents for {} and run aos maintain release step bootstrap \
+         --plan {} --environment {role} --registry-surface <base surface> \
+         --signed-intent <intent> --approval-key <KEY_ID=PATH> --config {} --output {}, \
+         then rerun advance",
+        session.plan.registry_base_commit,
+        session.work.plan().display(),
+        session.work.plan().display(),
+        session.config_path.display(),
+        output.display()
+    )
 }
 
 /// Reviews of one collected report.
