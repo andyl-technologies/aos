@@ -44,19 +44,62 @@
     };
   };
   supplementarySeed = seed supplementary;
+  builder = import ../../pkgs/system/_systemd-abilities/platform/_initrd-builder.nix {
+    inherit lib;
+    mkDerivation = arguments: arguments;
+    runtimePackages = pkgs;
+    kernel = {};
+    loadModules = [];
+    initrdUnits = "unused";
+    initrdRuntimeRoots = [];
+    handoff = {};
+    deploymentBundle = "unused";
+    registration = "unused";
+    accountSeed = baselineSeed;
+  };
+  accountPhase = builtins.head (builtins.filter (phase: phase.name == "seed-accounts") builder.phases);
+  expectedFile = name:
+    pkgs.writeTextFile {
+      name = "expected-initrd-${name}";
+      text = baselineSeed.${name};
+    };
 in {
-  completeNetworkRow = row "systemd-network" baselineSeed.passwd == [(expected "systemd-network")];
-  completeResolverRow = row "systemd-resolve" baselineSeed.passwd == [(expected "systemd-resolve")];
-  configuredAccountsOverride =
-    row "systemd-network" (seed overridden).passwd
-    == []
-    && row "systemd-resolve" (seed overridden).passwd == [(expected "systemd-resolve")];
-  disabledNetworkHasNoSeed =
-    row "systemd-network" (seed disabled).passwd
-    == []
-    && row "systemd-resolve" (seed disabled).passwd == []
-    && builtins.length (row "root" (seed disabled).passwd) == 1
-    && builtins.length (row "nobody" (seed disabled).passwd) == 1;
-  supplementaryMembershipPreserved = row "wheel" supplementarySeed.group == ["wheel:x:10:root,systemd-network"];
-  existingNativeGroupMemberPreserved = row "systemd-network" supplementarySeed.group == ["systemd-network:x:192:root"];
+  serialization = pkgs.mkDerivation {
+    pname = "aos-initrd-account-serialization-check";
+    version = "0";
+    src = null;
+    buildDeps = [pkgs.coreutils pkgs.gawk];
+    phases = [
+      {
+        name = "check";
+        script = ''
+          mkdir -p root/etc
+          ${accountPhase.script}
+          ${lib.concatMapStringsSep "\n" (name: ''
+            cmp root/etc/${name} ${expectedFile name}
+            awk 'NF == 0 { exit 1 }' root/etc/${name}
+          '') ["passwd" "group" "shadow"]}
+          test "$(stat -c %a root/etc/shadow)" = 600
+          mkdir -p "$out"
+          echo PASS > "$out/result"
+        '';
+      }
+    ];
+  };
+  checks = {
+    completeNetworkRow = row "systemd-network" baselineSeed.passwd == [(expected "systemd-network")];
+    completeResolverRow = row "systemd-resolve" baselineSeed.passwd == [(expected "systemd-resolve")];
+    configuredAccountsOverride =
+      row "systemd-network" (seed overridden).passwd
+      == []
+      && row "systemd-resolve" (seed overridden).passwd == [(expected "systemd-resolve")];
+    disabledNetworkHasNoSeed =
+      row "systemd-network" (seed disabled).passwd
+      == []
+      && row "systemd-resolve" (seed disabled).passwd == []
+      && builtins.length (row "root" (seed disabled).passwd) == 1
+      && builtins.length (row "nobody" (seed disabled).passwd) == 1;
+    supplementaryMembershipPreserved = row "wheel" supplementarySeed.group == ["wheel:x:10:root,systemd-network"];
+    existingNativeGroupMemberPreserved = row "systemd-network" supplementarySeed.group == ["systemd-network:x:192:root"];
+  };
 }

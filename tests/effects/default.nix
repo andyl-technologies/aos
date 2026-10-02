@@ -2,6 +2,7 @@
 {pkgs}: let
   lib = import ../../lib {system = pkgs.bash.system;};
   fixture = import ./deployment-fixture.nix {inherit pkgs lib;};
+  initrdAccountSeed = import ./initrd-account-seed.nix {inherit pkgs;};
   checks = {
     modules = import ./modules.nix;
     types = import ./types.nix;
@@ -23,7 +24,7 @@
     systemdResources = import ./systemd-resources.nix;
     platformReplay = import ./platform-replay.nix;
     observerBootstrap = import ./observer-bootstrap.nix;
-    initrdAccountSeed = import ./initrd-account-seed.nix {inherit pkgs;};
+    initrdAccountSeed = initrdAccountSeed.checks;
     nativeReleaseInventory = import ./release-native-inventory.nix {inherit pkgs;};
     releaseMaintenance = import ./release-maintenance.nix;
     fixtureConsumers = import ./fixture-consumers.nix;
@@ -66,12 +67,13 @@ in
       version = "0";
       src = null;
       buildDeps = [pkgs.python3];
-      runtimeDeps = [fixture];
+      runtimeDeps = [fixture initrdAccountSeed.serialization];
       phases = [
         {
           name = "check";
           script = ''
             export PYTHONDONTWRITEBYTECODE=1
+            test -f ${initrdAccountSeed.serialization}/result
             ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py}
             ${pkgs.python3}/bin/python3 ${../services/native-flight-oracle.py} ${../fleet/native-reference-service-flights.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-filesystem-firewall-oracles-self-test.py} ${../fleet/native-filesystem-firewall-oracles.py}
