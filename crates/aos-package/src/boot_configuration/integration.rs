@@ -122,12 +122,18 @@ async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
         Some(profile.path.clone()),
         &executable,
     )?;
-    let initrd = command(
+    let mut initrd = command(
         &fixture.initrd,
         &scratch.path().join("initrd"),
         None,
         &executable,
     )?;
+    // The image preserves this directory alias and its original immutable
+    // member symlinks. Read the committed decision through that actual layout.
+    let received_initrd = scratch.path().join("received-initrd");
+    std::os::unix::fs::symlink(&fixture.initrd, &received_initrd)?;
+    initrd.input = received_initrd;
+    initrd.admission = initrd.input.join("admission.json");
     ensure!(
         reader::read_initial_in(&host, &initrd, &fixture.binding).is_err(),
         "uncommitted initrd output was accepted as bootstrap authority"

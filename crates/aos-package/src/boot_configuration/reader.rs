@@ -67,14 +67,7 @@ pub(super) fn read_initial_in(
     let input = &initrd.input;
     crate::native_deployment::verify(&initrd)?;
 
-    let packages: ResolvedPackages = GRAPH_LIMITS.decode(
-        &crate::native_deployment::read_regular_document(&input.join("packages.json"))?,
-        "boot initrd packages",
-    )?;
-    let expected = Deployment::decode(
-        &crate::native_deployment::read_regular_document(&input.join("transaction.json"))?,
-        &packages,
-    )?;
+    let expected = read_initrd_deployment(input, &initrd.nix_store)?;
     let binding: MetadataBinding =
         GRAPH_LIMITS.decode(&read_bounded(binding_path, 4096)?, "image metadata binding")?;
     binding.validate(&expected)?;
@@ -142,6 +135,29 @@ pub(super) fn read_initial_in(
     })
 }
 
+// Read producer-owned aliases through the selected store. This decodes the
+// committed plan; its admission and journal authority are verified by the caller.
+fn read_initrd_deployment(input: &Path, nix_store: &Path) -> Result<Deployment> {
+    let packages: ResolvedPackages = GRAPH_LIMITS.decode(
+        &crate::native_deployment::read_immutable_document_in(
+            &input.join("packages.json"),
+            nix_store,
+            &Default::default(),
+        )
+        .context("reading committed initrd package aliases")?,
+        "boot initrd packages",
+    )?;
+    Deployment::decode(
+        &crate::native_deployment::read_immutable_document_in(
+            &input.join("transaction.json"),
+            nix_store,
+            &Default::default(),
+        )
+        .context("reading committed initrd transaction alias")?,
+        &packages,
+    )
+}
+
 pub(super) fn read_immutable_bounded(
     path: &Path,
     nix_store: &Path,
@@ -197,5 +213,33 @@ mod tests {
         let link = scratch.path().join("link.json");
         symlink(&path, &link).unwrap();
         assert!(read_bounded(&link, 3).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires an actual source-built initrd bundle and selected Nix"]
+    fn actual_initrd_alias_uses_selected_store_documents() -> Result<()> {
+        let original = PathBuf::from(
+            std::env::var_os("AOS_BOOT_IMAGE_INITRD_BUNDLE")
+                .context("actual source-built initrd bundle is required")?,
+        );
+        let nix_store = PathBuf::from(
+            std::env::var_os("AOS_NIX_STORE").context("source-built Nix is required")?,
+        );
+        let scratch = tempfile::tempdir()?;
+        let alias = scratch.path().join("received-initrd");
+        symlink(&original, &alias)?;
+
+        assert!(
+            crate::native_deployment::read_regular_document(&alias.join("packages.json")).is_err()
+        );
+        let retained = read_initrd_deployment(&original, &nix_store)?;
+        let received = read_initrd_deployment(&alias, &nix_store)?;
+        assert_eq!(received.id()?, retained.id()?);
+        assert_eq!(received.scope(), retained.scope());
+
+        fs::remove_file(&alias)?;
+        symlink(scratch.path(), &alias)?;
+        assert!(read_initrd_deployment(&alias, &nix_store).is_err());
+        Ok(())
     }
 }
