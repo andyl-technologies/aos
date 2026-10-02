@@ -52,7 +52,7 @@ pub(in crate::registry_ops) fn build_package_toml(
         let table = platform_table
             .as_table_mut()
             .context("new sysroot platform metadata is not a TOML table")?;
-        record_image_artifact_contract_gate(table)?;
+        record_feature_gate(table, FEATURE_IMAGE_ARTIFACT_CONTRACT_V1)?;
     }
     if existing.is_empty() {
         let mut package = toml::map::Map::new();
@@ -428,15 +428,20 @@ fn merge_minimum_format(
     Ok(())
 }
 
-fn record_image_artifact_contract_gate(
+/// Preserves structural gates while declaring a newly authored registry feature.
+///
+/// # Errors
+/// Rejects malformed feature arrays, reference tables, or format declarations.
+pub(super) fn record_feature_gate(
     platform: &mut toml::map::Map<String, toml::Value>,
+    feature: &str,
 ) -> Result<()> {
-    let features = BTreeSet::from([FEATURE_IMAGE_ARTIFACT_CONTRACT_V1.to_string()]);
+    let features = BTreeSet::from([feature.to_string()]);
     merge_feature_gate(platform, "requires-features", &features)?;
-    merge_minimum_format(platform, "sysroot platform")?;
+    merge_minimum_format(platform, "package platform")?;
 
     // The table representation makes readers that predate structural feature
-    // gates reject the sysroot before they can stage its image payload.
+    // gates reject the package before they can stage its payload.
     let prior_references = platform.remove("references");
     let mut reference_gate = match prior_references {
         Some(toml::Value::Array(hashes)) => {
@@ -445,7 +450,7 @@ fn record_image_artifact_contract_gate(
             gate
         }
         Some(toml::Value::Table(gate)) => gate,
-        Some(_) => bail!("sysroot references metadata is neither a hash list nor a gate table"),
+        Some(_) => bail!("package references metadata is neither a hash list nor a gate table"),
         None => {
             let mut gate = toml::map::Map::new();
             gate.insert("hashes".into(), toml::Value::Array(Vec::new()));
@@ -453,7 +458,7 @@ fn record_image_artifact_contract_gate(
         }
     };
     merge_feature_gate(&mut reference_gate, "requires-features", &features)?;
-    merge_minimum_format(&mut reference_gate, "sysroot references")?;
+    merge_minimum_format(&mut reference_gate, "package references")?;
     platform.insert("references".into(), toml::Value::Table(reference_gate));
     Ok(())
 }
