@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -28,7 +29,6 @@ mkdir() { :; }
 chmod() { :; }
 ln() { :; }
 sleep() { polls=$((polls + 1)); printf 'wait\n'; }
-blkid() { printf '%s\n' "$TEST_TYPE"; return "$TEST_BLKID_STATUS"; }
 mount() { printf 'mount'; printf ' <%s>' "$@"; printf '\n'; }
 source "$1"
 printf 'polls=%s\n' "$polls"
@@ -38,13 +38,41 @@ printf 'polls=%s\n' "$polls"
 class MountVarTests(unittest.TestCase):
     def run_script(self, devices="", delay=0, filesystem="ext4", mounted=False,
                    zfs=False, blkid_status=0):
-        environment = dict(os.environ, LC_ALL="C", AOS_ZFS_STATE=str(zfs).lower(),
-                           AOS_ZFS_POOL="tank", TEST_DEVICES=devices,
-                           TEST_DELAY=str(delay), TEST_TYPE=filesystem,
-                           TEST_MOUNTED=str(mounted).lower(),
-                           TEST_BLKID_STATUS=str(blkid_status))
-        return subprocess.run([BASH, "-c", HARNESS, "mount-var-test", SCRIPT],
-                              env=environment, capture_output=True, text=True)
+        with tempfile.TemporaryDirectory(prefix="mount-var-test-") as directory:
+            root = Path(directory)
+            tools = root / "util-linux"
+            (tools / "sbin").mkdir(parents=True)
+            probe = tools / "sbin/blkid"
+            probe.write_text(
+                f"#!{BASH}\n"
+                'printf "%s\\n" "$@" > "$TEST_PROBE_LOG"\n'
+                'printf "%s\\n" "$TEST_TYPE"\n'
+                'exit "$TEST_BLKID_STATUS"\n'
+            )
+            probe.chmod(0o555)
+
+            # Match the recipe's installation substitution. The probe exists
+            # only in sbin and PATH is empty, exposing accidental bare calls.
+            rendered = root / "mount-var"
+            rendered.write_text(Path(SCRIPT).read_text().replace(
+                "@util_linux@", str(tools)))
+            probe_log = root / "probe-arguments"
+            environment = dict(
+                os.environ, PATH="", LC_ALL="C",
+                AOS_ZFS_STATE=str(zfs).lower(), AOS_ZFS_POOL="tank",
+                TEST_DEVICES=devices, TEST_DELAY=str(delay),
+                TEST_TYPE=filesystem, TEST_MOUNTED=str(mounted).lower(),
+                TEST_BLKID_STATUS=str(blkid_status),
+                TEST_PROBE_LOG=str(probe_log),
+            )
+            result = subprocess.run(
+                [BASH, "-c", HARNESS, "mount-var-test", str(rendered)],
+                env=environment, capture_output=True, text=True,
+            )
+            self.probe_arguments = (
+                probe_log.read_text().splitlines() if probe_log.exists() else []
+            )
+            return result
 
     def assert_device(self, result, device):
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -62,6 +90,13 @@ class MountVarTests(unittest.TestCase):
     def test_raw_partition_uses_gpt_label(self):
         self.assert_device(self.run_script("/dev/disk/by-partlabel/var"),
                            "/dev/disk/by-partlabel/var")
+
+    def test_probe_resolves_sbin_without_environment_path(self):
+        result = self.run_script("/dev/disk/by-partlabel/var")
+        self.assert_device(result, "/dev/disk/by-partlabel/var")
+        self.assertEqual(self.probe_arguments,
+                         ["-p", "-s", "TYPE", "-o", "value",
+                          "/dev/disk/by-partlabel/var"])
 
     def test_late_device_is_waited_for(self):
         result = self.run_script("/dev/disk/by-partlabel/var", delay=3)

@@ -362,19 +362,8 @@
           ++ lib.optional cfg.verityEnabled bootIdentityReadiness;
         required_by = [initrdFilesystemsReadiness];
       };
-    conditions =
-      if cfg.zfsEnabled
-      then null
-      else {
-        all = [
-          {
-            kind = "path";
-            predicate = "exists";
-            path = "/dev/disk/by-partlabel/var";
-            negated = false;
-          }
-        ];
-      };
+    # A mapper, MD array, or raw partition can appear late. The script waits
+    # and checks its filesystem; a raw-partition condition would skip it.
     logging = substrateLogging;
   };
   nixOverlaySetup = substrateService {
