@@ -310,7 +310,7 @@
         ${setupImageRegistryWorkflow}
 
         echo "==> Test: apm image download server --format ${format}"
-        $APM image download server --registry image-reg --format ${format} \
+        $APM image download server --system --registry image-reg --format ${format} \
           --output ${output} --dry-run > /tmp/image-${format}-dry-run.out 2>&1 || {
           cat /tmp/image-${format}-dry-run.out
           fail "dry-run plans ${format} image download"
@@ -324,7 +324,7 @@
         delete_store_path "${"$"}${storeVar}" "${format} image"
         rm -f ${output}
 
-        $APM image download server --registry image-reg --format ${format} \
+        $APM image download server --system --registry image-reg --format ${format} \
           --output ${output} --yes > /tmp/image-${format}-install.out 2>&1 || {
           cat /tmp/image-${format}-install.out
           fail "apm downloads and writes ${format} image"
@@ -400,7 +400,7 @@ in {
       }
 
       echo "==> Test: unavailable image format fails after package resolution"
-      if $APM image download server --registry image-reg --format vmdk \
+      if $APM image download server --system --registry image-reg --format vmdk \
         --output /tmp/server.vmdk --dry-run > /tmp/image-vmdk.out 2>&1; then
         cat /tmp/image-vmdk.out
         fail "vmdk image format should be rejected"
@@ -505,7 +505,7 @@ in {
       }
       cat /tmp/image-system-pull-after-fix.out
 
-      if $APM image download server --registry image-reg --format qcow2 \
+      if $APM image download server --system --registry image-reg --format qcow2 \
         --output /tmp/server.qcow2 --dry-run > /tmp/image-qcow2-after-fix.out 2>&1; then
         cat /tmp/image-qcow2-after-fix.out
         fail "pruned qcow2 image format should be rejected"
@@ -520,7 +520,7 @@ in {
 
       delete_store_path "$IMAGE_RAW_DISK_STORE" "raw image after validate fix"
       rm -f /tmp/server-pruned.raw
-      $APM image download server --registry image-reg --format raw \
+      $APM image download server --system --registry image-reg --format raw \
         --output /tmp/server-pruned.raw --yes \
         > /tmp/image-raw-after-fix-install.out 2>&1 || {
         cat /tmp/image-raw-after-fix-install.out
