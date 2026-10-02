@@ -2,16 +2,56 @@
 
 import importlib.util
 import json
+import os
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 SOURCE = Path(sys.argv.pop(1)).resolve()
+RESOLVER_POLICY = Path(sys.argv.pop(1)).resolve(strict=True)
 specification = importlib.util.spec_from_file_location("network_handler", SOURCE)
 handler = importlib.util.module_from_spec(specification)
 specification.loader.exec_module(handler)
+
+
+def vendor_resolver_link():
+    entries = [
+        line.split() for line in RESOLVER_POLICY.read_text().splitlines()
+        if line.startswith("L!") and line.split()[1] == "/etc/resolv.conf"
+    ]
+    if len(entries) != 1:
+        raise ValueError("expected one installed vendor resolver link")
+    return Path(entries[0][1]), entries[0][-1]
+
+
+@contextmanager
+def isolated_network():
+    with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+        root = Path(directory).resolve(strict=True)
+        (root / "etc").mkdir()
+        state_path = root / "state"
+        state_path.mkdir(mode=0o700)
+        # Host tests retain real file/link/receipt IO without requiring root.
+        # Only the private state directory's owner metadata is simulated.
+        state = MagicMock(wraps=state_path)
+        state.__truediv__.side_effect = state_path.__truediv__
+        state.stat.return_value = SimpleNamespace(st_uid=0, st_mode=state_path.stat().st_mode)
+        stack.enter_context(patch.object(handler, "STATE", state))
+        stack.enter_context(patch.object(handler, "Path", side_effect=lambda path: root if path == "/" else Path(path)))
+        stack.enter_context(patch.object(handler, "units", return_value={}))
+        commands = stack.enter_context(patch.object(handler, "command"))
+        args = SimpleNamespace(action="apply", systemctl="fixture-systemctl")
+        invocation = {
+            "id": "resolver-fixture", "revision": "0" * 64,
+            "effect": {"identity": ["fixture", "network", "configure", "resolver"]},
+            "input": policy([]), "action": "apply", "previous": None,
+        }
+        yield root, args, invocation, commands
 
 
 def physical(name="eth0"):
@@ -28,6 +68,165 @@ def policy(links):
 
 
 class NativeNetworkTests(unittest.TestCase):
+    def test_installed_vendor_link_has_the_desired_lexical_identity(self):
+        path, target = vendor_resolver_link()
+        expected = handler.link_identity(path, target)
+        self.assertTrue(target.startswith("../"))
+
+        with (
+            patch.object(handler, "safe_path"),
+            patch.object(Path, "lstat", return_value=SimpleNamespace(st_mode=0o120777)),
+            patch.object(handler.os, "readlink", return_value=target),
+        ):
+            self.assertEqual(handler.link_at(path), expected)
+
+        with isolated_network() as (root, args, invocation, commands):
+            handler.converge(args, invocation)
+            receipt = json.loads(next((root / "state").glob("*.json")).read_text())
+            self.assertEqual(receipt["desired"]["symlinks"][str(path).lstrip("/")], expected)
+
+    def test_relative_and_absolute_links_apply_observe_and_remove(self):
+        vendor_path, vendor_target = vendor_resolver_link()
+        expected = handler.link_identity(vendor_path, vendor_target)
+        for relative in [False, True]:
+            with self.subTest(relative=relative), isolated_network() as (root, args, invocation, commands):
+                path = root / "etc/resolv.conf"
+                # Anchor equivalent relative spelling to this private fixture's
+                # real parent; the installed /etc spelling is checked above.
+                target = os.path.relpath(expected, path.parent) if relative else expected
+                path.symlink_to(target)
+
+                handler.converge(args, invocation)
+                self.assertEqual(os.readlink(path), target)
+                receipt_path = next((root / "state").glob("*.json"))
+                receipt = receipt_path.read_bytes()
+                self.assertEqual(json.loads(receipt)["desired"]["symlinks"]["etc/resolv.conf"], expected)
+                args.action = "observe"
+                self.assertEqual(handler.converge(args, invocation)["status"], "current")
+                self.assertEqual(receipt_path.read_bytes(), receipt)
+
+                args.action = invocation["action"] = "remove"
+                handler.converge(args, invocation)
+                self.assertFalse(path.is_symlink())
+                self.assertFalse(receipt_path.exists())
+
+    def test_unowned_foreign_links_and_regular_files_are_not_adopted(self):
+        for target in ["/run/foreign.conf", "../../outside", None]:
+            with self.subTest(target=target), isolated_network() as (root, args, invocation, commands):
+                path = root / "etc/resolv.conf"
+                if target is None:
+                    path.write_text("administrator resolver\n")
+                else:
+                    path.symlink_to(target)
+
+                with self.assertRaisesRegex(ValueError, "unowned resolver"):
+                    handler.converge(args, invocation)
+
+                self.assertEqual(list((root / "state").glob("*.json")), [])
+                commands.assert_not_called()
+                if target is None:
+                    self.assertEqual(path.read_text(), "administrator resolver\n")
+                else:
+                    self.assertEqual(os.readlink(path), target)
+
+    def test_receipted_conflicts_preserve_receipts_for_all_actions(self):
+        for replacement in ["/run/foreign.conf", "../../outside", None]:
+            with self.subTest(replacement=replacement), isolated_network() as (root, args, invocation, commands):
+                handler.converge(args, invocation)
+                receipt_path = next((root / "state").glob("*.json"))
+                before = receipt_path.read_bytes()
+                path = root / "etc/resolv.conf"
+                path.unlink()
+                if replacement is None:
+                    path.write_text("foreign resolver\n")
+                else:
+                    path.symlink_to(replacement)
+                commands.reset_mock()
+
+                for action in ["apply", "observe", "remove"]:
+                    args.action = action
+                    with self.assertRaisesRegex(ValueError, "outside its receipt"):
+                        handler.converge(args, invocation)
+                    self.assertEqual(receipt_path.read_bytes(), before)
+                    commands.assert_not_called()
+
+    def test_interrupted_symlink_apply_recovers_equivalent_relative_target(self):
+        with isolated_network() as (root, args, invocation, commands):
+            commands.side_effect = RuntimeError("interrupted after link publication")
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                handler.converge(args, invocation)
+            receipt_path = next((root / "state").glob("*.json"))
+            pending = receipt_path.read_bytes()
+            receipt = json.loads(pending)
+            self.assertFalse(receipt["complete"])
+            expected = receipt["desired"]["symlinks"]["etc/resolv.conf"]
+            path = root / "etc/resolv.conf"
+            path.unlink()
+            path.symlink_to("../../outside")
+
+            with self.assertRaisesRegex(ValueError, "outside its receipt"):
+                handler.converge(args, invocation)
+            self.assertEqual(receipt_path.read_bytes(), pending)
+            path.unlink()
+            path.symlink_to(os.path.relpath(expected, path.parent))
+            commands.side_effect = None
+            args.action = "observe"
+            self.assertEqual(handler.converge(args, invocation)["status"], "retry-safe")
+            self.assertEqual(receipt_path.read_bytes(), pending)
+
+            args.action = "apply"
+            handler.converge(args, invocation)
+            self.assertTrue(json.loads(receipt_path.read_text())["complete"])
+            args.action = "observe"
+            self.assertEqual(handler.converge(args, invocation)["status"], "current")
+            args.action = invocation["action"] = "remove"
+            handler.converge(args, invocation)
+            self.assertFalse(path.is_symlink())
+
+    def test_resolver_link_parent_symlinks_remain_forbidden(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "actual").mkdir()
+            (root / "etc").symlink_to("actual", target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "contains symlink"):
+                handler.link_at(root / "etc/resolv.conf")
+
+    def test_interrupted_resolver_disable_retains_previous_link_custody(self):
+        with isolated_network() as (root, args, invocation, commands):
+            handler.converge(args, invocation)
+            invocation["input"]["resolver"]["enabled"] = False
+            invocation["revision"] = "1" * 64
+
+            def interrupt_reload(argv):
+                if argv[1] == "daemon-reload":
+                    raise RuntimeError("interrupted resolver update")
+
+            commands.side_effect = interrupt_reload
+            with self.assertRaisesRegex(RuntimeError, "interrupted resolver update"):
+                handler.converge(args, invocation)
+            receipt_path = next((root / "state").glob("*.json"))
+            pending = receipt_path.read_bytes()
+            receipt = json.loads(pending)
+            self.assertFalse(receipt["complete"])
+            self.assertTrue(receipt["previous"]["resolved"])
+            path = root / "etc/resolv.conf"
+            expected = path.read_text()
+            path.write_text("foreign resolver\n")
+
+            with self.assertRaisesRegex(ValueError, "outside its receipt"):
+                handler.converge(args, invocation)
+            self.assertEqual(receipt_path.read_bytes(), pending)
+            path.write_text(expected)
+            commands.side_effect = None
+            args.action = "observe"
+            self.assertEqual(handler.converge(args, invocation)["status"], "retry-safe")
+            args.action = "apply"
+            handler.converge(args, invocation)
+            self.assertIsNone(json.loads(receipt_path.read_text())["previous"])
+            args.action = invocation["action"] = "remove"
+            handler.converge(args, invocation)
+            self.assertFalse(path.exists())
+
     def test_default_dhcp_preserves_ethernet_names_and_lease_policy(self):
         link = {
             "name": "default-dhcp", "kind": "ethernet",

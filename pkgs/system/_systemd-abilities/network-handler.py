@@ -231,6 +231,13 @@ def units(args, resolved):
     return files
 
 
+def link_identity(path, target):
+    """Identify a link lexically without following its possibly absent target."""
+    require(path.is_absolute(), "resolver link path is not absolute")
+    require(isinstance(target, str) and target and "\0" not in target, "invalid resolver link target")
+    return os.path.normpath(os.path.join(str(path.parent), target))
+
+
 def link_at(path):
     safe_path(path.parent)
     try:
@@ -238,7 +245,7 @@ def link_at(path):
     except FileNotFoundError:
         return None
     if stat.S_ISLNK(metadata.st_mode):
-        return os.readlink(path)
+        return link_identity(path, os.readlink(path))
     return None
 
 
