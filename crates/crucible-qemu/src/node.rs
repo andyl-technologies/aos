@@ -560,6 +560,8 @@ pub struct QemuNode {
     bounded_scheduler_preemption: Option<crate::BoundedSchedulerPreemptionEvidenceClaim>,
     selectable_resume_pending: bool,
     network_output_resume_pending: bool,
+    // A fork child inherits the stopped template until its first ceiling is published.
+    hot_fork_resume_pending: bool,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
@@ -814,6 +816,7 @@ impl QemuNode {
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
             network_output_resume_pending: false,
+            hot_fork_resume_pending: false,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
@@ -1810,8 +1813,9 @@ impl QemuNode {
             )
             .map_err(QemuNodeError::from_bounded_scheduler_preemption)?;
         let mut pending_quantum_certified = false;
-        let resume_stopped_boundary =
-            self.selectable_resume_pending || self.network_output_resume_pending;
+        let resume_stopped_boundary = self.selectable_resume_pending
+            || self.network_output_resume_pending
+            || self.hot_fork_resume_pending;
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
             channels: &mut self.channels,
@@ -1864,6 +1868,7 @@ impl QemuNode {
         if resume_stopped_boundary {
             self.selectable_resume_pending = false;
             self.network_output_resume_pending = false;
+            self.hot_fork_resume_pending = false;
         }
         Ok(report)
     }
@@ -1881,8 +1886,9 @@ impl QemuNode {
             stop_condition,
         };
         let horizon = ExecutionHorizon { icount: ceiling };
-        let resume_stopped_boundary =
-            self.selectable_resume_pending || self.network_output_resume_pending;
+        let resume_stopped_boundary = self.selectable_resume_pending
+            || self.network_output_resume_pending
+            || self.hot_fork_resume_pending;
         let report = if resume_stopped_boundary {
             run_bounded_qemu_node_step_with_start_hook(
                 &mut target,
@@ -1910,6 +1916,7 @@ impl QemuNode {
         if resume_stopped_boundary {
             self.selectable_resume_pending = false;
             self.network_output_resume_pending = false;
+            self.hot_fork_resume_pending = false;
         }
         Ok(report)
     }
@@ -2305,6 +2312,7 @@ impl QemuNode {
         // Its native fence is now released; the next step needs only its new
         // ceiling, just like a freshly reconstructed restored generation.
         self.network_output_resume_pending = false;
+        self.hot_fork_resume_pending = false;
         Ok(())
     }
 

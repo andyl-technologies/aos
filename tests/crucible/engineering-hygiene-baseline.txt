@@ -137,7 +137,7 @@ shape-review|crates/crucible-qemu/src/linux_cgroup.rs|sha256:f3714ec131bf4534719
 shape-review|crates/crucible-qemu/src/mapped_quantum.rs|sha256:9597f513080541a9c1b48db3d1c722b706c8d8878dbd9fd120687e0890dc97cd|implementation|1114|Owned mapped shared-memory adapter for QEMU quantum channels.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/node/channels.rs|sha256:958ef91c3f8a5801437f894ed45f8d96f90e2303fc162e45dda52892f24ee6df|implementation|1125|Typed plugin IPC, shared-memory, and QMP channel contracts for one QEMU node.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/node/test_support/hot_fork.rs|sha256:280e3c93eda1b5f65335caf1c5a6bc99a675ac6b13924f53512430fc1bbff77f|tests|1620|Scripted retained-template transport and completed scheduler-boundary tracking for cross-crate hot-fork tests.|Source setup, completed quantum state, child handshake emulation, transport faults, and teardown validate one retained-template transport contract without manufacturing operational native authority.
-shape-review|crates/crucible-qemu/src/node/tests/hot_fork.rs|sha256:87e1614edfe5bf1f4136ea0d63581f91b4fef2bb075b0bcf970266d3eb344d72|tests|1139|QEMU node hot-fork ownership transfer, rejection, and quarantine regressions.|threshold-not-reached
+shape-review|crates/crucible-qemu/src/node/tests/hot_fork.rs|sha256:fe1e628cf8edd194a90134c6df9b89054b48c1001e2aeb7b934e02a02b1593de|tests|1227|QEMU node hot-fork ownership transfer, rejection, and quarantine regressions.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/node_factory.rs|sha256:dd83b65038accfb71b31291b0b2de01f5b32c5e002d516116e310d9f85cf2170|implementation|1130|Linux factory for already-spawned QEMU nodes.|threshold-not-reached
 shape-review|crates/crucible-qemu/src/node_set.rs|sha256:1143edbd85ef502770695f60972104e9e346d51e7a717223704e2d3aaf6c02e9|implementation|2263|Node-addressed backend routing, physical selectable and marker stops, and whole-world structural transfer.|Parked counters, choice retention, shutdown, and hot-fork stages share the live NodeId ownership map; concurrent dispatch and native disk-seal routing remain in focused leaves.
 shape-review|crates/crucible-qemu/src/spawn.rs|sha256:8d1931b582ca51a9d04426b84da3b3adc6869494ab631e882f4e49a27e518c18|implementation|1968|Guarded QEMU process admission, fixed-descriptor transport, setup probe supervision, and child setup.|Descriptor creation, cgroup admission, bounded helper and probe execution, and pre-exec installation remain one Linux child-process boundary; storage argument and image-pin construction now reside in a focused leaf.
@@ -475,7 +475,7 @@ shape-line|crates/crucible-qemu/src/node/hot_fork_child_qmp.rs|731
 shape-line|crates/crucible-qemu/src/node/hot_fork_diagnostics.rs|715
 shape-line|crates/crucible-qemu/src/node/hot_fork_plugin_endpoints.rs|653
 shape-line|crates/crucible-qemu/src/node/hot_fork_ring_image.rs|952
-shape-line|crates/crucible-qemu/src/node_tests.rs|2354
+shape-line|crates/crucible-qemu/src/node_tests.rs|2392
 shape-line|crates/crucible-qemu/src/qmp.rs|2867
 shape-line|crates/crucible-qemu/src/qmp/hot_fork/block_barrier.rs|682
 shape-line|crates/crucible-qemu/src/qmp/hot_fork/plugin.rs|819

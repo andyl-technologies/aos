@@ -221,6 +221,10 @@ impl QemuHotForkSchedulerNodeContinuation {
     /// status release and target-resource cleanup remain with the outer
     /// lifecycle that issued `process`.
     ///
+    /// The native child retains the template's paused run state. Its first
+    /// bounded step publishes the new scheduler ceiling before acknowledging
+    /// the QMP resume; installation alone never admits guest execution.
+    ///
     /// # Errors
     ///
     /// Returns [`QemuHotForkSchedulerNodeInstallError`] with both linear inputs
@@ -314,6 +318,7 @@ impl QemuHotForkSchedulerNodeContinuation {
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
             network_output_resume_pending: false,
+            hot_fork_resume_pending: true,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: state.next_network_output_sequence,
