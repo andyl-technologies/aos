@@ -35,6 +35,7 @@
         {
           aos.services.dbus = {inherit enable;};
           aos.dbus.openFileLimit = openFileLimit;
+          aos.dbus.policyDirectories = ["${payload "polkit"}/share/dbus-1/system.d"];
           aos.dbus.activationDirectories = ["${payload "polkit"}/share/dbus-1/system-services"];
           aos.abilities = {
             serviceManagement.operations.realize.handler.program = artifactLib.value (artifact "service-handler");
@@ -68,5 +69,12 @@ in
   assert limited.config.aos.services.dbus.resources.processes.kind == "unbounded";
   assert realization.input.instance == "dbus";
   assert builtins.any (fragment: lib.hasInfix "${payload "polkit"}/share/dbus-1/system-services" fragment) file.input.fragments;
+  assert file.input.fragments
+  == [
+    "<busconfig>\n<include>${payload "dbus"}/share/dbus-1/aos-system-base.conf</include>\n"
+    "<servicedir>${payload "polkit"}/share/dbus-1/system-services</servicedir>\n"
+    "<includedir>${payload "polkit"}/share/dbus-1/system.d</includedir>\n"
+    "<includedir>/etc/dbus-1/system.d</includedir>\n<include ignore_missing=\"yes\">/etc/dbus-1/system-local.conf</include>\n</busconfig>\n"
+  ];
   assert disabled.deployment.graph.order == [];
   assert builtins.length default.deployment.graph.order == 4; true
