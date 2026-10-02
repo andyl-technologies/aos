@@ -679,7 +679,7 @@ in
           #!${bash}/bin/bash
           exec "${aos-systemd-provider}/bin/aos-systemd-image-evidence" \\
             --openssl "${openssl}/bin/openssl" \\
-            --objcopy "${binutils}/bin/objcopy" \\
+            --objcopy "${pe-tools}/bin/objcopy" \\
             "\$@"
           EOF
           chmod +x "$out/bin/aos-systemd-image-evidence"
@@ -696,7 +696,7 @@ in
             --mount "${util-linux}/bin/mount" \\
             --umount "${util-linux}/bin/umount" \\
             --blkid "${util-linux}/bin/blkid" \\
-            --objcopy "${binutils}/bin/objcopy" \\
+            --objcopy "${pe-tools}/bin/objcopy" \\
             --veritysetup "${cryptsetup}/bin/veritysetup" \\
             "\$@"
           EOF
