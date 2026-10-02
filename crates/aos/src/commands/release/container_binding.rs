@@ -3,14 +3,29 @@
 use anyhow::{Context as _, Result, bail};
 use aos_oci_types::ContainerRelease;
 use aos_release::plan::{ImagePlan, ReleasePlan};
+use aos_release::platform::Platform;
 
 /// Checks the signed container against the frozen release and package matrix.
 ///
 /// # Errors
 ///
 /// Returns an error for an unplanned release, package, package version, or
-/// system variant, or an ambiguous base-container definition.
+/// system variant, an ambiguous base-container definition, or a platform
+/// manifest outside the release matrix or on a platform the contract defers.
 pub(super) fn validate(release: &ContainerRelease, plan: &ReleasePlan) -> Result<()> {
+    // A deferred platform has no container claim, so nothing would qualify
+    // its manifest. Reject the bundle here, before registry authoring.
+    for descriptor in &release.oci.platform_manifests {
+        let platform = descriptor
+            .platform
+            .as_ref()
+            .context("container platform manifest lacks a platform")?;
+        let platform = release_platform(platform)?;
+        if plan.qualification.is_deferred(platform) {
+            bail!("container carries a {platform} manifest, but the release defers {platform}");
+        }
+    }
+
     if release.identity.release != plan.version {
         bail!("container release identity differs from the release plan");
     }
@@ -25,6 +40,23 @@ pub(super) fn validate(release: &ContainerRelease, plan: &ReleasePlan) -> Result
     }
 
     validate_image_attribute(&release.nix.definition.attribute, &plan.images)
+}
+
+/// Maps an OCI platform descriptor onto the closed release platform roster.
+///
+/// # Errors
+///
+/// Returns an error for any platform other than Linux amd64 or arm64.
+pub(super) fn release_platform(platform: &aos_oci_types::Platform) -> Result<Platform> {
+    match (platform.os.as_str(), platform.architecture.as_str()) {
+        ("linux", "amd64") => Ok(Platform::X86_64Linux),
+        ("linux", "arm64") => Ok(Platform::Aarch64Linux),
+        _ => bail!(
+            "container platform {}/{} is outside the release matrix",
+            platform.os,
+            platform.architecture
+        ),
+    }
 }
 
 fn validate_image_attribute(attribute: &str, images: &[ImagePlan]) -> Result<()> {

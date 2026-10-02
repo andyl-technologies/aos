@@ -429,6 +429,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   releaseQualification = import ./qualification {
     inherit lib;
     packageNames = qualificationPackageNames;
+    # The package inventory blocks exactly these platforms' cells.
+    inherit (pkgs.platformSupport) deferredPlatforms;
   };
   qualificationExecutorIdentity = "aos-${hostPlatform.system}-qualification-v1";
   qualificationReportScenario = testing.mkQualificationReportScenario {
