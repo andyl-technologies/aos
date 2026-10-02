@@ -166,6 +166,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   actual protected initialization, publication and live ACL changes. The
   existing immutable-read/live-policy test and mandatory formatting pass;
   strict native Clippy still reports unused incomplete T1 implementations.
+  The dictionary-reader candidate now passes the actual `chunk-codec` check,
+  including both exact guarded cases: every registered stored dictionary codec,
+  nested dependencies, malformed/cyclic/unavailable evidence, top-envelope
+  limits before dependency reads and actual current ACL revocation. The
+  `chunk-bomb-cap` check also passes. The reviewed helper returns genuine
+  dependency-first envelopes with verified plaintext lengths as ordinary data.
+  Native preload consumption and complete joint qualification remain required;
+  the reader stays on its task branch and T-CDC-1 remains open.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
@@ -514,6 +522,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The actual input-branch aggregate still rejects the absent `format_properties`
   target. This establishes no native codec, index or complete golden conformance;
   no task or milestone advances.
+  The isolated joint candidate now includes these published container inputs.
+  Its full core build, all 568 Nextest tests across ten binaries with zero skips
+  (run `b792ffd6-0906-46e3-b246-ad4c21b10edf`), strict all-target Clippy,
+  warnings/missing-docs rustdoc and final mandatory formatting pass. Temporary
+  consumers remain present through qualification and final formatting, then are
+  removed. Complete golden coverage and native milestone qualification remain
+  open; this combined core checkpoint advances no task or milestone.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
