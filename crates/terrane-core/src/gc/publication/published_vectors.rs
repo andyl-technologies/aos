@@ -3,6 +3,7 @@
 //! The reference file is a test input. No fixture is produced by decoding and
 //! re-encoding its own bytes; callers construct the described models separately.
 
+use crate::refs::{Locality, RefRecord};
 use alloc::{format, vec::Vec};
 
 const REFERENCE: &str = include_str!(concat!(
@@ -10,7 +11,7 @@ const REFERENCE: &str = include_str!(concat!(
     "/../../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md"
 ));
 
-/// Returns the exact bytes of one uniquely named positive reference witness.
+/// Returns the exact bytes of one uniquely named reference witness.
 ///
 /// # Panics
 /// Panics when the reference lacks the named section or its unique hex block,
@@ -46,4 +47,24 @@ pub(super) fn bytes(name: &str) -> Vec<u8> {
             u8::from_str_radix(pair, 16).unwrap()
         })
         .collect()
+}
+
+/// Constructs the earlier published whole head without decoding its wire bytes.
+pub(super) fn legacy_ref() -> RefRecord {
+    RefRecord {
+        commit: [
+            0xc8, 0xef, 0xdd, 0x18, 0x0d, 0xe6, 0xc5, 0xb1, 0xe0, 0x4a, 0xbe, 0x44, 0x35, 0x23,
+            0x8e, 0x89, 0x69, 0x77, 0x64, 0x97, 0x75, 0x96, 0x82, 0xc6, 0x09, 0x4a, 0x4c, 0xed,
+            0xe9, 0xc5, 0x79, 0xd6,
+        ],
+        seq: 1,
+        writer_epoch: 1,
+        home: Locality {
+            region: Some("eu-west-1".into()),
+            zone: None,
+            host: None,
+        },
+        policy: None,
+        candidate_id: None,
+    }
 }

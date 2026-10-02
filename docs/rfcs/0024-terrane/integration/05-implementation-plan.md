@@ -257,15 +257,21 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   tests for every format. D-80 adds independently reproduced D-77/D-78 byte
   witnesses and distinguishes decoder rejection from authority claims.
   Remaining format publication and joint native qualification are incomplete.
-  D-84 now publishes 21 independently encoded D-79 witnesses for original
+  D-84 now publishes 39 independently encoded D-79 witnesses for original
   controls, local/remote imports, trust rows, seeded configuration, policy,
-  backend registration and empty retained history. The hermetic
+  backend registration, retained heads, selected publication state and
+  pointers, raw import/trust/pin digests, and structural lineage/proof claims.
+  Two explicit missing-inventory checkpoint/genesis witnesses require decoder
+  rejection; their independent wire inputs bypass the rejecting encoders.
+  The reference generator `tests/terrane/publication_vectors.py` uses only
+  canonical CBOR primitives and the source-built `terrane-core` example
+  `reference_blake3` for raw digest bytes. The hermetic
   `checks.terrane.integration.publication-format-vectors` check reproduces
-  their complete reference section and runs four exact tests that encode
-  separately constructed models and decode the published bytes. It passes,
-  as do all 443 core tests, strict core Clippy and rustdoc. Every prior
-  golden byte remains unchanged. Import binding/trust, consumed pins/lineage,
-  other selected publication formats and complete corpus/fuzz qualification
+  their complete reference section and runs ten exact tests that encode
+  separately constructed models, decode positive published bytes and reject
+  the negative inputs. It passes, as do all 449 core tests, strict core Clippy
+  and rustdoc. Every prior golden byte remains unchanged. Remaining
+  collection/retirement formats and complete corpus/fuzz qualification
   remain required before T1's encoding freeze; `golden-vectors` stays pending.
   Mandatory repository formatting passes. The actual trunk aggregate remains
   red on the existing retirement-compatibility assertion in

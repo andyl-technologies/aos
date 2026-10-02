@@ -1480,7 +1480,11 @@ is added rather than editing history.
     local and remote imports, issuer/disclosure rows, seeded profiles,
     trusted configuration/registries/Guard snapshots, root/view policy,
     backend bindings/activation and empty retained history. Treat them as
-    positive format examples with no immutable descriptor or content identity.
+    format examples with no immutable descriptor or content identity. Extend
+    them with exact raw import/trust/pin digests, structural consumed lineage,
+    whole retained heads, state/pointers/proofs and next transactions. Label
+    missing-inventory genesis/checkpoint bodies as negative decoder witnesses
+    and construct their wire inputs without the rejecting record encoders.
     Keep all existing reference bytes unchanged. Remaining D-79 formats
     require their own witnesses before complete format conformance is claimed.
   - **Rationale:** D-79 registered new control and publication encodings,
