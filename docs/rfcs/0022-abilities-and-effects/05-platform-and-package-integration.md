@@ -25,6 +25,13 @@ system profile is also the host boot consumer's authoritative package profile.
 A subsequent boot preserves its committed operator changes and resumes pending
 work before accepting new desired state.
 
+Host and runtime operator modules can declare `aos.apm.desiredPackages` together
+with package-owned options. Typed selection precedes authenticated acquisition
+and complete native evaluation; package roots and their configured effects
+commit in the same generation. Built-in roles contribute their conditional
+package requirements through this selection, rather than assuming globally
+installed service payloads.
+
 Images retain the module library, source descriptors, package artifacts, and
 handlers required for their selected scopes. Early boot supplies the primitives
 needed to run the package runtime; package-owned operations describe subsequent

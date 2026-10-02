@@ -644,18 +644,24 @@ last fully evaluated host input.
 
 ## Understand the runtime boundary
 
-Optional workload packages are installed separately from the bootable server
-base. First install the package through the
-[machine-wide APM workflow](packages.md#manage-machine-wide-packages).
-Once its authenticated native module is admitted, host policy can configure
-and enable its service. For example, after installing `tailscale`, create
-`tailscale.nix`:
+Host policy can select a package and configure its native service in the same
+generation. Include this in boot-delivered `host.nix`, or create `tailscale.nix`
+as a runtime operator module:
 
 ```nix
 {
+  aos.apm.desiredPackages = ["tailscale"];
   aos.services.tailscale.enable = true;
 }
 ```
+
+The runtime first evaluates typed package selection, acquires authenticated
+package modules and their required artifacts, then evaluates the complete
+native configuration. The selected package need not already be installed.
+Package-specific options are checked only after its module is admitted;
+configuration and package selection commit together in the same generation.
+Dependency modules supply configuration interfaces; they do not globally
+install every available payload or sibling output.
 
 The change becomes live only after `aos-config.target` completes. The evaluator
 manifest alone is intermediate evidence; confirm the active generation and
@@ -673,14 +679,9 @@ apm config apply
 Use `apm config replace tailscale ./tailscale.nix` for subsequent changes.
 `apm switch` also applies the complete operator worktree. These commands retain
 immutable runtime module inputs; they do not rewrite the metadata delivery
-source. The same service configuration can be included in boot-delivered
-`host.nix` when its package module is already admitted.
-
-Runtime configuration applies to installed packages. A package name in
-`host.nix` does not currently install a new registry root automatically;
-`aos.apm.desiredPackages` is not consumed by the native runtime. Use APM to
-install new roots before enabling package-specific options. Disabling a service
-and removing its package are separate reviewed changes.
+source. [Machine-wide APM installation](packages.md#manage-machine-wide-packages)
+also supports separately managed desired-package files. Review the complete
+package selection and enabled effects before applying either workflow.
 
 Cloud-supplied public SSH keys are normalized into the typed
 `host.facts.ssh_authorized_keys` input. They are data, not implicit

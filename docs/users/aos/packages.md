@@ -129,8 +129,9 @@ falls back to cached metadata with a warning if that update fails. A change
 with no additions does not refresh metadata.
 
 Keep every explicit package you want in this file when adding a workload.
-After installing its native module, configure the service with
-[host policy](host-nix.md#understand-the-runtime-boundary); installing a payload
+Alternatively, [host policy](host-nix.md#understand-the-runtime-boundary) can
+select a package with `aos.apm.desiredPackages` and configure its native service
+in one generation, without a prior installation. Installing a payload alone
 does not substitute for reviewing and enabling its service configuration.
 
 The list is declarative. Explicit packages omitted from the next file are
