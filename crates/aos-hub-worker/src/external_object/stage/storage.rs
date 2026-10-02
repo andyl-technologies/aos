@@ -254,7 +254,7 @@ impl ExternalObjectGuard {
                 if matches!(
                     intent.operation,
                     ExternalStageOperation::CreateDestination { .. }
-                ) && head.stage.is_none()
+                ) && head.stage.is_none() && head.oci.is_none()
                 {
                     let owner_key = format!(
                         "external-stage/destination-owner/v1/{}",
@@ -613,6 +613,7 @@ fn initialize(object: &ObjectConfig, config: &config::Config, intent: &Intent) -
         incarnation: WireInteger::new(0),
         stage: None,
         copy: None,
+        oci: None,
     })
 }
 
@@ -858,8 +859,11 @@ pub(in crate::external_object) async fn verify_observable_destination(
     object: &ObjectConfig,
 ) -> Result<()> {
     ensure!(
-        head.pending.is_none() && head.stage.is_none() && head.observation.is_none()
-            && head.copy.is_none(),
+        head.pending.is_none()
+            && head.stage.is_none()
+            && head.observation.is_none()
+            && head.copy.is_none()
+            && head.oci.is_none(),
         "active physical turn blocks observation"
     );
     let visible = head
@@ -868,6 +872,10 @@ pub(in crate::external_object) async fn verify_observable_destination(
         .ok_or_else(|| anyhow::anyhow!("current positive publication proof absent"))?;
     visible.validate(head)?;
     match visible.kind {
+        super::super::state::VisibleKind::OciStage
+        | super::super::state::VisibleKind::OciDestination => {
+            anyhow::bail!("OCI visibility requires its own retained original and readback");
+        }
         super::super::state::VisibleKind::MetadataPut => {
             let receipt = super::super::storage::load_receipt(storage, &visible.operation_id)
                 .await?

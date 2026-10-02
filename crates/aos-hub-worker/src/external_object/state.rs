@@ -43,6 +43,8 @@ pub(super) struct Head {
     pub stage: Option<Box<super::stage::state::Session>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub copy: Option<super::copy::state::Owner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oci: Option<super::oci::state::Owner>,
 }
 
 /// One current positive publication pointer; receipts remain immutable KV records.
@@ -62,6 +64,8 @@ pub(super) struct VisibleReceipt {
 pub(super) enum VisibleKind {
     MetadataPut,
     DestinationClose,
+    OciStage,
+    OciDestination,
 }
 
 impl VisibleReceipt {
@@ -74,7 +78,9 @@ impl VisibleReceipt {
                 && self.incarnation.get() > 0
                 && match self.kind {
                     VisibleKind::MetadataPut => self.stage_configuration.is_none(),
-                    VisibleKind::DestinationClose => self
+                    VisibleKind::DestinationClose
+                    | VisibleKind::OciStage
+                    | VisibleKind::OciDestination => self
                         .stage_configuration
                         .as_ref()
                         .is_some_and(|value| digest_string(value)),
@@ -95,6 +101,7 @@ impl Head {
             self.pending.is_none()
                 && self.observation.is_none()
                 && self.copy.is_none()
+                && self.oci.is_none()
                 && self
                     .stage
                     .as_ref()
@@ -141,6 +148,7 @@ impl Head {
             incarnation: aos_hub_core::direct_upload::WireInteger::new(0),
             stage: None,
             copy: None,
+            oci: None,
         })
     }
 
@@ -178,11 +186,29 @@ impl Head {
         if let Some(stage) = &self.stage {
             stage.validate_shape(self)?;
         }
+
         if let Some(copy) = &self.copy {
             copy.validate()?;
-            ensure!(self.pending.is_none() && self.stage.is_none() && self.observation.is_none(),
-                "copy owner overlaps another physical workflow");
+            ensure!(
+                self.pending.is_none()
+                    && self.stage.is_none()
+                    && self.observation.is_none()
+                    && self.oci.is_none(),
+                "copy owner overlaps another physical workflow"
+            );
         }
+
+        if let Some(oci) = &self.oci {
+            oci.validate()?;
+            ensure!(
+                self.pending.is_none()
+                    && self.observation.is_none()
+                    && self.stage.is_none()
+                    && self.copy.is_none(),
+                "external OCI ownership conflicts with another physical owner"
+            );
+        }
+
         // The foundational floor's validator is private; new dispatch still
         // uses its full validation. Parsed terminal/replay state also rejects
         // incomplete/fork-shaped retained commitments rather than ignoring them.
@@ -220,6 +246,7 @@ impl Head {
                     && self.pending.is_none()
                     && self.stage.is_none()
                     && self.copy.is_none()
+                    && self.oci.is_none()
                     && self.visible_receipt.is_some(),
                 "corrupt observation slot"
             );
@@ -265,12 +292,26 @@ impl Head {
         intent.validate()?;
         ensure!(
             !matches!(intent.effect, super::protocol::Effect::Put { .. })
+                || self
+                    .visible_receipt
+                    .as_ref()
+                    .is_none_or(|visible| !matches!(
+                        visible.kind,
+                        VisibleKind::OciStage | VisibleKind::OciDestination
+                    )),
+            "ordinary metadata PUT cannot replace a retained OCI incarnation"
+        );
+        ensure!(
+            !matches!(intent.effect, super::protocol::Effect::Put { .. })
                 || self.incarnation.get() < super::stage::state::MAX_INCARNATION,
             "object incarnation capacity exhausted"
         );
         ensure!(
-            self.pending.is_none() && self.stage.is_none() && self.observation.is_none()
-                && self.copy.is_none(),
+            self.pending.is_none()
+                && self.stage.is_none()
+                && self.observation.is_none()
+                && self.copy.is_none()
+                && self.oci.is_none(),
             "unknown object turn blocks dispatch"
         );
         ensure!(

@@ -24,7 +24,7 @@ use aos_hub_core::service::RouteReservationKeyring as _;
 use clap::{Args, Parser, Subcommand};
 
 use aos_hub::db::Database;
-use aos_hub::server::{router, AppState};
+use aos_hub::server::{AppState, router};
 
 mod database_input;
 mod indexing;
@@ -122,6 +122,18 @@ enum Command {
         /// Read the independent physical guard challenge and reply key.
         #[arg(long, env = "HUB_DIRECT_UPLOAD_GUARD_KEY_FILE")]
         direct_upload_guard_key_file: Option<PathBuf>,
+        /// Read exact current External OCI profile and Worker identity pins.
+        #[arg(long, env = "HUB_EXTERNAL_OCI_PINS_FILE")]
+        external_oci_pins_file: Option<PathBuf>,
+        /// Read independently signed External OCI workflow acceptance artifacts.
+        #[arg(long, env = "HUB_EXTERNAL_OCI_ACCEPTANCE_FILE")]
+        external_oci_acceptance_file: Option<PathBuf>,
+        /// Read separately trusted External OCI reviewer public keys.
+        #[arg(long, env = "HUB_EXTERNAL_OCI_REVIEW_KEYS_FILE")]
+        external_oci_review_keys_file: Option<PathBuf>,
+        /// Read the existing External object guard role key, distinct from storage work.
+        #[arg(long, env = "HUB_EXTERNAL_OBJECT_GUARD_KEY_FILE")]
+        external_object_guard_key_file: Option<PathBuf>,
         /// Opt in to independently reviewed emulator-only OCI document SDK use.
         #[arg(long, env = "HUB_OCI_SDK_EMULATOR_ACCEPTANCE_FILE")]
         oci_sdk_emulator_acceptance_file: Option<PathBuf>,
@@ -972,6 +984,10 @@ async fn main() -> Result<()> {
             direct_upload_acceptance_file,
             direct_upload_review_keys_file,
             direct_upload_guard_key_file,
+            external_oci_pins_file,
+            external_oci_acceptance_file,
+            external_oci_review_keys_file,
+            external_object_guard_key_file,
             oci_sdk_emulator_acceptance_file,
             oci_sdk_emulator_review_keys_file,
             oci_sdk_emulator_guard_key_file,
@@ -1084,7 +1100,11 @@ async fn main() -> Result<()> {
                 let storage_key = aos_hub::auth::seal::read_secret_file(&storage_key_file)?;
                 let mut mirror_profiles = None;
                 let mut mirror_guard_key = None;
-                match (direct_upload_acceptance_file, direct_upload_review_keys_file, direct_upload_guard_key_file) {
+                match (
+                    direct_upload_acceptance_file,
+                    direct_upload_review_keys_file,
+                    direct_upload_guard_key_file,
+                ) {
                     (Some(acceptance_file), Some(review_keys_file), Some(guard_key_file)) => {
                         let acceptances = aos_hub::direct_upload::authority::NativeDirectUploadAcceptances::from_files_for_positive_recovery(
                             &acceptance_file, &review_keys_file,
@@ -1097,7 +1117,9 @@ async fn main() -> Result<()> {
                         mirror_guard_key = Some(guard_key);
                     }
                     (None, None, None) => {}
-                    _ => anyhow::bail!("direct acceptance, review keys and independent guard key files must be configured together"),
+                    _ => anyhow::bail!(
+                        "direct acceptance, review keys and independent guard key files must be configured together"
+                    ),
                 }
                 let work = aos_hub::storage_work::RemoteStorageWorkClient::new(
                     &worker_url,
@@ -1113,23 +1135,49 @@ async fn main() -> Result<()> {
                     None => work,
                 };
                 let work = match (
+                    external_oci_pins_file,
+                    external_oci_acceptance_file,
+                    external_oci_review_keys_file,
+                    external_object_guard_key_file,
+                ) {
+                    (Some(pins), Some(acceptance), Some(reviewers), Some(guard_file)) => {
+                        let guard = aos_hub::auth::seal::read_secret_file(&guard_file)?;
+                        let runtime = aos_hub::storage_work::ExternalOciRuntime::from_files(
+                            &pins,
+                            &acceptance,
+                            &reviewers,
+                            &guard,
+                        )?;
+                        work.with_external_oci_runtime(runtime)?
+                    }
+                    (None, None, None, None) => work,
+                    _ => anyhow::bail!(
+                        "External OCI profile, acceptance, reviewer and guard files must be configured together"
+                    ),
+                };
+                let work = match (
                     oci_sdk_emulator_acceptance_file,
                     oci_sdk_emulator_review_keys_file,
                     oci_sdk_emulator_guard_key_file,
                 ) {
                     (Some(acceptance), Some(reviewers), Some(guard_file)) => {
-                        let accepted = aos_hub::oci_sdk_emulation::NativeOciSdkEmulation::from_files(
-                            &acceptance,
-                            &reviewers,
-                            &deployment_id,
-                            &worker_url,
-                            hybrid_origin_url.as_deref().context("OCI SDK Native origin missing")?,
-                        )?;
+                        let accepted =
+                            aos_hub::oci_sdk_emulation::NativeOciSdkEmulation::from_files(
+                                &acceptance,
+                                &reviewers,
+                                &deployment_id,
+                                &worker_url,
+                                hybrid_origin_url
+                                    .as_deref()
+                                    .context("OCI SDK Native origin missing")?,
+                            )?;
                         let guard = aos_hub::auth::seal::read_secret_file(&guard_file)?;
                         work.with_oci_sdk_emulation(accepted, &guard)?
                     }
                     (None, None, None) => work,
-                    _ => anyhow::bail!("OCI emulator acceptance, reviewer and independent guard key files must be configured together"),
+                    _ => anyhow::bail!(
+                        "OCI emulator acceptance, reviewer and independent guard key files must be configured together"
+                    ),
                 };
                 work.check_console_ready().await?;
                 Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
@@ -1139,6 +1187,13 @@ async fn main() -> Result<()> {
                         && direct_upload_review_keys_file.is_none()
                         && direct_upload_guard_key_file.is_none(),
                     "direct runtime qualification requires hybrid topology"
+                );
+                anyhow::ensure!(
+                    external_oci_pins_file.is_none()
+                        && external_oci_acceptance_file.is_none()
+                        && external_oci_review_keys_file.is_none()
+                        && external_object_guard_key_file.is_none(),
+                    "External OCI qualification requires hybrid topology"
                 );
                 anyhow::ensure!(
                     oci_sdk_emulator_acceptance_file.is_none()
@@ -1307,17 +1362,42 @@ async fn main() -> Result<()> {
                 release_publication_keys_file,
                 qualification_keys_file,
             ) {
-                (Some(deployment_id), Some(key_id), Some(seed_path), Some(channel_key_id), Some(channel_seed_path), Some(publication_keys_path), Some(qualification_keys_path)) => {
-                    let seed = signing_input::read_signing_seed_file(&seed_path)
-                        .with_context(|| format!("reading release receipt key at {}", seed_path.display()))?;
+                (
+                    Some(deployment_id),
+                    Some(key_id),
+                    Some(seed_path),
+                    Some(channel_key_id),
+                    Some(channel_seed_path),
+                    Some(publication_keys_path),
+                    Some(qualification_keys_path),
+                ) => {
+                    let seed =
+                        signing_input::read_signing_seed_file(&seed_path).with_context(|| {
+                            format!("reading release receipt key at {}", seed_path.display())
+                        })?;
                     let channel_seed = signing_input::read_signing_seed_file(&channel_seed_path)
-                        .with_context(|| format!("reading channel receipt key at {}", channel_seed_path.display()))?;
+                        .with_context(|| {
+                            format!(
+                                "reading channel receipt key at {}",
+                                channel_seed_path.display()
+                            )
+                        })?;
                     let publication_keys_source = std::fs::read_to_string(&publication_keys_path)
-                        .with_context(|| format!("reading publication keys at {}", publication_keys_path.display()))?;
+                        .with_context(|| {
+                        format!(
+                            "reading publication keys at {}",
+                            publication_keys_path.display()
+                        )
+                    })?;
                     let publication_keys = serde_json::from_str(&publication_keys_source)
                         .context("parsing publication public-key map")?;
-                    let qualification_keys_source = std::fs::read_to_string(&qualification_keys_path)
-                        .with_context(|| format!("reading qualification keys at {}", qualification_keys_path.display()))?;
+                    let qualification_keys_source =
+                        std::fs::read_to_string(&qualification_keys_path).with_context(|| {
+                            format!(
+                                "reading qualification keys at {}",
+                                qualification_keys_path.display()
+                            )
+                        })?;
                     let qualification_keys = serde_json::from_str(&qualification_keys_source)
                         .context("parsing qualification public-key map")?;
                     app_state.release_evidence = Some(Arc::new(
@@ -2065,7 +2145,9 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             mode,
         )
         .await?;
-        println!("hybrid Worker deployed; direct uploads require independent acceptance for its final version");
+        println!(
+            "hybrid Worker deployed; direct uploads require independent acceptance for its final version"
+        );
         return Ok(());
     }
     if let WorkerCommand::ActivateHybridDirectUpload(args) = &command {
@@ -2098,7 +2180,9 @@ async fn run_worker_command(_root: &Option<PathBuf>, command: WorkerCommand) -> 
             &acceptance,
         )
         .await?;
-        println!("reviewed mirror purposes published for the unchanged Worker; runtime qualification remains independently required");
+        println!(
+            "reviewed mirror purposes published for the unchanged Worker; runtime qualification remains independently required"
+        );
         return Ok(());
     }
     if let WorkerCommand::InspectHybridDirectUpload(args) = &command {
@@ -2436,11 +2520,7 @@ fn spawn_oci_provider_inventory(
             {
                 Ok(stats) => {
                     continuation = stats.continuation;
-                    if continuation.is_some() {
-                        1
-                    } else {
-                        60
-                    }
+                    if continuation.is_some() { 1 } else { 60 }
                 }
                 Err(error) => {
                     tracing::warn!(error = %format!("{error:#}"), "OCI provider inventory pass failed");
@@ -2785,16 +2865,18 @@ mod production_vm_coverage {
         assert_eq!(restore.confirm_database_instance, "hub-v2");
         assert_eq!(restore.confirm_deployment_id, "deployment-1");
 
-        assert!(Cli::try_parse_from([
-            "aos-hub",
-            "worker",
-            "restore-bookmark",
-            "--url",
-            "https://aos.andyl.org",
-            "--bookmark",
-            "0000007b-0000b26e",
-        ])
-        .is_err());
+        assert!(
+            Cli::try_parse_from([
+                "aos-hub",
+                "worker",
+                "restore-bookmark",
+                "--url",
+                "https://aos.andyl.org",
+                "--bookmark",
+                "0000007b-0000b26e",
+            ])
+            .is_err()
+        );
     }
 
     fn collect_native_leaves(
@@ -2842,16 +2924,20 @@ mod production_vm_coverage {
                 operation: "workflow::capture_postgres",
                 fixture: "async fn actual_postgres_capture_and_private_sqlite_readback_preserve_originals()",
             },
-            "snapshot derive-object-requirements" => NativeCommandQualification::OfflineSnapshotCustody {
-                dispatch_arm: "SnapshotCommand::DeriveObjectRequirements",
-                operation: "inventory::derive_object_requirements",
-                fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
-            },
-            "snapshot verify-object-requirements" => NativeCommandQualification::OfflineSnapshotCustody {
-                dispatch_arm: "SnapshotCommand::VerifyObjectRequirements",
-                operation: "inventory::verify_object_requirements",
-                fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
-            },
+            "snapshot derive-object-requirements" => {
+                NativeCommandQualification::OfflineSnapshotCustody {
+                    dispatch_arm: "SnapshotCommand::DeriveObjectRequirements",
+                    operation: "inventory::derive_object_requirements",
+                    fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
+                }
+            }
+            "snapshot verify-object-requirements" => {
+                NativeCommandQualification::OfflineSnapshotCustody {
+                    dispatch_arm: "SnapshotCommand::VerifyObjectRequirements",
+                    operation: "inventory::verify_object_requirements",
+                    fixture: "async fn actual_sqlite_capture_projects_private_requirements_and_refuses_mismatch()",
+                }
+            }
             "snapshot verify-capture" => NativeCommandQualification::OfflineSnapshotCustody {
                 dispatch_arm: "SnapshotCommand::VerifyCapture",
                 operation: "workflow::verify",

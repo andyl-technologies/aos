@@ -9,30 +9,31 @@
 //! deleted.
 
 mod direct;
+mod external_allocation;
 mod manifest;
 
 use std::collections::BTreeMap;
 
 use aos_oci_types::{RepositoryName, Sha256Digest};
-use axum::body::{to_bytes, Body};
-use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
+use axum::body::{Body, to_bytes};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use futures_util::TryStreamExt as _;
 use uuid::Uuid;
 
 use super::{
-    add_distribution_version, distribution_error_response, unavailable_response,
-    DistributionErrorCode, OciRequest, RegistryRecord, RpcService,
+    DistributionErrorCode, OciRequest, RegistryRecord, RpcService, add_distribution_version,
+    distribution_error_response, unavailable_response,
 };
 use crate::db::{
-    oci_blob_object_key, AppendOciUploadChunk, BeginOciUpload, BindingWriteRevisionRecord,
-    ClaimOciUpload, CompleteOciUpload, Database, OciBlobClaimOutcome, OciRepositoryRecord,
-    OciUploadChunkRecord, OciUploadCleanupRecord, SurfacePlacementRecord, SurfaceTarget,
-    OCI_MAX_SESSION_SECONDS,
+    AppendOciUploadChunk, BeginOciUpload, BindingWriteRevisionRecord, ClaimOciUpload,
+    CompleteOciUpload, Database, OCI_MAX_SESSION_SECONDS, OciBlobClaimOutcome, OciRepositoryRecord,
+    OciUploadChunkRecord, OciUploadCleanupRecord, OciUploadRecord, SurfacePlacementRecord,
+    SurfaceTarget, oci_blob_object_key,
 };
 use crate::hybrid_ingress::{
-    oci_chunk_range_matches, HybridOciChunkAdmission, HybridOciChunkCompletionRequest,
-    HYBRID_UPLOAD_PHASE_HEADER, MAX_HYBRID_OCI_CHUNK_BYTES,
+    HYBRID_UPLOAD_PHASE_HEADER, HybridOciChunkAdmission, HybridOciChunkCompletionRequest,
+    MAX_HYBRID_OCI_CHUNK_BYTES, oci_chunk_range_matches,
 };
 use crate::surface_write::{MultipartAbortOutcome, PartTag, SurfaceWriteProvider};
 
@@ -106,11 +107,27 @@ async fn cleanup_upload_staging(
             candidate.upload.staging_binding_write_revision,
         )
         .await?;
-        let writer = writers
-            .placement_writer_at_revision(&placement, &revision)
-            .await?;
+        let mut writer = None;
         for chunk in &candidate.chunks {
+            let claim = db.claim_terminal_oci_chunk_cleanup(candidate, chunk).await?;
+            if writers.cleanup_oci_upload_chunk(&claim).await? {
+                claim.check_current(db).await?;
+                continue;
+            }
+
+            if writer.is_none() {
+                writer = Some(
+                    writers
+                        .placement_writer_at_revision(&placement, &revision)
+                        .await?,
+                );
+            }
+            let writer = writer
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("OCI cleanup writer absent"))?;
+            claim.check_current(db).await?;
             writer.delete(&chunk.staging_object_key).await?;
+            claim.check_current(db).await?;
         }
     }
     db.complete_oci_upload_cleanup(&candidate.upload.id, candidate.upload.resource_version, now)
@@ -231,6 +248,24 @@ impl RpcService {
                 );
             }
             return match phase {
+                crate::hybrid_ingress::HYBRID_OCI_FINAL_AUTHORIZATION_PHASE => {
+                    if !matches!(to_bytes(body, 1).await, Ok(bytes) if bytes.is_empty()) {
+                        return upload_error(
+                            StatusCode::BAD_REQUEST,
+                            DistributionErrorCode::BlobUploadInvalid,
+                            "OCI final authorization requires an empty request",
+                        );
+                    }
+                    match self
+                        .authorize_hybrid_oci_final(
+                            registry, repository, &owner, upload_id, authority, &headers, query,
+                        )
+                        .await
+                    {
+                        Ok(admission) => axum::Json(admission).into_response(),
+                        Err(response) => response,
+                    }
+                }
                 "preflight" => {
                     if !matches!(to_bytes(body, 1).await, Ok(bytes) if bytes.is_empty()) {
                         return upload_error(
@@ -240,7 +275,9 @@ impl RpcService {
                         );
                     }
                     match self
-                        .preflight_hybrid_oci_chunk(repository, &owner, upload_id)
+                        .preflight_hybrid_oci_chunk(
+                            registry, repository, &owner, upload_id, authority, &headers,
+                        )
                         .await
                     {
                         Ok(admission) => axum::Json(admission).into_response(),
@@ -254,7 +291,8 @@ impl RpcService {
                     match request {
                         Some(request) => {
                             self.complete_hybrid_oci_chunk(
-                                repository, &owner, upload_id, &headers, request,
+                                registry, repository, &owner, upload_id, authority, &headers,
+                                request,
                             )
                             .await
                         }
@@ -293,8 +331,10 @@ impl RpcService {
                     .await
             }
             (OciRequest::BlobUpload { upload_id, .. }, Method::PUT) => {
-                self.finalize_blob_upload(repository, &owner, &upload_id, &headers, query, body)
-                    .await
+                self.finalize_blob_upload(
+                    registry, repository, &owner, &upload_id, authority, &headers, query, body,
+                )
+                .await
             }
             (OciRequest::Manifest { reference, .. }, Method::PUT) => {
                 self.put_manifest(registry, repository, owner, reference, headers, body)
@@ -313,13 +353,161 @@ impl RpcService {
         }
     }
 
-    async fn preflight_hybrid_oci_chunk(
+    async fn authorize_hybrid_oci_final(
         &self,
+        registry: &RegistryRecord,
         repository: &OciRepositoryRecord,
         owner: &str,
         upload_id: &str,
+        authority: &str,
+        headers: &HeaderMap,
+        query: Option<&str>,
+    ) -> Result<crate::hybrid_ingress::HybridOciFinalAdmission, Response> {
+        let authenticated = manifest::authority::HybridManifestAuthority::resolve(
+            self, registry, repository, authority, headers,
+        )
+        .await?;
+        let upload = self
+            .db
+            .oci_upload(upload_id, owner, owner, now())
+            .await
+            .map_err(|_| unavailable_response("OCI upload is unavailable", false))?
+            .filter(|upload| {
+                upload.registry_id == registry.id
+                    && upload.repository_id == repository.id
+                    && matches!(upload.state.as_str(), "active" | "completing" | "complete")
+            })
+            .ok_or_else(upload_unknown)?;
+        let digest = parse_final_digest(query.unwrap_or_default()).map_err(|message| {
+            upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::DigestInvalid,
+                message,
+            )
+        })?;
+        let completion_only = upload.state != "active";
+        if completion_only && upload.final_digest != Some(digest) {
+            return Err(upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::DigestInvalid,
+                "declared digest differs from the frozen completion",
+            ));
+        }
+
+        if upload.state == "complete" {
+            // Cleanup may retire physical locators. An exact terminal replay
+            // uses durable business evidence and never selects a new writer.
+            let blob = self
+                .db
+                .oci_blob_for_repository(repository.id, digest)
+                .await
+                .map_err(|_| unavailable_response("OCI completed catalogue is unavailable", false))?
+                .filter(|blob| {
+                    blob.registry_id == upload.registry_id
+                        && blob.digest == digest
+                        && blob.byte_size == upload.uploaded_size
+                        && blob.object_key == oci_blob_object_key(digest)
+                        && blob.lifecycle_state == "active"
+                })
+                .ok_or_else(|| unavailable_response("OCI completed catalogue differs", false))?;
+            let object = self
+                .db
+                .surface_object(blob.surface_object_id)
+                .await
+                .map_err(|_| unavailable_response("OCI completed object is unavailable", false))?
+                .filter(|object| {
+                    object.registry_id == Some(upload.registry_id)
+                        && object.object_key == blob.object_key
+                        && object.content_hash == Some(digest.encoded())
+                        && object.size.and_then(|size| u64::try_from(size).ok())
+                            == Some(upload.uploaded_size)
+                        && object.object_kind == "immutable"
+                        && object.lifecycle_state == "active"
+                });
+            if object.is_none() {
+                return Err(unavailable_response("OCI completed object differs", false));
+            }
+            authenticated.recheck(self, registry, repository).await?;
+            return Ok(crate::hybrid_ingress::HybridOciFinalAdmission {
+                external: false,
+                completion_only: true,
+            });
+        }
+
+        let placement = if completion_only {
+            let (placement, _) = exact_upload_placement(
+                &self.db,
+                upload.registry_id,
+                upload.materialization_placement_id,
+                upload.materialization_binding_id,
+                upload.materialization_binding_write_revision,
+            )
+            .await
+            .map_err(|_| {
+                unavailable_response("OCI frozen completion writer is unavailable", false)
+            })?;
+            if upload.materialization_placement_resource_version != Some(placement.resource_version)
+            {
+                return Err(unavailable_response(
+                    "OCI frozen completion placement changed",
+                    false,
+                ));
+            }
+            placement
+        } else {
+            match upload.staging_placement_id {
+                Some(_) => {
+                    exact_upload_placement(
+                        &self.db,
+                        upload.registry_id,
+                        upload.staging_placement_id,
+                        upload.staging_binding_id,
+                        upload.staging_binding_write_revision,
+                    )
+                    .await
+                    .map_err(|_| unavailable_response("OCI frozen writer is unavailable", false))?
+                    .0
+                }
+                None => self
+                    .effective_surface_writer(SurfaceTarget::Registry(registry.id))
+                    .await
+                    .map_err(|_| {
+                        unavailable_response("OCI current writer is unavailable", false)
+                    })?,
+            }
+        };
+        let binding = self
+            .db
+            .binding(placement.binding_id)
+            .await
+            .map_err(|_| unavailable_response("OCI binding is unavailable", false))?
+            .ok_or_else(|| unavailable_response("OCI binding disappeared", false))?;
+        let external = !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2");
+        if !external && (!binding.is_instance_default || binding.kind != "deployment_r2") {
+            return Err(unavailable_response(
+                "OCI writer kind is unsupported",
+                false,
+            ));
+        }
+        // This is a bodyless routing decision after current Publish permission,
+        // not a reservation, provider proof or mutation permission.
+        authenticated.recheck(self, registry, repository).await?;
+        Ok(crate::hybrid_ingress::HybridOciFinalAdmission {
+            external,
+            completion_only,
+        })
+    }
+
+    async fn preflight_hybrid_oci_chunk(
+        &self,
+        registry: &RegistryRecord,
+        repository: &OciRepositoryRecord,
+        owner: &str,
+        upload_id: &str,
+        authority: &str,
+        headers: &HeaderMap,
     ) -> Result<HybridOciChunkAdmission, Response> {
-        let upload = match self.db.oci_upload(upload_id, owner, owner, now()).await {
+        let mut upload = match self.db.oci_upload(upload_id, owner, owner, now()).await {
             Ok(Some(upload))
                 if upload.repository_id == repository.id && upload.state == "active" =>
             {
@@ -363,6 +551,17 @@ impl RpcService {
             ));
         }
 
+        // Reject an intrinsically invalid declared range before reserving the
+        // private writer or issuing a control that can create a provider object.
+        // The positive completion still checks the independently counted body.
+        if !content_range_admits(headers, upload.uploaded_size, maximum_chunk_bytes) {
+            return Err(upload_error(
+                StatusCode::BAD_REQUEST,
+                DistributionErrorCode::BlobUploadInvalid,
+                "OCI chunk range is invalid for the current upload allowance",
+            ));
+        }
+
         let (placement, revision) = match upload.staging_placement_id {
             Some(_) => exact_upload_placement(
                 &self.db,
@@ -402,14 +601,86 @@ impl RpcService {
             .await
             .map_err(|_| unavailable_response("upload binding is unavailable", false))?
             .ok_or_else(|| unavailable_response("upload binding is unavailable", false))?;
-        if !binding.is_instance_default || binding.kind != "deployment_r2" {
+        let external = !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2");
+        if (!binding.is_instance_default || binding.kind != "deployment_r2") && !external {
             return Err(unavailable_response(
                 "hybrid OCI upload binding is unsupported",
                 false,
             ));
         }
 
+        let (staging_object_key, external) = if external {
+            use crate::storage_authority::external_object::oci::{
+                OciUploadOriginal, OciWriterOriginal, admission::ExternalOciStagePreparation,
+            };
+            let authenticated = manifest::authority::HybridManifestAuthority::resolve(
+                self, registry, repository, authority, headers,
+            )
+            .await?;
+            let write_authority = self
+                .db
+                .surface_write_authority(SurfaceTarget::Registry(upload.registry_id))
+                .await
+                .map_err(|_| unavailable_response("OCI writer authority unavailable", false))?
+                .ok_or_else(|| unavailable_response("OCI writer authority absent", false))?;
+            let writer = OciWriterOriginal::from_records(
+                &OciUploadOriginal::from_record(&upload)
+                    .map_err(|_| unavailable_response("OCI upload original invalid", false))?,
+                &placement,
+                &binding,
+                &revision,
+                &write_authority,
+            )
+            .map_err(|_| unavailable_response("external OCI writer is not ready", false))?;
+            let iam = authenticated.statements(self, registry, repository).await?;
+            upload = self
+                .db
+                .reserve_external_oci_staging(
+                    &upload,
+                    &placement,
+                    &writer,
+                    iam,
+                    authenticated.expires_at(),
+                    now(),
+                )
+                .await
+                .map_err(|_| {
+                    unavailable_response("external OCI writer reservation refused", false)
+                })?;
+            let key = ExternalOciStagePreparation::chunk_key(&upload, ordinal)
+                .map_err(|_| unavailable_response("OCI operation identity invalid", false))?;
+            let permit = self
+                .surface_write
+                .prepare_external_oci_stage(&ExternalOciStagePreparation {
+                    upload: upload.clone(),
+                    actor: authenticated
+                        .external_original()
+                        .map_err(|_| unavailable_response("OCI current actor invalid", false))?,
+                    writer,
+                    staging_key: key.clone(),
+                    ordinal,
+                    offset: upload.uploaded_size,
+                    prior_sha256: upload.sha256.clone(),
+                    maximum_bytes: maximum_chunk_bytes,
+                    expected: None,
+                })
+                .await
+                .map_err(|_| {
+                    unavailable_response("external OCI workflow qualification unavailable", false)
+                })?;
+            authenticated.recheck(self, registry, repository).await?;
+            (key, Some(permit))
+        } else {
+            (
+                format!(
+                    "oci/uploads/{upload_id}/chunks/{ordinal}-{}",
+                    Uuid::new_v4().simple()
+                ),
+                None,
+            )
+        };
         Ok(HybridOciChunkAdmission {
+            external,
             upload_resource_version: upload.resource_version,
             offset: upload.uploaded_size,
             ordinal,
@@ -419,19 +690,18 @@ impl RpcService {
             binding_id: revision.binding_id,
             binding_write_revision: revision.revision,
             placement_prefix: placement.prefix,
-            staging_object_key: format!(
-                "oci/uploads/{upload_id}/chunks/{ordinal}-{}",
-                Uuid::new_v4().simple()
-            ),
+            staging_object_key,
             sha256_state: upload.sha256,
         })
     }
 
     async fn complete_hybrid_oci_chunk(
         &self,
+        registry: &RegistryRecord,
         repository: &OciRepositoryRecord,
         owner: &str,
         upload_id: &str,
+        authority: &str,
         headers: &HeaderMap,
         request: HybridOciChunkCompletionRequest,
     ) -> Response {
@@ -487,15 +757,20 @@ impl RpcService {
             );
         }
         let current = match self
-            .preflight_hybrid_oci_chunk(repository, owner, upload_id)
+            .preflight_hybrid_oci_chunk(registry, repository, owner, upload_id, authority, headers)
             .await
         {
             Ok(current) => current,
             Err(response) => return response,
         };
         let mut expected = current;
-        expected.staging_object_key = admission.staging_object_key.clone();
-        if *admission != expected {
+        let external_permit = expected.external.take();
+        let mut received = admission.clone();
+        received.external = None;
+        if external_permit.is_none() {
+            expected.staging_object_key = admission.staging_object_key.clone();
+        }
+        if received != expected {
             return upload_error(
                 StatusCode::CONFLICT,
                 DistributionErrorCode::BlobUploadInvalid,
@@ -511,19 +786,40 @@ impl RpcService {
             }
             _ => return unavailable_response("OCI staging placement changed", false),
         };
-        let fetcher = match self.surface.placement_fetcher(&placement).await {
-            Ok(fetcher) => fetcher,
-            Err(_) => return unavailable_response("OCI staging object is unavailable", false),
-        };
-        let evidence = fetcher
-            .inventory_evidence_bounded(&admission.staging_object_key, request.byte_size)
-            .await;
-        let evidence = match evidence {
-            Ok(Some(evidence)) => evidence,
-            _ => return unavailable_response("OCI staging object is unverified", false),
-        };
-        if Some(evidence.size) != expected_size || evidence.sha256 != *chunk_digest.as_bytes() {
-            return unavailable_response("OCI staging object differs from the chunk", false);
+        if let Some(permit) = &external_permit {
+            let proof = match self.surface_write.external_oci_stage_readback(permit).await {
+                Ok(proof) => proof,
+                Err(_) => return unavailable_response("external OCI stage is unsettled", false),
+            };
+            let reply = match proof.for_original(&permit.request.original) {
+                Ok(reply) if reply.pending_effect_digest.is_none() => reply,
+                _ => return unavailable_response("external OCI stage proof differs", false),
+            };
+            if !reply.closed.as_ref().is_some_and(|closed| {
+                closed.bytes.size == request.byte_size
+                    && closed.bytes.sha256 == request.chunk_sha256
+            }) || reply.upload_sha256 != request.next_sha256_state
+            {
+                return unavailable_response(
+                    "external OCI staged bytes differ from completion",
+                    false,
+                );
+            }
+        } else {
+            let fetcher = match self.surface.placement_fetcher(&placement).await {
+                Ok(fetcher) => fetcher,
+                Err(_) => return unavailable_response("OCI staging object is unavailable", false),
+            };
+            let evidence = fetcher
+                .inventory_evidence_bounded(&admission.staging_object_key, request.byte_size)
+                .await;
+            let evidence = match evidence {
+                Ok(Some(evidence)) => evidence,
+                _ => return unavailable_response("OCI staging object is unverified", false),
+            };
+            if Some(evidence.size) != expected_size || evidence.sha256 != *chunk_digest.as_bytes() {
+                return unavailable_response("OCI staging object differs from the chunk", false);
+            }
         }
 
         let append = AppendOciUploadChunk {
@@ -546,7 +842,47 @@ impl RpcService {
             next_sha256: request.next_sha256_state,
             now: now(),
         };
-        match self.db.append_oci_upload_chunk(&append).await {
+        let current_authority = if external_permit.is_some() {
+            let authenticated = match manifest::authority::HybridManifestAuthority::resolve(
+                self, registry, repository, authority, headers,
+            )
+            .await
+            {
+                Ok(authenticated) => authenticated,
+                Err(response) => return response,
+            };
+            let permit = external_permit.as_ref().map(|permit| &permit.request);
+            if permit.is_none_or(|permit| {
+                authenticated.external_original().map_or(true, |actor| {
+                    actor.account != permit.actor.account || actor.token_id != permit.actor.token_id
+                })
+            }) {
+                return unavailable_response("OCI current actor changed during readback", false);
+            }
+            let mut statements = match authenticated.statements(self, registry, repository).await {
+                Ok(statements) => statements,
+                Err(response) => return response,
+            };
+            let Some(permit) = permit else {
+                return unavailable_response("OCI original disappeared during readback", false);
+            };
+            match self.db.external_oci_writer_statements(
+                registry.id,
+                &placement,
+                &permit.original.writer,
+            ) {
+                Ok(writer) => statements.extend(writer),
+                Err(_) => return unavailable_response("OCI writer changed during readback", false),
+            }
+            statements
+        } else {
+            Vec::new()
+        };
+        match self
+            .db
+            .append_oci_upload_chunk_checked(&append, current_authority)
+            .await
+        {
             Ok(upload) => upload_progress_response(
                 StatusCode::ACCEPTED,
                 repository,
@@ -582,7 +918,15 @@ impl RpcService {
                 );
             }
         };
-        if self.hybrid_delivery {
+        let external = if self.hybrid_delivery {
+            match self.hybrid_external_oci_writer(registry).await {
+                Ok(external) => external,
+                Err(response) => return response,
+            }
+        } else {
+            false
+        };
+        if self.hybrid_delivery && !external {
             return self
                 .begin_direct_blob_upload(registry, repository, authority, headers, query, body)
                 .await;
@@ -595,6 +939,18 @@ impl RpcService {
             );
         }
 
+        let authenticated = if external {
+            match manifest::authority::HybridManifestAuthority::resolve(
+                self, registry, repository, authority, headers,
+            )
+            .await
+            {
+                Ok(value) => Some(value),
+                Err(response) => return response,
+            }
+        } else {
+            None
+        };
         let body = match to_bytes(body, 1).await {
             Ok(body) if body.is_empty() => body,
             Ok(_) | Err(_) => {
@@ -666,7 +1022,57 @@ impl RpcService {
             now: current,
             expires_at: current + UPLOAD_SESSION_SECONDS,
         };
-        match self.db.begin_oci_upload(&begin).await {
+        let allocated = if let Some(authenticated) = authenticated {
+            let mut statements = match authenticated.statements(self, registry, repository).await {
+                Ok(statements) => statements,
+                Err(response) => return response,
+            };
+            let placement = match self
+                .effective_surface_writer(SurfaceTarget::Registry(registry.id))
+                .await
+            {
+                Ok(placement) => placement,
+                Err(_) => return unavailable_response("OCI current writer unavailable", false),
+            };
+            let binding = match self.db.binding(placement.binding_id).await {
+                Ok(Some(binding)) => binding,
+                _ => return unavailable_response("OCI current binding unavailable", false),
+            };
+            let revision = match self
+                .db
+                .placement_publication_write_revision(placement.id)
+                .await
+            {
+                Ok(Some(revision)) => revision,
+                _ => return unavailable_response("OCI write revision unavailable", false),
+            };
+            let write_authority = match self
+                .db
+                .surface_write_authority(SurfaceTarget::Registry(registry.id))
+                .await
+            {
+                Ok(Some(value)) => value,
+                _ => return unavailable_response("OCI write authority unavailable", false),
+            };
+            let writer = match crate::storage_authority::external_object::oci::OciWriterOriginal::from_registry_records(
+                registry.id, &placement, &binding, &revision, &write_authority) {
+                Ok(writer) => writer, Err(_) => return unavailable_response("OCI external writer changed", false),
+            };
+            match self
+                .db
+                .external_oci_writer_statements(registry.id, &placement, &writer)
+            {
+                Ok(writer) => statements.extend(writer),
+                Err(_) => return unavailable_response("OCI external writer changed", false),
+            }
+            if let Err(response) = authenticated.recheck(self, registry, repository).await {
+                return response;
+            }
+            self.db.begin_oci_upload_checked(&begin, statements).await
+        } else {
+            self.db.begin_oci_upload(&begin).await
+        };
+        match allocated {
             Ok(upload) => upload_progress_response(
                 StatusCode::ACCEPTED,
                 repository,
@@ -920,13 +1326,27 @@ impl RpcService {
 
     async fn finalize_blob_upload(
         &self,
+        registry: &RegistryRecord,
         repository: &OciRepositoryRecord,
         owner: &str,
         upload_id: &str,
+        authority: &str,
         headers: &HeaderMap,
         query: Option<&str>,
         body: Body,
     ) -> Response {
+        let authenticated = if self.hybrid_delivery {
+            match manifest::authority::HybridManifestAuthority::resolve(
+                self, registry, repository, authority, headers,
+            )
+            .await
+            {
+                Ok(value) => Some(value),
+                Err(response) => return response,
+            }
+        } else {
+            None
+        };
         let digest = match parse_final_digest(query.unwrap_or_default()) {
             Ok(digest) => digest,
             Err(message) => {
@@ -1025,6 +1445,21 @@ impl RpcService {
                 },
             };
         let claim_now = now();
+        let completion_expires_at = claim_now + COMPLETION_LEASE_SECONDS;
+        // External physical originals own the initial upload cutoff. Entering
+        // completing must never turn a near-expiry upload into fresh permission,
+        // including empty blobs that have no private chunk reservation.
+        let completion_expires_at = if self.hybrid_delivery {
+            match self.db.binding(materialization_revision.binding_id).await {
+                Ok(Some(binding)) if binding.kind != "deployment_r2" => {
+                    completion_expires_at.min(upload.expires_at)
+                }
+                Ok(Some(_)) => completion_expires_at,
+                _ => return unavailable_response("materialization binding is unavailable", false),
+            }
+        } else {
+            completion_expires_at
+        };
         let claim = match self
             .db
             .claim_oci_upload(&ClaimOciUpload {
@@ -1039,7 +1474,7 @@ impl RpcService {
                 materialization_binding_write_revision: materialization_revision.revision,
                 digest,
                 now: claim_now,
-                lease_expires_at: claim_now + COMPLETION_LEASE_SECONDS,
+                lease_expires_at: completion_expires_at,
             })
             .await
         {
@@ -1174,6 +1609,12 @@ impl RpcService {
                                         claimed.uploaded_size,
                                         &chunks,
                                         None,
+                                        Some((
+                                            &claimed,
+                                            authenticated.as_ref(),
+                                            registry,
+                                            repository,
+                                        )),
                                     )
                                     .await
                                 {
@@ -1203,19 +1644,34 @@ impl RpcService {
                 }
             }
         };
+        let current = match self
+            .external_oci_completion_statements(
+                &claimed,
+                registry,
+                repository,
+                authenticated.as_ref(),
+            )
+            .await
+        {
+            Ok(current) => current,
+            Err(response) => return response,
+        };
         let completed = self
             .db
-            .complete_oci_upload(&CompleteOciUpload {
-                upload_id: upload_id.to_string(),
-                writer_id: owner.to_string(),
-                token_id: owner.to_string(),
-                expected_resource_version: claimed.resource_version,
-                digest,
-                byte_size: claimed.uploaded_size,
-                surface_object_id: evidence.surface_object_id,
-                placement_id: evidence.placement_id,
-                now: now(),
-            })
+            .complete_oci_upload_checked(
+                &CompleteOciUpload {
+                    upload_id: upload_id.to_string(),
+                    writer_id: owner.to_string(),
+                    token_id: owner.to_string(),
+                    expected_resource_version: claimed.resource_version,
+                    digest,
+                    byte_size: claimed.uploaded_size,
+                    surface_object_id: evidence.surface_object_id,
+                    placement_id: evidence.placement_id,
+                    now: now(),
+                },
+                current,
+            )
             .await;
         let completed = match completed {
             Ok(completed) => completed,
@@ -1250,6 +1706,70 @@ impl RpcService {
         completed_upload_response(repository, digest)
     }
 
+    async fn external_oci_completion_statements(
+        &self,
+        upload: &OciUploadRecord,
+        registry: &RegistryRecord,
+        repository: &OciRepositoryRecord,
+        authenticated: Option<&manifest::authority::HybridManifestAuthority>,
+    ) -> Result<Vec<crate::backend::CheckedStatement>, Response> {
+        if !self.hybrid_delivery {
+            return Ok(Vec::new());
+        }
+        let (placement, revision) = exact_upload_placement(
+            &self.db,
+            upload.registry_id,
+            upload.materialization_placement_id,
+            upload.materialization_binding_id,
+            upload.materialization_binding_write_revision,
+        )
+        .await
+        .map_err(|_| unavailable_response("OCI completion writer unavailable", false))?;
+        let binding = self
+            .db
+            .binding(placement.binding_id)
+            .await
+            .map_err(|_| unavailable_response("OCI completion binding unavailable", false))?
+            .ok_or_else(|| unavailable_response("OCI completion binding absent", false))?;
+        if binding.is_instance_default && binding.kind == "deployment_r2" {
+            return Ok(Vec::new());
+        }
+        let authenticated = authenticated.ok_or_else(|| {
+            unavailable_response("external OCI completion lacks current actor", false)
+        })?;
+        let authority = self
+            .db
+            .surface_write_authority(SurfaceTarget::Registry(upload.registry_id))
+            .await
+            .map_err(|_| unavailable_response("OCI current writer unavailable", false))?
+            .ok_or_else(|| unavailable_response("OCI current writer absent", false))?;
+        let writer =
+            crate::storage_authority::external_object::oci::OciWriterOriginal::from_records(
+                &crate::storage_authority::external_object::oci::OciUploadOriginal::from_record(
+                    upload,
+                )
+                .map_err(|_| unavailable_response("OCI original upload invalid", false))?,
+                &placement,
+                &binding,
+                &revision,
+                &authority,
+            )
+            .map_err(|_| unavailable_response("OCI current writer differs", false))?;
+        if upload.materialization_placement_resource_version != Some(placement.resource_version) {
+            return Err(unavailable_response(
+                "OCI completion placement changed",
+                false,
+            ));
+        }
+        let mut statements = authenticated.statements(self, registry, repository).await?;
+        statements.extend(
+            self.db
+                .external_oci_writer_statements(upload.registry_id, &placement, &writer)
+                .map_err(|_| unavailable_response("OCI completion writer fence invalid", false))?,
+        );
+        Ok(statements)
+    }
+
     async fn materialize_blob(
         &self,
         registry_id: i64,
@@ -1260,54 +1780,120 @@ impl RpcService {
         byte_size: u64,
         chunks: &[OciUploadChunkRecord],
         managed_effect: Option<&crate::hybrid_ingress::OciDocumentEffect>,
+        business: Option<(
+            &OciUploadRecord,
+            Option<&manifest::authority::HybridManifestAuthority>,
+            &RegistryRecord,
+            &OciRepositoryRecord,
+        )>,
     ) -> Result<(crate::db::OciUploadedObjectEvidence, Option<String>), ()> {
         let path = oci_blob_object_key(digest);
         if self.hybrid_delivery {
-            let composed = if let Some(effect) = managed_effect {
-                self.surface_write
-                    .compose_oci_document(
-                        placement,
-                        revision,
-                        staging_placement,
-                        &path,
-                        chunks,
-                        digest,
-                        byte_size,
-                        effect,
-                    )
+            let binding = self
+                .db
+                .binding(placement.binding_id)
+                .await
+                .map_err(|_| ())?
+                .ok_or(())?;
+            let external =
+                !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2");
+            let (evidence, external_preparation) = if external {
+                use crate::storage_authority::external_object::oci::{
+                    OciUploadOriginal, OciWriterOriginal,
+                    materialization::ExternalOciMaterialization,
+                };
+                let (upload, authenticated, registry, repository) = business.ok_or(())?;
+                let authenticated = authenticated.ok_or(())?;
+                let write_authority = self
+                    .db
+                    .surface_write_authority(SurfaceTarget::Registry(registry_id))
                     .await
+                    .map_err(|_| ())?
+                    .ok_or(())?;
+                let writer = OciWriterOriginal::from_records(
+                    &OciUploadOriginal::from_record(upload).map_err(|_| ())?,
+                    placement,
+                    &binding,
+                    revision,
+                    &write_authority,
+                )
+                .map_err(|_| ())?;
+                let preparation = ExternalOciMaterialization::new(
+                    upload.clone(),
+                    authenticated.external_original().map_err(|_| ())?,
+                    writer,
+                    chunks.to_vec(),
+                    digest,
+                    authenticated
+                        .statements(self, registry, repository)
+                        .await
+                        .map_err(|_| ())?,
+                )
+                .map_err(|_| ())?;
+                let evidence = self
+                    .surface_write
+                    .materialize_external_oci(&preparation)
+                    .await
+                    .map_err(|_| ())?;
+                authenticated
+                    .recheck(self, registry, repository)
+                    .await
+                    .map_err(|_| ())?;
+                (evidence, Some(preparation))
             } else {
-                self.surface_write
-                    .compose_oci_blob(
-                        placement,
-                        revision,
-                        staging_placement,
-                        &path,
-                        chunks,
-                        digest,
-                        byte_size,
-                    )
-                    .await
+                let composed = if let Some(effect) = managed_effect {
+                    self.surface_write
+                        .compose_oci_document(
+                            placement,
+                            revision,
+                            staging_placement,
+                            &path,
+                            chunks,
+                            digest,
+                            byte_size,
+                            effect,
+                        )
+                        .await
+                } else {
+                    self.surface_write
+                        .compose_oci_blob(
+                            placement,
+                            revision,
+                            staging_placement,
+                            &path,
+                            chunks,
+                            digest,
+                            byte_size,
+                        )
+                        .await
+                };
+                let evidence = composed.map_err(|_| ())?.ok_or(())?;
+                (evidence, None)
             };
-            let evidence = composed.map_err(|_| ())?.ok_or(())?;
             if evidence.size != i64::try_from(byte_size).map_err(|_| ())?
                 || evidence.sha256 != *digest.as_bytes()
             {
                 return Err(());
             }
             let etag = evidence.strong_etag.ok_or(())?;
-            let record = self
-                .db
-                .record_oci_uploaded_object(
-                    registry_id,
-                    placement.id,
-                    digest,
-                    byte_size,
-                    &etag,
-                    now(),
-                )
-                .await
-                .map_err(|_| ())?;
+            let record = if let Some(preparation) = &external_preparation {
+                self.db
+                    .record_external_oci_uploaded_object(preparation, &etag)
+                    .await
+                    .map_err(|_| ())?
+            } else {
+                self.db
+                    .record_oci_uploaded_object(
+                        registry_id,
+                        placement.id,
+                        digest,
+                        byte_size,
+                        &etag,
+                        now(),
+                    )
+                    .await
+                    .map_err(|_| ())?
+            };
             return Ok((record, None));
         }
         let writer = self
@@ -1410,6 +1996,17 @@ impl RpcService {
             .await
             .map_err(|_| ())?;
         if self.hybrid_delivery {
+            let binding = self
+                .db
+                .binding(placement.binding_id)
+                .await
+                .map_err(|_| ())?
+                .ok_or(())?;
+            if !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2") {
+                // Missing SQL evidence does not infer provider absence. The
+                // actual OCI producer recovers its permanent original next.
+                return Ok(None);
+            }
             let evidence = fetcher
                 .inventory_evidence_bounded(&path, byte_size.max(1))
                 .await
@@ -1624,6 +2221,28 @@ fn parse_final_digest(query: &str) -> Result<Sha256Digest, &'static str> {
     digest.ok_or("final upload digest is required")
 }
 
+fn content_range_admits(headers: &HeaderMap, offset: u64, maximum_bytes: u64) -> bool {
+    let Some(value) = headers.get(header::CONTENT_RANGE) else {
+        return true;
+    };
+    let Ok(value) = value.to_str() else {
+        return false;
+    };
+    let value = value.strip_prefix("bytes ").unwrap_or(value);
+    let Some((start, end)) = value.split_once('-') else {
+        return false;
+    };
+    let (Ok(start), Ok(end)) = (start.parse::<u64>(), end.parse::<u64>()) else {
+        return false;
+    };
+    !value.contains('+')
+        && start == offset
+        && end
+            .checked_sub(start)
+            .and_then(|last| last.checked_add(1))
+            .is_some_and(|length| length > 0 && length <= maximum_bytes)
+}
+
 fn content_range_matches(headers: &HeaderMap, offset: u64, length: usize) -> bool {
     let range = headers
         .get(header::CONTENT_RANGE)
@@ -1721,6 +2340,27 @@ mod tests {
         assert!(parse_start_query("mount=sha256%3A00&from=source").is_err());
         assert!(parse_start_query("size=1&size=2").is_err());
         assert!(parse_start_query("unknown=value").is_err());
+    }
+
+    #[test]
+    fn declared_chunk_ranges_refuse_before_private_admission() {
+        let mut headers = HeaderMap::new();
+        assert!(content_range_admits(&headers, 4, 4));
+        for value in [
+            "bytes 3-6",
+            "bytes 4-8",
+            "bytes 4-3",
+            "bytes 4-7/8",
+            "bytes 4-18446744073709551615",
+            "bytes +4-7",
+            "invalid",
+        ] {
+            headers.insert(header::CONTENT_RANGE, HeaderValue::from_str(value).unwrap());
+            assert!(!content_range_admits(&headers, 4, 4), "{value}");
+        }
+        headers.insert(header::CONTENT_RANGE, HeaderValue::from_static("bytes 4-7"));
+        assert!(content_range_admits(&headers, 4, 4));
+        assert!(!content_range_admits(&headers, 4, 0));
     }
 
     #[test]

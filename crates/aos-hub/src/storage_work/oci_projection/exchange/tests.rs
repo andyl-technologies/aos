@@ -102,6 +102,7 @@ fn fixture() -> (OciProjectionLookup, StorageWorkKey, OciProjectionReply) {
     let request = OciProjectionLookup {
         version: 1,
         protected_profile_digest: "c".repeat(64),
+            source: aos_hub_core::oci_projection::OciProjectionSource::Managed,
         deployment_id: "exchange-deployment".into(),
         issuer: MirrorGuardIssuer {
             source_digest: "a".repeat(64),

@@ -17,6 +17,13 @@ pub(crate) use copy::{
 mod delete_config;
 mod deletion;
 mod observation;
+pub(crate) mod oci;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use oci::stage as stage_oci;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use oci::fetch as fetch_oci;
 mod protocol;
 mod stage;
 mod state;
@@ -47,6 +54,12 @@ pub(crate) use observation::fetch_semantic as fetch_semantic_observation;
 #[cfg(target_arch = "wasm32")]
 pub use storage::ExternalObjectGuard;
 
+/// Selects only the independently installed external physical guard role.
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn projection_guard_key(env: &worker::Env) -> anyhow::Result<aos_hub_core::storage_work::StorageWorkKey> {
+    storage::key(env)
+}
+
 #[cfg(target_arch = "wasm32")]
 pub(crate) use stage::resolve_external_profiles;
 #[cfg(target_arch = "wasm32")]
@@ -68,3 +81,9 @@ pub(crate) use stage::{
 mod frozen_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use oci::source_fetch as fetch_oci_source;
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) use oci::cleanup_fetch as fetch_oci_cleanup;

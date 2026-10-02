@@ -15,7 +15,7 @@ use crate::service::RpcService;
 
 use super::{now, unavailable_response, Response};
 
-pub(super) struct HybridManifestAuthority {
+pub(in crate::oci::upload) struct HybridManifestAuthority {
     authority: String,
     headers: HeaderMap,
     actor: DirectActorSlot,
@@ -24,7 +24,7 @@ pub(super) struct HybridManifestAuthority {
 }
 
 impl HybridManifestAuthority {
-    pub(super) async fn resolve(
+    pub(in crate::oci::upload) async fn resolve(
         service: &RpcService,
         registry: &RegistryRecord,
         repository: &OciRepositoryRecord,
@@ -43,7 +43,7 @@ impl HybridManifestAuthority {
         })
     }
 
-    pub(super) async fn recheck(
+    pub(in crate::oci::upload) async fn recheck(
         &self,
         service: &RpcService,
         registry: &RegistryRecord,
@@ -65,7 +65,7 @@ impl HybridManifestAuthority {
         Ok(())
     }
 
-    pub(super) async fn statements(
+    pub(in crate::oci::upload) async fn statements(
         &self,
         service: &RpcService,
         registry: &RegistryRecord,
@@ -108,7 +108,17 @@ impl HybridManifestAuthority {
             .map_err(|_| unavailable_response("current manifest permission changed", false))
     }
 
-    pub(super) fn expires_at(&self) -> i64 {
+    pub(in crate::oci::upload) fn expires_at(&self) -> i64 {
         self.expires_at
+    }
+
+    pub(in crate::oci::upload) fn external_original(
+        &self,
+    ) -> anyhow::Result<crate::storage_authority::external_object::oci::OciActorOriginal> {
+        crate::storage_authority::external_object::oci::OciActorOriginal::from_authenticated(
+            self.actor.clone(),
+            self.token_id.clone(),
+            self.expires_at,
+        )
     }
 }

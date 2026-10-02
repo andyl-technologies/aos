@@ -5,7 +5,7 @@
 //! every referenced object must already be linked to this repository and have
 //! exact evidence on the selected writer placement.
 
-mod authority;
+pub(in crate::oci::upload) mod authority;
 mod hybrid;
 
 use std::collections::BTreeMap;
@@ -15,22 +15,22 @@ use aos_oci_types::{
     Annotations, Descriptor, ImageConfig, ImageManifest, ManifestReference, MediaType, Platform,
     Sha256Digest,
 };
-use axum::body::{to_bytes, Body};
-use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+use axum::body::{Body, to_bytes};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse as _, Response};
 use uuid::Uuid;
 
 use super::{
-    add_distribution_version, cleanup_upload_staging, completed_upload_response,
-    distribution_error_response, exact_upload_placement, now, unavailable_response,
-    DistributionErrorCode, OciRepositoryRecord, RpcService, SurfaceTarget,
-    COMPLETION_LEASE_SECONDS, UPLOAD_SESSION_SECONDS,
+    COMPLETION_LEASE_SECONDS, DistributionErrorCode, OciRepositoryRecord, RpcService,
+    SurfaceTarget, UPLOAD_SESSION_SECONDS, add_distribution_version, cleanup_upload_staging,
+    completed_upload_response, distribution_error_response, exact_upload_placement, now,
+    unavailable_response,
 };
 use crate::db::{
-    oci_blob_object_key, AppendOciUploadChunk, BeginOciUpload, ClaimOciUpload, CompleteOciUpload,
+    AppendOciUploadChunk, BeginOciUpload, ClaimOciUpload, CompleteOciUpload,
     IndexOciRepositoryCatalog, OciBlobClaimOutcome, OciCatalogObject, OciCatalogProjection,
     OciImageConfigProjection, OciLayerProjection, OciUploadChunkRecord, OciUploadCleanupRecord,
-    OciUploadRecord,
+    OciUploadRecord, oci_blob_object_key,
 };
 
 const MAX_MANIFEST_BYTES: usize = crate::hybrid_ingress::MAX_HYBRID_OCI_MANIFEST_BYTES;
@@ -166,6 +166,9 @@ impl RpcService {
                     upload,
                     &chunks,
                     managed_effect.as_ref(),
+                    registry,
+                    repository,
+                    authority.as_ref(),
                 )
                 .await
             {
@@ -179,7 +182,7 @@ impl RpcService {
             let fetcher = match self.surface.placement_fetcher(&placement).await {
                 Ok(fetcher) => fetcher,
                 Err(_) => {
-                    return unavailable_response("final manifest reader is unavailable", false)
+                    return unavailable_response("final manifest reader is unavailable", false);
                 }
             };
             let final_proof = match fetcher
@@ -191,7 +194,7 @@ impl RpcService {
                     return unavailable_response(
                         "canonical manifest readback is unavailable or unsettled",
                         false,
-                    )
+                    );
                 }
             };
             // A positive staging read cannot publish a later materialization.
@@ -224,6 +227,26 @@ impl RpcService {
                             false,
                         );
                     };
+                    let current_actor = match authority.external_original() {
+                        Ok(actor) => actor,
+                        Err(_) => return unavailable_response("OCI current actor invalid", false),
+                    };
+                    for proof in proofs.iter().filter(|proof| proof.admission().is_some()) {
+                        if let crate::oci_projection::OciProjectionSource::External {
+                            original,
+                            ..
+                        } = proof.source()
+                        {
+                            if original.actor.account != current_actor.account
+                                || original.actor.token_id != current_actor.token_id
+                            {
+                                return unavailable_response(
+                                    "OCI retained root actor changed",
+                                    false,
+                                );
+                            }
+                        }
+                    }
                     let statements = match authority.statements(self, registry, repository).await {
                         Ok(statements) => statements,
                         Err(response) => return response,
@@ -442,6 +465,9 @@ impl RpcService {
         upload: OciUploadRecord,
         chunks: &[OciUploadChunkRecord],
         managed_effect: Option<&crate::hybrid_ingress::OciDocumentEffect>,
+        registry: &crate::db::RegistryRecord,
+        repository: &OciRepositoryRecord,
+        authenticated: Option<&authority::HybridManifestAuthority>,
     ) -> Result<(), Response> {
         let claim_now = now();
         let revision = self
@@ -570,6 +596,7 @@ impl RpcService {
                             claimed.uploaded_size,
                             chunks,
                             managed_effect,
+                            Some((&claimed, authenticated, registry, repository)),
                         )
                         .await
                         .map_err(|_| {
@@ -594,19 +621,25 @@ impl RpcService {
                 ));
             }
         };
+        let current = self
+            .external_oci_completion_statements(&claimed, registry, repository, authenticated)
+            .await?;
         let completed = self
             .db
-            .complete_oci_upload(&CompleteOciUpload {
-                upload_id: claimed.id.clone(),
-                writer_id: owner.to_string(),
-                token_id: owner.to_string(),
-                expected_resource_version: claimed.resource_version,
-                digest,
-                byte_size: claimed.uploaded_size,
-                surface_object_id: evidence.surface_object_id,
-                placement_id: evidence.placement_id,
-                now: now(),
-            })
+            .complete_oci_upload_checked(
+                &CompleteOciUpload {
+                    upload_id: claimed.id.clone(),
+                    writer_id: owner.to_string(),
+                    token_id: owner.to_string(),
+                    expected_resource_version: claimed.resource_version,
+                    digest,
+                    byte_size: claimed.uploaded_size,
+                    surface_object_id: evidence.surface_object_id,
+                    placement_id: evidence.placement_id,
+                    now: now(),
+                },
+                current,
+            )
             .await
             .map_err(|_| {
                 unavailable_response("manifest completion could not be committed", false)
@@ -722,7 +755,7 @@ impl RpcService {
                 )?;
             }
             ParsedDocument::Config(_) => {
-                return Err(manifest_invalid("image config is not a manifest root"))
+                return Err(manifest_invalid("image config is not a manifest root"));
             }
             ParsedDocument::Index(index) => {
                 root_digest = root.digest;

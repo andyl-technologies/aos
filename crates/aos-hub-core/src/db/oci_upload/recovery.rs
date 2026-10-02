@@ -701,6 +701,26 @@ mod tests {
         );
         assert_eq!(candidates[0].chunks, vec![append.chunk]);
 
+        let cleanup_claim = restarted
+            .claim_terminal_oci_chunk_cleanup(&candidates[0], &candidates[0].chunks[0])
+            .await
+            .unwrap();
+        cleanup_claim.check_current(&restarted).await.unwrap();
+
+        let mut changed_candidate = candidates[0].clone();
+        changed_candidate.upload.resource_version += 1;
+        assert!(restarted
+            .claim_terminal_oci_chunk_cleanup(&changed_candidate, &changed_candidate.chunks[0])
+            .await
+            .is_err());
+
+        let mut changed_chunk = candidates[0].chunks[0].clone();
+        changed_chunk.digest = Sha256Digest::digest(b"substituted chunk");
+        assert!(restarted
+            .claim_terminal_oci_chunk_cleanup(&candidates[0], &changed_chunk)
+            .await
+            .is_err());
+
         let current_placement = restarted
             .surface_placement(placement_id)
             .await
@@ -765,6 +785,14 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+        assert_eq!(
+            restarted
+                .oci_upload_chunks(&cleanup_claim.upload().id)
+                .await
+                .unwrap(),
+            candidates[0].chunks
+        );
+        assert!(cleanup_claim.check_current(&restarted).await.is_err());
     }
 
     #[tokio::test]

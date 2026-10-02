@@ -802,6 +802,12 @@ impl RpcService {
         {
             // Direct initial control must authenticate its original live owner
             // and empty body before even creating a repository in the catalog.
+            match self.hybrid_external_oci_writer(&registry).await {
+                Ok(true) => return self.begin_external_oci_allocation_request(
+                    &registry, repository_name, &resolved.authority, &headers, query, body).await,
+                Ok(false) => {},
+                Err(response) => return response,
+            }
             return self
                 .begin_direct_oci_allocation_request(
                     &registry,

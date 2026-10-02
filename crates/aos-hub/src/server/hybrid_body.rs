@@ -200,6 +200,11 @@ fn oci_limit(
         (OciRequest::BlobUpload { .. }, &Method::PATCH, Some("complete")) if query.is_none() => {
             Ok(16 * 1024)
         }
+        (
+            OciRequest::BlobUpload { .. },
+            &Method::PATCH,
+            Some(aos_hub_core::hybrid_ingress::HYBRID_OCI_FINAL_AUTHORIZATION_PHASE),
+        ) if valid_final_digest_query(query) => Ok(0),
         (OciRequest::Manifest { .. }, &Method::PUT, Some("authorize")) if query.is_none() => Ok(0),
         (OciRequest::Manifest { .. }, &Method::PUT, Some("preflight")) if query.is_none() => {
             Ok(2048)
@@ -214,6 +219,19 @@ fn oci_limit(
         | (OciRequest::BlobUpload { .. }, &Method::PUT | &Method::DELETE, None) => Ok(0),
         _ => Err(StatusCode::BAD_REQUEST),
     }
+}
+
+// This permission-only phase carries no body and selects no provider effect.
+// Its signed query must retain the same single digest as the later final PUT.
+fn valid_final_digest_query(query: Option<&str>) -> bool {
+    let Some(query) = query else { return false };
+    let mut fields = url::form_urlencoded::parse(query.as_bytes());
+    let Some((name, value)) = fields.next() else {
+        return false;
+    };
+    name == "digest"
+        && fields.next().is_none()
+        && aos_oci_types::Sha256Digest::parse(&value).is_ok()
 }
 
 fn valid_manifest_query(query: Option<&str>) -> bool {

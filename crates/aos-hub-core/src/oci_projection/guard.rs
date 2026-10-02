@@ -9,12 +9,12 @@
 //! of each bounded canonical envelope. This accommodates the existing 4 MiB OCI
 //! metadata limit without enlarging generic storage-work plan limits.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use aos_oci_types::Descriptor;
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use sha2::{Digest as _, Sha256};
 
-use super::{OciDocumentProjection, MAX_OCI_PROJECTION_BYTES};
+use super::{MAX_OCI_PROJECTION_BYTES, OciDocumentProjection};
 use crate::{
     hybrid_ingress::HybridOciManifestAdmission,
     mirror_guard::MirrorGuardIssuer,
@@ -38,6 +38,12 @@ pub struct OciProjectionLookup {
     pub deployment_id: String,
     /// Exact independently accepted provider/runtime/policy commitment.
     pub protected_profile_digest: String,
+    /// Historical Managed omission or exact external OCI original and closure.
+    #[serde(
+        default,
+        skip_serializing_if = "super::OciProjectionSource::is_managed"
+    )]
+    pub source: super::OciProjectionSource,
     /// Independently selected implementation identity.
     pub issuer: MirrorGuardIssuer,
     /// Independently selected conservative UTC uncertainty.
@@ -112,6 +118,8 @@ impl OciProjectionLookup {
             "OCI projection key is invalid"
         );
         self.descriptor.validate()?;
+        self.source
+            .validate(&self.key, &self.descriptor, &self.protected_profile_digest)?;
         ensure!(
             self.descriptor.size > 0
                 && self.descriptor.size <= aos_oci_types::limits::MAX_JSON_BYTES as u64
@@ -121,11 +129,40 @@ impl OciProjectionLookup {
             "OCI projection descriptor is invalid"
         );
         if let Some(admission) = &self.admission {
-            ensure!(
-                (crate::keymap::r2_key(&admission.placement_prefix, &admission.staging_object_key)
-                    == self.key
-                    || crate::keymap::r2_key(
+            let prefix = match &self.source {
+                crate::oci_projection::OciProjectionSource::Managed => {
+                    ensure!(
+                        admission.external.is_none(),
+                        "Managed OCI proof carries an External admission"
+                    );
+                    admission.placement_prefix.clone()
+                }
+                crate::oci_projection::OciProjectionSource::External { original, .. } => {
+                    ensure!(
+                        admission.managed_effect.is_none()
+                            && original.writer.placement_prefix == admission.placement_prefix
+                            && (self.key == original.scope.full_key)
+                            && (self.key
+                                == crate::keymap::r2_key(
+                                    &crate::keymap::r2_key(
+                                        &original.writer.binding_prefix,
+                                        &admission.placement_prefix
+                                    ),
+                                    &crate::db::oci_blob_object_key(self.descriptor.digest)
+                                )
+                                || original.upload.upload_id == admission.upload_id),
+                        "external OCI document admission selected another physical original"
+                    );
+                    crate::keymap::r2_key(
+                        &original.writer.binding_prefix,
                         &admission.placement_prefix,
+                    )
+                }
+            };
+            ensure!(
+                (crate::keymap::r2_key(&prefix, &admission.staging_object_key) == self.key
+                    || crate::keymap::r2_key(
+                        &prefix,
                         &crate::db::oci_blob_object_key(self.descriptor.digest)
                     ) == self.key)
                     && admission.byte_size == self.descriptor.size
@@ -210,6 +247,12 @@ impl VerifiedOciProjection {
     #[must_use]
     pub fn admission(&self) -> Option<&HybridOciManifestAdmission> {
         self.0.request.admission.as_ref()
+    }
+
+    /// Returns the separately authenticated physical producer identity.
+    #[must_use]
+    pub fn source(&self) -> &crate::oci_projection::OciProjectionSource {
+        &self.0.request.source
     }
 
     /// Returns the independently parsed document metadata.
@@ -327,17 +370,13 @@ fn validate_reply_checked(
         reply.request == *original
             && reply.object.key == original.key
             && reply.object.size == original.descriptor.size
-            && reply
-                .object
-                .provider_version
-                .as_deref()
-                .is_some_and(crate::storage_work::valid_provider_version)
             && crate::surface_write::strong_if_match_etag(&reply.object.etag)? == reply.object.etag
             && original.issued_at <= reply.observed_at
             && latest_now.is_none_or(|now| reply.observed_at <= now)
             && reply.observed_at < original.expires_at,
         "OCI projection reply differs from its exact original"
     );
+    original.source.validate_object(&reply.object)?;
     reply.projection.validate(original.descriptor.media_type)?;
     bounded(reply, MAX_OCI_PROJECTION_BYTES)?;
     Ok(())

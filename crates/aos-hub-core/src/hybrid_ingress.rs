@@ -35,6 +35,25 @@ pub const HYBRID_NATIVE_DURATION_HEADER: &str = "x-aos-hybrid-native-ms";
 pub const HYBRID_UPLOAD_PHASE_HEADER: &str = "x-aos-hybrid-upload-phase";
 /// Maximum required R2 placements in one bounded publication admission.
 pub const MAX_HYBRID_PUBLICATION_PLACEMENTS: usize = 32;
+/// Selects the final-body adapter after bodyless current OCI authorization.
+///
+/// This response grants no provider effect. A nonempty body requires its own
+/// exact chunk admission, and final publication retains its existing claim.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HybridOciFinalAdmission {
+    /// Uses the bounded External stream adapter instead of managed staging.
+    pub external: bool,
+    /// Allows only an empty completion replay of the exact frozen digest.
+    ///
+    /// This routing hint grants no new chunk admission or provider effect.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub completion_only: bool,
+}
+
+/// Signed bodyless authorization phase for an OCI final upload request.
+pub const HYBRID_OCI_FINAL_AUTHORIZATION_PHASE: &str = "authorize-final";
+
 /// Maximum accepted body for one OCI resumable upload chunk.
 pub const MAX_HYBRID_OCI_CHUNK_BYTES: usize = 20 * 1024 * 1024;
 
@@ -311,6 +330,9 @@ pub struct HybridCachePartCompletionRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HybridOciChunkAdmission {
+    /// Separately signed real OCI admission for an accepted external writer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external: Option<crate::storage_authority::external_object::oci::admission::ExternalOciStagePermit>,
     /// Upload row version that the chunk completion must compare and advance.
     pub upload_resource_version: i64,
     /// Current contiguous byte count before this chunk.
@@ -941,6 +963,35 @@ mod tests {
     }
 
     #[test]
+    fn oci_final_authorization_uses_the_signed_phase_grammar() {
+        let key = HybridIngressKey::new([7; 32]).unwrap();
+        let mut request = assertion();
+        request.method = "PATCH".into();
+        request.path_and_query = format!(
+            "/v2/repository/blobs/uploads/upload-id?digest=sha256:{}",
+            "a".repeat(64),
+        );
+        request.body_sha256 = body_sha256(b"");
+        request.upload_phase = Some(HYBRID_OCI_FINAL_AUTHORIZATION_PHASE.into());
+
+        let signed = key.sign(&request).unwrap();
+        let verified = key
+            .verify(
+                &signed,
+                "deployment-1",
+                "PATCH",
+                &request.path_and_query,
+                b"",
+                110,
+            )
+            .unwrap();
+        assert_eq!(verified, request);
+
+        request.upload_phase = Some("authorize_final".into());
+        assert_eq!(key.sign(&request), Err(HybridIngressError::Malformed));
+    }
+
+    #[test]
     fn request_context_is_bound_to_method_path_body_and_deployment() {
         let key = HybridIngressKey::new([7; 32]).unwrap();
         let signed = key.sign(&assertion()).unwrap();
@@ -1190,5 +1241,27 @@ mod tests {
 
         let signed = key.sign_delivery(&request, target.clone()).unwrap();
         assert_eq!(key.verify_delivery(&signed, &request, 110), Ok(target));
+    }
+
+    #[test]
+    fn legacy_final_admission_bytes_remain_exact_and_completion_only_is_explicit() {
+        let legacy = br#"{"external":true}"#;
+        let admission: HybridOciFinalAdmission = serde_json::from_slice(legacy).unwrap();
+        assert!(!admission.completion_only);
+        assert_eq!(serde_json::to_vec(&admission).unwrap(), legacy);
+
+        let completion = HybridOciFinalAdmission {
+            external: true,
+            completion_only: true,
+        };
+        let encoded = serde_json::to_vec(&completion).unwrap();
+        assert_eq!(encoded, br#"{"external":true,"completion_only":true}"#);
+        assert_eq!(serde_json::from_slice::<HybridOciFinalAdmission>(&encoded).unwrap(), completion);
+        assert!(serde_json::from_slice::<HybridOciFinalAdmission>(
+            br#"{"external":true,"completion_only":"true"}"#
+        ).is_err());
+        assert!(serde_json::from_slice::<HybridOciFinalAdmission>(
+            br#"{"external":true,"completion_only":true,"provider_permission":true}"#
+        ).is_err());
     }
 }

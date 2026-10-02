@@ -53,6 +53,18 @@ impl DurableObject for ExternalObjectGuard {
 
     async fn fetch(&self, mut request: Request) -> worker::Result<Response> {
         let path = request.url()?.path().to_owned();
+        if path == "/oci-cleanup" {
+            return self.oci_cleanup_fetch(&mut request).await;
+        }
+        if path == "/oci-source" {
+            return self.oci_source_fetch(&mut request).await;
+        }
+        if path == "/oci-turn" {
+            return self.oci_fetch(&mut request).await;
+        }
+        if path == "/oci-document-projection" {
+            return self.oci_projection_fetch(&mut request).await;
+        }
         if path == "/frozen-cleanup-ready" {
             // Binding custody holds its own gate during this observation.
             // An active physical turn can need that binding; refuse a busy

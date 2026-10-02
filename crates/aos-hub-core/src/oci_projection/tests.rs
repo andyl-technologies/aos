@@ -69,6 +69,7 @@ fn independent_readback_authenticates_a_near_four_mib_projection() {
     let request = OciProjectionLookup {
         version: 1,
         protected_profile_digest: "c".repeat(64),
+            source: crate::oci_projection::OciProjectionSource::Managed,
         deployment_id: "deployment".into(),
         issuer: MirrorGuardIssuer {
             source_digest: "a".repeat(64),

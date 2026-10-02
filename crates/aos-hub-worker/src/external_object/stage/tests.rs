@@ -426,6 +426,7 @@ impl Fixture {
             incarnation: WireInteger::new(0),
             stage: None,
             copy: None,
+            oci: None,
         }
     }
 
@@ -1065,3 +1066,31 @@ mod observation;
 mod boxed_journal;
 
 mod semantic_observation;
+
+#[tokio::test]
+async fn fresh_stage_admission_refuses_an_existing_oci_owner_before_dispatch() {
+    let fixture = Fixture::new(1).await;
+    let intent = fixture.intent("stage-owner-boundary", Operation::CreateStage);
+    let unowned = fixture.fresh(false);
+
+    let (admitted, turn) = fixture
+        .begin(&unowned, intent.clone(), None, None)
+        .unwrap();
+    assert!(matches!(turn.intent.operation, Operation::CreateStage));
+    assert!(admitted.stage.is_some());
+
+    let mut owned = unowned;
+    owned.oci = Some(super::super::oci::state::Owner {
+        original_digest: "d".repeat(64),
+        configuration: "e".repeat(64),
+    });
+    owned.oci.as_ref().unwrap().validate().unwrap();
+    owned.validate(&fixture.object, &intent.scope().unwrap()).unwrap();
+
+    let error = fixture.begin(&owned, intent, None, None).err().unwrap();
+    assert!(error.to_string().contains("prior object effect"));
+    assert!(owned.stage.is_none() && owned.pending.is_none());
+    assert!(owned.oci.is_some());
+    assert_eq!(owned.incarnation.get(), 0);
+    assert_eq!(owned.receipts.get(), 0);
+}

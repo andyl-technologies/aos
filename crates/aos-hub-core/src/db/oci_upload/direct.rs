@@ -166,7 +166,7 @@ impl Database {
         if let Some(existing) = self.direct_oci_allocation_replay(input).await? {
             return Ok(existing);
         }
-        let result = self.begin_oci_upload_retained(&upload, Some(input)).await?;
+        let result = self.begin_oci_upload_retained(&upload, Some(input), Vec::new()).await?;
         self.validate_direct_oci_token(input).await?;
         Ok(result)
     }

@@ -80,6 +80,9 @@ pub use direct::*;
 mod stage_read;
 pub use stage_read::presign_closed_stage_read;
 
+mod oci_read;
+pub use oci_read::presign_oci_conditional_read;
+
 mod conditional_read;
 pub use conditional_read::presign_versioned_conditional_range;
 

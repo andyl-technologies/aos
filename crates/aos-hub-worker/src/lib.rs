@@ -162,6 +162,10 @@ mod oci_document_effect;
 mod oci_manifest_ingress;
 #[cfg(target_arch = "wasm32")]
 mod oci_projection;
+#[cfg(target_arch = "wasm32")]
+mod oci_cleanup;
+#[cfg(any(test, target_arch = "wasm32"))]
+mod oci_cleanup_state;
 #[cfg(test)]
 #[path = "oci_projection/lifetime.rs"]
 mod oci_projection_lifetime;

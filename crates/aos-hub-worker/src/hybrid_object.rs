@@ -95,6 +95,11 @@ impl DurableObject for HybridObjectGuard {
         }
 
         let path = request.url()?.path().to_owned();
+        if path == crate::oci_cleanup::PHYSICAL_PATH {
+            return crate::oci_cleanup::physical_fetch(
+                self, &key, &mut request, Arc::clone(&self.gate),
+            ).await;
+        }
         if path == crate::oci_sdk_emulation::anchor::PHYSICAL_PATH {
             return crate::oci_sdk_emulation::anchor::physical_fetch(
                 self,

@@ -499,6 +499,41 @@ pub trait SurfaceWrite: BackendBounds {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWriteProvider: BackendBounds {
+    /// Prepares a real External OCI reservation beside the protected byte executor.
+    ///
+    /// This port returns only an authenticated short-lived Stage original. The
+    /// caller has already checked current OCI IAM and atomically frozen the real
+    /// upload writer. Local/Managed behavior does not use this external port.
+    ///
+    /// # Errors
+    /// Refuses unsupported or unqualified External OCI, changed reservation,
+    /// provider profile drift or a mismatched retained physical original.
+    async fn prepare_external_oci_stage(
+        &self,
+        preparation: &crate::storage_authority::external_object::oci::admission::ExternalOciStagePreparation,
+    ) -> Result<crate::storage_authority::external_object::oci::admission::ExternalOciStagePermit>
+    {
+        let _ = preparation;
+        anyhow::bail!("external OCI staging is not qualified by this runtime")
+    }
+
+    /// Reads exact positive external staging facts under a fresh OCI phase grant.
+    ///
+    /// The returned opaque proof authenticates the independently held original,
+    /// whole upload continuation, actual EOF and positive provider completion.
+    /// It supplies no mutation permission and cannot clear an unknown effect.
+    ///
+    /// # Errors
+    /// Refuses unsupported qualification, stale actor/writer or absent proof.
+    async fn external_oci_stage_readback(
+        &self,
+        permit: &crate::storage_authority::external_object::oci::admission::ExternalOciStagePermit,
+    ) -> Result<crate::storage_authority::external_object::oci::reply::VerifiedExternalOciReply>
+    {
+        let _ = permit;
+        anyhow::bail!("external OCI staging readback is not supported by this runtime")
+    }
+
     /// Copies one object between placements without returning its body to the caller.
     ///
     /// `Some(size)` means the provider completed a storage-local copy. Local
@@ -540,6 +575,18 @@ pub trait SurfaceWriteProvider: BackendBounds {
         let _ = (operation, claim_token);
         self.copy_placement_object(source, destination, path, listed_source)
             .await
+    }
+
+    /// Materializes one real External OCI claim under current checked authority.
+    ///
+    /// # Errors
+    /// Refuses unqualified external execution, stale originals or unknown effects.
+    async fn materialize_external_oci(
+        &self,
+        selected: &crate::storage_authority::external_object::oci::materialization::ExternalOciMaterialization,
+    ) -> Result<SurfaceObjectEvidence> {
+        let _ = selected;
+        anyhow::bail!("external OCI materialization is unavailable on this runtime")
     }
 
     /// Selects independently installed Managed OCI document effect permission.
@@ -616,6 +663,22 @@ pub trait SurfaceWriteProvider: BackendBounds {
             expected_size,
         );
         Ok(None)
+    }
+
+    /// Settles one terminal upload's exact private chunk through retained evidence.
+    ///
+    /// Returns `true` only after an implementation authenticates its positive
+    /// conditional-delete receipt. `false` selects the existing local or Managed
+    /// cleanup path; external adapters must refuse unsupported custody instead.
+    ///
+    /// # Errors
+    /// Refuses stale SQL claims, unavailable Delete authority or unknown effects.
+    async fn cleanup_oci_upload_chunk(
+        &self,
+        claim: &crate::db::OciTerminalChunkCleanupClaim,
+    ) -> Result<bool> {
+        let _ = claim;
+        Ok(false)
     }
 
     /// Builds a writer rooted at one explicit physical placement.
@@ -706,7 +769,7 @@ pub trait SurfaceWriteProvider: BackendBounds {
 
 #[cfg(test)]
 mod tests {
-    use super::{md5_multipart_etag, strong_if_match_etag, FrozenSurfaceAccess, PartTag};
+    use super::{FrozenSurfaceAccess, PartTag, md5_multipart_etag, strong_if_match_etag};
 
     fn frozen_access() -> FrozenSurfaceAccess {
         FrozenSurfaceAccess {

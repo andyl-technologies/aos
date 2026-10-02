@@ -192,7 +192,8 @@ mod runtime {
                     head.pending.is_none()
                         && head.observation.is_none()
                         && head.stage.is_none()
-                        && head.copy.is_none(),
+                        && head.copy.is_none()
+                        && head.oci.is_none(),
                     "copy read refuses an active physical workflow"
                 );
                 ensure!(

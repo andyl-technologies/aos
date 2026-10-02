@@ -362,3 +362,50 @@ async fn legacy_raw_narinfo_rpc_and_misleading_phase_never_poll_body() {
 }
 
 mod oci_completion;
+
+#[test]
+fn final_oci_authorization_keeps_the_exact_digest_and_zero_body_cap() {
+    let phase = aos_hub_core::hybrid_ingress::HYBRID_OCI_FINAL_AUTHORIZATION_PHASE;
+    let chunk = aos_hub_core::oci::parse_oci_path("v2/repo/blobs/uploads/upload").unwrap();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let query = format!("digest={digest}");
+
+    assert_eq!(
+        oci_limit(&Method::PATCH, &chunk, Some(&query), Some(phase)),
+        Ok(0)
+    );
+    let encoded_query = query.replace(':', "%3A");
+    assert_eq!(
+        oci_limit(&Method::PATCH, &chunk, Some(&encoded_query), Some(phase)),
+        Ok(0)
+    );
+
+    for query in [
+        None,
+        Some(""),
+        Some("digest=sha256:bad"),
+        Some("other=1"),
+        Some("digest=sha512:aaaaaaaa"),
+        Some("digest=sha256%3Abad"),
+    ] {
+        assert_eq!(
+            oci_limit(&Method::PATCH, &chunk, query, Some(phase)),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+    for changed in [format!("{query}&{query}"), format!("{query}&other=1")] {
+        assert_eq!(
+            oci_limit(&Method::PATCH, &chunk, Some(&changed), Some(phase)),
+            Err(StatusCode::BAD_REQUEST)
+        );
+    }
+    assert_eq!(
+        oci_limit(&Method::PUT, &chunk, Some(&query), Some(phase)),
+        Err(StatusCode::BAD_REQUEST)
+    );
+    let manifest = aos_hub_core::oci::parse_oci_path("v2/repo/manifests/latest").unwrap();
+    assert_eq!(
+        oci_limit(&Method::PATCH, &manifest, Some(&query), Some(phase)),
+        Err(StatusCode::BAD_REQUEST)
+    );
+}

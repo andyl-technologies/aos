@@ -4,34 +4,37 @@
 //! context. Storage-work and byte-delivery routes have no generic origin
 //! fallback: they must be implemented by the Worker storage data plane.
 
+mod oci_final;
+
 use std::cell::Cell;
 use std::sync::Arc;
 use std::time::Duration;
 
 use aos_hub_core::hybrid_ingress::{
-    oci_chunk_range_matches, HybridCachePartAdmission, HybridCachePartAdmissionRequest,
-    HybridCachePartCompletionRequest, HybridCachePartPreflight, HybridCacheUploadAdmission,
-    HybridCacheUploadAdmissionRequest, HybridCacheUploadCompletionRequest,
-    HybridCacheUploadPreflight, HybridDeliveryTarget, HybridIngressAssertion, HybridIngressKey,
-    HybridOciChunkAdmission, HybridOciChunkCompletionRequest, HybridOciManifestAdmission,
-    HybridOciManifestPreflight, HybridPublicationPartAdmission,
-    HybridPublicationPartAdmissionRequest, HybridPublicationPartCompletionRequest,
-    HybridPublicationPartPreflight, HybridPublicationPartTag, HybridPublicationUploadAdmission,
-    HybridPublicationUploadCompletionRequest, HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER,
-    HYBRID_NATIVE_DURATION_HEADER, HYBRID_OCI_MANIFEST_UPLOAD_QUERY, HYBRID_UPLOAD_PHASE_HEADER,
-    MAX_HYBRID_OCI_CHUNK_BYTES, MAX_HYBRID_OCI_MANIFEST_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS,
+    HYBRID_DELIVERY_HEADER, HYBRID_INGRESS_HEADER, HYBRID_NATIVE_DURATION_HEADER,
+    HYBRID_OCI_MANIFEST_UPLOAD_QUERY, HYBRID_UPLOAD_PHASE_HEADER, HybridCachePartAdmission,
+    HybridCachePartAdmissionRequest, HybridCachePartCompletionRequest, HybridCachePartPreflight,
+    HybridCacheUploadAdmission, HybridCacheUploadAdmissionRequest,
+    HybridCacheUploadCompletionRequest, HybridCacheUploadPreflight, HybridDeliveryTarget,
+    HybridIngressAssertion, HybridIngressKey, HybridOciChunkAdmission,
+    HybridOciChunkCompletionRequest, HybridOciManifestAdmission, HybridOciManifestPreflight,
+    HybridPublicationPartAdmission, HybridPublicationPartAdmissionRequest,
+    HybridPublicationPartCompletionRequest, HybridPublicationPartPreflight,
+    HybridPublicationPartTag, HybridPublicationUploadAdmission,
+    HybridPublicationUploadCompletionRequest, MAX_HYBRID_OCI_CHUNK_BYTES,
+    MAX_HYBRID_OCI_MANIFEST_BYTES, MAX_HYBRID_PUBLICATION_PLACEMENTS, oci_chunk_range_matches,
 };
 use aos_hub_core::storage_work::{
-    StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
     MAX_BINDING_CONTROL_BYTES, MAX_CREDENTIAL_PROBE_BYTES, MAX_FROZEN_CLEANUP_BYTES,
     MAX_PLAN_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES, STORAGE_BINDING_CONTROL_PATH,
     STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
     STORAGE_CREDENTIAL_PROBE_FAILURE_STAGES, STORAGE_CREDENTIAL_PROBE_PATH,
     STORAGE_FROZEN_CLEANUP_PATH, STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    StorageBindingControl, StorageCapabilities, StorageCredentialProbeRequest, StorageWorkKey,
 };
 use base64::Engine as _;
-use futures_util::lock::{Mutex, OwnedMutexGuard};
 use futures_util::StreamExt as _;
+use futures_util::lock::{Mutex, OwnedMutexGuard};
 use sha2::{Digest as _, Sha256};
 use wasm_bindgen::JsValue;
 use worker::{
@@ -81,6 +84,15 @@ pub async fn fetch(request: Request, env: &Env, context: &worker::Context) -> Re
     if let Some(response) = serve_static_asset(&request, &path).await? {
         return Ok(response);
     }
+    if path == aos_hub_core::storage_authority::external_object::oci::cleanup::OCI_CLEANUP_PATH {
+        return crate::external_object::fetch_oci_cleanup(request, env).await;
+    }
+    if path == aos_hub_core::storage_authority::external_object::oci::source::OCI_SOURCE_PATH {
+        return crate::external_object::fetch_oci_source(request, env).await;
+    }
+    if path == aos_hub_core::storage_authority::external_object::oci::control::EXTERNAL_OCI_PATH {
+        return crate::external_object::fetch_oci(request, env).await;
+    }
     if path == aos_hub_core::storage_authority::external_object::stage::EXTERNAL_STAGE_PATH {
         return crate::external_object::fetch_stage(request, env).await;
     }
@@ -113,6 +125,9 @@ pub async fn fetch(request: Request, env: &Env, context: &worker::Context) -> Re
     }
     if path == aos_hub_core::oci_projection::guard::OCI_PROJECTION_PATH {
         return crate::oci_projection::fetch(request, env).await;
+    }
+    if path == aos_hub_core::oci_cleanup::MANAGED_OCI_CLEANUP_PATH {
+        return crate::oci_cleanup::fetch(request, env).await;
     }
     if path == aos_hub_core::hybrid_ingress::live::candidate::query::LIVE_QUERY_CANDIDATE_PATH {
         #[cfg(feature = "do-e2e")]
@@ -292,13 +307,6 @@ async fn put_oci_manifest(
     context: &worker::Context,
 ) -> Result<Response> {
     let _permit = acquire_upload_permit().await;
-    // This shared decoder/document admission survives a pending native SDK
-    // upload when its request closes. Bodies remain unread until current IAM.
-    let memory = std::rc::Rc::new(
-        crate::mirror_import::buffers::acquire(false, || Ok(()))
-            .await
-            .map_err(|error| worker::Error::RustError(error.to_string()))?,
-    );
     let mut completion_url = request.url()?;
     if completion_url
         .query_pairs()
@@ -307,19 +315,34 @@ async fn put_oci_manifest(
         return Response::error("private manifest upload query is unavailable", 400);
     }
     let authorization_request = upload_phase_request(&request, &[])?;
-    let incoming = &mut request;
-    let bytes = match crate::oci_manifest_ingress::read_authorized(
-        proxy_upload_phase(authorization_request, env, "authorize"),
-        |response| response.status_code() == 204,
-        move || read_bounded_body(incoming, MAX_HYBRID_OCI_MANIFEST_BYTES),
-    )
-    .await?
+    let authorization = proxy_upload_phase(authorization_request, env, "authorize").await?;
+    if authorization.status_code() != 204 {
+        return Ok(authorization);
+    }
+    let external_writer = match authorization
+        .headers()
+        .get("x-aos-oci-writer-kind")?
+        .as_deref()
     {
-        crate::oci_manifest_ingress::AuthorizedBody::Denied(response) => return Ok(response),
-        crate::oci_manifest_ingress::AuthorizedBody::Read(Some(bytes)) => bytes,
-        crate::oci_manifest_ingress::AuthorizedBody::Read(None) => {
-            return Response::error("manifest body exceeds the 4 MiB limit", 413);
-        }
+        Some("external") => true,
+        Some("managed") => false,
+        _ => return Response::error("manifest writer selection is invalid", 502),
+    };
+    // Managed SDK promises retain this shared memory admission until settlement.
+    // External has at most two bounded document ingress gates and its physical
+    // producer independently owns the sole 8 MiB part admission.
+    let memory = if external_writer {
+        None
+    } else {
+        Some(std::rc::Rc::new(
+            crate::mirror_import::buffers::acquire(false, || Ok(()))
+                .await
+                .map_err(|error| worker::Error::RustError(error.to_string()))?,
+        ))
+    };
+    let bytes = match read_bounded_body(&mut request, MAX_HYBRID_OCI_MANIFEST_BYTES).await? {
+        Some(bytes) => bytes,
+        None => return Response::error("manifest body exceeds the 4 MiB limit", 413),
     };
     if bytes.is_empty() {
         return Response::error("manifest body must not be empty", 400);
@@ -347,16 +370,23 @@ async fn put_oci_manifest(
     {
         return Response::error("manifest semantic projection is invalid", 400);
     }
-    let qualified = match crate::oci_sdk_emulation::OciProviderConfig::load(env).await {
-        Ok(qualified) => qualified,
-        Err(_) => return Response::error("manifest provider qualification is unavailable", 503),
+    let qualified = if external_writer {
+        None
+    } else {
+        let qualified = match crate::oci_sdk_emulation::OciProviderConfig::load(env).await {
+            Ok(qualified) => qualified,
+            Err(_) => {
+                return Response::error("manifest provider qualification is unavailable", 503);
+            }
+        };
+        if qualified.verify_anchor(env, None).await.is_err() {
+            return Response::error(
+                "manifest managed provider qualification is unavailable",
+                503,
+            );
+        }
+        Some(qualified)
     };
-    if qualified.verify_anchor(env, None).await.is_err() {
-        return Response::error(
-            "manifest managed provider qualification is unavailable",
-            503,
-        );
-    }
     let mut sha256_state = aos_hub_core::db::OciSha256State::initial();
     sha256_state
         .update(&bytes)
@@ -365,11 +395,11 @@ async fn put_oci_manifest(
     let preflight = serde_json::to_vec(&HybridOciManifestPreflight {
         media_type,
         sha256_state,
-        managed_effect: Some(
-            qualified
-                .effect(env)
-                .map_err(|error| worker::Error::RustError(error.to_string()))?,
-        ),
+        managed_effect: qualified
+            .as_ref()
+            .map(|qualified| qualified.effect(env))
+            .transpose()
+            .map_err(|error| worker::Error::RustError(error.to_string()))?,
     })
     .map_err(|error| worker::Error::RustError(format!("manifest preflight JSON: {error}")))?;
     let preflight_request = upload_phase_request(&request, &preflight)?;
@@ -383,7 +413,7 @@ async fn put_oci_manifest(
     if response.status_code() != 200 {
         return Ok(response);
     }
-    let Some(admission_body) = read_bounded_response(response, 4096).await? else {
+    let Some(admission_body) = read_bounded_response(response, 16 * 1024).await? else {
         return Response::error("manifest admission is too large", 502);
     };
     let admission: HybridOciManifestAdmission = match serde_json::from_slice(&admission_body) {
@@ -413,37 +443,90 @@ async fn put_oci_manifest(
     {
         return Response::error("manifest admission identity is invalid", 502);
     }
-    let object_key =
-        aos_hub_core::keymap::r2_key(&admission.placement_prefix, &admission.staging_object_key);
-    if !valid_r2_key(&object_key) {
-        return Response::error("manifest placement key is invalid", 502);
-    }
-    let Some(effect) = admission.managed_effect.as_ref() else {
-        return Response::error("manifest effect original is absent", 502);
-    };
-    if qualified.check_effect(env, effect).is_err() {
-        return Response::error(
-            "manifest provider qualification expired before storage dispatch",
-            503,
-        );
-    }
-    if let Err(error) = crate::hybrid_object::put_oci_document(
-        env,
-        &object_key,
-        &bytes,
-        &qualified,
-        effect,
-        context,
-        memory,
-    )
-    .await
+    if external_writer != admission.external.is_some()
+        || (external_writer && admission.managed_effect.is_some())
     {
-        worker::console_error!("hybrid_manifest_put_failed: {error:#}");
-        return Response::error("manifest storage write failed", 503);
+        return Response::error("manifest writer selection changed during admission", 502);
     }
-    // The SDK owner has settled. Release the original buffer before Native's
-    // canonical read/materialization competes for the same full-window budget.
-    drop(bytes);
+    if let Some(permit) = &admission.external {
+        if permit.validate_shape().is_err()
+            || permit.request.original.upload.upload_id != admission.upload_id
+            || permit.request.original.writer.placement_prefix != admission.placement_prefix
+            || permit.request.original.scope.full_key != aos_hub_core::keymap::r2_key(
+                &aos_hub_core::keymap::r2_key(&permit.request.original.writer.binding_prefix,
+                    &admission.placement_prefix), &admission.staging_object_key)
+            || permit.request.original.object != (aos_hub_core::storage_authority::external_object::oci::OciObjectOriginal::Chunk {
+                ordinal: 0, offset: 0, maximum_bytes: admission.byte_size,
+                prior_sha256: aos_hub_core::db::OciSha256State::initial(),
+                expected: Some(aos_hub_core::storage_authority::external_object::oci::OciBytes {
+                    sha256: admission.sha256.clone(), size: admission.byte_size,
+                }),
+            })
+        {
+            return Response::error("external manifest admission differs from exact original bytes", 502);
+        }
+        let control = serde_json::to_vec(&permit.request).map_err(|_| {
+            worker::Error::RustError("external OCI control encoding refused".into())
+        })?;
+        // Only the already bounded 4 MiB manifest uses this native body source.
+        // Public blob chunks retain their streaming ingress path separately.
+        let mut bytes = bytes;
+        let source = worker::web_sys::Response::new_with_opt_u8_array(Some(bytes.as_mut_slice()))?
+            .body()
+            .ok_or_else(|| {
+                worker::Error::RustError("external OCI manifest stream absent".into())
+            })?;
+        drop(bytes);
+        match crate::external_object::stage_oci(env, source, &control, &permit.signature).await {
+            Ok(reply)
+                if reply.pending_effect_digest.is_none()
+                    && reply.closed.as_ref().is_some_and(|closed| {
+                        closed.bytes.size == admission.byte_size
+                            && closed.bytes.sha256 == admission.sha256
+                    }) => {}
+            _ => return Response::error("external manifest stage is unsettled", 503),
+        }
+    } else {
+        let qualified = qualified
+            .as_ref()
+            .ok_or_else(|| worker::Error::RustError("Managed OCI qualification absent".into()))?;
+        let memory = memory.ok_or_else(|| {
+            worker::Error::RustError("Managed OCI memory admission absent".into())
+        })?;
+        let object_key = aos_hub_core::keymap::r2_key(
+            &admission.placement_prefix,
+            &admission.staging_object_key,
+        );
+        if !valid_r2_key(&object_key) {
+            return Response::error("manifest placement key is invalid", 502);
+        }
+        let Some(effect) = admission.managed_effect.as_ref() else {
+            return Response::error("manifest effect original is absent", 502);
+        };
+        if qualified.check_effect(env, effect).is_err() {
+            return Response::error(
+                "manifest provider qualification expired before storage dispatch",
+                503,
+            );
+        }
+        if let Err(error) = crate::hybrid_object::put_oci_document(
+            env,
+            &object_key,
+            &bytes,
+            &qualified,
+            effect,
+            context,
+            memory,
+        )
+        .await
+        {
+            worker::console_error!("hybrid_manifest_put_failed: {error:#}");
+            return Response::error("manifest storage write failed", 503);
+        }
+        // The Managed SDK owner has settled; External has handed off its bounded
+        // native source and released its Rust bytes before the physical stage wait.
+        drop(bytes);
+    }
 
     completion_url
         .query_pairs_mut()
@@ -483,7 +566,7 @@ async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Resp
     if preflight_response.status_code() != 200 {
         return Ok(preflight_response);
     }
-    let Some(preflight_body) = read_bounded_response(preflight_response, 4096).await? else {
+    let Some(preflight_body) = read_bounded_response(preflight_response, 16 * 1024).await? else {
         return Response::error("OCI chunk admission is too large", 502);
     };
     let admission: HybridOciChunkAdmission = match serde_json::from_slice(&preflight_body) {
@@ -516,6 +599,75 @@ async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Resp
         aos_hub_core::keymap::r2_key(&admission.placement_prefix, &admission.staging_object_key);
     if !valid_r2_key(&object_key) {
         return Response::error("OCI chunk placement key is invalid", 502);
+    }
+
+    if let Some(permit) = &admission.external {
+        use aos_hub_core::storage_authority::external_object::oci::OciObjectOriginal;
+        if permit.validate_shape().is_err()
+            || permit.request.original.upload.upload_id != upload_id
+            || permit.request.original.upload.resource_version.get()
+                != admission.upload_resource_version
+            || permit.request.original.writer.placement_id.get() != admission.placement_id
+            || permit
+                .request
+                .original
+                .writer
+                .placement_resource_version
+                .get()
+                != admission.placement_resource_version
+            || permit.request.original.writer.binding_id.get() != admission.binding_id
+            || permit.request.original.writer.binding_write_revision.get()
+                != admission.binding_write_revision
+            || permit.request.original.writer.placement_prefix != admission.placement_prefix
+            || permit.request.original.scope.full_key
+                != aos_hub_core::keymap::r2_key(
+                    &permit.request.original.writer.binding_prefix,
+                    &object_key,
+                )
+            || permit.request.original.object
+                != (OciObjectOriginal::Chunk {
+                    ordinal: admission.ordinal,
+                    offset: admission.offset,
+                    maximum_bytes: admission.maximum_chunk_bytes,
+                    prior_sha256: admission.sha256_state.clone(),
+                    expected: None,
+                })
+        {
+            return Response::error("external OCI chunk admission differs from its upload", 502);
+        }
+        let source = request
+            .inner()
+            .body()
+            .ok_or_else(|| worker::Error::RustError("OCI chunk stream is absent".into()))?;
+        let control = serde_json::to_vec(&permit.request).map_err(|_| {
+            worker::Error::RustError("external OCI control encoding refused".into())
+        })?;
+        let reply =
+            match crate::external_object::stage_oci(env, source, &control, &permit.signature).await
+            {
+                Ok(reply) if reply.pending_effect_digest.is_none() => reply,
+                _ => return Response::error("external OCI chunk stage is unsettled", 503),
+            };
+        let Some(closed) = reply.closed else {
+            return Response::error("external OCI chunk lacks positive closure", 503);
+        };
+        let requested_range = request.headers().get("content-range")?;
+        let length = usize::try_from(closed.bytes.size)
+            .map_err(|_| worker::Error::RustError("OCI counted chunk size overflows".into()))?;
+        if !oci_chunk_range_matches(requested_range.as_deref(), admission.offset, length) {
+            return Response::error("OCI counted chunk range is not contiguous", 416);
+        }
+        let completion = HybridOciChunkCompletionRequest {
+            admission,
+            byte_size: closed.bytes.size,
+            chunk_sha256: closed.bytes.sha256,
+            next_sha256_state: reply.upload_sha256,
+        };
+        let bytes = serde_json::to_vec(&completion)
+            .map_err(|_| worker::Error::RustError("OCI completion encoding refused".into()))?;
+        let completion_request =
+            upload_phase_request_with_method(&request, &bytes, worker::Method::Patch)?;
+        return proxy_with_upload_phase(completion_request, env, Some("complete")).await;
     }
 
     let Some(bytes) =
@@ -562,6 +714,49 @@ async fn append_oci_upload_chunk(mut request: Request, env: &Env) -> Result<Resp
 }
 
 async fn finalize_oci_upload(mut request: Request, env: &Env) -> Result<Response> {
+    let control = upload_phase_request_with_method(&request, &[], worker::Method::Patch)?;
+    let admission = proxy_with_upload_phase(
+        control,
+        env,
+        Some(aos_hub_core::hybrid_ingress::HYBRID_OCI_FINAL_AUTHORIZATION_PHASE),
+    )
+    .await?;
+    if admission.status_code() != 200 {
+        return Ok(admission);
+    }
+    let Some(bytes) = read_bounded_response(admission, 1024).await? else {
+        return Response::error("OCI final authorization is oversized", 502);
+    };
+    let admission: aos_hub_core::hybrid_ingress::HybridOciFinalAdmission =
+        match serde_json::from_slice(&bytes) {
+            Ok(admission) => admission,
+            Err(_) => return Response::error("OCI final authorization is invalid", 502),
+        };
+    if admission.completion_only {
+        if !oci_final::is_empty(&request)
+            .await
+            .map_err(|_| worker::Error::RustError("OCI completion replay body refused".into()))?
+        {
+            return Response::error("OCI completion replay requires an empty body", 409);
+        }
+        let completion = upload_phase_request_with_method(&request, &[], worker::Method::Put)?;
+        return proxy(completion, env).await;
+    }
+
+    if admission.external {
+        let patch = oci_final::patch(&request)
+            .await
+            .map_err(|_| worker::Error::RustError("OCI final body stream refused".into()))?;
+        if let Some(patch) = patch {
+            let appended = append_oci_upload_chunk(patch, env).await?;
+            if appended.status_code() != 202 {
+                return Ok(appended);
+            }
+        }
+        let completion = upload_phase_request_with_method(&request, &[], worker::Method::Put)?;
+        return proxy(completion, env).await;
+    }
+
     let Some(final_bytes) = read_bounded_body(&mut request, MAX_HYBRID_OCI_CHUNK_BYTES).await?
     else {
         return Response::error("final OCI chunk body is too large", 413);
@@ -1034,7 +1229,7 @@ async fn upload_cache_object(mut request: Request, env: &Env) -> Result<Response
                     return Response::error(
                         "narinfo semantic projection is invalid or too large",
                         400,
-                    )
+                    );
                 }
             };
         if projection.validate_cache_path(&path).is_err() {

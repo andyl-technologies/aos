@@ -13,6 +13,10 @@ use anyhow::{ensure, Result};
 use aos_oci_types::{Descriptor, ImageConfig, ImageIndex, ImageManifest, MediaType, Sha256Digest};
 use serde::{Deserialize, Serialize};
 
+mod source;
+/// Closed managed or OCI-owned external provider source.
+pub use source::OciProjectionSource;
+
 pub mod guard;
 
 /// Bounds one document projection and its explicit control envelope.

@@ -261,3 +261,6 @@ pub struct ExternalObjectHead {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_version: Option<String>,
 }
+
+/// OCI-owned external staging originals and separately qualified controls.
+pub mod oci;

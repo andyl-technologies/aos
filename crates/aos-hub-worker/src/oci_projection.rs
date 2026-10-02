@@ -38,7 +38,7 @@ pub(crate) fn guard_key(env: &Env) -> Result<StorageWorkKey> {
     Ok(StorageWorkKey::new(guard)?)
 }
 
-async fn authenticate(
+pub(crate) async fn authenticate(
     request: &mut Request,
     env: &Env,
 ) -> Result<(OciProjectionLookup, Vec<u8>, String)> {
@@ -53,8 +53,17 @@ async fn authenticate(
     let body = crate::hybrid::read_bounded_body(request, MAX_OCI_PROJECTION_LOOKUP_BYTES)
         .await?
         .context("OCI projection lookup exceeds bound")?;
+    // The bounded closed discriminator selects only an independently installed
+    // role. It supplies no key material or trust; the complete canonical body
+    // is authenticated before using the selected source or original.
+    let selected: OciProjectionLookup = serde_json::from_slice(&body)?;
+    let role = if selected.source.is_managed() {
+        guard_key(env)?
+    } else {
+        crate::external_object::projection_guard_key(env)?
+    };
     let lookup = verify_oci_projection_lookup(
-        &guard_key(env)?,
+        &role,
         &signature,
         &body,
         &env.var("HUB_DEPLOYMENT_ID")?.to_string(),
@@ -82,6 +91,18 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
 
 async fn relay(request: &mut Request, env: &Env) -> Result<Response> {
     let (lookup, body, signature) = authenticate(request, env).await?;
+    if let aos_hub_core::oci_projection::OciProjectionSource::External { original, .. } = &lookup.source {
+        let headers = Headers::new();
+        headers.set(OCI_PROJECTION_SIGNATURE_HEADER, &signature)?;
+        let mut init = RequestInit::new();
+        init.with_method(Method::Post).with_headers(headers)
+            .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
+        return Ok(env.durable_object("EXTERNAL_OBJECT_GUARD")?
+            .id_from_name(&original.scope.guard_name()?)?.get_stub()?
+            .fetch_with_request(Request::new_with_init(
+                &format!("https://physical-guard{PHYSICAL_PATH}"), &init)?)
+            .await?);
+    }
     let address = format!(
         "{}:{}",
         lookup.deployment_id,
@@ -142,6 +163,7 @@ async fn physical_reply(
         lookup.key == key,
         "OCI projection addressed another physical guard"
     );
+    ensure!(lookup.source.is_managed(), "external OCI source requires its own physical guard");
     let storage = guard.state.storage();
     crate::direct_guard::deny_legacy(&storage).await?;
     crate::mirror_import::runtime::deny_other_owner(&storage).await?;

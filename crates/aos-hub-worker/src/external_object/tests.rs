@@ -830,3 +830,46 @@ async fn final_observation_rechecks_application_snapshot_and_clock() {
         .check_dispatch_time(&binding, &validated, &head.floor, clock(i64::MAX))
         .is_err());
 }
+
+#[tokio::test]
+async fn copy_and_oci_owners_exclude_each_other_and_generic_dispatch() {
+    let config = config();
+    let intent = intent(&config, 0, "owner-boundary");
+    let initial = Head::initialize(&config, &intent, clock(100)).unwrap();
+    let signed = token(&config, 0, 0).await;
+    let copy = super::copy::state::Owner {
+        copy_id: "a".repeat(64),
+        original_digest: "b".repeat(64),
+        configuration: "c".repeat(64),
+    };
+    let oci = super::oci::state::Owner {
+        original_digest: "d".repeat(64),
+        configuration: "e".repeat(64),
+    };
+
+    for copy_first in [true, false] {
+        let mut head = initial.clone();
+        if copy_first {
+            head.copy = Some(copy.clone());
+        } else {
+            head.oci = Some(oci.clone());
+        }
+        head.validate(&config, &intent.scope).unwrap();
+        assert!(head.require_cleanup_ready().is_err());
+        assert!(head
+            .begin(
+                &config,
+                intent.clone(),
+                &signed,
+                "f".repeat(64),
+                clock(101),
+            )
+            .is_err());
+        assert!(head.pending.is_none());
+
+        head.copy = Some(copy.clone());
+        head.oci = Some(oci.clone());
+        assert!(head.validate(&config, &intent.scope).is_err());
+        assert!(head.copy.is_some() && head.oci.is_some());
+    }
+}

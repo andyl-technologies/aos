@@ -55,6 +55,7 @@ impl SurfaceFetch for Storage {
             let request = OciProjectionLookup {
                 version: 1,
                 protected_profile_digest: "c".repeat(64),
+            source: crate::oci_projection::OciProjectionSource::Managed,
                 deployment_id: "controlled-fixture".into(),
                 issuer: MirrorGuardIssuer {
                     source_digest: "a".repeat(64),
@@ -1234,6 +1235,7 @@ async fn original_cutoff_contract(
             &ManifestReference::Digest(digest),
             preflight(bytes),
             cutoff,
+            None,
         )
         .await
         .unwrap();
@@ -1322,7 +1324,8 @@ async fn absent_or_changed_effect_is_refused_before_quota_or_provider_reservatio
                 &storage.owner,
                 &ManifestReference::Digest(Sha256Digest::digest(bytes)),
                 request,
-                now() + 300
+                now() + 300,
+                None,
             )
             .await
             .is_err());

@@ -26,6 +26,39 @@ impl S3Surface {
         })
     }
 
+    /// Signs only an independently authorized conditional empty OCI PUT.
+    ///
+    /// # Errors
+    /// Refuses public or unsafe coordinates, expiry and invalid signing inputs.
+    pub fn external_oci_empty_put_request(
+        &self, path: &str, now: i64,
+    ) -> Result<DirectSignedProviderRequest> {
+        self.with_direct_params(path, now, 30, |parameters| {
+            crate::sigv4::presign_external_oci_empty_put(parameters, 30)
+        })
+    }
+
+    /// Signs transport for an independently authorized OCI conditional read.
+    ///
+    /// A real optional version and strong ETag are signed verbatim. Guard stamps
+    /// and business permission are checked by the OCI executor, never inferred.
+    ///
+    /// # Errors
+    /// Refuses invalid material, false version/tag, excessive range or lifetime.
+    pub fn oci_conditional_read_request(
+        &self,
+        path: &str,
+        head: bool,
+        etag: &str,
+        provider_version: Option<&str>,
+        range: Option<(u64, u64)>,
+        now: i64,
+    ) -> Result<DirectSignedProviderRequest> {
+        self.with_direct_params(path, now, 30, |parameters| {
+            crate::sigv4::presign_oci_conditional_read(parameters, head, etag, provider_version, range, 30)
+        })
+    }
+
     /// Signs one bounded immutable source range with exact version and If-Match.
     ///
     /// # Errors

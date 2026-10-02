@@ -212,6 +212,34 @@ impl NativeDirectUploadAcceptances {
             .context("direct acceptance missing or expired")
     }
 
+    /// Selects one independently verified Managed profile for metadata recovery.
+    ///
+    /// This grants no dispatch permission. A physical cleanup producer must
+    /// independently require current acceptance before a new effect.
+    ///
+    /// # Errors
+    /// Refuses missing or ambiguous retained Managed issuer records.
+    pub(crate) fn retained_managed_profile_digest(
+        &self,
+        deployment: &str,
+        origin: &str,
+    ) -> Result<String> {
+        let selected = self
+            .accepted
+            .iter()
+            .filter(|item| {
+                item.deployment == deployment
+                    && item.origin == origin
+                    && matches!(item.profile, DirectProtectedProfile::Managed { .. })
+            })
+            .collect::<Vec<_>>();
+        ensure!(
+            selected.len() == 1,
+            "Managed cleanup requires exactly one independently retained provider profile"
+        );
+        selected[0].profile.digest()
+    }
+
     pub(crate) fn profiles(
         &self,
         deployment: &str,

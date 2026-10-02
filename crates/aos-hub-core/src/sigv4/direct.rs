@@ -197,6 +197,25 @@ pub fn presign_direct_create_multipart(
     signed(p, "POST", &[("uploads", String::new())], &headers)
 }
 
+/// Signs a server-owned conditional empty OCI object creation.
+///
+/// The OCI guard owns permission and the retained pending effect. These signed
+/// headers prevent replacing an existing provider object and enforce the empty
+/// body checksum. This transport helper does not qualify a provider workflow.
+///
+/// # Errors
+/// Refuses invalid coordinates, lifetime or signing inputs.
+pub fn presign_external_oci_empty_put(
+    parameters: &PresignParams<'_>, maximum_expires_secs: u32,
+) -> Result<DirectSignedProviderRequest> {
+    validate(parameters, None, maximum_expires_secs)?;
+    signed(parameters, "PUT", &[], &[
+        ("content-length", "0".into()),
+        ("content-md5", "1B2M2Y8AsgTpgAmY7PhCfg==".into()),
+        ("if-none-match", "*".into()),
+    ])
+}
+
 fn validate(
     p: &PresignParams<'_>,
     upload_id: Option<&str>,

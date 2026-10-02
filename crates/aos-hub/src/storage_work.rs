@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use anyhow::{bail, Context as _, Result};
+use anyhow::{Context as _, Result, bail};
 use aos_hub_core::db::{
     BindingCredentialRevisionRecord, BindingRecord, BindingWriteRevisionRecord, Database,
     OciUploadChunkRecord, SurfacePlacementRecord,
@@ -18,17 +18,17 @@ use aos_hub_core::fetch::{
     SurfaceInventoryHashChunk, SurfaceListPage, SurfaceListedEvidence, SurfaceObjectEvidence,
     SurfaceProvider,
 };
-use aos_hub_core::secret_version::{verify_secret_fingerprint, SecretVersionResolver};
+use aos_hub_core::secret_version::{SecretVersionResolver, verify_secret_fingerprint};
 use aos_hub_core::storage_work::{
-    StorageBindingAcknowledgement, StorageBindingControl, StorageBindingPublication,
-    StorageBindingSnapshot, StorageCapabilities, StorageCredentialMaterial,
-    StorageCredentialSelector, StorageGitObjectProjection, StorageOciChunkSource, StorageWorkKey,
-    StorageWorkOperation, StorageWorkOutcome, StorageWorkPlan, StorageWorkResult,
     MAX_BINDING_CONTROL_BYTES, MAX_DOCUMENTATION_ROWS, MAX_GIT_INSPECTION_BATCH,
     MAX_GIT_INSPECTION_CONTENT_BYTES, MAX_METADATA_BYTES, MAX_METADATA_INSPECTION_BATCH,
     MAX_OCI_HASH_RANGE_BYTES, MAX_OCI_RANGE_BYTES, MAX_RESULT_BYTES, MAX_VERIFY_SOURCE_BYTES,
     STORAGE_BINDING_CONTROL_PATH, STORAGE_CAPABILITIES_CHALLENGE, STORAGE_CAPABILITIES_PATH,
-    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER,
+    STORAGE_WORK_PATH, STORAGE_WORK_SIGNATURE_HEADER, StorageBindingAcknowledgement,
+    StorageBindingControl, StorageBindingPublication, StorageBindingSnapshot, StorageCapabilities,
+    StorageCredentialMaterial, StorageCredentialSelector, StorageGitObjectProjection,
+    StorageOciChunkSource, StorageWorkKey, StorageWorkOperation, StorageWorkOutcome,
+    StorageWorkPlan, StorageWorkResult,
 };
 use aos_hub_core::surface_write::{
     FrozenSurfaceAccess, MultipartAbortOutcome, PartTag, SurfaceDeleteOutcome,
@@ -52,6 +52,8 @@ mod binding_custody;
 pub use authority::StorageAuthorityControlSynchronization;
 mod control;
 mod external_delete;
+mod external_oci;
+pub use external_oci::ExternalOciRuntime;
 mod external_observation;
 mod external_copy;
 mod frozen;
@@ -65,6 +67,7 @@ mod mirror_inspection;
 mod mirror_membership;
 mod oci_document_effect;
 mod oci_projection;
+mod oci_cleanup;
 #[cfg(test)]
 mod result_acceptance_tests;
 mod telemetry;
@@ -139,6 +142,7 @@ pub struct RemoteStorageWorkClient {
     key: StorageWorkKey,
     mirror_profiles: Option<crate::direct_upload::authority::NativeDirectUploadAcceptances>,
     mirror_guard_key: Option<StorageWorkKey>,
+    external_oci: Option<Arc<ExternalOciRuntime>>,
     oci_sdk_emulation: Option<crate::oci_sdk_emulation::NativeOciSdkEmulation>,
     #[cfg(test)]
     controlled_mirror: Option<mirror_candidate::ControlledMirrorAuthority>,
@@ -202,6 +206,7 @@ impl RemoteStorageWorkClient {
             key: StorageWorkKey::new(key)?,
             mirror_profiles: None,
             mirror_guard_key: None,
+            external_oci: None,
             oci_sdk_emulation: None,
             #[cfg(test)]
             controlled_mirror: None,
@@ -2674,6 +2679,30 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
             path, listed_source).await
     }
 
+    async fn prepare_external_oci_stage(
+        &self,
+        preparation: &aos_hub_core::storage_authority::external_object::oci::admission::ExternalOciStagePreparation,
+    ) -> Result<
+        aos_hub_core::storage_authority::external_object::oci::admission::ExternalOciStagePermit,
+    > {
+        self.prepare_external_stage(preparation).await
+    }
+    async fn external_oci_stage_readback(
+        &self,
+        permit: &aos_hub_core::storage_authority::external_object::oci::admission::ExternalOciStagePermit,
+    ) -> Result<
+        aos_hub_core::storage_authority::external_object::oci::reply::VerifiedExternalOciReply,
+    > {
+        self.read_external_stage(permit).await
+    }
+
+    async fn materialize_external_oci(
+        &self,
+        selected: &aos_hub_core::storage_authority::external_object::oci::materialization::ExternalOciMaterialization,
+    ) -> Result<SurfaceObjectEvidence> {
+        self.compose_external_oci(selected).await
+    }
+
     async fn copy_placement_object(
         &self,
         source: &SurfacePlacementRecord,
@@ -2837,6 +2866,16 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
             Some(effect),
         )
         .await
+    }
+
+    async fn cleanup_oci_upload_chunk(
+        &self,
+        claim: &aos_hub_core::db::OciTerminalChunkCleanupClaim,
+    ) -> Result<bool> {
+        if self.cleanup_external_oci_chunk(claim).await? {
+            return Ok(true);
+        }
+        self.cleanup_managed_oci_chunk(claim).await
     }
 
     async fn placement_writer(
@@ -3410,9 +3449,11 @@ mod tests {
         let operation = || StorageWorkOperation::Head {
             path: "object".into(),
         };
-        assert!(client
-            .plan_for_placement(&placement, &binding, operation(), 101)
-            .is_err());
+        assert!(
+            client
+                .plan_for_placement(&placement, &binding, operation(), 101)
+                .is_err()
+        );
 
         client
             .published_bindings
@@ -3433,21 +3474,25 @@ mod tests {
                 generation: 2,
             }]
         );
-        assert!(client
-            .plan_for_placement(
-                &placement,
-                &binding,
-                StorageWorkOperation::ListPage {
-                    prefix: "".into(),
-                    cursor: None,
-                    limit: 1,
-                },
-                101,
-            )
-            .is_err());
-        assert!(client
-            .plan_for_placement(&placement, &binding, operation(), 201)
-            .is_err());
+        assert!(
+            client
+                .plan_for_placement(
+                    &placement,
+                    &binding,
+                    StorageWorkOperation::ListPage {
+                        prefix: "".into(),
+                        cursor: None,
+                        limit: 1,
+                    },
+                    101,
+                )
+                .is_err()
+        );
+        assert!(
+            client
+                .plan_for_placement(&placement, &binding, operation(), 201)
+                .is_err()
+        );
     }
 
     #[test]
@@ -3501,19 +3546,25 @@ mod tests {
             .unwrap()
             .insert(binding.id, snapshot);
 
-        assert!(client
-            .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
-            .is_ok());
+        assert!(
+            client
+                .validate_published_binding_snapshot(&binding, &[credential.clone()], &revision)
+                .is_ok()
+        );
         let mut rotated = credential.clone();
         rotated.generation += 1;
-        assert!(client
-            .validate_published_binding_snapshot(&binding, &[rotated], &revision)
-            .is_err());
+        assert!(
+            client
+                .validate_published_binding_snapshot(&binding, &[rotated], &revision)
+                .is_err()
+        );
         let mut moved = binding.clone();
         moved.object_prefix = Some("other-tenant".into());
-        assert!(client
-            .validate_published_binding_snapshot(&moved, &[credential], &revision)
-            .is_err());
+        assert!(
+            client
+                .validate_published_binding_snapshot(&moved, &[credential], &revision)
+                .is_err()
+        );
     }
 
     #[test]

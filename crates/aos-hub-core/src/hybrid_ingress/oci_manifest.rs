@@ -30,6 +30,11 @@ pub struct HybridOciManifestCompletion {}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HybridOciManifestAdmission {
+    /// Separate signed OCI control for an independently qualified external writer.
+    /// Managed omits this field and preserves its historical canonical admission.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external:
+        Option<crate::storage_authority::external_object::oci::admission::ExternalOciStagePermit>,
     /// Original Managed effect permission; External uses its own closed original.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub managed_effect: Option<OciDocumentEffect>,

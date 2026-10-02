@@ -206,7 +206,7 @@ impl RpcService {
         )
     }
 
-    async fn same_direct_oci_actor(
+    pub(in crate::oci) async fn same_direct_oci_actor(
         &self,
         registry: &RegistryRecord,
         repository: &aos_oci_types::RepositoryName,

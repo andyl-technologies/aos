@@ -7,21 +7,21 @@
 
 use crate::oci_projection::manifest_original_digest;
 use aos_oci_types::{ManifestReference, MediaType, Sha256Digest};
-use axum::body::{to_bytes, Body};
+use axum::body::{Body, to_bytes};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse as _, Response};
 use uuid::Uuid;
 
-use super::{manifest_invalid, now, unavailable_response, RpcService, MAX_MANIFEST_BYTES};
+use super::{MAX_MANIFEST_BYTES, RpcService, manifest_invalid, now, unavailable_response};
 use crate::db::{
     AppendOciUploadChunk, BeginOciUpload, OciRepositoryRecord, OciUploadChunkRecord,
     OciUploadRecord, RegistryRecord, SurfacePlacementRecord, SurfaceTarget,
 };
 use crate::hybrid_ingress::{
-    HybridOciManifestAdmission, HybridOciManifestCompletion, HybridOciManifestPreflight,
-    HYBRID_OCI_MANIFEST_UPLOAD_QUERY,
+    HYBRID_OCI_MANIFEST_UPLOAD_QUERY, HybridOciManifestAdmission, HybridOciManifestCompletion,
+    HybridOciManifestPreflight,
 };
-use crate::oci::upload::{exact_upload_placement, UPLOAD_SESSION_SECONDS};
+use crate::oci::upload::{UPLOAD_SESSION_SECONDS, exact_upload_placement};
 
 #[cfg(test)]
 mod tests;
@@ -58,7 +58,23 @@ impl RpcService {
                 if let Err(response) = authenticated.recheck(self, registry, repository).await {
                     return response;
                 }
-                StatusCode::NO_CONTENT.into_response()
+                let external = match self.hybrid_external_oci_writer(registry).await {
+                    Ok(external) => external,
+                    Err(response) => return response,
+                };
+                if let Err(response) = authenticated.recheck(self, registry, repository).await {
+                    return response;
+                }
+                let mut response = StatusCode::NO_CONTENT.into_response();
+                response.headers_mut().insert(
+                    "x-aos-oci-writer-kind",
+                    axum::http::HeaderValue::from_static(if external {
+                        "external"
+                    } else {
+                        "managed"
+                    }),
+                );
+                response
             }
             "preflight" => {
                 if !matches!(private_manifest_upload(query), Ok(None)) {
@@ -78,6 +94,7 @@ impl RpcService {
                         &reference,
                         request,
                         authenticated.expires_at(),
+                        Some(&authenticated),
                     )
                     .await
                 {
@@ -138,6 +155,7 @@ impl RpcService {
             reference,
             request,
             now() + UPLOAD_SESSION_SECONDS,
+            None,
         )
         .await
     }
@@ -150,6 +168,7 @@ impl RpcService {
         reference: &ManifestReference,
         request: HybridOciManifestPreflight,
         actor_expires_at: i64,
+        authenticated: Option<&super::authority::HybridManifestAuthority>,
     ) -> Result<HybridOciManifestAdmission, Response> {
         if !request.media_type.is_image_manifest() && !request.media_type.is_image_index() {
             return Err(manifest_invalid(
@@ -189,22 +208,34 @@ impl RpcService {
             .await
             .map_err(|_| unavailable_response("registry binding is unavailable", false))?
             .ok_or_else(|| unavailable_response("registry binding is unavailable", false))?;
-        if !binding.is_instance_default || binding.kind != "deployment_r2" {
+        let external = !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2");
+        if (!binding.is_instance_default || binding.kind != "deployment_r2") && !external {
             return Err(unavailable_response(
                 "hybrid manifest writer is unsupported",
                 false,
             ));
         }
+        if external && authenticated.is_none() {
+            return Err(unavailable_response(
+                "external manifest requires its actual current OCI actor",
+                false,
+            ));
+        }
 
         let current = now();
-        let mut managed_effect = self
-            .surface_write
-            .oci_document_effect(&placement, None)
-            .await
-            .map_err(|_| {
-                unavailable_response("manifest effect acceptance is unavailable", false)
-            })?;
-        if managed_effect.is_none() || managed_effect != request.managed_effect {
+        let mut managed_effect = if external {
+            None
+        } else {
+            self.surface_write
+                .oci_document_effect(&placement, None)
+                .await
+                .map_err(|_| {
+                    unavailable_response("manifest effect acceptance is unavailable", false)
+                })?
+        };
+        if (external && request.managed_effect.is_some())
+            || (!external && (managed_effect.is_none() || managed_effect != request.managed_effect))
+        {
             return Err(unavailable_response(
                 "manifest effect original is unavailable or changed",
                 false,
@@ -250,30 +281,38 @@ impl RpcService {
             managed_effect.as_ref(),
         )
         .map_err(|_| unavailable_response("manifest original could not be retained", false))?;
-        let upload = self
-            .db
-            .begin_oci_upload(&BeginOciUpload {
-                registry_id: registry.id,
-                repository_id: repository.id,
-                publication_id: None,
-                writer_id: owner.to_string(),
-                token_id: owner.to_string(),
-                idempotency_key: format!(
-                    "manifest-hybrid-{original_digest}-{}",
-                    Uuid::new_v4().simple()
-                ),
-                expected_digest: Some(digest),
-                expected_size: Some(size),
-                maximum_size: MAX_MANIFEST_BYTES as u64,
-                now: current,
-                expires_at: managed_effect
-                    .as_ref()
-                    .map_or(current + UPLOAD_SESSION_SECONDS, |effect| {
-                        effect.expires_at as i64
-                    }),
-            })
-            .await
-            .map_err(|_| unavailable_response("manifest quota could not be reserved", false))?;
+        let allocation = BeginOciUpload {
+            registry_id: registry.id,
+            repository_id: repository.id,
+            publication_id: None,
+            writer_id: owner.to_string(),
+            token_id: owner.to_string(),
+            idempotency_key: format!(
+                "manifest-hybrid-{original_digest}-{}",
+                Uuid::new_v4().simple()
+            ),
+            expected_digest: Some(digest),
+            expected_size: Some(size),
+            maximum_size: MAX_MANIFEST_BYTES as u64,
+            now: current,
+            expires_at: managed_effect
+                .as_ref()
+                .map_or(current + UPLOAD_SESSION_SECONDS, |effect| {
+                    effect.expires_at as i64
+                }),
+        };
+        let upload = if external {
+            let authenticated = authenticated.ok_or_else(|| unavailable_response("external manifest actor absent", false))?;
+            let writer = crate::storage_authority::external_object::oci::OciWriterOriginal::from_registry_records(
+                registry.id, &placement, &binding, &revision, &authority)
+                .map_err(|_| unavailable_response("external manifest writer unavailable", false))?;
+            let mut current = authenticated.statements(self, registry, repository).await?;
+            current.extend(self.db.external_oci_writer_statements(registry.id, &placement, &writer)
+                .map_err(|_| unavailable_response("external manifest writer unavailable", false))?);
+            self.db.begin_oci_upload_checked(&allocation, current).await
+        } else {
+            self.db.begin_oci_upload(&allocation).await
+        }.map_err(|_| unavailable_response("manifest quota could not be reserved", false))?;
         let staging_object_key = format!(
             "oci/uploads/{}/chunks/0-{}-{}",
             upload.id,
@@ -306,20 +345,88 @@ impl RpcService {
                 now: current,
             })
             .await;
-        if reserved.is_err() {
-            // A lost commit acknowledgement may leave the reservation live.
-            // No Worker PUT has been admitted yet; expiry recovers that state.
-            let _ = self
+        let reserved = match reserved {
+            Ok(reserved) => reserved,
+            Err(_) => {
+                // A lost commit acknowledgement may leave the reservation live.
+                // No Worker PUT has been admitted yet; expiry recovers that state.
+                let _ = self
+                    .db
+                    .cancel_oci_upload(&upload.id, owner, owner, upload.resource_version, now())
+                    .await;
+                return Err(unavailable_response(
+                    "manifest staging reservation failed",
+                    false,
+                ));
+            }
+        };
+        let external = if external {
+            use crate::storage_authority::external_object::oci::{
+                OciBytes, OciUploadOriginal, OciWriterOriginal,
+                admission::ExternalOciStagePreparation,
+            };
+            let authenticated = authenticated
+                .ok_or_else(|| unavailable_response("external OCI actor missing", false))?;
+            let writer = OciWriterOriginal::from_records(
+                &OciUploadOriginal::from_record(&reserved).map_err(|_| {
+                    unavailable_response("external OCI upload original invalid", false)
+                })?,
+                &placement,
+                &binding,
+                &revision,
+                &authority,
+            )
+            .map_err(|_| unavailable_response("external OCI writer is not current", false))?;
+            let iam = authenticated.statements(self, registry, repository).await?;
+            let reserved = self
                 .db
-                .cancel_oci_upload(&upload.id, owner, owner, upload.resource_version, now())
-                .await;
-            return Err(unavailable_response(
-                "manifest staging reservation failed",
-                false,
-            ));
-        }
+                .reserve_external_oci_staging(
+                    &reserved,
+                    &placement,
+                    &writer,
+                    iam,
+                    authenticated.expires_at(),
+                    now(),
+                )
+                .await
+                .map_err(|_| {
+                    unavailable_response("external OCI current writer reservation refused", false)
+                })?;
+            let actor = authenticated
+                .external_original()
+                .map_err(|_| unavailable_response("external OCI current actor invalid", false))?;
+            let preparation = ExternalOciStagePreparation {
+                upload: reserved,
+                actor,
+                writer,
+                staging_key: staging_object_key.clone(),
+                ordinal: 0,
+                offset: 0,
+                prior_sha256: crate::db::OciSha256State::initial(),
+                maximum_bytes: size,
+                expected: Some(OciBytes {
+                    sha256: digest.encoded(),
+                    size,
+                }),
+            };
+            let permit = self
+                .surface_write
+                .prepare_external_oci_stage(&preparation)
+                .await
+                .map_err(|_| {
+                    unavailable_response(
+                        "external OCI workflow qualification is unavailable",
+                        false,
+                    )
+                })?;
+            authenticated.recheck(self, registry, repository).await?;
+            Some(permit)
+        } else {
+            None
+        };
         Ok(HybridOciManifestAdmission {
             managed_effect,
+            external,
             original_digest,
             upload_id: upload.id,
             placement_prefix: placement.prefix,
@@ -468,17 +575,23 @@ impl RpcService {
             Ok(Some(authority)) => authority,
             _ => return unavailable_response("manifest write authority is unavailable", false),
         };
-        let managed_effect = match self
-            .surface_write
-            .oci_document_effect(&placement, u64::try_from(upload.expires_at).ok())
-            .await
-        {
-            Ok(Some(effect)) => Some(effect),
-            _ => {
-                return unavailable_response(
-                    "manifest original effect acceptance is unavailable",
-                    false,
-                )
+        let external_writer =
+            !binding.is_instance_default && matches!(binding.kind.as_str(), "s3" | "r2");
+        let managed_effect = if external_writer {
+            None
+        } else {
+            match self
+                .surface_write
+                .oci_document_effect(&placement, u64::try_from(upload.expires_at).ok())
+                .await
+            {
+                Ok(Some(effect)) => Some(effect),
+                _ => {
+                    return unavailable_response(
+                        "manifest original effect acceptance is unavailable",
+                        false,
+                    );
+                }
             }
         };
         let original_digest = match manifest_original_digest(
@@ -511,6 +624,7 @@ impl RpcService {
         }
         let admission = HybridOciManifestAdmission {
             managed_effect,
+            external: None,
             original_digest,
             upload_id: upload.id.clone(),
             placement_prefix: placement.prefix.clone(),
@@ -531,7 +645,7 @@ impl RpcService {
         let fetcher = match self.surface.placement_fetcher(&placement).await {
             Ok(fetcher) => fetcher,
             Err(_) => {
-                return unavailable_response("manifest projection reader is unavailable", false)
+                return unavailable_response("manifest projection reader is unavailable", false);
             }
         };
         let projection_path = if upload.state == "complete" {
@@ -560,7 +674,7 @@ impl RpcService {
                 return unavailable_response(
                     "exact stored manifest projection could not be verified",
                     false,
-                )
+                );
             }
         };
         let document = match proof.check(&descriptor, now()) {

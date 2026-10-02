@@ -70,13 +70,18 @@ impl Database {
             .surface_placement(input.placement_id)
             .await?
             .context("OCI placement disappeared")?;
+        let physical_prefix = match root_proof.source() {
+            crate::oci_projection::OciProjectionSource::Managed => placement.prefix.clone(),
+            crate::oci_projection::OciProjectionSource::External { original, .. } =>
+                crate::keymap::r2_key(&original.writer.binding_prefix, &placement.prefix),
+        };
         anyhow::ensure!(
             placement.prefix == admission.placement_prefix
                 && (root_proof.key()
-                    == crate::keymap::r2_key(&placement.prefix, &admission.staging_object_key)
+                    == crate::keymap::r2_key(&physical_prefix, &admission.staging_object_key)
                     || root_proof.key()
                         == crate::keymap::r2_key(
-                            &placement.prefix,
+                            &physical_prefix,
                             &oci_blob_object_key(input.root_digest)
                         )),
             "OCI root readback addressed another placement"
@@ -96,7 +101,7 @@ impl Database {
                     anyhow::ensure!(
                         proof.key()
                             == crate::keymap::r2_key(
-                                &placement.prefix,
+                                &physical_prefix,
                                 &oci_blob_object_key(document.config.digest)
                             ),
                         "OCI image config readback addressed another placement"
@@ -127,6 +132,22 @@ impl Database {
             .surface_write_authority(crate::db::SurfaceTarget::Registry(input.registry_id))
             .await?
             .context("OCI current writer is absent")?;
+        if let crate::oci_projection::OciProjectionSource::External { original, .. } = root_proof.source() {
+            let current = crate::storage_authority::external_object::oci::OciWriterOriginal::from_registry_records(
+                input.registry_id, &placement, &binding, &revision, &authority)?;
+            anyhow::ensure!(original.writer == current
+                && original.upload.registry_id.get() == input.registry_id
+                && original.upload.repository_id.get() == upload.repository_id
+                && original.upload.writer_id == input.actor_id,
+                "external OCI retained writer or actor differs from catalogue authority");
+            for proof in readbacks {
+                let crate::oci_projection::OciProjectionSource::External { original, .. } = proof.source() else {
+                    anyhow::bail!("external OCI graph mixes unrelated provider proofs");
+                };
+                anyhow::ensure!(original.writer == current,
+                    "external OCI graph contains another current writer");
+            }
+        }
         let reference = input
             .tag
             .clone()
@@ -229,7 +250,7 @@ impl Database {
             anyhow::ensure!(
                 proof.key()
                     == crate::keymap::r2_key(
-                        &placement.prefix,
+                        &physical_prefix,
                         &oci_blob_object_key(object.descriptor.digest)
                     ),
                 "OCI final readback does not address its canonical object"

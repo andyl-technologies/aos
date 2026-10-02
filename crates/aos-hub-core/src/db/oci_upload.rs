@@ -12,6 +12,12 @@ mod claim;
 mod direct;
 #[path = "oci_upload/direct_completion.rs"]
 mod direct_completion;
+#[path = "oci_upload/external_staging.rs"]
+mod external_staging;
+#[path = "oci_upload/terminal_cleanup.rs"]
+mod terminal_cleanup;
+
+pub use terminal_cleanup::OciTerminalChunkCleanupClaim;
 
 pub use direct::BeginDirectOciUpload;
 #[path = "oci_upload/model.rs"]
@@ -76,13 +82,25 @@ impl Database {
     /// mismatched repository/publication, quota exhaustion, or database
     /// failure.
     pub async fn begin_oci_upload(&self, input: &BeginOciUpload) -> Result<OciUploadRecord> {
-        self.begin_oci_upload_retained(input, None).await
+        self.begin_oci_upload_retained(input, None, Vec::new()).await
+    }
+
+    /// Opens a real OCI upload and quota reservation under current IAM checks.
+    ///
+    /// # Errors
+    /// Refuses empty authority, failed current fences, quota or upload conflicts.
+    pub(crate) async fn begin_oci_upload_checked(
+        &self, input: &BeginOciUpload, authority: Vec<CheckedStatement>,
+    ) -> Result<OciUploadRecord> {
+        anyhow::ensure!(!authority.is_empty(), "checked OCI allocation lacks current authority");
+        self.begin_oci_upload_retained(input, None, authority).await
     }
 
     async fn begin_oci_upload_retained(
         &self,
         input: &BeginOciUpload,
         direct: Option<&BeginDirectOciUpload>,
+        authority: Vec<CheckedStatement>,
     ) -> Result<OciUploadRecord> {
         validate_session_identity(&input.writer_id, "writer id", 128)?;
         validate_session_identity(&input.token_id, "token id", 128)?;
@@ -103,6 +121,7 @@ impl Database {
         let quota_id = reservation_id(&upload_id);
         let initial = OciSha256State::initial();
         let expected_digest = input.expected_digest.map(|digest| digest.to_string());
+        let checked_authority = !authority.is_empty();
         let mut statements = vec![
             Statement::new(
                 "UPDATE registries SET updated_at = updated_at
@@ -230,7 +249,14 @@ impl Database {
             )
             .expecting(1),
         );
-        if let Err(error) = self.backend.checked_batch(&statements).await {
+        let mut checked = authority;
+        checked.extend(statements);
+        if let Err(error) = self.backend.checked_batch(&checked).await {
+            // A failed current IAM fence cannot be converted into allocation
+            // success by finding an unrelated historical idempotency row.
+            if checked_authority {
+                return Err(error).context("opening OCI upload under current authority");
+            }
             if let Some(direct) = direct {
                 return self
                     .direct_oci_allocation_replay(direct)
@@ -371,6 +397,15 @@ impl Database {
     pub async fn append_oci_upload_chunk(
         &self,
         input: &AppendOciUploadChunk,
+    ) -> Result<OciUploadRecord> {
+        self.append_oci_upload_chunk_checked(input, Vec::new()).await
+    }
+
+    /// Appends progress with the caller's current checked IAM and writer fences.
+    pub(crate) async fn append_oci_upload_chunk_checked(
+        &self,
+        input: &AppendOciUploadChunk,
+        mut authority: Vec<crate::backend::CheckedStatement>,
     ) -> Result<OciUploadRecord> {
         validate_session_identity(&input.writer_id, "writer id", 128)?;
         validate_session_identity(&input.token_id, "token id", 128)?;
@@ -561,7 +596,8 @@ impl Database {
             )
             .expecting(1),
         ];
-        if let Err(error) = self.backend.checked_batch(&statements).await {
+        authority.extend(statements);
+        if let Err(error) = self.backend.checked_batch(&authority).await {
             if let Some(existing) = self
                 .oci_upload(
                     &input.upload_id,
@@ -1271,7 +1307,16 @@ impl Database {
     /// absent exact placement evidence, a conflicting immutable identity, or
     /// database failure.
     pub async fn complete_oci_upload(&self, input: &CompleteOciUpload) -> Result<OciUploadRecord> {
-        let statements = Self::complete_oci_upload_statements(input)?;
+        self.complete_oci_upload_checked(input, Vec::new()).await
+    }
+
+    /// Commits the same catalogue/quota transaction with current external actor
+    /// and writer fences. Exact already-complete replay remains metadata-only.
+    pub(crate) async fn complete_oci_upload_checked(
+        &self, input: &CompleteOciUpload, mut current_authority: Vec<CheckedStatement>,
+    ) -> Result<OciUploadRecord> {
+        current_authority.extend(Self::complete_oci_upload_statements(input)?);
+        let statements = current_authority;
         if let Err(error) = self.backend.checked_batch(&statements).await {
             if let Some(existing) = self
                 .oci_upload(
