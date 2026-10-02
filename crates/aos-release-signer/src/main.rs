@@ -1,6 +1,6 @@
 //! File-backed signing adapter for canonical AOS releases.
 //!
-//! `aos release` commands never touch private keys; they invoke a
+//! `aos maintain release` commands never touch private keys; they invoke a
 //! deployment-configured executable with the `sign-exchange-v1` operation and
 //! verify whatever comes back against independently pinned public material.
 //! This binary is such an executable for deployments whose keys live in

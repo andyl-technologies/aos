@@ -10,6 +10,13 @@
 > sections §4 (HTTP / object layout & CDN cache policy), §8 (object store &
 > dumb-HTTP details), and §12 (stock git dumb-HTTP compatibility).
 
+Unpublished candidates follow the [release-stage contract](release-stages.md).
+Maintainer branches are authoring workspaces. Configured channel branch names
+reserve the published frontier, public `HEAD` names the default channel, and
+signed semver releases and the 256-partition schema retain their existing
+meaning. Default catalogs and channels omit drafts; a known ref, digest, cache
+URL, or CDN path may still expose candidate bytes.
+
 ---
 
 ## 1. Scope & sibling documents

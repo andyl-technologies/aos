@@ -1,4 +1,4 @@
-//! `aos release step channel`: ring-by-ring rollout of one destination.
+//! `aos maintain release step channel`: ring-by-ring rollout of one destination.
 //!
 //! `advance` moves one planned ring of the destination's channel with a
 //! compare-and-swap on the surface (Hub transaction or static generation

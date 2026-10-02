@@ -25,7 +25,7 @@
     else 1024;
 
   # The experimental images are canonical release artifacts: the Nix build emits
-  # an unsigned assembly and `aos release step finalize-image` applies Secure Boot,
+  # an unsigned assembly and `aos maintain release step finalize-image` applies Secure Boot,
   # module, and PCR-policy signatures through the registry's signer adapter.
   # Only public trust inputs appear here; see andyl-testing-authorities/README.md.
   aos.profiles.canonicalRelease = {

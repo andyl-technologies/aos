@@ -36,6 +36,9 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
   configuration, packages, security, upgrades, operations, and recovery.
 - [AOS Hub documentation](docs/users/aos-hub/) covers its trust model, web,
   API, CLI, native, and Cloudflare deployments.
+- [Registry release stages](docs/registry/release-stages.md) explains unpublished
+  candidate uploads and revision checks. Registry maintainers use `apr release`;
+  AOS qualification and destination orchestration use `aos maintain release`.
 - [Registry operator documentation](docs/users/registry/) covers hosting,
   signing, publishing, staged rollouts, and incident response.
 - [Crucible documentation](docs/users/crucible/) covers deterministic
@@ -46,8 +49,11 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
 ## Contributing
 
 Bug reports and feature proposals are welcome in
-[GitHub Issues](https://github.com/andyl-technologies/aos/issues). Before
-changing packages, images, or build tooling, read the
+[GitHub Issues](https://github.com/andyl-technologies/aos/issues). Report
+undisclosed vulnerabilities privately under the [security policy](SECURITY.md).
+External contributions are currently disabled, and only project contributors
+may open pull requests. Before changing packages, images, or build tooling,
+read the
 [contribution requirements](CONTRIBUTING.md) and
 [maintainer guide](docs/maintainers/). The contribution requirements document
 the employee authorization, external CLA, DCO, and license-boundary checks that
@@ -55,6 +61,24 @@ apply before a change is merged.
 AOS is built hermetically from source;
 new dependencies must be added to the AOS package graph rather than imported
 from nixpkgs.
+
+Load the development shell through direnv or `nix develop --accept-flake-config`.
+It puts `aos-dev` and the ordinary packaged `aos` CLI in PATH:
+
+```sh
+aos --help
+aos-dev run apm --help
+aos-dev run apr --help
+aos-dev cache init
+aos-dev build package crucible --no-out-link
+```
+
+Tool-running commands fetch or build ordinary packaged binaries on demand.
+Explicit development builds use shared compiler caches. The shell and script
+use the production testing binary cache with signature verification and source
+fallback; an empty cache still permits source builds. See
+[the development instructions](AGENTS.md#the-aos-dev-development-entry-point)
+for cache setup and incremental Rust builds.
 
 ## Project status
 

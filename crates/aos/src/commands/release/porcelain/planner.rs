@@ -544,7 +544,7 @@ fn completion_step(destination: &DestinationFacts, options: &Options) -> Result<
         let missing = destination.completion_threshold - destination.completion_approvals;
         return Ok(Next::Wait(format!(
             "{missing} completion approval(s) needed for {name}: each release-evidence \
-             reviewer runs aos release review"
+             reviewer runs aos maintain release review"
         )));
     }
     Ok(Next::Run(Step::Complete))
@@ -568,7 +568,7 @@ fn phase_step(destination: &DestinationFacts, phase: Phase, facts: PhaseFacts) -
         let missing = destination.review_threshold - facts.accepted_reviews;
         return Some(Next::Wait(format!(
             "{missing} reviewer signature(s) needed over qualification/{}/{}/prepared/\
-             qualification-report.json: run aos release review",
+             qualification-report.json: run aos maintain release review",
             destination_slug(&destination.name),
             phase.directory_name()
         )));
@@ -609,7 +609,7 @@ fn observation_ready_at(destination: &DestinationFacts, ring: u16) -> Result<Opt
 
 /// Renders the fitness instruction for a fitness failure.
 fn fitness_instruction(blocker: &str) -> String {
-    format!("record fresh fitness with aos release fitness run <kind> ({blocker})")
+    format!("record fresh fitness with aos maintain release fitness run <kind> ({blocker})")
 }
 
 /// Formats a time as RFC 3339 UTC with second precision.

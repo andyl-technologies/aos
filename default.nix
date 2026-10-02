@@ -544,6 +544,16 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
   };
+  # The closure a maintainer machine installs: the CLI plus the executor for
+  # the platform it can qualify natively. `aos release` discovers its own
+  # closure and executors from this layout, so neither appears in the
+  # maintainer configuration.
+  releaseTooling = import ./pkgs/tools/aos/_release-tooling.nix {
+    inherit lib;
+    inherit (pkgs) runCommand runtimeShell;
+    aos = pkgs.aos;
+    executors = {${hostPlatform.system} = releaseQualificationExecutor;};
+  };
 
   prefixAttrs = prefix: attrs:
     builtins.listToAttrs (
@@ -1269,7 +1279,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     then (import ./. {inherit system;}).systems.server.config.aos.config.evalAtBoot.baseLib
     else discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
 in rec {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
   # nix-build does not descend through arbitrary nested check attrsets. An
   # explicit list reaches every gate while stopping at derivations, whose
   # passthru attributes are metadata rather than additional checks.

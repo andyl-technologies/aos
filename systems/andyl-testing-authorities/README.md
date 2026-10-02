@@ -25,5 +25,5 @@ not collapse onto one key: the release signer holds each under a separate role
 so compromising one does not authorize the others.
 
 Signing itself never happens here. The Nix half of the image build emits an
-unsigned assembly and `aos release finalize-image` applies the signatures
+unsigned assembly and `aos maintain release step finalize-image` applies the signatures
 through the configured signer adapter.

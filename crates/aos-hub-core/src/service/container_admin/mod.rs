@@ -76,6 +76,21 @@ impl RpcService {
         &self,
         registry_id: i64,
     ) -> Result<Option<String>, RpcError> {
+        self.container_distribution_origin(registry_id)
+            .await?
+            .map(|origin| distribution_authority(&origin))
+            .transpose()
+    }
+
+    /// Resolves an enabled, acknowledged OCI route without inventing an origin.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for database failure or a malformed ready route origin.
+    pub(crate) async fn container_distribution_origin(
+        &self,
+        registry_id: i64,
+    ) -> Result<Option<String>, RpcError> {
         let canonical_registry_url = self
             .db
             .ready_registry_canonical_url(registry_id)
@@ -94,7 +109,7 @@ impl RpcService {
             .list_routes(SurfaceTarget::Registry(registry_id))
             .await
             .map_err(RpcError::internal)?;
-        let mut fallback_authority = None;
+        let mut fallback_origin = None;
 
         for route in routes {
             if !route.enabled {
@@ -130,14 +145,14 @@ impl RpcService {
             // A CDN can serve static registry objects and expose OCI on /v2/.
             // Prefer that configured route without deriving an implicit one.
             if preferred_authority.as_deref() == Some(authority.as_str()) {
-                return Ok(Some(authority));
+                return Ok(Some(snapshot.canonical_url));
             }
-            if fallback_authority.is_none() {
-                fallback_authority = Some(authority);
+            if fallback_origin.is_none() {
+                fallback_origin = Some(snapshot.canonical_url);
             }
         }
 
-        Ok(fallback_authority)
+        Ok(fallback_origin)
     }
 }
 
@@ -161,7 +176,7 @@ fn distribution_authority(canonical_url: &str) -> Result<String, RpcError> {
         None => {
             return Err(RpcError::internal(anyhow::anyhow!(
                 "ready OCI route has no URL authority"
-            )))
+            )));
         }
     };
     Ok(url

@@ -50,7 +50,7 @@
     aos.image.allowTestArtifacts = true;
     aos.image.testArtifactRoots = [pkgs.python3];
     aos.containers.definitions.custom =
-      (import ../../containers/aos.nix {
+      (import ../../modules/image/_container-definition.nix {
         inherit lib pkgs goldenRoots aosSystem;
       })
       .config;

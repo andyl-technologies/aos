@@ -6,23 +6,21 @@ use anyhow::{bail, Context, Result};
 use aos_oci_types::Sha256Digest;
 use uuid::Uuid;
 
-use super::plan_model::{
-    canonical_digest, digest_json, oci_gc_snapshot_guard_statement, policy_guard_statement,
-    validate_apply_input, validate_plan_input, EffectivePolicy, FrozenAction, FrozenCandidate,
-    FrozenPlacement, FrozenRoot, PlanBlocker,
-};
 pub use super::plan_model::{ApplyOciGc, PlanOciGc};
+use super::plan_model::{
+    EffectivePolicy, FrozenAction, FrozenCandidate, FrozenPlacement, FrozenRoot, PlanBlocker,
+    canonical_digest, digest_json, oci_gc_snapshot_guard_statement, policy_guard_statement,
+    validate_apply_input, validate_plan_input,
+};
 use super::{
-    OciGcGenerationRecord, OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES,
-    OCI_GC_MAX_INVENTORY_AGE_SECONDS, OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS,
-    OCI_GC_PLAN_TTL_SECONDS,
+    OCI_GC_MAX_ACTIONS, OCI_GC_MAX_DEPTH, OCI_GC_MAX_EDGES, OCI_GC_MAX_INVENTORY_AGE_SECONDS,
+    OCI_GC_MAX_OBJECTS, OCI_GC_MAX_PLACEMENTS, OCI_GC_PLAN_TTL_SECONDS, OciGcGenerationRecord,
 };
 use crate::backend::Statement;
 use crate::db::{
-    sanitize_log_text, Database, OciRetentionPolicyRecord,
-    OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
+    Database, OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
     OCI_RETENTION_DEFAULT_RECENT_MANUAL_TAG_REVISIONS, OCI_RETENTION_DEFAULT_RETAIN_REFERRERS,
-    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS,
+    OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS, OciRetentionPolicyRecord, sanitize_log_text,
 };
 
 /// Qualifies a catalog-owned root source within its repository.
@@ -291,6 +289,16 @@ impl Database {
                 Statement::new(
                     "UPDATE oci_registry_state SET updated_at = updated_at
                      WHERE registry_id = ?1 AND mutation_epoch = ?4
+                       AND NOT EXISTS (
+                         SELECT 1 FROM staged_release_objects staged_object
+                         JOIN staged_release_revisions staged_revision
+                           ON staged_revision.registry_id = staged_object.registry_id
+                          AND staged_revision.stage_id = staged_object.stage_id
+                          AND staged_revision.revision = staged_object.revision
+                         WHERE staged_object.registry_id = ?1
+                           AND staged_object.sha256 = substr(?2, 8)
+                           AND (staged_revision.retire_after IS NULL
+                             OR staged_revision.retire_after > ?3))
                        AND NOT EXISTS (SELECT 1 FROM oci_tags tag
                          WHERE tag.registry_id = ?1 AND tag.digest = ?2)
                        AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
@@ -346,11 +354,21 @@ impl Database {
                 Statement::new(
                     "DELETE FROM oci_repository_objects
                      WHERE registry_id = ?1 AND digest = ?2
+                       AND NOT EXISTS (
+                         SELECT 1 FROM staged_release_objects staged_object
+                         JOIN staged_release_revisions staged_revision
+                           ON staged_revision.registry_id = staged_object.registry_id
+                          AND staged_revision.stage_id = staged_object.stage_id
+                          AND staged_revision.revision = staged_object.revision
+                         WHERE staged_object.registry_id = ?1
+                           AND staged_object.sha256 = substr(?2, 8)
+                           AND (staged_revision.retire_after IS NULL
+                             OR staged_revision.retire_after > ?3))
                        AND NOT EXISTS (SELECT 1 FROM oci_tags tag
                          WHERE tag.registry_id = ?1 AND tag.digest = ?2)
                        AND NOT EXISTS (SELECT 1 FROM oci_release_roots root
                          WHERE root.registry_id = ?1 AND root.index_digest = ?2)",
-                    vals![plan.registry_id, digest],
+                    vals![plan.registry_id, digest, input.now],
                 )
                 .unchecked(),
                 Statement::new(
@@ -1142,6 +1160,33 @@ impl Database {
                 repository_id: Some(row.get(2)?),
             });
         }
+        // Stages own immutable object inventories before their signed release
+        // becomes a public root. Retired revisions keep that ownership through
+        // their explicit grace deadline; shared OCI digests remain hard roots.
+        for row in self
+            .backend
+            .query(
+                "SELECT object.sha256, object.stage_id, object.revision
+                 FROM staged_release_objects object
+                 JOIN staged_release_revisions revision
+                   ON revision.registry_id = object.registry_id
+                  AND revision.stage_id = object.stage_id
+                  AND revision.revision = object.revision
+                 WHERE object.registry_id = ?1
+                   AND object.object_key = 'oci/blobs/sha256/' || object.sha256
+                   AND (revision.retire_after IS NULL OR revision.retire_after > ?2)
+                 ORDER BY object.sha256, object.stage_id, object.revision LIMIT ?3",
+                &vals![registry_id, now, i64::try_from(OCI_GC_MAX_OBJECTS + 1)?],
+            )
+            .await?
+        {
+            roots.insert(FrozenRoot {
+                kind: "publication".into(),
+                digest: canonical_digest(format!("sha256:{}", row.get::<String>(0)?))?,
+                source_id: format!("stage:{}:{}", row.get::<String>(1)?, row.get::<i64>(2)?),
+                repository_id: None,
+            });
+        }
         self.collect_oci_gc_history_roots(registry_id, policy, now, &mut roots)
             .await?;
         if roots.len() > OCI_GC_MAX_OBJECTS {
@@ -1467,6 +1512,85 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::repository_root_source_id;
+
+    #[tokio::test]
+    async fn staged_oci_inventory_remains_a_hard_root_until_discard_grace() {
+        use super::EffectivePolicy;
+        use crate::db::{Database, STAGED_RELEASE_GRACE_SECONDS};
+        use aos_registry_surface::staging::{STAGE_SCHEMA, StageRevision, inventory_digest};
+
+        let db = Database::open_in_memory().await.unwrap();
+        let registry_id = db
+            .register_registry("oci-staged-retention", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+        let digest = "a".repeat(64);
+        let revision = StageRevision {
+            schema: STAGE_SCHEMA.into(),
+            id: "candidate".into(),
+            registry: registry.slug,
+            revision: 1,
+            release_id: "1.0.0".into(),
+            source_branch: "maintainer/candidate".into(),
+            commit: "c".repeat(64),
+            container: None,
+            inventory_digest: inventory_digest(&[]).unwrap(),
+            inventory: vec![],
+            publication: vec![],
+            store_roots: vec![],
+        };
+        let policy = EffectivePolicy {
+            untagged_grace_seconds: 3600,
+            deleted_tag_history_seconds: 3600,
+            recent_manual_tag_revisions: 1,
+            retain_referrers: true,
+            resource_version: 0,
+        };
+        db.upsert_staged_release(registry_id, &revision, 0, None, 100)
+            .await
+            .unwrap();
+
+        // This test exercises the admitted inventory ledger used by GC. Typed
+        // container graph validation has its own surface admission tests.
+        db.backend
+            .execute(
+                "INSERT INTO staged_release_objects
+             (registry_id, stage_id, revision, object_key, sha256, media_type, byte_size)
+             VALUES (?1, 'candidate', 1, ?2, ?3, 'application/octet-stream', 1)",
+                &vals![registry_id, format!("oci/blobs/sha256/{digest}"), digest],
+            )
+            .await
+            .unwrap();
+
+        let roots = db
+            .collect_oci_gc_hard_roots(registry_id, &policy, 200)
+            .await
+            .unwrap();
+        assert!(roots.iter().any(|root| root.kind == "publication"
+            && root.source_id.starts_with("stage:")
+            && root.digest == format!("sha256:{digest}")));
+
+        db.discard_staged_release(registry_id, "candidate", 1, 300)
+            .await
+            .unwrap();
+        assert!(
+            !db.collect_oci_gc_hard_roots(
+                registry_id,
+                &policy,
+                300 + STAGED_RELEASE_GRACE_SECONDS - 1
+            )
+            .await
+            .unwrap()
+            .is_empty()
+        );
+        assert!(
+            db.collect_oci_gc_hard_roots(registry_id, &policy, 300 + STAGED_RELEASE_GRACE_SECONDS)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     #[test]
     fn repository_root_sources_do_not_collide_across_repositories() {

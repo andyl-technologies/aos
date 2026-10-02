@@ -10,7 +10,7 @@
 ##! machine-run fitness attestations under a shared, group-writable fitness
 ##! root. Production destination profiles consume those attestations with a
 ##! 14 day maximum age; operator-run exercises are recorded manually with
-##! `aos release fitness run <kind>` and age out after 90 days.
+##! `aos maintain release fitness run <kind>` and age out after 90 days.
 {
   config,
   lib,
@@ -123,7 +123,7 @@ in {
         wrapper. A successful exit must prove restored evidence integrity.
         After a successful restore the wrapper records a `storage-restore`
         fitness attestation with
-        `aos release fitness run storage-restore --report <retained report>`,
+        `aos maintain release fitness run storage-restore --report <retained report>`,
         signing through the release-evidence signer whose material arrives via
         fitnessCredentials. Production destination profiles accept that
         attestation for at most 14 days.
@@ -147,11 +147,11 @@ in {
         as the alert role. It must trigger the alert path with a synthetic unit
         name, confirm delivery to the configured on-call destination, and then
         record an `alert-delivery` fitness attestation with
-        `aos release fitness run alert-delivery --report <retained report>`.
+        `aos maintain release fitness run alert-delivery --report <retained report>`.
         Production destination profiles accept that attestation for at most
         14 days. Operator exercises (authority recovery, Hub restore, key
         rotation) are not automated here; operators record them with
-        `aos release fitness run <kind>` and they age out after 90 days.
+        `aos maintain release fitness run <kind>` and they age out after 90 days.
       '';
     };
 
@@ -199,7 +199,7 @@ in {
         for the aos-release-fitness group so the release, backup, and monitor
         roles can each record attestations; every maintainer configuration
         used on the machine must set `fitness_root` to this path, because
-        `aos release fitness` and `aos release advance` read it from there.
+        `aos maintain release fitness` and `aos maintain release advance` read it from there.
       '';
     };
 
