@@ -1,10 +1,14 @@
 ##! Bounded bootable-base image budgets for server and edge variants.
-{lib, ...}: {
+{
+  lib,
+  pkgs,
+  ...
+}: {
   # OCI images use a separate package slice and closure budget.
-  aos.image.budgets.maxRootMiB = lib.mkDefault 960;
-  # The source-built minimal base measures 1516 MiB including native initrd
-  # and qualification companions. Workload fixtures set their own allowances.
-  aos.image.budgets.maxRuntimeClosureMiB = lib.mkDefault 1792;
+  aos.image.budgets.maxRootMiB = lib.mkDefault 640;
+  # The checked x86 native closure is 903 MiB, including its compressed initrd.
+  # Keep the independently defined target allowance on other architectures.
+  aos.image.budgets.maxRuntimeClosureMiB = lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "x86_64") (lib.mkDefault 960);
   aos.image.budgets.maxDevelopmentPayloadMiB = lib.mkDefault 48;
-  aos.image.budgets.maxDownloadMiB = lib.mkDefault 1280;
+  aos.image.budgets.maxDownloadMiB = lib.mkDefault 768;
 }

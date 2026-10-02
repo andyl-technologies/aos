@@ -4,12 +4,12 @@
 
   aos.profiles.experimentalRelease.enable = true;
 
-  # Arm's normal UKI and both recovery UKIs occupy 423 MiB before FAT and
-  # bootloader overhead. Retain the full recovery payload in the staging ESP.
-  aos.image.budgets.maxEspMiB =
+  # Retain upstream Arm capacity and the native server's x86 allowance:
+  # two 200 MiB boot executables require at least 432 MiB with headroom.
+  aos.image.budgets.maxFirmwarePartitionMiB =
     if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
     then 512
-    else 384;
+    else 448;
 
   # The converted disk formats exceed the compressed raw image budget.
   # Arm VHD exports exceed 1 GiB once the full recovery ESP is included.
