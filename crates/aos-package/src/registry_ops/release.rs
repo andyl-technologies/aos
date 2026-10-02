@@ -19,7 +19,7 @@ use crate::registry_ops::config::{
     resolve_effective_release_cache_url, resolve_registry_name, resolve_upload_urls,
     warn_on_cache_gc,
 };
-use crate::registry_ops::git::{git, git2_identity, git_try};
+use crate::registry_ops::git::{git, git_try, git2_identity};
 use crate::registry_ops::publish::{
     publish_to_registry_directory, validate_release_publish_metadata,
     validate_release_publish_signing_identity,

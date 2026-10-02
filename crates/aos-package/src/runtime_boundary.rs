@@ -12,7 +12,7 @@ use anyhow::{Result, bail};
 
 use crate::{
     ApmRegistryCommand, AttestCommand, BranchCommand, CacheCommand, ChangeCommand, ChannelCommand,
-    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, KeysCommand,
+    CredentialCommand, DocumentationCacheCommand, DocumentationCommand, ImageCommand, KeysCommand,
     OptionsCommand, OriginCommand, PackageCommand, RegistryCommand, RegistryStageCommand,
     RuntimeConfigCommand, SbCertsCommand, StoreCommand, TrustCommand,
 };
@@ -115,17 +115,20 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 /// runtime classification before the crate compiles.
 fn requires_host_runtime(command: &PackageCommand) -> bool {
     match command {
-        PackageCommand::Install {
-            from,
-            system,
-            image,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => *system || from.is_some() || image.is_some() || *kexec || *reboot || *live || *drain,
-        PackageCommand::Update { system, .. }
+        PackageCommand::Image { .. } | PackageCommand::Reconcile { .. } => true,
+        PackageCommand::Install { system, .. }
+        | PackageCommand::Remove { system, .. }
+        | PackageCommand::Autoremove { system }
+        | PackageCommand::Reinstall { system, .. }
+        | PackageCommand::FullUpgrade { system }
+        | PackageCommand::Hold { system, .. }
+        | PackageCommand::Unhold { system, .. }
+        | PackageCommand::Verify { system, .. }
+        | PackageCommand::Source { system, .. }
+        | PackageCommand::Gc { system }
+        | PackageCommand::Update { system, .. }
+        | PackageCommand::Upgrade { system, .. }
+        | PackageCommand::Rollback { system, .. }
         | PackageCommand::Search { system, .. }
         | PackageCommand::Show { system, .. }
         | PackageCommand::List { system, .. }
@@ -136,23 +139,6 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
         | PackageCommand::Held { system, .. }
         | PackageCommand::Orphans { system, .. }
         | PackageCommand::Clean { system, .. } => *system,
-        PackageCommand::Upgrade {
-            system,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => *system || *kexec || *reboot || *live || *drain,
-        PackageCommand::Rollback {
-            system,
-            image,
-            kexec,
-            reboot,
-            live,
-            drain,
-            ..
-        } => *system || *image || *kexec || *reboot || *live || *drain,
         PackageCommand::Registry { system, .. } => *system,
         PackageCommand::Docs { command } => documentation_requires_host_runtime(command),
         PackageCommand::Options { command } => options_require_host_runtime(command),
@@ -163,16 +149,7 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
             AttestCommand::Enroll { .. } => false,
         },
         PackageCommand::TestVerifyPackageAttestation { system, .. } => *system,
-        PackageCommand::Remove { .. }
-        | PackageCommand::Autoremove
-        | PackageCommand::Reinstall { .. }
-        | PackageCommand::FullUpgrade
-        | PackageCommand::Hold { .. }
-        | PackageCommand::Unhold { .. }
-        | PackageCommand::Gc
-        | PackageCommand::Verify { .. }
-        | PackageCommand::Source { .. }
-        | PackageCommand::Credential(_) => false,
+        PackageCommand::Credential(_) => false,
         PackageCommand::ActivatePreEtcSwap { .. }
         | PackageCommand::ActivatePostEtcSwap { .. }
         | PackageCommand::ActivateRestoreRoutedSources { .. }
@@ -200,6 +177,8 @@ fn requires_host_runtime(command: &PackageCommand) -> bool {
 /// they do not write.
 fn is_read_only(command: &PackageCommand) -> bool {
     match command {
+        PackageCommand::Image { command } => matches!(command, ImageCommand::List),
+        PackageCommand::Reconcile { .. } => false,
         PackageCommand::Search { .. }
         | PackageCommand::Show { .. }
         | PackageCommand::List { .. }
@@ -226,15 +205,15 @@ fn is_read_only(command: &PackageCommand) -> bool {
         PackageCommand::Registry { command, .. } => apm_registry_is_read_only(command),
         PackageCommand::Install { .. }
         | PackageCommand::Remove { .. }
-        | PackageCommand::Autoremove
+        | PackageCommand::Autoremove { .. }
         | PackageCommand::Reinstall { .. }
         | PackageCommand::Update { .. }
         | PackageCommand::Upgrade { .. }
-        | PackageCommand::FullUpgrade
+        | PackageCommand::FullUpgrade { .. }
         | PackageCommand::Hold { .. }
         | PackageCommand::Unhold { .. }
         | PackageCommand::Clean { .. }
-        | PackageCommand::Gc
+        | PackageCommand::Gc { .. }
         | PackageCommand::ActivatePreEtcSwap { .. }
         | PackageCommand::ActivatePostEtcSwap { .. }
         | PackageCommand::ActivateRestoreRoutedSources { .. }
@@ -298,7 +277,8 @@ fn documentation_is_read_only(command: &DocumentationCommand) -> bool {
 fn runtime_config_is_read_only(command: &RuntimeConfigCommand) -> bool {
     matches!(
         command,
-        RuntimeConfigCommand::Status { .. }
+        RuntimeConfigCommand::Rollback { list: true, .. }
+            | RuntimeConfigCommand::Status { .. }
             | RuntimeConfigCommand::List { .. }
             | RuntimeConfigCommand::Diff { .. }
     )
@@ -496,8 +476,26 @@ mod tests {
 
         for arguments in [
             &["list", "--system"][..],
+            &["install", "nginx", "--system"][..],
+            &["remove", "nginx", "--system"][..],
+            &["reinstall", "nginx", "--system"][..],
+            &["upgrade", "--system"][..],
+            &["full-upgrade", "--system"][..],
+            &["autoremove", "--system"][..],
+            &["hold", "nginx", "--system"][..],
+            &["unhold", "nginx", "--system"][..],
+            &["verify", "nginx", "--system"][..],
+            &["source", "nginx", "--system"][..],
+            &["rollback", "--system"][..],
+            &["gc", "--system"][..],
+            &["reconcile", "--system", "--from", "desired.toml"][..],
+            &["image", "install", "aos"][..],
+            &["image", "upgrade"][..],
+            &["image", "rollback"][..],
+            &["image", "list"][..],
+            &["config", "rollback", "--list"][..],
             &["docs", "search", "hello", "--system"][..],
-            &["install", "hello", "--image", "raw"][..],
+            &["image", "download", "hello", "--format", "raw"][..],
             &["attest", "quote", "--nonce", "00", "--output-dir", "/tmp/q"][..],
             &["_test-systemd-client", "is-active", "a.service"][..],
             &["activate-post-etc-swap", "--plan", "/tmp/plan"][..],

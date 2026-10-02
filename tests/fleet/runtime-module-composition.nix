@@ -304,7 +304,7 @@ in {
           cat > /run/runtime-module-desired.toml <<'EOF'
           packages = ["nginx", "envoy", "k3s-worker"]
           EOF
-          HOME=/tmp USER=root {APM} install --system \
+          HOME=/tmp USER=root {APM} reconcile --system \
             --from /run/runtime-module-desired.toml --yes
 
       """), timeout=1200)
@@ -577,7 +577,7 @@ in {
       # runtime module set, not the currently empty authoring worktree or the
       # runtime descriptor from the generation being left behind.
       runtime.succeed(
-          f"{APM} rollback --system --generation {configured}", timeout=600
+          f"{APM} config rollback --generation {configured}", timeout=600
       )
       assert current_generation() == configured
       rollback_manifest = json.loads(runtime.succeed(

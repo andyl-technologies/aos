@@ -190,7 +190,7 @@ in {
     # nftables.service — load the firewall rules at boot.
     systemd.services."nftables" = {
       description = "nftables Firewall";
-      # Live in-place upgrades (`apm upgrade --system`): when the firewall
+      # Live in-place upgrades (`apm image upgrade`): when the firewall
       # ruleset changes between generations, reload gracefully via
       # `ExecReload=` (an atomic `nft -f`) instead of a stop+start that
       # would briefly `flush ruleset` and leave a window with no firewall.
