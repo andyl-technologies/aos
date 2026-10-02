@@ -106,9 +106,13 @@ where
             destination_authority: *authority.id(),
             import_digest,
         };
-        let mut issuer_keys = original
-            .historical_keys()?
-            .unwrap_or_else(|| source.issuer_keys.clone());
+        let mut issuer_keys = match original.historical_keys()? {
+            Some(keys) => keys,
+            None if original.baseline().authority() == &source.authority => {
+                source.issuer_keys.clone()
+            }
+            None => return Err(invalid()),
+        };
         issuer_keys.sort_by(|left, right| {
             (&left.issuer, &left.key_id).cmp(&(&right.issuer, &right.key_id))
         });

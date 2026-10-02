@@ -10,6 +10,10 @@ mod projection;
 #[path = "disclosure/destination.rs"]
 mod destination;
 
+#[path = "disclosure/publication.rs"]
+mod publication;
+pub(crate) use publication::publish;
+
 use crate::bucket::held::HeldBucket;
 use crate::bucket::publication::SelectedObservation;
 use crate::bucket::{BucketBinding, FileBucket};
@@ -24,6 +28,7 @@ use super::{LocalControlInputs, SharedCheck, invalid};
 
 /// Keeps independently checked source rights and exact physical controls private.
 struct DisclosureSource<'guard, F: LocalFs> {
+    authority: crate::guard::OriginalAuthority,
     snapshots: Vec<AuthorizedSnapshot>,
     issuer_keys: Vec<terrane_core::auth::IssuerKey>,
     requests: Vec<AuthorizedRef>,
@@ -159,6 +164,7 @@ where
     observed.revalidate().await?;
 
     Ok(DisclosureSource {
+        authority,
         issuer_keys: concrete.keys().to_vec(),
         snapshots,
         requests,

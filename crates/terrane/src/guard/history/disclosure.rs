@@ -316,7 +316,11 @@ impl<S: Store, C: Clock> Guard<S, C> {
     }
 
     #[cfg(all(feature = "std", unix))]
-    fn history_disclosure_roles(
+    /// Returns checked local and retained imported disclosure-role mappings.
+    ///
+    /// # Errors
+    /// Rejects unavailable or inconsistent protected role and import controls.
+    pub(crate) fn history_disclosure_roles(
         &self,
     ) -> Result<
         Vec<crate::repository::local_authority::public_trust::DisclosureRoleRecord>,
@@ -349,7 +353,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         };
         let checked = match observation.held {
             Some(held) => {
-                self.check_original_commit_held(baseline, association, held)
+                self.recheck_original_commit_observed(baseline, association, held)
                     .await?
             }
             None => self.check_original_commit(baseline, association).await?,

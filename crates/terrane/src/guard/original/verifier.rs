@@ -213,7 +213,6 @@ impl<
                     } = publication;
                     let held = SingleHeld::acquire(concrete.store()).await?;
                     let destination = held.destination();
-                    let selected = destination.observe_publication().await?;
                     let proof = destination.identity_proof();
                     let guard = concrete.held_guard(held.destination(), clock)?;
                     *guard.original_verifier.write().map_err(|_| unavailable())? = state.verifier;
@@ -223,6 +222,7 @@ impl<
                         .map_err(|_| unavailable())? = state.baselines;
                     *guard.original_commits.write().map_err(|_| unavailable())? = state.commits;
                     let coordinator = Coordinator::new(guard, timing, FsRef(concrete.store().fs()));
+                    let selected = coordinator.store().observe_publication().await?;
                     let namespace = DomainNamespace {
                         root: publication_authority.root.clone(),
                         domain: publication_authority.domain.clone(),
@@ -543,7 +543,7 @@ impl<S, C> Guard<S, C> {
         };
         let checked = match observation.identity() {
             Some(held) => {
-                self.check_original_commit_held(baseline, view, held)
+                self.recheck_original_commit_observed(baseline, view, held)
                     .await?
             }
             None => self.check_original_commit(baseline, view).await?,
@@ -712,6 +712,30 @@ impl<S, C> Guard<S, C> {
         }
         self.check_original_commit_at(baseline, view, Some(held), false)
             .await
+    }
+
+    /// Rechecks an installed original context under an actual held read observation.
+    ///
+    /// This validates protected records without installing or supplementing any
+    /// authority. The existing context and native retention owner must match the
+    /// freshly checked result exactly, including every imported control pin.
+    ///
+    /// # Errors
+    /// Rejects missing dispatch or installed context, mismatched physical holders,
+    /// changed protected records or context, and unavailable synchronization.
+    pub(crate) async fn recheck_original_commit_observed<'a>(
+        &self,
+        baseline: &'a RetainedBootstrap,
+        view: AssociationView<'a>,
+        held: &'a HeldIdentity<'a>,
+    ) -> Result<OriginalCommitContext, StoreFailure> {
+        let existing = self.original_commit(view.commit)?;
+        let verifier = self.original_verifier()?;
+        let checked = (verifier.commit)(baseline, view, Some(held)).await?;
+        if existing != checked || self.original_commit(view.commit)? != checked {
+            return Err(invalid());
+        }
+        Ok(checked)
     }
 
     /// Installs a fully checked protected import during an explicit held transition.
