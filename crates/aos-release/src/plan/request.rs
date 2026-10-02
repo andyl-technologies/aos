@@ -51,6 +51,16 @@ pub struct ReleasePlanRequest {
     pub registry_base_commit: String,
     /// Exact compare-and-swap registry generation.
     pub registry_base_generation: u64,
+    /// Whether the base is the root commit of a registry that no surface
+    /// serves yet.
+    ///
+    /// A first release's base must be installed on each surface by the signed
+    /// `step bootstrap` before anything is published there. The planner does
+    /// not copy the flag into the plan; the bootstrap intents bind the plan
+    /// digest and base commit instead. Omitted when false, so ordinary
+    /// requests keep their exact bytes.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub first_release: bool,
     /// Source reachability and authorization policy.
     pub source: PlanningSource,
     /// Complete Linux system-image intent.
@@ -171,4 +181,65 @@ pub fn planned_destinations(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::canonical;
+
+    /// Returns a minimal reviewed request as JSON.
+    fn request_json() -> serde_json::Value {
+        let digest = Sha256Digest::of_bytes(b"policy").to_string();
+        serde_json::json!({
+            "schema_version": PLAN_REQUEST,
+            "release_id": "release-2026.9.0-dev.20260927.1",
+            "version": "2026.9.0-dev.20260927.1",
+            "release_class": "edge",
+            "registry": "andyl/experimental",
+            "registry_base_commit": "a".repeat(64),
+            "registry_base_generation": 0,
+            "source": {
+                "protected_branch": "master",
+                "source_tag": "release/2026.9.0-dev.20260927.1",
+                "contributor_authorization_digest": digest,
+            },
+            "images": [],
+            "signers": [],
+            "surfaces": [],
+            "destinations": [],
+            "retention": {
+                "policy_id": "retention",
+                "policy_digest": digest,
+                "require_corresponding_source": true,
+            },
+            "public_evidence_policy_digest": digest,
+            "restricted_operator_policy_digest": digest,
+        })
+    }
+
+    #[test]
+    fn ordinary_requests_omit_the_first_release_flag() -> Result<()> {
+        let request: ReleasePlanRequest = serde_json::from_value(request_json())?;
+        assert!(!request.first_release);
+
+        let bytes = canonical::to_vec(&request)?;
+        let text = std::str::from_utf8(&bytes)?;
+        assert!(!text.contains("first_release"));
+        Ok(())
+    }
+
+    #[test]
+    fn first_release_requests_round_trip_the_flag() -> Result<()> {
+        let mut value = request_json();
+        value["first_release"] = serde_json::Value::Bool(true);
+        let request: ReleasePlanRequest = serde_json::from_value(value)?;
+        assert!(request.first_release);
+
+        let bytes = canonical::to_vec(&request)?;
+        let decoded: ReleasePlanRequest = canonical::from_slice(&bytes, "plan request")?;
+        assert!(decoded.first_release);
+        assert_eq!(decoded, request);
+        Ok(())
+    }
 }
