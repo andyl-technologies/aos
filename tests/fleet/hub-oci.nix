@@ -1011,6 +1011,74 @@ in {
         f"{HUB}/oauth2/token"
     ))["access_token"]
 
+    # Staging reads the destination's public HEAD and ref advertisement at the
+    # upload URL and calls the stage API on the same origin. Serve the
+    # registry's Git surface and binary cache from the Hub control origin.
+    reviewed(
+        publisher,
+        "control-endpoint-create",
+        "endpoint add http://hub:8420 --stable-id fleet-native-hub --org acme "
+        "--acknowledge-cleartext --network-policy instance:public@1 --ingress hub "
+        "--listener-provider hub-native --listener-resource-id aos-hub.service "
+        "--probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 "
+        "--probe-public-key ${fixture.probePublicKey}",
+        token,
+    )
+    control_endpoint = json.loads(publisher.succeed(
+        hub_command("endpoint show fleet-native-hub", token)
+    ))["data"]["endpoint"]
+    control_generation = int(control_endpoint["desired_generation"])
+    control_observation = {
+        "stableId": "fleet-native-hub",
+        "expectedObservationVersion": control_endpoint["resource_version"],
+        "controllerLeaseId": "fleet-oci-controller",
+        "controllerGeneration": 1,
+        "observation": {
+            "observedGeneration": control_generation,
+            "boundaryRevision": control_endpoint["desired"]["boundary_revision"],
+            "state": "healthy",
+            "listenerObserved": True,
+            "tlsObserved": False,
+        },
+    }
+    publisher.succeed(
+        f"{CURL} -fsS -X POST "
+        "-H 'Content-Type: application/json' "
+        "-H 'Connect-Protocol-Version: 1' "
+        f"-H 'Authorization: Bearer {controller_token}' "
+        f"--data {shlex.quote(json.dumps(control_observation))} "
+        f"{HUB}/aos.hub.v1.DeliveryControllerService/ReportEndpoint"
+    )
+    reviewed(
+        publisher,
+        "containers-git-route-create",
+        "route add registry:acme/containers --stable-id containers-git-route "
+        f"--endpoint fleet-native-hub@{control_generation} "
+        "--base-path /acme/containers --mode hub-proxy --placement primary "
+        "--serves git --serves cache --access public",
+        token,
+    )
+    git_route = next(
+        item
+        for item in json.loads(publisher.succeed(
+            hub_command("route list registry:acme/containers", token)
+        ))["data"]["routes"]
+        if item["stable_id"] == "containers-git-route"
+    )
+    reviewed(
+        publisher,
+        "containers-git-route-enable",
+        "route enable containers-git-route "
+        f"--if-version {shlex.quote(git_route['resource_version'])}",
+        token,
+    )
+    publisher.wait_until_succeeds(
+        hub_command("route list registry:acme/containers", token)
+        + f" | {JQ} -e '.data.routes[] | select(.stable_id == \"containers-git-route\") "
+        "| .observation.state == \"healthy\"'",
+        timeout=180,
+    )
+
     publisher_apr(f"""
         rm -rf /var/tmp/container-bootstrap-surface
         {APR} origin upload --registry containers \
