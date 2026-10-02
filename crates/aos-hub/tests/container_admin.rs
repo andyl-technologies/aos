@@ -492,6 +492,20 @@ async fn direct_connect_requests_cannot_bypass_container_rollout_gates() {
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{method}");
     }
 
+    let gc_cancel = hub
+        .response(
+            "CancelContainerGcRun",
+            Some(&owner),
+            &pb::CancelContainerGcRunRequest {
+                registry: hub.registry.clone(),
+                run_id: "gc-run".to_string(),
+                expected_resource_version: "1".to_string(),
+                idempotency_key: "disabled-gc-cancel".to_string(),
+            },
+        )
+        .await;
+    assert_eq!(gc_cancel.status(), StatusCode::SERVICE_UNAVAILABLE);
+
     let gc_requeue = hub
         .response(
             "RequeueContainerGcPlacementAction",
@@ -765,6 +779,62 @@ async fn enabled_gc_plan_replay_returns_the_same_actor_bound_review() {
         hub.call("PlanRunContainerGc", &owner, &request).await;
     assert_eq!(replay, first);
     assert!(!first.plan.unwrap().plan_id.is_empty());
+}
+
+#[tokio::test]
+async fn gc_cancel_requires_configuration_and_returns_terminal_runs_unchanged() {
+    let hub = spawn_hub().await;
+    let owner = hub.bearer("gc-cancel@example.test", "gc-cancel-token").await;
+    let reader = hub
+        .bearer_with_permissions(
+            "gc-cancel-reader@example.test",
+            "gc-cancel-reader-token",
+            hub.registry_id,
+            vec![Permission::Read],
+        )
+        .await;
+    // The test registry has no provider placement, so planning fails closed
+    // and the run is already terminal when cancellation arrives.
+    let run_id = hub.seed_gc_plan(&owner, "gc-cancel-terminal-plan").await;
+    let request = pb::CancelContainerGcRunRequest {
+        registry: hub.registry.clone(),
+        run_id: run_id.clone(),
+        expected_resource_version: "1".to_string(),
+        idempotency_key: "gc-cancel-terminal".to_string(),
+    };
+
+    assert_eq!(
+        hub.response("CancelContainerGcRun", Some(&reader), &request)
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    let cancelled: pb::ContainerGcRunResponse =
+        hub.call("CancelContainerGcRun", &owner, &request).await;
+    let run = cancelled.run.unwrap();
+    assert_eq!((run.run_id.as_str(), run.state.as_str()), (run_id.as_str(), "failed"));
+    assert!(!cancelled.blockers.is_empty());
+
+    let missing = pb::CancelContainerGcRunRequest {
+        run_id: "missing-gc-run".to_string(),
+        ..request.clone()
+    };
+    assert_eq!(
+        hub.response("CancelContainerGcRun", Some(&owner), &missing)
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let unversioned = pb::CancelContainerGcRunRequest {
+        expected_resource_version: String::new(),
+        ..request
+    };
+    assert_eq!(
+        hub.response("CancelContainerGcRun", Some(&owner), &unversioned)
+            .await
+            .status(),
+        StatusCode::BAD_REQUEST
+    );
 }
 
 #[tokio::test]

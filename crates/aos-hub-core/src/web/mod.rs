@@ -21,6 +21,10 @@
 //!   read shapes) and threads the signed-in identity via an explicit
 //!   [`SessionIndicator`](console_render::SessionIndicator), superseding the
 //!   anonymous proto-shaped builders in [`render`].
+//! - [`host_delivery`] — whether the request's exact host delivers each listed
+//!   registry, from the enabled routes the route dispatcher already resolved,
+//!   so the home and registry pages can mark registries clients cannot fetch
+//!   from this host.
 //!
 //! The browser identity boundary is shared the same way:
 //!
@@ -50,6 +54,7 @@ pub mod console_render;
 pub mod container_browse_pages;
 pub mod csrf;
 pub mod help;
+pub mod host_delivery;
 pub mod release_browse;
 pub mod release_pages;
 pub mod render;

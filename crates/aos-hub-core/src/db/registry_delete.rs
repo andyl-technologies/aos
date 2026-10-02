@@ -206,7 +206,9 @@ impl Database {
         let mut statements = vec![
             // Reassert quiescence while taking the registry row's write
             // lock. Publication admission must retain the same parent row,
-            // so it cannot race new work behind this teardown fence.
+            // so it cannot race new work behind this teardown fence. An
+            // expired or aborted GC plan cannot be applied, so it and its
+            // never-claimed actions are retired below instead of blocking.
             Statement::new(
                 "UPDATE registries SET updated_at = updated_at
                  WHERE id = ?1 AND scope_key = ?2 AND resource_version = ?3
@@ -231,10 +233,15 @@ impl Database {
                    AND NOT EXISTS (SELECT 1 FROM oci_leases
                      WHERE registry_id = ?1 AND expires_at > ?4)
                    AND NOT EXISTS (SELECT 1 FROM oci_gc_runs
-                     WHERE registry_id = ?1 AND state IN('planned', 'applying'))
-                   AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_actions
                      WHERE registry_id = ?1
-                       AND state IN('pending', 'claimed', 'failed'))
+                       AND (state = 'applying'
+                         OR (state = 'planned' AND expires_at > ?4)))
+                   AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_actions action
+                     WHERE action.registry_id = ?1
+                       AND action.state IN('pending', 'claimed', 'failed')
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_runs action_run
+                         WHERE action_run.id = action.run_id
+                           AND action_run.state IN('planned', 'aborted')))
                    AND NOT EXISTS (SELECT 1 FROM oci_untracked_repair_plans
                      WHERE registry_id = ?1
                        AND state IN('planned', 'pending', 'claimed', 'failed'))

@@ -878,6 +878,43 @@ in {
     """))
     inventory_seeded_at = int(hub.succeed("date +%s").strip())
 
+    def http_status(machine, url, accept="text/html"):
+        return machine.succeed(
+            f"{CURL} -sS -o /dev/null -w '%{{http_code}}' "
+            f"-H {shlex.quote('Accept: ' + accept)} {shlex.quote(url)}"
+        ).strip()
+
+    # A registry with no delivery route on any host is still browsable on the
+    # control authority. Its page and the instance home both say that this
+    # host does not deliver it; machine clients and absent slugs still 404.
+    unrouted_trust = publisher.succeed(textwrap.dedent(f"""
+        set -eu
+        export HOME=/var/lib/aos-oci-publisher USER=publisher
+        output=$({APR} keys generate initial --registry unrouted 2>&1)
+        printf '%s\n' "$output" >&2
+        printf '%s\n' "$output" | ${pkgs.gawk}/bin/awk '/Public key:/ {{print $NF; exit}}'
+    """), timeout=120).strip()
+    assert unrouted_trust.startswith("unrouted:Ed25519:"), unrouted_trust
+    reviewed(
+        publisher,
+        "unrouted-registry-create",
+        "registry create --org acme --name unrouted --visibility public "
+        f"--trust-key {shlex.quote(unrouted_trust)}",
+        token,
+    )
+    unrouted_page = consumer.succeed(f"{CURL} -fsS {HUB}/acme/unrouted/")
+    assert "no public route on this host yet" in unrouted_page, unrouted_page
+    assert unrouted_trust in unrouted_page, unrouted_page
+    instance_home = consumer.succeed(f"{CURL} -fsS {HUB}/")
+    unrouted_row = next(
+        row for row in instance_home.split("<tr")
+        if 'href="/acme/unrouted/"' in row
+    )
+    assert "no route on this host" in unrouted_row, unrouted_row
+    assert http_status(consumer, f"{HUB}/acme/unrouted/-/packages") == "200"
+    assert http_status(consumer, f"{HUB}/acme/unrouted/", "application/json") == "404"
+    assert http_status(consumer, f"{HUB}/acme/absent/") == "404"
+
     endpoints = [
         ("oci-public", "https://hub:8443", "hub-oci-public"),
         ("oci-private", "https://192.168.50.11:8443", "hub-oci-private"),
@@ -943,6 +980,10 @@ in {
             hub_command(f"route list registry:acme/{slug}", token)
         ))["data"]["routes"]
         route = next(item for item in routes if item["stable_id"] == route_id)
+        if slug == "containers":
+            # `route add` creates the registry's only route disabled.
+            disabled_page = consumer.succeed(f"{CURL} -fsS {HUB}/acme/containers/")
+            assert "delivery route is disabled" in disabled_page, disabled_page
         reviewed(
             publisher,
             f"{route_id}-enable",
@@ -2042,6 +2083,145 @@ in {
     assert inventory[3] >= inventory_seeded_at, (inventory, inventory_seeded_at)
     assert inventory[1] == blob_count, (inventory, blob_count)
     assert inventory[2] == blob_count, (inventory, blob_count)
+
+    # A plan created only to inspect blockers must not hold registry deletion
+    # for its whole review lifetime. An empty disposable registry plans with no
+    # candidates once the native maintenance loop has inventoried its
+    # placement; cancelling that review lets the purge fence and the reviewed
+    # registry deletion proceed immediately.
+    token = browser_session_token()
+    reviewed(
+        publisher,
+        "gc-cancel-registry-create",
+        "registry create --org acme --name gc-cancel --visibility private",
+        token,
+    )
+    reviewed(
+        publisher,
+        "gc-cancel-placement-create",
+        "placement add registry:acme/gc-cancel primary --binding instance-default "
+        "--prefix gc-cancel --kind complete --desired-state active --read enabled",
+        token,
+    )
+    disposable_placement = json.loads(publisher.succeed(
+        hub_command("placement show registry:acme/gc-cancel primary", token)
+    ))["data"]["placement"]
+    reviewed(
+        publisher,
+        "gc-cancel-placement-scan",
+        "placement scan registry:acme/gc-cancel primary --wait --timeout 2m "
+        f"--if-version {shlex.quote(disposable_placement['resource_version'])}",
+        token,
+        timeout=240,
+    )
+    disposable_placement = json.loads(publisher.succeed(
+        hub_command("placement show registry:acme/gc-cancel primary", token)
+    ))["data"]["placement"]
+    reviewed(
+        publisher,
+        "gc-cancel-placement-promote",
+        "placement promote registry:acme/gc-cancel primary "
+        f"--if-version {shlex.quote(disposable_placement['resource_version'])}",
+        token,
+    )
+
+    # Planning first creates the registry's mutation state and fails closed
+    # until the next maintenance pass inventories the placement, so retry with
+    # fresh plan keys until one review is planned. Failed plans never block;
+    # the pause keeps the retry from flooding the Hub with failed reviews.
+    publisher.wait_until_succeeds(
+        "{ "
+        + hub_command(
+            "registry container gc plan acme/gc-cancel --if-version 0 "
+            "--idempotency-key hub-oci-gc-diagnostic-$(date +%s%N)",
+            token,
+        )
+        + " > /tmp/hub-oci-gc-diagnostic.json"
+        + f" && {JQ} -e '.data.run.state == \"planned\"' /tmp/hub-oci-gc-diagnostic.json; "
+        + "} || { sleep 10; false; }",
+        timeout=420,
+    )
+    diagnostic = json.loads(
+        publisher.succeed("cat /tmp/hub-oci-gc-diagnostic.json")
+    )["data"]["run"]
+    assert int(diagnostic["candidate_object_count"]) == 0, diagnostic
+    # Inventory waits can outlive the session JWT used to create the review.
+    token = browser_session_token()
+
+    disposable_version = json.loads(publisher.succeed(
+        hub_command("registry show acme/gc-cancel", token)
+    ))["data"]["registry"]["resource_version"]
+    disposable_fence = json.loads(publisher.succeed(hub_command(
+        "registry container gc purge-fence plan acme/gc-cancel "
+        f"--action begin --if-version {shlex.quote(disposable_version)} "
+        "--idempotency-key hub-oci-gc-cancel-fence-plan",
+        token,
+    )))["data"]["plan"]
+    disposable_fence_version = next(
+        value.removeprefix("resource_version=")
+        for value in disposable_fence["input_versions"]
+        if value.startswith("resource_version=")
+    )
+
+    def apply_disposable_fence(label):
+        return hub_command(
+            "registry container gc purge-fence apply "
+            f"--plan-id {disposable_fence['plan_id']} "
+            f"--confirm-hash {disposable_fence['confirmation_hash']} "
+            f"--if-version {shlex.quote(disposable_fence_version)} "
+            f"--idempotency-key {label} --yes",
+            token,
+        )
+
+    # The unexpired planned review is GC work, so the fence fails closed.
+    publisher.fail(apply_disposable_fence("hub-oci-gc-cancel-fence-blocked"))
+
+    cancel_command = hub_command(
+        f"registry container gc cancel acme/gc-cancel {diagnostic['run_id']} "
+        f"--if-version {shlex.quote(diagnostic['resource_version'])} "
+        "--idempotency-key hub-oci-gc-cancel",
+        token,
+    )
+    cancelled = json.loads(publisher.succeed(cancel_command))["data"]["run"]
+    assert cancelled["state"] == "aborted", cancelled
+    assert cancelled["failure"] == "cancelled by operator before apply", cancelled
+    replayed = json.loads(publisher.succeed(cancel_command))["data"]["run"]
+    assert replayed == cancelled, (replayed, cancelled)
+    publisher.fail(hub_command(
+        "registry container gc apply "
+        f"--plan-id {diagnostic['run_id']} "
+        f"--confirm-hash {diagnostic['confirmation_hash']} "
+        "--idempotency-key hub-oci-gc-apply-cancelled --yes",
+        token,
+    ))
+    aborted_runs = json.loads(publisher.succeed(hub_command(
+        "registry container gc list acme/gc-cancel --resource runs --state aborted",
+        token,
+    )))["data"]["runs"]
+    assert any(
+        run["run_id"] == diagnostic["run_id"] for run in aborted_runs
+    ), aborted_runs
+
+    publisher.succeed(apply_disposable_fence("hub-oci-gc-cancel-fence-apply"))
+    publisher.wait_until_succeeds(
+        hub_command(
+            f"registry container gc purge-fence status {disposable_fence['plan_id']}",
+            token,
+        )
+        + f" | {JQ} -e '.data.fence.post_fence_inventory_ready == true'",
+        timeout=360,
+    )
+    # Deletion runs as an operation; --wait returns once it has succeeded and
+    # reuses the operator's fence instead of acquiring another.
+    reviewed(
+        publisher,
+        "gc-cancel-registry-delete",
+        "registry delete acme/gc-cancel "
+        f"--if-version {shlex.quote(disposable_version)} --wait --timeout 3m",
+        token,
+        timeout=240,
+    )
+    publisher.fail(hub_command("registry show acme/gc-cancel", token))
 
     # The published registry's deletion review reports its structured
     # blockers, and the apply is refused with the same breakdown.
