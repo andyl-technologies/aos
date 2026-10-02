@@ -545,6 +545,15 @@ in
         exit 1
       fi
       ${pkgs.coreutils}/bin/cat /tmp/apr-publish-package.json
+      # The public catalog projects the default channel's released tree, so
+      # the published package becomes visible only through a signed release.
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json release 1.0.0 --registry maintenance \
+        --key-id maintainer --channel stable --init-channel \
+        >/tmp/apr-release-initial.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-release-initial.json >&2
+        exit 1
+      fi
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json web generate --registry maintenance \
         --output /tmp/producer-web >/tmp/apr-web-generate.json
@@ -639,10 +648,15 @@ in
         /tmp/publication-abort.json >/dev/null
       hub_cli_into /tmp/registry-channels.json registry channel list \
         operations/maintenance --page-size 1
-      ${pkgs.jq}/bin/jq -e '(.data.channels // []) == []' \
+      ${pkgs.jq}/bin/jq -e \
+        '.data.channels | any(.name == "stable" and .frontier == "1.0.0")' \
         /tmp/registry-channels.json >/dev/null
+      hub_cli_into /tmp/registry-channel-stable.json registry channel show \
+        operations/maintenance stable
+      ${pkgs.jq}/bin/jq -e '(.data.channel // .data).frontier == "1.0.0"' \
+        /tmp/registry-channel-stable.json >/dev/null
       expect_hub_error registry-channel-missing 'not.?found' \
-        registry channel show operations/maintenance stable
+        registry channel show operations/maintenance missing
 
       reviewed registry-mirror-set registry mirror set operations/maintenance \
         --source https://mirror.operations.example.test/registry/ \
@@ -773,6 +787,16 @@ in
       ${pkgs.jq}/bin/jq -e \
         '.cache_pointer_updated == true and .committed == true' \
         /tmp/apr-cache-b.json >/dev/null
+      if ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json release 1.0.1 --registry maintenance \
+        --key-id maintainer >/tmp/apr-release-cache-stack.json 2>&1 \
+        || ! HOME="$producer_home" PATH="$producer_path" \
+        ${pkgs.aos.apr}/bin/apr --json channel advance stable 1.0.1 \
+        --count 256 --registry maintenance --key-id maintainer \
+        >>/tmp/apr-release-cache-stack.json 2>&1; then
+        ${pkgs.coreutils}/bin/cat /tmp/apr-release-cache-stack.json >&2
+        exit 1
+      fi
       HOME="$producer_home" PATH="$producer_path" \
         ${pkgs.aos.apr}/bin/apr --json origin upload \
           --registry maintenance --upload-url "file://$producer_surface" \
@@ -1005,9 +1029,11 @@ in
       hub_cli cache integration list operations/build-cache --page-size 1 \
         >/tmp/cache-integration-list-empty.json
 
+      # Released 1.0.0 and 1.0.1 have verified snapshots; the exact 9.0.0
+      # selector names no release, so refreshing this policy must fail.
       reviewed cache-retention-set cache retention set operations/build-cache \
         --registry operations/maintenance --current-catalog --channel stable \
-        --recent-releases 2 --release 1.0.0 --semver '>=1.0.0,<2.0.0' \
+        --recent-releases 2 --release 9.0.0 --semver '>=1.0.0,<2.0.0' \
         --removal-grace 1h --if-version absent \
         >/tmp/cache-retention-set.json
       retention_version=$(resource_version /tmp/cache-retention-set.json)
@@ -1422,6 +1448,37 @@ in
         >/tmp/disposable-registry-show.json
       disposable_registry_version=$(resource_version \
         /tmp/disposable-registry-show.json)
+
+      # Final registry deletion requires a reviewed OCI purge writer fence,
+      # even for a registry that never held container state. With no
+      # placements, the empty registry is purge-ready as soon as it is fenced.
+      hub_cli_into /tmp/disposable-purge-plan.json \
+        registry container gc purge-fence plan analytics/disposable \
+        --action begin --if-version "$disposable_registry_version" \
+        --idempotency-key disposable-purge-plan
+      purge_plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id \
+        /tmp/disposable-purge-plan.json)
+      purge_confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash \
+        /tmp/disposable-purge-plan.json)
+      hub_cli_into /tmp/disposable-purge-planned.json \
+        registry container gc purge-fence status "$purge_plan_id"
+      purge_plan_version=$(${pkgs.jq}/bin/jq -er \
+        '.data.fence | select(.plan_state == "planned" and .fence_state == "absent")
+          | .plan_resource_version' \
+        /tmp/disposable-purge-planned.json)
+      hub_cli_into /tmp/disposable-purge-apply.json \
+        registry container gc purge-fence apply \
+        --plan-id "$purge_plan_id" --confirm-hash "$purge_confirm_hash" \
+        --if-version "$purge_plan_version" \
+        --idempotency-key disposable-purge-apply --yes
+      ${pkgs.jq}/bin/jq -e \
+        '.data.fence | .plan_state == "applied" and .fence_state == "collecting"
+          and .post_fence_inventory_ready == true' \
+        /tmp/disposable-purge-apply.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/disposable-purge-apply.json >&2
+        exit 1
+      }
+
       reviewed disposable-registry-delete registry delete analytics/disposable \
         --if-version "$disposable_registry_version" \
         >/tmp/disposable-registry-delete.json
@@ -1937,7 +1994,8 @@ in
         | ${pkgs.jq}/bin/jq -e '.data | tostring | contains("maintenance")' >/dev/null
       ${pkgs.aos}/bin/aos --json hub registry releases operations/maintenance \
         --hub "$hub_url" --token "$token" \
-        | ${pkgs.jq}/bin/jq -e '(.data.releases // []) == []' >/dev/null
+        | ${pkgs.jq}/bin/jq -e \
+          '[.data.releases[].semver] | sort == ["1.0.0", "1.0.1"]' >/dev/null
       ${pkgs.aos}/bin/aos --json hub registry package list operations/maintenance \
         --hub "$hub_url" --token "$token" \
         | ${pkgs.jq}/bin/jq -e \
@@ -1955,24 +2013,17 @@ in
       hub_pid=
 
       echo '==> Re-run native maintenance after a clean shutdown'
+      # The legacy `validate run` and `validate repair` operator commands
+      # were removed with legacy Hub validation; offline re-indexing is the
+      # remaining native maintenance command.
       $hub_exec --root "$hub_root" index operations/maintenance
-      $hub_exec --root "$hub_root" validate run operations/maintenance
-      $hub_exec --root "$hub_root" validate run operations/maintenance --depth integrity
-      $hub_exec --root "$hub_root" validate run operations/maintenance --depth deep
-      $hub_exec --root "$hub_root" validate repair operations/maintenance \
-        --external-url "$hub_url"
-      if $hub_exec --root "$hub_root" validate run missing/registry \
-        >/tmp/validate-missing.out 2>&1; then
-        echo 'validation unexpectedly accepted a missing registry' >&2
+      if $hub_exec --root "$hub_root" index missing/registry \
+        >/tmp/index-missing.out 2>&1; then
+        echo 'indexing unexpectedly accepted a missing registry' >&2
         exit 1
       fi
-      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/validate-missing.out
-      if $hub_exec --root "$hub_root" validate repair missing/registry \
-        >/tmp/repair-missing.out 2>&1; then
-        echo 'repair unexpectedly accepted a missing registry' >&2
-        exit 1
-      fi
-      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/repair-missing.out
+      ${pkgs.grep}/bin/grep -Fq "no registry 'missing/registry'" \
+        /tmp/index-missing.out
 
       echo 'native Hub operator lifecycle: PASS'
     '';
