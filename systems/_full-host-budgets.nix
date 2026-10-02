@@ -19,7 +19,4 @@ in {
   aos.image.budgets.maxFirmwarePartitionMiB = lib.mkIf isX86 (lib.mkDefault 448);
   aos.image.budgets.maxDevelopmentPayloadMiB = lib.mkDefault 48;
   aos.image.budgets.maxDownloadMiB = lib.mkDefault 768;
-  # VHD block allocation adds fixed overhead above 800 MiB on AArch64.
-  aos.image.budgets.maxConvertedDownloadMiB =
-    lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 801);
 }

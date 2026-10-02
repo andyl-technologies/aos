@@ -24,6 +24,9 @@ pub mod components;
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 mod mutation;
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+mod registry_deletion;
 #[cfg(target_arch = "wasm32")]
 pub mod transport;
 #[cfg(target_arch = "wasm32")]

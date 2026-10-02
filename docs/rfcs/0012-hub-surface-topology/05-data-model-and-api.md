@@ -3090,6 +3090,42 @@ consumer-cache changes explicitly.
 
 Logical GC and placement eviction are different methods and audit event types.
 
+### Registry deletion
+
+- `PlanDeleteRegistry` returns `RegistryDeletePlanResponse`, which pairs the
+  reviewed `TopologyPlan` with a `RegistryDeletionReadiness`.
+- `DeleteRegistry` applies that plan and returns an `OperationResponse` for one
+  `delete_registry` operation. Replaying the same apply returns the same
+  operation.
+
+The confirmation hash binds only the registry identity and resource version.
+Readiness is evaluated again at apply time and on every controller step, so it
+does not need to be part of the hash. `RegistryDeletionReadiness` carries:
+
+- `verdict`: `blocked`, `automatic`, or `ready`.
+- `blockers`: an exact count for every blocker class (`RegistryDeletionBlockers`).
+- `placements`: the per-placement inventory state (`ready`, `needs_inventory`,
+  `collecting`, `needs_scan`, `has_objects`, or `unavailable`) with its tracked
+  and untracked object counts.
+- `blocking_reasons` and `automatic_steps`: the reasons that refuse deletion,
+  and the steps the operation will take itself.
+- `purge_fence_held`: whether the registry's purge fence is already held.
+
+A `blocked` apply returns `failed_precondition` with the same reasons, creates
+no operation, and leaves the plan unconsumed.
+
+Otherwise the operation's `detail_json` records its phase (`pending`,
+`preparing`, `scanning`, `inventorying`, `deleting`, `deleted`, `blocked`, or
+`failed`). It also records the latest readiness in ProtoJSON form, the planned
+GC runs it abandoned, whether it acquired the purge fence, the placement scans
+it requested, and its inventory attempts per placement.
+
+The native maintenance loop and the Worker topology job advance the operation
+under a leased claim in `placement_scan_claims`, so no new table is needed. The
+final deletion transaction marks the operation succeeded atomically. A changed
+precondition fails the operation as `failed_precondition` with the breakdown,
+never as an internal error.
+
 ## Validation transactions
 
 Mutations that cross records use a plan/apply shape:

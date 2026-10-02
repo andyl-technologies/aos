@@ -14,6 +14,7 @@
 //!   "url": "https://cdn.aos.andyl.org/andyl/experimental/",
 //!   "channel": "edge",
 //!   "trustKeys": ["andyl-experimental:Ed25519:<OpenSSH public-key blob>"],
+//!   "rootOwnerSigners": ["andyl-experimental-provenance-v1"],
 //!   "warning": "Experimental image; not for production workloads."
 //! }
 //! ```
@@ -53,6 +54,10 @@ pub struct ArtifactProfile {
     pub channel: String,
     /// Ed25519 public trust lines installed for the selected registry alias.
     pub trust_keys: Vec<String>,
+    /// Provenance key ids the baked package manager trusts for shared-root
+    /// ownership; every id must be a provenance signer the plan can use.
+    #[serde(default)]
+    pub root_owner_signers: Vec<String>,
     /// User-visible lifecycle notice, required for testing and `edge` artifacts.
     pub warning: String,
 }
@@ -114,6 +119,24 @@ impl ArtifactProfile {
             policy.tier() == RegistryTier::Testing || channel_kind(&self.channel)? == "edge";
         if unsupported_stream && self.warning.trim().is_empty() {
             bail!("testing and edge artifacts require a user-visible lifecycle warning");
+        }
+        Ok(())
+    }
+
+    /// Requires every baked root-owner signer to be a planned provenance key.
+    ///
+    /// The package manager grants shared-root ownership to packages whose
+    /// provenance is signed by these ids, so an image must not trust an id
+    /// the release cannot sign with: that would either bake a dead trust
+    /// entry or, worse, trust a key outside the release's signer roster.
+    ///
+    /// # Errors
+    /// Returns an error when a baked id is not among `provenance_key_ids`.
+    pub fn require_root_owner_signers(&self, provenance_key_ids: &[String]) -> Result<()> {
+        for signer in &self.root_owner_signers {
+            if !provenance_key_ids.contains(signer) {
+                bail!("artifact root-owner signer '{signer}' is not a planned provenance key");
+            }
         }
         Ok(())
     }
@@ -188,8 +211,37 @@ mod tests {
             url: format!("https://cdn.aos.andyl.org/{registry}/"),
             channel: if testing { "edge" } else { "stable" }.into(),
             trust_keys: vec![aos_registry_surface::sshsig::trusted_key_line(&alias, &key)],
+            root_owner_signers: vec![format!("{alias}-provenance-v1")],
             warning: "Experimental image; not for production workloads.".into(),
         }
+    }
+
+    #[test]
+    fn root_owner_signers_decode_by_default_and_must_be_planned_provenance_keys() {
+        let value = serde_json::json!({
+            "enabled": true,
+            "tier": "testing",
+            "registry": "andyl/experimental",
+            "rootEpoch": registry_policy("andyl/experimental").unwrap().root_epoch(),
+            "clientName": "andyl-experimental",
+            "url": "https://cdn.aos.andyl.org/andyl/experimental/",
+            "channel": "edge",
+            "trustKeys": profile("andyl/experimental").trust_keys,
+            "warning": "Experimental image; not for production workloads."
+        });
+        let decoded: ArtifactProfile = serde_json::from_value(value).unwrap();
+        assert!(decoded.root_owner_signers.is_empty());
+        assert!(decoded.require_root_owner_signers(&[]).is_ok());
+
+        let artifact = profile("andyl/experimental");
+        let planned = vec!["andyl-experimental-provenance-v1".to_owned()];
+        assert!(artifact.require_root_owner_signers(&planned).is_ok());
+        assert!(artifact.require_root_owner_signers(&[]).is_err());
+        assert!(
+            artifact
+                .require_root_owner_signers(&["andyl-main-provenance-v1".to_owned()])
+                .is_err()
+        );
     }
 
     #[test]

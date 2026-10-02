@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use anyhow::{Result, bail};
 
 use super::QualificationCase;
-use super::selection::select;
+use super::selection::{requires_predecessor, select};
 use crate::artifact::{ArtifactKind, ArtifactRecord, ArtifactRelation};
 use crate::digest::Sha256Digest;
 use crate::manifest::ReleaseManifestV1;
@@ -25,8 +25,8 @@ use crate::qualification::{
 /// its change scope restricts package cells when the profile is
 /// change-scoped, and its soak sets the A3 observation window. `None` expands
 /// the union of every planned destination (or, for a qualification snapshot,
-/// every contract obligation), which is how build evidence and manifest
-/// structure are checked.
+/// every predecessor-independent contract obligation), which is how build
+/// evidence and manifest structure are checked.
 ///
 /// # Errors
 /// Returns an error for an invalid plan, an unknown destination, missing
@@ -135,14 +135,10 @@ pub(super) fn expand(
             } else {
                 None
             };
-            let predecessor = if requirement.id == super::NATIVE_ADAPTER_MATRIX_REQUIREMENT
-                || requirement.id == "image-update-recovery"
+            let predecessor = if requires_predecessor(&requirement.id)
                 || claim.as_ref().is_some_and(|claim| {
                     claim.minimum_assurance >= AssuranceLevel::A2
-                        && claim
-                            .requirements
-                            .iter()
-                            .any(|id| id == "image-update-recovery")
+                        && claim.requirements.iter().any(|id| requires_predecessor(id))
                 })
                 || package_rule.is_some_and(|rule| {
                     matches!(rule.execution, Some(PackageExecution::RecoveryImage { .. }))

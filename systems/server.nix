@@ -29,6 +29,16 @@
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
 
+  # Arm's uncompressed kernel and complete runtime need the measured upstream
+  # server allowances. Keep edge policy and the native x86 allowances separate.
+  aos.image.budgets = lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") {
+    maxRootMiB = 768;
+    maxBootExecutableMiB = 224;
+    maxFirmwarePartitionMiB = 768;
+    maxDownloadMiB = 1280;
+    maxConvertedDownloadMiB = lib.mkDefault 1792;
+  };
+
   # The service modules retain backwards-compatible enabled defaults. Keep
   # the golden image policy-neutral at a weaker priority so authenticated
   # host.nix or aos.roles.server/aos.roles.edge can select runtime services

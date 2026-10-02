@@ -4,24 +4,17 @@
 
   aos.profiles.experimentalRelease.enable = true;
 
-  # Retain upstream Arm capacity and the native server's x86 allowance:
-  # two 200 MiB boot executables require at least 432 MiB with headroom.
-  aos.image.budgets.maxFirmwarePartitionMiB =
-    if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-    then 512
-    else 448;
-
   # The converted disk formats exceed the compressed raw image budget.
-  # Arm VHD exports exceed 1 GiB once the full recovery ESP is included.
+  # Arm exports carry the full recovery ESP and the larger root payload.
   aos.image.budgets.maxConvertedDownloadMiB =
     if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-    then 1152
+    then 1792
     else 896;
 
   # Recovery archives include the root and both normal and recovery UKIs.
   aos.image.budgets.maxRecoveryBundleMiB =
     if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-    then 1280
+    then 1792
     else 1024;
 
   # The experimental images are canonical release artifacts: the Nix build emits

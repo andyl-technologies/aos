@@ -222,6 +222,8 @@ kind = "hub"
 origin = "https://aos.staging.andyl.org"
 identity = "staging-2026-09"
 receipt_keys = ["staging-publication-v1=/etc/aos-release/keys/staging-publication-v1.pub"]
+# Optional: without it, AOS_TOKEN, else the active `aos hub login` profile
+# for this origin (see "Hub credentials" below).
 token_credential = "staging-token"
 
 [surfaces.production]
@@ -286,7 +288,7 @@ destination = "oncall@example.org"
 | `surfaces.<role>.readback_origin` | Anonymous `https://` or `file://` origin used for read-back when `origin` is not anonymously fetchable; required for `s3://` and `sftp://` |
 | `surfaces.<role>.identity` | Hub deployment ID, or the static identity served at `.aos-surface` |
 | `surfaces.<role>.receipt_keys` | `KEY_ID=PATH` keys that verify the surface's publication and channel receipts: Hub receipt keys, or the `surface-receipt` role key for a static surface |
-| `surfaces.<role>.token_credential` | Hub access token: a name under `$CREDENTIALS_DIRECTORY`, or an absolute path. Without it (and without `--token` or `AOS_TOKEN`), Hub operations use the renewable `aos hub` login profile for the surface origin |
+| `surfaces.<role>.token_credential` | Optional Hub access token: a name under `$CREDENTIALS_DIRECTORY`, or an absolute path. See [Hub credentials](#hub-credentials) for the order in which it, `AOS_TOKEN`, and the `aos hub login` profile apply |
 | `surfaces.<role>.s3_region`, `s3_profile`, `s3_endpoint` | S3 client settings for an `s3://` origin; credentials come from the AWS default chain |
 | `surfaces.<role>.ssh_key_credential`, `ssh_password_credential` | SFTP private key or password for an `sftp://` origin |
 | `surfaces.<role>.hub_schema` | Hub schema version the surface reports; the production value is the `hub-schema` fitness binding. Hub surfaces only |
@@ -307,6 +309,32 @@ surfaces must have different identities.
 Every `*_credential` key resolves to `$CREDENTIALS_DIRECTORY/<name>` or an
 absolute path, is read without following links, and is trimmed. No secret
 appears in the file itself.
+
+#### Hub credentials
+
+Every porcelain command that reaches a Hub surface (`new`, `advance`,
+`publish`, and the steps they run) resolves that surface's token in this
+order:
+
+1. the surface's `token_credential`;
+2. a non-empty `AOS_TOKEN`;
+3. the renewable `aos hub login` profile stored for the surface origin,
+   refreshed before use and before each object or multipart operation of a
+   long upload.
+
+The profile is resolved exactly as the `aos hub` commands resolve it, from
+`$AOS_CONFIG_HOME/hub-profiles.json` (else `$XDG_CONFIG_HOME/aos/` or
+`~/.config/aos/`), and only while it is the active profile.
+`aos hub login --hub <origin>` makes its origin active, so when both surfaces
+are Hubs without `token_credential`, sign in to a surface's origin before the
+commands that reach it, or configure `token_credential` for one of them.
+`AOS_TOKEN` is presented to every Hub surface that has no `token_credential`;
+set it only when exactly one surface lacks one. A configured credential that
+cannot be read fails the command; it never falls through to the next source.
+
+Step commands run directly take `--token` or `AOS_TOKEN` first, then, with
+`--config`, the configuration's `token_credential`, then the active login
+profile. `status` and `explain` are offline and use no credential.
 
 ### Start a release
 
@@ -338,10 +366,56 @@ It prints the request summary, runs the planner, and writes the work directory.
 command refuses a directory that already holds a frozen plan or belongs to
 another release. Rerunning it after a failed planning attempt reuses the
 unfinished directory only when the derived request is byte-identical;
-otherwise remove the unfinished directory first. `--override DIR` plans with
-signed [profile overrides](#plan-an-emergency-override) from the start. The
-frozen plan is the identity bound by every later operation. To change
-anything, start a new release.
+otherwise remove the unfinished directory first. `--request-only` writes
+`request.json` and stops before planning, so the derived request can be
+reviewed first; rerun without it to freeze the plan from the same request.
+`--override DIR` plans with signed
+[profile overrides](#plan-an-emergency-override) from the start. The frozen
+plan is the identity bound by every later operation. To change anything,
+start a new release.
+
+#### Plan a registry's first release
+
+A registry that no surface serves yet has no publication from which to read a
+base. Its first release plans the root commit of the authoring clone that
+`apr create` wrote, and names that clone explicitly:
+
+```sh
+aos maintain release new --registry andyl/experimental \
+  --version 2026.9.0-dev.20260927.1 --images images.json \
+  --first-release \
+  --source-registry ~/.local/share/apm/registries/andyl-experimental
+```
+
+`--first-release` and `--source-registry` require each other. `new` then
+refuses to plan unless:
+
+- the staging surface holds no publication of the registry at all: no
+  publication in any state on a Hub, and no registry `HEAD` object on a
+  static surface;
+- the clone is a non-bare Git repository with SHA-256 object ids and no
+  uncommitted or untracked changes;
+- every reference in the clone, `HEAD` included, names one and the same
+  parentless root commit; and
+- the clone's `registry.toml` names the registry by its slash-free alias
+  (`andyl-experimental` for `andyl/experimental`) or by its bare name
+  (`experimental`).
+
+The request plans that root commit at generation 0 and records
+`"first_release": true`, and the summary's `Registry` row says so. Without
+`--first-release`, `new` refuses a staging surface that holds no publication;
+with it, `new` refuses one that does, so neither path can stand in for the
+other. The flag is not part of the frozen plan: the signed bootstrap intents
+bind the plan digest and its base commit instead.
+
+A first release cannot publish until its base is installed on each surface.
+Follow [Bootstrap the first registry base](#bootstrap-the-first-registry-base)
+for staging and then production, writing each `step bootstrap` output to
+`<work>/bootstrap/<role>/`. Until that directory holds bootstrap evidence for
+the planned base, `advance` stops before anything reaches that surface with a
+`Waiting:` instruction naming the exact `step bootstrap` invocation. Place the
+same clean clone (or a copy at the same commit) at `inputs/source-registry/`
+for `step prepare-registry`.
 
 ### Advance to a destination
 
@@ -395,6 +469,9 @@ by full read-back and moves only its own channel.
 When a step needs a person, `advance` prints one instruction beginning
 `Waiting:` and exits zero. The human steps are:
 
+- for a [first release](#plan-a-registrys-first-release), the signed
+  bootstrap of each surface into `bootstrap/<role>/`, before anything reaches
+  that surface;
 - operator inputs the driver cannot produce, each at a fixed path in the work
   directory: a clean authoring registry clone at the planned base commit in
   `inputs/source-registry/`, the externally signed OCI release bundle
@@ -568,6 +645,8 @@ contributor-authorization.json    public summary bound by the plan
 inputs/source-registry/           operator: clean authoring registry at the base
 inputs/container/                 operator: signed OCI release bundle
 inputs/advisory-disposition.json  operator: reviewed advisory disposition
+bootstrap/<role>/                 operator: step bootstrap output of a first
+                                  release (signed-intents/, bootstrap-evidence.json)
 build/                            build report, SBOM, build journal
 images/<platform>/<variant>/      finalize-image work and finalized/ output
 registry/prepared/                isolated registry, finalized in place
@@ -1371,25 +1450,65 @@ plan's `release-evidence` threshold. The intent binds the environment,
 surface identity, the plan's exact registry identity, planned base commit, plan
 digest, public authority, and approval time.
 
+A registry's first release runs in this order:
+
+1. Create the registry on each surface without publishing anything: the
+   reviewed `aos hub registry create` plan and apply on a Hub, or the
+   `.aos-surface` identity on a static origin.
+2. Plan with
+   [`new --first-release --source-registry`](#plan-a-registrys-first-release).
+   Note the printed plan digest and the base commit in the `Registry` row.
+3. Write one intent payload per environment. Every approver signs the same
+   bytes, so `authority_id` names the approving authority rather than one key,
+   and `approved_at` is fixed before signing:
+
+   ```json
+   {
+     "schema_version": "aos.release.registry-bootstrap-intent/v1",
+     "environment": "staging",
+     "deployment_id": "staging-2026-09",
+     "registry": "andyl/experimental",
+     "base_commit": "<registry_base_commit from plan.json>",
+     "plan_digest": "sha256:<SHA-256 of plan.json>",
+     "authority_id": "andyl-release-evidence",
+     "approved_at": "2026-10-02T12:00:00Z"
+   }
+   ```
+
+   Each release-evidence key holder signs it, for example with
+   `aos-release-signer sign-evidence --key-id release-evidence-v1
+   --payload staging-intent.json --output approvals/staging-bootstrap-1.json`.
+4. Export the clone's root commit as a static registry surface:
+   `apr origin upload --registry andyl-experimental --upload-url
+   file:///var/lib/aos-release-coordinator/base-registry-surface`.
+5. Run `step bootstrap` for staging, then for production, as below.
+6. Place the clean clone at `<work>/inputs/source-registry/` and continue
+   with `aos maintain release advance --to staging/<channel>`.
+
 Install the reviewed base in staging first:
 
 ```sh
 aos maintain release step bootstrap \
-  --plan release-plan.json \
+  --plan "$WORK/plan.json" \
   --registry-surface base-registry-surface \
   --environment staging \
   --signed-intent approvals/staging-bootstrap-1.json \
   --signed-intent approvals/staging-bootstrap-2.json \
   --approval-key evidence-1=/media/keys/evidence-1.pub \
   --approval-key evidence-2=/media/keys/evidence-2.pub \
-  --output staging-bootstrap
+  --config /etc/aos-release/maintainer.toml \
+  --output "$WORK/bootstrap/staging"
 ```
 
 Repeat with independent production intent envelopes, the production
-credentials, `--environment production`, and a different output directory. A
-Hub surface takes its short-lived token through `--token` or `AOS_TOKEN`; a
-static surface's upload credentials come from the maintainer configuration
-named by `--config`.
+credentials, `--environment production`, and
+`--output "$WORK/bootstrap/production"`. `advance` reads exactly these output
+directories: it refuses one that lacks `bootstrap-evidence.json` or records
+another environment or base commit. A Hub surface takes `--token` or
+`AOS_TOKEN`, else, with `--config`, the configuration's `token_credential`,
+else the active `aos hub login` profile for its origin
+([Hub credentials](#hub-credentials)); a static surface's upload credentials
+come from the maintainer configuration named by `--config`.
 The command dispatches on the plan's surface kind: it uses the Hub publication
 protocol for a Hub surface and writes the base surface, with its registry head
 object, directly to a static origin whose `.aos-surface` already names the
@@ -1811,13 +1930,25 @@ four small prebuilt fixture closures, and exports one NAR for each package cell:
 payloads are not rebuilt into any guest image. Darwin participates only in the
 package and qualification matrix; no Darwin image cell is created.
 
-The test initializes both empty native Hubs, creates the public `andyl/main`
-delivery topology through reviewed `aos hub` operations, installs the same
-signed base publication in both environments, and then invokes the real step
-commands for offline verification, staging publication, four-platform
-public-byte qualification, production publication with qualification
-admission, channel compare-and-swap, and rollout completion. It verifies the final journal state
-and anonymous production channel object. The deterministic authorities and TLS
+The test initializes both empty native Hubs and creates the public
+`andyl/main` delivery topology through reviewed `aos hub` operations, without
+any publication. The release is therefore the registry's first: the publisher
+approves a real `aos hub login` device ceremony for staging and configures
+production with `token_credential`, shows that `new` refuses the
+unbootstrapped staging surface without `--first-release` and refuses a dirty
+authoring clone, and derives the request with
+`new --first-release --source-registry --request-only` from the single-commit
+clone `apr create` wrote. The fixture then stands in for the Nix-evaluated
+`step plan` leaf, which needs an AOS source checkout the fleet does not carry:
+it freezes the request's base, generation, surfaces, and destinations into a
+plan around the four prebuilt package cells. Threshold-signed intents install
+that base with `step bootstrap` on staging (through the login profile) and
+then production, a second bootstrap and a second first-release plan are
+refused, and the real step commands perform offline verification, staging
+publication, four-platform public-byte qualification, production
+publication with qualification admission, channel compare-and-swap, and
+rollout completion. It verifies the final journal state and anonymous
+production channel object. The deterministic authorities and TLS
 key used by this test are confined to explicit test fixtures and the
 `pkgs.aos.testSupport` output; no test authority is installed in a shipped CLI
 output.

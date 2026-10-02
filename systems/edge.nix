@@ -31,6 +31,10 @@
   aos.filesystems.rootFsType = lib.mkDefault "erofs";
   aos.filesystems.rootReadOnly = lib.mkDefault true;
 
+  # VHD block allocation adds fixed overhead above 800 MiB on AArch64.
+  aos.image.budgets.maxConvertedDownloadMiB =
+    lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 801);
+
   # The service modules predate host-time evaluation and default to enabled.
   # Give this policy-neutral image a lower-priority disabled baseline. A normal
   # host.nix assignment, or aos.roles.edge's mkDefault, overrides it without

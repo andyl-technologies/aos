@@ -714,6 +714,55 @@ fn new_requires_registry_version_and_image_decisions() {
     assert_eq!(args.override_dir, Some(PathBuf::from("approvals")));
     assert_eq!(args.work, Some(PathBuf::from("work")));
     assert_eq!(args.config, Some(PathBuf::from("maintainer.toml")));
+    assert!(!args.first_release);
+    assert_eq!(args.source_registry, None);
+    assert!(!args.request_only);
+}
+
+#[test]
+fn new_first_release_names_its_authoring_clone() {
+    let base = [
+        "aos",
+        "maintain",
+        "release",
+        "new",
+        "--registry",
+        "andyl/experimental",
+        "--version",
+        "2026.9.0-dev.20260929.1",
+        "--images",
+        "images.json",
+    ];
+
+    // Each flag requires the other, so neither half of the input can be dropped.
+    for partial in [
+        ["--first-release"].as_slice(),
+        ["--source-registry", "clone"].as_slice(),
+    ] {
+        assert!(Cli::try_parse_from(base.iter().chain(partial)).is_err());
+    }
+
+    let Ok(parsed) = Cli::try_parse_from(base.iter().chain(&[
+        "--first-release",
+        "--source-registry",
+        "clone",
+        "--request-only",
+    ])) else {
+        panic!("first-release arguments should parse");
+    };
+    let Commands::Maintain(MaintainArgs {
+        command:
+            Some(MaintainCommand::Release {
+                command: ReleaseCommand::New(args),
+            }),
+        ..
+    }) = parsed.command
+    else {
+        panic!("expected release new command");
+    };
+    assert!(args.first_release);
+    assert_eq!(args.source_registry, Some(PathBuf::from("clone")));
+    assert!(args.request_only);
 }
 
 #[test]
