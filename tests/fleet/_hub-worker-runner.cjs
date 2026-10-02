@@ -8,12 +8,16 @@ const { createRequire } = require('node:module');
 const { createServer } = require('node:net');
 const path = require('node:path');
 
-function acceptanceRegistryServer(runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation, ociAnchorCreation) {
+function acceptanceRegistryServer(
+  runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation,
+  ociAnchorCreation, ociAcceptanceStaging,
+) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
     throw new Error('Acceptance control requires an owner-private directory');
   }
   const sockets = new Set();
+  let ociStagingActive = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
@@ -45,6 +49,16 @@ function acceptanceRegistryServer(runtime, socketPath, bindings, namespaceObserv
         }
         if (request.version === 1 && request.kind === 'oci-sdk-anchor-create') {
           socket.end(JSON.stringify(await ociAnchorCreation(request)) + '\n');
+          return;
+        }
+        if (request.version === 1 && request.kind === 'oci-sdk-acceptance-install') {
+          if (ociStagingActive) throw new Error('OCI staging request is already active');
+          ociStagingActive = true;
+          try {
+            socket.end(JSON.stringify(await ociAcceptanceStaging(request)) + '\n');
+          } finally {
+            ociStagingActive = false;
+          }
           return;
         }
         if (request.version !== 1 || fields !== 'artifactBase64,artifactSha256,key,version') {
@@ -555,6 +569,160 @@ async function createOciSdkAnchor(runtime, options, request, namespaceObservatio
   return receipt;
 }
 
+// This owner-private fixture stores typed bytes only. The source-built client
+// verifies the shared artifact codec before and after this branch; the actual
+// Worker purpose loader must verify it again before any OCI business effect.
+const OCI_SDK_STAGING_FIELDS = {
+  artifact: [
+    'evidence', 'evidenceSha256', 'executionKind',
+    'expiresAt', 'issuedAt', 'profile',
+    'purpose', 'reviewerKeyId', 'signature',
+    'version',
+  ].join(','),
+  profile: [
+    'anchor', 'bindingName', 'clockPolicy',
+    'deploymentId', 'maximumProviderRequests', 'namespaceId',
+    'namespaceObjectId', 'namespaceUniqueKey', 'nativeOrigin',
+    'privateStagePolicy', 'publicOrigin', 'workerName',
+    'workerScriptVersion', 'workerSourceDigest',
+  ].join(','),
+  evidence: [
+    'anchor', 'clock', 'expiredEffects',
+    'installation', 'sdkObservationScope', 'sdkObservationSha256',
+  ].join(','),
+  installation: [
+    'bindingName', 'configurationSha256', 'distributionNarSha256',
+    'miniflareBucketWorkerSha256', 'miniflareEntryWorkerSha256', 'miniflareModuleSha256',
+    'namespaceId', 'namespaceObjectId', 'namespaceObservationSha256',
+    'namespaceUniqueKey', 'nativeConfigurationSha256', 'nativeExecutableSha256',
+    'nativeObservationSha256', 'observedAt', 'runnerSha256',
+    'shimSha256', 'sourceNarSha256', 'wasmByteSize',
+    'wasmSha256', 'workerName', 'workerScriptVersion',
+    'workerSourceDigest', 'workerdExecutableSha256',
+  ].join(','),
+};
+
+function ociSdkStagingFields(value, fields) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === fields;
+}
+
+async function storeOciSdkAcceptance(runtime, options, request, namespaceObservation) {
+  const bindings = options.bindings ?? {};
+  const selectedKey = options.ociSdkAcceptanceRegistryKey;
+  const namespaces = options.kvNamespaces;
+  const registryId = namespaces?.HUB_OCI_SDK_EMULATOR_ACCEPTANCE;
+  if (!ociSdkStagingFields(request, 'artifactBase64,artifactSha256,key,kind,version')
+      || request.version !== 1 || request.kind !== 'oci-sdk-acceptance-install'
+      || typeof selectedKey !== 'string'
+      || !/^oci-sdk-emulator-v1-[0-9a-f]{64}$/.test(selectedKey)
+      || request.key !== selectedKey
+      || !namespaces || Array.isArray(namespaces) || typeof registryId !== 'string' || !registryId
+      || Object.entries(namespaces).some(([name, value]) => name !== 'HUB_OCI_SDK_EMULATOR_ACCEPTANCE'
+        && (typeof value === 'string' ? value : value?.id) === registryId)
+      || bindings.HUB_OCI_SDK_EMULATOR_ENABLED !== 'true'
+      || !/^[0-9a-f]{64}$/.test(bindings.HUB_OCI_SDK_EMULATOR_REVIEWER_PUBLIC_KEY ?? '')) {
+    throw new Error('OCI typed staging selection differs');
+  }
+  const bytes = ociDecodeBytes(request.artifactBase64, request.artifactSha256, 32 * 1024);
+  if (!Buffer.from(bytes.toString('utf8'), 'utf8').equals(bytes)) {
+    throw new Error('OCI typed staging requires exact UTF-8');
+  }
+  const artifact = JSON.parse(bytes.toString('utf8'));
+  if (!ociSdkStagingFields(artifact, OCI_SDK_STAGING_FIELDS.artifact)
+      || artifact.version !== 1 || artifact.purpose !== 'oci_documents'
+      || artifact.executionKind !== 'emulated_managed_sdk'
+      || artifact.reviewerKeyId !== bindings.HUB_OCI_SDK_EMULATOR_REVIEWER_KEY_ID
+      || typeof artifact.reviewerKeyId !== 'string' || !artifact.reviewerKeyId
+      || !/^[0-9a-f]{128}$/.test(artifact.signature ?? '')
+      || !/^[0-9a-f]{64}$/.test(artifact.evidenceSha256 ?? '')) {
+    throw new Error('OCI typed staging artifact purpose or field set differs');
+  }
+  const profile = artifact.profile;
+  const evidence = artifact.evidence;
+  if (!ociSdkStagingFields(profile, OCI_SDK_STAGING_FIELDS.profile)
+      || !ociSdkStagingFields(evidence, OCI_SDK_STAGING_FIELDS.evidence)
+      || evidence.sdkObservationScope !== 'anchor_create_and_conditional_read'
+      || !ociSdkStagingFields(evidence.installation, OCI_SDK_STAGING_FIELDS.installation)) {
+    throw new Error('OCI typed staging artifact purpose or field set differs');
+  }
+  const now = Math.floor(Date.now() / 1000);
+  if (!Number.isSafeInteger(artifact.issuedAt) || !Number.isSafeInteger(artifact.expiresAt)
+      || artifact.issuedAt <= 0 || artifact.issuedAt > now || now >= artifact.expiresAt
+      || artifact.expiresAt - artifact.issuedAt <= 30
+      || artifact.expiresAt - artifact.issuedAt > 3600
+      || profile.deploymentId !== bindings.HUB_DEPLOYMENT_ID
+      || profile.publicOrigin !== bindings.HUB_OCI_SDK_EMULATOR_PUBLIC_ORIGIN
+      || profile.nativeOrigin !== bindings.HUB_HYBRID_ORIGIN_URL
+      || !Number.isInteger(profile.maximumProviderRequests)
+      || !/^(?:[2-9]|[12][0-9]|3[0-2])$/.test(bindings.HUB_OCI_SDK_EMULATOR_MAX_PROVIDER_REQUESTS ?? '')
+      || profile.maximumProviderRequests !== Number(bindings.HUB_OCI_SDK_EMULATOR_MAX_PROVIDER_REQUESTS)
+      || !ociSdkStagingFields(profile.clockPolicy, 'mode,uncertaintySeconds,version')
+      || profile.clockPolicy.version !== 1 || profile.clockPolicy.mode !== 'bounded_utc'
+      || bindings.HUB_DIRECT_UPLOAD_CLOCK_MODE !== profile.clockPolicy.mode
+      || bindings.HUB_DIRECT_UPLOAD_CLOCK_UNCERTAINTY_SECONDS !== profile.clockPolicy.uncertaintySeconds) {
+    throw new Error('OCI typed staging configured audience or original window differs');
+  }
+  const checkInstallation = observed => {
+    const installed = evidence.installation;
+    const mapping = {
+      workerName: observed.workerName, bindingName: observed.bindingName,
+      namespaceId: observed.namespaceId, namespaceObjectId: observed.namespaceObjectId,
+      namespaceUniqueKey: observed.namespaceUniqueKey,
+      workerSourceDigest: observed.buildDerivedSourceDigest,
+      workerScriptVersion: observed.buildDerivedScriptVersion,
+    };
+    const files = {
+      configurationSha256: observed.configurationSha256,
+      runnerSha256: observed.runnerSha256, miniflareModuleSha256: observed.miniflareModuleSha256,
+      miniflareEntryWorkerSha256: observed.miniflareEntryWorkerSha256,
+      miniflareBucketWorkerSha256: observed.miniflareBucketWorkerSha256,
+      wasmSha256: observed.wasmSha256, wasmByteSize: Number(observed.wasmByteSize),
+      shimSha256: observed.shimSha256, workerdExecutableSha256: observed.workerdExecutableSha256,
+    };
+    if (observed.observationScope !== 'oci_sdk_emulator_namespace_readback'
+        || observed.runnerPid !== process.pid
+        || Object.entries(mapping).some(([name, value]) => profile[name] !== value || installed[name] !== value)
+        || Object.entries(files).some(([name, value]) => installed[name] !== value)) {
+      throw new Error('OCI typed staging differs from the actual installed mapping');
+    }
+    return observed;
+  };
+  const checkWindow = () => {
+    const observedNow = Math.floor(Date.now() / 1000);
+    if (observedNow < artifact.issuedAt || observedNow >= artifact.expiresAt) {
+      throw new Error('OCI typed staging original is outside its window');
+    }
+  };
+  const before = checkInstallation(await namespaceObservation());
+  checkWindow();
+  // The selected key comes from the shared Rust helper, rather than a second
+  // JavaScript implementation of its domain and canonical serialization.
+  const registry = await runtime.getKVNamespace('HUB_OCI_SDK_EMULATOR_ACCEPTANCE', before.workerName);
+  checkWindow();
+  const existing = await registry.get(selectedKey);
+  const encoded = bytes.toString('utf8');
+  if (existing !== null && existing !== encoded) {
+    throw new Error('OCI typed staging slot retains different bytes');
+  }
+  checkWindow();
+  if (existing === null) await registry.put(selectedKey, encoded);
+  checkWindow();
+  const retained = await registry.get(selectedKey);
+  if (retained !== encoded) throw new Error('OCI typed staging readback differs');
+  const after = checkInstallation(await namespaceObservation());
+  checkWindow();
+  if (before.runnerStartTicks !== after.runnerStartTicks
+      || before.workerdPid !== after.workerdPid || before.workerdStartTicks !== after.workerdStartTicks) {
+    throw new Error('OCI typed staging installation or original changed during storage');
+  }
+  return {
+    version: 1, status: 'stored', key: selectedKey, artifactSha256: request.artifactSha256,
+    byteSize: String(bytes.length), runnerPid: after.runnerPid,
+    runnerStartTicks: after.runnerStartTicks, artifactBase64: Buffer.from(retained).toString('base64'),
+  };
+}
+
 async function main() {
   const [toolingRoot, configurationPath] = process.argv.slice(2);
   if (!toolingRoot || !configurationPath) {
@@ -572,7 +740,8 @@ async function main() {
   const configurationBytes = readFileSync(configurationPath);
   const {
     certificatePath, privateKeyPath, queueObservationPath, namespaceObservationPath,
-    acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled, ...options
+    acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled,
+    ociSdkAcceptanceRegistryKey, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
@@ -660,6 +829,9 @@ async function main() {
           ociAnchorEnabled: ociSdkAnchorEnabled === true }, request,
           () => observeOciSdkNamespace(runtime, load, options, configurationBytes,
             ociSdkNamespaceObservation, configurationPath)),
+        request => storeOciSdkAcceptance(runtime, { ...options, ociSdkAcceptanceRegistryKey }, request,
+          () => observeOciSdkNamespace(runtime, load, options, configurationBytes,
+            ociSdkNamespaceObservation, configurationPath)),
       );
       await acceptanceServer.ready;
     }
@@ -693,4 +865,4 @@ if (require.main === module) {
 
 module.exports = { acceptanceRegistryServer, observeOciSdkNamespace, ociLocalR2Selection,
   ociHashFile, ociProcessIdentity, ociWorkerdIdentity, ociMiniflareImplementation,
-  ociNamespaceObjectId, createOciSdkAnchor, ociAnchorOriginal, OCI_MINIFLARE_PIN };
+  ociNamespaceObjectId, createOciSdkAnchor, ociAnchorOriginal, storeOciSdkAcceptance, OCI_MINIFLARE_PIN };
