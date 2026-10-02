@@ -14,6 +14,17 @@ mod destination;
 mod publication;
 pub(crate) use publication::publish;
 
+/// Arms one test interruption after actual import installation and before selection.
+///
+/// # Errors
+/// Rejects unavailable synchronization or an already armed interruption.
+#[cfg(test)]
+pub(crate) fn interrupt_next_import_selection(
+    root: &std::path::Path,
+) -> Result<(), crate::store::StoreFailure> {
+    destination::interrupt_next_selection(root)
+}
+
 use crate::bucket::held::HeldBucket;
 use crate::bucket::publication::SelectedObservation;
 use crate::bucket::{BucketBinding, FileBucket};

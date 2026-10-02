@@ -7,14 +7,22 @@ use super::{DisclosureSource, invalid};
 use crate::bucket::held::HeldBucket;
 use crate::bucket::publication::SelectedObservation;
 use crate::bucket::{BucketBinding, FileBucket};
-use crate::guard::{ConsumedResolver, Guard, HistoryObservation};
+use crate::guard::{ConsumedResolver, Guard, HistoryObservation, OriginalAuthority};
 use crate::repository::local_authority::{
     import_binding::ImportBindingRecord,
     public_trust::PublicTrustRecord,
-    retention::{self, Record},
+    retention::{self, ImportRecord, Record},
 };
 use crate::selected_bridge::{CheckedEvidence, CheckedMutation, OwnedFinalCheck};
 use crate::store::{Clock, ContentValidator, LocalFs, StoreFailure};
+use terrane_core::gc::publication::evidence::{DisclosureRow, GuardSnapshot};
+
+/// Contains only records derived from freshly checked original and signer contexts.
+struct ImportPlan {
+    import: ImportRecord,
+    binding: ImportBindingRecord,
+    trust: PublicTrustRecord,
+}
 
 /// Borrows request data and preserves the original destination operation timing.
 pub(super) struct DestinationRequest<'request> {
@@ -49,6 +57,7 @@ where
 {
     let principal = source.requests.first().ok_or_else(invalid)?.subject();
     let authority = concrete.configured_original_authority()?;
+    let plans = import_plans(source, &authority)?;
     let before = ConsumedResolver::new(destination, &authority)?;
     before.registration(&authority)?;
     let current = destination
@@ -66,14 +75,8 @@ where
     }
     before.operation(&current)?;
     let requests = [current];
-    let mut controls = super::super::hold_consumed_controls(
-        concrete,
-        &authority,
-        destination.store(),
-        observed,
-        &before,
-    )
-    .await?;
+    let mut controls =
+        hold_paired_controls(concrete, &authority, destination, observed, &before, &plans).await?;
     let previous_snapshot = controls.snapshot.clone();
     let destination_check =
         super::super::retain_final_check(destination, &requests, request.started, request.timing)?;
@@ -90,76 +93,35 @@ where
     }
 
     let mut imports = Vec::new();
-    for original in &source.originals {
+    for plan in &plans {
         final_check.recheck()?;
         source.controls.exclusion.revalidate().await?;
         source_observed.revalidate().await?;
         controls.exclusion.revalidate().await?;
         observed.revalidate().await?;
 
-        let import = original.retained_import_record()?;
-        let import_digest =
-            *blake3::hash(&import.encode().map_err(crate::guard::retention_failure)?).as_bytes();
-        let binding = ImportBindingRecord {
-            commit: *original.commit(),
-            source_authority: *original.baseline().authority().id(),
-            destination_authority: *authority.id(),
-            import_digest,
-        };
-        let mut issuer_keys = match original.historical_keys()? {
-            Some(keys) => keys,
-            None if original.baseline().authority() == &source.authority => {
-                source.issuer_keys.clone()
-            }
-            None => return Err(invalid()),
-        };
-        issuer_keys.sort_by(|left, right| {
-            (&left.issuer, &left.key_id).cmp(&(&right.issuer, &right.key_id))
-        });
-        let mut roles = original.historical_disclosure_roles()?.unwrap_or_default();
-        roles.push(source.signer.role().clone());
-        roles.sort_by(|left, right| {
-            (
-                &left.repository,
-                &left.domain,
-                left.public_key,
-                left.not_before,
-            )
-                .cmp(&(
-                    &right.repository,
-                    &right.domain,
-                    right.public_key,
-                    right.not_before,
-                ))
-        });
-        roles.dedup();
-        let trust = PublicTrustRecord {
-            import_digest,
-            source_authority: binding.source_authority,
-            destination_authority: binding.destination_authority,
-            issuer_keys,
-            disclosure_roles: roles,
-        };
-        binding
-            .validate_pair(&import, authority.id())
-            .map_err(crate::guard::retention_failure)?;
-        trust.validate().map_err(crate::guard::retention_failure)?;
         retain(
             destination.store().fs(),
             authority.control(),
             owner,
-            &import,
+            &plan.import,
         )
         .await?;
         retain(
             destination.store().fs(),
             authority.control(),
             owner,
-            &binding,
+            &plan.binding,
         )
         .await?;
-        retain(destination.store().fs(), authority.control(), owner, &trust).await?;
-        imports.push(import);
+        retain(
+            destination.store().fs(),
+            authority.control(),
+            owner,
+            &plan.trust,
+        )
+        .await?;
+        imports.push(plan.import.clone());
     }
 
     // Native verification acquires protected configuration exclusion itself.
@@ -210,7 +172,7 @@ where
         after.original(&destination.original_commit(&import.association.commit)?)?;
     }
     let snapshot = after.snapshot_bytes()?;
-    check_transition(&previous_snapshot, &snapshot)?;
+    check_transition(&previous_snapshot, &snapshot, &plans)?;
     let inputs = after.finish()?;
     let mut controls = concrete
         .hold_original_registration(&authority, observed.identity())
@@ -262,6 +224,14 @@ where
     next.sources.clear();
     final_check.recheck()?;
     source.controls.exclusion.revalidate().await?;
+    #[cfg(test)]
+    if selection_faults()
+        .lock()
+        .map_err(|_| invalid())?
+        .remove(authority.root())
+    {
+        return Err(invalid());
+    }
     destination
         .store()
         .publish_checked(CheckedMutation {
@@ -279,6 +249,29 @@ where
         .await?;
     controls.revalidate().await?;
     source.controls.exclusion.revalidate().await?;
+    Ok(())
+}
+
+#[cfg(test)]
+fn selection_faults() -> &'static std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> {
+    static FAULTS: std::sync::Mutex<std::collections::BTreeSet<std::path::PathBuf>> =
+        std::sync::Mutex::new(std::collections::BTreeSet::new());
+    &FAULTS
+}
+
+/// Interrupts one genuine import transition immediately before Guard selection.
+///
+/// # Errors
+/// Rejects unavailable test synchronization or a duplicate armed interruption.
+#[cfg(test)]
+pub(super) fn interrupt_next_selection(root: &std::path::Path) -> Result<(), StoreFailure> {
+    if !selection_faults()
+        .lock()
+        .map_err(|_| invalid())?
+        .insert(root.to_owned())
+    {
+        return Err(invalid());
+    }
     Ok(())
 }
 
@@ -300,9 +293,205 @@ async fn retain<F: LocalFs + Sync, R: Record>(
     .map_err(crate::guard::retention_failure)
 }
 
-/// Allows only source-derived additions to the dedicated disclosure role set.
-fn check_transition(before: &[u8], after: &[u8]) -> Result<(), StoreFailure> {
-    use terrane_core::gc::publication::evidence::GuardSnapshot;
+/// Derives complete expected imports without consulting destination presence.
+fn import_plans<F: LocalFs>(
+    source: &DisclosureSource<'_, F>,
+    destination: &OriginalAuthority,
+) -> Result<Vec<ImportPlan>, StoreFailure> {
+    let mut plans = Vec::new();
+    for original in &source.originals {
+        let import = original.retained_import_record()?;
+        let import_digest =
+            *blake3::hash(&import.encode().map_err(crate::guard::retention_failure)?).as_bytes();
+        let binding = ImportBindingRecord {
+            commit: *original.commit(),
+            source_authority: *original.baseline().authority().id(),
+            destination_authority: *destination.id(),
+            import_digest,
+        };
+        let mut issuer_keys = match original.historical_keys()? {
+            Some(keys) => keys,
+            None if original.baseline().authority() == &source.authority => {
+                source.issuer_keys.clone()
+            }
+            None => return Err(invalid()),
+        };
+        issuer_keys.sort_by(|left, right| {
+            (&left.issuer, &left.key_id).cmp(&(&right.issuer, &right.key_id))
+        });
+        let mut roles = original.historical_disclosure_roles()?.unwrap_or_default();
+        roles.push(source.signer.role().clone());
+        roles.sort_by(|left, right| {
+            (
+                &left.repository,
+                &left.domain,
+                left.public_key,
+                left.not_before,
+            )
+                .cmp(&(
+                    &right.repository,
+                    &right.domain,
+                    right.public_key,
+                    right.not_before,
+                ))
+        });
+        roles.dedup();
+        let trust = PublicTrustRecord {
+            import_digest,
+            source_authority: binding.source_authority,
+            destination_authority: binding.destination_authority,
+            issuer_keys,
+            disclosure_roles: roles,
+        };
+        binding
+            .validate_pair(&import, destination.id())
+            .map_err(crate::guard::retention_failure)?;
+        trust.validate().map_err(crate::guard::retention_failure)?;
+        plans.push(ImportPlan {
+            import,
+            binding,
+            trust,
+        });
+    }
+    Ok(plans)
+}
+
+/// Recovers only a cached transition independently authorized by this held pair.
+///
+/// DOM-24 requires freshly captured source Read and destination Commit before
+/// this call. PROV-26/27 require the exact source signer and independently checked
+/// originals in `plans`; their physical controls stay retained by the caller.
+/// PROV-28/29/31 and AUTH-26/28/29/30 remain ordinary candidate checks. No
+/// selection occurs here, and ordinary startup and control capture remain strict.
+async fn hold_paired_controls<'guard, F, B, V, C, D>(
+    concrete: &'guard Guard<FileBucket<F, B, V>, C>,
+    authority: &OriginalAuthority,
+    destination: &Guard<HeldBucket<'_, F, B, V, true>, D>,
+    observed: &SelectedObservation<'_>,
+    consumed: &ConsumedResolver,
+    plans: &[ImportPlan],
+) -> Result<super::super::LocalControlInputs<'guard, F>, StoreFailure>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+{
+    observed.revalidate().await?;
+    let snapshot = consumed.snapshot_bytes()?;
+    let selected = destination
+        .store()
+        .selected_guard_snapshot(observed)
+        .await?
+        .ok_or_else(invalid)?;
+    if selected == snapshot {
+        return super::super::hold_consumed_controls(
+            concrete,
+            authority,
+            destination.store(),
+            observed,
+            consumed,
+        )
+        .await;
+    }
+    check_transition(&selected, &snapshot, plans)?;
+    let selected = GuardSnapshot::decode(&selected).map_err(|_| invalid())?;
+
+    // Every installed carrier of an added role must be this pair's exact
+    // expected import. Re-read its physical records before taking exclusion;
+    // consumed pins then bind those same bytes throughout the transition.
+    for trust in destination.retained_public_trust()? {
+        if !trust
+            .disclosure_roles
+            .iter()
+            .any(|role| !selected.disclosures.contains(&role_row(role)))
+        {
+            continue;
+        }
+        let trust_bytes = trust.encode().map_err(crate::guard::retention_failure)?;
+        let mut matching = None;
+        for plan in plans {
+            if plan
+                .trust
+                .encode()
+                .map_err(crate::guard::retention_failure)?
+                == trust_bytes
+            {
+                matching = Some(plan);
+                break;
+            }
+        }
+        let plan = matching.ok_or_else(invalid)?;
+        let checked = concrete
+            .load_original_import_held(authority, &plan.import, observed.identity())
+            .await?;
+        let borrowed = destination
+            .load_original_import_held(authority, &plan.import, observed.identity())
+            .await?;
+        let checked_trust = PublicTrustRecord {
+            import_digest: plan.trust.import_digest,
+            source_authority: plan.trust.source_authority,
+            destination_authority: plan.trust.destination_authority,
+            issuer_keys: borrowed.historical_keys()?.ok_or_else(invalid)?,
+            disclosure_roles: borrowed
+                .historical_disclosure_roles()?
+                .ok_or_else(invalid)?,
+        };
+        if checked != borrowed
+            || borrowed.retained_import_record()? != plan.import
+            || checked_trust
+                .encode()
+                .map_err(crate::guard::retention_failure)?
+                != trust_bytes
+        {
+            return Err(invalid());
+        }
+        consumed.original(&borrowed)?;
+    }
+
+    let mut controls = concrete
+        .hold_original_registration(authority, observed.identity())
+        .await?;
+    if ConsumedResolver::new(destination, authority)?.snapshot_bytes()? != snapshot {
+        return Err(invalid());
+    }
+    concrete
+        .check_retained_trust_controls(
+            authority,
+            &mut controls,
+            &GuardSnapshot::decode(&snapshot).map_err(|_| invalid())?,
+        )
+        .await?;
+    let used = consumed.finish()?;
+    for pin in &used.controls {
+        if pin.owner != crate::guard::consumed_registration(authority) {
+            return Err(invalid());
+        }
+        pin.check_record(&controls.read_record(&pin.key).await?)
+            .map_err(|_| invalid())?;
+    }
+    controls.revalidate().await?;
+    observed.revalidate().await?;
+    Ok(super::super::LocalControlInputs {
+        exclusion: controls,
+        snapshot,
+        used,
+    })
+}
+
+fn role_row(
+    role: &crate::repository::local_authority::public_trust::DisclosureRoleRecord,
+) -> DisclosureRow {
+    DisclosureRow {
+        repository: role.repository.clone(),
+        domain: role.domain.clone(),
+        public_key: role.public_key,
+        not_before: role.not_before,
+        not_after: role.not_after,
+    }
+}
+
+/// Allows only exact freshly source-derived additions to the dedicated role set.
+fn check_transition(before: &[u8], after: &[u8], plans: &[ImportPlan]) -> Result<(), StoreFailure> {
     let before = GuardSnapshot::decode(before).map_err(|_| invalid())?;
     let after = GuardSnapshot::decode(after).map_err(|_| invalid())?;
     if before.registration != after.registration
@@ -313,6 +502,15 @@ fn check_transition(before: &[u8], after: &[u8]) -> Result<(), StoreFailure> {
             .disclosures
             .iter()
             .any(|role| !after.disclosures.contains(role))
+        || after.disclosures.iter().any(|role| {
+            !before.disclosures.contains(role)
+                && !plans.iter().any(|plan| {
+                    plan.trust
+                        .disclosure_roles
+                        .iter()
+                        .any(|expected| role_row(expected) == *role)
+                })
+        })
     {
         return Err(invalid());
     }

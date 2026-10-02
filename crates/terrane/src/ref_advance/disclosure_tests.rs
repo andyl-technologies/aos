@@ -14,6 +14,14 @@ use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
 mod multiple;
+#[cfg(unix)]
+mod recovery;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_paired_retry_recovers_exact_installed_imports_without_relaxing_open() {
+    recovery::recover_cached_transition().await;
+}
 
 #[tokio::test]
 async fn disclosure_boundary_manifest_and_multiple_source_certificates() {
