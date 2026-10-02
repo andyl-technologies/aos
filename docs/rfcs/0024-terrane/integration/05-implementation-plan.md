@@ -704,6 +704,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and signatures remain ordinary opaque fields, without signing, verification
   or authority construction. Nonempty outer recipe context and the actual
   `golden-vectors` dependency/coverage inventory also remain open.
+  Full review of the six consumed-lineage inputs covers 36 complete positive
+  models and 155 independently assembled negative wires. Its isolated build,
+  all 493 core Nextest tests with zero skips (run
+  `9ed8f506-949a-4cd5-88c3-575668b2932c`), strict Clippy/rustdoc, six exact
+  auxiliary groups and mandatory formatting pass. ROOT independently reproduced
+  all 191 unique wires and the four embedded Commit digest claims. D-97 publishes
+  those reviewed bytes while preserving every previous reference byte; the
+  shared harness now requires the normative whole file. Published-input and
+  combined qualification remain pending. The isolated aggregate still fails
+  on missing `format_properties`; no authority, task or milestone is qualified.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

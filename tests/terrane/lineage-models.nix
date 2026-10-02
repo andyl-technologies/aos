@@ -27,10 +27,9 @@ in
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/lineage_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
-    python3 ../tests/terrane/lineage_vectors.py --emit \
-      --blake3-bin "$reference_binary" > ../tests/terrane/lineage-reference.md
-    python3 ../tests/terrane/lineage_vectors.py --check ../tests/terrane/lineage-reference.md \
+    python3 ../tests/terrane/lineage_vectors.py --check ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md \
       --blake3-bin "$reference_binary" >> "$out/reference-result"
+    cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/lineage-reference.md
     cp ../tests/terrane/lineage-reference.md "$out/reference.md"
     cp ../tests/terrane/lineage-models.rs terrane-core/tests/lineage_vectors.rs
     cp -r ../tests/terrane/lineage_models terrane-core/tests/lineage_models

@@ -1759,6 +1759,30 @@ is added rather than editing history.
     additive correction precedes T1's initial encoding freeze and does not
     qualify the complete corpus, payload validation or native operations.
 
+- **[D-97] Publish complete consumed-lineage record field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 36 complete positive models and 155 independently
+    assembled negative wire inputs. Cover all six control-pin kinds across
+    local/S3/GCS owner alternatives, ordered ancestor/graft policy layers,
+    absolute path bounds, repeated view occurrences, complete used-input
+    summaries and all ten checked-source slots. Preserve every prior reference
+    byte. These enclosing records receive no immutable-content descriptor or
+    identity; only embedded canonical Commit bytes use their registered digest.
+  - **Rationale:** TEST-2 requires published witnesses for implemented formats.
+    Independent CBOR primitives reproduce exact wires and malformed inputs;
+    separately constructed ordinary public models compare every decoded field.
+    Embedded whole source records, canonical Commit encodings/preimages and
+    control-set equality test represented relationships. Ordered or repeated
+    policy occurrences remain exact data. Fixed token and signature bytes are
+    opaque; no signer, verifier, policy evaluation, private holder, factory or
+    backend is involved. Neither represented evidence nor decoder acceptance
+    establishes checked lineage, current authority or permission for effects.
+  - **Affects:** TEST-1 to TEST-3, the ordinary format prerequisites of
+    PROV-4, PROV-28 and PROV-31, and the golden-vector reference. Requirement
+    IDs, schemas, identity domains and existing bytes remain unchanged. This
+    additive correction precedes T1's initial encoding freeze and does not
+    qualify the complete corpus or native operations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
