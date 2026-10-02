@@ -1709,5 +1709,72 @@ in {
         "--idempotency-key hub-oci-purge-wrong-confirm --yes",
         token,
     ))
+
+    # The published registry's deletion review reports its structured
+    # blockers, and the apply is refused with the same breakdown.
+    blocked = json.loads(publisher.succeed(hub_command(
+        f"registry delete acme/containers --if-version {shlex.quote(registry_version)}",
+        token,
+        "--plan --idempotency-key hub-oci-delete-blocked-plan",
+    )))["data"]
+    readiness = blocked["readiness"]
+    assert readiness["verdict"] == "blocked", readiness
+    assert int(readiness["blockers"]["repositories"]) > 0, readiness
+    assert any(
+        "OCI repositories" in reason for reason in readiness["blocking_reasons"]
+    ), readiness
+    status, refused = publisher.execute(hub_command(
+        "registry delete acme/containers",
+        token,
+        " ".join([
+            "--plan-id", shlex.quote(blocked["plan"]["plan_id"]),
+            "--confirm-hash", shlex.quote(blocked["plan"]["confirmation_hash"]),
+            "--idempotency-key hub-oci-delete-blocked-apply --yes --wait",
+        ]),
+    ) + " 2>&1")
+    assert status != 0, refused
+    assert "failed_precondition" in refused and "OCI repositories" in refused, refused
+    publisher.succeed(hub_command("registry show acme/containers", token))
+
+    # An empty registry whose placement was never scanned or inventoried is
+    # deleted by one reviewed apply: the operation scans, fences, collects a
+    # fresh empty inventory, and deletes without any other operator step.
+    reviewed(
+        publisher,
+        "scratch-registry-create",
+        "registry create --org acme --name scratch --visibility public",
+        token,
+    )
+    reviewed(
+        publisher,
+        "scratch-placement-create",
+        "placement add registry:acme/scratch primary --binding instance-default "
+        "--prefix scratch --kind complete --desired-state active --read enabled",
+        token,
+    )
+    scratch = json.loads(publisher.succeed(
+        hub_command("registry show acme/scratch", token)
+    ))["data"]["registry"]
+    planned = json.loads(publisher.succeed(hub_command(
+        "registry delete acme/scratch "
+        f"--if-version {shlex.quote(scratch['resource_version'])}",
+        token,
+        "--plan --idempotency-key hub-oci-delete-scratch-plan",
+    )))["data"]
+    assert planned["readiness"]["verdict"] == "automatic", planned
+    assert not planned["readiness"].get("blocking_reasons"), planned
+    deleted = json.loads(publisher.succeed(hub_command(
+        "registry delete acme/scratch",
+        token,
+        " ".join([
+            "--plan-id", shlex.quote(planned["plan"]["plan_id"]),
+            "--confirm-hash", shlex.quote(planned["plan"]["confirmation_hash"]),
+            "--idempotency-key hub-oci-delete-scratch-apply --yes --wait --timeout 3m",
+        ]),
+    ), timeout=240))["data"]
+    assert deleted["operation"]["operation"]["state"] == "succeeded", deleted
+    assert deleted["deletion"]["phase"] == "deleted", deleted
+    assert deleted["deletion"]["fence_acquired"] is True, deleted
+    publisher.fail(hub_command("registry show acme/scratch", token))
   '';
 }
