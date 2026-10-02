@@ -62,6 +62,7 @@ pub(crate) use journal::{
     ProtectedVerifiedAtomicStorageHistoryV1, RetainedFailedCreateOriginalsDataV3,
 };
 pub(crate) use journal::{FixedEndpointCustodyV1, ProtectedBrokerSessionJournalV1};
+pub(crate) use journal::BrokerMainOpenV1;
 pub use journal::{
     ProtectedBrokerOutcomeCommitRecoveryV1, ProtectedBrokerOutcomeCommitResultV1,
     ProtectedBrokerRequestCommitRecoveryV1, ProtectedBrokerRequestCommitResultV1,

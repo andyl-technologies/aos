@@ -88,6 +88,21 @@ fn main() -> ExitCode {
     }
 }
 
+// This exclusive loan is scoped inside each existing accept boundary, so its
+// unwind fence runs before lower Storage/operator/output originals can drop.
+// No cold debt means the exact old return/drop disposition remains selected.
+struct StorageColdAcceptUnwindV1<'activation>(
+    &'activation mut aos_sandbox_broker_session_security::ProductionBrokerSessionActivationV1,
+);
+
+impl Drop for StorageColdAcceptUnwindV1<'_> {
+    fn drop(&mut self) {
+        if self.0.has_failed_storage_cold() {
+            std::process::abort();
+        }
+    }
+}
+
 fn run() -> Result<(), StorageStartupRunErrorV3> {
     if !rustix::process::getuid().is_root() || !rustix::process::geteuid().is_root() {
         return Err(StorageServiceError::Activation(
@@ -306,8 +321,16 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             if handshake_ready {
                 let deadline = production_deadline_after(ACCEPT_TIMEOUT)
                     .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                match activation.accept_authenticated(deadline) {
+                let acceptance = StorageColdAcceptUnwindV1(&mut activation);
+                match acceptance.0.accept_authenticated(deadline) {
                     Ok(session) => active_session = Some(session),
+                    Err(error) if acceptance.0.has_failed_storage_cold() => {
+                        // Original cold owners and typed cause remain in the
+                        // activation stack. Exit before returning through lower
+                        // Storage/operator disposal or accepting a replacement.
+                        eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
+                        std::process::exit(1);
+                    }
                     Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
                     Err(error) => return Err(production_error(error).into()),
                 }
@@ -449,8 +472,16 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             } else {
                 let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
                     .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                match activation.accept_authenticated(accept_deadline) {
+                let acceptance = StorageColdAcceptUnwindV1(&mut activation);
+                match acceptance.0.accept_authenticated(accept_deadline) {
                     Ok(session) => active_session = Some(session),
+                    Err(error) if acceptance.0.has_failed_storage_cold() => {
+                        // Original cold owners and typed cause remain in the
+                        // activation stack. Exit before returning through lower
+                        // Storage/operator disposal or accepting a replacement.
+                        eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
+                        std::process::exit(1);
+                    }
                     Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
                     Err(error) => return Err(production_error(error).into()),
                 }

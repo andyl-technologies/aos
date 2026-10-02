@@ -100,7 +100,7 @@ impl From<handshake::DormantBrokerSessionHandshakeErrorV1>
     }
 }
 
-fn remaining_handshake_nanoseconds(
+pub(crate) fn remaining_handshake_nanoseconds(
     deadline_boottime_nanoseconds: u64,
 ) -> Result<u64, DormantBrokerSessionHandshakeErrorV1> {
     let now = rustix::time::clock_gettime(rustix::time::ClockId::Boottime);
@@ -6382,6 +6382,104 @@ impl DormantAuthenticatedBrokerSessionV1 {
 }
 
 impl ProtectedBrokerSessionFixedCustodyV1 {
+    /// Drives the same fixed ControllerStorage flight, parking its actual
+    /// final HELLO return before the first cold context/main/floor gate.
+    ///
+    /// # Errors
+    /// Preserves raw-flight failures; post-verified failure keeps its first
+    /// typed cause and every returned owner in the original cold slot.
+    pub(crate) fn connect_retained_storage_session(
+        self,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+        node: [u8; 16],
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        if slot.is_some()
+            || self.production_protocol()
+                != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+        {
+            return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+        }
+        deadline.check()?;
+        let socket = SeqpacketSocket::connect(Path::new(self.production_socket_path()))
+            .map_err(|_| DormantBrokerSessionHandshakeErrorV1::Transport)?;
+        let mut handshake = self.begin_production_client_handshake(socket)?.0;
+        loop {
+            deadline.check()?;
+            match handshake.advance_retaining_storage()? {
+                handshake::ColdClientHandshakeProgressV1::Pending(pending) => {
+                    wait_for_handshake_readiness(
+                        pending.as_fd()?,
+                        pending.wants_write(),
+                        deadline.value(),
+                    )?;
+                    handshake = pending;
+                }
+                handshake::ColdClientHandshakeProgressV1::Verified(verified) => {
+                    *slot = Some(handshake::RetainedStorageColdOpenV1::retain(
+                        verified, deadline,
+                    ));
+                    let session = slot
+                        .as_mut()
+                        .ok_or(DormantBrokerSessionHandshakeErrorV1::EndpointRole)?
+                        .finish(Some(node))?;
+                    let session = DormantAuthenticatedBrokerSessionV1(session, Vec::new());
+                    // Only the completed, empty shell drops after pure handoff.
+                    *slot = None;
+                    return Ok(session);
+                }
+                handshake::ColdClientHandshakeProgressV1::Complete(_) => std::process::abort(),
+            }
+        }
+    }
+
+    /// Drives the fixed Storage broker flight under its original accept D.
+    ///
+    /// # Errors
+    /// Preserves raw-flight failures; a post-verified rejection retains its
+    /// originals and permanently closes this activation's cold slot.
+    pub(crate) fn complete_retained_storage_handshake(
+        self,
+        socket: SeqpacketSocket,
+        deadline: handshake::OriginalBrokerColdDeadlineV1,
+        slot: &mut Option<handshake::RetainedStorageColdOpenV1>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, DormantBrokerSessionHandshakeErrorV1> {
+        if slot.is_some()
+            || self.production_protocol()
+                != aos_sandbox_broker_session_protocol::BrokerSessionProtocolV1::Storage
+        {
+            return Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole);
+        }
+        deadline.check()?;
+        let mut handshake = self.begin_production_broker_handshake(socket)?.0;
+        loop {
+            deadline.check()?;
+            match handshake.advance_retaining_storage()? {
+                handshake::ColdBrokerHandshakeProgressV1::Pending(pending) => {
+                    wait_for_handshake_readiness(
+                        pending.as_fd()?,
+                        pending.wants_write(),
+                        deadline.value(),
+                    )?;
+                    handshake = pending;
+                }
+                handshake::ColdBrokerHandshakeProgressV1::Verified(verified) => {
+                    *slot = Some(handshake::RetainedStorageColdOpenV1::retain(
+                        verified, deadline,
+                    ));
+                    let session = slot
+                        .as_mut()
+                        .ok_or(DormantBrokerSessionHandshakeErrorV1::EndpointRole)?
+                        .finish(None)?;
+                    let session = DormantAuthenticatedBrokerSessionV1(session, Vec::new());
+                    *slot = None;
+                    return Ok(session);
+                }
+                handshake::ColdBrokerHandshakeProgressV1::Complete(_) => std::process::abort(),
+            }
+        }
+    }
+
     /// Connects a fixed client endpoint and completes its production handshake.
     ///
     /// The socket path, protocol, audience, complete method profile, and

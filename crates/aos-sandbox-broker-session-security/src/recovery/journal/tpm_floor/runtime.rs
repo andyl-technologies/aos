@@ -50,6 +50,33 @@ enum FloorStateV1 {
 }
 
 impl BrokerFloorV1 {
+    pub(in crate::recovery::journal) fn check_cold_deadline(&mut self) -> Result<(), FloorErrorV1> {
+        match &mut self.state {
+            FloorStateV1::Required { attached, .. } => attached.check_cold_deadline(),
+            _ => Ok(()),
+        }
+    }
+
+    pub(in crate::recovery::journal) fn bind_cold_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        match &mut self.state {
+            FloorStateV1::Required { attached, .. } => attached.bind_cold_deadline(deadline),
+            _ => Err(FloorErrorV1::Unavailable),
+        }
+    }
+
+    pub(in crate::recovery::journal) fn retire_cold_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        match &mut self.state {
+            FloorStateV1::Required { attached, .. } => attached.retire_cold_deadline(deadline),
+            _ => Err(FloorErrorV1::Unavailable),
+        }
+    }
+
     pub(in crate::recovery::journal) const fn unavailable() -> Self {
         Self {
             state: FloorStateV1::Unavailable,
