@@ -1361,12 +1361,17 @@ mod tests {
             base.join("info/refs"),
             format!("{commit}\trefs/heads/master\n"),
         )?;
+        let request = temporary.path().join("plan-request.json");
+        fs::write(
+            &request,
+            canonical::to_vec(&first_release_request_fixture(&commit)?)?,
+        )?;
         let mut arguments = vec![
             base.display().to_string(),
             output.display().to_string(),
             predecessor.display().to_string(),
             trust.display().to_string(),
-            commit,
+            request.display().to_string(),
         ];
         for platform in Platform::ALL {
             let path = temporary.path().join(format!("{platform}.nar"));
@@ -1380,6 +1385,47 @@ mod tests {
             output,
             predecessor,
             trust,
+        })
+    }
+
+    /// Builds the first-release request `new --request-only` would derive for
+    /// the fleet's candidate on its two Hubs.
+    fn first_release_request_fixture(base_commit: &str) -> Result<ReleasePlanRequest> {
+        Ok(ReleasePlanRequest {
+            schema_version: aos_release::plan::PLAN_REQUEST.into(),
+            qualification_predecessor: None,
+            release_id: RELEASE_ID.into(),
+            version: RELEASE_VERSION.into(),
+            release_class: ReleaseClass::Candidate,
+            registry: aos_release::registry::MAIN_REGISTRY.into(),
+            registry_base_commit: base_commit.into(),
+            registry_base_generation: 0,
+            first_release: true,
+            source: aos_release::plan::PlanningSource {
+                protected_branch: "master".into(),
+                source_tag: format!("release/{RELEASE_VERSION}"),
+                contributor_authorization_digest: digest("fleet-contributor-authorization"),
+            },
+            images: Vec::new(),
+            signers: Vec::new(),
+            surfaces: fleet_surfaces(),
+            destinations: [SurfaceRole::Staging, SurfaceRole::Production]
+                .into_iter()
+                .map(|surface| RequestedDestination {
+                    surface,
+                    channel: CHANNEL.into(),
+                    effective: None,
+                })
+                .collect(),
+            change_scope: None,
+            profile_overrides: Vec::new(),
+            retention: RetentionPolicy {
+                policy_id: "fleet-retention-v1".into(),
+                policy_digest: digest("fleet-retention-policy"),
+                require_corresponding_source: true,
+            },
+            public_evidence_policy_digest: fleet_contract()?.digest()?,
+            restricted_operator_policy_digest: digest("fleet-restricted-operator-policy"),
         })
     }
 
