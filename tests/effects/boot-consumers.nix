@@ -112,6 +112,32 @@ in {
   assert initrd.config.aos.boot.hostActivatorService == null; true;
   disabled_control_plane_preserves_boot_activation = assert builtins.attrNames (hostActivators disabledControlPlaneHost) == ["boot-preparations.aos-ability-host-controller"];
   assert disabledControlPlaneHost.config.aos.boot.hostActivatorService == host.config.aos.boot.hostActivatorService; true;
+  host_journal_does_not_claim_unused_esp_storage = let
+    hostController = host.config.aos.services."boot-preparations.aos-ability-host-controller";
+    stateDirectory = host.config.aos.boot.substrateServices.hostStateDirectory;
+  in
+    assert !(host.config.aos.abilities.bootTransactionStorage.operations.view.effects ? stage);
+    assert !(canonicalHost.config.aos.abilities.bootTransactionStorage.operations.view.effects ? stage);
+    assert stateDirectory == "/var/lib/profiles/system/deployment";
+    assert builtins.elemAt (builtins.head hostController.lifecycle.start).executable.arguments 4 == stateDirectory;
+    assert builtins.elemAt (builtins.head receiver.lifecycle.start).executable.arguments 4 == initrd.config.aos.boot.substrateServices.initrdStateDirectory; true;
+  initrd_journal_preserves_firmware_bootstrap_boundary = let
+    storage = initrd.config.aos.services."boot-storage.aos-boot-transaction-storage";
+  in
+    assert storage.enable;
+    assert !host.config.aos.services."boot-storage.aos-boot-transaction-storage".enable;
+    assert storage.conditions.all
+    == [
+      {
+        kind = "path";
+        predicate = "exists";
+        path = "/sys/firmware/efi";
+        negated = false;
+      }
+    ];
+    assert builtins.elem "sysroot.mount" storage.dependencies.requires;
+    assert builtins.elem "aos-boot-transaction-storage.service" controller.dependencies.requires;
+    assert initrd.config.aos.abilities.bootTransactionStorage.operations.view.effects.stage.input.path == initrd.config.aos.boot.substrateServices.initrdStateDirectory; true;
   transaction_storage_requires_only_enabled_identity_guard = let
     storage = evaluation: evaluation.config.aos.services."boot-storage.aos-boot-transaction-storage";
     guard = "aos-boot-identity-guard.service";
