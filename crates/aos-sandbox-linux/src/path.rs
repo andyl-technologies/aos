@@ -20,6 +20,52 @@ use crate::{Error, Result};
 const MAX_RELATIVE_PATH_BYTES: usize = 4096;
 const MAXIMUM_BOUNDED_READ_BYTES: usize = 16 * 1024 * 1024;
 
+// Both dispositions preserve the consuming root's original observation order.
+// The retained caller parks its descriptor before expanding these checks.
+macro_rules! owned_root_identity_recipe {
+    ($fd:ident) => {{
+        uapi::ensure_cloexec($fd.as_fd())?;
+        let identity = inspect($fd.as_fd())?;
+        if identity.file_type != FileType::Directory {
+            return Err(Error::WrongDescriptorType {
+                expected: "directory",
+            });
+        }
+        identity
+    }};
+}
+
+/// Parks a returned root candidate before its consuming directory validation.
+#[derive(Debug, Default)]
+pub(crate) struct PendingBeneathRootV5 {
+    raw: Option<OwnedFd>,
+    validated: Option<BeneathRoot>,
+}
+
+impl PendingBeneathRootV5 {
+    pub(crate) fn retain(&mut self, candidate: OwnedFd) -> Result<()> {
+        if self.raw.is_some() || self.validated.is_some() {
+            return Err(Error::invalid("retained root", "already attempted"));
+        }
+        self.raw = Some(candidate);
+
+        let descriptor = self.raw.as_ref().ok_or_else(|| {
+            Error::invalid("retained root", "original descriptor is absent")
+        })?;
+        let identity = owned_root_identity_recipe!(descriptor);
+
+        let Some(fd) = self.raw.take() else {
+            std::process::abort();
+        };
+        self.validated = Some(BeneathRoot { fd, identity });
+        Ok(())
+    }
+
+    pub(crate) fn take_validated(&mut self) -> Option<BeneathRoot> {
+        self.validated.take()
+    }
+}
+
 /// Holds a regular-file acquisition before its first fallible inspection.
 #[derive(Debug, Default)]
 pub(crate) struct PendingRegularFileV1 {
@@ -188,13 +234,7 @@ impl BeneathRoot {
     /// Returns an error if the descriptor cannot be inspected or does not name
     /// a directory.
     pub fn from_owned(fd: OwnedFd) -> Result<Self> {
-        uapi::ensure_cloexec(fd.as_fd())?;
-        let identity = inspect(fd.as_fd())?;
-        if identity.file_type != FileType::Directory {
-            return Err(Error::WrongDescriptorType {
-                expected: "directory",
-            });
-        }
+        let identity = owned_root_identity_recipe!(fd);
         Ok(Self { fd, identity })
     }
 

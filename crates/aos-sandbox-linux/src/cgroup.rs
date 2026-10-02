@@ -21,7 +21,10 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::FileExt as _;
 use std::path::{Component, Path};
 
-use crate::path::{BeneathRoot, PendingRegularFileV1, PendingResolvedPathV5, ResolveOptions};
+use crate::path::{
+    BeneathRoot, PendingBeneathRootV5, PendingRegularFileV1, PendingResolvedPathV5,
+    ResolveOptions,
+};
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result, uapi};
 
@@ -348,6 +351,26 @@ fn parse_limit_decimal(bytes: &[u8]) -> Option<u64> {
     })
 }
 
+macro_rules! require_cgroup_identity_platform {
+    () => {
+        if !cfg!(target_pointer_width = "64") {
+            return Err(Error::invalid(
+                "cgroup identity profile",
+                "requires a 64-bit kernel/process",
+            ));
+        }
+    };
+}
+
+macro_rules! anchor_from_root {
+    ($root:ident) => {
+        RetainedCgroupAnchor {
+            kernel_id: $root.identity().inode,
+            root: $root,
+        }
+    };
+}
+
 /// Retains a kernel cgroup-v2 directory as a strict descendant-resolution root.
 ///
 /// The caller chooses its trusted scope; this type proves neither that the
@@ -417,6 +440,106 @@ impl TryFrom<BeneathRoot> for CgroupV2Root {
 pub struct RetainedCgroupAnchor {
     root: BeneathRoot,
     kernel_id: u64,
+}
+
+/// Retains initial hierarchy and fixed offline-provisioner cgroup observations.
+///
+/// This move-only DATA reservoir parks a returned root duplicate and every
+/// returned child/probe before validation. It proves kernel object identity,
+/// not service provenance, privilege, startup admission, funding or currentness.
+/// Its only descendant is `system.slice/aos-sandbox-nix-floor-provision.service`.
+/// It retains at most two directory descriptors and four active-file probes;
+/// transitions between candidate and validated slots never duplicate an FD.
+/// The external caller keeps the reservoir alive on error or caught unwind.
+#[derive(Debug, Default)]
+pub struct NixOfflineInitialCgroupReadbackV5 {
+    attempted: bool,
+    complete: bool,
+    root_candidate: PendingBeneathRootV5,
+    hierarchy_candidate: Option<RetainedCgroupAnchor>,
+    root: Option<CgroupV2Root>,
+    root_probe: PendingRegularFileV1,
+    child: InitialCgroupChildV5,
+}
+
+#[derive(Debug, Default)]
+struct InitialCgroupChildV5 {
+    resolution: PendingResolvedPathV5,
+    anchor: Option<RetainedCgroupAnchor>,
+    probes: [PendingRegularFileV1; 3],
+}
+
+impl NixOfflineInitialCgroupReadbackV5 {
+    /// Creates fixed empty slots without acquiring or admitting an object.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Captures a returned hierarchy duplicate and the one fixed self cgroup.
+    ///
+    /// The first call parks the candidate before its directory checks. The
+    /// actual error is returned by value for the external owner to retain;
+    /// partial descriptors remain here. Failure or unwind fences this instance.
+    /// An unrequested owned argument to a repeated call is dropped normally,
+    /// without releasing any previously captured original.
+    ///
+    /// # Errors
+    /// Returns the original directory, cgroup, resolution or kernel error.
+    /// Refuses a repeated/interrupted capture without resampling its originals.
+    pub fn capture_provisioner(&mut self, original_root_candidate: OwnedFd) -> Result<()> {
+        if self.attempted {
+            self.complete = false;
+            return Err(Error::invalid("initial cgroup capture", "already attempted"));
+        }
+        self.attempted = true;
+        self.complete = false;
+
+        self.root_candidate.retain(original_root_candidate)?;
+        let Some(root) = self.root_candidate.take_validated() else {
+            std::process::abort();
+        };
+        self.hierarchy_candidate = Some(anchor_from_root!(root));
+        self.hierarchy_candidate
+            .as_ref()
+            .ok_or_else(|| {
+                Error::invalid("initial cgroup capture", "hierarchy candidate is absent")
+            })?
+            .validate_initial_retaining(&mut self.root_probe)?;
+
+        let Some(anchor) = self.hierarchy_candidate.take() else {
+            std::process::abort();
+        };
+        self.root = Some(CgroupV2Root { anchor });
+        self.root
+            .as_ref()
+            .ok_or_else(|| {
+                Error::invalid("initial cgroup capture", "hierarchy root is absent")
+            })?
+            .anchor
+            .resolve_initial_provisioner_retaining(&mut self.child)?;
+
+        self.complete = true;
+        Ok(())
+    }
+
+    /// Transfers the two fully validated kernel objects once, leaving probes resident.
+    ///
+    /// Returns `None` before full success, after transfer, or after a failed or
+    /// interrupted capture. Both slots are checked before either owning move.
+    /// This supplies kernel DATA, never an admitted service origin or floor.
+    #[must_use]
+    pub fn take_validated_pair(&mut self) -> Option<(CgroupV2Root, RetainedCgroupAnchor)> {
+        if !self.complete || self.root.is_none() || self.child.anchor.is_none() {
+            return None;
+        }
+        self.complete = false;
+
+        match (self.root.take(), self.child.anchor.take()) {
+            (Some(root), Some(anchor)) => Some((root, anchor)),
+            _ => std::process::abort(),
+        }
+    }
 }
 
 /// Retains the kernel population file for one exact cgroup lifetime.
@@ -651,6 +774,57 @@ macro_rules! validate_active_recipe {
     }};
 }
 
+macro_rules! child_resolution_step {
+    (Local, active, $anchor:ident, $pending:ident, $index:literal) => {
+        $anchor.validate_active()?;
+    };
+    (Retained, active, $anchor:ident, $pending:ident, $index:literal) => {
+        $anchor.validate_active_retaining(&mut $pending.probes[$index])?;
+    };
+    (Local, resolve, $anchor:ident, $relative:ident, $pending:ident, $resolved:ident) => {
+        let $resolved = $anchor.root.resolve($relative, ResolveOptions::directory())?;
+    };
+    (Retained, resolve, $anchor:ident, $relative:ident, $pending:ident, $resolved:ident) => {
+        $anchor.root.resolve_directory_retaining(
+            $relative,
+            &mut $pending.resolution,
+        )?;
+    };
+    (Local, construct, $pending:ident, $resolved:ident, $child:ident) => {
+        let $child = Self::new(BeneathRoot::from_resolved($resolved)?)?;
+    };
+    (Retained, construct, $pending:ident, $resolved:ident, $child:ident) => {
+        let Some(root) = $pending.resolution.take_directory_root() else {
+            std::process::abort();
+        };
+        $pending.anchor = Some(anchor_from_root!(root));
+        $pending.anchor
+            .as_ref()
+            .ok_or_else(|| {
+                Error::invalid("initial cgroup capture", "self anchor is absent")
+            })?
+            .validate_initial_retaining(&mut $pending.probes[1])?;
+    };
+    (Local, finish, $child:ident) => {
+        Ok($child)
+    };
+    (Retained, finish, $child:ident) => {
+        Ok(())
+    };
+}
+
+// The ordinary expansion retains its consuming locals and original check order.
+// Only the selected disposition changes where returned child/probe FDs reside.
+macro_rules! resolve_child_recipe {
+    ($anchor:ident, $relative:ident, $disposition:ident, $pending:ident) => {{
+        child_resolution_step!($disposition, active, $anchor, $pending, 0);
+        child_resolution_step!($disposition, resolve, $anchor, $relative, $pending, resolved);
+        child_resolution_step!($disposition, construct, $pending, resolved, child);
+        child_resolution_step!($disposition, active, $anchor, $pending, 2);
+        child_resolution_step!($disposition, finish, child)
+    }};
+}
+
 impl RetainedCgroupAnchor {
     /// Resolves and retains one proper descendant cgroup beneath this anchor.
     ///
@@ -874,18 +1048,15 @@ impl RetainedCgroupAnchor {
     }
 
     fn new(root: BeneathRoot) -> Result<Self> {
-        if !cfg!(target_pointer_width = "64") {
-            return Err(Error::invalid(
-                "cgroup identity profile",
-                "requires a 64-bit kernel/process",
-            ));
-        }
-        let anchor = Self {
-            kernel_id: root.identity().inode,
-            root,
-        };
+        require_cgroup_identity_platform!();
+        let anchor = anchor_from_root!(root);
         anchor.validate_active()?;
         Ok(anchor)
+    }
+
+    fn validate_initial_retaining(&self, pending: &mut PendingRegularFileV1) -> Result<()> {
+        require_cgroup_identity_platform!();
+        self.validate_active_retaining(pending)
     }
 
     /// Returns the retained object's full kernel cgroup ID, not an authorization token.
@@ -957,11 +1128,15 @@ impl RetainedCgroupAnchor {
     }
 
     fn resolve_child(&self, relative: &Path) -> Result<Self> {
-        self.validate_active()?;
-        let resolved = self.root.resolve(relative, ResolveOptions::directory())?;
-        let child = Self::new(BeneathRoot::from_resolved(resolved)?)?;
-        self.validate_active()?;
-        Ok(child)
+        resolve_child_recipe!(self, relative, Local, unused)
+    }
+
+    fn resolve_initial_provisioner_retaining(
+        &self,
+        pending: &mut InitialCgroupChildV5,
+    ) -> Result<()> {
+        let relative = Path::new("system.slice/aos-sandbox-nix-floor-provision.service");
+        resolve_child_recipe!(self, relative, Retained, pending)
     }
 
     /// Rechecks the retained identity and an active kernfs control inode.
@@ -1062,6 +1237,45 @@ mod limit_readback_tests {
         readback.phase = LimitReadbackPhaseV1::Checking;
         assert!(readback.bytes(CgroupLimitControlV1::PidsMax).is_none());
         assert!(readback.failure().is_none());
+    }
+}
+
+#[cfg(test)]
+mod initial_cgroup_phase_tests {
+    use super::NixOfflineInitialCgroupReadbackV5;
+
+    #[test]
+    fn empty_initial_cgroup_cannot_transfer_objects() {
+        let mut original = NixOfflineInitialCgroupReadbackV5::new();
+
+        assert!(original.take_validated_pair().is_none());
+        assert!(!original.attempted);
+        assert!(!original.complete);
+    }
+
+    #[test]
+    fn interrupted_initial_cgroup_remains_closed() {
+        let mut original = NixOfflineInitialCgroupReadbackV5 {
+            attempted: true,
+            ..NixOfflineInitialCgroupReadbackV5::default()
+        };
+
+        assert!(original.take_validated_pair().is_none());
+        assert!(original.attempted);
+        assert!(!original.complete);
+    }
+
+    #[test]
+    fn completion_marker_alone_cannot_transfer_kernel_objects() {
+        let mut original = NixOfflineInitialCgroupReadbackV5 {
+            attempted: true,
+            complete: true,
+            ..NixOfflineInitialCgroupReadbackV5::default()
+        };
+
+        assert!(original.take_validated_pair().is_none());
+        assert!(original.root.is_none());
+        assert!(original.child.anchor.is_none());
     }
 }
 
