@@ -2,6 +2,15 @@
 //!
 //! This do-e2e projection grants no authority. Native authentication, current
 //! SQL and the independently captured provider request remain separate joins.
+//!
+//! The closed observational format has these fields; nested Core values retain
+//! their existing serialization. This outline is not an authorization receipt:
+//!
+//! ```text
+//! Projection = {version, attemptId, selection, job, work}
+//! Selection = {version, stagingPrefix, expectedSourceSha256, expectedSourceBytes}
+//! Job = {canonicalJobSha256, admission, complete, placementId, closedResult}
+//! ```
 
 use anyhow::{ensure, Result};
 use aos_hub_core::direct_upload::{DirectCompleteRequest, DirectUploadAdmission, WireInteger};

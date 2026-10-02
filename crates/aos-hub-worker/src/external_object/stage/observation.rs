@@ -2,6 +2,19 @@
 //!
 //! Prepared requests are not dispatch receipts. These records cannot replace
 //! current Native authorization, physical provider evidence or complete windows.
+//!
+//! Private records use the following closed tagged shapes. Turn, Receipt and
+//! floor fields retain their existing wire formats:
+//!
+//! ```text
+//! {kind: "started", projection: Projection}
+//! {kind: "prepared", prepared: {projection, turn, closure, floor,
+//!   directPermissionExpiresAt, providerBucket, providerFullKey, providerUrl,
+//!   requiredHeaders}}
+//! {kind: "terminal", version: 1, attemptId, status, result}
+//! {kind: "incomplete", version: 1, attemptId, reason}
+//! ```
+//! Terminal status is positive, error or dropped; only positive carries a result.
 
 use std::cell::Cell;
 
