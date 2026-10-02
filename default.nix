@@ -1485,10 +1485,13 @@ in rec {
       };
       package-root-image = import ./lib/testing/package-root-image.nix {inherit pkgs lib;};
       systemd-verity = import ./lib/testing/systemd-verity.nix {inherit pkgs lib;};
-      # aos-testing leaves signing to the release finalizer, so Nix has no
+      # Experimental variants leave signing to the release finalizer, so Nix has no
       # final image for the signed-artifact budget check. Keep the exemption
       # explicit: any other missing check must stop whole-check evaluation.
-      imageBudgetExemptSystemNames = ["aos-testing"];
+      imageBudgetExemptSystemNames = [
+        "aos-experimental"
+        "aos-experimental-staging"
+      ];
       systemsMissingImageBudgets = builtins.filter (
         name: !(discoverSystems.${name}.checks ? image-budget)
       ) (builtins.attrNames discoverSystems);
