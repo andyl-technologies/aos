@@ -102,6 +102,32 @@
     destination = "/value";
     text = "hub-oci-qualification-delivery-attestation-key-v1";
   };
+  # Staged registry releases discover the Hub through its public deployment
+  # identity, which the native Hub advertises only with a complete release
+  # evidence authority. These seeds and keys are public test material.
+  releaseEvidenceCredential = name: text:
+    pkgs.writeTextFile {
+      inherit name text;
+      destination = "/value";
+    };
+  releaseEvidenceCredentials = {
+    hub-oci-release-receipt-seed =
+      releaseEvidenceCredential "hub-oci-release-receipt-seed"
+      "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0=";
+    hub-oci-channel-receipt-seed =
+      releaseEvidenceCredential "hub-oci-channel-receipt-seed"
+      "Dg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4=";
+    hub-oci-release-publication-keys =
+      releaseEvidenceCredential "hub-oci-release-publication-keys.json"
+      (builtins.toJSON {
+        "hub-oci-publication-v1" = "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
+      });
+    hub-oci-qualification-keys =
+      releaseEvidenceCredential "hub-oci-qualification-keys.json"
+      (builtins.toJSON {
+        "hub-oci-qualification-v1" = "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o=";
+      });
+  };
   deliveryAttestationSigner = pkgs.writeTextFile {
     name = "hub-oci-delivery-attestation-signer";
     destination = "/bin/hub-oci-delivery-attestation-signer";
@@ -313,10 +339,26 @@
   hubOciModule = {
     aos.firewall.allowedTCP = [8443];
     aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
-    aos.registry-hub.credentials.deliveryAttestationKey = "hub-oci-delivery-attestation-key";
     environment.etc."tmpfiles.d/hub-oci-delivery-attestation.conf".text = ''
       C /run/credentials/@system/hub-oci-delivery-attestation-key 0600 root root - ${deliveryAttestationKey}/value
     '';
+    aos.registry-hub = {
+      deploymentId = "hub-oci-qualification-v1";
+      releaseReceiptKeyId = "hub-oci-release-receipt-v1";
+      channelReceiptKeyId = "hub-oci-channel-receipt-v1";
+      credentials = {
+        deliveryAttestationKey = "hub-oci-delivery-attestation-key";
+        releaseReceiptKey = "hub-oci-release-receipt-seed";
+        channelReceiptKey = "hub-oci-channel-receipt-seed";
+        releasePublicationKeys = "hub-oci-release-publication-keys";
+        qualificationKeys = "hub-oci-qualification-keys";
+      };
+    };
+    environment.etc."tmpfiles.d/hub-oci-release-evidence.conf".text =
+      lib.concatStrings (lib.mapAttrsToList (name: credential: ''
+          C /run/credentials/@system/${name} 0600 root root - ${credential}/value
+        '')
+        releaseEvidenceCredentials);
     aos.users.users.nginx = {
       uid = 803;
       group = "nginx";
