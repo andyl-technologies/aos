@@ -21,12 +21,332 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::FileExt as _;
 use std::path::{Component, Path};
 
-use crate::path::{BeneathRoot, ResolveOptions};
+use crate::path::{BeneathRoot, PendingRegularFileV1, ResolveOptions};
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result, uapi};
 
 const CGROUP2_SUPER_MAGIC: libc::c_long = 0x6367_7270;
 const MAXIMUM_DESCENDANT_HINT_BYTES: usize = 4096;
+
+const LIMIT_CONTROL_BYTES: usize = 256;
+
+/// Names the closed read-only files used by a service-limit observation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CgroupLimitControlV1 {
+    /// Available controllers, not enabled subtree controllers.
+    Controllers,
+    /// Controllers enabled for children.
+    SubtreeControl,
+    /// Domain/threaded topology classification.
+    Type,
+    /// Finite task limit or the literal `max`.
+    PidsMax,
+    /// CPU scheduling weight, not inherited bandwidth.
+    CpuWeight,
+    /// Raw memory-high value; no page normalization is implied.
+    MemoryHigh,
+    /// Raw memory-max value; no page normalization is implied.
+    MemoryMax,
+}
+
+impl CgroupLimitControlV1 {
+    const ALL: [Self; 7] = [
+        Self::Controllers,
+        Self::SubtreeControl,
+        Self::Type,
+        Self::PidsMax,
+        Self::CpuWeight,
+        Self::MemoryHigh,
+        Self::MemoryMax,
+    ];
+
+    const fn name(self) -> &'static str {
+        match self {
+            Self::Controllers => "cgroup.controllers",
+            Self::SubtreeControl => "cgroup.subtree_control",
+            Self::Type => "cgroup.type",
+            Self::PidsMax => "pids.max",
+            Self::CpuWeight => "cpu.weight",
+            Self::MemoryHigh => "memory.high",
+            Self::MemoryMax => "memory.max",
+        }
+    }
+}
+
+#[derive(Debug)]
+struct LimitControlSlotV1 {
+    opening: PendingRegularFileV1,
+    bookend: PendingRegularFileV1,
+    final_name: PendingRegularFileV1,
+    absent: Option<Error>,
+    absence_bookend: Option<Error>,
+    final_absence: Option<Error>,
+    bytes: [u8; LIMIT_CONTROL_BYTES + 1],
+    length: usize,
+    final_bytes: [u8; LIMIT_CONTROL_BYTES + 1],
+    final_length: usize,
+}
+
+impl Default for LimitControlSlotV1 {
+    fn default() -> Self {
+        Self {
+            opening: PendingRegularFileV1::default(),
+            bookend: PendingRegularFileV1::default(),
+            final_name: PendingRegularFileV1::default(),
+            absent: None,
+            absence_bookend: None,
+            final_absence: None,
+            bytes: [0; LIMIT_CONTROL_BYTES + 1],
+            length: 0,
+            final_bytes: [0; LIMIT_CONTROL_BYTES + 1],
+            final_length: 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LimitReadbackPhaseV1 {
+    Fresh,
+    Checking,
+    Ready,
+    Current,
+    Failed,
+}
+
+/// Retains fixed control-file descriptors, bounded bytes and the first error.
+///
+/// This is observed DATA, not an enforcement or currentness capability. An
+/// interrupted capture cannot be retried. Missing files remain explicit kernel
+/// observations; callers must decide which files their actual topology requires.
+#[derive(Debug)]
+pub struct CgroupLimitReadbackV1 {
+    slots: [LimitControlSlotV1; 7],
+    phase: LimitReadbackPhaseV1,
+    failure: Option<Error>,
+}
+
+impl Default for CgroupLimitReadbackV1 {
+    fn default() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| LimitControlSlotV1::default()),
+            phase: LimitReadbackPhaseV1::Fresh,
+            failure: None,
+        }
+    }
+}
+
+impl CgroupLimitReadbackV1 {
+    /// Captures one bounded observation through the actual retained anchor.
+    ///
+    /// # Errors
+    ///
+    /// Rejects reentry, stale anchors, failed opens/reads, changed named files,
+    /// and malformed or oversized records. The original first error stays here;
+    /// the returned error is only a negative status, never a positive permit.
+    pub fn capture(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.phase != LimitReadbackPhaseV1::Fresh {
+            return Err(Error::invalid("cgroup limit capture", "already attempted"));
+        }
+        self.phase = LimitReadbackPhaseV1::Checking;
+        match self.capture_once(anchor) {
+            Ok(()) => {
+                self.phase = LimitReadbackPhaseV1::Ready;
+                Ok(())
+            }
+            Err(error) => {
+                self.failure = Some(error);
+                self.phase = LimitReadbackPhaseV1::Failed;
+                Err(Error::invalid("cgroup limit capture", "original failure retained"))
+            }
+        }
+    }
+
+    /// Borrows the first actual native/parser error without releasing custody.
+    #[must_use]
+    pub fn failure(&self) -> Option<&Error> {
+        self.failure.as_ref()
+    }
+
+    /// Borrows an actual missing-file cause without synthesizing a default.
+    ///
+    /// Absence is negative DATA even when this caller's topology permits it.
+    #[must_use]
+    pub fn absence(&self, control: CgroupLimitControlV1) -> Option<&Error> {
+        self.slots[control as usize].absent.as_ref()
+    }
+
+    /// Borrows a complete record only after the whole capture succeeded.
+    #[must_use]
+    pub fn bytes(&self, control: CgroupLimitControlV1) -> Option<&[u8]> {
+        if !matches!(self.phase, LimitReadbackPhaseV1::Ready | LimitReadbackPhaseV1::Current) {
+            return None;
+        }
+        let slot = &self.slots[control as usize];
+        slot.absent.is_none().then_some(&slot.bytes[..slot.length])
+    }
+
+    /// Performs the sole final same-OFD and named-identity bookend.
+    ///
+    /// # Errors
+    ///
+    /// Rejects non-ready/repeated calls, changes, removal and native read/open
+    /// errors. A failure or interrupted bookend leaves all originals resident.
+    pub fn recheck(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        if self.phase != LimitReadbackPhaseV1::Ready {
+            return Err(Error::invalid("cgroup limit bookend", "not initially ready"));
+        }
+        self.phase = LimitReadbackPhaseV1::Checking;
+        match self.recheck_once(anchor) {
+            Ok(()) => {
+                self.phase = LimitReadbackPhaseV1::Current;
+                Ok(())
+            }
+            Err(error) => {
+                self.failure = Some(error);
+                self.phase = LimitReadbackPhaseV1::Failed;
+                Err(Error::invalid("cgroup limit bookend", "original failure retained"))
+            }
+        }
+    }
+
+    fn recheck_once(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        anchor.validate_current()?;
+        for control in CgroupLimitControlV1::ALL {
+            let slot = &mut self.slots[control as usize];
+            let path = Path::new(control.name());
+            if slot.absent.is_some() {
+                match anchor.root.open_regular_retaining(path, &mut slot.final_name) {
+                    Err(error) if is_missing(&error) => {
+                        slot.final_absence = Some(error);
+                        continue;
+                    }
+                    Err(error) => return Err(error),
+                    Ok(()) => return Err(Error::invalid("cgroup control", "absent file appeared")),
+                }
+            }
+            read_limit_record(
+                slot.opening.file()?.as_fd(), &mut slot.final_bytes, &mut slot.final_length,
+            )?;
+            if slot.bytes[..slot.length] != slot.final_bytes[..slot.final_length] {
+                return Err(Error::invalid("cgroup control", "same-OFD record changed"));
+            }
+            anchor.root.open_regular_retaining(path, &mut slot.final_name)?;
+            if slot.opening.file()?.identity() != slot.final_name.file()?.identity() {
+                return Err(Error::invalid("cgroup control", "final named identity changed"));
+            }
+        }
+        anchor.validate_current()
+    }
+
+    fn capture_once(&mut self, anchor: &RetainedCgroupAnchor) -> Result<()> {
+        anchor.validate_current()?;
+        for control in CgroupLimitControlV1::ALL {
+            let slot = &mut self.slots[control as usize];
+            let path = Path::new(control.name());
+            match anchor.root.open_regular_retaining(path, &mut slot.opening) {
+                Err(error @ Error::Syscall { .. }) if is_missing(&error) => {
+                    slot.absent = Some(error);
+                    match anchor.root.open_regular_retaining(path, &mut slot.bookend) {
+                        Err(error) if is_missing(&error) => {
+                            slot.absence_bookend = Some(error);
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                        Ok(()) => return Err(Error::invalid("cgroup control", "absent file appeared")),
+                    }
+                }
+                Err(error) => return Err(error),
+                Ok(()) => {}
+            }
+
+            // The same readable OFD supplies every byte, from offset zero. The
+            // sentinel and each returned prefix are resident before validation.
+            read_limit_record(slot.opening.file()?.as_fd(), &mut slot.bytes, &mut slot.length)?;
+            validate_limit_record(control, &slot.bytes[..slot.length])?;
+            anchor.root.open_regular_retaining(path, &mut slot.bookend)?;
+            if slot.opening.file()?.identity() != slot.bookend.file()?.identity() {
+                return Err(Error::invalid("cgroup control", "named identity changed"));
+            }
+        }
+        anchor.validate_current()
+    }
+}
+
+fn read_limit_record(
+    fd: BorrowedFd<'_>,
+    bytes: &mut [u8; LIMIT_CONTROL_BYTES + 1],
+    length: &mut usize,
+) -> Result<()> {
+    loop {
+        let read = rustix::io::pread(fd, &mut bytes[*length..], *length as u64)
+            .map_err(|source| Error::Syscall {
+                operation: "read fixed cgroup control", source: source.into(),
+            })?;
+        *length += read;
+        if *length > LIMIT_CONTROL_BYTES {
+            return Err(Error::ObservationLimitExceeded {
+                object: "fixed cgroup control", limit: LIMIT_CONTROL_BYTES,
+            });
+        }
+        if read == 0 {
+            return Ok(());
+        }
+    }
+}
+
+fn is_missing(error: &Error) -> bool {
+    matches!(error, Error::Syscall { source, .. } if source.raw_os_error() == Some(libc::ENOENT))
+}
+
+fn validate_limit_record(control: CgroupLimitControlV1, bytes: &[u8]) -> Result<()> {
+    let body = bytes.strip_suffix(b"\n").ok_or_else(|| {
+        Error::invalid("cgroup control", "record lacks its single final newline")
+    })?;
+    let valid = match control {
+        CgroupLimitControlV1::Controllers | CgroupLimitControlV1::SubtreeControl => {
+            let mut seen = 0_u16;
+            body.is_empty() || body.split(|byte| *byte == b' ').all(|word| {
+                let bit = match word {
+                    b"cpu" => 1,
+                    b"pids" => 2,
+                    b"memory" => 4,
+                    b"cpuset" => 8,
+                    b"io" => 16,
+                    b"hugetlb" => 32,
+                    b"rdma" => 64,
+                    b"misc" => 128,
+                    _ => return false,
+                };
+                let fresh = seen & bit == 0;
+                seen |= bit;
+                fresh
+            })
+        }
+        CgroupLimitControlV1::Type => matches!(
+            body, b"domain" | b"domain threaded" | b"domain invalid" | b"threaded"
+        ),
+        CgroupLimitControlV1::PidsMax | CgroupLimitControlV1::MemoryHigh | CgroupLimitControlV1::MemoryMax => {
+            body == b"max" || parse_limit_decimal(body).is_some()
+        }
+        CgroupLimitControlV1::CpuWeight => {
+            parse_limit_decimal(body).is_some_and(|weight| (1..=10_000).contains(&weight))
+        }
+    };
+    if !valid {
+        return Err(Error::invalid("cgroup control", "malformed fixed record"));
+    }
+    Ok(())
+}
+
+fn parse_limit_decimal(bytes: &[u8]) -> Option<u64> {
+    if bytes.is_empty() || bytes.len() > 20 || (bytes.len() > 1 && bytes[0] == b'0') {
+        return None;
+    }
+    bytes.iter().try_fold(0_u64, |value, byte| {
+        byte.is_ascii_digit().then_some(())?;
+        value.checked_mul(10)?.checked_add(u64::from(*byte - b'0'))
+    })
+}
 
 /// Retains a kernel cgroup-v2 directory as a strict descendant-resolution root.
 ///
@@ -568,6 +888,46 @@ fn recheck_process(process: &PidFd, before: PidFdInfo) -> Result<PidFdInfo> {
         ));
     }
     Ok(after)
+}
+
+#[cfg(test)]
+mod limit_readback_tests {
+    use super::*;
+
+    #[test]
+    fn finite_decimal_rejects_max_overflow_and_noncanonical_numbers() {
+        assert_eq!(parse_limit_decimal(b"42"), Some(42));
+        for bytes in [b"max".as_slice(), b"01", b"-1", b"18446744073709551616", b""] {
+            assert_eq!(parse_limit_decimal(bytes), None);
+        }
+    }
+
+    #[test]
+    fn controller_records_reject_duplicate_unknown_and_trailing_fields() {
+        assert!(validate_limit_record(CgroupLimitControlV1::Controllers, b"cpu memory pids\n").is_ok());
+        for bytes in [b"cpu cpu\n".as_slice(), b"cpu foreign\n", b"cpu \n", b"cpu\n\n"] {
+            assert!(validate_limit_record(CgroupLimitControlV1::Controllers, bytes).is_err());
+        }
+    }
+
+    #[test]
+    fn control_records_require_one_newline_and_closed_weight_range() {
+        for bytes in [b"0\n".as_slice(), b"10001\n", b"100\nextra", b"100"] {
+            assert!(validate_limit_record(CgroupLimitControlV1::CpuWeight, bytes).is_err());
+        }
+        assert!(validate_limit_record(CgroupLimitControlV1::CpuWeight, b"10000\n").is_ok());
+        assert!(validate_limit_record(CgroupLimitControlV1::MemoryMax, b"max\n").is_ok());
+    }
+
+    #[test]
+    fn fresh_and_interrupted_slots_do_not_expose_records() {
+        let mut readback = CgroupLimitReadbackV1::default();
+        assert!(readback.bytes(CgroupLimitControlV1::PidsMax).is_none());
+
+        readback.phase = LimitReadbackPhaseV1::Checking;
+        assert!(readback.bytes(CgroupLimitControlV1::PidsMax).is_none());
+        assert!(readback.failure().is_none());
+    }
 }
 
 #[cfg(test)]

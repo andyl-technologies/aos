@@ -13,8 +13,8 @@ use std::sync::Mutex;
 
 use aos_sandbox_linux::boot::KernelBootId;
 use aos_sandbox_linux::cgroup::{
-    CgroupFreezerState, CgroupPopulationMonitor, CgroupPopulationState, CgroupV2Root,
-    RetainedCgroupAnchor,
+    CgroupFreezerState, CgroupLimitControlV1, CgroupLimitReadbackV1, CgroupPopulationMonitor,
+    CgroupPopulationState, CgroupV2Root, RetainedCgroupAnchor,
 };
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::path::{BeneathRoot, ResolveOptions};
@@ -714,6 +714,88 @@ pub struct BoundPayloadVerification {
     pub(crate) shifted_payload_inspection: Option<VerifiedShiftedPayloadInspectionV1>,
 }
 
+/// Borrows the concrete installed worker without granting a worker factory.
+///
+/// Construction is private to the actual systemd worker. Other implementations
+/// retain their ordinary APIs and cannot manufacture positive limit readback.
+pub struct RetainedPayloadWorkerV1<'worker> {
+    worker: &'worker SystemdOneShotWorker,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BoundReadbackPhaseV1 {
+    Fresh,
+    Checking,
+    Ready,
+    Failed,
+}
+
+/// Resident originals for one of the request's two fixed verification points.
+pub(crate) struct BoundPayloadReadbackV1 {
+    pub(super) pending_payload: Option<PinnedPayloadLeader>,
+    pub(super) observation: Option<WorkerObservation>,
+    pub(super) proof: Option<RuntimeProofSnapshot>,
+    pub(super) shifted: Option<VerifiedShiftedPayloadInspectionV1>,
+    pub(super) verification: Option<BoundPayloadVerification>,
+    pub(super) root: Option<CgroupV2Root>,
+    pub(super) anchors: [Option<RetainedCgroupAnchor>; 4],
+    pub(super) payload_anchor: Option<RetainedCgroupAnchor>,
+    pub(super) anchor_bookends: [Option<RetainedCgroupAnchor>; 4],
+    pub(super) limits: [CgroupLimitReadbackV1; 4],
+    pub(super) native_failure: Option<aos_sandbox_linux::Error>,
+    pub(super) missing_control: Option<(usize, CgroupLimitControlV1)>,
+    pub(super) failure: Option<HostError>,
+    pub(super) phase: BoundReadbackPhaseV1,
+}
+
+impl BoundPayloadReadbackV1 {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending_payload: None,
+            observation: None,
+            proof: None,
+            shifted: None,
+            verification: None,
+            root: None,
+            anchors: std::array::from_fn(|_| None),
+            payload_anchor: None,
+            anchor_bookends: std::array::from_fn(|_| None),
+            limits: std::array::from_fn(|_| CgroupLimitReadbackV1::default()),
+            native_failure: None,
+            missing_control: None,
+            failure: None,
+            phase: BoundReadbackPhaseV1::Fresh,
+        }
+    }
+
+    pub(crate) fn verified(&self) -> Result<&BoundPayloadVerification> {
+        if self.phase != BoundReadbackPhaseV1::Ready {
+            return Err(HostError::Worker("resident payload readback is not ready".to_owned()));
+        }
+        self.verification.as_ref().ok_or_else(|| {
+            HostError::Worker("resident payload readback lost its verification".to_owned())
+        })
+    }
+
+    /// Borrows the actual first refusal; coarse status errors own no custody.
+    pub(crate) fn failure_cause(&self) -> Option<&dyn std::error::Error> {
+        if let Some(error) = &self.native_failure {
+            return Some(error);
+        }
+        if let Some((index, control)) = self.missing_control {
+            if let Some(error) = self.limits[index].absence(control) {
+                return Some(error);
+            }
+        }
+        for readback in &self.limits {
+            if let Some(error) = readback.failure() {
+                return Some(error);
+            }
+        }
+        self.failure.as_ref().map(|error| error as &dyn std::error::Error)
+    }
+}
+
 impl BoundPayloadVerification {
     /// Borrows the shifted-payload readback produced by an exact bound start.
     ///
@@ -774,6 +856,13 @@ pub enum ExactWorkerStopOutcome {
 /// Executes one idempotent fixed-function host transaction.
 #[async_trait]
 pub trait HostWorker {
+    /// Returns a concrete installed-worker loan, or no limit-readback support.
+    ///
+    /// The default does not create positive evidence or alter ordinary calls.
+    fn retained_payload_worker(&self) -> Option<RetainedPayloadWorkerV1<'_>> {
+        None
+    }
+
     /// Applies or reconciles one operation, then returns verified observation.
     /// Implementations must invoke `before_effect` after asynchronous
     /// preparation and immediately before each mutating backend call. An
@@ -1132,6 +1221,22 @@ fn ensure_done(outcome: &aos_systemd::JobOutcome) -> Result<()> {
 
 fn worker_error(error: &aos_systemd::Error) -> HostError {
     HostError::Worker(error.to_string())
+}
+
+#[cfg(test)]
+mod resident_readback_tests {
+    use super::*;
+
+    #[test]
+    fn empty_and_interrupted_readback_cannot_supply_verification() {
+        let mut readback = BoundPayloadReadbackV1::new();
+        assert!(readback.verified().is_err());
+
+        readback.phase = BoundReadbackPhaseV1::Checking;
+        assert!(readback.verified().is_err());
+        assert!(readback.observation.is_none());
+        assert!(readback.pending_payload.is_none());
+    }
 }
 
 #[cfg(test)]

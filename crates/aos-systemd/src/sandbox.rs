@@ -230,6 +230,30 @@ pub struct SandboxResources {
 }
 
 impl SandboxResources {
+    /// Returns the original requested memory-high byte value.
+    #[must_use]
+    pub const fn memory_high_bytes(&self) -> u64 {
+        self.memory_high_bytes
+    }
+
+    /// Returns the original requested memory-max byte value.
+    #[must_use]
+    pub const fn memory_max_bytes(&self) -> u64 {
+        self.memory_max_bytes
+    }
+
+    /// Returns the original finite task limit.
+    #[must_use]
+    pub const fn tasks_max(&self) -> u64 {
+        self.tasks_max
+    }
+
+    /// Returns the original validated CPU weight.
+    #[must_use]
+    pub const fn cpu_weight(&self) -> CpuWeight {
+        self.cpu_weight
+    }
+
     /// Constructs mandatory memory, task, and CPU-weight limits.
     ///
     /// # Errors
@@ -552,6 +576,12 @@ pub struct SandboxGuestAgentDescriptorsV1 {
 }
 
 impl SandboxUnitSpec {
+    /// Borrows the original resource request used by the property encoder.
+    #[must_use]
+    pub const fn resources(&self) -> &SandboxResources {
+        &self.resources
+    }
+
     /// Constructs a closed sandbox service specification.
     ///
     /// The command owns the complete fixed argv profile; the root and network
@@ -1196,6 +1226,21 @@ fn parse_exact_cgroup(
         )));
     }
     Ok(Some(SandboxCgroupPath(path)))
+}
+
+#[cfg(test)]
+mod resource_readback_tests {
+    use super::*;
+
+    #[test]
+    fn getters_preserve_original_bytes_task_limit_and_weight() {
+        let resources = SandboxResources::new(4097, 8193, 17, 103).unwrap();
+
+        assert_eq!(resources.memory_high_bytes(), 4097);
+        assert_eq!(resources.memory_max_bytes(), 8193);
+        assert_eq!(resources.tasks_max(), 17);
+        assert_eq!(resources.cpu_weight().get(), 103);
+    }
 }
 
 #[cfg(test)]

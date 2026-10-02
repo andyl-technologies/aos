@@ -32,12 +32,83 @@ use crate::state::transition::{
 };
 use crate::state::{GuardianLineage, HostAction, HostStateStore};
 use crate::worker::{
-    ExactWorkerStopOutcome, GuardianObservedState, HostRuntimeIdentity, HostWorker,
-    ObservedRuntimeState, WorkerObservation,
+    BoundPayloadReadbackV1, BoundPayloadVerification, ExactWorkerStopOutcome,
+    GuardianObservedState, HostRuntimeIdentity, HostWorker, ObservedRuntimeState,
+    PinnedLeader, WorkerObservation,
 };
+use crate::state::transition::RuntimeProofSnapshot;
 use crate::{HostError, Result};
 
 const POST_UNREF_OBSERVATION_DELAY: Duration = Duration::from_millis(50);
+
+pub(super) struct RetainedHostLimitAttemptV1 {
+    payload: PreparedLaunch,
+    points: [BoundPayloadReadbackV1; 2],
+    observed_leader: Option<PinnedLeader>,
+    failure: Option<HostError>,
+}
+
+impl RetainedHostLimitAttemptV1 {
+    fn new(payload: PreparedLaunch) -> Self {
+        Self {
+            payload,
+            points: std::array::from_fn(|_| BoundPayloadReadbackV1::new()),
+            observed_leader: None,
+            failure: None,
+        }
+    }
+
+    fn failure_cause(&self) -> Option<&dyn std::error::Error> {
+        self.points.iter().find_map(BoundPayloadReadbackV1::failure_cause)
+            .or_else(|| self.failure.as_ref().map(|error| error as &dyn std::error::Error))
+    }
+}
+
+enum LaunchInputV1 {
+    Local(PreparedLaunch),
+    Retained([u8; 16]),
+}
+
+enum VerifiedLaunchV1 {
+    Local(BoundPayloadVerification),
+    Retained { request: [u8; 16], point: usize },
+}
+
+impl VerifiedLaunchV1 {
+    fn metadata(
+        &self,
+        attempts: &std::collections::BTreeMap<[u8; 16], RetainedHostLimitAttemptV1>,
+    ) -> Result<(Option<[u8; 32]>, [u8; 16], RuntimeProofSnapshot)> {
+        let verified = match self {
+            Self::Local(verified) => verified,
+            Self::Retained { request, point } => attempts.get(request)
+                .ok_or_else(retained_launch_missing)?.points[*point].verified()?,
+        };
+        Ok((verified.binding, verified.invocation_id, verified.proof))
+    }
+}
+
+enum CompletionObservationV1 {
+    Local(WorkerObservation),
+    Retained { request: [u8; 16], point: usize },
+}
+
+impl CompletionObservationV1 {
+    fn borrow<'a>(
+        &'a self,
+        attempts: &'a std::collections::BTreeMap<[u8; 16], RetainedHostLimitAttemptV1>,
+    ) -> Result<&'a WorkerObservation> {
+        match self {
+            Self::Local(observation) => Ok(observation),
+            Self::Retained { request, point } => Ok(&attempts.get(request)
+                .ok_or_else(retained_launch_missing)?.points[*point].verified()?.observation),
+        }
+    }
+}
+
+fn retained_launch_missing() -> HostError {
+    HostError::Worker("retained original Host limit attempt is unavailable".to_owned())
+}
 
 impl<C, S, W> HostBroker<C, S, W>
 where
@@ -372,6 +443,58 @@ where
     where
         W: Sync,
     {
+        if self.worker.retained_payload_worker().is_none() {
+            return self.advance_guardian_start_inner(fence, request_id, request_digest, effect,
+                spec, LaunchInputV1::Local(payload), pending_agent, maximum_response_bytes,
+                trusted_clock).await;
+        }
+        // The sole installed caller has already committed this genuine request.
+        // The existing durable registry has a fixed bound and no production
+        // deletion; this custody map admits no key absent from that registry.
+        if self.state.guardian_attempt(&request_id).is_none() {
+            return Err(HostError::State("Guardian launch lost its durable attempt".to_owned()));
+        }
+        if self.live_limit_attempts.contains_key(&request_id) {
+            return Err(retained_launch_missing());
+        }
+        // Cancellation or caught unwind leaves this key and its originals in
+        // the same broker; no terminal path removes or reopens the attempt.
+        self.live_limit_attempts.insert(request_id, RetainedHostLimitAttemptV1::new(payload));
+        let result = self.advance_guardian_start_inner(
+            fence, request_id, request_digest, effect, spec, LaunchInputV1::Retained(request_id),
+            pending_agent, maximum_response_bytes, trusted_clock,
+        ).await;
+        match result {
+            Ok(body) => Ok(body),
+            Err(error) => {
+                if let Some(attempt) = self.live_limit_attempts.get_mut(&request_id) {
+                    if attempt.failure.is_none() {
+                        attempt.failure = Some(error);
+                    }
+                }
+                let cause = self.live_limit_attempts.get(&request_id)
+                    .and_then(RetainedHostLimitAttemptV1::failure_cause)
+                    .ok_or_else(retained_launch_missing)?;
+                Err(HostError::Worker(format!("original Host limit attempt failed: {cause}")))
+            }
+        }
+    }
+
+    async fn advance_guardian_start_inner(
+        &mut self,
+        fence: &ValidatedAssignmentFence,
+        request_id: [u8; 16],
+        request_digest: [u8; 32],
+        effect: &BrokerEffectIntentV1,
+        spec: GuardianUnitSpec,
+        payload: LaunchInputV1,
+        pending_agent: Option<HostAgentPendingSessionV1>,
+        maximum_response_bytes: u32,
+        trusted_clock: &mut (impl FnMut() -> Result<RawPairedClockSample> + Send),
+    ) -> Result<Vec<u8>>
+    where
+        W: Sync,
+    {
         let identity = HostRuntimeIdentity::new(
             *fence.sandbox_id(),
             *fence.incarnation_id(),
@@ -650,7 +773,8 @@ where
                     })
                     .map_err(HostError::from)
             };
-            self.worker
+            match &payload {
+                LaunchInputV1::Local(payload) => self.worker
                 .start_bound_payload(
                     payload.spec(),
                     payload.pins(),
@@ -661,15 +785,34 @@ where
                 .await
                 .map(|done| {
                     (
-                        done.verification,
+                        VerifiedLaunchV1::Local(done.verification),
                         StartJobEvidence::DoneForCurrentSubmission,
                     )
-                })
+                }),
+                LaunchInputV1::Retained(request) => {
+                    let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                    let attempt = self.live_limit_attempts.get_mut(request).ok_or_else(retained_launch_missing)?;
+                    loan.start(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                        *guardian_invocation, &mut before_effect, &mut attempt.points[0]).await
+                        .map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
+                            StartJobEvidence::DoneForCurrentSubmission))
+                }
+            }
         } else {
-            self.worker
-                .prove_bound_payload(payload.spec(), payload.pins(), &identity)
-                .await
-                .map(|proof| (proof.verification, StartJobEvidence::RecoveredExactProof))
+            match &payload {
+                LaunchInputV1::Local(payload) => self.worker
+                    .prove_bound_payload(payload.spec(), payload.pins(), &identity)
+                    .await
+                    .map(|proof| (VerifiedLaunchV1::Local(proof.verification), StartJobEvidence::RecoveredExactProof)),
+                LaunchInputV1::Retained(request) => {
+                    let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                    let attempt = self.live_limit_attempts.get_mut(request).ok_or_else(retained_launch_missing)?;
+                    loan.prove(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                        &mut attempt.points[0]).await
+                        .map(|()| (VerifiedLaunchV1::Retained { request: *request, point: 0 },
+                            StartJobEvidence::RecoveredExactProof))
+                }
+            }
         };
         let (verified, payload_job) = match verification {
             Ok(verified) => verified,
@@ -687,9 +830,10 @@ where
             }
         };
         let guardian = guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
+        let (verified_binding, verified_invocation, verified_proof) = verified.metadata(&self.live_limit_attempts)?;
         let payload_observation = UnitObservation::Present {
-            binding: verified.binding,
-            invocation: verified.invocation_id,
+            binding: verified_binding,
+            invocation: verified_invocation,
             state: PresentUnitState::ActiveRunning,
         };
         let mut proposed = self.state.clone();
@@ -705,7 +849,7 @@ where
             payload: payload_observation,
             worker_proof: Some(crate::state::transition::WorkerProof {
                 observation_sequence,
-                runtime: verified.proof,
+                runtime: verified_proof,
             }),
         });
         let verified_phase = match decision {
@@ -777,7 +921,7 @@ where
         request_id: [u8; 16],
         request_digest: [u8; 32],
         effect: &BrokerEffectIntentV1,
-        payload: PreparedLaunch,
+        payload: LaunchInputV1,
         pending_agent: Option<HostAgentPendingSessionV1>,
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
@@ -844,12 +988,12 @@ where
         clippy::too_many_arguments,
         reason = "verified launch finalization joins one durable request and fresh pair proof"
     )]
-    pub(super) async fn finalize_guardian_payload_verified(
+    async fn finalize_guardian_payload_verified(
         &mut self,
         request_id: [u8; 16],
         request_digest: [u8; 32],
         effect: &BrokerEffectIntentV1,
-        payload: PreparedLaunch,
+        payload: LaunchInputV1,
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
         binding: [u8; 32],
@@ -870,12 +1014,20 @@ where
                 "Guardian finalization lost its verified payload phase".to_owned(),
             ));
         };
-        let verified = match self
-            .worker
-            .prove_bound_payload(payload.spec(), payload.pins(), &identity)
-            .await
-        {
-            Ok(proof) => proof.verification,
+        let verification = match &payload {
+            LaunchInputV1::Local(payload) => self.worker
+                .prove_bound_payload(payload.spec(), payload.pins(), &identity).await
+                .map(|proof| VerifiedLaunchV1::Local(proof.verification)),
+            LaunchInputV1::Retained(request) => {
+                let loan = self.worker.retained_payload_worker().ok_or_else(retained_launch_missing)?;
+                let attempt = self.live_limit_attempts.get_mut(request).ok_or_else(retained_launch_missing)?;
+                loan.prove(attempt.payload.spec(), attempt.payload.pins(), &identity,
+                    &mut attempt.points[1]).await
+                    .map(|()| VerifiedLaunchV1::Retained { request: *request, point: 1 })
+            }
+        };
+        let verified = match verification {
+            Ok(verified) => verified,
             Err(_) => {
                 return self
                     .begin_guardian_compensation(
@@ -891,6 +1043,7 @@ where
         };
         let guardian = guardian_unit_observation(self.worker.observe_guardian(&identity).await?);
         let freshness = guardian_authority_freshness(&self.authority, effect, trusted_clock);
+        let (verified_binding, verified_invocation, verified_proof) = verified.metadata(&self.live_limit_attempts)?;
         let verified_phase = GuardianLaunchPhase::PayloadVerified {
             guardian_invocation,
             payload_invocation,
@@ -905,27 +1058,28 @@ where
             payload_job: StartJobEvidence::RecoveredExactProof,
             guardian,
             payload: UnitObservation::Present {
-                binding: verified.binding,
-                invocation: verified.invocation_id,
+                binding: verified_binding,
+                invocation: verified_invocation,
                 state: PresentUnitState::ActiveRunning,
             },
             worker_proof: Some(crate::state::transition::WorkerProof {
                 observation_sequence,
-                runtime: verified.proof,
+                runtime: verified_proof,
             }),
         });
         match decision {
-            GuardianDecision::Persist(GuardianLaunchPhase::Complete { .. }) => self
-                .complete_guardian_launch(
-                    request_id,
-                    request_digest,
-                    effect,
-                    maximum_response_bytes,
-                    identity,
-                    observation_sequence,
-                    verified.observation,
+            GuardianDecision::Persist(GuardianLaunchPhase::Complete { .. }) => match verified {
+                VerifiedLaunchV1::Local(verified) => self.complete_guardian_launch(
+                    request_id, request_digest, effect, maximum_response_bytes, identity,
+                    observation_sequence, CompletionObservationV1::Local(verified.observation),
                     verified_phase,
                 ),
+                VerifiedLaunchV1::Retained { request, point } => self.complete_guardian_launch(
+                    request_id, request_digest, effect, maximum_response_bytes, identity,
+                    observation_sequence, CompletionObservationV1::Retained { request, point },
+                    verified_phase,
+                ),
+            },
             GuardianDecision::PersistThen {
                 phase: cleanup @ GuardianLaunchPhase::CleanupIssued { .. },
                 effect: cleanup_effect,
@@ -976,7 +1130,7 @@ where
         maximum_response_bytes: u32,
         identity: HostRuntimeIdentity,
         observation_sequence: u64,
-        observation: WorkerObservation,
+        observation: CompletionObservationV1,
         verified_phase: GuardianLaunchPhase,
     ) -> Result<Vec<u8>> {
         let GuardianLaunchPhase::PayloadVerified {
@@ -990,7 +1144,8 @@ where
                 "Guardian completion did not retain a verified payload".to_owned(),
             ));
         };
-        let response = encode_observation(&identity, observation_sequence, &observation)?;
+        let response = encode_observation(&identity, observation_sequence,
+            observation.borrow(&self.live_limit_attempts)?)?;
         ensure_response_bound(&response, maximum_response_bytes)?;
         let completed = effect
             .clone()
@@ -1012,9 +1167,68 @@ where
             sealed_completed,
             response.clone(),
         )?;
-        self.retain_runtime_observation(identity, observation)?;
+        match observation {
+            CompletionObservationV1::Local(observation) => self.retain_runtime_observation(identity, observation)?,
+            CompletionObservationV1::Retained { request, point } => {
+                self.retain_original_runtime_observation(identity, request, point)?;
+            }
+        }
         self.commit_state(&proposed)?;
         Ok(response)
+    }
+
+    fn retain_original_runtime_observation(
+        &mut self,
+        identity: HostRuntimeIdentity,
+        request: [u8; 16],
+        point: usize,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if self.fail_runtime_retention {
+            self.fail_runtime_retention = false;
+            return Err(HostError::Worker("injected runtime retention failure".to_owned()));
+        }
+        // Preserve the old duplicate-before-recheck order. A successfully
+        // returned duplicate is resident before scope validation can fail.
+        {
+            let attempt = self.live_limit_attempts.get_mut(&request)
+                .ok_or_else(retained_launch_missing)?;
+            let observation = &attempt.points[point].verified()?.observation;
+            let supervisor = observation.leader.as_ref().ok_or_else(retained_launch_missing)?;
+            let observed_leader = supervisor.try_clone()?;
+            attempt.observed_leader = Some(observed_leader);
+        }
+
+        let attempt = self.live_limit_attempts.get(&request).ok_or_else(retained_launch_missing)?;
+        let observation = &attempt.points[point].verified()?.observation;
+        let (Some(invocation_id), Some(supervisor), Some(payload)) = (
+            observation.invocation_id, observation.leader.as_ref(), observation.payload.as_ref(),
+        ) else {
+            return Err(retained_launch_missing());
+        };
+        let scope_handle = self.prepare_runtime_scope(&identity, invocation_id, supervisor, payload)?;
+
+        // No fallible validation follows the first move. These exclusive
+        // Options were all checked while the actual originals were still held.
+        let attempt = self.live_limit_attempts.get_mut(&request).ok_or_else(retained_launch_missing)?;
+        let verified = attempt.points[point].verification.as_mut().ok_or_else(retained_launch_missing)?;
+        if verified.observation.leader.is_none() || verified.observation.payload.is_none()
+            || attempt.observed_leader.is_none()
+        {
+            return Err(retained_launch_missing());
+        }
+        let (Some(supervisor), Some(payload), Some(observed_leader)) = (
+            verified.observation.leader.take(), verified.observation.payload.take(),
+            attempt.observed_leader.take(),
+        ) else { std::process::abort() };
+        let retained = super::RetainedRuntimePins { invocation_id, supervisor, payload, scope_handle };
+        self.observed_leaders.retain(|retained, _| {
+            retained.sandbox_id() != identity.sandbox_id() || retained == &identity
+        });
+        self.observed_leaders.insert(identity, observed_leader);
+        self.runtime_pins.retain(|retained, _| retained.sandbox_id() != identity.sandbox_id());
+        self.runtime_pins.insert(identity, retained);
+        Ok(())
     }
 
     pub(super) async fn begin_guardian_compensation(
