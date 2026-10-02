@@ -198,4 +198,5 @@ in {
   integration.local-factory-construction = import ./local-factory-construction.nix {inherit sourceGate;};
   integration.namespace-reference-models = import ./namespace-models.nix {inherit sourceGate;};
   integration.attribute-reference-models = import ./attribute-models.nix {inherit sourceGate;};
+  integration.container-reference-models = import ./container-models.nix {inherit sourceGate;};
 }
