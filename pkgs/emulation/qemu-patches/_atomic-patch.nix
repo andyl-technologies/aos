@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "8b6cda8e378074c06b8e4bc8df0c8abad0d9c509fa0c9390284ba0f0b5637f38";
-  subject = "sim: preserve exact native control and lifecycle boundaries";
-  body = "Retain the selected native control, device, process and fault-state implementation. Admit exact registered packet-output stops, separate canonical lifecycle state from process-local custody, retain deferred control intent across advance/stop settlement, and permit unlocked atomic intent observation while preserving BQL custody mutation gates. Add a disabled-by-default native control delivery trace with per-process diagnostic ownership deduplication and distinct registered callback entry/return records. Include scoped standalone production-body regressions.";
-  commit = "8ae5f48bdcd540352168190b3c71a0dc5fb5e790";
-  tree = "d237f724d702c1c92c2a771453c22835e4d6699b";
+  sha256 = "6b424da3a2f2b2e3fb4bfd9ce16b3b183c3241837632897a6f48795b7fb1e98d";
+  subject = "crucible: retain exact control intent through stopped RR drain";
+  body = "Include deterministic native control, time, VM-stop, packet output and\nlifecycle projection support, with exact admission and custody checks.\nRearm retained control intent only when the RR VM-stop park settles a\nreasserted CPU stop request. Preserve the current observational delivery\ntrace and atomic advisory lock contract.\n\nThe native body fixtures provide bounded causal regressions. Linked\nQEMU and running-guest qualification remain separate acceptance work.";
+  commit = "56aea68b8af3988a6af46106004cfac7174bc8f7";
+  tree = "5d70040d9ddb4c5a183e64b5567ea15c1b4d02be";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-control-delivery-canonical-111";
+  branchRef = "dplecki/native-stopped-control-rearm-canonical-112";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "05d7c1a795c5725716cf37711f4ec16315e43add8c410a0c25260a5b3803d4c5";
+  bundleSha256 = "c8dc6542d3463b07d405528255547a36e7014e4b8069e9e3962225ce7afc2fd3";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-02T07:38:05-07:00";
+  deterministicPatchDate = "2026-10-02T08:38:28-07:00";
 
   additionalCapabilities = [
     {
