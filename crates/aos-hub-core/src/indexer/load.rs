@@ -1183,7 +1183,9 @@ mod bundle_tests {
     }
 
     struct InvalidBundleFetch {
+        bundle_path: String,
         bundle: Vec<u8>,
+        loose_path: String,
         loose: Vec<u8>,
         loose_reads: AtomicUsize,
     }
@@ -1228,13 +1230,21 @@ mod bundle_tests {
 
     #[async_trait::async_trait]
     impl SurfaceFetch for InvalidBundleFetch {
-        async fn fetch(&self, _path: &str) -> Result<Option<Vec<u8>>> {
-            self.loose_reads.fetch_add(1, Ordering::SeqCst);
-            Ok(Some(self.loose.clone()))
+        async fn fetch(&self, path: &str) -> Result<Option<Vec<u8>>> {
+            panic!("unexpected unbounded object fetch for {path}")
         }
 
-        async fn fetch_bounded(&self, _path: &str, _max_bytes: usize) -> Result<Option<Vec<u8>>> {
-            Ok(Some(self.bundle.clone()))
+        async fn fetch_bounded(&self, path: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+            let bytes = if path == self.bundle_path {
+                &self.bundle
+            } else {
+                assert_eq!(path, self.loose_path);
+                self.loose_reads.fetch_add(1, Ordering::SeqCst);
+                &self.loose
+            };
+            assert!(bytes.len() <= max_bytes);
+
+            Ok(Some(bytes.clone()))
         }
 
         fn describe(&self) -> String {
@@ -1336,7 +1346,9 @@ mod bundle_tests {
         )
         .unwrap();
         let fetch = InvalidBundleFetch {
+            bundle_path: aos_registry_surface::object_bundle::shard_path(shard).unwrap(),
             bundle,
+            loose_path: oid.loose_path(),
             loose: object::encode_loose(ObjectKind::Blob, content).unwrap(),
             loose_reads: AtomicUsize::new(0),
         };
