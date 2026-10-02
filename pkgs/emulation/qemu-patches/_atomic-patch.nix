@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "8f71eec21fef8e3ae4374f3ee85c13338355d63a90fa53bf2fe010bc4e5358ab";
-  subject = "crucible: retain native runtime and detailed child-file refusals";
-  body = "Retain deterministic runtime admission and authenticated native graph,\nblock, descriptor, and barrier handling. Carry child-private file plan\nerrors into the existing hot-fork QMP refusal while preserving generic\ncontext, EIO status, and successful preparation.\n\nKeep production-body diagnostic coverage and the existing runtime tests.\nNative Error ownership lasts through synchronous preparation and refusal\nformatting, then ends on every QMP return.";
-  commit = "012c327f906454d13514764f8d2f32c5fd45db79";
-  tree = "6f3182c9f0ac4f15ab5ef2108f4d1b99f940e21e";
+  sha256 = "42bd936b96a05c3231983f9a2ad35ebf59cb999b7a74cae9c17b51647b9151eb";
+  subject = "crucible: retain native runtime and descriptor-safe child files";
+  body = "Retain deterministic runtime admission and authenticated native graph,\nblock, descriptor, and barrier handling. Carry child-private file plan\nerrors into the existing hot-fork QMP refusal while preserving generic\ncontext, EIO status, and successful preparation.\n\nReopen validated native descriptors independently through generated procfd\nlinks while retaining access, direct-I/O, and status semantics. Exclude only\nthe original O_NOFOLLOW pathname policy from these internal reopens and\nadoption comparisons; keep source identity, custody, and lock checks.\n\nKeep production-body diagnostic and Linux descriptor regressions alongside\nthe existing runtime tests. Native Error ownership ends on every QMP return.";
+  commit = "3c39c485fe9776032844e5d0883bcf0f1d0e9404";
+  tree = "cac7d84bea57eaa37eb4500106b95ce58ced9e24";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-copy-error-canonical-105";
+  branchRef = "dplecki/native-procfd-flags-canonical-106";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "890b440179b590ebcefc67d7178cca99c50c4bb7ab185eb095d555591b4662c5";
+  bundleSha256 = "0ef8a922e343c4bb2732ed1b2c0dcb0d309628c13a3a434cf85052438f407c2e";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-01T21:55:16-07:00";
+  deterministicPatchDate = "2026-10-02T00:48:50-07:00";
 
   additionalCapabilities = [
     {

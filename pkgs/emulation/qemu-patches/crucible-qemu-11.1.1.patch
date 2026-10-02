@@ -1,17 +1,21 @@
-From 012c327f906454d13514764f8d2f32c5fd45db79 Mon Sep 17 00:00:00 2001
+From 3c39c485fe9776032844e5d0883bcf0f1d0e9404 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 1 Oct 2026 21:55:16 -0700
-Subject: [PATCH] crucible: retain native runtime and detailed child-file
- refusals
+Date: Fri, 2 Oct 2026 00:48:50 -0700
+Subject: [PATCH] crucible: retain native runtime and descriptor-safe child
+ files
 
 Retain deterministic runtime admission and authenticated native graph,
 block, descriptor, and barrier handling. Carry child-private file plan
 errors into the existing hot-fork QMP refusal while preserving generic
 context, EIO status, and successful preparation.
 
-Keep production-body diagnostic coverage and the existing runtime tests.
-Native Error ownership lasts through synchronous preparation and refusal
-formatting, then ends on every QMP return.
+Reopen validated native descriptors independently through generated procfd
+links while retaining access, direct-I/O, and status semantics. Exclude only
+the original O_NOFOLLOW pathname policy from these internal reopens and
+adoption comparisons; keep source identity, custody, and lock checks.
+
+Keep production-body diagnostic and Linux descriptor regressions alongside
+the existing runtime tests. Native Error ownership ends on every QMP return.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -8322,10 +8326,10 @@ index 37ba7e9fc40ed95da902d9831fb91a828eb10e86..8e3afa6b6d82c1067ad68b76f9bd8f23
          throttle_group_attach_aio_context(tgm, new_context);
 diff --git a/block/crucible-hot-fork-source.c b/block/crucible-hot-fork-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..ba10e460c01b96aba1fa831c351b1a503f876dfb
+index 0000000000000000000000000000000000000000..f53b46933e7db1d4c1ff339d9784f6228fee72f7
 --- /dev/null
 +++ b/block/crucible-hot-fork-source.c
-@@ -0,0 +1,1764 @@
+@@ -0,0 +1,1768 @@
 +/*
 + * Crucible native read-only block source ownership
 + *
@@ -8398,6 +8402,10 @@ index 0000000000000000000000000000000000000000..ba10e460c01b96aba1fa831c351b1a50
 +    int opened;
 +
 +    g_snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor);
++#ifdef O_NOFOLLOW
++    /* The validated descriptor supplies identity, not this internal proc link. */
++    flags &= ~O_NOFOLLOW;
++#endif
 +    opened = open(path, flags | O_CLOEXEC);
 +    if (opened < 0) {
 +        error_setg_errno(errp, errno, "Cannot open Crucible source file");
@@ -11163,7 +11171,7 @@ index 0000000000000000000000000000000000000000..35fefde050b5d8d110355a40651d0db9
 +}
 +block_init(bdrv_crucible_shmem_init);
 diff --git a/block/file-posix.c b/block/file-posix.c
-index 3c985da94f563be9463b05c3573ac95e2d726f06..ed8a10991b7d635c1e8d3392ca8409ab01bf4a0f 100644
+index 3c985da94f563be9463b05c3573ac95e2d726f06..71b837e45355fd293e735ab1d15be9bbf0362301 100644
 --- a/block/file-posix.c
 +++ b/block/file-posix.c
 @@ -23,6 +23,8 @@
@@ -11251,7 +11259,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..ed8a10991b7d635c1e8d3392ca8409ab
      return thread_pool_submit_co(func, arg);
  }
  
-@@ -3956,6 +4005,138 @@ raw_co_copy_range_to(BlockDriverState *bs,
+@@ -3956,6 +4005,139 @@ raw_co_copy_range_to(BlockDriverState *bs,
      return raw_thread_pool_submit(handle_aiocb_copy_range, &acb);
  }
  
@@ -11350,13 +11358,14 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..ed8a10991b7d635c1e8d3392ca8409ab
 +    flags = descriptor < 0 ? -1 : fcntl(descriptor, F_GETFL);
 +    if (!original.read_only || descriptor == s->fd || flags < 0 ||
 +        fstat(descriptor, &metadata) < 0 || !S_ISREG(metadata.st_mode) ||
-+        flags != original.flags) {
++        (flags & ~O_NOFOLLOW) != (original.flags & ~O_NOFOLLOW)) {
 +        error_setg(errp, "Crucible child file must preserve frozen access flags");
 +        return false;
 +    }
 +    /* dup() would retain locks through the parent's staged open description. */
 +    g_snprintf(path, sizeof(path), "/proc/self/fd/%d", descriptor);
-+    retained = qemu_open(path, flags, errp);
++    /* O_NOFOLLOW governed the original path, not this owned descriptor link. */
++    retained = qemu_open(path, flags & ~O_NOFOLLOW, errp);
 +    if (retained < 0) {
 +        return false;
 +    }
@@ -11390,7 +11399,7 @@ index 3c985da94f563be9463b05c3573ac95e2d726f06..ed8a10991b7d635c1e8d3392ca8409ab
  BlockDriver bdrv_file = {
      .format_name = "file",
      .protocol_name = "file",
-@@ -3967,6 +4148,10 @@ BlockDriver bdrv_file = {
+@@ -3967,6 +4149,10 @@ BlockDriver bdrv_file = {
      .bdrv_reopen_prepare = raw_reopen_prepare,
      .bdrv_reopen_commit = raw_reopen_commit,
      .bdrv_reopen_abort = raw_reopen_abort,
@@ -167113,6 +167122,369 @@ index 0000000000000000000000000000000000000000..8e17de0910d8b55fb8e68357ef4fe776
 +    }
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-procfd-flags.py b/tests/unit/test-crucible-procfd-flags.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..31ac27207289e8493e8df1444cc7da0636a39784
+--- /dev/null
++++ b/tests/unit/test-crucible-procfd-flags.py
+@@ -0,0 +1,357 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Run native procfd preparation and adoption bodies against Linux descriptors.
++
++Graph state is a small fixture with locking disabled. Opens, duplication, copy,
++hashing, descriptor queries, and parent/child custody use real syscalls. This
++standalone test does not exercise a complete QEMU guest or fork coordinator.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def production_definition(source: str, signature: str, is_type=False) -> str:
++    """Extract one complete production function or typedef for compilation."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                end = source.index(";", index) if is_type else index
++                return source[start:end + 1]
++
++    raise AssertionError(f"unterminated production definition: {signature}")
++
++
++PRELUDE = r"""
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qemu/error-report.h"
++#include "qemu/cutils.h"
++#include <linux/fs.h>
++#include <sys/ioctl.h>
++#include <sys/wait.h>
++
++#define GRAPH_RDLOCK
++#define GLOBAL_STATE_CODE() ((void)0)
++#define HOT_FORK_CHILD_COPY_CHUNK (64 * 1024)
++
++/* Only the graph/configuration is modeled; no syscall result is substituted. */
++typedef struct BDRVRawState {
++    int fd;
++    void *reopen_state;
++    int perm_change_fd;
++    unsigned crucible_source_pins;
++    pid_t crucible_source_owner;
++    bool crucible_child_descriptor;
++    bool use_linux_aio, use_linux_io_uring, use_lock;
++    uint64_t perm, shared_perm, locked_perm, locked_shared_perm;
++} BDRVRawState;
++
++typedef struct BlockDriverState {
++    void *opaque;
++} BlockDriverState;
++
++#define BLK_PERM_ALL UINT64_MAX
++
++static const char *bdrv_get_node_name(BlockDriverState *bs)
++{
++    return "procfd-fixture";
++}
++
++static int raw_apply_lock_bytes(BDRVRawState *s, int fd, uint64_t perm,
++                                uint64_t shared, bool unlock, Error **errp)
++{
++    g_assert_not_reached();
++}
++
++static int raw_check_lock_bytes(int fd, uint64_t perm, uint64_t shared,
++                                Error **errp)
++{
++    g_assert_not_reached();
++}
++
++static int qemu_parse_fdset(const char *name)
++{
++    g_assert_not_reached();
++}
++
++static int monitor_fdset_dup_fd_add(int64_t id, int flags, Error **errp)
++{
++    g_assert_not_reached();
++}
++
++static void monitor_fdset_dup_fd_remove(int fd)
++{
++}
++
++void error_report(const char *fmt, ...)
++{
++    g_assert_not_reached();
++}
++
++void warn_report(const char *fmt, ...)
++{
++    g_assert_not_reached();
++}
++
++int error_printf(const char *fmt, ...)
++{
++    g_assert_not_reached();
++}
++"""
++
++
++TESTS = r"""
++static void expect_adoption_refusal(BlockDriverState *node, pid_t parent,
++                                     int descriptor, const char *message)
++{
++    Error *err = NULL;
++
++    g_assert_false(raw_crucible_hot_fork_file_child(
++        node, parent, descriptor, &err));
++    g_assert_nonnull(err);
++    g_assert_nonnull(strstr(error_get_pretty(err), message));
++    error_free(err);
++}
++
++static bool run_case(int status_flags, bool private_file, bool retained_adoption)
++{
++    char source_path[] = "procfd-source-XXXXXX";
++    char destination_path[] = "procfd-destination-XXXXXX";
++    char symlink_path[128];
++    uint8_t bytes[4096];
++    BDRVRawState state = { .fd = -1 };
++    BlockDriverState node = { .opaque = &state };
++    HotForkChildFileEntry entry = { .prepared_fd = -1, .destination_fd = -1 };
++    Error *err = NULL;
++    int creation, original, duplicate, pin, destination, status, adoption_fd;
++    pid_t parent = getpid(), child;
++
++    memset(bytes, 0x5a, sizeof(bytes));
++    creation = mkstemp(source_path);
++    g_assert_cmpint(creation, >=, 0);
++    g_assert_cmpint(write(creation, bytes, sizeof(bytes)), ==, sizeof(bytes));
++    g_assert_cmpint(close(creation), ==, 0);
++
++    original = open(source_path, (private_file ? O_RDWR : O_RDONLY) |
++                                 O_NOFOLLOW | status_flags);
++    if (original < 0 && (status_flags & O_DIRECT) &&
++        (errno == EINVAL || errno == EOPNOTSUPP)) {
++        g_assert_cmpint(unlink(source_path), ==, 0);
++        puts("PROCFD_DIRECT_UNSUPPORTED: local filesystem rejects O_DIRECT");
++        return false;
++    }
++    g_assert_cmpint(original, >=, 0);
++    duplicate = qemu_dup(original);
++    g_assert_cmpint(duplicate, >=, 0);
++    g_assert_cmpint(fcntl(duplicate, F_GETFL), ==, fcntl(original, F_GETFL));
++    g_assert_cmpint(fcntl(duplicate, F_GETFL) & O_NOFOLLOW, ==, O_NOFOLLOW);
++    state.fd = duplicate;
++    g_assert_true(raw_crucible_hot_fork_file(
++        &node, BDRV_CRUCIBLE_HOT_FORK_FILE_PIN, &entry.source, &err));
++    g_assert_null(err);
++    g_assert_cmpint(entry.source.flags & O_ACCMODE, ==,
++                    private_file ? O_RDWR : O_RDONLY);
++    pin = source_file_open(duplicate, O_RDONLY, &err);
++    g_assert_cmpint(pin, >=, 0);
++    g_assert_null(err);
++    entry.original_fd = pin;
++    entry.source_size = sizeof(bytes);
++    entry.private_file = !entry.source.read_only;
++    if (private_file) {
++        /* Model graph freeze with a real independent read-only backend fd. */
++        int frozen = source_file_open(duplicate, O_RDONLY | status_flags, &err);
++
++        g_assert_cmpint(frozen, >=, 0);
++        g_assert_null(err);
++        g_assert_cmpint(close(duplicate), ==, 0);
++        duplicate = frozen;
++        state.fd = frozen;
++        g_assert_true(raw_crucible_hot_fork_file(
++            &node, BDRV_CRUCIBLE_HOT_FORK_FILE_QUERY, &entry.source, &err));
++        g_assert_null(err);
++        g_assert_true(entry.source.read_only);
++    }
++    adoption_fd = retained_adoption ? qemu_dup(duplicate) : -1;
++    if (retained_adoption) {
++        g_assert_cmpint(adoption_fd, >=, 0);
++        g_assert_cmpint(fcntl(adoption_fd, F_GETFL) & O_NOFOLLOW, ==, O_NOFOLLOW);
++    }
++    destination = mkstemp(destination_path);
++    g_assert_cmpint(destination, >=, 0);
++    entry.destination_fd = destination;
++    g_assert_cmpint(fstat(destination, &entry.destination), ==, 0);
++
++    /* Caller pathname policy still rejects a symlink with O_NOFOLLOW. */
++    snprintf(symlink_path, sizeof(symlink_path), "%s-link", source_path);
++    g_assert_cmpint(symlink(source_path, symlink_path), ==, 0);
++    g_assert_cmpint(qemu_open(symlink_path, O_RDONLY | O_NOFOLLOW, &err), ==, -1);
++    g_assert_cmpint(errno, ==, ELOOP);
++    g_assert_nonnull(err);
++    error_free(err);
++    err = NULL;
++    g_assert_cmpint(unlink(symlink_path), ==, 0);
++
++    /* Neither launch pathname nor launch fd supplies authority after pinning. */
++    g_assert_cmpint(unlink(source_path), ==, 0);
++    g_assert_cmpint(close(original), ==, 0);
++    bool prepared_ok = child_file_prepare(&entry, &err);
++    if (!prepared_ok) {
++        fprintf(stderr, "native preparation refused: %s\n", error_get_pretty(err));
++    }
++    g_assert_true(prepared_ok);
++    g_assert_null(err);
++    g_assert_true(child_file_prepared_matches(&entry, &err));
++    g_assert_null(err);
++    g_assert_cmpint(fcntl(entry.prepared_fd, F_GETFL), ==,
++                    entry.source.flags & ~O_NOFOLLOW);
++    g_assert_cmpint(fcntl(entry.prepared_fd, F_GETFD) & FD_CLOEXEC, ==, FD_CLOEXEC);
++    g_assert_cmpint(fcntl(duplicate, F_GETFL), ==, entry.source.flags);
++
++    /* A regular descriptor for another inode must fail the plan identity gate. */
++    int prepared = entry.prepared_fd;
++    entry.prepared_fd = private_file ? pin : destination;
++    g_assert_false(child_file_prepared_matches(&entry, &err));
++    g_assert_null(err);
++    entry.prepared_fd = prepared;
++
++    child = fork();
++    g_assert_cmpint(child, >=, 0);
++    if (child == 0) {
++        _Alignas(4096) uint8_t read_buffer[4096];
++        struct stat adopted;
++        int changed;
++
++        expect_adoption_refusal(&node, getpid(), prepared, "immediate child");
++        state.crucible_source_pins = 0;
++        expect_adoption_refusal(&node, parent, prepared, "immediate child");
++        state.crucible_source_pins = 1;
++        expect_adoption_refusal(&node, parent, duplicate, "frozen access flags");
++        expect_adoption_refusal(&node, parent, destination, "frozen access flags");
++
++        changed = source_file_open(prepared,
++                                   O_RDONLY | (status_flags ^ O_NONBLOCK), &err);
++        g_assert_cmpint(changed, >=, 0);
++        g_assert_null(err);
++        expect_adoption_refusal(&node, parent, changed, "frozen access flags");
++        g_assert_cmpint(close(changed), ==, 0);
++
++        bool adopted_ok = raw_crucible_hot_fork_file_child(
++            &node, parent, retained_adoption ? adoption_fd : prepared, &err);
++        if (!adopted_ok) {
++            fprintf(stderr, "native adoption refused: %s\n", error_get_pretty(err));
++        }
++        g_assert_true(adopted_ok);
++        g_assert_null(err);
++        g_assert_true(state.crucible_child_descriptor);
++        g_assert_cmpint(state.crucible_source_owner, ==, getpid());
++        g_assert_cmpint(fcntl(duplicate, F_GETFD), ==, -1);
++        g_assert_cmpint(errno, ==, EBADF);
++        g_assert_cmpint(fcntl(state.fd, F_GETFL), ==,
++                        entry.source.flags & ~O_NOFOLLOW);
++        g_assert_cmpint(fstat(state.fd, &adopted), ==, 0);
++        g_assert_cmpuint(adopted.st_dev, ==, private_file ?
++                          entry.destination.st_dev : entry.source.device);
++        g_assert_cmpuint(adopted.st_ino, ==, private_file ?
++                          entry.destination.st_ino : entry.source.inode);
++        g_assert_cmpint(pread(state.fd, read_buffer, sizeof(bytes), 0), ==,
++                        sizeof(bytes));
++        g_assert_cmpmem(read_buffer, sizeof(bytes), bytes, sizeof(bytes));
++        g_assert_cmpint(qemu_close(state.fd), ==, 0);
++        _exit(0);
++    }
++    g_assert_cmpint(waitpid(child, &status, 0), ==, child);
++    g_assert_true(WIFEXITED(status));
++    g_assert_cmpint(WEXITSTATUS(status), ==, 0);
++    g_assert_cmpint(fcntl(duplicate, F_GETFL), ==, entry.source.flags);
++    g_assert_true(raw_crucible_hot_fork_file(
++        &node, BDRV_CRUCIBLE_HOT_FORK_FILE_UNPIN, &entry.source, &err));
++    g_assert_null(err);
++    g_assert_cmpint(close(prepared), ==, 0);
++    g_assert_cmpint(close(pin), ==, 0);
++    g_assert_cmpint(close(duplicate), ==, 0);
++    g_assert_cmpint(close(destination), ==, 0);
++    if (adoption_fd >= 0) {
++        g_assert_cmpint(close(adoption_fd), ==, 0);
++    }
++    g_assert_cmpint(unlink(destination_path), ==, 0);
++    return true;
++}
++
++int main(void)
++{
++    g_assert_true(run_case(O_NONBLOCK | O_DSYNC, false, true));
++    g_assert_true(run_case(O_NONBLOCK | O_DSYNC, false, false));
++    g_assert_true(run_case(O_NONBLOCK | O_DSYNC, true, false));
++    if (run_case(O_DIRECT | O_NONBLOCK, true, false)) {
++        puts("PROCFD_DIRECT_PASS: retained O_DIRECT; real copy/adoption, aligned read");
++    }
++    puts("PROCFD_FLAGS_PASS: retained O_NOFOLLOW via real duplication; "
++         "native prepare/adoption, flags, identity, custody, generic symlink refusal");
++    return 0;
++}
++"""
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--native-source", type=Path,
++                        default=ROOT / "block/crucible-hot-fork-source.c")
++    parser.add_argument("--raw-source", type=Path, default=ROOT / "block/file-posix.c")
++    parser.add_argument("--output-dir", type=Path, required=True)
++    args = parser.parse_args()
++    native = args.native_source.read_text()
++    raw = args.raw_source.read_text()
++    osdep = (ROOT / "util/osdep.c").read_text()
++    block_types = (ROOT / "include/block/block_int-common.h").read_text()
++    functions = [
++        production_definition((ROOT / "util/cutils.c").read_text(), "int strstart("),
++        *[production_definition(osdep, signature) for signature in (
++            "int qemu_dup(int fd)", "static int qemu_open_cloexec(",
++            "static int\nqemu_open_internal(", "int qemu_open(const char *name",
++            "int qemu_close(int fd)",
++        )],
++        production_definition(raw, "static bool GRAPH_RDLOCK raw_crucible_hot_fork_file("),
++        *[production_definition(native, signature) for signature in (
++            "static int source_file_open(", "static bool child_file_copy(",
++            "static bool child_file_digest(", "static bool child_file_original_matches(",
++            "static bool child_file_digest_matches(",
++            "static bool child_file_prepared_matches(", "static bool child_file_prepare(",
++        )],
++        production_definition(raw, "static bool GRAPH_RDLOCK raw_crucible_hot_fork_file_child("),
++    ]
++    args.output_dir.mkdir(parents=True, exist_ok=True)
++    fixture = args.output_dir / "procfd-flags.c"
++    binary = args.output_dir / "procfd-flags"
++    fixture.write_text("\n\n".join([
++        PRELUDE,
++        production_definition(block_types, "typedef struct BdrvCrucibleHotForkFileState", True),
++        production_definition(block_types, "typedef enum BdrvCrucibleHotForkFileAction", True),
++        production_definition(native, "typedef struct HotForkChildFileEntry", True),
++        *functions, TESTS,
++    ]))
++    command = [
++        *shlex.split(os.environ["CC"]),
++        *shlex.split(os.environ.get("CFLAGS", "")),
++        "-std=gnu11", "-Wall", "-Werror", str(fixture), str(ROOT / "util/error.c"),
++        "-o", str(binary), *shlex.split(os.environ.get("LDFLAGS", "")),
++    ]
++    (args.output_dir / "compile-command.json").write_text(json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=args.output_dir, check=True, timeout=10)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-ptimer-wide-clock.c b/tests/unit/test-crucible-ptimer-wide-clock.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..49b54cb72fc04601b3021c5cdaf7fb6251af5463

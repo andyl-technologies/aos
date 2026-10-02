@@ -1595,6 +1595,50 @@ in
                 child-file-refusal.result
               grep -Fxq '258 detail/fallback refusals, 130 native Error releases, success, descriptor and receipt refusals PASS' \
                 child-file-refusal.result
+              # Recompile the actual native procfd preparation/adoption bodies
+              # with QEMU's configured block headers, then exercise Linux FDs.
+              ${python3}/bin/python3 - <<'PYTHON' > procfd-flags.result
+              import json
+              import os
+              from pathlib import Path
+              import shlex
+              import subprocess
+              import sys
+
+              source_root = Path.cwd()
+              commands = json.loads((source_root / "build/compile_commands.json").read_text())
+              block_commands = [
+                  entry for entry in commands
+                  if entry["file"].endswith("/block/file-posix.c")
+              ]
+              if len(block_commands) != 1:
+                  raise SystemExit("expected exactly one configured file-posix compile command")
+
+              entry = block_commands[0]
+              command = shlex.split(entry["command"])
+              flags = []
+              arguments = iter(command[1:])
+              for argument in arguments:
+                  if argument in ("-MQ", "-MF", "-o", "-c"):
+                      next(arguments)
+                  elif argument not in ("-MD", "-MMD", "-MP"):
+                      flags.append(argument)
+
+              environment = os.environ.copy()
+              environment["CC"] = shlex.join(command[:1])
+              environment["CFLAGS"] = shlex.join(flags)
+              environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
+              subprocess.run([
+                  sys.executable,
+                  str(source_root / "tests/unit/test-crucible-procfd-flags.py"),
+                  "--output-dir", str(source_root / "procfd-flags-proof"),
+              ], cwd=entry["directory"], env=environment, check=True)
+              PYTHON
+              cat procfd-flags.result
+              grep -Fxq 'PROCFD_FLAGS_PASS: retained O_NOFOLLOW via real duplication; native prepare/adoption, flags, identity, custody, generic symlink refusal' \
+                procfd-flags.result
+              grep -Fxq 'PROCFD_DIRECT_PASS: retained O_DIRECT; real copy/adoption, aligned read' \
+                procfd-flags.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -3951,6 +3995,10 @@ in
                 "$out/share/aos/crucible/child-file-refusal.result"
               install -m 644 child-file-refusal-proof/compile-command.json \
                 "$out/share/aos/crucible/child-file-refusal.compile-command.json"
+              install -m 644 procfd-flags.result \
+                "$out/share/aos/crucible/procfd-flags.result"
+              install -m 644 procfd-flags-proof/compile-command.json \
+                "$out/share/aos/crucible/procfd-flags.compile-command.json"
               install -m 644 acpi-fingerprint-tests.tap \
                 "$out/share/aos/crucible/acpi-fingerprint-tests.tap"
               install -m 644 vga-fingerprint-tests.tap \
