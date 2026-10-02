@@ -54,6 +54,7 @@ const MAXIMUM_ISSUANCES: usize = 1024;
 const TRANSACTION_DOMAIN: &[u8] = b"aos.sandbox.storage.native-issuance.transaction.v1\0";
 
 pub(crate) mod held_completion;
+mod held_custody;
 
 /// Rejects malformed, stale, conflicting, or indeterminate issuance state.
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +74,34 @@ pub(crate) enum StorageNativeIssuanceErrorV1 {
     /// Protected custody, capacity, append, or recovery failed closed.
     #[error("Storage native issuance journal failed: {0}")]
     Journal(#[from] JournalError),
+    /// Same-parser history retained the first cause and any final bookend debt.
+    #[error(transparent)]
+    History(#[from] aos_sandbox::StorageNativeIssuanceHistoryErrorV1),
+    /// The sole mixed reducer rejected canonical history or continuation geometry.
+    #[error(transparent)]
+    Held(Box<held_completion::StorageHeldCompletionErrorV1>),
+    /// Independently held current role pins could not authenticate an archive.
+    #[error(transparent)]
+    Trust(#[from] crate::live_export_request_trust::StorageLiveExportRequestTrustErrorV1),
+    /// The dedicated original signing credential changed.
+    #[error(transparent)]
+    Credential(Box<crate::service::StorageServiceError>),
+    /// Bounded retention could not reserve its actual bytes.
+    #[error(transparent)]
+    Allocation(#[from] std::collections::TryReserveError),
+    /// Validation refused first and the same writer also failed its final bookend.
+    #[error("native issuance validation failed: {primary}; final custody also failed: {bookend}")]
+    HeldBookend {
+        #[source]
+        primary: Box<StorageNativeIssuanceErrorV1>,
+        bookend: JournalError,
+    },
+}
+
+impl From<held_completion::StorageHeldCompletionErrorV1> for StorageNativeIssuanceErrorV1 {
+    fn from(cause: held_completion::StorageHeldCompletionErrorV1) -> Self {
+        Self::Held(Box::new(cause))
+    }
 }
 
 /// Distinguishes a durable new row from an exact replay.
@@ -308,6 +337,8 @@ pub(crate) struct StorageNativeIssuanceLedgerV1 {
 
 enum NativeIssuanceCustodyV1 {
     RootOwned,
+    // Selected only by the actual original-startup construction attempt.
+    RootOwnedHeld,
     #[cfg(test)]
     UidFixture {
         device: u64,
@@ -454,8 +485,12 @@ impl StorageNativeIssuanceLedgerV1 {
         &mut self,
     ) -> Result<(u64, ObjectDigest), StorageNativeIssuanceErrorV1> {
         self.validate_boundary()?;
-        let rows = self.rows()?;
-        self.preflight_retirements(&rows, None)?;
+        if self.uses_original_held_route() {
+            self.held_offer_funding()?;
+        } else {
+            let rows = self.rows()?;
+            self.preflight_retirements(&rows, None)?;
+        }
 
         let mut digest = Sha256::new();
         digest.update(b"aos.sandbox.operator-repair-native-cut.v4\0");
@@ -491,7 +526,7 @@ impl StorageNativeIssuanceLedgerV1 {
 
     fn validate_boundary(&mut self) -> Result<(), StorageNativeIssuanceErrorV1> {
         match self.custody {
-            NativeIssuanceCustodyV1::RootOwned => self
+            NativeIssuanceCustodyV1::RootOwned | NativeIssuanceCustodyV1::RootOwnedHeld => self
                 .journal
                 .validate_held_root_owned_at(&self.state_directory, JOURNAL_FILE)?,
             #[cfg(test)]
@@ -512,6 +547,9 @@ impl StorageNativeIssuanceLedgerV1 {
     }
 
     fn rows(&self) -> Result<Vec<NativeIssuanceRowV1>, StorageNativeIssuanceErrorV1> {
+        if matches!(self.custody, NativeIssuanceCustodyV1::RootOwnedHeld) {
+            return self.held_original_rows();
+        }
         self.journal.ensure_healthy()?;
         let mut rows = Vec::new();
         let mut identities = NativeIssuanceIdentityIndexV1::default();
@@ -558,6 +596,9 @@ impl StorageNativeIssuanceLedgerV1 {
         prepared: &PreparedStorageNativeIssuanceV1,
         current: &StorageHeldSnapshotCatalogCutV1,
     ) -> Result<IssuanceCommitOutcomeV1, StorageNativeIssuanceErrorV1> {
+        if self.uses_original_held_route() {
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
+        }
         self.validate_boundary()?;
         if prepared.row.retirement.is_some() {
             return Err(StorageNativeIssuanceErrorV1::Noncanonical);
@@ -590,6 +631,9 @@ impl StorageNativeIssuanceLedgerV1 {
         &mut self,
         proof: &PreparedStorageNativeRetirementV1,
     ) -> Result<IssuanceCommitOutcomeV1, StorageNativeIssuanceErrorV1> {
+        if self.uses_original_held_route() {
+            return Err(StorageNativeIssuanceErrorV1::Conflict);
+        }
         self.validate_boundary()?;
         if proof.original.retirement.is_some() {
             return Err(StorageNativeIssuanceErrorV1::Noncanonical);

@@ -85,6 +85,19 @@ pub(crate) fn reduce(
     let [key] = changed.as_slice() else {
         return Err(invalid("exactly one issuance mutation"));
     };
+    held_mutation(&old, &new, key, before_sequence, step)
+}
+
+// Both callers have already decoded complete maps and proved one changed key.
+// Lending those maps keeps the sole target/step/transaction engine shared
+// without repeating nine whole-state decodes during native history search.
+fn held_mutation(
+    old: &BTreeMap<[u8; 48], StorageIssuanceValueV1>,
+    new: &BTreeMap<[u8; 48], StorageIssuanceValueV1>,
+    key: &[u8; 48],
+    before_sequence: u64,
+    step: StorageHeldStepV1,
+) -> Result<StorageHeldReductionV1> {
     let Some(StorageIssuanceValueV1::Held(next)) = new.get(key) else {
         return Err(invalid("held transition target"));
     };
@@ -98,6 +111,77 @@ pub(crate) fn reduce(
     Ok(StorageHeldReductionV1 {
         transaction: Some(next.transaction()?),
     })
+}
+
+/// Joins one real native COMMIT edge to its sole canonical issuance mutation.
+///
+/// The caller supplies lending before/after maps and BEGIN from the existing
+/// Core parser. This validates DATA only; no transaction is committed here.
+///
+/// # Errors
+///
+/// Rejects duplicate PUTs, removals, upgrades, advanced initial rows, identity
+/// reuse, missing predecessors, or a different UUID/ordered transaction.
+pub(crate) fn require_native_replayed_edge(
+    before: &BTreeMap<[u8; 48], Vec<u8>>,
+    after: &BTreeMap<[u8; 48], Vec<u8>>,
+    begin: u64,
+    actual: &JournalTransaction,
+) -> Result<()> {
+    let old = decode_state(before)?;
+    let new = decode_state(after)?;
+    if before.keys().any(|key| !after.contains_key(key)) {
+        return Err(invalid("removed native issuance identity"));
+    }
+    let mut changed = after.iter().filter(|(key, value)| before.get(*key) != Some(*value));
+    let Some((key, _)) = changed.next() else {
+        // ExactReplay has no append: a committed duplicate PUT is not replay.
+        return Err(invalid("native COMMIT without an issuance transition"));
+    };
+    if changed.next().is_some() {
+        return Err(invalid("multiple native issuance transitions"));
+    }
+    match (old.get(key), new.get(key)) {
+        (None, Some(StorageIssuanceValueV1::Legacy(row))) if row.retirement.is_none() => {
+            if row.transaction()? == *actual {
+                return Ok(());
+            }
+        }
+        (Some(StorageIssuanceValueV1::Legacy(previous)),
+            Some(StorageIssuanceValueV1::Legacy(next))) => {
+            if let Some((terminal, cleanup)) = next.retirement {
+                if previous.retirement.is_none()
+                    && previous.retired(terminal, cleanup) == *next
+                    && next.transaction()? == *actual
+                {
+                    return Ok(());
+                }
+            }
+        }
+        (_, Some(StorageIssuanceValueV1::Held(_))) => {
+            // Step selection stays next to the sole phase/prefix validator.
+            // Only one of its closed transitions may explain a physical COMMIT.
+            for step in [
+                StorageHeldStepV1::InterestRecorded,
+                StorageHeldStepV1::HeldPrepared,
+                StorageHeldStepV1::HeldStored,
+                StorageHeldStepV1::RootDispositionRecorded,
+                StorageHeldStepV1::SettlementPrepared,
+                StorageHeldStepV1::ColdCarrierPrepared,
+                StorageHeldStepV1::SettlementStored,
+                StorageHeldStepV1::AlreadySettledRecoveryProofRecorded,
+                StorageHeldStepV1::RetirementRecorded,
+            ] {
+                if let Ok(reduction) = held_mutation(&old, &new, key, begin, step) {
+                    if reduction.transaction.as_ref() == Some(actual) {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    Err(invalid("native UUID/ordered records or closed historical edge"))
 }
 
 // The same non-recycling index covers active, retired, legacy and held rows.
@@ -616,4 +700,47 @@ fn signed_successor(
     prepared
         .zip(signed)
         .is_some_and(|(prepared, signed)| prepared == signed.prepared())
+}
+
+#[cfg(test)]
+mod native_history_tests {
+    use super::*;
+
+    fn legacy() -> NativeIssuanceRowV1 {
+        crate::native_issuance::tests::fixture(1, 42).row
+    }
+
+    #[test]
+    fn original_legacy_edge_and_exact_retirement_use_the_existing_uuid_engine() {
+        let row = legacy();
+        let initial = BTreeMap::from([(row.key(), row.encode().unwrap())]);
+        require_native_replayed_edge(&BTreeMap::new(), &initial, 1, &row.transaction().unwrap()).unwrap();
+        let retired = row.retired(ObjectDigest::from_bytes([2; 32]), ObjectDigest::from_bytes([3; 32]));
+        let final_state = BTreeMap::from([(retired.key(), retired.encode().unwrap())]);
+
+        require_native_replayed_edge(&initial, &final_state, 4, &retired.transaction().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn historical_duplicate_put_and_wrong_uuid_are_not_exact_replay() {
+        let row = legacy();
+        let values = BTreeMap::from([(row.key(), row.encode().unwrap())]);
+        let transaction = row.transaction().unwrap();
+        assert!(require_native_replayed_edge(&values, &values, 4, &transaction).is_err());
+        let mut wrong_id = *transaction.id();
+        wrong_id[0] ^= 1;
+        let wrong = JournalTransaction::new(wrong_id, transaction.records().to_vec()).unwrap();
+
+        assert!(require_native_replayed_edge(&BTreeMap::new(), &values, 1, &wrong).is_err());
+    }
+
+    #[test]
+    fn retired_initial_and_removed_identity_cannot_explain_native_history() {
+        let retired = legacy().retired(ObjectDigest::from_bytes([2; 32]), ObjectDigest::from_bytes([3; 32]));
+        let values = BTreeMap::from([(retired.key(), retired.encode().unwrap())]);
+        let transaction = retired.transaction().unwrap();
+
+        assert!(require_native_replayed_edge(&BTreeMap::new(), &values, 1, &transaction).is_err());
+        assert!(require_native_replayed_edge(&values, &BTreeMap::new(), 4, &transaction).is_err());
+    }
 }

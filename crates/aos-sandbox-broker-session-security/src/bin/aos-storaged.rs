@@ -47,6 +47,90 @@ enum StorageStartupRunErrorV3 {
     Service(#[from] StorageServiceError),
     #[error(transparent)]
     Original(#[from] aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3),
+    #[error(transparent)]
+    OriginalConstruction(#[from] aos_sandbox_storage::runtime::StorageOriginalNativeConstructionClosedV1),
+    #[error(transparent)]
+    Template(aos_sandbox_storage::guest_root_inventory::GuestRootInventoryErrorV1),
+}
+
+// The legacy arm borrows the local composition at its old drop position. The selected
+// arm only borrows the parent-held composition/trust. The fixed enum shares the
+// one daemon loop without consuming a selected owner or using legacy early-send.
+enum StorageRunCompositionV1<'original> {
+    Legacy(&'original mut Option<DormantStorageApplyCompositionV1>),
+    Original {
+        composition: &'original mut DormantStorageApplyCompositionV1,
+        trust: aos_sandbox_storage::runtime::StorageOriginalNativeTrustLoanV1<'original>,
+    },
+}
+
+impl StorageRunCompositionV1<'_> {
+    fn is_original(&self) -> bool {
+        matches!(self, Self::Original { .. })
+    }
+
+    fn composition_mut(&mut self) -> &mut DormantStorageApplyCompositionV1 {
+        match self {
+            Self::Legacy(slot) => match slot.as_mut() {
+                Some(composition) => composition,
+                None => std::process::abort(),
+            },
+            Self::Original { composition, .. } => composition,
+        }
+    }
+
+    fn cold_audit(&mut self, state: &Path) -> Result<(), StorageServiceError> {
+        match self {
+            Self::Legacy(slot) => {
+                let composition = match slot.take() {
+                    Some(composition) => composition,
+                    None => std::process::abort(),
+                };
+                **slot = Some(composition.with_private_live_export_cold_audit(state)?);
+                Ok(())
+            }
+            Self::Original { composition, .. } => composition.retain_private_live_export_cold_audit(state),
+        }
+    }
+
+    fn serve_native(
+        &mut self, listener: &mut RecordSubjectListener,
+        verifier: &ProviderLiveExportPeerVerifier, authority: &Path,
+        key: Option<&StorageZfsHoldKeyV1>,
+    ) -> Result<aos_sandbox_storage::zfs_hold_transport::StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
+        match self {
+            Self::Legacy(slot) => match slot.as_mut() {
+                Some(composition) => composition.serve_zfs_hold_request_once(
+                    listener, verifier, authority, key,
+                ),
+                None => std::process::abort(),
+            },
+            Self::Original { composition, trust } => {
+                let key = key.ok_or(StorageRuntimeError::Recovery)?;
+                composition.serve_original_held_offer_once(listener, verifier, trust, key)
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for StorageRunCompositionV1<'_> {
+    type Target = DormantStorageApplyCompositionV1;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Legacy(slot) => match slot.as_ref() {
+                Some(composition) => composition,
+                None => std::process::abort(),
+            },
+            Self::Original { composition, .. } => composition,
+        }
+    }
+}
+
+impl std::ops::DerefMut for StorageRunCompositionV1<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.composition_mut()
+    }
 }
 
 impl From<StorageRuntimeError> for StorageStartupRunErrorV3 {
@@ -133,99 +217,88 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
             None,
         )
     };
-    let (
-        mut activation,
-        mut export_listener,
-        mut live_export_listener,
-        mut zfs_hold_listener,
-        mut operator_listener,
-        mut existing_output_listener,
-    ) = startup.into_parts();
-    let output_custody = if let Some(source) = &arguments.output_key_source {
-        Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
-    } else {
-        None
-    };
-    if output_custody.is_some() != existing_output_listener.is_some() {
-        return Err(StorageServiceError::Activation(
-            "existing-output listener and protected custody must be provisioned together"
-                .to_owned(),
-        )
-        .into());
-    }
-    let zfs_hold_key = if arguments.zfs_hold_key_configured {
-        Some(StorageZfsHoldKeyV1::load()?)
-    } else {
-        None
-    };
-    let identity_pool =
-        StorageIdentityPoolV1::new(arguments.identity_pool_start, arguments.identity_pool_size)
-            .map_err(StorageRuntimeError::WorkspaceCatalog)?;
-    let executor = SystemdZfsExecutor::new(PathBuf::from(ZFS_WORKER_SOCKET), open_cgroup_root()?)
-        .map_err(StorageRuntimeError::Worker)?;
-    let guest_root_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
-        .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-    let operator_credentials = if operator_listener.is_some() {
-        Some(StorageOperatorRecoveryCredentialsV1::load()?)
-    } else {
-        None
-    };
-    if command == StorageStartupCommandV4::ProvisionOperator {
-        let credentials = operator_credentials.as_ref().ok_or_else(|| {
-            StorageServiceError::Activation(
-                "operator provisioning requires the existing operator listener role".to_owned(),
-            )
-        })?;
-        activation.storage_listener_fd().map_err(production_error)?;
-        let provisioning_listeners = [
-            Some(&export_listener),
-            live_export_listener.as_ref(),
-            zfs_hold_listener.as_ref(),
-            operator_listener.as_ref(),
-            existing_output_listener.as_ref(),
-        ];
-        validate_operator_provisioning_listeners(&provisioning_listeners)?;
-        credentials.recheck()?;
-
-        DormantStorageApplyCompositionV1::provision_empty_operator_repair_v4(
-            &arguments.authority_directory,
-            &arguments.bootstrap_directory,
-            state_root,
-            arguments.resolver_policy_directory.as_deref(),
-            identity_pool,
-            arguments.zfs_executable,
-            executor,
-            credentials,
-        )?;
-
-        credentials.recheck()?;
-        activation.storage_listener_fd().map_err(production_error)?;
-        validate_operator_provisioning_listeners(&provisioning_listeners)?;
-        if let Some(key) = &zfs_hold_key {
-            key.recheck()?;
-        }
-        if let Some(custody) = &output_custody {
-            custody.recheck(state_root)?;
-        }
-        let current_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
-            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-        if current_template.root() != guest_root_template.root()
-            || current_template.package_binding() != guest_root_template.package_binding()
-            || current_template.root_tree_digest() != guest_root_template.root_tree_digest()
-        {
+    let mut original_attempt = original_worker_startup.map(
+        aos_sandbox_storage::runtime::StorageOriginalNativeConstructionV1::begin,
+    );
+    // Selected credentials remain outside the fallible run scope too. Legacy
+    // locals below retain their old creation and reverse destruction positions.
+    let mut original_key = None;
+    let mut original_operator_credentials = None;
+    let _original_crossing = original_attempt.as_ref().map(|owner| owner.unwind_fence());
+    let result: Result<(), StorageStartupRunErrorV3> = (|| {
+        let (
+            mut activation,
+            mut export_listener,
+            mut live_export_listener,
+            mut zfs_hold_listener,
+            mut operator_listener,
+            mut existing_output_listener,
+        ) = startup.into_parts();
+        let output_custody = if let Some(source) = &arguments.output_key_source {
+            Some(StorageExecutionOutputCustodyV1::open(state_root, source)?)
+        } else {
+            None
+        };
+        if output_custody.is_some() != existing_output_listener.is_some() {
             return Err(StorageServiceError::Activation(
-                "guest-root template changed during operator provisioning".to_owned(),
+                "existing-output listener and protected custody must be provisioned together"
+                    .to_owned(),
             )
             .into());
         }
-        // Keep the actual template and complete inherited table until all
-        // provisioning bookends finish. No actor or effect owner is returned.
-        drop(guest_root_template);
-        return Ok(());
-    }
-    let (mut storage, mut operator_owner) = match operator_credentials.as_ref() {
-        Some(credentials) => {
-            let (storage, owner) = DormantStorageApplyCompositionV1::open_existing_operator_repair_v4(
+        let mut legacy_key = None;
+        let zfs_hold_key = if original_attempt.is_some() {
+            original_key = Some(StorageZfsHoldKeyV1::load()?);
+            &original_key
+        } else {
+            if arguments.zfs_hold_key_configured {
+                legacy_key = Some(StorageZfsHoldKeyV1::load()?);
+            }
+            &legacy_key
+        };
+        let identity_pool =
+            StorageIdentityPoolV1::new(arguments.identity_pool_start, arguments.identity_pool_size)
+                .map_err(StorageRuntimeError::WorkspaceCatalog)?;
+        let executor = SystemdZfsExecutor::new(PathBuf::from(ZFS_WORKER_SOCKET), open_cgroup_root()?)
+            .map_err(StorageRuntimeError::Worker)?;
+        let guest_root_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
+            .map_err(|cause| {
+                if original_attempt.is_some() {
+                    StorageStartupRunErrorV3::Template(cause)
+                } else {
+                    StorageStartupRunErrorV3::Service(StorageServiceError::Activation(cause.to_string()))
+                }
+            })?;
+        let mut legacy_operator_credentials = None;
+        let operator_credentials = if original_attempt.is_some() {
+            if operator_listener.is_some() {
+                original_operator_credentials = Some(StorageOperatorRecoveryCredentialsV1::load()?);
+            }
+            &original_operator_credentials
+        } else {
+            if operator_listener.is_some() {
+                legacy_operator_credentials = Some(StorageOperatorRecoveryCredentialsV1::load()?);
+            }
+            &legacy_operator_credentials
+        };
+        if command == StorageStartupCommandV4::ProvisionOperator {
+            let credentials = operator_credentials.as_ref().ok_or_else(|| {
+                StorageServiceError::Activation(
+                    "operator provisioning requires the existing operator listener role".to_owned(),
+                )
+            })?;
+            activation.storage_listener_fd().map_err(production_error)?;
+            let provisioning_listeners = [
+                Some(&export_listener),
+                live_export_listener.as_ref(),
+                zfs_hold_listener.as_ref(),
+                operator_listener.as_ref(),
+                existing_output_listener.as_ref(),
+            ];
+            validate_operator_provisioning_listeners(&provisioning_listeners)?;
+            credentials.recheck()?;
+
+            DormantStorageApplyCompositionV1::provision_empty_operator_repair_v4(
                 &arguments.authority_directory,
                 &arguments.bootstrap_directory,
                 state_root,
@@ -235,353 +308,436 @@ fn run() -> Result<(), StorageStartupRunErrorV3> {
                 executor,
                 credentials,
             )?;
-            (storage.with_guest_root_template(guest_root_template), Some(owner))
-        }
-        None => (
-            DormantStorageApplyCompositionV1::open_root_owned(
-                &arguments.authority_directory,
-                &arguments.bootstrap_directory,
-                state_root,
-                arguments.resolver_policy_directory.as_deref(),
-                identity_pool,
-                arguments.zfs_executable,
-                executor,
-            )?.with_guest_root_template(guest_root_template),
-            None,
-        ),
-    };
-    if let Some(startup) = original_worker_startup {
-        storage = storage.with_original_worker_startup(startup)?;
-    }
-    if let Some(diagnostic) = prepare_readiness_diagnostic(storage.runtime().prepare_readiness()) {
-        eprintln!("aos-storaged: {diagnostic}");
-    }
-    // Auxiliary cold audit and ordinary publisher admission follow exact
-    // settlement. Neither may create journal names while Repair debt is held.
-    let mut ordinary_services_initialized = false;
-    let mut active_session: Option<DormantAuthenticatedBrokerSessionV1> = None;
-    loop {
-        // An unresolved sidecar hold admits its same-socket recovery and a
-        // fresh authenticated handshake for historical checkpoint verification.
-        // No ordinary method request is served until exact settlement.
-        while let Some(owner) = operator_owner.as_mut() {
-            if !storage.retain_operator_terminal_cold_hold(owner)? {
-                break;
-            }
-            let listener = operator_listener.as_mut().ok_or_else(|| {
-                StorageServiceError::Activation("unresolved operator hold has no listener".to_owned())
-            })?;
-            let credentials = operator_credentials.as_ref().ok_or_else(|| {
-                StorageServiceError::Activation("unresolved operator hold has no credentials".to_owned())
-            })?;
+
             credentials.recheck()?;
-            let broker_listener = activation.storage_listener_fd().map_err(production_error)?;
-            let mut recovery_ready = vec![
-                rustix::event::PollFd::from_borrowed_fd(listener.as_fd(), rustix::event::PollFlags::IN),
-                rustix::event::PollFd::from_borrowed_fd(broker_listener, rustix::event::PollFlags::IN),
-            ];
-            let pending_request_index = if let Some(session) = active_session.as_ref() {
-                let index = recovery_ready.len();
-                recovery_ready.push(rustix::event::PollFd::from_borrowed_fd(
-                    session.as_fd().map_err(|error| StorageServiceError::Activation(error.to_string()))?,
+            activation.storage_listener_fd().map_err(production_error)?;
+            validate_operator_provisioning_listeners(&provisioning_listeners)?;
+            if let Some(key) = &zfs_hold_key {
+                key.recheck()?;
+            }
+            if let Some(custody) = &output_custody {
+                custody.recheck(state_root)?;
+            }
+            let current_template = ProtectedGuestRootTemplateV1::open(&arguments.guest_root_template)
+                .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+            if current_template.root() != guest_root_template.root()
+                || current_template.package_binding() != guest_root_template.package_binding()
+                || current_template.root_tree_digest() != guest_root_template.root_tree_digest()
+            {
+                return Err(StorageServiceError::Activation(
+                    "guest-root template changed during operator provisioning".to_owned(),
+                )
+                .into());
+            }
+            // Keep the actual template and complete inherited table until all
+            // provisioning bookends finish. No actor or effect owner is returned.
+            drop(guest_root_template);
+            return Ok(());
+        }
+        // Declare these in the original tuple's order: on legacy error the fourth
+        // writer drops before the composition. The route enum borrows both slots.
+        let mut legacy_storage = None;
+        let mut legacy_operator_owner = None;
+        let (mut storage, operator_owner) = if let Some(original) = original_attempt.as_mut() {
+            original.open_once(
+                &arguments.authority_directory, &arguments.bootstrap_directory,
+                state_root, arguments.resolver_policy_directory.as_deref(),
+                identity_pool, arguments.zfs_executable, executor,
+                zfs_hold_key.as_ref().ok_or(StorageRuntimeError::Recovery)?,
+                operator_credentials.as_ref(), guest_root_template,
+            )?;
+            let (composition, owner, trust) = original.ready_parts()?;
+            (StorageRunCompositionV1::Original { composition, trust }, owner)
+        } else {
+            let (composition, owner) = match operator_credentials.as_ref() {
+                Some(credentials) => {
+                    let (storage, owner) = DormantStorageApplyCompositionV1::open_existing_operator_repair_v4(
+                        &arguments.authority_directory,
+                        &arguments.bootstrap_directory,
+                        state_root,
+                        arguments.resolver_policy_directory.as_deref(),
+                        identity_pool,
+                        arguments.zfs_executable,
+                        executor,
+                        credentials,
+                    )?;
+                    (storage.with_guest_root_template(guest_root_template), Some(owner))
+                }
+                None => (
+                    DormantStorageApplyCompositionV1::open_root_owned(
+                        &arguments.authority_directory,
+                        &arguments.bootstrap_directory,
+                        state_root,
+                        arguments.resolver_policy_directory.as_deref(),
+                        identity_pool,
+                        arguments.zfs_executable,
+                        executor,
+                    )?.with_guest_root_template(guest_root_template),
+                    None,
+                ),
+            };
+            legacy_storage = Some(composition);
+            legacy_operator_owner = owner;
+            (StorageRunCompositionV1::Legacy(&mut legacy_storage), &mut legacy_operator_owner)
+        };
+        if let Some(diagnostic) = prepare_readiness_diagnostic(storage.runtime().prepare_readiness()) {
+            eprintln!("aos-storaged: {diagnostic}");
+        }
+        // Auxiliary cold audit and ordinary publisher admission follow exact
+        // settlement. Neither may create journal names while Repair debt is held.
+        let mut ordinary_services_initialized = false;
+        let mut active_session: Option<DormantAuthenticatedBrokerSessionV1> = None;
+        loop {
+            // An unresolved sidecar hold admits its same-socket recovery and a
+            // fresh authenticated handshake for historical checkpoint verification.
+            // No ordinary method request is served until exact settlement.
+            while let Some(owner) = operator_owner.as_mut() {
+                if !storage.retain_operator_terminal_cold_hold(owner)? {
+                    break;
+                }
+                let listener = operator_listener.as_mut().ok_or_else(|| {
+                    StorageServiceError::Activation("unresolved operator hold has no listener".to_owned())
+                })?;
+                let credentials = operator_credentials.as_ref().ok_or_else(|| {
+                    StorageServiceError::Activation("unresolved operator hold has no credentials".to_owned())
+                })?;
+                credentials.recheck()?;
+                let broker_listener = activation.storage_listener_fd().map_err(production_error)?;
+                let mut recovery_ready = vec![
+                    rustix::event::PollFd::from_borrowed_fd(listener.as_fd(), rustix::event::PollFlags::IN),
+                    rustix::event::PollFd::from_borrowed_fd(broker_listener, rustix::event::PollFlags::IN),
+                ];
+                let pending_request_index = if let Some(session) = active_session.as_ref() {
+                    let index = recovery_ready.len();
+                    recovery_ready.push(rustix::event::PollFd::from_borrowed_fd(
+                        session.as_fd().map_err(|error| StorageServiceError::Activation(error.to_string()))?,
+                        rustix::event::PollFlags::IN,
+                    ));
+                    Some(index)
+                } else {
+                    None
+                };
+                match rustix::event::poll(&mut recovery_ready, None) {
+                    Ok(_) => {}
+                    Err(rustix::io::Errno::INTR) => continue,
+                    Err(error) => return Err(error.into()),
+                }
+                let operator_ready = recovery_ready[0].revents().contains(rustix::event::PollFlags::IN);
+                let handshake_ready = recovery_ready[1].revents().contains(rustix::event::PollFlags::IN);
+                let request_ready = pending_request_index.is_some_and(|index| recovery_ready[index].revents().contains(rustix::event::PollFlags::IN));
+                let request_disconnected = pending_request_index.is_some_and(|index| recovery_ready[index].revents().intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR));
+                if recovery_ready[..2].iter().any(|ready| ready.revents().intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR)) {
+                    return Err(StorageServiceError::Activation(
+                        "operator recovery listener retired".to_owned(),
+                    )
+                    .into());
+                }
+                drop(recovery_ready);
+                if request_ready {
+                    if let Some(session) = active_session.take() {
+                        let deadline = production_deadline_after(REQUEST_TIMEOUT)
+                            .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                        match session.serve_operator_repair_unresolved_rejection(deadline) {
+                            Ok(session) => active_session = Some(session),
+                            Err(error) => eprintln!("aos-storaged: held request rejected: {error}"),
+                        }
+                    }
+                } else if request_disconnected {
+                    active_session = None;
+                }
+                if handshake_ready {
+                    let deadline = production_deadline_after(ACCEPT_TIMEOUT)
+                        .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                    let acceptance = StorageColdAcceptUnwindV1(&mut activation);
+                    match acceptance.0.accept_authenticated(deadline) {
+                        Ok(session) => active_session = Some(session),
+                        Err(error) if acceptance.0.has_failed_storage_cold() => {
+                            // Original cold owners and typed cause remain in the
+                            // activation stack. Exit before returning through lower
+                            // Storage/operator disposal or accepting a replacement.
+                            eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
+                            std::process::exit(1);
+                        }
+                        Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
+                        Err(error) => return Err(production_error(error).into()),
+                    }
+                }
+                if operator_ready {
+                    let controller_cgroup = open_cgroup_root()?.resolve(Path::new(CONTROLLER_CGROUP))?;
+                    let verifier = ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
+                    storage.serve_operator_repair_once(listener, &verifier, owner)?;
+                }
+                credentials.recheck()?;
+            }
+            if !ordinary_services_initialized {
+                if live_export_listener.is_some() {
+                    storage.cold_audit(state_root)?;
+                }
+                // Normal admission still requires the real no-effect health probe.
+                storage.probe_guest_root_publisher()?;
+                ordinary_services_initialized = true;
+            }
+            if let Some(key) = &zfs_hold_key {
+                key.recheck()?;
+            }
+            if let Some(custody) = &output_custody {
+                custody.recheck(state_root)?;
+            }
+            if !storage.runtime().is_inventory_ready() {
+                return Err(StorageRuntimeError::Recovery.into());
+            }
+
+            let mut ready = Vec::with_capacity(6);
+            if let Some(session) = active_session.as_ref() {
+                let session_fd = session
+                    .as_fd()
+                    .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    session_fd,
                     rustix::event::PollFlags::IN,
                 ));
-                Some(index)
             } else {
-                None
-            };
-            match rustix::event::poll(&mut recovery_ready, None) {
+                let listener_fd = activation.storage_listener_fd().map_err(production_error)?;
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    listener_fd,
+                    rustix::event::PollFlags::IN,
+                ));
+            }
+            ready.push(rustix::event::PollFd::from_borrowed_fd(
+                export_listener.as_fd(),
+                rustix::event::PollFlags::IN,
+            ));
+            let live_export_index = live_export_listener.as_ref().map(|listener| {
+                let index = ready.len();
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    listener.as_fd(),
+                    rustix::event::PollFlags::IN,
+                ));
+                index
+            });
+            let zfs_hold_index = zfs_hold_listener.as_ref().map(|listener| {
+                let index = ready.len();
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    listener.as_fd(),
+                    rustix::event::PollFlags::IN,
+                ));
+                index
+            });
+            let operator_index = operator_listener.as_ref().map(|listener| {
+                let index = ready.len();
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    listener.as_fd(),
+                    rustix::event::PollFlags::IN,
+                ));
+                index
+            });
+            let existing_output_index = existing_output_listener.as_ref().map(|listener| {
+                let index = ready.len();
+                ready.push(rustix::event::PollFd::from_borrowed_fd(
+                    listener.as_fd(),
+                    rustix::event::PollFlags::IN,
+                ));
+                index
+            });
+            match rustix::event::poll(&mut ready, None) {
                 Ok(_) => {}
                 Err(rustix::io::Errno::INTR) => continue,
                 Err(error) => return Err(error.into()),
             }
-            let operator_ready = recovery_ready[0].revents().contains(rustix::event::PollFlags::IN);
-            let handshake_ready = recovery_ready[1].revents().contains(rustix::event::PollFlags::IN);
-            let request_ready = pending_request_index.is_some_and(|index| recovery_ready[index].revents().contains(rustix::event::PollFlags::IN));
-            let request_disconnected = pending_request_index.is_some_and(|index| recovery_ready[index].revents().intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR));
-            if recovery_ready[..2].iter().any(|ready| ready.revents().intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR)) {
+            let broker_ready = ready[0].revents().contains(rustix::event::PollFlags::IN);
+            let broker_disconnected = ready[0]
+                .revents()
+                .intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR);
+            let export_ready = ready[1].revents().contains(rustix::event::PollFlags::IN);
+            let live_export_ready = live_export_index
+                .and_then(|index| ready.get(index))
+                .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+            let zfs_hold_ready = zfs_hold_index
+                .and_then(|index| ready.get(index))
+                .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+            let operator_ready = operator_index
+                .and_then(|index| ready.get(index))
+                .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+            let existing_output_ready = existing_output_index
+                .and_then(|index| ready.get(index))
+                .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
+            drop(ready);
+            if let Some(key) = &zfs_hold_key {
+                key.recheck()?;
+            }
+            if let Some(custody) = &output_custody {
+                custody.recheck(state_root)?;
+            }
+            if !broker_ready
+                && !broker_disconnected
+                && !export_ready
+                && !live_export_ready
+                && !zfs_hold_ready
+                && !operator_ready
+                && !existing_output_ready
+            {
                 return Err(StorageServiceError::Activation(
-                    "operator recovery listener retired".to_owned(),
+                    "activated Storage endpoint reported invalid readiness".to_owned(),
                 )
                 .into());
             }
-            drop(recovery_ready);
-            if request_ready {
+
+            if broker_disconnected && active_session.is_none() {
+                return Err(StorageServiceError::Activation(
+                    "protected Storage broker listener was retired".to_owned(),
+                )
+                .into());
+            }
+            if broker_ready {
                 if let Some(session) = active_session.take() {
-                    let deadline = production_deadline_after(REQUEST_TIMEOUT)
+                    let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
                         .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                    match session.serve_operator_repair_unresolved_rejection(deadline) {
+                    match session.serve_production_storage_request(storage.composition_mut(), request_deadline) {
+                        Ok(retained) => active_session = Some(retained),
+                        Err(error) => eprintln!("aos-storaged: authenticated request failed: {error}"),
+                    }
+                } else {
+                    let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
+                        .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
+                    let acceptance = StorageColdAcceptUnwindV1(&mut activation);
+                    match acceptance.0.accept_authenticated(accept_deadline) {
                         Ok(session) => active_session = Some(session),
-                        Err(error) => eprintln!("aos-storaged: held request rejected: {error}"),
+                        Err(error) if acceptance.0.has_failed_storage_cold() => {
+                            // Original cold owners and typed cause remain in the
+                            // activation stack. Exit before returning through lower
+                            // Storage/operator disposal or accepting a replacement.
+                            eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
+                            std::process::exit(1);
+                        }
+                        Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
+                        Err(error) => return Err(production_error(error).into()),
                     }
                 }
-            } else if request_disconnected {
+            } else if broker_disconnected {
+                // A retired child is local to that session; a retired listener is fatal.
                 active_session = None;
             }
-            if handshake_ready {
-                let deadline = production_deadline_after(ACCEPT_TIMEOUT)
-                    .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                let acceptance = StorageColdAcceptUnwindV1(&mut activation);
-                match acceptance.0.accept_authenticated(deadline) {
-                    Ok(session) => active_session = Some(session),
-                    Err(error) if acceptance.0.has_failed_storage_cold() => {
-                        // Original cold owners and typed cause remain in the
-                        // activation stack. Exit before returning through lower
-                        // Storage/operator disposal or accepting a replacement.
-                        eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
-                        std::process::exit(1);
+            if export_ready {
+                let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
+                if let Ok(host_cgroup) = host_cgroup {
+                    let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
+                    storage.serve_root_export_once(&mut export_listener, &verifier)?;
+                } else {
+                    export_listener.validate_current()?;
+                    let _ = export_listener.accept_descriptor_subject();
+                }
+            }
+            if live_export_ready {
+                let listener = live_export_listener.as_mut().ok_or_else(|| {
+                    StorageServiceError::Activation("live-export listener disappeared".to_owned())
+                })?;
+                let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
+                if let Ok(provider_cgroup) = provider_cgroup {
+                    let verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
+                    storage.serve_live_export_request_once(
+                        listener,
+                        &verifier,
+                        &arguments.authority_directory,
+                        Path::new(STATE_ROOT),
+                    )?;
+                } else {
+                    listener.validate_current()?;
+                    let _ = listener.accept();
+                }
+            }
+            if zfs_hold_ready {
+                let listener = zfs_hold_listener.as_mut().ok_or_else(|| {
+                    StorageServiceError::Activation("ZFS hold listener disappeared".to_owned())
+                })?;
+                let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
+                match provider_cgroup {
+                    Ok(provider_cgroup) => {
+                        let verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
+                        storage.serve_native(
+                            listener,
+                            &verifier,
+                            &arguments.authority_directory,
+                            zfs_hold_key.as_ref(),
+                        )?;
                     }
-                    Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
-                    Err(error) => return Err(production_error(error).into()),
+                    Err(cause) if storage.is_original() => return Err(cause.into()),
+                    Err(_) => {
+                        listener.validate_current()?;
+                        let _ = listener.accept();
+                    }
                 }
             }
             if operator_ready {
-                let controller_cgroup = open_cgroup_root()?.resolve(Path::new(CONTROLLER_CGROUP))?;
-                let verifier = ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
-                storage.serve_operator_repair_once(listener, &verifier, owner)?;
-            }
-            credentials.recheck()?;
-        }
-        if !ordinary_services_initialized {
-            if live_export_listener.is_some() {
-                storage = storage.with_private_live_export_cold_audit(state_root)?;
-            }
-            // Normal admission still requires the real no-effect health probe.
-            storage.probe_guest_root_publisher()?;
-            ordinary_services_initialized = true;
-        }
-        if let Some(key) = &zfs_hold_key {
-            key.recheck()?;
-        }
-        if let Some(custody) = &output_custody {
-            custody.recheck(state_root)?;
-        }
-        if !storage.runtime().is_inventory_ready() {
-            return Err(StorageRuntimeError::Recovery.into());
-        }
-
-        let mut ready = Vec::with_capacity(6);
-        if let Some(session) = active_session.as_ref() {
-            let session_fd = session
-                .as_fd()
-                .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-            ready.push(rustix::event::PollFd::from_borrowed_fd(
-                session_fd,
-                rustix::event::PollFlags::IN,
-            ));
-        } else {
-            let listener_fd = activation.storage_listener_fd().map_err(production_error)?;
-            ready.push(rustix::event::PollFd::from_borrowed_fd(
-                listener_fd,
-                rustix::event::PollFlags::IN,
-            ));
-        }
-        ready.push(rustix::event::PollFd::from_borrowed_fd(
-            export_listener.as_fd(),
-            rustix::event::PollFlags::IN,
-        ));
-        let live_export_index = live_export_listener.as_ref().map(|listener| {
-            let index = ready.len();
-            ready.push(rustix::event::PollFd::from_borrowed_fd(
-                listener.as_fd(),
-                rustix::event::PollFlags::IN,
-            ));
-            index
-        });
-        let zfs_hold_index = zfs_hold_listener.as_ref().map(|listener| {
-            let index = ready.len();
-            ready.push(rustix::event::PollFd::from_borrowed_fd(
-                listener.as_fd(),
-                rustix::event::PollFlags::IN,
-            ));
-            index
-        });
-        let operator_index = operator_listener.as_ref().map(|listener| {
-            let index = ready.len();
-            ready.push(rustix::event::PollFd::from_borrowed_fd(
-                listener.as_fd(),
-                rustix::event::PollFlags::IN,
-            ));
-            index
-        });
-        let existing_output_index = existing_output_listener.as_ref().map(|listener| {
-            let index = ready.len();
-            ready.push(rustix::event::PollFd::from_borrowed_fd(
-                listener.as_fd(),
-                rustix::event::PollFlags::IN,
-            ));
-            index
-        });
-        match rustix::event::poll(&mut ready, None) {
-            Ok(_) => {}
-            Err(rustix::io::Errno::INTR) => continue,
-            Err(error) => return Err(error.into()),
-        }
-        let broker_ready = ready[0].revents().contains(rustix::event::PollFlags::IN);
-        let broker_disconnected = ready[0]
-            .revents()
-            .intersects(rustix::event::PollFlags::HUP | rustix::event::PollFlags::ERR);
-        let export_ready = ready[1].revents().contains(rustix::event::PollFlags::IN);
-        let live_export_ready = live_export_index
-            .and_then(|index| ready.get(index))
-            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
-        let zfs_hold_ready = zfs_hold_index
-            .and_then(|index| ready.get(index))
-            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
-        let operator_ready = operator_index
-            .and_then(|index| ready.get(index))
-            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
-        let existing_output_ready = existing_output_index
-            .and_then(|index| ready.get(index))
-            .is_some_and(|entry| entry.revents().contains(rustix::event::PollFlags::IN));
-        drop(ready);
-        if let Some(key) = &zfs_hold_key {
-            key.recheck()?;
-        }
-        if let Some(custody) = &output_custody {
-            custody.recheck(state_root)?;
-        }
-        if !broker_ready
-            && !broker_disconnected
-            && !export_ready
-            && !live_export_ready
-            && !zfs_hold_ready
-            && !operator_ready
-            && !existing_output_ready
-        {
-            return Err(StorageServiceError::Activation(
-                "activated Storage endpoint reported invalid readiness".to_owned(),
-            )
-            .into());
-        }
-
-        if broker_disconnected && active_session.is_none() {
-            return Err(StorageServiceError::Activation(
-                "protected Storage broker listener was retired".to_owned(),
-            )
-            .into());
-        }
-        if broker_ready {
-            if let Some(session) = active_session.take() {
-                let request_deadline = production_deadline_after(REQUEST_TIMEOUT)
-                    .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                match session.serve_production_storage_request(&mut storage, request_deadline) {
-                    Ok(retained) => active_session = Some(retained),
-                    Err(error) => eprintln!("aos-storaged: authenticated request failed: {error}"),
+                let listener = operator_listener.as_mut().ok_or_else(|| {
+                    StorageServiceError::Activation("operator Repair listener disappeared".to_owned())
+                })?;
+                let credentials = operator_credentials.as_ref().ok_or_else(|| {
+                    StorageServiceError::Activation(
+                        "operator Repair credentials disappeared".to_owned(),
+                    )
+                })?;
+                let owner = operator_owner.as_mut().ok_or_else(|| {
+                    StorageServiceError::Activation("operator Repair owner disappeared".to_owned())
+                })?;
+                credentials.recheck()?;
+                let controller_cgroup = open_cgroup_root()?.resolve(Path::new(CONTROLLER_CGROUP));
+                if let Ok(controller_cgroup) = controller_cgroup {
+                    let verifier =
+                        ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
+                    storage.serve_operator_repair_once(listener, &verifier, owner)?;
+                } else {
+                    // A queued stale child cannot create Controller authority.
+                    listener.validate_current()?;
+                    let _ = listener.accept();
                 }
-            } else {
-                let accept_deadline = production_deadline_after(ACCEPT_TIMEOUT)
-                    .map_err(|error| StorageServiceError::Activation(error.to_string()))?;
-                let acceptance = StorageColdAcceptUnwindV1(&mut activation);
-                match acceptance.0.accept_authenticated(accept_deadline) {
-                    Ok(session) => active_session = Some(session),
-                    Err(error) if acceptance.0.has_failed_storage_cold() => {
-                        // Original cold owners and typed cause remain in the
-                        // activation stack. Exit before returning through lower
-                        // Storage/operator disposal or accepting a replacement.
-                        eprintln!("aos-storaged: resident Storage cold admission failed: {error}");
-                        std::process::exit(1);
-                    }
-                    Err(ProductionBrokerSessionActivationErrorV1::Deadline) => {}
-                    Err(error) => return Err(production_error(error).into()),
+                credentials.recheck()?;
+            }
+            if existing_output_ready {
+                let listener = existing_output_listener.as_mut().ok_or_else(|| {
+                    StorageServiceError::Activation("existing-output listener disappeared".to_owned())
+                })?;
+                let custody = output_custody.as_ref().ok_or_else(|| {
+                    StorageServiceError::Activation("existing-output custody disappeared".to_owned())
+                })?;
+                let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
+                if let Ok(host_cgroup) = host_cgroup {
+                    let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
+                    serve_existing_output_query_once(listener, &verifier, custody, state_root)?;
+                } else {
+                    listener.validate_current()?;
+                    let _ = listener.accept_descriptor_subject();
                 }
             }
-        } else if broker_disconnected {
-            // A retired child is local to that session; a retired listener is fatal.
-            active_session = None;
-        }
-        if export_ready {
-            let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
-            if let Ok(host_cgroup) = host_cgroup {
-                let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
-                storage.serve_root_export_once(&mut export_listener, &verifier)?;
-            } else {
-                export_listener.validate_current()?;
-                let _ = export_listener.accept_descriptor_subject();
+            if let Some(key) = &zfs_hold_key {
+                key.recheck()?;
+            }
+            if let Some(custody) = &output_custody {
+                custody.recheck(state_root)?;
             }
         }
-        if live_export_ready {
-            let listener = live_export_listener.as_mut().ok_or_else(|| {
-                StorageServiceError::Activation("live-export listener disappeared".to_owned())
-            })?;
-            let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
-            if let Ok(provider_cgroup) = provider_cgroup {
-                let verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
-                storage.serve_live_export_request_once(
-                    listener,
-                    &verifier,
-                    &arguments.authority_directory,
-                    Path::new(STATE_ROOT),
-                )?;
-            } else {
-                listener.validate_current()?;
-                let _ = listener.accept();
+    })();
+    match (original_attempt.as_mut(), result) {
+        (None, outcome) => outcome,
+        (Some(owner), Err(StorageStartupRunErrorV3::Service(cause))) => {
+            owner.retain_service_failure(cause);
+            if let Some(cause) = owner.first_cause() {
+                eprintln!("aos-storaged: resident original native failure: {cause}");
             }
+            std::process::exit(1);
         }
-        if zfs_hold_ready {
-            let listener = zfs_hold_listener.as_mut().ok_or_else(|| {
-                StorageServiceError::Activation("ZFS hold listener disappeared".to_owned())
-            })?;
-            let provider_cgroup = open_cgroup_root()?.resolve(Path::new(SOURCE_PROVIDER_CGROUP));
-            if let Ok(provider_cgroup) = provider_cgroup {
-                let verifier = ProviderLiveExportPeerVerifier::new(provider_cgroup)?;
-                storage.serve_zfs_hold_request_once(
-                    listener,
-                    &verifier,
-                    &arguments.authority_directory,
-                    zfs_hold_key.as_ref(),
-                )?;
+        (Some(owner), Err(cause)) => {
+            owner.close_resident();
+            if let Some(first) = owner.first_cause() {
+                eprintln!("aos-storaged: resident original native failure: {first}");
             } else {
-                listener.validate_current()?;
-                let _ = listener.accept();
+                eprintln!("aos-storaged: resident original native failure: {cause}");
             }
+            std::process::exit(1);
         }
-        if operator_ready {
-            let listener = operator_listener.as_mut().ok_or_else(|| {
-                StorageServiceError::Activation("operator Repair listener disappeared".to_owned())
-            })?;
-            let credentials = operator_credentials.as_ref().ok_or_else(|| {
-                StorageServiceError::Activation(
-                    "operator Repair credentials disappeared".to_owned(),
-                )
-            })?;
-            let owner = operator_owner.as_mut().ok_or_else(|| {
-                StorageServiceError::Activation("operator Repair owner disappeared".to_owned())
-            })?;
-            credentials.recheck()?;
-            let controller_cgroup = open_cgroup_root()?.resolve(Path::new(CONTROLLER_CGROUP));
-            if let Ok(controller_cgroup) = controller_cgroup {
-                let verifier =
-                    ControllerPeerVerifier::new(controller_cgroup, arguments.controller_identity)?;
-                storage.serve_operator_repair_once(listener, &verifier, owner)?;
-            } else {
-                // A queued stale child cannot create Controller authority.
-                listener.validate_current()?;
-                let _ = listener.accept();
-            }
-            credentials.recheck()?;
-        }
-        if existing_output_ready {
-            let listener = existing_output_listener.as_mut().ok_or_else(|| {
-                StorageServiceError::Activation("existing-output listener disappeared".to_owned())
-            })?;
-            let custody = output_custody.as_ref().ok_or_else(|| {
-                StorageServiceError::Activation("existing-output custody disappeared".to_owned())
-            })?;
-            let host_cgroup = open_cgroup_root()?.resolve(Path::new(HOST_CGROUP));
-            if let Ok(host_cgroup) = host_cgroup {
-                let verifier = HostRootExportPeerVerifier::new(host_cgroup)?;
-                serve_existing_output_query_once(listener, &verifier, custody, state_root)?;
-            } else {
-                listener.validate_current()?;
-                let _ = listener.accept_descriptor_subject();
-            }
-        }
-        if let Some(key) = &zfs_hold_key {
-            key.recheck()?;
-        }
-        if let Some(custody) = &output_custody {
-            custody.recheck(state_root)?;
+        (Some(owner), Ok(())) => {
+            // No local success is a release/Drain proof for this selected owner.
+            owner.close_resident();
+            std::process::exit(1);
         }
     }
 }

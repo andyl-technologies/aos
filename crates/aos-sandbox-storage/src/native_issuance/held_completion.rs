@@ -37,7 +37,21 @@ mod profile;
 mod reducer;
 
 pub(crate) use profile::{StorageHeldCapacityProfileV1, remaining_capacity_profile};
-pub(crate) use reducer::{StorageHeldReductionV1, StorageHeldStepV1, reduce};
+pub(crate) use reducer::{
+    StorageHeldReductionV1, StorageHeldStepV1, reduce, require_native_replayed_edge,
+};
+
+// These projections remain inside the native issuance owner. Sibling custody
+// code uses the sole mixed decoder and original-row policy, not a second codec.
+pub(super) fn decoded_native_rows(
+    values: &std::collections::BTreeMap<[u8; 48], Vec<u8>>,
+) -> Result<std::collections::BTreeMap<[u8; 48], StorageIssuanceValueV1>> {
+    reducer::decode_state(values)
+}
+
+pub(super) fn original_native_row(value: &StorageIssuanceValueV1) -> &NativeIssuanceRowV1 {
+    value.original()
+}
 
 /// Bounds the complete held value, excluding actual Journal append framing.
 pub(crate) const MAXIMUM_STORAGE_HELD_ISSUANCE_VALUE_BYTES_V2: usize = 1_177_050;

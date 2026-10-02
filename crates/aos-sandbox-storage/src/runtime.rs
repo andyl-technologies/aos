@@ -27,6 +27,7 @@ pub(crate) use native_acquire::{
     StorageNativeDeliveryOutcomeV2, original_fail_stop_deadline,
     validate_native_request_clock, validate_original_clock,
 };
+pub(crate) use original_held_measurement::StoredOriginalHeldSigningLoanV1;
 
 use std::io::Read as _;
 use std::os::fd::{AsFd as _, OwnedFd};
@@ -272,6 +273,272 @@ enum StorageStartupOutcomeV4 {
         Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
     ),
     OperatorProvisioned,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OriginalNativeConstructionPhaseV1 {
+    Captured,
+    Opening,
+    NativeOpening,
+    Ready,
+    Failed,
+}
+
+enum OriginalNativeConstructionCauseV1 {
+    Startup(crate::activation::StorageOriginalWorkerStartupCauseV3),
+    Native(crate::native_issuance::StorageNativeIssuanceErrorV1),
+    Runtime(StorageRuntimeError),
+    Service(crate::service::StorageServiceError),
+}
+
+impl OriginalNativeConstructionCauseV1 {
+    fn source(&self) -> &(dyn std::error::Error + 'static) {
+        match self {
+            Self::Startup(cause) => cause,
+            Self::Native(cause) => cause,
+            Self::Runtime(cause) => cause,
+            Self::Service(cause) => cause,
+        }
+    }
+}
+
+/// Retains the genuine original startup and the selected first-offer construction.
+///
+/// It is begun immediately after real capture, before later caller gates. Its
+/// private partial slots keep the same returned native writer and optional
+/// Repair owner. Ready lends the composition; it never extracts a replacement
+/// writer or converts absence into admission. An armed destructor aborts before
+/// these originals can be discarded. Lower pre-return custody remains separate.
+pub struct StorageOriginalNativeConstructionV1 {
+    phase: OriginalNativeConstructionPhaseV1,
+    startup: Option<crate::activation::StorageOriginalWorkerStartupV3>,
+    native_writer: Option<aos_sandbox::Journal>,
+    native_trust: Option<crate::live_export_request_trust::StorageLiveExportRequestTrustV1>,
+    native_ledger: Option<StorageNativeIssuanceLedgerV1>,
+    operator_owner: Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
+    runtime: Option<StorageBrokerRuntime>,
+    composition: Option<crate::DormantStorageApplyCompositionV1>,
+    first_cause: Option<OriginalNativeConstructionCauseV1>,
+}
+
+/// Reports that the original construction is closed; its real cause stays resident.
+#[derive(Debug, thiserror::Error)]
+#[error("original Storage native construction is closed; its cause and custody remain resident")]
+pub struct StorageOriginalNativeConstructionClosedV1;
+
+/// Borrows the same independently held request-trust owner from original construction.
+///
+/// This nonClone, private-field loan contains no caller pins or descriptor
+/// selector. It supplies cryptographic provenance only; the concrete offer must
+/// also rejoin its original writer, startup, peer, clock and measured root.
+pub struct StorageOriginalNativeTrustLoanV1<'owner> {
+    pub(crate) owner: &'owner crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
+}
+
+/// Fences selected crossings before parent-held originals can unwind.
+#[must_use]
+pub struct StorageOriginalNativeUnwindFenceV1 {
+    _private: (),
+}
+
+impl Drop for StorageOriginalNativeUnwindFenceV1 {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
+impl StorageOriginalNativeConstructionV1 {
+    /// Parks the actual returned original startup without performing another observation.
+    #[must_use]
+    pub fn begin(startup: crate::activation::StorageOriginalWorkerStartupV3) -> Self {
+        Self {
+            phase: OriginalNativeConstructionPhaseV1::Captured,
+            startup: Some(startup),
+            native_writer: None,
+            native_trust: None,
+            native_ledger: None,
+            operator_owner: None,
+            runtime: None,
+            composition: None,
+            first_cause: None,
+        }
+    }
+
+    /// Returns a nonauthorizing unwind fence for this already-held owner.
+    pub fn unwind_fence(&self) -> StorageOriginalNativeUnwindFenceV1 {
+        StorageOriginalNativeUnwindFenceV1 { _private: () }
+    }
+
+    /// Borrows the first concrete failure without cloning or formatting its cause.
+    pub fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.first_cause.as_ref().map(OriginalNativeConstructionCauseV1::source)
+            .or_else(|| self.composition.as_ref().and_then(|composition|
+                composition.runtime().original_held_first_cause()))
+    }
+
+    /// Permanently closes the owner around a returned installed-caller failure.
+    pub fn retain_service_failure(&mut self, cause: crate::service::StorageServiceError) {
+        self.phase = OriginalNativeConstructionPhaseV1::Failed;
+        if self.first_cause.is_none()
+            && !self.composition.as_ref().is_some_and(|composition|
+                composition.runtime().original_held_first_cause().is_some())
+        {
+            self.first_cause = Some(OriginalNativeConstructionCauseV1::Service(cause));
+        }
+    }
+
+    /// Permanently closes a resident negative without replacing its real cause.
+    pub fn close_resident(&mut self) {
+        self.phase = OriginalNativeConstructionPhaseV1::Failed;
+    }
+
+    /// Constructs the same selected runtime once, retaining every returned native cut.
+    ///
+    /// # Errors
+    ///
+    /// Refuses reentry, absent provisioned names, changed genuine startup, role
+    /// archives, history, active holds or any runtime gate. The original cause
+    /// remains in this owner; failure does not drop or reopen its writer.
+    #[allow(clippy::too_many_arguments)]
+    pub fn open_once(
+        &mut self,
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+        key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
+        operator_credentials: Option<&crate::operator_recovery_credentials::StorageOperatorRecoveryCredentialsV1>,
+        template: ProtectedGuestRootTemplateV1,
+    ) -> Result<(), StorageOriginalNativeConstructionClosedV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Captured {
+            self.phase = OriginalNativeConstructionPhaseV1::Failed;
+            return Err(StorageOriginalNativeConstructionClosedV1);
+        }
+        self.phase = OriginalNativeConstructionPhaseV1::Opening;
+        let _crossing = self.unwind_fence();
+        let result = (|| {
+            self.startup.as_mut().ok_or(StorageRuntimeError::Recovery)?
+                .recheck().map_err(|cause| {
+                    self.first_cause = Some(OriginalNativeConstructionCauseV1::Startup(cause));
+                    StorageRuntimeError::Recovery
+                })?;
+            let selection = match operator_credentials {
+                Some(credentials) => operator_startup::OperatorStartupSelectionV4::Existing(credentials),
+                None => operator_startup::OperatorStartupSelectionV4::Ordinary,
+            };
+            let outcome = StorageBrokerRuntime::open_root_owned_selected_native_v4(
+                authority_directory, bootstrap_directory, state_directory,
+                resolver_policy_directory, identity_pool, zfs_executable, executor,
+                StorageApplyConstructionV1::DormantProtectedWorker, selection, Some((&mut *self, key)),
+            )?;
+            let StorageStartupOutcomeV4::Runtime(runtime, owner) = outcome else {
+                return Err(StorageRuntimeError::Recovery);
+            };
+            self.operator_owner = owner;
+            self.composition = Some(crate::DormantStorageApplyCompositionV1::from_runtime(runtime)
+                .with_guest_root_template(template));
+            Ok(())
+        })();
+        match result {
+            Ok(()) => {
+                self.phase = OriginalNativeConstructionPhaseV1::Ready;
+                Ok(())
+            }
+            Err(cause) => {
+                self.phase = OriginalNativeConstructionPhaseV1::Failed;
+                if self.first_cause.is_none() {
+                    self.first_cause = Some(OriginalNativeConstructionCauseV1::Runtime(cause));
+                }
+                Err(StorageOriginalNativeConstructionClosedV1)
+            }
+        }
+    }
+
+    /// Lends the same completed composition and optional fourth writer.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a partial, failed or reentered owner. No field is taken on refusal.
+    pub fn ready_parts(&mut self) -> Result<(
+        &mut crate::DormantStorageApplyCompositionV1,
+        &mut Option<crate::operator_recovery::StorageOperatorRecoveryOwnerV1>,
+        StorageOriginalNativeTrustLoanV1<'_>,
+    ), StorageOriginalNativeConstructionClosedV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Ready
+            || self.first_cause.is_some()
+            || self.composition.as_ref().is_some_and(|composition|
+                composition.runtime().requires_reopen())
+        {
+            self.phase = OriginalNativeConstructionPhaseV1::Failed;
+            return Err(StorageOriginalNativeConstructionClosedV1);
+        }
+        match self.composition.as_mut() {
+            Some(composition) => match self.native_trust.as_ref() {
+                Some(owner) => Ok((composition, &mut self.operator_owner,
+                    StorageOriginalNativeTrustLoanV1 { owner })),
+                None => {
+                    self.phase = OriginalNativeConstructionPhaseV1::Failed;
+                    Err(StorageOriginalNativeConstructionClosedV1)
+                }
+            },
+            None => {
+                self.phase = OriginalNativeConstructionPhaseV1::Failed;
+                Err(StorageOriginalNativeConstructionClosedV1)
+            }
+        }
+    }
+
+    pub(crate) fn require_native_open(&mut self) -> Result<(), crate::native_issuance::StorageNativeIssuanceErrorV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::Opening
+            || self.native_writer.is_some() || self.native_trust.is_some() || self.native_ledger.is_some()
+        {
+            return Err(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict);
+        }
+        self.phase = OriginalNativeConstructionPhaseV1::NativeOpening;
+        self.startup.as_mut().ok_or(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict)?
+            .recheck().map_err(|cause| {
+                self.first_cause = Some(OriginalNativeConstructionCauseV1::Startup(cause));
+                crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict
+            })
+    }
+
+    pub(crate) fn park_native_writer(&mut self, journal: aos_sandbox::Journal) {
+        self.native_writer = Some(journal);
+    }
+
+    pub(crate) fn park_native_trust(&mut self, trust: crate::live_export_request_trust::StorageLiveExportRequestTrustV1) {
+        self.native_trust = Some(trust);
+    }
+
+    pub(crate) fn take_native_writer(&mut self) -> Result<aos_sandbox::Journal,
+        crate::native_issuance::StorageNativeIssuanceErrorV1> {
+        if self.phase != OriginalNativeConstructionPhaseV1::NativeOpening
+            || self.native_writer.is_none() || self.native_trust.is_none()
+        {
+            return Err(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict);
+        }
+        match self.native_writer.take() {
+            Some(journal) => Ok(journal),
+            None => std::process::abort(),
+        }
+    }
+
+    pub(crate) fn park_native_ledger(&mut self, ledger: StorageNativeIssuanceLedgerV1) {
+        self.native_ledger = Some(ledger);
+    }
+}
+
+impl Drop for StorageOriginalNativeConstructionV1 {
+    fn drop(&mut self) {
+        // Even Ready retains original session/interest debt. There is no local
+        // completion, loss-of-FD, timeout or empty-population discharge here.
+        std::process::abort();
+    }
 }
 
 /// Describes whether protected policy permits production catalog preparation.
@@ -1217,6 +1484,26 @@ impl StorageBrokerRuntime {
         apply_construction: StorageApplyConstructionV1,
         selection: operator_startup::OperatorStartupSelectionV4<'_>,
     ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
+        Self::open_root_owned_selected_native_v4(
+            authority_directory, bootstrap_directory, state_directory,
+            resolver_policy_directory, identity_pool, zfs_executable, executor,
+            apply_construction, selection, None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn open_root_owned_selected_native_v4(
+        authority_directory: &Path,
+        bootstrap_directory: &Path,
+        state_directory: &Path,
+        resolver_policy_directory: Option<&Path>,
+        identity_pool: StorageIdentityPoolV1,
+        zfs_executable: PathBuf,
+        executor: SystemdZfsExecutor,
+        apply_construction: StorageApplyConstructionV1,
+        selection: operator_startup::OperatorStartupSelectionV4<'_>,
+        mut original: Option<(&mut StorageOriginalNativeConstructionV1, &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1)>,
+    ) -> Result<StorageStartupOutcomeV4, StorageRuntimeError> {
         let operator_credentials = selection.credentials();
         // Retain the host mount namespace before constructing any subsystem
         // that may later acquire a namespace-scoped helper.
@@ -1320,14 +1607,34 @@ impl StorageBrokerRuntime {
         // Preserve one lifetime writer order: primary transaction, workspace,
         // then separate native issuance. Neither acceptance nor ReleaseHold
         // may observe a separately reopened/unheld consumer-interest snapshot.
-        let mut native_issuance = match operator_credentials {
-            Some(_) => StorageNativeIssuanceLedgerV1::open_existing_root_owned(state_directory),
-            None => StorageNativeIssuanceLedgerV1::open_root_owned(state_directory),
-        }
-        .map_err(|_| StorageRuntimeError::Recovery)?;
-        native_issuance
-            .validate_active_holds(&coordinator)
-            .map_err(|_| StorageRuntimeError::Recovery)?;
+        let mut native_issuance = if let Some((attempt, key)) = original.as_mut() {
+            let _crossing = attempt.unwind_fence();
+            let result = StorageNativeIssuanceLedgerV1::park_original_held_writer(
+                attempt, state_directory, authority_directory, key,
+            ).and_then(|()| {
+                attempt.native_ledger.as_mut()
+                    .ok_or(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict)?
+                    .validate_original_held_cold(&coordinator,
+                        attempt.native_trust.as_ref()
+                            .ok_or(crate::native_issuance::StorageNativeIssuanceErrorV1::Conflict)?, key)
+            });
+            if let Err(cause) = result {
+                attempt.phase = OriginalNativeConstructionPhaseV1::Failed;
+                if attempt.first_cause.is_none() {
+                    attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Native(cause));
+                }
+                return Err(StorageRuntimeError::Recovery);
+            }
+            None
+        } else {
+            let mut native_issuance = match operator_credentials {
+                Some(_) => StorageNativeIssuanceLedgerV1::open_existing_root_owned(state_directory),
+                None => StorageNativeIssuanceLedgerV1::open_root_owned(state_directory),
+            }.map_err(|_| StorageRuntimeError::Recovery)?;
+            native_issuance.validate_active_holds(&coordinator)
+                .map_err(|_| StorageRuntimeError::Recovery)?;
+            Some(native_issuance)
+        };
 
         if let operator_startup::OperatorStartupSelectionV4::ProvisionEmpty(credentials) = selection {
             // All lower writers and physical roots remain held. Provisioning
@@ -1336,7 +1643,7 @@ impl StorageBrokerRuntime {
             operator_startup::provision_empty_operator_sidecar_v4(
                 &coordinator,
                 &workspaces,
-                &mut native_issuance,
+                native_issuance.as_mut().ok_or(StorageRuntimeError::Recovery)?,
                 &pin_io,
                 state_directory,
                 credentials,
@@ -1351,13 +1658,28 @@ impl StorageBrokerRuntime {
 
         // The fourth writer is acquired only after all three lower cuts authenticate.
         let mut operator_owner = match operator_credentials {
-            Some(credentials) => Some(
-                credentials.open_existing_owner(state_directory)
-                    .map_err(|_| StorageRuntimeError::Recovery)?,
-            ),
+            Some(credentials) => {
+                let owner = credentials.open_existing_owner(state_directory).map_err(|cause| {
+                    if let Some((attempt, _)) = original.as_mut() {
+                        if attempt.first_cause.is_none() {
+                            attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Service(cause));
+                        }
+                    }
+                    StorageRuntimeError::Recovery
+                })?;
+                Some(owner)
+            }
             None => None,
         };
-        let operator_startup = match operator_owner.as_mut() {
+        // The returned fourth writer parks before its first capture/readback.
+        if let Some((attempt, _)) = original.as_mut() {
+            attempt.operator_owner = operator_owner.take();
+        }
+        let operator_owner_loan = match original.as_mut() {
+            Some((attempt, _)) => attempt.operator_owner.as_mut(),
+            None => operator_owner.as_mut(),
+        };
+        let operator_startup = match operator_owner_loan {
             Some(owner) => Some(operator_startup::DeferredOperatorStartupV4::capture(
                 owner,
                 resolver_policy_directory,
@@ -1384,9 +1706,15 @@ impl StorageBrokerRuntime {
             configuration_binding,
             broker_instance_id,
             held_reader_state_directory: Some(state_directory.to_path_buf()),
-            native_issuance: Some(native_issuance),
+            native_issuance: match original.as_mut() {
+                Some((attempt, _)) => attempt.native_ledger.take(),
+                None => native_issuance.take(),
+            },
             native_escrow: native_acquire::StorageNativeEscrowV2::default(),
-            original_worker_startup: None,
+            original_worker_startup: match original.as_mut() {
+                Some((attempt, _)) => attempt.startup.take(),
+                None => None,
+            },
             original_measurements: original_held_measurement::ResidentOriginalMeasurementsV3::default(),
             #[cfg(test)]
             native_fixture: None,
@@ -1407,7 +1735,32 @@ impl StorageBrokerRuntime {
             #[cfg(test)]
             fail_repair_completion_commit_for_test: false,
         };
-        if let Some(owner) = operator_owner.as_mut() {
+        if let Some((attempt, key)) = original.as_mut() {
+            attempt.runtime = Some(runtime);
+            let _crossing = attempt.unwind_fence();
+            let runtime = attempt.runtime.as_mut().ok_or(StorageRuntimeError::Recovery)?;
+            if let Some(owner) = attempt.operator_owner.as_mut() {
+                runtime.finish_operator_construction_v4(owner)?;
+            } else {
+                runtime.readiness = runtime.reconcile_startup()?;
+            }
+            runtime.original_worker_startup.as_mut().ok_or(StorageRuntimeError::Recovery)?
+                .recheck().map_err(|cause| {
+                    attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Startup(cause));
+                    StorageRuntimeError::Recovery
+                })?;
+            key.recheck().map_err(|cause| {
+                attempt.first_cause = Some(OriginalNativeConstructionCauseV1::Service(cause));
+                StorageRuntimeError::Recovery
+            })?;
+            // All checks precede these infallible checked moves. The caller
+            // immediately parks the same composition; the fence stays armed.
+            let runtime = match attempt.runtime.take() {
+                Some(runtime) => runtime,
+                None => std::process::abort(),
+            };
+            return Ok(StorageStartupOutcomeV4::Runtime(runtime, attempt.operator_owner.take()));
+        } else if let Some(owner) = operator_owner.as_mut() {
             runtime.finish_operator_construction_v4(owner)?;
         } else {
             runtime.readiness = runtime.reconcile_startup()?;

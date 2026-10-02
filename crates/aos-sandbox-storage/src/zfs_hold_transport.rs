@@ -30,6 +30,116 @@ use crate::transport::boottime;
 const REQUEST_RECEIVE_NANOSECONDS: u64 = 10_000_000_000;
 const READBACK_NANOSECONDS: u64 = 180_000_000_000;
 
+/// Receives Root1 and its exact request into the selected original carrier.
+///
+/// This is separate from the unchanged V1/V2/metadata dispatcher. A returned
+/// child, record, subject and parsed body enter the carrier before the next
+/// fallible gate. The one original receive deadline is never renewed.
+///
+/// # Errors
+///
+/// Returns reopen-required after retaining the actual first cause and all
+/// returned carrier custody in the selected runtime. Lower consuming failure
+/// prefixes remain lower-layer functional obligations.
+pub(crate) fn serve_original_held_offer_once(
+    listener: &mut RecordSubjectListener,
+    runtime: &mut StorageBrokerRuntime,
+    verifier: &ProviderLiveExportPeerVerifier,
+    trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
+    key: &StorageZfsHoldKeyV1,
+) -> Result<StorageZfsHoldTransportOutcomeV1, StorageServiceError> {
+    use crate::runtime::original_held_measurement::{
+        OriginalHeldMeasurementErrorV3 as Error, OriginalHeldRecordV1,
+    };
+    use aos_sandbox_source_provider_protocol::native_held_completion::{
+        MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1,
+        frame::SignedNativeHeldControlV1,
+    };
+
+    let mut carrier = runtime.begin_original_held_carrier()?;
+    let _crossing = carrier.unwind_fence();
+    let received = (|| {
+        verifier.validate_current()?;
+        listener.validate_current()?;
+        carrier.child = Some(listener.accept_retaining()
+            .map_err(|cause| Error::HeldAdmission(Box::new(cause)))?);
+        let child = carrier.child.as_ref().ok_or(Error::Closed)?;
+        carrier.execution = Some(verifier.verify_connection_typed(child.peer())?);
+        let deadline = boottime()?.checked_add(REQUEST_RECEIVE_NANOSECONDS)
+            .ok_or(StorageServiceError::Clock)?;
+
+        for (index, maximum) in [
+            MAXIMUM_NATIVE_HELD_CONTROL_BYTES_V1,
+            MAXIMUM_SIGNED_STORAGE_NATIVE_ACQUIRE_REQUEST_BYTES_V2,
+        ].into_iter().enumerate() {
+            let child = carrier.child.as_mut().ok_or(Error::Closed)?;
+            wait_original_record(child.as_fd()?, deadline)?;
+            carrier.pending_record = Some(child.receive_retaining(maximum)
+                .map_err(|cause| Error::HeldReceive(Box::new(cause)))?);
+            let record = carrier.pending_record.take().ok_or(Error::Closed)?;
+            let bound = match child.bind_received_retaining(record) {
+                Ok(bound) => bound,
+                Err((cause, record)) => {
+                    carrier.pending_record = Some(record);
+                    return Err(Error::HeldBinding(cause));
+                }
+            };
+            let (bytes, subject, _) = bound.into_parts();
+            carrier.records[index] = Some(OriginalHeldRecordV1 { bytes, subject });
+            let record = carrier.records[index].as_ref().ok_or(Error::Closed)?;
+            verifier.verify_record_typed(
+                carrier.execution.ok_or(Error::Closed)?, child.peer(), &record.subject,
+            )?;
+            if index == 0 {
+                carrier.root = Some(SignedNativeHeldControlV1::from_canonical_bytes(&record.bytes)?);
+            } else {
+                carrier.request = Some(SignedStorageNativeAcquireRequestV2::from_canonical_bytes(&record.bytes)?);
+            }
+            if boottime()? >= deadline {
+                return Err(Error::Closed);
+            }
+        }
+        trust.owner.require_original_root_prepared(
+            carrier.root.as_ref().ok_or(Error::Closed)?,
+            carrier.request.as_ref().ok_or(Error::Closed)?, key.verifier(),
+        )?;
+        Ok::<_, Error>(())
+    })();
+    if let Err(cause) = received {
+        runtime.retain_original_held_carrier_failure(carrier, cause);
+        return Err(StorageRuntimeError::ReopenRequired.into());
+    }
+    runtime.offer_original_held_native(carrier, trust.owner, verifier, key)
+        .map(|outcome| match outcome {
+            StorageNativeDeliveryOutcomeV2::Delivered => StorageZfsHoldTransportOutcomeV1::Exported,
+            StorageNativeDeliveryOutcomeV2::SendAmbiguous => StorageZfsHoldTransportOutcomeV1::SendAmbiguous,
+            StorageNativeDeliveryOutcomeV2::Unavailable => StorageZfsHoldTransportOutcomeV1::Unavailable,
+        }).map_err(Into::into)
+}
+
+// Polling borrows the same child. It neither consumes a record nor retries a
+// retaining receive whose actual lower cause already owns ambiguous custody.
+fn wait_original_record(
+    fd: std::os::fd::BorrowedFd<'_>, deadline: u64,
+) -> Result<(), crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3> {
+    use crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3 as Error;
+    use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+    loop {
+        let remaining = deadline.checked_sub(boottime()?).filter(|value| *value > 0)
+            .ok_or(Error::Closed)?;
+        let timeout = Timespec::try_from(std::time::Duration::from_nanos(remaining))
+            .map_err(|_| Error::Closed)?;
+        let mut ready = [PollFd::from_borrowed_fd(fd, PollFlags::IN)];
+        match poll(&mut ready, Some(&timeout)) {
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(cause) => return Err(StorageServiceError::from(cause).into()),
+            Ok(_) if ready[0].revents().contains(PollFlags::IN) => return Ok(()),
+            Ok(_) => return Err(Error::Closed),
+        }
+    }
+}
+
 /// Reports whether one closed native request was authenticated and inspected.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StorageZfsHoldTransportOutcomeV1 {
