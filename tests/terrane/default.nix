@@ -192,4 +192,5 @@ in {
   integration.authorized-principal = import ./authorized-principal.nix {inherit sourceGate;};
   integration.algebra-reference-models = import ./algebra-models.nix {inherit sourceGate;};
   integration.legacy-format-vectors = import ./legacy-vectors.nix {inherit sourceGate;};
+  integration.local-factory-construction = import ./local-factory-construction.nix {inherit sourceGate;};
 }

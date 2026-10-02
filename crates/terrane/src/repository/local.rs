@@ -1,5 +1,7 @@
 //! Opens and initializes actual local bucket repositories with sibling authority.
 
+mod recovery;
+
 use std::{os::unix::fs::MetadataExt, path::PathBuf, time::SystemTime};
 
 use terrane_core::{
@@ -360,6 +362,43 @@ where
         RetentionSetup::Initialize(owner_uid) => (owner_uid, true),
         RetentionSetup::Reopen(owner_uid) => (owner_uid, false),
     };
+    let (coordinator, namespace) =
+        open_local_parts(location, authority, policy, profile, fs, clock, owner_uid).await?;
+    if initialize {
+        Repository::initialize_native_retention(
+            coordinator,
+            &namespace,
+            &location.authority,
+            owner_uid,
+        )
+        .await
+    } else {
+        Repository::reopen_native_retention(coordinator, &namespace, &location.authority, owner_uid)
+            .await
+    }
+}
+
+/// Constructs the exact local bindings without choosing a repository factory.
+async fn open_local_parts<F, C>(
+    location: &LocalRepositoryLocation,
+    authority: &LocalAuthority,
+    policy: LocalRepositoryPolicy,
+    profile: ChunkProfile,
+    fs: F,
+    clock: C,
+    owner_uid: u32,
+) -> Result<
+    (
+        Coordinator<FileBucket<F, C, MetadataValidator>, C, F>,
+        crate::domain::DomainNamespace,
+    ),
+    Error,
+>
+where
+    F: LocalFs + BucketBinding + Clone + Sync + 'static,
+    C: Clock + BucketBinding + Clone + Sync + 'static,
+    FileBucket<F, C, MetadataValidator>: Sync,
+{
     let bucket = FileBucket::open(
         FileBucketConfig {
             publication_control: Some(FileBucketPublicationConfig {
@@ -397,18 +436,8 @@ where
         },
     );
     let coordinator = Coordinator::new(guard, policy.timing, fs);
-    if initialize {
-        Repository::initialize_native_retention(
-            coordinator,
-            &namespace,
-            &location.authority,
-            owner_uid,
-        )
-        .await
-    } else {
-        Repository::reopen_native_retention(coordinator, &namespace, &location.authority, owner_uid)
-            .await
-    }
+
+    Ok((coordinator, namespace))
 }
 
 fn validate_local_reference(reference: &str) -> Result<(), Error> {

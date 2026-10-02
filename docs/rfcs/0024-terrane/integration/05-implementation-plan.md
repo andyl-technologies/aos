@@ -1034,6 +1034,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   native build, 16 focused regressions and mandatory formatting pass. This is
   preparatory evidence; genuine independent-factory paired publication and the
   19 required boundary cases remain unqualified.
+  The current isolated paired-publication candidate now passes six genuine
+  native regressions, including interrupted cached-import recovery, unrelated
+  pending-carrier and altered retained-trust refusal, valid attenuated current
+  scope denials and equal-subject/different-principal-kind refusal. The exact
+  run `013dc7c0-97d8-4fab-bf92-bcb0be766673` has six passes and 367 filtered
+  cases. Only two of the nineteen required contracts are implemented; the
+  remaining seventeen and fresh deferred-destination recovery stay open.
+  These additional regressions do not qualify the absent contracts.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -1163,6 +1171,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Both mandatory formatting commands pass. Complete workflow and package
   qualification remain pending; native I/O
   batching preserves every required observation and fence.
+  Local bucket/namespace/Guard/coordinator construction is now factored into a
+  private helper for the paired-recovery implementation. Ordinary initialization
+  and reopen still call their original strict retention factories; no pending
+  repository is returned to ordinary callers. The actual hermetic
+  `local-factory-construction` check passes both existing protected bootstrap
+  and directory-edit/reopen regressions, with exact nonempty selections.
+  Mandatory formatting passes. Its two inherited native dead-code warnings
+  remain visible; this targeted check does not establish strict native Clippy
+  or complete paired recovery, which remains on its task branch.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.
 
