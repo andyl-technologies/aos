@@ -123,14 +123,11 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         "selected-guest-result",
     )?;
     assert_eq!(selection["selection"]["value"], "u64:7");
-    require_bounded_boundary(
-        &selection,
-        if materialization {
-            "boundary:single.selected"
-        } else {
-            "boundary:single.complete"
-        },
-    )?;
+    if materialization {
+        require_bounded_boundary(&selection, "boundary:single.selected")?;
+    } else {
+        assert_eq!(selection["observation"]["stop"], "terminal-success");
+    }
     println!("single_guest_selected_result={SELECTED_MARKER}");
 
     if materialization {
@@ -318,7 +315,7 @@ fn capture_and_restore(
     assert_eq!(restored["runtime"]["origin"], "selected-savepoint");
     assert_eq!(restored["runtime"]["origin_checkpoint"], checkpoint);
     assert_eq!(restored["runtime"]["source_request"], request);
-    require_bounded_boundary(&restored, "boundary:single.complete")?;
+    assert_eq!(restored["observation"]["stop"], "terminal-success");
     guest_choice::assert_materialization_tier(
         &guest_choice::capture_materialization_events(service)?,
         continuation,
@@ -463,6 +460,7 @@ fn bounded_boundary_success_preserves_primary_and_physical_progress() {
 #[test]
 fn bounded_boundary_rejects_timeouts_wrong_primary_and_invalid_progress() {
     for stop in [
+        "terminal-success",
         "reached:next-choice",
         "bounded-primary-timeout:next-choice:frontier-ps=1:quanta=1",
         "policy-timeout:VirtualTime:next-choice:frontier-ps=1:quanta=1",
