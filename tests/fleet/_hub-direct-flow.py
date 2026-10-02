@@ -707,32 +707,32 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     storage_boundary = capture_direct_storage_boundary(native, worker, tools,
         native_storage_log.read_text(), worker_storage_log.read_text(), worker_log.read_text(),
         identity["identity"]["sourceDigest"], tools["storageBoundaryInstallation"]["routing"]["nativeAddress"])
-    copy_transports = join_copy_captured_transports(
+    storage_transports = join_authenticated_storage_transports(
         storage_boundary["nativeOriginalBodies"]["bodies"],
         storage_boundary["workerReceivedBodies"]["bodies"],
         protected_headers["native-outbound"], protected_headers["worker-received"],
-        copy_authenticated_transport_receipts(native_copy_log.read_text(), native_copy_capture))
-    copy_codec_input = prepare_copy_codec_cases(copy_transports,
+        authenticated_storage_transport_receipts(native_copy_log.read_text(), native_copy_capture))
+    storage_codec_input = prepare_storage_codec_cases(storage_transports,
         storage_boundary["nativeOriginalBodies"]["bodies"],
         storage_boundary["workerReceivedBodies"]["bodies"],
         identity["identity"]["sourceDigest"], tools["deploymentId"])
-    copy_codec_reference = None
-    if copy_codec_input is not None:
-        body = json.dumps(copy_codec_input, sort_keys=True).encode()
-        name = "actual-copy-codec-selection.json"
-        copy_codec_reference = {"file": str(Path("external-direct-flow") / name),
+    storage_codec_reference = None
+    if storage_codec_input is not None:
+        body = json.dumps(storage_codec_input, sort_keys=True).encode()
+        name = "actual-storage-codec-selection.json"
+        storage_codec_reference = {"file": str(Path("external-direct-flow") / name),
             "sha256": retain_direct_flow(name, body), "byteSize": len(body)}
     workflow_capture = {"version": 1, "protectedHeaders": protected_headers,
         "headerLogWindows": header_windows, "nativeJournalWindow": native_copy_window,
         "nativeProcess": {name: native_copy_capture[name] for name in
             ("pid", "startTicks", "executableSha256")},
-        "copyAuthenticatedTransports": copy_transports,
-        "copyCodecSelection": copy_codec_reference,
+        "authenticatedStorageTransports": storage_transports,
+        "storageCodecSelection": storage_codec_reference,
         "providerApplicationBodies": {"rawReportSha256": provider_window["sha256"],
             "observedReceiptCount": len(provider_boundary["receipts"]),
             "groups": provider_boundary["groups"], "unknownCallers": provider_boundary["unknownCallers"]},
         "nativeBulkBytes": None,
-        "scope": "actual private controls and authenticated consumed Copy metadata; actor/purpose/object/provider attribution and final-source codec joins pending"}
+        "scope": "actual private controls and authenticated consumed Copy/OCI projection metadata; actor/purpose/object/provider attribution and final-source codec joins pending"}
     retain_direct_flow("actual-storage-workflow-captures.json", workflow_capture)
     provider_classification = classify_direct_provider_object_receipts(provider_boundary, original_mapping)
     throughput = summarize_direct_provider_throughput(provider_boundary, provider_classification,

@@ -7,11 +7,14 @@ their ingress compacts are omitted; their records remain explicitly unsupported.
 Only the closed OCI upload selectors are retained. Raw header values and bodies
 remain private, while summaries contain file hashes and measured byte counts.
 
-Native emits `external_copy_authenticated` only after the existing Copy reply
-authenticator succeeds. Its receipt binds the actual offered request and consumed
-reply hashes and lengths to the original plan ID and operation. Invalid MACs,
-unread HTTP refusals and cancellation emit no success receipt. Request bytes are
-offered application bytes, not evidence of delivery or TLS billing.
+Native emits `external_copy_authenticated` and `oci_projection_authenticated`
+only after their existing reply authenticator succeeds. Version 2 receipts bind
+the actual offered request and consumed reply hashes and lengths to the original
+plan and a fresh 128-bit `transportCallId`. That ID is sent in the observational
+`x-aos-storage-call-id` header; it grants no authority and changes no signed body.
+Invalid MACs, expired replies, unread HTTP refusals and cancellation emit no
+success receipt. Request bytes are offered application bytes, not evidence of
+delivery or TLS billing.
 
 The controller retains a bounded journal window under the unchanged running
 Native PID, start time and installed executable. It joins both independent
@@ -20,10 +23,17 @@ and successful HTTP status alone are insufficient. The retained canonical Copy
 request is the exact original/source/placement/object context; its closed codec
 must still match the final compiled runtime.
 
-Each join requires one uniquely owned original and exactly one corresponding
-successful receipt. Duplicate exact bodies or multiple matching receipt events
-remain unresolved; their actual completion timestamps are retained in the raw
-journal. A success cannot authenticate another identical call that later failed.
+Each join requires the exact call ID on both independent proxies and exactly one
+corresponding successful receipt. Identical genuine replay bodies may join only
+under distinct actual call IDs. Missing, reused or substituted call IDs and
+multiple matching receipt events remain unresolved. Their actual completion
+timestamps remain retained in the raw journal; a success cannot authenticate
+another identical call that later failed.
+
+OCI projection signatures use their own `x-aos-oci-projection-signature` header,
+retained separately from the storage-work signature. Only the existing exact
+projection authenticator can emit its successful receipt. This transport join
+still supplies no current actor, purpose, provider or placement conclusion.
 
 The header parser streams the retained private file one row at a time. Its
 204,704-record ceiling allows two selected stock publications, each containing
@@ -33,7 +43,7 @@ protocol guarantee or measured call budget. Every row is retained; excess,
 incomplete or unsupported observations cannot establish complete coverage.
 
 Raw logs remain bounded to 512 MiB and each input row to 48 KiB. Retained join
-summaries are separately bounded to 204,704 entries, four compact references per
+summaries are separately bounded to 204,704 entries, six compact references per
 entry, 2 KiB serialized per entry and 256 MiB serialized in total. Python object
 overhead is additional and has not been measured; these are representation
 bounds, not a claim about exact process RSS. No second complete raw-log JSON

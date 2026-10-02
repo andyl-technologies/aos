@@ -134,6 +134,10 @@ impl RemoteStorageWorkClient {
             .semantic_observation_http
             .post(endpoint)
             .header(STORAGE_WORK_SIGNATURE_HEADER, signature)
+            .header(
+                super::telemetry::STORAGE_CALL_ID_HEADER,
+                exchange.transport_call_id(),
+            )
             .header(reqwest::header::CONTENT_TYPE, "application/json")
             .body(body)
             .send()

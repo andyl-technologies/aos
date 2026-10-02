@@ -55,9 +55,13 @@ impl RemoteStorageWorkClient {
             .post(format!("{origin}{OCI_PROJECTION_PATH}"))
             .header("content-type", "application/json")
             .header(OCI_PROJECTION_SIGNATURE_HEADER, signed.signature)
+            .header(
+                crate::storage_work::telemetry::STORAGE_CALL_ID_HEADER,
+                exchange.transport_call_id(),
+            )
             .body(signed.body.clone())
             .timeout(timeout);
-        exchange.offer_plan(signed.body.len());
+        exchange.offer_control(OCI_PROJECTION_PATH, &signed.body);
         let operation = async {
             let response = request
                 .send()
@@ -90,8 +94,10 @@ impl RemoteStorageWorkClient {
             let latest_now = u64::try_from(aos_hub_core::clock::now_unix_secs())?
                 .checked_add(lookup.clock_uncertainty_seconds)
                 .context("OCI guard clock overflow")?;
-            verify_oci_projection_reply(key, &signature, &bytes, lookup, latest_now)
-                .inspect_err(|_| exchange.finish("invalid_result"))
+            let verified = verify_oci_projection_reply(key, &signature, &bytes, lookup, latest_now)
+                .inspect_err(|_| exchange.finish("invalid_result"))?;
+            exchange.authenticated_control(&bytes);
+            Ok(verified)
         };
         match tokio::time::timeout(timeout, operation).await {
             Ok(result) => result,

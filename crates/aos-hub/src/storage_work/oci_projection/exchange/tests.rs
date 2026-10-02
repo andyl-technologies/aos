@@ -14,6 +14,7 @@ use axum::{
     routing::post,
     Router,
 };
+use sha2::Digest as _;
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
@@ -59,6 +60,19 @@ impl<S: Subscriber> Layer<S> for Events {
     }
 }
 impl Events {
+    fn authenticated_controls(&self) -> Vec<serde_json::Value> {
+        self.rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|row| {
+                row.get("message")
+                    .and_then(|message| message.strip_prefix("oci_projection_authenticated "))
+                    .map(|encoded| serde_json::from_str(encoded).unwrap())
+            })
+            .collect()
+    }
+
     fn exchange(&self) -> Fields {
         let rows = self.rows.lock().unwrap();
         let found: Vec<_> = rows
@@ -138,9 +152,18 @@ async fn success_and_bad_signature_account_exact_offered_and_observed_bytes() {
         };
         let signed = sign_oci_projection_reply(&signer, &reply).unwrap();
         let expected = signed.body.len();
+        let reply_sha256 = hex::encode(sha2::Sha256::digest(&signed.body));
+        let call_id = Arc::new(Mutex::new(String::new()));
+        let observed_call_id = Arc::clone(&call_id);
         let app = Router::new().route(
             OCI_PROJECTION_PATH,
-            post(move |body: Bytes| {
+            post(move |headers: HeaderMap, body: Bytes| {
+                *observed_call_id.lock().unwrap() = headers
+                    .get(crate::storage_work::telemetry::STORAGE_CALL_ID_HEADER)
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+                    .to_owned();
                 let body_bytes = signed.body.clone();
                 let signature = signed.signature.clone();
                 async move {
@@ -171,6 +194,26 @@ async fn success_and_bad_signature_account_exact_offered_and_observed_bytes() {
                 .len()
                 .to_string()
         );
+        let controls = events.authenticated_controls();
+        if bad_signature {
+            assert!(controls.is_empty());
+        } else {
+            assert_eq!(controls.len(), 1);
+            let control = &controls[0];
+            assert_eq!(control["version"], 2);
+            assert_eq!(
+                control["transportCallId"].as_str().unwrap(),
+                call_id.lock().unwrap().as_str()
+            );
+            assert_eq!(
+                control["requestSha256"],
+                hex::encode(sha2::Sha256::digest(
+                    sign_oci_projection_lookup(&key, &request).unwrap().body
+                ))
+            );
+            assert_eq!(control["replySha256"], reply_sha256);
+            assert_eq!(control["replyBytes"], expected);
+        }
         assert_eq!(e["observed_body_bytes"], expected.to_string());
         assert_eq!(
             e["outcome"],
@@ -223,6 +266,7 @@ async fn caller_cancellation_preserves_bytes_already_observed() {
     drop(future);
     server.abort();
     let e = events.exchange();
+    assert!(events.authenticated_controls().is_empty());
     assert_eq!(e["outcome"], "cancelled");
     assert_eq!(e["observed_body_bytes"], "3");
     assert_eq!(
@@ -252,6 +296,7 @@ async fn stalled_response_is_cut_off_by_the_original_deadline() {
     server.abort();
     assert!(started.elapsed() < Duration::from_secs(5));
     let e = events.exchange();
+    assert!(events.authenticated_controls().is_empty());
     assert_eq!(e["observed_body_bytes"], "3");
     assert_ne!(e["outcome"], "success");
     assert_eq!(e["exchange_attempts"], "1");
@@ -275,6 +320,7 @@ async fn rejected_status_counts_offered_bytes_without_consuming_error_contents()
         .is_err());
     server.abort();
     let event = events.exchange();
+    assert!(events.authenticated_controls().is_empty());
     assert_eq!(event["outcome"], "http_rejected");
     assert_eq!(
         event["offered_plan_bytes"],

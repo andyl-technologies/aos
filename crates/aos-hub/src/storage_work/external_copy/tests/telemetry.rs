@@ -4,6 +4,7 @@
 //! provider effect, Worker distribution, runtime acceptance or fleet qualification.
 
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 
 use aos_hub_core::{
     storage_authority::{
@@ -179,10 +180,18 @@ async fn exchange(
     } else {
         super::EXTERNAL_COPY_PATH
     };
+    let call_id = Arc::new(Mutex::new(String::new()));
+    let received_call_id = Arc::clone(&call_id);
     let app = axum::Router::new().route(
         route,
-        axum::routing::post(move |body: Bytes| {
+        axum::routing::post(move |headers: HeaderMap, body: Bytes| {
             assert_eq!(body.as_ref(), expected_request.as_slice());
+            *received_call_id.lock().unwrap() = headers
+                .get(crate::storage_work::telemetry::STORAGE_CALL_ID_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
             let response = response.clone();
             async move {
                 let mut headers = HeaderMap::new();
@@ -222,6 +231,17 @@ async fn exchange(
     let controls = recorded.authenticated_controls();
     if accepted {
         assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0]["version"], 2);
+        assert_eq!(
+            controls[0]["transportCallId"].as_str().unwrap(),
+            call_id.lock().unwrap().as_str()
+        );
+        assert_eq!(
+            uuid::Uuid::parse_str(controls[0]["transportCallId"].as_str().unwrap())
+                .unwrap()
+                .get_version_num(),
+            4
+        );
         assert_eq!(controls[0]["requestSha256"], request_sha256);
         assert_eq!(controls[0]["replySha256"], reply_sha256);
         assert_eq!(controls[0]["requestBytes"], request_body.len());
@@ -255,8 +275,107 @@ async fn copy_accounting_requires_authentication_and_measures_actual_reply_paylo
         assert_eq!(event["offered_plan_bytes"], request.to_string());
         assert_eq!(event["observed_body_bytes"], response.to_string());
         assert_eq!(event["discarded_status_responses"], "0");
-        assert_eq!(controls[0].as_object().unwrap().len(), 8);
+        assert_eq!(controls[0].as_object().unwrap().len(), 9);
     }
+}
+
+async fn identical_copy_calls(late_second: bool) {
+    let (mut request, _, key) = requests().await;
+    if late_second {
+        request.plan.expires_at = aos_hub_core::clock::now_unix_secs() + 2;
+    }
+    let progress = CopyProgress {
+        phase: CopyPhase::Creating,
+        completed_parts: 0,
+        copied_bytes: LeaseInteger::new(0).unwrap(),
+        pending: false,
+        destination: None,
+        sha256: None,
+    };
+    let signed = ExternalCopyReply::new(&request, progress)
+        .unwrap()
+        .sign(&key, &request)
+        .unwrap();
+    let expected_request = serde_json::to_vec(&request).unwrap();
+    let request_body = expected_request.clone();
+    let reply_bytes = signed.0.len();
+    let expires_at = request.plan.expires_at;
+    let call_ids = Arc::new(Mutex::new(Vec::<String>::new()));
+    let observed_ids = Arc::clone(&call_ids);
+    let app = axum::Router::new().route(
+        super::EXTERNAL_COPY_PATH,
+        axum::routing::post(move |headers: HeaderMap, body: Bytes| {
+            assert_eq!(body.as_ref(), expected_request.as_slice());
+            let call_id = headers
+                .get(crate::storage_work::telemetry::STORAGE_CALL_ID_HEADER)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned();
+            let index = {
+                let mut ids = observed_ids.lock().unwrap();
+                let index = ids.len();
+                ids.push(call_id);
+                index
+            };
+            let signed = signed.clone();
+            async move {
+                if late_second && index == 1 {
+                    while aos_hub_core::clock::now_unix_secs() < expires_at {
+                        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                    }
+                }
+                let mut headers = HeaderMap::new();
+                headers.insert(STORAGE_WORK_SIGNATURE_HEADER, signed.1.parse().unwrap());
+                (headers, signed.0)
+            }
+        }),
+    );
+    let (mut client, server) = serve(app).await;
+    client.key = key;
+    client.deployment_id = request.original.deployment_id.clone();
+
+    for index in 0..2 {
+        let events = RecordedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(events.clone());
+        let result = client
+            .external_copy_control(&request)
+            .with_subscriber(subscriber)
+            .await;
+        let accepted = !late_second || index == 0;
+        assert_eq!(result.is_ok(), accepted);
+        let accounting = events.exchange();
+        assert_eq!(
+            accounting["offered_plan_bytes"],
+            request_body.len().to_string()
+        );
+        assert_eq!(accounting["observed_body_bytes"], reply_bytes.to_string());
+        let controls = events.authenticated_controls();
+        if accepted {
+            assert_eq!(controls.len(), 1);
+            assert_eq!(
+                controls[0]["transportCallId"].as_str().unwrap(),
+                call_ids.lock().unwrap()[index]
+            );
+        } else {
+            assert!(controls.is_empty());
+            assert_eq!(accounting["outcome"], "invalid_result");
+        }
+    }
+    server.abort();
+    let ids = call_ids.lock().unwrap();
+    assert_eq!(ids.len(), 2);
+    assert_ne!(ids[0], ids[1]);
+}
+
+#[tokio::test]
+async fn identical_copy_replays_have_separate_authenticated_call_ids() {
+    identical_copy_calls(false).await;
+}
+
+#[tokio::test]
+async fn late_identical_reply_is_consumed_without_a_successful_call_receipt() {
+    identical_copy_calls(true).await;
 }
 
 #[tokio::test]

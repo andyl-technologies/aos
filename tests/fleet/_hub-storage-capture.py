@@ -1,4 +1,4 @@
-"""Retain compact controls and correlate actual authenticated Copy transports.
+"""Retain compact controls and correlate authenticated Copy/OCI transports.
 
 Header values and selected journal records remain owner-private. Public numeric
 projections contain commitments only. Transport acceptance is not a current SQL
@@ -15,14 +15,21 @@ import re
 PROTECTED_HEADER_FIELDS = frozenset((
     "version", "request_id", "origin_request_id", "path_and_query", "method",
     "phase", "status", "ingress", "request_signature", "reply_signature", "query_class",
+    "transport_call_id", "oci_request_signature", "oci_reply_signature",
 ))
-COPY_AUTHENTICATED_FIELDS = frozenset((
+STORAGE_AUTHENTICATED_FIELDS = frozenset((
     "version", "route", "planId", "operation", "requestSha256", "replySha256",
-    "requestBytes", "replyBytes",
+    "requestBytes", "replyBytes", "transportCallId",
 ))
 COPY_CAPTURE_ROUTES = {
     "/_internal/storage/external-copy/v1": "external_copy_control",
     "/_internal/storage/external-copy-metadata/v1": "external_copy_metadata",
+}
+OCI_CAPTURE_ROUTE = "/_internal/storage/oci-document-projection"
+STORAGE_CAPTURE_ROUTES = {**COPY_CAPTURE_ROUTES, OCI_CAPTURE_ROUTE: "OciDocumentProjection"}
+AUTHENTICATED_EVENT_ROUTES = {
+    "external_copy_authenticated": COPY_CAPTURE_ROUTES,
+    "oci_projection_authenticated": {OCI_CAPTURE_ROUTE: "OciDocumentProjection"},
 }
 
 # Two stock publications each contain 12,535 metadata objects and 3 large originals.
@@ -92,7 +99,7 @@ def finish_native_copy_capture(native, tools, selected):
         with os.fdopen(descriptor, 'wb') as output, os.fdopen(errors, 'wb') as error:
             result = subprocess.run(['journalctl', '--no-pager', '--output=json',
                 '--output-fields=__REALTIME_TIMESTAMP,_PID,_EXE,_SYSTEMD_UNIT,MESSAGE',
-                r'--grep=^\\[INFO\\] message=external_copy_authenticated ',
+                r'--grep=^\\[INFO\\] message=(external_copy_authenticated|oci_projection_authenticated) ',
                 '--unit=aos-hub.service', '--after-cursor=' + selected['journalCursor']],
                 stdout=output, stderr=error, check=False, timeout=45)
             output.flush()
@@ -105,7 +112,7 @@ def finish_native_copy_capture(native, tools, selected):
             'inode': str(metadata.st_ino), 'byteSize': 0}))
     """, selected, timeout=60))
     path, receipt = retain_direct_log_window(native, tools["python"], observed,
-        "publication-native-authenticated-copy.jsonl")
+        "publication-native-authenticated-storage.jsonl")
     return path, receipt
 
 
@@ -127,9 +134,10 @@ def capture_protected_headers(source, label):
         raw = _closed_review_json(line)
         if not isinstance(raw, dict) or set(raw) != PROTECTED_HEADER_FIELDS:
             raise ValueError("protected header capture shape differs")
-        if (raw["version"] != "1" or not re.fullmatch(r"[0-9a-f]{32}", raw["request_id"])
+        if (raw["version"] != "2" or not re.fullmatch(r"[0-9a-f]{32}", raw["request_id"])
                 or raw["request_id"] in projected
                 or not re.fullmatch(r"(?:[0-9a-f]{32})?", raw["origin_request_id"])
+                or not re.fullmatch(r"(?:[0-9a-f]{32})?", raw["transport_call_id"])
                 or raw["method"] not in {"GET", "POST", "PUT", "PATCH", "HEAD", "DELETE", "OPTIONS"}
                 or not re.fullmatch(r"[a-z0-9-]{0,64}", raw["phase"])
                 or not re.fullmatch(r"[1-5][0-9]{2}", raw["status"])):
@@ -144,7 +152,8 @@ def capture_protected_headers(source, label):
                 or any(ord(value) < 32 or ord(value) == 127 for value in target)):
             raise ValueError("protected target is not bounded")
         files = {}
-        for field in ("path_and_query", "ingress", "request_signature", "reply_signature"):
+        for field in ("path_and_query", "ingress", "request_signature", "reply_signature",
+                "oci_request_signature", "oci_reply_signature"):
             value = raw[field]
             if not isinstance(value, str) or len(value.encode()) > 16 * 1024:
                 raise ValueError("protected compact control exceeds its bound")
@@ -163,6 +172,7 @@ def capture_protected_headers(source, label):
             "requestId": raw["request_id"], "originalRequestId": raw["origin_request_id"] or None,
             "method": raw["method"], "phase": raw["phase"], "status": int(raw["status"]),
             "queryClass": raw["query_class"],
+            "transportCallId": raw["transport_call_id"] or None,
             "files": files,
         }
         summary_size = len(json.dumps(projected[raw["request_id"]], separators=(",", ":")).encode())
@@ -188,7 +198,7 @@ def _protected_header_lines(source):
             yield line.decode("utf-8"), len(line)
 
 
-def copy_authenticated_transport_receipts(text, native_process):
+def authenticated_storage_transport_receipts(text, native_process):
     """Read post-authentication events from the selected actual Native journal.
 
     The collector checks the process lifetime and executable on both sides of
@@ -198,9 +208,12 @@ def copy_authenticated_transport_receipts(text, native_process):
     for line in text.splitlines():
         raw = _closed_review_json(line)
         message = raw.get("MESSAGE")
-        prefix = "[INFO] message=external_copy_authenticated "
-        if not isinstance(message, str) or not message.startswith(prefix):
+        selected = [("[INFO] message=" + event + " ", routes)
+            for event, routes in AUTHENTICATED_EVENT_ROUTES.items()
+            if isinstance(message, str) and message.startswith("[INFO] message=" + event + " ")]
+        if not selected:
             continue
+        prefix, routes = selected[0]
         if (raw.get("_PID") != str(native_process["pid"])
                 or raw.get("_EXE") != native_process["executablePath"]
                 or raw.get("_SYSTEMD_UNIT") != "aos-hub.service"
@@ -212,49 +225,57 @@ def copy_authenticated_transport_receipts(text, native_process):
         if suffix and not suffix.startswith(" span="):
             raise ValueError("authenticated transport event suffix differs")
         value = _closed_review_json(encoded[:end])
-        if (not isinstance(value, dict) or set(value) != COPY_AUTHENTICATED_FIELDS
-                or type(value["version"]) is not int or value["version"] != 1
-                or value["route"] not in COPY_CAPTURE_ROUTES
-                or value["operation"] != COPY_CAPTURE_ROUTES[value["route"]]
-                or not re.fullmatch(r"[0-9a-f]{32}", value["planId"])):
-            raise ValueError("authenticated Copy receipt shape differs")
+        if (not isinstance(value, dict) or set(value) != STORAGE_AUTHENTICATED_FIELDS
+                or type(value["version"]) is not int or value["version"] != 2
+                or value["route"] not in routes
+                or value["operation"] != routes[value["route"]]
+                or not re.fullmatch(r"[0-9a-f]{32}", value["transportCallId"])
+                or not re.fullmatch(r"[0-9a-f]{64}" if value["route"] == OCI_CAPTURE_ROUTE
+                    else r"[0-9a-f]{32}", value["planId"])):
+            raise ValueError("authenticated storage receipt shape differs")
         for field in ("requestSha256", "replySha256"):
             if not re.fullmatch(r"[0-9a-f]{64}", value[field]):
-                raise ValueError("authenticated Copy body commitment differs")
+                raise ValueError("authenticated storage body commitment differs")
         for field in ("requestBytes", "replyBytes"):
-            if type(value[field]) is not int or not 0 <= value[field] <= 64 * 1024:
-                raise ValueError("authenticated Copy byte count differs")
+            maximum = (4 * 1024 * 1024 + 64 * 1024) if value["route"] == OCI_CAPTURE_ROUTE and field == "replyBytes" else 64 * 1024
+            if type(value[field]) is not int or not 0 <= value[field] <= maximum:
+                raise ValueError("authenticated storage byte count differs")
         receipts.append({**value, "nativeCompletedAtUnixMicros": raw["__REALTIME_TIMESTAMP"]})
-        if len(receipts) > 4096:
-            raise ValueError("authenticated Copy receipt corpus exceeds its bound")
+        if len(receipts) > PROTECTED_HEADER_RECORD_LIMIT:
+            raise ValueError("authenticated storage receipt corpus exceeds its bound")
     return receipts
 
 
-def join_copy_captured_transports(originals, received, original_headers, received_headers, receipts):
-    """Join exact independent bytes and MACs to the existing Native authenticator."""
+def join_authenticated_storage_transports(originals, received, original_headers, received_headers, receipts):
+    """Join exclusive call IDs, independent bytes and existing Native MAC acceptance."""
     original_by_id = {row["requestId"]: row for row in originals}
     received_by_id = {row["requestId"]: row for row in received}
     if len(original_by_id) != len(originals) or len(received_by_id) != len(received):
         raise ValueError("Copy body ownership is ambiguous")
 
-    # The post-authentication event has no proxy request ID. Identical original
-    # bodies therefore cannot share a receipt, even if only one call succeeded.
+    # A fresh observational ID identifies each actual call independently of its
+    # immutable plan/body. Reusing that ID across calls is always ambiguous.
     original_owners = {}
     for original in originals:
-        if original["procedure"] in COPY_CAPTURE_ROUTES and all(
-                original["bodies"][side] is not None for side in ("request", "response")):
-            commitment = _copy_body_commitment(original)
-            original_owners.setdefault(commitment, []).append(original["requestId"])
+        header = original_headers.get(original["requestId"])
+        if header is not None and header["transportCallId"] is not None:
+            original_owners.setdefault(header["transportCallId"], []).append(original["requestId"])
+
+    received_headers_by_original = {}
+    for row in received_headers.values():
+        received_headers_by_original.setdefault(row["originalRequestId"], []).append(row)
+    receipts_by_call = {}
+    for row in receipts:
+        receipts_by_call.setdefault(row["transportCallId"], []).append(row)
 
     joined, unresolved = [], []
     for identifier, original in original_by_id.items():
-        if original["procedure"] not in COPY_CAPTURE_ROUTES:
-            # The complete boundary keeps unsupported rows; they are not Copy.
+        if original["procedure"] not in STORAGE_CAPTURE_ROUTES:
+            # The complete boundary keeps unsupported routes for other codecs.
             unresolved.append(identifier)
             continue
         first = original_headers.get(identifier)
-        candidates = [row for row in received_headers.values()
-            if row["originalRequestId"] == identifier]
+        candidates = received_headers_by_original.get(identifier, [])
         if first is None or len(candidates) != 1:
             unresolved.append(identifier)
             continue
@@ -273,13 +294,17 @@ def join_copy_captured_transports(originals, received, original_headers, receive
                 or original["responseContentEncoding"]):
             unresolved.append(identifier)
             continue
-        if len(original_owners[_copy_body_commitment(original)]) != 1:
+        call_id = first["transportCallId"]
+        if (call_id is None or call_id != second["transportCallId"]
+                or len(original_owners[call_id]) != 1):
             unresolved.append(identifier)
             continue
         equal = True
         route_digest = hashlib.sha256(original["procedure"].encode()).hexdigest()
         equal &= first["queryClass"] == second["queryClass"] == "absent"
-        for field in ("request_signature", "reply_signature", "path_and_query"):
+        signature_fields = ("oci_request_signature", "oci_reply_signature") if original["procedure"] == OCI_CAPTURE_ROUTE \
+            else ("request_signature", "reply_signature")
+        for field in (*signature_fields, "path_and_query"):
             before, after = first["files"][field], second["files"][field]
             if before is None or after is None or (before["sha256"], before["byteSize"]) != (
                     after["sha256"], after["byteSize"]):
@@ -292,41 +317,33 @@ def join_copy_captured_transports(originals, received, original_headers, receive
         for side in ("request", "response"):
             before, after = original["bodies"][side], actual["bodies"][side]
             equal &= (before["sha256"], before["byteSize"]) == (after["sha256"], after["byteSize"])
-        matches = [row for row in receipts if row["route"] == original["procedure"]
+        owned_receipts = receipts_by_call.get(call_id, [])
+        matches = [row for row in owned_receipts if row["route"] == original["procedure"]
             and row["requestSha256"] == original["bodies"]["request"]["sha256"]
             and row["replySha256"] == original["bodies"]["response"]["sha256"]
             and row["requestBytes"] == original["bodies"]["request"]["byteSize"]
             and row["replyBytes"] == original["bodies"]["response"]["byteSize"]]
-        # Multiple retained success events cannot be assigned to one exchange
-        # without a per-call identifier. Preserve their actual times in the raw
-        # journal and refuse the join instead of collapsing them into one event.
-        if not equal or len(matches) != 1:
+        if not equal or len(owned_receipts) != 1 or len(matches) != 1:
             unresolved.append(identifier)
             continue
         receipt = matches[0]
         joined.append({"nativeRequestId": identifier, "receivedRequestId": actual["requestId"],
             "operation": receipt["operation"], "planIdSha256": hashlib.sha256(receipt["planId"].encode()).hexdigest(),
+            "transportCallIdSha256": hashlib.sha256(call_id.encode()).hexdigest(),
             "requestSha256": receipt["requestSha256"], "replySha256": receipt["replySha256"],
             "offeredRequestBytes": receipt["requestBytes"], "consumedReplyBytes": receipt["replyBytes"],
             "headerCommitments": first["files"],
             "completionObservationsUnixMicros": sorted({row["nativeCompletedAtUnixMicros"] for row in matches}),
             "currentActorEvidence": None, "purposeArtifactEvidence": None,
             "providerObjectPartition": None,
-            "scope": "existing Native transport authenticator accepted exact consumed reply; no current SQL or provider conclusion"})
+            "scope": "existing Native transport authenticator accepted this exact call and consumed reply; no current SQL or provider conclusion"})
     return {"version": 1, "joined": joined, "unresolvedNativeRequestIds": unresolved,
         "nativeBulkBytes": None,
         "scope": "actual original/received compact and body equality plus post-authentication consumption; complete authority/provider joins pending"}
 
 
-def _copy_body_commitment(original):
-    request = original["bodies"]["request"]
-    reply = original["bodies"]["response"]
-    return (original["procedure"], request["sha256"], request["byteSize"],
-        reply["sha256"], reply["byteSize"])
-
-
-def prepare_copy_codec_cases(transport, originals, received, source_digest, deployment_id):
-    """Select private codec inputs from actual accepted Copy transport joins.
+def prepare_storage_codec_cases(transport, originals, received, source_digest, deployment_id):
+    """Select private codec inputs from accepted Copy/OCI projection transport joins.
 
     This prepares source-bound observation inputs only. Missing actor, purpose
     and provider evidence remains missing even when a closed codec succeeds.

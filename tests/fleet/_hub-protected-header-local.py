@@ -40,6 +40,7 @@ listen 127.0.0.1:{port};
 location / {{
 default_type application/json;
 add_header x-aos-storage-work-signature {'b' * 64};
+add_header x-aos-oci-projection-signature {'d' * 64};
 return 200 '{{}}';
 }}
 }}
@@ -83,6 +84,8 @@ return 200 '{{}}';
                         "x-aos-hybrid-ingress": "e30.controlledsignature",
                         "x-aos-hybrid-upload-phase": "authorize-final" if index == 3 else "",
                         "x-aos-storage-work-signature": "a" * 64,
+                        "x-aos-storage-call-id": "f" * 32,
+                        "x-aos-oci-projection-signature": "c" * 64,
                         "Authorization": "Bearer controlled-private-bearer",
                         "Cookie": "session=controlled-private-cookie",
                     })
@@ -97,6 +100,8 @@ return 200 '{{}}';
     raw = raw_log.read_bytes()
     rows = [json.loads(line) for line in raw.splitlines()]
     assert len(rows) == 4
+    assert all(row["version"] == "2" and row["transport_call_id"] == "f" * 32 for row in rows)
+    assert all(row["oci_request_signature"] == "c" * 64 and row["oci_reply_signature"] == "d" * 64 for row in rows)
     assert [row["query_class"] for row in rows] == ["absent", "retained", "unsupported", "absent"]
     assert rows[2]["path_and_query"] == rows[2]["ingress"] == ""
     assert rows[3]["phase"] == "authorize-final"

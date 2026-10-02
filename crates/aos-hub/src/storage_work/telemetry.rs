@@ -11,10 +11,14 @@ use std::time::Instant;
 use aos_hub_core::storage_work::StorageWorkPlan;
 use sha2::{Digest as _, Sha256};
 
+/// Correlates one HTTP call without authenticating or authorizing its contents.
+pub(super) const STORAGE_CALL_ID_HEADER: &str = "x-aos-storage-call-id";
+
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct AuthenticatedControlBody {
     version: u8,
+    transport_call_id: String,
     route: String,
     plan_id: String,
     operation: String,
@@ -36,6 +40,7 @@ pub(super) struct ExchangeTelemetry<'a> {
     observed_body_bytes: u64,
     discarded_status_responses: usize,
     outcome: &'static str,
+    transport_call_id: String,
     control_body: Option<AuthenticatedControlBody>,
 }
 
@@ -57,8 +62,14 @@ impl<'a> ExchangeTelemetry<'a> {
             observed_body_bytes: 0,
             discarded_status_responses: 0,
             outcome: "cancelled",
+            transport_call_id: uuid::Uuid::new_v4().simple().to_string(),
             control_body: None,
         }
+    }
+
+    /// Returns this invocation's fresh observational ID, distinct from its plan.
+    pub(super) fn transport_call_id(&self) -> &str {
+        &self.transport_call_id
     }
 
     pub(super) fn offer_plan(&mut self, length: usize) {
@@ -70,7 +81,8 @@ impl<'a> ExchangeTelemetry<'a> {
     pub(super) fn offer_control(&mut self, route: &str, body: &[u8]) {
         self.offer_plan(body.len());
         self.control_body = Some(AuthenticatedControlBody {
-            version: 1,
+            version: 2,
+            transport_call_id: self.transport_call_id.clone(),
             route: route.into(),
             plan_id: self.plan_id.into(),
             operation: self.operation.into(),
@@ -115,7 +127,15 @@ impl<'a> ExchangeTelemetry<'a> {
         let Ok(encoded) = serde_json::to_string(body) else {
             return;
         };
-        tracing::info!("external_copy_authenticated {encoded}");
+        match self.operation {
+            "external_copy_control" | "external_copy_metadata" => {
+                tracing::info!("external_copy_authenticated {encoded}");
+            }
+            "OciDocumentProjection" => {
+                tracing::info!("oci_projection_authenticated {encoded}");
+            }
+            _ => {}
+        }
     }
 }
 

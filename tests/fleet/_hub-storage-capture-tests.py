@@ -39,10 +39,11 @@ PROCESS = {"pid": 123, "executablePath": "/nix/store/controlled-hub/bin/aos-hub"
 
 
 def header(identifier, original="", **changes):
-    return {"version": "1", "request_id": identifier, "origin_request_id": original,
+    return {"version": "2", "request_id": identifier, "origin_request_id": original,
         "path_and_query": ROUTE, "method": "POST", "phase": "", "status": "200",
         "ingress": "", "request_signature": "a" * 64, "reply_signature": "b" * 64,
-        "query_class": "absent", **changes}
+        "query_class": "absent", "transport_call_id": original or identifier,
+        "oci_request_signature": "", "oci_reply_signature": "", **changes}
 
 
 def body(identifier):
@@ -53,15 +54,15 @@ def body(identifier):
 
 
 def receipt(**changes):
-    return {"version": 1, "route": ROUTE, "planId": "e" * 32,
+    return {"version": 2, "transportCallId": ORIGINAL, "route": ROUTE, "planId": "e" * 32,
         "operation": "external_copy_control", "requestSha256": "c" * 64,
         "replySha256": "d" * 64, "requestBytes": 17, "replyBytes": 23, **changes}
 
 
-def journal(value, **changes):
+def journal(value, event="external_copy_authenticated", **changes):
     return json.dumps({"_PID": "123", "_EXE": PROCESS["executablePath"],
         "_SYSTEMD_UNIT": "aos-hub.service", "__REALTIME_TIMESTAMP": "1770000000123000",
-        "MESSAGE": "[INFO] message=external_copy_authenticated " + json.dumps(value)
+        "MESSAGE": "[INFO] message=" + event + " " + json.dumps(value)
             + ' span=registry_index registry_id=7', **changes})
 
 
@@ -112,26 +113,26 @@ class StorageCaptureTests(unittest.TestCase):
                 + json.dumps(header(ORIGINAL)), "native-outbound")
 
     def test_native_journal_receipt_requires_exact_process_schema_and_route(self):
-        rows = capture.copy_authenticated_transport_receipts(journal(receipt()), PROCESS)
+        rows = capture.authenticated_storage_transport_receipts(journal(receipt()), PROCESS)
         self.assertEqual(rows[0]["requestBytes"], 17)
         self.assertEqual(rows[0]["nativeCompletedAtUnixMicros"], "1770000000123000")
         for changes in ({"_PID": "124"}, {"_EXE": "/another/process"},
                 {"_SYSTEMD_UNIT": "another.service"}, {"__REALTIME_TIMESTAMP": "-1"}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                capture.copy_authenticated_transport_receipts(journal(receipt(), **changes), PROCESS)
+                capture.authenticated_storage_transport_receipts(journal(receipt(), **changes), PROCESS)
         for changes in ({"requestBytes": True}, {"replyBytes": 65537},
                 {"route": "/unsupported"}, {"operation": "external_copy_metadata"},
-                {"callerPass": True}):
+                {"callerPass": True}, {"transportCallId": "not-a-call"}, {"version": 1}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
-                capture.copy_authenticated_transport_receipts(journal(receipt(**changes)), PROCESS)
-        self.assertEqual(capture.copy_authenticated_transport_receipts(journal(receipt(),
+                capture.authenticated_storage_transport_receipts(journal(receipt(**changes)), PROCESS)
+        self.assertEqual(capture.authenticated_storage_transport_receipts(journal(receipt(),
             MESSAGE="[INFO] message=ordinary error mentions external_copy_authenticated fake"), PROCESS), [])
 
     def test_exact_original_received_headers_bodies_and_consumption_join(self):
         first = capture.capture_protected_headers(json.dumps(header(ORIGINAL)), "native-outbound")
         second = capture.capture_protected_headers(json.dumps(header(RECEIVED, ORIGINAL)), "worker-received")
-        receipts = capture.copy_authenticated_transport_receipts(journal(receipt()), PROCESS)
-        result = capture.join_copy_captured_transports([body(ORIGINAL)], [body(RECEIVED)], first, second, receipts)
+        receipts = capture.authenticated_storage_transport_receipts(journal(receipt()), PROCESS)
+        result = capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)], first, second, receipts)
         self.assertEqual(result["unresolvedNativeRequestIds"], [])
         self.assertEqual(result["joined"][0]["consumedReplyBytes"], 23)
         self.assertIsNone(result["nativeBulkBytes"])
@@ -144,33 +145,33 @@ class StorageCaptureTests(unittest.TestCase):
                 lambda value: value.update(status=403)):
             changed = body(RECEIVED)
             mutate(changed)
-            result = capture.join_copy_captured_transports([body(ORIGINAL)], [changed], first, second, receipts)
+            result = capture.join_authenticated_storage_transports([body(ORIGINAL)], [changed], first, second, receipts)
             self.assertEqual(result["unresolvedNativeRequestIds"], [ORIGINAL])
             self.assertEqual(result["joined"], [])
             self.assertIsNone(result["nativeBulkBytes"])
         changed = copy.deepcopy(second)
         changed[RECEIVED]["files"]["reply_signature"]["sha256"] = "f" * 64
-        self.assertEqual(capture.join_copy_captured_transports([body(ORIGINAL)], [body(RECEIVED)],
+        self.assertEqual(capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)],
             first, changed, receipts)["joined"], [])
-        self.assertEqual(capture.join_copy_captured_transports([body(ORIGINAL)], [body(RECEIVED)],
+        self.assertEqual(capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)],
             first, second, [])["joined"], [])
 
     def test_codec_selection_comes_only_from_joined_originals_and_keeps_unknowns(self):
         first = capture.capture_protected_headers(json.dumps(header(ORIGINAL)), "native-outbound")
         second = capture.capture_protected_headers(json.dumps(header(RECEIVED, ORIGINAL)), "worker-received")
-        receipts = capture.copy_authenticated_transport_receipts(journal(receipt()), PROCESS)
-        joined = capture.join_copy_captured_transports([body(ORIGINAL)], [body(RECEIVED)], first, second, receipts)
-        selected = capture.prepare_copy_codec_cases(joined, [body(ORIGINAL)], [body(RECEIVED)],
+        receipts = capture.authenticated_storage_transport_receipts(journal(receipt()), PROCESS)
+        joined = capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)], first, second, receipts)
+        selected = capture.prepare_storage_codec_cases(joined, [body(ORIGINAL)], [body(RECEIVED)],
             "f" * 64, "controlled-deployment")
         self.assertEqual(selected["cases"][0]["originalRequest"]["byteSize"], "17")
         self.assertEqual(selected["cases"][0]["requestId"], ORIGINAL)
         self.assertIsNone(selected["cases"][0]["originalIngress"])
         self.assertIsNone(joined["nativeBulkBytes"])
-        self.assertIsNone(capture.prepare_copy_codec_cases({"joined": []}, [], [],
+        self.assertIsNone(capture.prepare_storage_codec_cases({"joined": []}, [], [],
             "f" * 64, "controlled-deployment"))
         changed = copy.deepcopy(second)
         changed[RECEIVED]["files"]["path_and_query"]["sha256"] = "f" * 64
-        self.assertEqual(capture.join_copy_captured_transports([body(ORIGINAL)], [body(RECEIVED)],
+        self.assertEqual(capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)],
             first, changed, receipts)["joined"], [])
 
     def test_identical_second_consumed_exchange_cannot_reuse_one_success(self):
@@ -183,32 +184,113 @@ class StorageCaptureTests(unittest.TestCase):
 
         # Both exchanges consumed identical bodies, but the second call failed
         # its late/expired authenticator and emitted no successful receipt.
-        receipts = capture.copy_authenticated_transport_receipts(journal(receipt()), PROCESS)
-        result = capture.join_copy_captured_transports(
+        receipts = capture.authenticated_storage_transport_receipts(journal(receipt()), PROCESS)
+        result = capture.join_authenticated_storage_transports(
             [body(ORIGINAL), body(other_original)], [body(RECEIVED), body(other_received)],
             first, second, receipts)
 
-        self.assertEqual(result["joined"], [])
-        self.assertEqual(result["unresolvedNativeRequestIds"], [ORIGINAL, other_original])
+        self.assertEqual([row["nativeRequestId"] for row in result["joined"]], [ORIGINAL])
+        self.assertEqual(result["unresolvedNativeRequestIds"], [other_original])
         self.assertIsNone(result["nativeBulkBytes"])
-        self.assertIsNone(capture.prepare_copy_codec_cases(result,
+        self.assertEqual(len(capture.prepare_storage_codec_cases(result,
             [body(ORIGINAL), body(other_original)], [body(RECEIVED), body(other_received)],
-            "f" * 64, "controlled-deployment"))
+            "f" * 64, "controlled-deployment")["cases"]), 1)
 
     def test_distinct_completion_times_do_not_collapse_into_one_exchange(self):
         first = capture.capture_protected_headers(json.dumps(header(ORIGINAL)), "native-outbound")
         second = capture.capture_protected_headers(json.dumps(header(RECEIVED, ORIGINAL)), "worker-received")
-        receipts = capture.copy_authenticated_transport_receipts("\n".join((
+        receipts = capture.authenticated_storage_transport_receipts("\n".join((
             journal(receipt()), journal(receipt(), __REALTIME_TIMESTAMP="1770000000456000"))), PROCESS)
 
         self.assertEqual([row["nativeCompletedAtUnixMicros"] for row in receipts],
             ["1770000000123000", "1770000000456000"])
-        result = capture.join_copy_captured_transports([body(ORIGINAL)], [body(RECEIVED)],
+        result = capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)],
             first, second, receipts)
 
         self.assertEqual(result["joined"], [])
         self.assertEqual(result["unresolvedNativeRequestIds"], [ORIGINAL])
         self.assertIsNone(result["nativeBulkBytes"])
+
+    def test_identical_successes_are_owned_by_their_distinct_transport_calls(self):
+        other_original, other_received = "3" * 32, "4" * 32
+        first = capture.capture_protected_headers("\n".join(json.dumps(header(identifier))
+            for identifier in (ORIGINAL, other_original)), "native-outbound")
+        second = capture.capture_protected_headers("\n".join((
+            json.dumps(header(RECEIVED, ORIGINAL)),
+            json.dumps(header(other_received, other_original)))), "worker-received")
+        receipts = capture.authenticated_storage_transport_receipts("\n".join((
+            journal(receipt()), journal(receipt(transportCallId=other_original),
+                __REALTIME_TIMESTAMP="1770000000456000"))), PROCESS)
+
+        result = capture.join_authenticated_storage_transports(
+            [body(ORIGINAL), body(other_original)], [body(RECEIVED), body(other_received)],
+            first, second, receipts)
+
+        self.assertEqual(result["unresolvedNativeRequestIds"], [])
+        self.assertEqual([row["nativeRequestId"] for row in result["joined"]], [ORIGINAL, other_original])
+        self.assertEqual([row["completionObservationsUnixMicros"] for row in result["joined"]],
+            [["1770000000123000"], ["1770000000456000"]])
+        self.assertIsNone(result["nativeBulkBytes"])
+
+        # A reused call ID is ambiguous even if the immutable bodies match.
+        changed_first, changed_second = copy.deepcopy(first), copy.deepcopy(second)
+        changed_first[other_original]["transportCallId"] = ORIGINAL
+        changed_second[other_received]["transportCallId"] = ORIGINAL
+        result = capture.join_authenticated_storage_transports(
+            [body(ORIGINAL), body(other_original)], [body(RECEIVED), body(other_received)],
+            changed_first, changed_second, receipts)
+        self.assertEqual(result["joined"], [])
+        self.assertEqual(result["unresolvedNativeRequestIds"], [ORIGINAL, other_original])
+
+    def test_call_id_missing_substituted_or_receipt_reused_remains_unresolved(self):
+        first = capture.capture_protected_headers(json.dumps(header(ORIGINAL)), "native-outbound")
+        second = capture.capture_protected_headers(json.dumps(header(RECEIVED, ORIGINAL)), "worker-received")
+        receipts = capture.authenticated_storage_transport_receipts(journal(receipt()), PROCESS)
+        for value in (None, "f" * 32):
+            changed = copy.deepcopy(second)
+            changed[RECEIVED]["transportCallId"] = value
+            result = capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)],
+                first, changed, receipts)
+            self.assertEqual(result["joined"], [])
+            self.assertIsNone(result["nativeBulkBytes"])
+        result = capture.join_authenticated_storage_transports([body(ORIGINAL)], [body(RECEIVED)],
+            first, second, receipts + [{**receipts[0], "replySha256": "f" * 64}])
+        self.assertEqual(result["joined"], [])
+
+    def test_oci_projection_requires_its_own_signature_and_post_authentication_event(self):
+        route = capture.OCI_CAPTURE_ROUTE
+        fields = {"path_and_query": route, "request_signature": "", "reply_signature": "",
+            "oci_request_signature": "a" * 64, "oci_reply_signature": "b" * 64}
+        first = capture.capture_protected_headers(json.dumps(header(ORIGINAL, **fields)), "native-outbound")
+        second = capture.capture_protected_headers(json.dumps(header(RECEIVED, ORIGINAL, **fields)), "worker-received")
+        original, received = body(ORIGINAL), body(RECEIVED)
+        for row in (original, received):
+            row["procedure"] = route
+        value = receipt(route=route, planId="e" * 64, operation="OciDocumentProjection")
+        receipts = capture.authenticated_storage_transport_receipts(
+            journal(value, event="oci_projection_authenticated"), PROCESS)
+
+        result = capture.join_authenticated_storage_transports([original], [received], first, second, receipts)
+
+        self.assertEqual(result["joined"][0]["operation"], "OciDocumentProjection")
+        self.assertIsNone(result["nativeBulkBytes"])
+        self.assertIsNone(result["joined"][0]["purposeArtifactEvidence"])
+        changed = copy.deepcopy(second)
+        changed[RECEIVED]["files"]["oci_reply_signature"]["sha256"] = "f" * 64
+        self.assertEqual(capture.join_authenticated_storage_transports(
+            [original], [received], first, changed, receipts)["joined"], [])
+        with self.assertRaises(ValueError):
+            capture.authenticated_storage_transport_receipts(journal(value), PROCESS)
+
+        # The shared OCI projection envelope admits a 4 MiB document graph
+        # plus 64 KiB framing; observation must not shrink that real contract.
+        maximum = 4 * 1024 * 1024 + 64 * 1024
+        accepted = capture.authenticated_storage_transport_receipts(journal(
+            {**value, "replyBytes": maximum}, event="oci_projection_authenticated"), PROCESS)
+        self.assertEqual(accepted[0]["replyBytes"], maximum)
+        with self.assertRaises(ValueError):
+            capture.authenticated_storage_transport_receipts(journal(
+                {**value, "replyBytes": maximum + 1}, event="oci_projection_authenticated"), PROCESS)
 
     def test_two_distinct_originals_retain_exclusive_success_receipts(self):
         other_original, other_received = "3" * 32, "4" * 32
@@ -220,11 +302,12 @@ class StorageCaptureTests(unittest.TestCase):
         original, received = body(other_original), body(other_received)
         for row in (original, received):
             row["bodies"]["request"]["sha256"] = "5" * 64
-        receipts = capture.copy_authenticated_transport_receipts("\n".join((
-            journal(receipt()), journal(receipt(planId="6" * 32, requestSha256="5" * 64),
+        receipts = capture.authenticated_storage_transport_receipts("\n".join((
+            journal(receipt()), journal(receipt(planId="6" * 32, requestSha256="5" * 64,
+                transportCallId=other_original),
                 __REALTIME_TIMESTAMP="1770000000456000"))), PROCESS)
 
-        result = capture.join_copy_captured_transports([body(ORIGINAL), original],
+        result = capture.join_authenticated_storage_transports([body(ORIGINAL), original],
             [body(RECEIVED), received], first, second, receipts)
 
         self.assertEqual(result["unresolvedNativeRequestIds"], [])

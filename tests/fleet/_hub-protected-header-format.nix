@@ -21,12 +21,15 @@ name: ''
     retained $http_x_aos_hybrid_ingress;
   }
   log_format ${name} escape=json
-    '{"version":"1","request_id":"$request_id",'
+    '{"version":"2","request_id":"$request_id",'
     '"origin_request_id":"$http_x_aos_fleet_request_id",'
     '"path_and_query":"${"$"}${name}_target","query_class":"${"$"}${name}_query_class",'
     '"method":"$request_method",'
     '"phase":"$http_x_aos_hybrid_upload_phase","status":"$status",'
     '"ingress":"${"$"}${name}_ingress",'
+    '"transport_call_id":"$http_x_aos_storage_call_id",'
     '"request_signature":"$http_x_aos_storage_work_signature",'
-    '"reply_signature":"$sent_http_x_aos_storage_work_signature"}';
+    '"reply_signature":"$sent_http_x_aos_storage_work_signature",'
+    '"oci_request_signature":"$http_x_aos_oci_projection_signature",'
+    '"oci_reply_signature":"$sent_http_x_aos_oci_projection_signature"}';
 ''
