@@ -588,7 +588,6 @@ fn release_plan(
                     platform,
                     decision: MatrixCell::Artifact {
                         artifact: PlannedArtifactSet {
-                            configuration: None,
                             artifacts: [
                                 format!("image/server/{platform}"),
                                 format!("image/server/{platform}/metadata"),
