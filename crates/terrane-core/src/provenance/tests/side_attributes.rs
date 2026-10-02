@@ -648,6 +648,93 @@ fn prov_side_attribute_unsigned_inline_evidence_needs_completed_carrying_context
 }
 
 #[test]
+fn prov_side_context_encoder_preserves_verified_legacy_carrying_witness() {
+    let value = value();
+    let encoded = value.encode().unwrap();
+    let mut inline = file([7; 32]);
+    inline.attrs = vec![Attribute {
+        name: "hash.sha256",
+        value: &encoded,
+    }];
+    inline.attrs_present = true;
+    let (root, bytes) = private_tree(vec![item(b"file", inline)]);
+    let mut origin = receipt(root, EntryOrigin::Current);
+    origin.attributes = Some(vec![("hash.sha256".to_string(), EntryOrigin::Current)]);
+    let producer = authored(root, vec![], Some(vec![origin]), true);
+    let carrier = authored(root, vec![producer.identity()], None, false);
+    let location = EntryLocation {
+        commit: carrier.identity(),
+        root,
+        path: b"file".to_vec(),
+    };
+    let mut history = VerifiedHistory::new(MIN_CHUNK);
+    history.insert_tree(root, &[(root, bytes)]).unwrap();
+    for commit in [&producer, &carrier] {
+        history.insert_commit(commit.clone()).unwrap();
+        verify_fixture_scope(&mut history, commit.identity(), defaults()).unwrap();
+    }
+
+    let unsigned = AttrRecord {
+        object: [7; 32],
+        function: value.name().function(),
+        value,
+        producer: producer.identity(),
+        signature: None,
+    };
+    let evidence = verify_record_producer(&unsigned, &history, &location).unwrap();
+    assert_ne!(*evidence.producer(), evidence.location().commit);
+    assert_eq!(*evidence.producer(), producer.identity());
+
+    for with_side in [false, true] {
+        if with_side {
+            history
+                .insert_side_attribute(evidence.clone(), binding(carrier.identity(), b"file"))
+                .unwrap();
+        }
+        for preset in [
+            Preset::Any,
+            Preset::SignedBaseline,
+            Preset::Strict,
+            Preset::Attested,
+        ] {
+            for baseline in [None, Some(""), Some("baseline")] {
+                let selector = Selector::preset(preset);
+                let first = TrustContext::new(
+                    &history,
+                    carrier.identity(),
+                    selector.clone(),
+                    DOMAIN,
+                    baseline,
+                )
+                .unwrap();
+                let second =
+                    TrustContext::new(&history, carrier.identity(), selector, DOMAIN, baseline)
+                        .unwrap();
+                let bytes = first.canonical_context();
+                let mut decoder = crate::cbor::Decoder::new(bytes);
+                assert_eq!(decoder.array(7).unwrap(), if with_side { 7 } else { 6 });
+                assert_eq!(decoder.uint().unwrap(), if with_side { 2 } else { 1 });
+                assert_eq!(bytes, second.canonical_context());
+                assert_eq!(validate_canonical_context(bytes), Ok(()));
+            }
+        }
+    }
+    let context = TrustContext::new(
+        &history,
+        carrier.identity(),
+        attribute_selector(Selector::preset(Preset::Strict).encode()),
+        DOMAIN,
+        Some("baseline"),
+    )
+    .unwrap();
+    assert!(context.accepts_path(b"file"));
+    assert_eq!(
+        history.attribute_producer(&location, "hash.sha256"),
+        Ok(producer.identity())
+    );
+}
+
+#[test]
 fn prov_side_attribute_legacy_commit_preserves_explicit_trusted_original_defaults() {
     let value = value();
     let encoded = value.encode().unwrap();

@@ -1,8 +1,9 @@
 {sourceGate, ...}: let
-  runTest = name: ''
-    cargo test --frozen --offline -p terrane-core --lib provenance::tests::${name} -- --exact > "$TMPDIR/test.log"
+  runCase = path: ''
+    cargo test --frozen --offline -p terrane-core --lib ${path} -- --exact > "$TMPDIR/test.log"
     python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output)' "$TMPDIR/test.log"
   '';
+  runTest = name: runCase "provenance::tests::${name}";
 in {
   prov-commit-signature = sourceGate "prov-commit-signature" ''
     cd crates
@@ -64,6 +65,11 @@ in {
     ${runTest "disclosure::boundaries::prov_disclosure_history_import_rejects_unfinished_or_provisional_dependencies"}
     ${runTest "side_attributes::prov_history_union_preserves_selected_side_record_contexts"}
     ${runTest "side_attributes::prov_history_union_rejects_conflicting_selected_side_records_atomically"}
+    ${runTest "side_attributes::prov_side_context_encoder_preserves_verified_legacy_carrying_witness"}
+    ${runCase "provenance::trust::context::tests::prov_context_selected_rows_bind_view_domain_and_name"}
+    ${runCase "provenance::trust::context::tests::prov_context_selected_evidence_enforces_path_and_digest_limits"}
+    ${runCase "provenance::trust::context::tests::prov_context_selected_values_and_order_require_canonical_encoding"}
+    ${runCase "provenance::trust::context::tests::prov_context_rejects_truncated_and_excessive_claims"}
     printf 'PASS: closed trust presets and verified entry preservation\n' > "$out/result"
   '';
 }

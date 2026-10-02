@@ -13,7 +13,7 @@
 use super::selector::Node;
 use super::{EntryLocation, Preset, Rejected, Selector, VerifiedHistory};
 use crate::{
-    cbor::{self, Decoder},
+    cbor,
     identity::Digest,
     tree_format::{Entry, Property},
 };
@@ -25,6 +25,8 @@ use alloc::{
     vec::Vec,
 };
 use core::cell::RefCell;
+
+mod context;
 
 /// Evaluates a view's trust using authenticated commits and canonical witnesses.
 ///
@@ -42,22 +44,6 @@ pub struct TrustContext {
     memo: RefCell<BTreeMap<Vec<u8>, bool>>,
 }
 
-fn nullable_text(decoder: &mut Decoder<'_>) -> Result<Option<String>, Rejected> {
-    if decoder.peek_major().map_err(|_| Rejected)? == 7 {
-        if decoder.simple().map_err(|_| Rejected)? != 0xf6 {
-            return Err(Rejected);
-        }
-        Ok(None)
-    } else {
-        Ok(Some(
-            decoder
-                .text(decoder.remaining().len())
-                .map_err(|_| Rejected)?
-                .to_string(),
-        ))
-    }
-}
-
 /// Validates serialized trust configuration without granting runtime authority.
 ///
 /// The canonical tuple is `[1, view, domain, selector, baseline-or-null,
@@ -67,45 +53,11 @@ fn nullable_text(decoder: &mut Decoder<'_>) -> Result<Option<String>, Rejected> 
 ///
 /// # Errors
 /// Returns [`Rejected`] for malformed/noncanonical context bytes, unknown
-/// versions, invalid digest width, invalid selectors, or trailing bytes.
+/// versions, invalid digest widths or selectors, malformed selected evidence,
+/// inconsistent view/domain/name bindings, duplicate or unordered selections,
+/// invalid complete entry paths, noncanonical selected values or trailing bytes.
 pub fn validate_canonical_context(bytes: &[u8]) -> Result<(), Rejected> {
-    let mut decoder = Decoder::new(bytes);
-    let count = decoder.array(7).map_err(|_| Rejected)?;
-    let version = decoder.uint().map_err(|_| Rejected)?;
-    if !matches!((version, count), (1, 6) | (2, 7)) {
-        return Err(Rejected);
-    }
-    if decoder.bytes(32).map_err(|_| Rejected)?.len() != 32 {
-        return Err(Rejected);
-    }
-    decoder
-        .text(decoder.remaining().len())
-        .map_err(|_| Rejected)?;
-    let selector = decoder
-        .bytes(decoder.remaining().len())
-        .map_err(|_| Rejected)?;
-    Selector::decode(selector).map_err(|_| Rejected)?;
-    nullable_text(&mut decoder)?;
-    decoder.uint().map_err(|_| Rejected)?;
-    if version == 2 {
-        let evidence = decoder
-            .bytes(decoder.remaining().len())
-            .map_err(|_| Rejected)?;
-        let mut evidence_decoder = Decoder::new(evidence);
-        if evidence_decoder
-            .array(evidence.len())
-            .map_err(|_| Rejected)?
-            == 0
-        {
-            return Err(Rejected);
-        }
-        let mut evidence_decoder = Decoder::new(evidence);
-        evidence_decoder
-            .skip_value(evidence.len())
-            .map_err(|_| Rejected)?;
-        evidence_decoder.finish().map_err(|_| Rejected)?;
-    }
-    decoder.finish().map_err(|_| Rejected)
+    context::validate(bytes)
 }
 
 impl TrustContext {

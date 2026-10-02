@@ -354,8 +354,13 @@ side-evidence-tuple = [
 ; Selected items sort uniquely by (view-location, name, target-domain), using
 ; digest/path bytes for locations and UTF-8 bytes for names and domains. Each
 ; selected view-location names this context's view; each target-domain equals
-; its domain. A producer-location names the separately verified producer.
-; Paths are canonical view/root-relative paths. Value contains canonical CBOR.
+; its domain. The row and side tuple carry the same attribute name.
+; A producer-location names the checked tree/object witness: the producing
+; commit for a signed side record, or a carrying commit whose verified inline
+; attribute origins resolve the producer for an unsigned legacy record (PROV-9).
+; The actual producer's signature and original context are independently checked.
+; These paths name complete entries, so are nonempty canonical view/root-relative
+; paths, not empty key suffixes. Value contains one complete canonical CBOR value.
 memo = {
   1 => digest32,                        ; recipe hash
   2 => digest32,                        ; resulting root

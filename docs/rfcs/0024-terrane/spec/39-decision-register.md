@@ -1520,6 +1520,29 @@ is added rather than editing history.
     precedes T1's initial format freeze and claims no native writer entropy,
     serving verification or complete golden-corpus qualification.
 
+- **[D-86] Clarify selected side-evidence carrying witnesses and paths.**
+  - **Status:** Decided
+  - **Decision:** Clarify that the selected evidence tuple's producer-location
+    is the checked tree/object witness. Signed side records name their actual
+    producer; unsigned legacy records may name a carrying commit whose
+    authenticated inline attribute origins resolve that producer. Both witness
+    and producer contexts remain independently verified under PROV-9. State
+    that these paths name complete nonempty entries, rather than the empty
+    suffix permitted by the generic key-bytes type, and that row and side names
+    agree and value bytes contain one complete canonical CBOR value.
+  - **Rationale:** The previous schema comment implied that every witness
+    location named the producer itself, conflicting with PROV-9's existing
+    unsigned inline-history route. Syntax checking cannot authenticate that
+    route or infer whether the separately addressed record is signed. The
+    generic key type also serves tree suffixes and did not express the complete
+    file-entry path semantics of selected side evidence. Explicit relationships
+    let borrowed schema validation reject malformed tuples while preserving
+    genuine checked legacy witnesses.
+  - **Affects:** PROV-9, TEST-3, CRATE-4 and the selected-side-evidence reference
+    comments. Requirement IDs, tuple fields, versions, identity domains and
+    existing encoded bytes remain unchanged. This clarification precedes T1's
+    initial encoding freeze and creates no verification or publication authority.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
