@@ -9,6 +9,7 @@
   patchelf,
   zfs,
   service-management,
+  smartmontools,
   storage-interface,
   kernel-interface,
   kmod,
@@ -93,7 +94,8 @@ in
     runtimeDeps = [zfs];
 
     module = ./_aos-zfs-provider;
-    moduleDeps = [service-management storage-interface kernel-interface kmod aos-kernel-tunable-provider];
+    # ZFS recommends hardware monitoring; admit its contract without bundling smartd.
+    moduleDeps = [service-management smartmontools storage-interface kernel-interface kmod aos-kernel-tunable-provider];
     preBuild = staticBuildSetup;
 
     postInstall = ''

@@ -46,7 +46,9 @@
     nativeOperationMatrix = import ./native-operation-matrix.nix;
     configurationPolicy = import ./configuration-policy.nix;
     configurationProvider = import ./configuration-provider.nix {inherit lib pkgs;};
+    zfsHardwareMonitoring = import ./zfs-hardware-monitoring.nix {inherit lib pkgs;};
     storageProfile = import ./storage-profile.nix;
+    provisioningProjection = import ./provisioning-projection.nix {inherit lib pkgs;};
     buildInvariants = import ./build-invariants.nix {inherit lib pkgs;};
     runtimeRoles = import ./runtime-roles.nix {inherit lib pkgs;};
     measuredVar = import ./measured-var.nix;
