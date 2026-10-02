@@ -1,4 +1,4 @@
-//! Guarded creation of one fresh overlay for a stopped hot-fork source.
+//! Pinned overlay provisioning for stopped sources and private hot-fork children.
 //!
 //! The original generation directory, helper child, process contract, and file
 //! inode remain bound throughout creation and admission into the native graph.
@@ -8,6 +8,79 @@ use crate::spawn::invalid_input;
 use rustix::fs::open;
 
 impl QemuPreparedRunDirectory {
+    /// Provisions the empty destination pair for an admitted hot-fork child.
+    ///
+    /// Generation allocation supplies an empty VMState file. Disk-backed
+    /// children additionally need an empty regular root file for the native
+    /// copy transaction; fresh-image and exact-restore materialization are
+    /// separate operations. Both destinations retain this attempt's original
+    /// contract, directory, inode, credentials, and aggregate quota authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if admission changed, either destination was consumed
+    /// or changed, or exclusive creation and synchronization fail. A failed
+    /// creation leaves the overlay unavailable for launch or another copy.
+    pub fn provision_hot_fork_child_files(
+        &mut self,
+        process_contract: &QemuChildProcessContract,
+    ) -> Result<(), QemuSpawnError> {
+        self.require_same_attempt(process_contract)?;
+        crate::spawn::validate_guarded_launch_requirements(
+            self.launch_resources,
+            process_contract,
+        )?;
+        if self.exact_checkpoint_materialization != PreparedExactCheckpointMaterialization::Absent {
+            return Err(invalid_input(
+                "provision hot-fork child files",
+                "generation already carries exact checkpoint materialization",
+            ));
+        }
+        self.hot_fork_child_file_destination()?;
+        if !self.launch_resources.has_root_overlay() {
+            return Ok(());
+        }
+        if !matches!(
+            self.root_overlay_materialization,
+            PreparedRootOverlayMaterialization::Absent
+                | PreparedRootOverlayMaterialization::Provisioned
+        ) {
+            return Err(QemuSpawnError::PreparedRootOverlayNotReady {
+                path: self.path.join(crate::DEFAULT_ROOT_OVERLAY_FILE_NAME),
+            });
+        }
+
+        // Publish availability only after the original named inode is durable.
+        // Partial creation remains aggregate-owner cleanup debt, never a retry
+        // that reopens an arbitrary file under the destination name.
+        if self.root_overlay_materialization == PreparedRootOverlayMaterialization::Absent {
+            self.root_overlay_materialization = PreparedRootOverlayMaterialization::Updating;
+            let destination = self.create_root_overlay_destination()?;
+            fsync(&destination).map_err(|source| QemuSpawnError::Io {
+                operation: "synchronize hot-fork root destination",
+                source: source.into(),
+            })?;
+        }
+        fsync(&self.directory).map_err(|source| QemuSpawnError::Io {
+            operation: "synchronize hot-fork destination directory",
+            source: source.into(),
+        })?;
+        let root = self.revalidate_root_overlay_identity()?;
+        if rustix::fs::FileType::from_raw_mode(root.st_mode) != rustix::fs::FileType::RegularFile
+            || root.st_size != 0
+            || root.st_nlink != 1
+            || self.root_overlay_identity == Some(self.vmstate_identity)
+        {
+            return Err(invalid_input(
+                "provision hot-fork child files",
+                "root destination is not an empty distinct regular inode",
+            ));
+        }
+        self.hot_fork_child_file_destination()?;
+        self.root_overlay_materialization = PreparedRootOverlayMaterialization::Provisioned;
+        Ok(())
+    }
+
     /// Authenticates an overlay basename under the original source working directory.
     ///
     /// The native process retains its launch cwd even when its ancestor is

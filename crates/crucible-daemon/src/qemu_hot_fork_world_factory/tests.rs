@@ -203,10 +203,6 @@ impl QemuAttemptProcessResourceGuard for ScriptedWorldGuard {
         std::fs::create_dir(&generation).map_err(test_realization_error)?;
         File::create(generation.join(crucible_qemu::DEFAULT_VMSTATE_FILE_NAME))
             .map_err(test_realization_error)?;
-        if requirements.has_root_overlay() {
-            File::create(generation.join(crucible_qemu::DEFAULT_ROOT_OVERLAY_FILE_NAME))
-                .map_err(test_realization_error)?;
-        }
         let prepared = QemuPreparedRunDirectory::open_for_test_requirements(
             requirements,
             generation.clone(),
