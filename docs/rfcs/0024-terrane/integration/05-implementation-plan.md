@@ -536,6 +536,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   pending; the check fails explicitly until they exist. Format comparison
   establishes no current authority, completed wait or physical permission;
   normative publication and complete golden qualification remain required.
+  The separate `refs-reference-models` auxiliary reserves four exact groups
+  for complete modern commit optional fields/preimages, ref policy and snapshot
+  envelope fields/preimages, reflog reason/CAS/predecessor alternatives and
+  independently malformed wire inputs. It fails explicitly while its primitive
+  generator and model templates are absent. These untrusted format inputs
+  establish no signed authority, live ref state or successful publication;
+  complete reference publication remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
