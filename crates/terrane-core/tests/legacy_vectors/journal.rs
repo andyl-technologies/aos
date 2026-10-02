@@ -5,7 +5,7 @@
 //! tests select history, acquire a lease or propose physical effects.
 
 use super::bucket::pack_id;
-use super::support::{digest, hexadecimal, wire};
+use super::support::{assert_published_digest, digest, hexadecimal, wire};
 use terrane_core::{
     cbor,
     gc::{
@@ -152,6 +152,11 @@ fn identity_wire(identity: &[u8]) -> Vec<u8> {
     bytes
 }
 
+/// Compares complete creation journal phase models and structural negatives.
+///
+/// # Panics
+///
+/// Panics if a published wire or decoded model differs, or an invalid wire is accepted.
 pub(super) fn creations() {
     for (heading, state) in [
         ("### Creation journal pending", JournalState::Pending),
@@ -291,6 +296,12 @@ fn write_authorization(bytes: &mut Vec<u8>, model: &DeleteAuthorization) {
     uint_field(bytes, 6, model.elapsed_ns);
 }
 
+/// Compares ordinary retirement records and the published raw authorization digest.
+///
+/// # Panics
+///
+/// Panics if a wire, model, raw digest or publication control differs, or an
+/// independently constructed invalid operation is accepted.
 pub(super) fn operations() {
     let model = authorization();
     let published = wire("### Delete authorization", 0);
@@ -300,6 +311,13 @@ pub(super) fn operations() {
     assert_eq!(model.encode().unwrap(), published);
     assert_eq!(model.digest().unwrap(), authorization_digest());
     assert_eq!(blake3::hash(&published).as_bytes(), &authorization_digest());
+    // This raw hash binds inert fields; it grants no deletion authority.
+    assert_published_digest(
+        "## Layout and physical-intent record vectors",
+        "its 640 canonical bytes, without an immutable-content domain prefix:\n\n```text\n",
+        "\n```\n",
+        *blake3::hash(&independent).as_bytes(),
+    );
 
     for (heading, phase, revision) in [
         ("### Delete operation", DeletePhase::Authorized, 0),
