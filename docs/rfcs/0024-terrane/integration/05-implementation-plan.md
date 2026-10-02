@@ -852,9 +852,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The full aggregate remains red on the backend retirement assertion. Direct
   complete native qualification builds successfully and passes 355 of 362
   tests, with the same six backend failures and the unchanged cancellation
-  arrival failure; no test times out. Portable, rustdoc and Clippy stages remain
-  queued on the shared Cargo target, and the
-  original-authority fallback still needs the same single-traversal treatment.
+  arrival failure; no test times out. All 116 non-Send portable tests pass.
+  Strict Clippy still rejects the known twenty production and two test dead-code
+  diagnostics. The stricter documentation check identifies four undocumented
+  public store-error fields; their comments-only correction passes native
+  rustdoc with warnings and missing documentation denied, plus both mandatory
+  formatting commands. The original-authority fallback now has an isolated
+  single-traversal candidate, whose native build and formatting pass; its
+  final regression sequence remains in progress.
   This candidate is unmerged and does not qualify the task.
   Pure core view, endpoint, exposure
   and schema vocabulary is integrated as an SDK prerequisite. View parsing

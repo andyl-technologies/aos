@@ -109,7 +109,10 @@ pub struct Capabilities {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InvalidReason {
     /// Uploaded bytes failed the named validation rule.
-    Upload { rule_id: &'static str },
+    Upload {
+        /// The specification requirement whose upload validation failed.
+        rule_id: &'static str,
+    },
     /// A request asks for bytes beyond the content boundary.
     Range(ByteRange),
     /// A request cannot be decoded or exceeds a protocol limit.
@@ -138,9 +141,17 @@ pub enum StoreErrorKind {
     /// The backend cannot accept writes.
     ReadOnly,
     /// The guard denied a verb on a pattern without disclosing more detail.
-    Denied { verb: &'static str, pattern: String },
+    Denied {
+        /// The requested operation that was denied.
+        verb: &'static str,
+        /// The requested authorization pattern reported without further details.
+        pattern: String,
+    },
     /// The backend is temporarily unreachable.
-    Unavailable { retry_after: Option<Duration> },
+    Unavailable {
+        /// The suggested wait before retrying, when the backend supplies one.
+        retry_after: Option<Duration>,
+    },
     /// A reservation or quota would be exceeded.
     Capacity,
     /// Uploaded content or a requested range is invalid.
