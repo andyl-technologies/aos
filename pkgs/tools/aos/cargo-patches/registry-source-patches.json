@@ -1,6 +1,31 @@
 [
   {
     "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "name": "tokio",
+    "version": "1.52.3",
+    "archiveSha256": "8fc7f01b389ac15039e4dc9531aa973a135d7a4135281b12d7c1bc79fd57fffe",
+    "patch": "pkgs/tools/aos/cargo-patches/tokio-1.52.3-retained-unix-listener.patch",
+    "patchSha256": "84e62b2dd20e201add5a7131c9b8c151126aee9ca258ea986820628aaeafabe9",
+    "files": [
+      {
+        "path": "src/io/poll_evented.rs",
+        "beforeSha256": "334619a06d840de8d5d7037bee6d6f48accf5e8e1252460841637a512fa233f8",
+        "afterSha256": "6ca87da6e9825be00e7f160fe20d192b8f6b42b1ec1b84574a6377a0721c1cce"
+      },
+      {
+        "path": "src/net/mod.rs",
+        "beforeSha256": "94c29a12212dfdbedc9dc8067156670f4590e2e4184a47fdfe8aa6f2b22b8765",
+        "afterSha256": "7660f367171a4cbea20f2b56435f6dff6405a3ae1e5edee6d7e6e4fd46e99a5d"
+      },
+      {
+        "path": "src/net/unix/listener.rs",
+        "beforeSha256": "6fc204b8b70f667af73d014586bf09329222de03d345c36bcae21d38362eacfb",
+        "afterSha256": "3e78d78ebf1a154535e935c23367f6c2bfdef516690270d0100d4f5731296fc2"
+      }
+    ]
+  },
+  {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
     "name": "tokio-rustls",
     "version": "0.26.4",
     "archiveSha256": "1729aa945f29d91ba541258c8df89027d5792d85a8841fb65e8bf0f4ede4ef61",

@@ -1,0 +1,199 @@
+diff --git a/src/io/poll_evented.rs b/src/io/poll_evented.rs
+--- a/src/io/poll_evented.rs
++++ b/src/io/poll_evented.rs
+@@ -111,18 +111,40 @@
+         Self::new_with_interest_and_handle(io, interest, scheduler::Handle::current())
+     }
+ 
+-    #[track_caller]
+-    pub(crate) fn new_with_interest_and_handle(
+-        mut io: E,
+-        interest: Interest,
+-        handle: scheduler::Handle,
+-    ) -> io::Result<Self> {
+-        let registration = Registration::new_with_interest_and_handle(&mut io, interest, handle)?;
+-        Ok(Self {
+-            io: Some(io),
+-            registration,
+-        })
+-    }
++    #[track_caller]
++    pub(crate) fn new_with_interest_and_handle(
++        io: E,
++        interest: Interest,
++        handle: scheduler::Handle,
++    ) -> io::Result<Self> {
++        // The local slot preserves the owned constructor's error/unwind boundary.
++        let mut io = Some(io);
++        Self::new_with_retained_io_and_handle(&mut io, interest, handle)
++    }
++
++    /// Registers an occupied source without consuming it on error or unwind.
++    #[track_caller]
++    pub(crate) fn new_with_retained_io_and_handle(
++        io: &mut Option<E>,
++        interest: Interest,
++        handle: scheduler::Handle,
++    ) -> io::Result<Self> {
++        let Some(source) = io.as_mut() else {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "I/O registration requires an occupied source slot",
++            ));
++        };
++
++        let registration = Registration::new_with_interest_and_handle(source, interest, handle)?;
++
++        // The exclusive source loan kept the slot occupied. Transfer only moves;
++        // no check or user code may run between registration and assembly.
++        Ok(Self {
++            io: io.take(),
++            registration,
++        })
++    }
+ 
+     /// Returns a reference to the registration.
+     #[cfg(any(feature = "net", all(feature = "process", target_os = "linux")))]
+diff --git a/src/net/mod.rs b/src/net/mod.rs
+--- a/src/net/mod.rs
++++ b/src/net/mod.rs
+@@ -54,7 +54,7 @@
+ cfg_net_unix! {
+     pub mod unix;
+     pub use unix::datagram::socket::UnixDatagram;
+-    pub use unix::listener::UnixListener;
++    pub use unix::listener::{UnixListener, UnixListenerRegistrationAttempt};
+     pub use unix::stream::UnixStream;
+     pub use unix::socket::UnixSocket;
+ }
+diff --git a/src/net/unix/listener.rs b/src/net/unix/listener.rs
+--- a/src/net/unix/listener.rs
++++ b/src/net/unix/listener.rs
+@@ -51,12 +51,121 @@
+     /// }
+     /// ```
+     #[cfg_attr(docsrs, doc(alias = "uds"))]
+-    pub struct UnixListener {
+-        io: PollEvented<mio::net::UnixListener>,
+-    }
+-}
+-
+-impl UnixListener {
++    pub struct UnixListener {
++        io: PollEvented<mio::net::UnixListener>,
++    }
++
++    /// Holds the original Unix listener through one borrowed registration attempt.
++    ///
++    /// The attempt takes ownership without observing or registering the listener.
++    /// It must remain owned by the caller while [`register`](Self::register) is
++    /// borrowed. An error or unwind leaves the original listener in the attempt;
++    /// dropping the attempt still closes that listener normally.
++    ///
++    /// Successful registration transfers the original into the returned
++    /// [`UnixListener`]. A failed or unwinding registration is not transactional
++    /// rollback and must not be retried. This type provides ordinary I/O custody,
++    /// not authorization, resource funding, or a guarantee about reactor cleanup.
++    ///
++    /// Its `Debug` output exposes only whether registration was attempted and
++    /// whether a std or Mio listener remains resident, not descriptor identities.
++    pub struct UnixListenerRegistrationAttempt {
++        listener: Option<net::UnixListener>,
++        source: Option<mio::net::UnixListener>,
++        attempted: bool,
++    }
++}
++
++impl UnixListenerRegistrationAttempt {
++    /// Takes ownership of an original listener without performing I/O.
++    ///
++    /// The listener must already be nonblocking before [`register`](Self::register)
++    /// is called. Construction does not check or change that flag.
++    pub fn new(listener: net::UnixListener) -> Self {
++        Self {
++            listener: Some(listener),
++            source: None,
++            attempted: false,
++        }
++    }
++
++    /// Registers the resident original once and transfers it only on success.
++    ///
++    /// The original stays resident during the blocking check, runtime lookup and
++    /// reactor registration. On success, the caller must retain the returned
++    /// [`UnixListener`]; the attempt then holds no listener.
++    ///
++    /// # Errors
++    ///
++    /// Returns the original blocking-check or reactor-registration error unchanged.
++    /// Returns [`io::ErrorKind::InvalidInput`] if registration was already attempted.
++    /// Every outcome, including unwind, forbids another attempt. A failed source
++    /// may already contain registration state; retention does not imply rollback.
++    ///
++    /// # Panics
++    ///
++    /// Panics outside a Tokio runtime with I/O enabled, as [`UnixListener::from_std`]
++    /// does. Registering a blocking socket is erroneous and can also panic.
++    /// The attempt retains the listener only while its caller retains the attempt;
++    /// it does not catch a panic or preserve a caller that unwinds and drops it.
++    ///
++    /// # Examples
++    ///
++    /// A conversion can borrow an attempt already parked in its caller:
++    ///
++    /// ```no_run
++    /// use std::io;
++    /// use tokio::net::{UnixListener, UnixListenerRegistrationAttempt};
++    ///
++    /// async fn register_parked(
++    ///     attempt: &mut UnixListenerRegistrationAttempt,
++    /// ) -> io::Result<UnixListener> {
++    ///     attempt.register()
++    /// }
++    /// ```
++    #[track_caller]
++    pub fn register(&mut self) -> io::Result<UnixListener> {
++        if self.attempted {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "Unix listener registration was already attempted",
++            ));
++        }
++
++        // Arm before even the blocking check, which can fail or panic.
++        self.attempted = true;
++        let Some(listener) = self.listener.as_ref() else {
++            return Err(io::Error::new(
++                io::ErrorKind::InvalidInput,
++                "Unix listener registration requires its original listener",
++            ));
++        };
++        check_socket_for_blocking(listener)?;
++
++        // Mio wraps the same original by an infallible move. Park it before
++        // runtime lookup or registration can fail or unwind.
++        self.source = self.listener.take().map(mio::net::UnixListener::from_std);
++
++        let io = PollEvented::new_with_retained_io_and_handle(
++            &mut self.source,
++            Interest::READABLE | Interest::WRITABLE,
++            crate::runtime::scheduler::Handle::current(),
++        )?;
++        Ok(UnixListener { io })
++    }
++}
++
++impl fmt::Debug for UnixListenerRegistrationAttempt {
++    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
++        f.debug_struct("UnixListenerRegistrationAttempt")
++            .field("attempted", &self.attempted)
++            .field("owns_std_listener", &self.listener.is_some())
++            .field("owns_mio_listener", &self.source.is_some())
++            .finish()
++    }
++}
++
++impl UnixListener {
+     pub(crate) fn new(listener: mio::net::UnixListener) -> io::Result<UnixListener> {
+         let io = PollEvented::new(listener)?;
+         Ok(UnixListener { io })
