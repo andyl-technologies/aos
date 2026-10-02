@@ -1,5 +1,5 @@
 ##! Verifies enabled native security consumers preserve resource ordering and policy.
-let
+{pkgs}: let
   lib = import ../../lib {system = "x86_64-linux";};
   package = {
     type = "derivation";
@@ -98,11 +98,42 @@ let
   selinux = select "realize" "selinux.selinux-policy-load";
   verifier = select "realize" "attestationVerifier";
   quote = select "realize" "package-attestation-quote.aos-attest";
+  projectSudo = operator:
+    lib.evalPackageModules {
+      scope = ["profile" "system"];
+      packages = [pkgs.sudo];
+      packageImportRoots.${builtins.unsafeDiscardStringContext (toString pkgs.sudo.module)} = toString ../../pkgs/security/_sudo;
+      operatorModules = [{aos.security.sudo.enable = true;} operator];
+    };
+  sudoPolicy = projection: projection.config.aos.abilities.configuration.operations.file.effects.sudoers.input.content;
+  nativeSudo = projectSudo {};
+  userPathSudo = projectSudo ({lib, ...}: {
+    options.environment.sessionVariables = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      default = {};
+    };
+    config.environment.sessionVariables.PATH = "/var/lib/profiles/per-user/alice/current/bin";
+  });
+  imageSecurePath = "/run/wrappers/bin:/image/package/bin:/image/package/sbin";
+  imageSudo = projectSudo ({lib, ...}: {
+    options.system.build.systemPath = lib.mkOption {type = lib.types.str;};
+    config.system.build.systemPath = imageSecurePath;
+  });
+  sshProjection = lib.evalPackageModules {
+    scope = ["profile" "system"];
+    packages = [pkgs.openssh];
+    packageImportRoots.${builtins.unsafeDiscardStringContext (toString pkgs.openssh.module)} = toString ../../pkgs/networking/_openssh;
+    operatorModules = [{aos.services.ssh.enable = true;}];
+  };
 in {
   verifierRetainsIsolation = verifier.input.isolation.network == "none" && verifier.input.identity.ephemeral;
   verifierRetainsOutputPath = builtins.elem "/var/lib/aos-attestation-verifier/result.json" (builtins.head verifier.input.lifecycle.start).executable.arguments;
   quoteWaitsForCommittedActivation = quote.input.dependencies.requires == ["aos-activate.service" "package-profile-convergence.service" "aos-image-boot-commit.service"] && quote.input.auto_start == false && quote.input.activation_owner == "manager" && quote.input.dependencies.wanted_by == ["multi-user.target"];
   sudoWaitsForSudoers = builtins.length sudo.dependencies == 1;
+  sudoFollowsActiveSystemProfiles = lib.hasInfix ''Defaults secure_path="/run/wrappers/bin:/var/lib/profiles/system-packages/current/bin:/var/lib/profiles/system-packages/current/sbin:/var/lib/profiles/system/current/bin:/var/lib/profiles/system/current/sbin"'' (sudoPolicy nativeSudo);
+  sudoExcludesUserProfilePaths = sudoPolicy userPathSudo == sudoPolicy nativeSudo;
+  sudoPreservesImageSystemPath = lib.hasInfix ''Defaults secure_path="${imageSecurePath}"'' (sudoPolicy imageSudo);
+  sshPreservesPublicHostKeyDirectoryAccess = sshProjection.config.aos.abilities.filesystem.operations.directory.effects.ssh-host-keys.input.mode == "0755";
   polkitRegistersRetainedBusPaths = evaluated.config.aos.dbus.activationDirectories == ["${package}/share/dbus-1/system-services"];
   polkitPreservesIdentity = polkit.input.identity.ephemeral == false;
   polkitPreservesIsolation = polkit.input.isolation.network == "none";

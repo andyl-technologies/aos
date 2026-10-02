@@ -373,7 +373,7 @@ in {
             lifetime = "persistent";
             input = {
               path = "/var/etc/ssh";
-              mode = "0700";
+              mode = "0755";
               owner = "root";
               group = "root";
             };
