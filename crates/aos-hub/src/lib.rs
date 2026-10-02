@@ -93,6 +93,7 @@ pub mod db;
 pub mod direct_upload;
 /// Independent measured direct-upload review preparation and explicit signing.
 pub mod direct_upload_review;
+pub mod oci_sdk_review;
 pub mod egress_gateway;
 /// The tenancy/IAM domain model, re-exported from [`aos_hub_core::domain`]
 /// (RFC-0004 Phase 5) so the Worker shares it; keeps `crate::domain::…` stable.
