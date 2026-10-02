@@ -536,6 +536,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   pending; the check fails explicitly until they exist. Format comparison
   establishes no current authority, completed wait or physical permission;
   normative publication and complete golden qualification remain required.
+  D-92 now publishes all 34 inert retirement record witnesses. Full consumer
+  review covers independent wire assembly, complete public and nested models,
+  structural rejection, truncation, nonminimal headers and eleven decoder size
+  limits. The input candidate passes its seven exact auxiliary groups, all 494
+  core Nextest tests with zero skips, strict Clippy, warnings/missing-docs rustdoc
+  and mandatory formatting. The shared harness now checks the normative whole
+  reference and copies that published file into the consumer. Published-input
+  qualification remains pending. Its actual candidate aggregate still rejects
+  the absent `format_properties` target; no task or milestone advances.
   The separate `refs-reference-models` auxiliary reserves four exact groups
   for complete modern commit optional fields/preimages, ref policy and snapshot
   envelope fields/preimages, reflog reason/CAS/predecessor alternatives and
