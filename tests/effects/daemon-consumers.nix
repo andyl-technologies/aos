@@ -107,7 +107,51 @@ let
   nodes = builtins.attrValues evaluated.deployment.graph.nodes;
   services = builtins.filter (node: builtins.elem "serviceManagement" node.identity) nodes;
   inputFiles = evaluated.config.aos.abilities.configuration.operations.file.effects;
+  evaluateOpkssh = enabled:
+    lib.evalPackageModules {
+      scope = ["test" "opkssh"];
+      packageModules = [
+        (record "aos-runtime-checks" ../../pkgs/system/_aos-runtime-checks {})
+        (record "service-management" ../../pkgs/system/_service-management {})
+        (record "filesystem" ../../pkgs/filesystem/_aos-filesystem-provider {})
+        (record "nftables" ../../pkgs/networking/_nftables {})
+        (record "linux-pam" ../../pkgs/security/_linux-pam {})
+        (record "openssh" ../../pkgs/networking/_openssh {})
+        (record "opkssh" ../../pkgs/security/_opkssh {})
+      ];
+      operatorModules = [
+        {
+          aos.security.opkssh.enable = enabled;
+          aos.services.ssh.enable = enabled;
+          aos.abilities = {
+            serviceManagement.operations.realize.handler.program = artifactLib.value (artifact "service-handler");
+            configuration.operations.file.handler.program = artifactLib.value (artifact "file-handler");
+            identity.operations.group.handler.program = artifactLib.value (artifact "identity-handler");
+            identity.operations.principal.handler.program = artifactLib.value (artifact "identity-handler");
+            network.operations.ready.handler.program = artifactLib.value (artifact "network-handler");
+            networkPolicy.operations.ruleset.handler.program = artifactLib.value (artifact "firewall-handler");
+          };
+        }
+      ];
+    };
+  opkssh = evaluateOpkssh true;
+  disabledOpkssh = evaluateOpkssh false;
+  opksshLog = opkssh.config.aos.abilities.filesystem.operations.entry.effects.opkssh-log;
+  opksshLogNode = builtins.head (builtins.filter (node: builtins.elem "opkssh-log" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
+  opksshLogId = builtins.head (builtins.attrNames (lib.filterAttrs (_: node: builtins.elem "opkssh-log" node.identity) opkssh.deployment.graph.nodes));
+  opksshSshNode = builtins.head (builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "ssh" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
 in {
+  opksshPreservesMutableLog = assert opksshLog.input.kind == "empty-file";
+  assert opksshLog.input.path == "/var/log/opkssh.log";
+  assert opksshLog.input.mode == "0660";
+  assert opksshLog.input.owner == "root";
+  assert opksshLog.input.group == opkssh.config.aos.abilities.identity.operations.group.effects.opkssh.outputs.name;
+  assert opksshLog.input.sourcePath == null;
+  assert opksshLogNode.lifetime == "persistent"; true;
+  opksshSshWaitsForLog = assert builtins.elem opksshLogId opksshSshNode.dependencies;
+  assert builtins.elem opksshLog.outputs.resource opkssh.config.aos.services.ssh.dependencies.prerequisites; true;
+  disabledOpksshDoesNotCreateLog = assert disabledOpkssh.config.aos.abilities.filesystem.operations.entry.effects == {};
+  assert !(builtins.any (node: node.owner == "opkssh") (builtins.attrValues disabledOpkssh.deployment.graph.nodes)); true;
   stableManagerIdentities = assert evaluated.config.aos.abilities.serviceManagement.operations.realize.effects.chrony.input.service == "chronyd";
   assert evaluated.config.aos.abilities.serviceManagement.operations.realize.effects.tailscale.input.service == "tailscaled"; true;
   chronyPreservesStateIdentity = assert evaluated.config.aos.abilities.identity.operations.group.effects.chrony.input.requested_id == 994;

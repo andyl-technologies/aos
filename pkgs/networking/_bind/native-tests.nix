@@ -50,6 +50,7 @@ in {
     }
   ]; true;
   settings = assert builtins.all (value: value.assertion) evaluated.assertions;
+  assert config.aos.services.bind.isolation.home_access == "inaccessible";
   assert config.aos.services.bind.reload.strategy == "command";
   assert config.aos.abilities.configuration.operations.file.effects.bind.input.fragments != []; true;
   conflictingOwnership = assert !(builtins.tryEval (builtins.deepSeq conflicting.config.aos.abilities.listener.operations.claim.effects.tcp-5353.outputs.resource true)).success; true;

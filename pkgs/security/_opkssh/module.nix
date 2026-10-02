@@ -79,11 +79,22 @@ in {
     };
     aos.services.ssh.dependencies.prerequisites = builtins.sort (left: right: builtins.toJSON left < builtins.toJSON right) [
       principal.outputs.resource
+      config.aos.abilities.filesystem.operations.entry.effects.opkssh-log.outputs.resource
       files.opkssh-providers.outputs.resource
       files.opkssh-auth-id.outputs.resource
       files.opkssh-config.outputs.resource
     ];
     aos.abilities = {
+      filesystem.operations.entry.effects.opkssh-log = {
+        lifetime = "persistent";
+        input = {
+          path = "/var/log/opkssh.log";
+          kind = "empty-file";
+          mode = "0660";
+          owner = "root";
+          group = group.outputs.name;
+        };
+      };
       identity.operations = {
         group.effects.opkssh.input = {
           name = "opksshuser";

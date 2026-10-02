@@ -339,6 +339,21 @@ impl NativeFilesystem {
                 };
                 (identity, None)
             }
+            "empty-file" => {
+                ensure!(
+                    input.source_path.is_none(),
+                    "mutable file input has a source"
+                );
+                let identity = allocate_file_nofollow(
+                    &input.path,
+                    mode,
+                    ownership,
+                    claim
+                        .filter(|_| input.path.exists())
+                        .map(|claim| (claim.device, claim.inode)),
+                )?;
+                (identity, None)
+            }
             "copied-file" => {
                 let source = input
                     .source_path
@@ -419,7 +434,7 @@ impl NativeFilesystem {
                 && ((claim.kind == "directory"
                     && metadata.is_dir()
                     && !metadata.file_type().is_symlink())
-                    || (claim.kind == "copied-file"
+                    || (matches!(claim.kind.as_str(), "copied-file" | "empty-file")
                         && metadata.is_file()
                         && !metadata.file_type().is_symlink())
                     || (claim.kind == "symlink-tree" && metadata.file_type().is_symlink())),

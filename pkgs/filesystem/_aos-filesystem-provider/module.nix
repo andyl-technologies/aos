@@ -139,9 +139,9 @@ in {
         imports = [directoryInput];
         options = {
           kind = mkOption {
-            type = types.enum ["directory" "copied-file"];
+            type = types.enum ["directory" "copied-file" "empty-file"];
             default = "directory";
-            description = "Filesystem entry kind.";
+            description = "Filesystem entry kind; empty-file allocates mutable contents without replacing them.";
           };
           sourcePath = mkOption {
             type = types.nullOr (types.deferred types.str);

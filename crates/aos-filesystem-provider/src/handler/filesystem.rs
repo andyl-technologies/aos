@@ -311,6 +311,45 @@ pub(super) fn copy_file_atomic_with_identity(
     result
 }
 
+/// Allocates a regular file or updates a claimed file's metadata without truncation.
+pub(super) fn allocate_file_nofollow(
+    path: &Path,
+    mode: u32,
+    ownership: StorageOwnership,
+    existing: Option<(u64, u64)>,
+) -> Result<StorageIdentity> {
+    let parent = open_directory_nofollow(path.parent().context("file has no parent")?)?;
+    let name = path.file_name().context("file has no basename")?;
+    let flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    let descriptor = match existing {
+        Some(_) => openat(&parent, name, flags, Mode::empty()),
+        None => openat(
+            &parent,
+            name,
+            flags | OFlags::CREATE | OFlags::EXCL,
+            Mode::from_raw_mode(0o600),
+        ),
+    }
+    .context("opening owned mutable file")?;
+
+    let metadata = fstat(&descriptor)?;
+    ensure!(
+        rustix::fs::FileType::from_raw_mode(metadata.st_mode) == rustix::fs::FileType::RegularFile,
+        "mutable file is not a regular file"
+    );
+    if let Some(identity) = existing {
+        ensure!(
+            (metadata.st_dev, metadata.st_ino) == identity,
+            "mutable file changed before mutation"
+        );
+    }
+
+    apply_metadata(&descriptor, mode, ownership)?;
+    let identity = raw_storage_identity(&descriptor)?;
+    File::from(descriptor).sync_all()?;
+    Ok(identity)
+}
+
 pub(super) fn open_directory_nofollow(path: &Path) -> Result<OwnedFd> {
     let mut directory = openat(
         rustix::fs::CWD,
