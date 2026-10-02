@@ -387,6 +387,7 @@
           {
             path = "/usr/lib/aos-container/native-deployment";
             target = builtins.toString deploymentArtifact.artifact;
+            targetType = "directory";
           }
         ];
       storeLayers = closureLayers;

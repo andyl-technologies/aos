@@ -71,6 +71,14 @@
         kind = "symlink";
         path = common.validatePath "symlinks[${toString index}].path" entry.path;
         target = common.validateTarget "symlinks[${toString index}].target" entry.target;
+        targetType = let
+          value = entry.targetType or "file";
+        in
+          if
+            builtins.elem value ["file" "directory"]
+            && !(value == "directory" && ((entry.requireExecutable or false) || !lib.hasPrefix "/nix/store/" entry.target))
+          then value
+          else common.fail "symlinks[${toString index}].targetType must be file or a non-executable directory";
         requireExecutable = let
           value = entry.requireExecutable or false;
         in
@@ -142,7 +150,11 @@
       metadata_target=${lib.escapeShellArg entry.target}
       case "$metadata_target" in
         /nix/store/*)
-          validate_store_symlink_target \
+          ${
+        if entry.targetType == "directory"
+        then "validate_store_directory_target"
+        else "validate_store_symlink_target"
+      } \
             realized-store-paths.allowed \
             "$metadata_target" \
             ${
@@ -164,7 +176,7 @@
     inherit layerName;
     directories = map (entry: {inherit (entry) path mode;}) normalizedDirectories;
     files = map (entry: {inherit (entry) path mode text source;}) normalizedFiles;
-    symlinks = map (entry: {inherit (entry) path target requireExecutable;}) normalizedSymlinks;
+    symlinks = map (entry: {inherit (entry) path target targetType requireExecutable;}) normalizedSymlinks;
   };
 in
   builtins.deepSeq validated (mkDerivation {

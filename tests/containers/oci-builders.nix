@@ -108,11 +108,12 @@
     meta.license = "Apache-2.0";
   };
   base = pkgs.runCommand "oci-builder-fixture-base" {} ''
-    mkdir -p "$out/bin" "$out/share"
+    mkdir -p "$out/bin" "$out/share/nested"
     printf '%s\n' 'base payload' > "$out/bin/base-tool"
     chmod 0555 "$out/bin/base-tool"
     printf '%s\n' 'not executable' > "$out/share/non-executable"
     chmod 0444 "$out/share/non-executable"
+    ln -s share "$out/share-link"
   '';
   application = pkgs.runCommand "oci-builder-fixture-application" {BASE = base;} ''
     mkdir -p "$out/bin" "$out/share"
@@ -193,6 +194,11 @@
         path = "/bin/base-tool";
         target = "${base}/bin/base-tool";
         requireExecutable = true;
+      }
+      {
+        path = "/usr/lib/base-runtime";
+        target = builtins.toString base;
+        targetType = "directory";
       }
     ];
     storeLayers = [baseLayerA applicationDelta abilityLayer];
@@ -457,11 +463,13 @@ in
           jq -e '.schema == "aos.package.evaluation-input" and .scope == ["profile","system"]
             and (.libraryNarHash | test("^sha256:[0-9a-f]{64}$"))' \
             ${profileBundle}/evaluation.json >/dev/null
-          jq -e 'length == 4 and ([.[] | select(.apm.explicit)] | length) == 3
-            and ([.[] | select(.apm.name == "oci-profile-output-fixture")] | length) == 2
-            and ([.[] | select(.apm.qualification != null)] | length) == 2
+          jq -e --arg selectedOutput ${lib.escapeShellArg (builtins.toString namedOutputFixture.dev)} \
+            'length == 3 and ([.[] | select(.apm.explicit)] | length) == 3
+            and ([.[] | select(.apm.name == "oci-profile-output-fixture")] | length) == 1
+            and any(.[]; .store_path == $selectedOutput)
             and all(.[];
             .apm.registry == "image"
+            and .apm.qualification == null
             and (.apm.deployment.store_path | startswith("/nix/store/"))
             and (.apm.deployment.document_sha256 | test("^sha256:[0-9a-f]{64}$")))' \
             ${profileBundle}/installed.json >/dev/null
@@ -511,6 +519,25 @@ in
                   policy-valid.allowed \
                   ${base}/bin/base-tool \
                   1
+                validate_store_directory_target policy-valid.allowed ${base}
+                validate_store_directory_target policy-valid.allowed ${base}/share
+                for directory_target in \
+                  /nix/store/00000000000000000000000000000000-missing \
+                  ${nativeHandler} \
+                  ${base}/share-link \
+                  ${base}/share-link/nested \
+                  ${base}/share-link/../share \
+                  ${base}/share/../share \
+                  ${base}/bin/base-tool; do
+                  if validate_store_directory_target \
+                    policy-valid.allowed "$directory_target" 2>/dev/null; then
+                    fail "invalid directory target was accepted: $directory_target"
+                  fi
+                done
+                if validate_store_symlink_target \
+                  policy-valid.allowed ${base} 0 2>/dev/null; then
+                  fail "file target validation accepted a directory"
+                fi
 
                 assert_compact_sorted_json() {
                   json_path="$1"
@@ -569,6 +596,8 @@ in
                   || fail "metadata layer lost sticky /tmp mode"
                 test "$(readlink metadata-root/bin/base-tool)" = ${lib.escapeShellArg "${base}/bin/base-tool"} \
                   || fail "metadata layer changed an authored symlink"
+                test "$(readlink metadata-root/usr/lib/base-runtime)" = ${lib.escapeShellArg (builtins.toString base)} \
+                  || fail "metadata layer changed its admitted directory target"
                 test -f metadata-root/etc/os-release
                 grep -Fx 'generated registration bytes' metadata-root/usr/lib/aos/nix-registration >/dev/null \
                   || fail "store-backed metadata source bytes changed"
