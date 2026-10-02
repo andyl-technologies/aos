@@ -54,9 +54,10 @@ async fn requests() -> (ExternalCopyRequest, CopyMetadataRequest, StorageWorkKey
         destination: current.destination.clone(),
         path: "nar/source.nar".into(),
         source_object: CopySourceObject {
-            provider_version: "fixture-version".into(),
+            provider_version: Some("fixture-version".into()),
             etag: "\"fixture-tag\"".into(),
             bytes: LeaseInteger::new(11).unwrap(),
+            guard_stamp: None,
         },
         read_generation: LeaseInteger::new(1).unwrap(),
         write_generation: LeaseInteger::new(1).unwrap(),
@@ -64,6 +65,7 @@ async fn requests() -> (ExternalCopyRequest, CopyMetadataRequest, StorageWorkKey
         profile_digest: "b".repeat(64),
         part_bytes: LeaseInteger::new(5 * 1024 * 1024).unwrap(),
         expected_sha256: None,
+        source_receipt_digest: None,
     };
     let mut plan = StorageWorkPlan {
         version: 1,
@@ -144,8 +146,10 @@ async fn exchange(
                 part_bytes: control.original.part_bytes,
                 read_generation: control.original.read_generation,
                 write_generation: control.original.write_generation,
+                protected_versionless: false,
             },
             retained: None,
+            source_closure: None,
         };
         reply.sign(&key, &query).unwrap()
     } else {

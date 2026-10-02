@@ -872,7 +872,8 @@ pub(in crate::external_object) async fn verify_observable_destination(
         .ok_or_else(|| anyhow::anyhow!("current positive publication proof absent"))?;
     visible.validate(head)?;
     match visible.kind {
-        super::super::state::VisibleKind::OciStage
+        super::super::state::VisibleKind::CopyDestination
+        | super::super::state::VisibleKind::OciStage
         | super::super::state::VisibleKind::OciDestination => {
             anyhow::bail!("OCI visibility requires its own retained original and readback");
         }
@@ -928,4 +929,47 @@ pub(in crate::external_object) async fn verify_observable_destination(
         }
     }
     Ok(())
+}
+
+/// Projects the actual closed Direct destination without granting a read permit.
+///
+/// # Errors
+/// Refuses an active/replaced head or a missing, changed or nonpositive receipt.
+pub(in crate::external_object) async fn closed_copy_source(
+    env: &worker::Env,
+    storage: &Storage,
+    head: &Head,
+    object: &ObjectConfig,
+) -> Result<aos_hub_core::storage_authority::external_object::copy::source::CopySourceClosure> {
+    verify_observable_destination(env, storage, head, object).await?;
+    let visible = head
+        .visible_receipt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Direct copy source has no positive receipt"))?;
+    ensure!(
+        visible.kind == super::super::state::VisibleKind::DestinationClose,
+        "copy source is not a Direct destination closure"
+    );
+    let receipt = load_receipt(storage, &visible.operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Direct copy source receipt absent"))?;
+    let (etag, stamp) = match &receipt.outcome {
+        ExternalStageOutcome::Closed {
+            etag, guard_stamp, ..
+        }
+        | ExternalStageOutcome::EmptyClosed { etag, guard_stamp } => (etag, guard_stamp),
+        _ => anyhow::bail!("Direct copy source closure is not positive"),
+    };
+    let closure =
+        aos_hub_core::storage_authority::external_object::copy::source::CopySourceClosure {
+            guard_stamp: stamp.clone(),
+            receipt_digest: visible.receipt_digest.clone(),
+            sha256: receipt.turn.intent.context.intent.expected_sha256.clone(),
+            bytes: aos_hub_core::storage_authority::lease::LeaseInteger::new(i64::try_from(
+                receipt.turn.intent.context.intent.byte_size.get(),
+            )?)?,
+            etag: Some(etag.clone()),
+        };
+    closure.validate()?;
+    Ok(closure)
 }

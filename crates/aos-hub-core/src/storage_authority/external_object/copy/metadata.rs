@@ -50,6 +50,10 @@ pub struct CopyMetadataRequest {
     pub plan: StorageWorkPlan,
     /// Exact bounded inventory path.
     pub path: String,
+    /// Requests only the installed profile, without owner or closure discovery.
+    /// This read-only form still requires the exact current controller claim.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub profile_only: bool,
 }
 
 impl CopyMetadataRequest {
@@ -75,6 +79,7 @@ impl CopyMetadataRequest {
             claim,
             plan,
             path,
+            profile_only: false,
         };
         value.validate(&value.plan.deployment_id, now)?;
         Ok(value)
@@ -112,6 +117,7 @@ impl CopyMetadataRequest {
         ensure!(
             self.version == 1
                 && self.domain == DOMAIN
+                && (!self.profile_only || self.claim.is_some())
                 && matches!(&self.plan.operation, StorageWorkOperation::Head { path } if path == &self.path)
                 && self.plan.placement_id == self.destination.placement_id.get()
                 && self.plan.placement_resource_version == self.destination.resource_version.get()
@@ -204,6 +210,13 @@ pub struct CopyMetadataProfile {
     pub read_generation: LeaseInteger,
     /// Installed purpose-local write generation.
     pub write_generation: LeaseInteger,
+    /// Selects only protected versionless originals; absent on version-one wire.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub protected_versionless: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 /// Returns the actual retained immutable owner and compact progress, without private receipts.
@@ -228,6 +241,10 @@ pub struct CopyMetadataReply {
     pub profile: CopyMetadataProfile,
     /// Genuine existing owner; absence grants no physical effect.
     pub retained: Option<RetainedCopyOriginal>,
+    /// Actual current source closure, required before new versionless admission.
+    /// Absence never authorizes an unknown or discovered source object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_closure: Option<super::source::CopySourceClosure>,
 }
 
 impl CopyMetadataReply {
@@ -236,6 +253,10 @@ impl CopyMetadataReply {
     /// # Errors
     /// Refuses changed query, association, generation, geometry or retained owner.
     pub fn selector(&self, request: &CopyMetadataRequest) -> Result<CopyOriginalSelector> {
+        ensure!(
+            !request.profile_only || (self.retained.is_none() && self.source_closure.is_none()),
+            "profile-only metadata cannot contain physical owner evidence"
+        );
         identifier(&self.profile.binding_stable_id)?;
         ensure!(
             self.version == 1
@@ -253,6 +274,13 @@ impl CopyMetadataReply {
                     .contains(&(self.profile.part_bytes.get() as u64)),
             "copy metadata profile differs"
         );
+        if let Some(closure) = &self.source_closure {
+            closure.validate()?;
+            ensure!(
+                self.profile.protected_versionless,
+                "versioned copy metadata cannot contain a protected closure"
+            );
+        }
         let selector = CopyOriginalSelector {
             deployment_id: request.plan.deployment_id.clone(),
             topology: request.topology.clone(),
@@ -272,7 +300,9 @@ impl CopyMetadataReply {
         if let Some(retained) = &self.retained {
             selector.validate_retained(&retained.original, &retained.progress)?;
             ensure!(
-                retained.original.binding_write_revision == self.profile.binding_write_revision
+                (retained.original.version == 2) == self.profile.protected_versionless
+                    && retained.original.binding_write_revision
+                        == self.profile.binding_write_revision
                     && retained.original.read_generation == self.profile.read_generation
                     && retained.original.write_generation == self.profile.write_generation
                     && retained.original.part_bytes == self.profile.part_bytes,

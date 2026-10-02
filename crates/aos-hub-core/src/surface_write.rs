@@ -495,10 +495,66 @@ pub trait SurfaceWrite: BackendBounds {
     }
 }
 
+/// Pins an installed copy profile selected under current controller authority.
+///
+/// This observational policy grants no source read or destination effect.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlacementCopyPolicy {
+    /// Exact authenticated installed profile commitment.
+    pub profile_digest: String,
+    /// Requires trusted catalogue selection and claimed replay for every object.
+    pub catalogue_only: bool,
+}
+
 /// Resolves the [`SurfaceWrite`] for one explicit physical placement.
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait SurfaceWriteProvider: BackendBounds {
+    /// Observes an installed copy policy under the exact current claim and path.
+    ///
+    /// Local and Managed providers retain their existing policy by default.
+    /// The result grants no provider effect or source-incarnation permission.
+    ///
+    /// # Errors
+    /// Refuses changed current authority or an unauthenticated installed profile.
+    async fn placement_copy_policy(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+    ) -> Result<Option<PlacementCopyPolicy>> {
+        let _ = (operation, claim_token, source, destination, path);
+        Ok(None)
+    }
+
+    /// Copies an object while requiring the previously selected installed policy.
+    ///
+    /// Implementations that return a policy must check it before dispatch or
+    /// accepting retained success; the default preserves existing local copies.
+    ///
+    /// # Errors
+    /// Refuses policy drift or any error from the claimed copy implementation.
+    async fn copy_placement_object_with_policy(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+        policy: Option<&PlacementCopyPolicy>,
+    ) -> Result<Option<u64>> {
+        if policy.is_some() {
+            anyhow::ensure!(
+                self.placement_copy_policy(operation, claim_token, source, destination, path).await?.as_ref() == policy,
+                "installed placement copy policy changed"
+            );
+        }
+        self.copy_placement_object_claimed(operation, claim_token, source, destination, path, listed_source).await
+    }
+
     /// Prepares a real External OCI reservation beside the protected byte executor.
     ///
     /// This port returns only an authenticated short-lived Stage original. The

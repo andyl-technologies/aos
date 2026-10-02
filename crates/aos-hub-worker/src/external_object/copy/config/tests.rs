@@ -60,6 +60,7 @@ pub(in crate::external_object::copy) fn fixture() -> (ObjectConfig, Config, Exte
             abort_closes_upload_id: true,
             upload_part_checksum_enforced: true,
             versioned_empty_put: false,
+            protected_versionless: None,
         },
         read_cohort: read,
         list_cohort: list,
@@ -107,15 +108,17 @@ pub(in crate::external_object::copy) fn fixture() -> (ObjectConfig, Config, Exte
         destination: pin(2, 2, "objects/destination/"),
         path: "nar/blob.nar".into(),
         source_object: CopySourceObject {
-            provider_version: "actual-immutable-version".into(),
+            provider_version: Some("actual-immutable-version".into()),
             etag: "\"actual-source-tag\"".into(),
             bytes: integer(11),
+            guard_stamp: None,
         },
         read_generation: domain.read_cohort.credential.generation,
         write_generation: domain.write_cohort.credential.generation,
         profile_digest: domain.commitment().unwrap(),
         part_bytes: domain.part_bytes,
         expected_sha256: None,
+        source_receipt_digest: None,
     };
     (
         object,
@@ -221,4 +224,68 @@ fn parser_and_execution_budgets_refuse_ambiguity_and_capacity_exhaustion() {
     let mut value = serde_json::to_value(config).unwrap();
     value["unreviewed"] = serde_json::json!(true);
     assert!(Config::parse(&serde_json::to_string(&value).unwrap(), &object).is_err());
+}
+
+pub(in crate::external_object::copy) fn protected_fixture(
+) -> (ObjectConfig, Config, ExternalCopyOriginal) {
+    let (object, mut config, mut original) = fixture();
+    let contract = &mut config.domains[0].provider_contract;
+    contract.versioned_conditional_range_read = false;
+    contract.versioned_multipart_complete = false;
+    contract.protected_versionless = Some(VersionlessProviderContract {
+        strong_conditional_range_read: true,
+        positive_multipart_complete: true,
+    });
+    original.version = 2;
+    original.source_object.provider_version = None;
+    original.source_object.guard_stamp = Some(aos_hub_core::storage_authority::StorageGuardStamp {
+        physical_authority_id: config.domains[0].read_cohort.authority.authority_id.clone(),
+        incarnation: aos_hub_core::storage_authority::GuardIncarnation::parse("11").unwrap(),
+    });
+    original.expected_sha256 = Some("e".repeat(64));
+    original.source_receipt_digest = Some("f".repeat(64));
+    original.profile_digest = config.domains[0].commitment().unwrap();
+    (object, config, original)
+}
+
+#[test]
+fn protected_copy_requires_its_exact_independently_installed_contract() {
+    let (object, config, original) = protected_fixture();
+    assert!(config.domain(&object, &original).is_ok());
+    let (_, versioned, _) = fixture();
+    assert_ne!(
+        config.domains[0].commitment().unwrap(),
+        versioned.domains[0].commitment().unwrap()
+    );
+    assert!(versioned.domain(&object, &original).is_err());
+    let encoded = serde_json::to_string(&versioned).unwrap();
+    assert!(!encoded.contains("protected_versionless"));
+
+    for requirement in 0..8 {
+        let mut changed = config.clone();
+        let contract = &mut changed.domains[0].provider_contract;
+        match requirement {
+            0 => {
+                contract
+                    .protected_versionless
+                    .as_mut()
+                    .unwrap()
+                    .strong_conditional_range_read = false
+            }
+            1 => {
+                contract
+                    .protected_versionless
+                    .as_mut()
+                    .unwrap()
+                    .positive_multipart_complete = false
+            }
+            2 => contract.versioned_conditional_range_read = true,
+            3 => contract.versioned_multipart_complete = true,
+            4 => contract.private_incomplete_upload = false,
+            5 => contract.completed_upload_rejects_late_parts = false,
+            6 => contract.abort_closes_upload_id = false,
+            _ => contract.upload_part_checksum_enforced = false,
+        }
+        assert!(Config::parse(&serde_json::to_string(&changed).unwrap(), &object).is_err());
+    }
 }

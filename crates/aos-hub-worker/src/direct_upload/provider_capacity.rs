@@ -11,6 +11,9 @@ use std::{
 
 use anyhow::{ensure, Result};
 
+/// One-use transfers of actual reserved source capacity within the same pool.
+pub(crate) mod transfer;
+
 /// Distinguishes queue read capacity from bounded foreground SDK work.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Class {
@@ -36,6 +39,7 @@ struct Waiter {
 }
 
 struct Pool {
+    generation: String,
     maximum: u32,
     active: Cell<u32>,
     by_class: [Cell<u32>; 3],
@@ -50,6 +54,7 @@ struct Pool {
 impl Pool {
     fn new(maximum: u32) -> Self {
         Self {
+            generation: uuid::Uuid::new_v4().to_string(),
             maximum,
             active: Cell::new(0),
             by_class: std::array::from_fn(|_| Cell::new(0)),

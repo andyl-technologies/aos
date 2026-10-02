@@ -131,15 +131,16 @@ fn positive_close_requires_full_ranges_hash_and_actual_provider_version() {
     value.copied_bytes = original.source_object.bytes;
     value.sha256 = Some("d".repeat(64));
     value.destination = Some(CopySourceObject {
-        provider_version: "actual-positive-version".into(),
+        provider_version: Some("actual-positive-version".into()),
         etag: "\"actual-positive-tag\"".into(),
         bytes: original.source_object.bytes,
+        guard_stamp: None,
     });
     value.validate(&original).unwrap();
     value.pending = true;
     assert!(value.validate(&original).is_err());
     value.pending = false;
-    value.destination.as_mut().unwrap().provider_version = "null".into();
+    value.destination.as_mut().unwrap().provider_version = Some("null".into());
     assert!(value.validate(&original).is_err());
 }
 
@@ -221,11 +222,13 @@ fn retained_copy_metadata_observation_keeps_installed_profile_and_owner_exact() 
             part_bytes: original.part_bytes,
             read_generation: original.read_generation,
             write_generation: original.write_generation,
+            protected_versionless: false,
         },
         retained: Some(RetainedCopyOriginal {
             original: original.clone(),
             progress: progress(),
         }),
+        source_closure: None,
     };
     let request_bytes = serde_json::to_vec(&query).unwrap();
     let reply_bytes = serde_json::to_vec(&reply).unwrap();

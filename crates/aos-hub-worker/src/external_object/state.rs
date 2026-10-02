@@ -64,6 +64,7 @@ pub(super) struct VisibleReceipt {
 pub(super) enum VisibleKind {
     MetadataPut,
     DestinationClose,
+    CopyDestination,
     OciStage,
     OciDestination,
 }
@@ -79,6 +80,7 @@ impl VisibleReceipt {
                 && match self.kind {
                     VisibleKind::MetadataPut => self.stage_configuration.is_none(),
                     VisibleKind::DestinationClose
+                    | VisibleKind::CopyDestination
                     | VisibleKind::OciStage
                     | VisibleKind::OciDestination => self
                         .stage_configuration

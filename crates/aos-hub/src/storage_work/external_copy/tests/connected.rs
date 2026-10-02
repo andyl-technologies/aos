@@ -206,9 +206,10 @@ async fn close_legacy_original(
         panic!("actual legacy source HEAD absent")
     };
     original.source_object = CopySourceObject {
-        provider_version: object.provider_version.unwrap(),
+        provider_version: Some(object.provider_version.unwrap()),
         etag: object.etag,
         bytes: LeaseInteger::new(i64::try_from(object.size).unwrap()).unwrap(),
+        guard_stamp: None,
     };
     for _ in 0..original.part_count().unwrap() + 2 {
         let now = aos_hub_core::clock::now_unix_secs();
@@ -601,7 +602,7 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
         .unwrap();
     assert_eq!(
         retained.original.source_object.provider_version,
-        "source-version-1"
+        Some("source-version-1".to_owned())
     );
     assert_eq!(
         writer
@@ -863,7 +864,7 @@ async fn actual_native_copy_guard_issuer_and_cold_terminal_replay() {
     assert!(original.progress.pending);
     assert_eq!(
         original.original.source_object.provider_version,
-        "source-version-1"
+        Some("source-version-1".to_owned())
     );
     rpc.retry_operation(
         Some(&auth),

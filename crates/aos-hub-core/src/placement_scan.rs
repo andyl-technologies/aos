@@ -35,6 +35,21 @@ const COPY_PART_UPLOAD_ATTEMPTS: u32 = 3;
 const COPY_PART_RETRY_DELAY_MILLIS: u64 = 250;
 const PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT: usize = 20;
 
+mod copy_policy;
+
+#[derive(Debug)]
+struct CopyPolicyFence {
+    source: SurfacePlacementRecord,
+    path: String,
+    policy: crate::surface_write::PlacementCopyPolicy,
+}
+
+#[derive(Debug)]
+struct PlacementCopyExecution {
+    detail: serde_json::Value,
+    policy_fence: Option<CopyPolicyFence>,
+}
+
 /// Executes reviewed physical-placement copy and scan operations.
 pub struct PlacementScanController {
     db: Arc<Database>,
@@ -184,8 +199,12 @@ impl PlacementScanController {
         } else {
             bail!("placement operation target has no surface");
         };
-        if let Some(copy_detail) = copy_detail {
-            detail["copy"] = copy_detail;
+        if let Some(copy_execution) = copy_detail {
+            // The final inventory awaited provider and SQL work. Its completion
+            // cannot extend the lifetime of the earlier installed-policy sample.
+            self.recheck_copy_policy(operation, claim_token, &placement,
+                copy_execution.policy_fence.as_ref()).await?;
+            detail["copy"] = copy_execution.detail;
         }
         let now = clock::now_unix_secs();
         let total = detail
@@ -217,7 +236,7 @@ impl PlacementScanController {
         operation: &TopologyOperationRecord,
         claim_token: &str,
         destination: &SurfacePlacementRecord,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<PlacementCopyExecution> {
         let source_target = self
             .db
             .topology_operation_targets(&operation.operation_id)
@@ -249,6 +268,35 @@ impl PlacementScanController {
         } else {
             MAX_SURFACE_LIST_PAGES
         };
+        let surface = match (source.registry_id, source.cache_id) {
+            (Some(id), None) => SurfaceTarget::Registry(id),
+            (None, Some(id)) => SurfaceTarget::BinaryCache(id),
+            _ => bail!("placement copy source has no exact logical surface"),
+        };
+        let catalogue = self.db.list_active_surface_objects(surface).await?;
+        let first_page = fetch.list_page(None, page_limit).await?;
+        first_page.validate(page_limit, None)?;
+        let policy_path = catalogue.first().map(|object| object.object_key.clone())
+            .or_else(|| first_page.paths.first().cloned());
+        let policy = match policy_path.as_deref() {
+            Some(path) => writes.placement_copy_policy(operation, claim_token,
+                &source, destination, path).await?,
+            None => None,
+        };
+        if policy.as_ref().is_some_and(|policy| policy.catalogue_only) {
+            let detail = self.copy_catalogue_objects(operation, claim_token, &source,
+                destination, fetch.as_ref(), writes.as_ref(), surface, catalogue,
+                first_page, page_limit, max_pages, policy.as_ref().context("copy policy absent")?,
+                policy_path.as_deref().context("copy policy path absent")?).await?;
+            return Ok(PlacementCopyExecution {
+                detail,
+                policy_fence: Some(CopyPolicyFence {
+                    source,
+                    path: policy_path.context("copy policy path absent")?,
+                    policy: policy.context("copy policy absent")?,
+                }),
+            });
+        }
         let destination_evidence = collect_listing_evidence(
             destination_fetch.as_ref(),
             page_limit,
@@ -264,6 +312,7 @@ impl PlacementScanController {
         let mut copied_objects = 0_i64;
         let mut copied_bytes = 0_u64;
         let mut reused_objects = 0_i64;
+        let mut first_page = Some(first_page);
         loop {
             pages = pages
                 .checked_add(1)
@@ -271,7 +320,10 @@ impl PlacementScanController {
             if pages > max_pages {
                 bail!("placement copy exceeded the page limit");
             }
-            let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
+            let page = match first_page.take() {
+                Some(page) => page,
+                None => fetch.list_page(cursor.as_deref(), page_limit).await?,
+            };
             page.validate(page_limit, cursor.as_deref())?;
             let source_evidence = page.evidence;
             for path in page.paths {
@@ -284,19 +336,25 @@ impl PlacementScanController {
                     source_evidence.get(&path),
                     destination_evidence.get(&path),
                 )? {
+                    if policy.is_some() {
+                        anyhow::ensure!(writes.placement_copy_policy(operation,
+                            claim_token, &source, destination, &path).await? == policy,
+                            "installed placement copy policy changed before LIST reuse");
+                    }
                     reused_objects = reused_objects
                         .checked_add(1)
                         .context("placement copy reuse count overflow")?;
                     continue;
                 }
                 let size = match writes
-                    .copy_placement_object_claimed(
+                    .copy_placement_object_with_policy(
                         operation,
                         claim_token,
                         &source,
                         destination,
                         &path,
                         source_evidence.get(&path),
+                        policy.as_ref(),
                     )
                     .await?
                 {
@@ -323,13 +381,37 @@ impl PlacementScanController {
                 break;
             }
         }
-        Ok(serde_json::json!({
+        if let Some(path) = policy_path.as_deref() {
+            anyhow::ensure!(writes.placement_copy_policy(operation, claim_token,
+                &source, destination, &path).await? == policy,
+                "installed placement copy policy changed during enumeration");
+        }
+        let detail = serde_json::json!({
             "source": source.name,
             "destination": destination.name,
             "copiedObjects": copied_objects,
             "copiedBytes": copied_bytes,
             "reusedObjects": reused_objects,
-        }))
+        });
+        let policy_fence = policy.zip(policy_path).map(|(policy, path)|
+            CopyPolicyFence { source, path, policy });
+        Ok(PlacementCopyExecution { detail, policy_fence })
+    }
+
+    async fn recheck_copy_policy(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        destination: &SurfacePlacementRecord,
+        fence: Option<&CopyPolicyFence>,
+    ) -> Result<()> {
+        if let Some(fence) = fence {
+            let writes = self.writes.as_ref().context("copy write provider disappeared")?;
+            anyhow::ensure!(writes.placement_copy_policy(operation, claim_token,
+                &fence.source, destination, &fence.path).await?.as_ref() == Some(&fence.policy),
+                "installed placement copy policy changed during final inventory");
+        }
+        Ok(())
     }
 
     async fn scan_catalog_placement(
@@ -2175,4 +2257,196 @@ mod tests {
         assert_eq!(operation.state, "succeeded", "{:?}", operation.error);
         assert!(operation.detail_json.contains("\"strongVersionObjects\":1"));
     }
+
+    struct ProtectedCopyProvider {
+        storage: CopySurfaceProvider,
+        policy: crate::surface_write::PlacementCopyPolicy,
+        calls: Arc<Mutex<Vec<String>>>,
+        policy_reads: AtomicUsize,
+        drift_on_read: usize,
+        refuse_remote_result: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl SurfaceWriteProvider for ProtectedCopyProvider {
+        async fn placement_writer(&self, _placement: &SurfacePlacementRecord)
+            -> Result<Box<dyn SurfaceWrite>> {
+            bail!("protected copy must never initialize a Native body writer")
+        }
+
+        async fn placement_writer_at_revision(&self, placement: &SurfacePlacementRecord,
+            _revision: &crate::db::BindingWriteRevisionRecord) -> Result<Box<dyn SurfaceWrite>> {
+            self.placement_writer(placement).await
+        }
+
+        async fn placement_deleter(&self, placement: &SurfacePlacementRecord,
+            _version: i64, _generation: i64) -> Result<Box<dyn SurfaceWrite>> {
+            self.placement_writer(placement).await
+        }
+
+        async fn placement_copy_policy(&self, _operation: &TopologyOperationRecord,
+            _claim: &str, _source: &SurfacePlacementRecord,
+            _destination: &SurfacePlacementRecord, _path: &str)
+            -> Result<Option<crate::surface_write::PlacementCopyPolicy>> {
+            let mut policy = self.policy.clone();
+            if self.policy_reads.fetch_add(1, Ordering::SeqCst) == self.drift_on_read {
+                policy.profile_digest = "b".repeat(64);
+            }
+            Ok(Some(policy))
+        }
+
+        async fn copy_placement_object_claimed(&self, _operation: &TopologyOperationRecord,
+            _claim: &str, source: &SurfacePlacementRecord, destination: &SurfacePlacementRecord,
+            path: &str, _listed: Option<&SurfaceListedEvidence>) -> Result<Option<u64>> {
+            self.calls.lock().unwrap().push(path.to_owned());
+            if self.refuse_remote_result {
+                return Ok(None);
+            }
+            let mut storage = self.storage.objects.lock().unwrap();
+            let bytes = storage.get(&source.name).and_then(|objects| objects.get(path))
+                .cloned().unwrap_or_else(|| b"known".to_vec());
+            storage.entry(destination.name.clone()).or_default().insert(path.into(), bytes.clone());
+            Ok(Some(bytes.len() as u64))
+        }
+    }
+
+    async fn protected_copy_fixture(size: Option<i64>) -> (
+        Arc<Database>, SurfacePlacementRecord, SurfacePlacementRecord, TopologyOperationRecord,
+        CopySurfaceProvider, ProtectedCopyProvider,
+    ) {
+        let (db, source, _) = scan_fixture("protected-copy", "protected-copy-scan").await;
+        let surface = SurfaceTarget::Registry(source.registry_id.unwrap());
+        db.create_surface_object(&SetSurfaceObject { surface, object_key: "known".into(),
+            content_hash: Some(hex::encode(Sha256::digest(b"known"))), size,
+            object_kind: "immutable".into(), mutable_publication_id: None }).await.unwrap();
+        let destination = db.create_surface_placement(&NewSurfacePlacementSpec {
+            surface, name: "protected-target".into(), binding_id: source.binding_id,
+            prefix: "protected-copy/target".into(), kind: "complete".into(),
+            desired_state: "active".into(), hash_range: None, desired_read_enabled: true,
+            read_order: 10, requires_conditional_writes: false,
+        }).await.unwrap();
+        let operation = db.create_topology_operation(&NewTopologyOperation {
+            operation_id: "protected-copy-operation".into(), operation_kind: "replicate_placement".into(),
+            control_permission: Permission::StorageManage,
+            targets: vec![NewTopologyOperationTarget { role: "source".into(),
+                target: NewTopologyOperationTargetRef::Placement(source.id),
+                generation_key: source.resource_version, configuration_digest: String::new() },
+                NewTopologyOperationTarget { role: "primary".into(),
+                target: NewTopologyOperationTargetRef::Placement(destination.id),
+                generation_key: destination.resource_version, configuration_digest: String::new() }],
+            detail_json: "{}".into(), progress_total: None,
+        }).await.unwrap();
+        let storage = CopySurfaceProvider::default();
+        for name in [&source.name, &destination.name] {
+            storage.objects.lock().unwrap().entry(name.clone()).or_default()
+                .insert("known".into(), b"known".to_vec());
+        }
+        let provider = ProtectedCopyProvider { storage: storage.clone(),
+            policy: crate::surface_write::PlacementCopyPolicy {
+                profile_digest: "a".repeat(64), catalogue_only: true },
+            calls: Arc::new(Mutex::new(Vec::new())), policy_reads: AtomicUsize::new(0),
+            drift_on_read: usize::MAX, refuse_remote_result: false };
+        (db, source, destination, operation, storage, provider)
+    }
+
+    #[tokio::test]
+    async fn protected_catalogue_copy_replays_matching_lists_and_reports_unknown_keys() {
+        let (db, source, destination, operation, storage, provider) = protected_copy_fixture(Some(5)).await;
+        storage.objects.lock().unwrap().get_mut(&source.name).unwrap()
+            .insert("uncatalogued-draft".into(), b"unknown".to_vec());
+        let calls = provider.calls.clone();
+        let controller = PlacementScanController::new(db, Arc::new(storage.clone()))
+            .with_writes(Arc::new(provider));
+
+        let detail = controller.copy_to_placement(&operation, "actual-controller-fixture", &destination)
+            .await.unwrap().detail;
+
+        assert_eq!(*calls.lock().unwrap(), ["known"]);
+        assert_eq!(detail["reusedObjects"], 0);
+        assert_eq!(detail["copiedObjects"], 1);
+        assert_eq!(detail["unknownSourceObjects"], 1);
+        assert_eq!(detail["unknownSourceSample"], serde_json::json!(["uncatalogued-draft"]));
+        assert!(!storage.objects.lock().unwrap()[&destination.name].contains_key("uncatalogued-draft"));
+    }
+
+    #[tokio::test]
+    async fn protected_catalogue_copy_replays_every_entry_even_without_source_listing() {
+        let (db, source, destination, operation, storage, provider) = protected_copy_fixture(Some(5)).await;
+        storage.objects.lock().unwrap().get_mut(&source.name).unwrap().clear();
+        let calls = provider.calls.clone();
+        let controller = PlacementScanController::new(db, Arc::new(storage))
+            .with_writes(Arc::new(provider));
+        controller.copy_to_placement(&operation, "actual-controller-fixture", &destination)
+            .await.unwrap();
+        assert_eq!(*calls.lock().unwrap(), ["known"]);
+    }
+
+    #[tokio::test]
+    async fn protected_catalogue_copy_refuses_missing_size_profile_drift_and_body_fallback() {
+        for scenario in ["missing-size", "profile-drift", "body-fallback"] {
+            let size = (scenario != "missing-size").then_some(5);
+            let (db, _, destination, operation, storage, mut provider) = protected_copy_fixture(size).await;
+            provider.drift_on_read = if scenario == "profile-drift" { 1 } else { usize::MAX };
+            provider.refuse_remote_result = scenario == "body-fallback";
+            let calls = provider.calls.clone();
+            let controller = PlacementScanController::new(db, Arc::new(storage))
+                .with_writes(Arc::new(provider));
+
+            let error = controller.copy_to_placement(&operation, "actual-controller-fixture", &destination)
+                .await.unwrap_err();
+
+            assert!(!error.to_string().is_empty());
+            assert_eq!(calls.lock().unwrap().len(), usize::from(scenario == "body-fallback"));
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_catalogue_copy_reports_an_unknown_only_source_without_copying_it() {
+        let (db, source, destination, operation, storage, provider) = protected_copy_fixture(Some(5)).await;
+        let surface = SurfaceTarget::Registry(source.registry_id.unwrap());
+        let object = db.list_active_surface_objects(surface).await.unwrap().pop().unwrap();
+        assert!(db.tombstone_surface_object(object.id, object.resource_version,
+            clock::now_unix_secs()).await.unwrap());
+        let calls = provider.calls.clone();
+        let controller = PlacementScanController::new(db, Arc::new(storage))
+            .with_writes(Arc::new(provider));
+
+        let result = controller.copy_to_placement(&operation,
+            "actual-controller-fixture", &destination).await.unwrap();
+
+        assert!(calls.lock().unwrap().is_empty());
+        assert_eq!(result.detail["copiedObjects"], 0);
+        assert_eq!(result.detail["unknownSourceObjects"], 1);
+        assert_eq!(result.detail["unknownSourceSample"], serde_json::json!(["known"]));
+    }
+
+    #[tokio::test]
+    async fn protected_catalogue_copy_rechecks_installed_policy_after_final_inventory() {
+        for drift in [false, true] {
+            let (db, _, destination, operation, storage, mut provider) = protected_copy_fixture(Some(5)).await;
+            provider.drift_on_read = if drift { 3 } else { usize::MAX };
+            let token = "actual-protected-copy-claim";
+            let claimed = db.claim_surface_placement_scan_operation(&operation.operation_id,
+                operation.resource_version, token, 600).await.unwrap().unwrap();
+            let controller = PlacementScanController::new(db.clone(), Arc::new(storage))
+                .with_writes(Arc::new(provider));
+
+            let result = controller.run_claimed(&claimed, token).await;
+            let current = db.topology_operation(&operation.operation_id).await.unwrap().unwrap();
+
+            if drift {
+                assert!(result.unwrap_err().to_string().contains("during final inventory"));
+                assert_ne!(current.state, "succeeded");
+            } else {
+                result.unwrap();
+                assert_eq!(current.state, "succeeded");
+                let detail: serde_json::Value = serde_json::from_str(&current.detail_json).unwrap();
+                assert_eq!(detail["phase"], "complete");
+                assert_eq!(detail["copy"]["copiedObjects"], 1);
+            }
+            assert_eq!(db.surface_placement(destination.id).await.unwrap().unwrap().completeness,
+                "complete");
+        }
+    }
+
 }

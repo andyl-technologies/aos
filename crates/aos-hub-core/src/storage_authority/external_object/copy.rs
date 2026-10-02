@@ -10,9 +10,16 @@
 //!             binding_stable_id, binding_resource_version, snapshot_revision,
 //!             source, destination, path, source_object, read_generation,
 //!             write_generation, binding_write_revision, profile_digest,
-//!             part_bytes, expected_sha256}
+//!             part_bytes, expected_sha256, source_receipt_digest?}
+//! source_object = {provider_version?: real provider version,
+//!                  etag, bytes, guard_stamp?: permanent source incarnation}
 //! copy_id = SHA256(domain, topology.operation_id, destination stable ID, path)
 //! ```
+//!
+//! Version one retains the exact original provider-version wire form. Version
+//! two requires a permanent source guard stamp, its positive receipt digest,
+//! and a trusted whole-object catalogue hash and size. Absent version-two fields
+//! are omitted from version-one canonical bytes and authentication domains.
 
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
@@ -20,7 +27,7 @@ use serde::{Deserialize, Serialize};
 use crate::db::{SurfacePlacementRecord, TopologyOperationRecord, TopologyOperationTargetRecord};
 use crate::direct_upload::{MAX_DIRECT_PARTS, MAX_DIRECT_PART_BYTES, MIN_DIRECT_PART_BYTES};
 use crate::domain::Permission;
-use crate::storage_authority::{canonical_digest, lease::LeaseInteger};
+use crate::storage_authority::{canonical_digest, lease::LeaseInteger, StorageGuardStamp};
 
 /// Compact physical ownership and positive receipt transitions.
 pub mod session;
@@ -33,6 +40,9 @@ pub mod original_lookup;
 
 /// Bounded installed-profile and retained-owner queries under a live SQL claim.
 pub mod metadata;
+
+/// Compact projections of genuine permanent source closures.
+pub mod source;
 
 /// Historical exact codec observations without transport or dispatch permission.
 pub mod observation;
@@ -251,28 +261,48 @@ impl CopyPlacementPin {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CopySourceObject {
-    /// Actual immutable provider version; a null version or guard stamp refuses.
-    pub provider_version: String,
+    /// Actual immutable provider version, present only for versioned objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_version: Option<String>,
     /// Actual strong quoted provider entity tag, paired with the version.
     pub etag: String,
     /// Exact known length that bounds all conditional source ranges.
     pub bytes: LeaseInteger,
+    /// Positive permanent physical-key incarnation for a versionless object.
+    /// The guard must independently verify its actual closed receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_stamp: Option<StorageGuardStamp>,
 }
 
 impl CopySourceObject {
     /// Checks exact provider identity and the existing storage-work size bound.
     ///
     /// # Errors
-    /// Returns an error for absent version, weak tag or an excessive length.
+    /// Returns an error for missing or ambiguous incarnation, weak tag or an
+    /// excessive length. A valid shape does not establish guard receipt custody.
     pub fn validate(&self) -> Result<()> {
         ensure!(
-            crate::storage_work::valid_provider_version(&self.provider_version)
-                && self.provider_version != "null"
-                && crate::surface_write::strong_if_match_etag(&self.etag)? == self.etag
+            (match (&self.provider_version, &self.guard_stamp) {
+                (Some(version), None) =>
+                    crate::storage_work::valid_provider_version(version) && version != "null",
+                (None, Some(_)) => true,
+                _ => false,
+            }) && crate::surface_write::strong_if_match_etag(&self.etag)? == self.etag
                 && self.bytes.get() as u64 <= crate::storage_work::MAX_VERIFY_SOURCE_BYTES,
             "external copy requires a bounded immutable source incarnation"
         );
         Ok(())
+    }
+
+    /// Borrows the immutable provider version without accepting a guard stamp.
+    ///
+    /// # Errors
+    /// Returns an error for a protected versionless incarnation or invalid shape.
+    pub fn require_provider_version(&self) -> Result<&str> {
+        self.validate()?;
+        self.provider_version
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("immutable provider version required"))
     }
 }
 
@@ -280,7 +310,7 @@ impl CopySourceObject {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalCopyOriginal {
-    /// Closed original version, currently one.
+    /// One selects immutable provider versions; two selects protected versionless sources.
     pub version: u8,
     /// Original Native and Worker deployment identity.
     pub deployment_id: String,
@@ -315,6 +345,10 @@ pub struct ExternalCopyOriginal {
     /// Existing authoritative SHA-256, when known before the conditional read.
     /// Absence requires computing the complete source hash beside storage.
     pub expected_sha256: Option<String>,
+    /// Exact retained positive source receipt commitment for a versionless copy.
+    /// Absence preserves the original version-one byte contract.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_receipt_digest: Option<String>,
 }
 
 impl ExternalCopyOriginal {
@@ -332,8 +366,19 @@ impl ExternalCopyOriginal {
         identifier(&self.binding_stable_id)?;
         let part_bytes = self.part_bytes.get() as u64;
         ensure!(
-            self.version == 1
-                && self.binding_id.get() > 0
+            (match self.version {
+                1 =>
+                    self.source_object.provider_version.is_some()
+                        && self.source_receipt_digest.is_none(),
+                2 =>
+                    self.source_object.guard_stamp.is_some()
+                        && self
+                            .source_receipt_digest
+                            .as_ref()
+                            .is_some_and(|value| digest_string(value))
+                        && self.expected_sha256.is_some(),
+                _ => false,
+            }) && self.binding_id.get() > 0
                 && self.binding_resource_version.get() > 0
                 && self.source.binding_id == self.binding_id
                 && self.destination.binding_id == self.binding_id
@@ -358,6 +403,34 @@ impl ExternalCopyOriginal {
             self.part_count()? <= MAX_DIRECT_PARTS
                 && serde_json::to_vec(self)?.len() <= MAX_EXTERNAL_COPY_ORIGINAL_BYTES,
             "external copy original or multipart count exceeds bound"
+        );
+        Ok(())
+    }
+
+    /// Checks positive destination incarnation against this original's protocol.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid destination, a changed byte count,
+    /// a versionless receipt on version one, or a different physical authority.
+    pub fn validate_destination(&self, destination: &CopySourceObject) -> Result<()> {
+        self.validate()?;
+        destination.validate()?;
+        ensure!(
+            destination.bytes == self.source_object.bytes,
+            "copy destination length differs"
+        );
+        ensure!(
+            match self.version {
+                1 => destination.provider_version.is_some(),
+                2 => destination
+                    .guard_stamp
+                    .as_ref()
+                    .zip(self.source_object.guard_stamp.as_ref())
+                    .is_some_and(|(destination, source)| destination.physical_authority_id
+                        == source.physical_authority_id),
+                _ => false,
+            },
+            "copy destination incarnation protocol differs"
         );
         Ok(())
     }

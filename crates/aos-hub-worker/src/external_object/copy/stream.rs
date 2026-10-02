@@ -21,6 +21,14 @@ use super::bytes::{RangeBytes, RangeDigest, CHUNK_BYTES};
 use super::window::DispatchWindow;
 
 /// Selects an exact versioned range after the caller's guard and lease checks.
+pub(super) enum SourceRequest<'a> {
+    Provider(&'a DirectSignedProviderRequest),
+    Protected {
+        env: &'a worker::Env,
+        request: &'a super::source_protocol::Request,
+    },
+}
+
 pub(super) struct SourceRange<'a> {
     pub(super) source: &'a CopySourceObject,
     pub(super) offset: u64,
@@ -61,7 +69,7 @@ impl SourceRange<'_> {
             .map(|(_, value)| value.into_owned())
             .collect();
         ensure!(
-            versions == [self.source.provider_version.clone()],
+            versions == [self.source.require_provider_version()?.to_owned()],
             "copy source signed version differs"
         );
         provider_headers(signed)
@@ -73,8 +81,12 @@ impl SourceRange<'_> {
         ensure!(
             response.status_code() == 206
                 && headers.get("etag")?.as_deref() == Some(self.source.etag.as_str())
-                && headers.get("x-amz-version-id")?.as_deref()
-                    == Some(self.source.provider_version.as_str())
+                && match self.source.provider_version.as_deref() {
+                    Some(version) => headers.get("x-amz-version-id")?.as_deref() == Some(version),
+                    None =>
+                        headers.get("x-amz-version-id")?.is_none()
+                            && self.source.guard_stamp.is_some(),
+                }
                 && headers.get("content-length")?.as_deref()
                     == Some(self.bytes.to_string().as_str())
                 && headers.get("content-range")?.as_deref()
@@ -103,7 +115,7 @@ impl SourceRange<'_> {
 /// Refuses changed source metadata, failed/truncated reads, excessive bytes,
 /// unqualified clock, expired authority or canceled invocation.
 pub(super) async fn hash_range(
-    signed: &DirectSignedProviderRequest,
+    signed: &SourceRequest<'_>,
     range: &SourceRange<'_>,
     continuation: OciSha256State,
     window: &DispatchWindow<'_>,
@@ -128,7 +140,7 @@ pub(super) async fn hash_range(
 /// Refuses changed source/checksum, failed native framing, absent positive part
 /// acknowledgement, cancellation or any stale authenticated dispatch window.
 pub(super) async fn upload_range(
-    read: &DirectSignedProviderRequest,
+    read: &SourceRequest<'_>,
     write: &DirectSignedProviderRequest,
     range: &SourceRange<'_>,
     continuation: OciSha256State,
@@ -148,7 +160,7 @@ pub(super) async fn upload_range(
 }
 
 async fn upload_range_inner(
-    read: &DirectSignedProviderRequest,
+    read: &SourceRequest<'_>,
     write: &DirectSignedProviderRequest,
     range: &SourceRange<'_>,
     continuation: OciSha256State,
@@ -215,29 +227,46 @@ async fn upload_range_inner(
 }
 
 async fn source_reader(
-    signed: &DirectSignedProviderRequest,
+    signed: &SourceRequest<'_>,
     range: &SourceRange<'_>,
     cancellation: &Cancellation,
     fresh: &dyn Fn() -> Result<()>,
     lifetime: &super::lifetime::Lifetime,
 ) -> Result<Reader> {
-    let mut init = RequestInit::new();
-    init.with_method(Method::Get)
-        .with_redirect(RequestRedirect::Manual)
-        .with_headers(range.headers(signed)?);
-    let request = Request::new_with_init(&signed.url, &init)?;
     fresh()?;
-    crate::direct_upload::provider_capacity::record_dispatch();
-    let response = Fetch::Request(request)
-        .send_with_signal(&worker::AbortSignal::from(cancellation.0.signal()))
-        .await?;
+    let response = match signed {
+        SourceRequest::Provider(signed) => {
+            let mut init = RequestInit::new();
+            init.with_method(Method::Get)
+                .with_redirect(RequestRedirect::Manual)
+                .with_headers(range.headers(signed)?);
+            let request = Request::new_with_init(&signed.url, &init)?;
+            crate::direct_upload::provider_capacity::record_dispatch();
+            Fetch::Request(request)
+                .send_with_signal(&worker::AbortSignal::from(cancellation.0.signal()))
+                .await?
+        }
+        SourceRequest::Protected { env, request } => {
+            super::source::range(env, request, &cancellation.0.signal()).await?
+        }
+    };
     fresh()?;
+    let mut unhanded = match response.body() {
+        ResponseBody::Stream(body) => Some(super::super::oci::byte_stream::UnhandedStream::new(
+            body.clone().into(),
+        )),
+        _ => None,
+    };
     range.validate_response(&response)?;
     let (_, body) = response.into_parts();
     let ResponseBody::Stream(stream) = body else {
         anyhow::bail!("copy source native stream unavailable");
     };
-    Reader::new(stream.into(), lifetime)
+    let reader = Reader::new(stream.into(), lifetime)?;
+    if let Some(owner) = &mut unhanded {
+        owner.disarm();
+    }
+    Ok(reader)
 }
 
 async fn pump(
@@ -295,14 +324,14 @@ impl Drop for Cancellation {
     }
 }
 
-struct Reader {
+pub(super) struct Reader {
     native: JsValue,
     ended: std::cell::Cell<bool>,
     _registration: super::lifetime::Registration,
 }
 
 impl Reader {
-    fn new(stream: JsValue, lifetime: &super::lifetime::Lifetime) -> Result<Self> {
+    pub(super) fn new(stream: JsValue, lifetime: &super::lifetime::Lifetime) -> Result<Self> {
         let options = js_sys::Object::new();
         Reflect::set(&options, &"mode".into(), &"byob".into()).map_err(|_| refused())?;
         let native = invoke(&stream, "getReader", &[options.into()])?;
@@ -314,7 +343,7 @@ impl Reader {
         })
     }
 
-    async fn read(&self) -> Result<(Uint8Array, bool)> {
+    pub(super) async fn read(&self) -> Result<(Uint8Array, bool)> {
         let view = Uint8Array::new_with_length(CHUNK_BYTES as u32);
         let result = awaited(invoke(&self.native, "read", &[view.into()])?).await?;
         let done = Reflect::get(&result, &"done".into())

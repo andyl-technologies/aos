@@ -47,6 +47,19 @@ pub(super) struct ProviderContract {
     pub abort_closes_upload_id: bool,
     pub upload_part_checksum_enforced: bool,
     pub versioned_empty_put: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_versionless: Option<VersionlessProviderContract>,
+}
+
+/// Describes separately reviewed versionless transport beneath physical guards.
+///
+/// These facts do not create source custody: every read still requires an
+/// independently retained positive receipt and a gate held through source EOF.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct VersionlessProviderContract {
+    pub strong_conditional_range_read: bool,
+    pub positive_multipart_complete: bool,
 }
 
 /// Binds one exact installed provider domain to its purpose-local cohorts.
@@ -71,7 +84,12 @@ impl Domain {
     /// # Errors
     /// Returns an error when canonical serialization fails.
     pub(super) fn commitment(&self) -> Result<String> {
-        digest(&("aos.external-copy-configured-domain.v1", self))
+        let version = if self.provider_contract.protected_versionless.is_some() {
+            "aos.external-copy-configured-domain.v2"
+        } else {
+            "aos.external-copy-configured-domain.v1"
+        };
+        digest(&(version, self))
     }
 
     fn validate(&self, object: &ObjectConfig) -> Result<()> {
@@ -97,8 +115,17 @@ impl Domain {
                 && provider.contract_id.len() <= 128
                 && !provider.contract_id.chars().any(char::is_control)
                 && digest_string(&provider.evidence_digest)
-                && provider.versioned_conditional_range_read
-                && provider.versioned_multipart_complete
+                && match &provider.protected_versionless {
+                    None =>
+                        provider.versioned_conditional_range_read
+                            && provider.versioned_multipart_complete,
+                    Some(contract) =>
+                        !provider.versioned_conditional_range_read
+                            && !provider.versioned_multipart_complete
+                            && !provider.versioned_empty_put
+                            && contract.strong_conditional_range_read
+                            && contract.positive_multipart_complete,
+                }
                 && provider.private_incomplete_upload
                 && provider.completed_upload_rejects_late_parts
                 && provider.abort_closes_upload_id
@@ -174,6 +201,8 @@ impl Domain {
         let association = &self.write_cohort.association;
         ensure!(
             original.profile_digest == self.commitment()?
+                && (original.version == 2)
+                    == self.provider_contract.protected_versionless.is_some()
                 && original.binding_id == association.binding_id
                 && original.binding_stable_id == association.binding_stable_id
                 && original.binding_resource_version == association.binding_resource_version
@@ -215,6 +244,19 @@ impl Domain {
         object: &ObjectConfig,
         selector: &aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector,
     ) -> Result<StorageAuthorityObjectScope> {
+        self.selector_scope_for(object, selector, true)
+    }
+
+    /// Resolves either sealed physical key for read-only source discovery.
+    ///
+    /// # Errors
+    /// Refuses foreign pins, collapsed keys or a key outside the configured domain.
+    pub(super) fn selector_scope_for(
+        &self,
+        object: &ObjectConfig,
+        selector: &aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector,
+        destination: bool,
+    ) -> Result<StorageAuthorityObjectScope> {
         self.validate(object)?;
         selector.validate()?;
         let association = &self.write_cohort.association;
@@ -236,7 +278,7 @@ impl Domain {
             keys.push(key);
         }
         ensure!(keys[0] != keys[1], "copy lookup collapses physical keys");
-        object.scope(&self.write_cohort, keys.remove(1))
+        object.scope(&self.write_cohort, keys.remove(usize::from(destination)))
     }
 
     /// Resolves the original physical key under its independently installed cohort.

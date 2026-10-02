@@ -147,6 +147,8 @@ pub(super) enum Reply {
         turn: CopyTurn,
         floor: EpochLeaseFloor,
         source_state: Option<OciSha256State>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_stamp: Option<aos_hub_core::storage_authority::StorageGuardStamp>,
     },
     ManifestPage {
         parts: Vec<Part>,
@@ -174,9 +176,19 @@ impl Reply {
                     turn,
                     floor,
                     source_state,
+                    destination_stamp,
                 },
                 Operation::Begin { .. },
             ) => {
+                ensure!(
+                    match (request.original.version, destination_stamp) {
+                        (1, None) => true,
+                        (2, Some(stamp)) =>
+                            stamp.physical_authority_id == request.scope.physical_authority_id,
+                        _ => false,
+                    },
+                    "copy destination incarnation projection differs"
+                );
                 request.validate_turn(turn)?;
                 ensure!(
                     digest_string(&turn.dispatch_nonce)

@@ -134,6 +134,15 @@ async fn execute(
     .await?;
     check_publication(object, domain, work, &publication, &deployment)?;
 
+    if work.original.version == 2 {
+        let request = super::source::request(&work.plan, domain.commitment()?,
+            domain.scope(object, &work.original, false)?,
+            Some(aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector::from_original(&work.original)?),
+            super::source_protocol::Operation::Check { original: work.original.clone() })?;
+        super::source::lookup(env, &request).await?;
+        check_publication(object, domain, work, &publication, &deployment)?;
+    }
+
     // A part is selected only after a positive Create. Read permission is
     // acquired before reserving the destination turn so unsupported/expired
     // source admission cannot leave a preventable destination unknown.
@@ -157,8 +166,13 @@ async fn execute(
         source.operation = Operation::SourceRead {
             read_lease: token.clone(),
         };
-        let Reply::ReadAuthorized { floor } = call(env, &source).await? else {
-            anyhow::bail!("source read floor absent");
+        let floor = if work.original.version == 1 {
+            let Reply::ReadAuthorized { floor } = call(env, &source).await? else {
+                anyhow::bail!("source read floor absent");
+            };
+            Some(floor)
+        } else {
+            None
         };
         Some((token, floor, source.scope))
     } else {
@@ -170,13 +184,14 @@ async fn execute(
         control: work.control,
         write_lease: write_lease.clone(),
     };
-    let (turn, floor, continuation) = match call(env, &message).await? {
+    let (turn, floor, continuation, destination_stamp) = match call(env, &message).await? {
         Reply::Progress { progress } => return Ok(progress),
         Reply::Dispatch {
             turn,
             floor,
             source_state,
-        } => (turn, floor, source_state),
+            destination_stamp,
+        } => (turn, floor, source_state, destination_stamp),
         _ => anyhow::bail!("copy guard dispatch absent"),
     };
     let fresh = || -> Result<()> {
@@ -190,7 +205,7 @@ async fn execute(
             effect(&turn.action),
             object.clock(),
         )?;
-        if let Some((token, source_floor, scope)) = &read {
+        if let Some((token, Some(source_floor), scope)) = &read {
             object.verifier()?.validate_lease(
                 token.as_bytes(),
                 &domain.read_cohort,
@@ -222,6 +237,12 @@ async fn execute(
         &|| window.check(),
     )
     .await?;
+    let (capacity, mut source_capacity) = if part && work.original.version == 2 {
+        let (destination, source) = crate::direct_upload::provider_capacity::transfer::split(capacity)?;
+        (destination, Some(source))
+    } else {
+        (capacity, None)
+    };
     window.lifetime.retain_capacity(capacity)?;
     let write_secret = publication.credential_text(
         &StorageCredentialSelector {
@@ -269,16 +290,41 @@ async fn execute(
                 offset: *offset,
                 bytes: *bytes,
             };
-            let signed_read = source.versioned_conditional_range_request(
-                &work.original.path,
-                &work.original.source_object,
-                *offset,
-                *bytes,
-                object.clock().observed_at,
-                PROVIDER_TTL,
-            )?;
+            let signed_read = if work.original.version == 1 {
+                Some(source.versioned_conditional_range_request(
+                    &work.original.path,
+                    &work.original.source_object,
+                    *offset,
+                    *bytes,
+                    object.clock().observed_at,
+                    PROVIDER_TTL,
+                )?)
+            } else {
+                None
+            };
+            let mut guarded_read = if work.original.version == 2 {
+                Some(super::source::request(&work.plan, domain.commitment()?,
+                    domain.scope(object, &work.original, false)?,
+                    Some(aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector::from_original(&work.original)?),
+                    super::source_protocol::Operation::Range { original: work.original.clone(),
+                        read_lease: read.as_ref().ok_or_else(|| anyhow::anyhow!("source read lease absent"))?.0.clone(),
+                        offset: *offset, bytes: *bytes })?)
+            } else {
+                None
+            };
+            let source_reservation = if let Some(request) = &mut guarded_read {
+                Some(super::source::reserve(request, source_capacity.take(), &window).await?)
+            } else {
+                None
+            };
+            let source_request = match (&signed_read, &guarded_read) {
+                (Some(signed), None) => stream::SourceRequest::Provider(signed),
+                (None, Some(request)) => stream::SourceRequest::Protected { env, request },
+                _ => anyhow::bail!("source incarnation selection differs"),
+            };
             let expected =
-                stream::hash_range(&signed_read, &range, continuation.clone(), &window).await?;
+                stream::hash_range(&source_request, &range, continuation.clone(), &window).await?;
+            drop(source_reservation);
             let descriptor = DirectPart {
                 part_number: *number,
                 offset: WireInteger::new(*offset),
@@ -297,16 +343,42 @@ async fn execute(
                 object.clock().observed_at,
                 PROVIDER_TTL,
             )?;
-            let signed_read = source.versioned_conditional_range_request(
-                &work.original.path,
-                &work.original.source_object,
-                *offset,
-                *bytes,
-                object.clock().observed_at,
-                PROVIDER_TTL,
-            )?;
+            let signed_read = if work.original.version == 1 {
+                Some(source.versioned_conditional_range_request(
+                    &work.original.path,
+                    &work.original.source_object,
+                    *offset,
+                    *bytes,
+                    object.clock().observed_at,
+                    PROVIDER_TTL,
+                )?)
+            } else {
+                None
+            };
+            let mut guarded_read = if work.original.version == 2 {
+                Some(super::source::request(&work.plan, domain.commitment()?,
+                    domain.scope(object, &work.original, false)?,
+                    Some(aos_hub_core::storage_authority::external_object::copy::original_lookup::CopyOriginalSelector::from_original(&work.original)?),
+                    super::source_protocol::Operation::Range { original: work.original.clone(),
+                        read_lease: read.as_ref().ok_or_else(|| anyhow::anyhow!("source read lease absent"))?.0.clone(),
+                        offset: *offset, bytes: *bytes })?)
+            } else {
+                None
+            };
+            // The first GET reached EOF. The destination slot remains held,
+            // so another source can never fill the pool while awaiting this PUT.
+            let _source_reservation = if let Some(request) = &mut guarded_read {
+                Some(super::source::reserve(request, None, &window).await?)
+            } else {
+                None
+            };
+            let source_request = match (&signed_read, &guarded_read) {
+                (Some(signed), None) => stream::SourceRequest::Provider(signed),
+                (None, Some(request)) => stream::SourceRequest::Protected { env, request },
+                _ => anyhow::bail!("source incarnation selection differs"),
+            };
             let (etag, actual) = stream::upload_range(
-                &signed_read,
+                &source_request,
                 &signed_write,
                 &range,
                 continuation,
@@ -330,6 +402,7 @@ async fn execute(
                 &destination,
                 &publication,
                 &window,
+                destination_stamp.as_ref(),
             )
             .await?
         }
@@ -424,6 +497,7 @@ async fn metadata_effect(
     surface: &S3Surface,
     publication: &StorageBindingPublication,
     window: &DispatchWindow<'_>,
+    destination_stamp: Option<&aos_hub_core::storage_authority::StorageGuardStamp>,
 ) -> Result<CopyOutcome> {
     let now = object.clock().observed_at;
     let headers = Headers::new();
@@ -567,13 +641,24 @@ async fn metadata_effect(
                         &publication.snapshot.object_bucket,
                         full_key,
                     )?;
-                    let destination = CopySourceObject {
-                        provider_version: version
-                            .ok_or_else(|| anyhow::anyhow!("copy Complete version absent"))?,
-                        etag: receipt.etag,
-                        bytes: work.original.source_object.bytes,
-                    };
-                    destination.validate()?;
+                    let destination =
+                        CopySourceObject {
+                            provider_version: if work.original.version == 1 {
+                                Some(version.ok_or_else(|| {
+                                    anyhow::anyhow!("copy Complete version absent")
+                                })?)
+                            } else {
+                                ensure!(
+                                    version.as_deref().is_none_or(|value| value == "null"),
+                                    "protected Complete returned an unselected provider version"
+                                );
+                                None
+                            },
+                            etag: receipt.etag,
+                            bytes: work.original.source_object.bytes,
+                            guard_stamp: destination_stamp.cloned(),
+                        };
+                    work.original.validate_destination(&destination)?;
                     Ok(CopyOutcome::Closed {
                         destination,
                         sha256: sha256.clone(),

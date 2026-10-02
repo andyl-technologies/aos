@@ -74,9 +74,10 @@ async fn exercise(request: &mut Request) -> Result<serde_json::Value> {
     .await?;
     window.lifetime.retain_capacity(capacity)?;
     let source = CopySourceObject {
-        provider_version: "controlled-source-version".into(),
+        provider_version: Some("controlled-source-version".into()),
         etag: "\"controlled-source-tag\"".into(),
         bytes: LeaseInteger::new(BYTES as i64)?,
+        guard_stamp: None,
     };
     let range = SourceRange {
         source: &source,
@@ -98,7 +99,13 @@ async fn exercise(request: &mut Request) -> Result<serde_json::Value> {
     };
     let read = presign_versioned_conditional_range(&parameters, &source, 0, BYTES, 25)?;
     let initial = OciSha256State::initial();
-    let first = hash_range(&read, &range, initial.clone(), &window).await?;
+    let first = hash_range(
+        &super::stream::SourceRequest::Provider(&read),
+        &range,
+        initial.clone(),
+        &window,
+    )
+    .await?;
     let part = DirectPart {
         part_number: 1,
         offset: WireInteger::new(0),
@@ -116,7 +123,15 @@ async fn exercise(request: &mut Request) -> Result<serde_json::Value> {
     };
     let write =
         presign_direct_upload_part(&write_parameters, "controlled-positive-upload", &part, 25)?;
-    let (etag, actual) = upload_range(&read, &write, &range, initial, &first, &window).await?;
+    let (etag, actual) = upload_range(
+        &super::stream::SourceRequest::Provider(&read),
+        &write,
+        &range,
+        initial,
+        &first,
+        &window,
+    )
+    .await?;
     Ok(serde_json::json!({
         "etag": etag,
         "sha256": actual.sha256,

@@ -17,6 +17,17 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    CopyContract {
+        /// Read the actual complete bounded provider observation report.
+        #[arg(long)]
+        report_file: PathBuf,
+        /// Read the matching retained private original and phase journal.
+        #[arg(long)]
+        journal_directory: PathBuf,
+        /// Create a new private copy transport-facts document.
+        #[arg(long)]
+        output: PathBuf,
+    },
     Run {
         /// Read the explicit operator target and protected input file paths.
         #[arg(long)]
@@ -38,6 +49,9 @@ enum Command {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let result = match Cli::parse().command {
+        Command::CopyContract { report_file, journal_directory, output } =>
+            aos_hub::provider_conformance::export_provider_copy_contract(
+                &report_file, &journal_directory, &output),
         Command::Run {
             config_file,
             journal_directory,

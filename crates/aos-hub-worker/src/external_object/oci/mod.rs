@@ -14,6 +14,9 @@ mod provider;
 mod storage;
 
 #[cfg(target_arch = "wasm32")]
+pub(super) use storage::closed_copy_source;
+
+#[cfg(target_arch = "wasm32")]
 mod runtime;
 
 #[cfg(target_arch = "wasm32")]

@@ -36,6 +36,8 @@ pub(super) struct Lifetime {
 struct Resources {
     closed: Cell<bool>,
     capacity: RefCell<Option<Permit>>,
+    source_gate: RefCell<Option<futures_util::lock::OwnedMutexGuard<()>>>,
+    transfers: RefCell<Vec<crate::direct_upload::provider_capacity::transfer::Cancellation>>,
     native: RefCell<Vec<(JsValue, &'static str)>>,
 }
 
@@ -93,6 +95,38 @@ impl Lifetime {
         Ok(())
     }
 
+    /// Retains immediate cancellation of this part's two exact source passes.
+    ///
+    /// # Errors
+    /// Refuses canceled ownership or more than the two bounded pass transfers.
+    pub(super) fn retain_transfer(
+        &self,
+        cancellation: crate::direct_upload::provider_capacity::transfer::Cancellation,
+    ) -> Result<()> {
+        self.check()?;
+        let mut transfers = self.resources.transfers.borrow_mut();
+        ensure!(transfers.len() < 2, "copy source transfer bound reached");
+        transfers.push(cancellation);
+        Ok(())
+    }
+
+    /// Retains exact source-key ownership until EOF, error or native cancellation.
+    ///
+    /// # Errors
+    /// Refuses a canceled owner or repeated source-gate attachment.
+    pub(super) fn retain_source_gate(
+        &self,
+        gate: futures_util::lock::OwnedMutexGuard<()>,
+    ) -> Result<()> {
+        self.check()?;
+        ensure!(
+            self.resources.source_gate.borrow().is_none(),
+            "source gate already retained"
+        );
+        *self.resources.source_gate.borrow_mut() = Some(gate);
+        Ok(())
+    }
+
     /// Registers one native abort/cancel operation beside its ordinary Rust owner.
     ///
     /// # Errors
@@ -127,6 +161,9 @@ impl Resources {
         if self.closed.replace(true) {
             return;
         }
+        for cancellation in self.transfers.take() {
+            cancellation.cancel();
+        }
         // Remove the collection before invoking native methods so callbacks
         // cannot borrow a live mutable list or retain another dispatch owner.
         for (object, method) in self.native.take() {
@@ -141,6 +178,7 @@ impl Resources {
             }
         }
         self.capacity.borrow_mut().take();
+        self.source_gate.borrow_mut().take();
     }
 }
 

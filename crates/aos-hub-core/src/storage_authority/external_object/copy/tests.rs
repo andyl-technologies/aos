@@ -81,9 +81,10 @@ pub(super) fn original() -> ExternalCopyOriginal {
         destination: placement(11, 5, "destination/"),
         path: "nar/object.nar".into(),
         source_object: CopySourceObject {
-            provider_version: "actual-source-version".into(),
+            provider_version: Some("actual-source-version".into()),
             etag: "\"source-tag\"".into(),
             bytes: LeaseInteger::new(11).unwrap(),
+            guard_stamp: None,
         },
         read_generation: LeaseInteger::new(2).unwrap(),
         write_generation: LeaseInteger::new(3).unwrap(),
@@ -91,6 +92,7 @@ pub(super) fn original() -> ExternalCopyOriginal {
         profile_digest: "b".repeat(64),
         part_bytes: LeaseInteger::new(MIN_DIRECT_PART_BYTES as i64).unwrap(),
         expected_sha256: None,
+        source_receipt_digest: None,
     }
 }
 
@@ -101,7 +103,7 @@ fn stable_owner_does_not_renew_or_readdress_changed_source() {
     let fingerprint = initial.fingerprint().unwrap();
 
     let mut changed = initial.clone();
-    changed.source_object.provider_version = "replacement-source-version".into();
+    changed.source_object.provider_version = Some("replacement-source-version".into());
     assert_eq!(changed.copy_id().unwrap(), id);
     assert_ne!(changed.fingerprint().unwrap(), fingerprint);
 
@@ -170,7 +172,7 @@ fn projection_preserves_sealed_targets_and_excludes_mutable_claim_progress() {
 fn immutable_source_and_same_surface_pins_are_required() {
     for version in ["", "null"] {
         let mut value = original();
-        value.source_object.provider_version = version.into();
+        value.source_object.provider_version = Some(version.into());
         assert!(value.validate().is_err());
     }
     let mut value = original();
@@ -219,4 +221,77 @@ fn canonical_original_decoder_refuses_unrecognized_permission_fields() {
     let mut encoded = serde_json::to_value(original()).unwrap();
     encoded["renew_until"] = serde_json::json!(999999);
     assert!(serde_json::from_value::<ExternalCopyOriginal>(encoded).is_err());
+}
+
+#[test]
+fn version_one_original_bytes_fingerprint_and_mac_remain_exact() {
+    let bytes = include_bytes!("fixtures/version-one-original.json");
+    let value = original();
+    assert_eq!(serde_json::to_vec(&value).unwrap(), bytes);
+    assert_eq!(
+        serde_json::from_slice::<ExternalCopyOriginal>(bytes).unwrap(),
+        value
+    );
+    assert_eq!(
+        value.fingerprint().unwrap(),
+        "61f00ffd785fd05a0d76744885e93ba67ec8482661f469f8836267c5ae22b407"
+    );
+    let key =
+        crate::storage_work::StorageWorkKey::new(b"v1-copy-wire-regression-key-32-bytes").unwrap();
+    assert_eq!(
+        key.sign_body(bytes).unwrap(),
+        "a7a073f7b227ef00a077a924b24a5d151120144fdfa8437b9feb8767825baab7"
+    );
+}
+
+pub(super) fn protected_original() -> ExternalCopyOriginal {
+    let mut value = original();
+    value.version = 2;
+    value.source_object.provider_version = None;
+    value.source_object.guard_stamp = Some(crate::storage_authority::StorageGuardStamp {
+        physical_authority_id: crate::storage_authority::PhysicalStorageAuthorityId::parse(
+            "00000000-0000-4000-8000-000000000001",
+        )
+        .unwrap(),
+        incarnation: crate::storage_authority::GuardIncarnation::parse("7").unwrap(),
+    });
+    value.source_receipt_digest = Some("c".repeat(64));
+    value.expected_sha256 = Some("d".repeat(64));
+    value
+}
+
+#[test]
+fn protected_versionless_original_requires_closed_receipt_and_trusted_hash() {
+    let value = protected_original();
+    value.validate().unwrap();
+    assert!(value.source_object.require_provider_version().is_err());
+    let wire = serde_json::to_value(&value).unwrap();
+    assert!(wire["source_object"].get("provider_version").is_none());
+    assert_eq!(wire["source_object"]["guard_stamp"]["incarnation"], "7");
+
+    let mut changed = value.clone();
+    changed.version = 1;
+    assert!(changed.validate().is_err());
+    changed = value.clone();
+    changed.source_receipt_digest = None;
+    assert!(changed.validate().is_err());
+    changed = value.clone();
+    changed.expected_sha256 = None;
+    assert!(changed.validate().is_err());
+    changed = value.clone();
+    changed.source_object.provider_version = Some("null".into());
+    assert!(changed.validate().is_err());
+    changed = value.clone();
+    changed.source_object.guard_stamp = None;
+    assert!(changed.validate().is_err());
+
+    changed = value.clone();
+    changed
+        .source_object
+        .guard_stamp
+        .as_mut()
+        .unwrap()
+        .incarnation = crate::storage_authority::GuardIncarnation::parse("8").unwrap();
+    assert_eq!(changed.copy_id().unwrap(), value.copy_id().unwrap());
+    assert_ne!(changed.fingerprint().unwrap(), value.fingerprint().unwrap());
 }

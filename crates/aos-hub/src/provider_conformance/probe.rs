@@ -323,19 +323,16 @@ impl Probe {
         intent.first_byte = range.map(|value| value.0);
         intent.size = expected.len() as u64;
         intent.expected_sha256 = Some(digest(expected));
-        let mut request = ordinary(
-            reqwest::Method::GET,
-            self.loaded.surface.object_url(Method::Get, key, now())?,
-            None,
-        );
-        request
-            .headers
-            .push(("if-match".into(), original.etag.clone()));
-        if let Some((first, last)) = range {
-            request
-                .headers
-                .push(("range".into(), format!("bytes={first}-{last}")));
-        }
+        let geometry = range.map(|(first, last)| -> Result<_> {
+            let bytes = last.checked_sub(first).and_then(|value| value.checked_add(1))
+                .ok_or_else(|| anyhow::anyhow!("operator conditional range overflow"))?;
+            Ok((first, bytes))
+        }).transpose()?;
+        let signed = self.loaded.surface.oci_conditional_read_request(key, false,
+            &original.etag, original.provider_version.as_deref(), geometry, now())?;
+        let request = Request { method: reqwest::Method::GET, url: signed.url,
+            headers: signed.required_headers.into_iter().map(|header|
+                (header.name, header.value)).collect(), body: None };
         let exchange = transport::dispatch(&self.loaded, &self.journal, intent, request).await?;
         let (exchange, response) = exchange
             .read(&self.journal, expected.len() as u64, retain)
@@ -497,6 +494,15 @@ pub(super) async fn run(loaded: Loaded, directory: &Path, output: &Path) -> Resu
             last_request,
         )
         .await?;
+    // A completed-object privacy result cannot establish private incomplete
+    // staging. Retain a separate actual anonymous read before Complete.
+    let mut incomplete = url::Url::parse(&probe.loaded.surface.object_url(
+        Method::Get, &source_key, now())?)?;
+    incomplete.set_query(None);
+    probe.refusal(Intent::new(Phase::AnonymousIncompleteRead, &source_key),
+        ordinary(reqwest::Method::GET, incomplete.into(), None),
+        &["AccessDenied", "Unauthorized", "NoSuchKey"], &[401, 403, 404]).await?;
+
     let source_etag = probe
         .complete(
             Phase::CompleteSource,
@@ -520,6 +526,18 @@ pub(super) async fn run(loaded: Loaded, directory: &Path, output: &Path) -> Resu
     let source = probe
         .head(Phase::SourceHead, &source_key, &source_etag, &bytes)
         .await?;
+    let wrong = format!("\"aos-wrong-{}\"", digest(source.etag.as_bytes()));
+    ensure!(wrong != source.etag, "negative condition equals current source");
+    let signed = probe.loaded.surface.oci_conditional_read_request(&source_key,
+        false, &wrong, source.provider_version.as_deref(), Some((0, 65536)), now())?;
+    let mut negative = Intent::new(Phase::RejectWrongConditionalRange, &source_key);
+    negative.source_etag = Some(wrong);
+    negative.first_byte = Some(0);
+    negative.size = 65536;
+    probe.refusal(negative, Request { method: reqwest::Method::GET, url: signed.url,
+        headers: signed.required_headers.into_iter().map(|header|
+            (header.name, header.value)).collect(), body: None },
+        &["PreconditionFailed"], &[412]).await?;
     probe
         .read(
             Phase::SourceFullRead,

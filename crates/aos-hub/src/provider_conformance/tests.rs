@@ -37,6 +37,7 @@ struct Object {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Fault {
     None,
+    Versionless,
     LostComplete,
     CopyError,
     ChangedSource,
@@ -230,19 +231,31 @@ async fn execute(State(state): State<Arc<Mutex<Provider>>>, request: Request) ->
     }
     let object = provider.objects.get(&key).unwrap();
     if request.method == "HEAD" {
-        return Response::builder()
+        let mut reply = Response::builder()
             .status(200)
             .header("etag", &object.etag)
-            .header("x-amz-version-id", &object.version)
-            .header("content-length", object.bytes.len())
+            .header("content-length", object.bytes.len());
+        if provider.fault != Fault::Versionless {
+            reply = reply.header("x-amz-version-id", &object.version);
+        }
+        return reply
             .body(Body::empty())
             .unwrap();
     }
     assert_eq!(request.method, "GET");
-    assert_eq!(request.headers["if-match"].to_str().unwrap(), object.etag);
+    if provider.fault == Fault::Versionless {
+        assert!(!query.contains_key("versionId"));
+    }
+    assert!(query["X-Amz-SignedHeaders"].contains("if-match"));
+    if request.headers["if-match"].to_str().unwrap() != object.etag {
+        assert!(query["X-Amz-SignedHeaders"].contains("range"));
+        return error(412, "PreconditionFailed");
+    }
     let mut builder = Response::builder()
-        .header("etag", &object.etag)
-        .header("x-amz-version-id", &object.version);
+        .header("etag", &object.etag);
+    if provider.fault != Fault::Versionless {
+        builder = builder.header("x-amz-version-id", &object.version);
+    }
     if let Some(range) = request.headers.get("range") {
         let (first, last) = range
             .to_str()
@@ -402,16 +415,59 @@ async fn actual_tls_pipeline_retains_closed_observations_without_authorizing_a_p
     let status: serde_json::Value = serde_json::from_str(&status).unwrap();
     assert_eq!(status["unknown_operation_ids"].as_array().unwrap().len(), 0);
     let journal = fixture.directory.path().join("journal");
-    let first: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(journal.join("002.intent.json")).unwrap()).unwrap();
-    let late: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(journal.join("005.intent.json")).unwrap()).unwrap();
+    let intent_at = |phase: Phase| {
+        let index = report.observations.iter().position(|value| value.phase == phase).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(
+            journal.join(format!("{index:03}.intent.json"))).unwrap()).unwrap()
+    };
+    let first = intent_at(Phase::UploadSourcePart);
+    let late = intent_at(Phase::LatePartAfterComplete);
     assert_eq!(first["authorization_sha256"], late["authorization_sha256"]);
     eprintln!(
         "operator TLS provider conformance requests={} result_bytes={}",
         report.observations.len(),
         bytes.len()
     );
+}
+
+#[tokio::test]
+async fn versionless_copy_contract_projects_only_complete_actual_tls_journal() {
+    let fixture = Fixture::new(Fault::Versionless).await;
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(fixture.directory.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    fixture.run().await.unwrap();
+    let root = fixture.directory.path();
+    let report = root.join("report.json");
+    let journal = root.join("journal");
+    let output = root.join("copy-contract.json");
+    let before = fixture.state.lock().unwrap().requests;
+
+    super::export_provider_copy_contract(&report, &journal, &output).unwrap();
+
+    assert_eq!(fixture.state.lock().unwrap().requests, before);
+    let selected: serde_json::Value = serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+    assert_eq!(selected["report_sha256"], digest(&std::fs::read(&report).unwrap()));
+    assert_eq!(selected["provider_contract"]["evidence_digest"], selected["report_sha256"]);
+    assert_eq!(selected["provider_contract"]["versioned_conditional_range_read"], false);
+    assert_eq!(selected["provider_contract"]["protected_versionless"]["strong_conditional_range_read"], true);
+    assert_eq!(std::fs::metadata(&output).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(super::export_provider_copy_contract(&report, &journal, &output).is_err());
+
+    // A caller's edited report cannot replace a retained observed phase.
+    let original = std::fs::read(&report).unwrap();
+    let mut changed: Report = serde_json::from_slice(&original).unwrap();
+    changed.observations.retain(|value| value.phase != Phase::RejectWrongConditionalRange);
+    write(&report, &serde_json::to_vec(&changed).unwrap());
+    assert!(super::export_provider_copy_contract(&report, &journal,
+        &root.join("missing-negative.json")).is_err());
+    write(&report, &original);
+
+    let mut changed: Report = serde_json::from_slice(&original).unwrap();
+    changed.source.size += 1;
+    write(&report, &serde_json::to_vec(&changed).unwrap());
+    assert!(super::export_provider_copy_contract(&report, &journal,
+        &root.join("wrong-content.json")).is_err());
+    assert_eq!(fixture.state.lock().unwrap().requests, before);
 }
 
 #[tokio::test]
@@ -430,7 +486,11 @@ async fn lost_complete_reply_retains_original_forever_and_status_never_replays()
     }
     assert!(fixture.run().await.is_err());
     assert_eq!(fixture.state.lock().unwrap().requests, before);
-    let original = std::fs::read(fixture.directory.path().join("journal/004.intent.json")).unwrap();
+    let status: serde_json::Value = serde_json::from_str(&provider_conformance_status(
+        &fixture.directory.path().join("journal")).unwrap()).unwrap();
+    let pending = status["observations"].as_array().unwrap().len();
+    let original = std::fs::read(fixture.directory.path().join(
+        format!("journal/{pending:03}.intent.json"))).unwrap();
     assert!(std::str::from_utf8(&original)
         .unwrap()
         .contains("complete_source"));

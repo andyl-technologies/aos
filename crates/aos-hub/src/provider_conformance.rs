@@ -10,6 +10,7 @@
 //! Worker SDK compatibility; both require their independent review gates.
 
 mod config;
+mod copy_contract;
 mod journal;
 mod model;
 mod probe;
@@ -44,4 +45,21 @@ pub async fn run_provider_conformance(
 /// Returns an error for an invalid, oversized or inaccessible private journal.
 pub fn provider_conformance_status(journal_directory: &Path) -> Result<String> {
     journal::status(journal_directory)
+}
+
+/// Projects complete retained versionless observations into copy transport facts.
+///
+/// This read-only command contacts no provider and installs no acceptance,
+/// credential, cohort or runtime permission. Its input remains independently
+/// selected evidence rather than an authenticated provider attestation.
+///
+/// # Errors
+/// Refuses changed source/executable or report/journal correlation, missing,
+/// partial, unknown or incompatible phases, and insecure or existing output.
+pub fn export_provider_copy_contract(
+    report_file: &Path,
+    journal_directory: &Path,
+    output: &Path,
+) -> Result<String> {
+    copy_contract::project(report_file, journal_directory, output)
 }

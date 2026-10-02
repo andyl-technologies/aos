@@ -2758,6 +2758,42 @@ impl HybridSurfaceWrites {
 
 #[async_trait]
 impl SurfaceWriteProvider for HybridSurfaceWrites {
+    async fn placement_copy_policy(
+        &self,
+        operation: &aos_hub_core::db::TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+    ) -> Result<Option<aos_hub_core::surface_write::PlacementCopyPolicy>> {
+        let binding = self.db.binding(destination.binding_id).await?
+            .context("copy destination binding disappeared")?;
+        if binding.kind == "deployment_r2" && binding.is_instance_default {
+            return Ok(None);
+        }
+        Ok(Some(self.external_copy_policy(operation, claim_token, source, destination, path).await?))
+    }
+
+    async fn copy_placement_object_with_policy(
+        &self,
+        operation: &aos_hub_core::db::TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed_source: Option<&SurfaceListedEvidence>,
+        policy: Option<&aos_hub_core::surface_write::PlacementCopyPolicy>,
+    ) -> Result<Option<u64>> {
+        let binding = self.db.binding(destination.binding_id).await?
+            .context("copy destination binding disappeared")?;
+        if binding.kind == "deployment_r2" && binding.is_instance_default {
+            anyhow::ensure!(policy.is_none(), "managed copy policy changed");
+            return self.copy_placement_object(source, destination, path, listed_source).await;
+        }
+        self.copy_external_with_policy(operation, claim_token, source, destination,
+            path, listed_source, policy).await
+    }
+
     async fn copy_placement_object_claimed(
         &self,
         operation: &aos_hub_core::db::TopologyOperationRecord,

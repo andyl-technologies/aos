@@ -56,11 +56,14 @@ impl<'a> Selection<'a> {
             "external inventory offset differs"
         );
         let source = CopySourceObject {
-            provider_version: expected_provider_version
-                .clone()
-                .ok_or_else(|| anyhow::anyhow!("external inventory version absent"))?,
+            provider_version: Some(
+                expected_provider_version
+                    .clone()
+                    .ok_or_else(|| anyhow::anyhow!("external inventory version absent"))?,
+            ),
             etag: strong_etag.clone(),
             bytes: LeaseInteger::new(i64::try_from(*total)?)?,
+            guard_stamp: None,
         };
         source.validate()?;
 
@@ -87,8 +90,7 @@ impl<'a> Selection<'a> {
             identity.key == key
                 && identity.size == self.source.bytes.get() as u64
                 && identity.etag == self.source.etag
-                && identity.provider_version.as_deref()
-                    == Some(self.source.provider_version.as_str()),
+                && identity.provider_version.as_deref() == self.source.provider_version.as_deref(),
             "external inventory source identity differs"
         );
         Ok(())
@@ -190,7 +192,7 @@ mod tests {
             key: "binding/placement/blob".into(),
             size: 6,
             etag: selection.source.etag.clone(),
-            provider_version: Some(selection.source.provider_version.clone()),
+            provider_version: selection.source.provider_version.clone(),
         };
         selection
             .validate_identity(&identity.key, &identity)

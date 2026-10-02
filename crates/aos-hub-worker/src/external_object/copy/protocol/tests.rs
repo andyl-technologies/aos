@@ -63,6 +63,7 @@ fn private_continuation_authenticates_exact_request_and_independent_guard_key() 
             turn: turn.clone(),
             floor,
             source_state: Some(source.clone()),
+            destination_stamp: None,
         },
     )
     .unwrap();
@@ -86,6 +87,8 @@ fn private_continuation_authenticates_exact_request_and_independent_guard_key() 
         .original
         .source_object
         .provider_version
+        .as_mut()
+        .unwrap()
         .push_str("-replacement");
     assert!(verify_reply(&key, &changed, &signature, &body).is_err());
     let mut changed = request.clone();
@@ -98,44 +101,41 @@ fn authenticated_words_cannot_replace_the_pending_continuation_or_turn() {
     let (request, turn, floor, mut source) = pending_part();
     let key = StorageWorkKey::new([7_u8; 32]).unwrap();
     source.update(b"forged prior bytes").unwrap();
-    assert!(
-        sign_reply(
-            &key,
-            &request,
-            Reply::Dispatch {
-                turn: turn.clone(),
-                floor: floor.clone(),
-                source_state: Some(source)
-            }
-        )
-        .is_err()
-    );
-    assert!(
-        sign_reply(
-            &key,
-            &request,
-            Reply::Dispatch {
-                turn: turn.clone(),
-                floor: floor.clone(),
-                source_state: None
-            }
-        )
-        .is_err()
-    );
+    assert!(sign_reply(
+        &key,
+        &request,
+        Reply::Dispatch {
+            turn: turn.clone(),
+            floor: floor.clone(),
+            source_state: Some(source),
+            destination_stamp: None,
+        }
+    )
+    .is_err());
+    assert!(sign_reply(
+        &key,
+        &request,
+        Reply::Dispatch {
+            turn: turn.clone(),
+            floor: floor.clone(),
+            source_state: None,
+            destination_stamp: None,
+        }
+    )
+    .is_err());
     let mut changed = turn;
     changed.original_digest = "f".repeat(64);
-    assert!(
-        sign_reply(
-            &key,
-            &request,
-            Reply::Dispatch {
-                turn: changed,
-                floor,
-                source_state: Some(OciSha256State::initial())
-            }
-        )
-        .is_err()
-    );
+    assert!(sign_reply(
+        &key,
+        &request,
+        Reply::Dispatch {
+            turn: changed,
+            floor,
+            source_state: Some(OciSha256State::initial()),
+            destination_stamp: None,
+        }
+    )
+    .is_err());
 }
 
 #[test]

@@ -80,9 +80,18 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
                 part_bytes: domain.part_bytes,
                 read_generation: domain.read_cohort.credential.generation,
                 write_generation: domain.write_cohort.credential.generation,
+                protected_versionless: domain.provider_contract.protected_versionless.is_some(),
             },
             retained: None,
+            source_closure: None,
         };
+        if query.profile_only {
+            query.validate(&deployment, object.clock().observed_at)?;
+            publication.snapshot.authorizes(
+                &query.plan, &deployment, object.clock().observed_at,
+            )?;
+            return reply.sign(&key, &query);
+        }
         let selector = reply.selector(&query)?;
         let scope = domain.selector_scope(&object, &selector)?;
         let mut nonce = [0_u8; 32];
@@ -100,6 +109,17 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
                 original: retained.original,
                 progress: retained.progress,
             });
+        }
+        if reply.retained.is_none() && reply.profile.protected_versionless {
+            let selector = reply.selector(&query)?;
+            let message = super::source::request(
+                &query.plan,
+                domain.commitment()?,
+                domain.selector_scope_for(&object, &selector, false)?,
+                Some(selector),
+                super::source_protocol::Operation::Lookup,
+            )?;
+            reply.source_closure = Some(super::source::lookup(env, &message).await?);
         }
         // Metadata lookup never turns historical bytes into fresh permission.
         // The application query must remain live after the guard await.

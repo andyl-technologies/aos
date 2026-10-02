@@ -43,7 +43,7 @@ fn cold_lookup_keeps_unknown_original_after_source_replacement() {
     assert!(retained.progress.pending);
 
     let mut fresh = original.clone();
-    fresh.source_object.provider_version = "new-source-version".into();
+    fresh.source_object.provider_version = Some("new-source-version".into());
     assert_eq!(fresh.copy_id().unwrap(), original.copy_id().unwrap());
     assert!(cold.validate(&fresh).is_err());
     assert_ne!(retained.original.source_object, fresh.source_object);

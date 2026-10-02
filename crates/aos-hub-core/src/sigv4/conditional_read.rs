@@ -41,7 +41,7 @@ pub fn presign_versioned_conditional_range(
     let url = presign_url_with_headers(
         "GET",
         parameters,
-        &[("versionId", source.provider_version.clone())],
+        &[("versionId", source.require_provider_version()?.to_owned())],
         &headers,
     )?;
     Ok(DirectSignedProviderRequest {
@@ -77,9 +77,10 @@ mod tests {
 
     fn source() -> CopySourceObject {
         CopySourceObject {
-            provider_version: "version/one+".into(),
+            provider_version: Some("version/one+".into()),
             etag: "\"actual-source-tag\"".into(),
             bytes: LeaseInteger::new(12).unwrap(),
+            guard_stamp: None,
         }
     }
 
@@ -105,7 +106,7 @@ mod tests {
         let original = signature(signed);
 
         let mut changed = source.clone();
-        changed.provider_version = "another-real-version".into();
+        changed.provider_version = Some("another-real-version".into());
         assert_ne!(
             original,
             signature(
@@ -130,9 +131,9 @@ mod tests {
     fn versionless_overflow_out_of_bounds_and_unreviewed_lifetime_refuse() {
         let parameters = parameters();
         let mut source = source();
-        source.provider_version = "null".into();
+        source.provider_version = Some("null".into());
         assert!(presign_versioned_conditional_range(&parameters, &source, 0, 5, 30).is_err());
-        source.provider_version = "actual-version".into();
+        source.provider_version = Some("actual-version".into());
         assert!(
             presign_versioned_conditional_range(&parameters, &source, u64::MAX, 5, 30).is_err()
         );

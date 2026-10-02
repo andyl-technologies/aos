@@ -303,7 +303,7 @@ impl CopySession {
             "retained copy phase invalid"
         );
         if let Some(destination) = &self.destination {
-            destination.validate()?;
+            original.validate_destination(destination)?;
             ensure!(
                 destination.bytes == original.source_object.bytes,
                 "retained destination length differs"
@@ -415,7 +415,7 @@ impl CopySession {
                     sha256,
                 },
             ) => {
-                destination.validate()?;
+                self.original.validate_destination(destination)?;
                 ensure!(
                     destination.bytes == self.original.source_object.bytes
                         && sha256 == &self.source_hash()?,

@@ -11,6 +11,8 @@ mod config;
 
 mod protocol;
 
+mod source_protocol;
+
 mod discovery;
 
 mod read_control;
@@ -20,6 +22,12 @@ mod list_cursor;
 mod provider_receipt;
 
 pub(in crate::external_object) mod state;
+
+#[cfg(target_arch = "wasm32")]
+mod closure;
+
+#[cfg(target_arch = "wasm32")]
+mod source;
 
 #[cfg(target_arch = "wasm32")]
 mod storage;

@@ -798,3 +798,6 @@ async fn stale_export_refuses_hydration_before_any_protected_publication() {
         .to_string()
         .contains("no longer current and validated"));
 }
+
+#[path = "list_cohort_tests.rs"]
+mod list_selection;

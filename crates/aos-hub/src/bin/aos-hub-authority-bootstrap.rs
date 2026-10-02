@@ -45,6 +45,24 @@ enum Operation {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Export a list-only cohort selection from current admitted SQL authority.
+    ExportListCohort {
+        /// Select the permanent reviewed authority.
+        #[arg(long)]
+        authority_id: String,
+        /// Read the existing validated issuer configuration without reading keys.
+        #[arg(long)]
+        issuer_configuration: PathBuf,
+        /// Select its exact admitted SQL binding association.
+        #[arg(long)]
+        association_id: String,
+        /// Narrow to the independently reviewed managed object prefix.
+        #[arg(long)]
+        admitted_prefix: String,
+        /// Create a new private selection directory under an existing private parent.
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Export the current reviewed SQL authority publication in any admission state.
     ExportPublication {
         /// Select the permanent authority already approved through root Plan/Apply.
@@ -187,6 +205,26 @@ async fn run(args: Args) -> Result<()> {
             )
             .await?;
             println!("Reviewed delete cohort selection exported; capability and custody remain separate.");
+        }
+        Operation::ExportListCohort {
+            authority_id,
+            issuer_configuration,
+            association_id,
+            admitted_prefix,
+            output,
+        } => {
+            let authority = PhysicalStorageAuthorityId::parse(&authority_id)?;
+            let configuration = AuthorityConfiguration::read(&issuer_configuration)?;
+            bootstrap::export_list_cohort(
+                &db,
+                &authority,
+                &configuration,
+                &association_id,
+                &admitted_prefix,
+                &output,
+            )
+            .await?;
+            println!("Reviewed list cohort selection exported; provider qualification and custody remain separate.");
         }
         Operation::ExportPublication {
             authority_id,

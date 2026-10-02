@@ -164,6 +164,8 @@ impl ExternalObjectGuard {
                         .selector
                         .validate_retained(session.original(), &progress)?;
                     domain.validate_original(&object, session.original())?;
+                    let head = load_head(&storage).await?;
+                    require_current_closed(&storage, head.as_ref(), &object, &session).await?;
                     Some(super::discovery::Retained {
                         original: session.original().clone(),
                         progress,
@@ -197,6 +199,10 @@ impl ExternalObjectGuard {
             head.validate(object, &message.scope)?;
         }
         if let Operation::SourceRead { read_lease } = &message.operation {
+            ensure!(
+                message.original.version == 1,
+                "protected source requires a held range guard"
+            );
             crate::direct_guard::deny_legacy(&storage).await?;
             let mut head = match &prior {
                 Some(head) => head.clone(),
@@ -251,9 +257,12 @@ impl ExternalObjectGuard {
         match &message.operation {
             Operation::SourceRead { .. } => anyhow::bail!("source read was not handled"),
             Operation::Lookup => match stored {
-                Some(session) => Ok(Reply::Progress {
-                    progress: session.progress()?,
-                }),
+                Some(session) => {
+                    require_current_closed(&storage, prior.as_ref(), object, &session).await?;
+                    Ok(Reply::Progress {
+                        progress: session.progress()?,
+                    })
+                }
                 None => Ok(Reply::Unseen),
             },
             Operation::Begin {
@@ -269,6 +278,7 @@ impl ExternalObjectGuard {
                 if matches!(session.phase(), CopyPhase::Closed | CopyPhase::Aborted)
                     || session.pending().is_some()
                 {
+                    require_current_closed(&storage, prior.as_ref(), object, &session).await?;
                     return Ok(Reply::Progress {
                         progress: session.progress()?,
                     });
@@ -346,7 +356,22 @@ impl ExternalObjectGuard {
                     BTreeMap::new(),
                 )
                 .await?;
+                let destination_stamp = if message.original.version == 2 {
+                    Some(aos_hub_core::storage_authority::StorageGuardStamp {
+                        physical_authority_id: message.scope.physical_authority_id.clone(),
+                        incarnation: aos_hub_core::storage_authority::GuardIncarnation::parse(
+                            head.incarnation
+                                .get()
+                                .checked_add(1)
+                                .ok_or_else(|| anyhow::anyhow!("copy incarnation exhausted"))?
+                                .to_string(),
+                        )?,
+                    })
+                } else {
+                    None
+                };
                 Ok(Reply::Dispatch {
+                    destination_stamp,
                     turn,
                     floor: head.floor,
                     source_state,
@@ -359,6 +384,7 @@ impl ExternalObjectGuard {
                 let receipt_key = receipt_key(&receipt.turn.action_id);
                 if let Some(retained) = load_receipt(&storage, &receipt.turn.action_id).await? {
                     ensure!(retained == *receipt, "copy positive receipt changed");
+                    require_current_closed(&storage, prior.as_ref(), object, &session).await?;
                     return Ok(Reply::Progress {
                         progress: session.progress()?,
                     });
@@ -370,6 +396,27 @@ impl ExternalObjectGuard {
                     .as_ref()
                     .ok_or_else(|| anyhow::anyhow!("copy physical owner absent"))?
                     .matches(&message.original)?;
+                if message.original.version == 2 {
+                    if let CopyOutcome::Closed { destination, .. } = &receipt.outcome {
+                        let stamp = destination
+                            .guard_stamp
+                            .as_ref()
+                            .ok_or_else(|| anyhow::anyhow!("protected Complete stamp absent"))?;
+                        ensure!(
+                            stamp.physical_authority_id == message.scope.physical_authority_id
+                                && stamp.incarnation.as_str()
+                                    == head
+                                        .incarnation
+                                        .get()
+                                        .checked_add(1)
+                                        .ok_or_else(|| anyhow::anyhow!(
+                                            "copy incarnation exhausted"
+                                        ))?
+                                        .to_string(),
+                            "protected Complete has another physical incarnation"
+                        );
+                    }
+                }
                 session.acknowledge(receipt)?;
                 head.receipts = LeaseInteger::new(
                     head.receipts
@@ -397,7 +444,18 @@ impl ExternalObjectGuard {
                     );
                     // Existing visible receipts describe the earlier incarnation.
                     // The new copy has its own actual versioned positive receipt.
-                    head.visible_receipt = None;
+                    head.visible_receipt = if message.original.version == 2 {
+                        Some(super::super::state::VisibleReceipt {
+                            kind: super::super::state::VisibleKind::CopyDestination,
+                            operation_id: receipt.turn.action_id.clone(),
+                            receipt_digest: digest(receipt)?,
+                            context_digest: message.original.fingerprint()?,
+                            incarnation: head.incarnation,
+                            stage_configuration: Some(message.original.profile_digest.clone()),
+                        })
+                    } else {
+                        None
+                    };
                 }
                 if matches!(session.phase(), CopyPhase::Closed | CopyPhase::Aborted) {
                     head.copy = None;
@@ -604,5 +662,105 @@ async fn commit(
             }
         })
         .await?;
+    Ok(())
+}
+
+/// Reads the exact current positive Copy closure without issuing another turn.
+///
+/// # Errors
+/// Refuses unknown ownership, replacement, missing original or altered receipt.
+pub(super) async fn closed_copy_source(
+    storage: &Storage,
+    head: &Head,
+    object: &ObjectConfig,
+) -> Result<aos_hub_core::storage_authority::external_object::copy::source::CopySourceClosure> {
+    use super::super::state::VisibleKind;
+    head.validate(object, &head.scope)?;
+    head.require_cleanup_ready()?;
+    ensure!(head.stage.is_none(), "copy source has active staging");
+    let visible = head
+        .visible_receipt
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("copy source has no visible closure"))?;
+    ensure!(
+        visible.kind == VisibleKind::CopyDestination,
+        "copy source belongs to another producer"
+    );
+    let receipt = load_receipt(storage, &visible.operation_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("copy closure receipt absent"))?;
+    ensure!(
+        receipt.turn.action_id == visible.operation_id
+            && receipt.turn.original_digest == visible.context_digest
+            && digest(&receipt)? == visible.receipt_digest,
+        "copy closure receipt changed"
+    );
+    let session: CopySession = decode(
+        storage
+            .get::<String>(&session_key(&receipt.turn.copy_id))
+            .await?,
+        MAX_MESSAGE,
+    )?
+    .ok_or_else(|| anyhow::anyhow!("copy closure original absent"))?;
+    session.validate(session.original())?;
+    let progress = session.progress()?;
+    let CopyOutcome::Closed {
+        destination,
+        sha256,
+    } = &receipt.outcome
+    else {
+        anyhow::bail!("copy closure is not positive");
+    };
+    ensure!(
+        session.original().version == 2
+            && session.original().fingerprint()? == visible.context_digest
+            && visible.stage_configuration.as_ref() == Some(&session.original().profile_digest)
+            && progress.phase == CopyPhase::Closed
+            && progress.destination.as_ref() == Some(destination)
+            && progress.sha256.as_ref() == Some(sha256),
+        "copy closure original or final state differs"
+    );
+    let stamp = destination
+        .guard_stamp
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("copy closure guard stamp absent"))?;
+    ensure!(
+        stamp.physical_authority_id == head.scope.physical_authority_id
+            && stamp.incarnation.as_str() == head.incarnation.get().to_string(),
+        "copy closure incarnation is no longer current"
+    );
+    let closure =
+        aos_hub_core::storage_authority::external_object::copy::source::CopySourceClosure {
+            guard_stamp: stamp.clone(),
+            receipt_digest: visible.receipt_digest.clone(),
+            sha256: sha256.clone(),
+            bytes: destination.bytes,
+            etag: Some(destination.etag.clone()),
+        };
+    closure.validate()?;
+    Ok(closure)
+}
+
+async fn require_current_closed(
+    storage: &Storage,
+    head: Option<&Head>,
+    object: &ObjectConfig,
+    session: &CopySession,
+) -> Result<()> {
+    if session.original().version == 2 && session.phase() == CopyPhase::Closed {
+        let head =
+            head.ok_or_else(|| anyhow::anyhow!("protected copy lost current physical head"))?;
+        let closure = closed_copy_source(storage, head, object).await?;
+        let progress = session.progress()?;
+        ensure!(
+            progress
+                .destination
+                .as_ref()
+                .and_then(|destination| destination.guard_stamp.as_ref())
+                == Some(&closure.guard_stamp)
+                && progress.sha256.as_ref() == Some(&closure.sha256),
+            "protected copy positive is no longer the current destination"
+        );
+    }
     Ok(())
 }

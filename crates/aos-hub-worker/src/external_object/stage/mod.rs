@@ -51,7 +51,7 @@ pub(crate) use planning::{
 pub(crate) use profiles::resolve_external_profiles;
 
 #[cfg(target_arch = "wasm32")]
-pub(super) use storage::verify_observable_destination;
+pub(super) use storage::{closed_copy_source, verify_observable_destination};
 
 #[cfg(test)]
 mod tests;

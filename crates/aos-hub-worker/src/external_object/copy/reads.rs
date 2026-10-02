@@ -1,8 +1,11 @@
-//! Independently leased, bounded scan reads for versioned external copies.
+//! Independently leased, bounded scan reads for external copies.
 //!
 //! Listings describe keys; they never establish a source incarnation. Hash
-//! inspection first pins a real HEAD version and then conditionally reads only
-//! that version. Provider bytes stay beside the store, with 64 KiB buffers.
+//! inspection pins either a real provider version or a previously closed
+//! permanent guard receipt. Protected ranges hold that source gate through EOF
+//! or cancellation. Provider bytes stay beside the store, with 64 KiB buffers.
+//! Cross-request OCI hash continuations require a real provider version; their
+//! wire state has no permanent closure pin for the protected versionless form.
 
 use anyhow::{Result, ensure};
 use aos_hub_core::{
@@ -27,7 +30,7 @@ use super::super::{
 };
 use super::{config, read_control, stream, window::DispatchWindow};
 
-/// Executes configured HEAD, LIST, versioned inspection or OCI range hashing.
+/// Executes configured HEAD, LIST, protected inspection or versioned OCI hashing.
 ///
 /// # Errors
 /// Refuses missing installed cohorts, active owners, changed publications,
@@ -199,7 +202,15 @@ pub(crate) async fn execute(
 
     let (outcome, source_bytes) = match &plan.operation {
         StorageWorkOperation::Head { path } => {
-            let result = head(&surface, path, plan, &object, &window).await?;
+            let result = head(
+                &surface,
+                path,
+                plan,
+                &object,
+                &window,
+                domain.provider_contract.protected_versionless.is_some(),
+            )
+            .await?;
             (
                 result.map_or(Outcome::NotFound, |object| Outcome::Head { object }),
                 0,
@@ -293,7 +304,16 @@ pub(crate) async fn execute(
             expected_sha256,
             max_source_bytes,
         } => {
-            let Some(identity) = head(&surface, path, plan, &object, &window).await? else {
+            let Some(identity) = head(
+                &surface,
+                path,
+                plan,
+                &object,
+                &window,
+                domain.provider_contract.protected_versionless.is_some(),
+            )
+            .await?
+            else {
                 return Ok(Some(crate::surface::storage_work_result(
                     plan,
                     Outcome::NotFound,
@@ -304,13 +324,34 @@ pub(crate) async fn execute(
                 identity.size > 0 && identity.size <= *max_source_bytes,
                 "external hash source exceeds bound or empty-read contract"
             );
+            let protected = if domain.provider_contract.protected_versionless.is_some() {
+                let message = super::source::request(
+                    plan,
+                    domain.commitment()?,
+                    scope.clone(),
+                    None,
+                    super::source_protocol::Operation::Lookup,
+                )?;
+                let closure = super::source::lookup(env, &message).await?;
+                ensure!(
+                    closure.bytes.get() as u64 == identity.size
+                        && closure
+                            .etag
+                            .as_ref()
+                            .is_none_or(|etag| etag == &identity.etag),
+                    "protected scan HEAD differs from retained source closure"
+                );
+                Some(closure)
+            } else {
+                None
+            };
             let source = CopySourceObject {
-                provider_version: identity
-                    .provider_version
-                    .clone()
-                    .ok_or_else(|| anyhow::anyhow!("external hash version absent"))?,
+                provider_version: identity.provider_version.clone(),
                 etag: identity.etag.clone(),
                 bytes: LeaseInteger::new(i64::try_from(identity.size)?)?,
+                guard_stamp: protected
+                    .as_ref()
+                    .map(|closure| closure.guard_stamp.clone()),
             };
             source.validate()?;
             let mut state = OciSha256State::initial();
@@ -319,16 +360,42 @@ pub(crate) async fn execute(
                 let offset = state.total_bytes;
                 let bytes = (identity.size - offset)
                     .min(aos_hub_core::direct_upload::MAX_DIRECT_PART_BYTES);
-                let signed = surface.versioned_conditional_range_request(
-                    path,
-                    &source,
-                    offset,
-                    bytes,
-                    object.clock().observed_at,
-                    30,
-                )?;
+                let signed = if protected.is_none() {
+                    Some(surface.versioned_conditional_range_request(
+                        path,
+                        &source,
+                        offset,
+                        bytes,
+                        object.clock().observed_at,
+                        30,
+                    )?)
+                } else {
+                    None
+                };
+                let request = if let Some(closure) = &protected {
+                    Some(super::source::request(
+                        plan,
+                        domain.commitment()?,
+                        scope.clone(),
+                        None,
+                        super::source_protocol::Operation::InspectRange {
+                            closure: closure.clone(),
+                            read_lease: lease.clone(),
+                            etag: identity.etag.clone(),
+                            offset,
+                            bytes,
+                        },
+                    )?)
+                } else {
+                    None
+                };
+                let read = match (&signed, &request) {
+                    (Some(signed), None) => stream::SourceRequest::Provider(signed),
+                    (None, Some(request)) => stream::SourceRequest::Protected { env, request },
+                    _ => anyhow::bail!("scan source incarnation selection differs"),
+                };
                 state = stream::hash_range(
-                    &signed,
+                    &read,
                     &stream::SourceRange {
                         source: &source,
                         offset,
@@ -341,6 +408,12 @@ pub(crate) async fn execute(
                 .source_state;
             }
             let sha256 = state.final_digest()?.encoded();
+            ensure!(
+                protected
+                    .as_ref()
+                    .is_none_or(|closure| closure.sha256 == sha256),
+                "protected scan body differs from its retained positive source SHA-256"
+            );
             ensure!(
                 expected_sha256
                     .as_ref()
@@ -359,7 +432,8 @@ pub(crate) async fn execute(
             let selection = hash_range
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("external inventory range absent"))?;
-            let Some(identity) = head(&surface, selection.path, plan, &object, &window).await?
+            let Some(identity) =
+                head(&surface, selection.path, plan, &object, &window, false).await?
             else {
                 return Ok(Some(crate::surface::storage_work_result(
                     plan,
@@ -377,7 +451,7 @@ pub(crate) async fn execute(
                 30,
             )?;
             let result = stream::hash_range(
-                &signed,
+                &stream::SourceRequest::Provider(&signed),
                 &stream::SourceRange {
                     source: &selection.source,
                     offset: selection.start,
@@ -413,6 +487,7 @@ async fn head(
     plan: &StorageWorkPlan,
     object: &ObjectConfig,
     window: &DispatchWindow<'_>,
+    protected_versionless: bool,
 ) -> Result<Option<StorageObjectIdentity>> {
     let url = surface.object_url(S3Method::Head, path, object.clock().observed_at)?;
     let (response, _registration) = metadata_request(&url, Method::Head, window).await?;
@@ -433,21 +508,33 @@ async fn head(
             .get("etag")?
             .ok_or_else(|| anyhow::anyhow!("external HEAD ETag absent"))?,
     )?;
-    let provider_version = headers
-        .get("x-amz-version-id")?
-        .ok_or_else(|| anyhow::anyhow!("external HEAD immutable version absent"))?;
-    CopySourceObject {
-        provider_version: provider_version.clone(),
-        etag: etag.clone(),
-        bytes: LeaseInteger::new(i64::try_from(size)?)?,
-    }
-    .validate()?;
+    let provider_version = headers.get("x-amz-version-id")?;
+    let provider_version = if protected_versionless {
+        ensure!(
+            provider_version
+                .as_deref()
+                .is_none_or(|version| version == "null"),
+            "protected HEAD returned an unselected immutable provider version"
+        );
+        None
+    } else {
+        let version = provider_version
+            .ok_or_else(|| anyhow::anyhow!("external HEAD immutable version absent"))?;
+        CopySourceObject {
+            provider_version: Some(version.clone()),
+            etag: etag.clone(),
+            bytes: LeaseInteger::new(i64::try_from(size)?)?,
+            guard_stamp: None,
+        }
+        .validate()?;
+        Some(version)
+    };
     window.check()?;
     Ok(Some(StorageObjectIdentity {
         key: plan.object_key(path)?,
         size,
         etag,
-        provider_version: Some(provider_version),
+        provider_version,
     }))
 }
 

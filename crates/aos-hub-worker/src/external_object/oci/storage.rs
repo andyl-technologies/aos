@@ -550,3 +550,62 @@ fn receipt_key(original: &str, effect: &str) -> String {
 fn part_key(original: &str, number: u32) -> String {
     format!("external-oci/part/v1/{original}/{number}")
 }
+
+/// Projects one still-visible OCI source closure without granting Copy authority.
+///
+/// # Errors
+/// Refuses a foreign scope, unresolved/replaced original or changed positive receipt.
+pub(in crate::external_object) async fn closed_copy_source(
+    storage: &Storage,
+    object: &ObjectConfig,
+    scope: &StorageAuthorityObjectScope,
+) -> Result<aos_hub_core::storage_authority::external_object::copy::source::CopySourceClosure> {
+    let head = load_head(storage)
+        .await?
+        .context("OCI copy source head absent")?;
+    head.validate(object, scope)?;
+    let visible = head
+        .visible_receipt
+        .as_ref()
+        .context("OCI copy source closure absent")?;
+    ensure!(
+        matches!(
+            visible.kind,
+            VisibleKind::OciStage | VisibleKind::OciDestination
+        ),
+        "OCI copy source belongs to another producer"
+    );
+    let session: Session = decode(
+        storage
+            .get::<String>(&session_key(&visible.context_digest))
+            .await?,
+        MAX_SESSION,
+    )?
+    .context("OCI copy source original absent")?;
+    session.validate()?;
+    let closed = session
+        .closed
+        .as_ref()
+        .context("OCI copy source is not closed")?;
+    let checked = closed_for_lookup(storage, object, &session.original, closed).await?;
+    ensure!(
+        checked == head && session.original.scope == *scope,
+        "OCI copy source selected another physical key"
+    );
+    let stamp = match &closed.incarnation {
+        aos_hub_core::storage_authority::external_object::oci::OciProviderIncarnation::Versioned { guard_stamp, .. }
+        | aos_hub_core::storage_authority::external_object::oci::OciProviderIncarnation::Guarded { guard_stamp } => guard_stamp,
+    };
+    let closure =
+        aos_hub_core::storage_authority::external_object::copy::source::CopySourceClosure {
+            guard_stamp: stamp.clone(),
+            receipt_digest: closed.receipt_digest.clone(),
+            sha256: closed.bytes.sha256.clone(),
+            bytes: aos_hub_core::storage_authority::lease::LeaseInteger::new(i64::try_from(
+                closed.bytes.size,
+            )?)?,
+            etag: Some(closed.etag.clone()),
+        };
+    closure.validate()?;
+    Ok(closure)
+}

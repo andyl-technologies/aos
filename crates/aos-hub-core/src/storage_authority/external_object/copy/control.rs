@@ -267,7 +267,7 @@ impl CopyProgress {
                 .sha256
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("closed copy lacks source SHA-256"))?;
-            destination.validate()?;
+            original.validate_destination(destination)?;
             ensure!(
                 !self.pending
                     && self.completed_parts == original.part_count()?

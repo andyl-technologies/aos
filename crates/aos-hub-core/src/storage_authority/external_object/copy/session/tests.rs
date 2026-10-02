@@ -64,7 +64,7 @@ fn unknown_create_survives_restart_and_cannot_reissue_or_abort() {
         .is_err());
 
     let mut changed = original;
-    changed.source_object.provider_version = "replacement".into();
+    changed.source_object.provider_version = Some("replacement".into());
     assert_eq!(
         changed.copy_id().unwrap(),
         restarted.original().copy_id().unwrap()
@@ -128,9 +128,10 @@ fn positive_create_and_part_close_once_after_actual_conditional_read() {
         turn,
         outcome: CopyOutcome::Closed {
             destination: CopySourceObject {
-                provider_version: "actual-destination-version".into(),
+                provider_version: Some("actual-destination-version".into()),
                 etag: "\"actual-destination-tag\"".into(),
                 bytes: original.source_object.bytes,
+                guard_stamp: None,
             },
             sha256: hash,
         },
@@ -140,8 +141,8 @@ fn positive_create_and_part_close_once_after_actual_conditional_read() {
     closed.validate(&original).unwrap();
     assert_eq!(closed.phase(), CopyPhase::Closed);
     assert_eq!(
-        closed.destination().unwrap().provider_version,
-        "actual-destination-version"
+        closed.destination().unwrap().provider_version.as_deref(),
+        Some("actual-destination-version")
     );
     assert!(closed.next_action().is_err());
 }
@@ -169,9 +170,10 @@ fn short_range_and_wrong_provider_close_do_not_clear_pending() {
         turn,
         outcome: CopyOutcome::Closed {
             destination: CopySourceObject {
-                provider_version: "null".into(),
+                provider_version: Some("null".into()),
                 etag: "\"tag\"".into(),
                 bytes: original.source_object.bytes,
+                guard_stamp: None,
             },
             sha256: "0".repeat(64),
         },
@@ -241,13 +243,127 @@ fn empty_copy_requires_positive_versioned_put_and_never_creates_multipart() {
             turn,
             outcome: CopyOutcome::Closed {
                 destination: CopySourceObject {
-                    provider_version: "empty-positive-version".into(),
+                    provider_version: Some("empty-positive-version".into()),
                     etag: "\"empty-tag\"".into(),
                     bytes: original.source_object.bytes,
+                    guard_stamp: None,
                 },
                 sha256: OciSha256State::initial().final_digest().unwrap().encoded(),
             },
         })
         .unwrap();
     assert_eq!(reload(&session).phase(), CopyPhase::Closed);
+}
+
+#[test]
+fn protected_source_replacement_cannot_escape_a_lost_create_turn() {
+    let original = super::super::tests::protected_original();
+    let mut session = CopySession::initialize(original.clone()).unwrap();
+    let turn = session
+        .begin(&original, CopyAction::Create, "c".repeat(64))
+        .unwrap();
+    let mut restarted = reload(&session);
+    assert_eq!(restarted.pending(), Some(&turn));
+    assert!(restarted.next_action().is_err());
+
+    let mut replacement = original.clone();
+    replacement
+        .source_object
+        .guard_stamp
+        .as_mut()
+        .unwrap()
+        .incarnation = crate::storage_authority::GuardIncarnation::parse("8").unwrap();
+    assert_eq!(replacement.copy_id().unwrap(), original.copy_id().unwrap());
+    assert!(restarted.validate(&replacement).is_err());
+    assert!(restarted
+        .begin(&replacement, CopyAction::Create, "e".repeat(64))
+        .is_err());
+    assert!(restarted.abort_action().is_err());
+}
+
+#[test]
+fn protected_copy_closes_with_guard_incarnation_and_rejects_foreign_closure() {
+    let mut original = super::super::tests::protected_original();
+    let mut expected = OciSha256State::initial();
+    expected.update(b"hello world").unwrap();
+    original.expected_sha256 = Some(expected.final_digest().unwrap().encoded());
+    let mut session = CopySession::initialize(original.clone()).unwrap();
+    create(&mut session);
+    let part_receipt = part(&mut session);
+    session.acknowledge(&part_receipt).unwrap();
+    let action = session.next_action().unwrap();
+    let CopyAction::Complete { sha256, .. } = &action else {
+        panic!("expected complete after actual full source hash")
+    };
+    let hash = sha256.clone();
+    let turn = session.begin(&original, action, "f".repeat(64)).unwrap();
+    let mut receipt = CopyReceipt {
+        turn,
+        outcome: CopyOutcome::Closed {
+            destination: CopySourceObject {
+                provider_version: None,
+                etag: "\"actual-destination-tag\"".into(),
+                bytes: original.source_object.bytes,
+                guard_stamp: original.source_object.guard_stamp.clone(),
+            },
+            sha256: hash,
+        },
+    };
+    if let CopyOutcome::Closed { destination, .. } = &mut receipt.outcome {
+        destination.guard_stamp.as_mut().unwrap().incarnation =
+            crate::storage_authority::GuardIncarnation::parse("11").unwrap();
+    }
+    let mut foreign = receipt.clone();
+    if let CopyOutcome::Closed { destination, .. } = &mut foreign.outcome {
+        destination
+            .guard_stamp
+            .as_mut()
+            .unwrap()
+            .physical_authority_id = crate::storage_authority::PhysicalStorageAuthorityId::parse(
+            "00000000-0000-4000-8000-000000000002",
+        )
+        .unwrap();
+    }
+    assert!(session.acknowledge(&foreign).is_err());
+    assert!(session.pending().is_some());
+    session.acknowledge(&receipt).unwrap();
+    let mut restarted = reload(&session);
+    let closed = restarted.progress().unwrap();
+    assert_eq!(closed.phase, CopyPhase::Closed);
+    assert!(closed
+        .destination
+        .as_ref()
+        .unwrap()
+        .provider_version
+        .is_none());
+    assert_eq!(
+        closed
+            .destination
+            .as_ref()
+            .unwrap()
+            .guard_stamp
+            .as_ref()
+            .unwrap()
+            .incarnation
+            .as_str(),
+        "11"
+    );
+    assert!(restarted.acknowledge(&receipt).is_err());
+    assert_eq!(restarted.progress().unwrap(), closed);
+}
+
+#[test]
+fn protected_copy_trusted_hash_mismatch_never_selects_complete() {
+    let original = super::super::tests::protected_original();
+    let mut session = CopySession::initialize(original).unwrap();
+    create(&mut session);
+    let positive = part(&mut session);
+    session.acknowledge(&positive).unwrap();
+    assert!(session.next_action().is_err());
+    assert_eq!(session.phase(), CopyPhase::Active);
+    assert!(session.destination().is_none());
+    assert!(matches!(
+        session.abort_action().unwrap(),
+        CopyAction::Abort { .. }
+    ));
 }

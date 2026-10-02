@@ -199,6 +199,38 @@ struct CurrentCopy {
 }
 
 impl HybridSurfaceWrites {
+    /// Observes the installed policy without reading source ownership or bytes.
+    pub(super) async fn external_copy_policy(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+    ) -> Result<aos_hub_core::surface_write::PlacementCopyPolicy> {
+        let current = self.current_copy(operation, source, destination, true).await?;
+        self.work.ensure_remote_binding_snapshot(&self.db, &current.binding).await?;
+        let claim = self.recheck_copy(&current, operation, claim_token, source, destination).await?;
+        let now = aos_hub_core::clock::now_unix_secs();
+        let plan = self.work.plan_for_placement(destination, &current.binding,
+            StorageWorkOperation::Head { path: path.into() }, now)?;
+        let mut query = CopyMetadataRequest::new(current.topology.clone(), current.source.clone(),
+            current.destination.clone(), Some(claim), plan, path.into(), now)?;
+        query.profile_only = true;
+        let metadata = self.work.external_copy_metadata(&query).await?;
+        let selector = metadata.selector(&query)?;
+        ensure!(selector.binding_stable_id == current.binding.stable_id
+            && metadata.profile.binding_write_revision.get() == current.revision.revision
+            && metadata.profile.write_generation.get() == current.revision.write_credential_generation,
+            "installed copy policy differs from current SQL");
+        self.check_snapshot(&current, &selector.snapshot_revision).await?;
+        self.recheck_copy(&current, operation, claim_token, source, destination).await?;
+        Ok(aos_hub_core::surface_write::PlacementCopyPolicy {
+            profile_digest: metadata.profile.profile_digest,
+            catalogue_only: metadata.profile.protected_versionless,
+        })
+    }
+
     /// Reads a failed or running original without a dispatch claim or provider I/O.
     ///
     /// Callers select an already authorized topology operation. This method
@@ -277,6 +309,19 @@ impl HybridSurfaceWrites {
         path: &str,
         listed: Option<&SurfaceListedEvidence>,
     ) -> Result<Option<u64>> {
+        self.copy_external_with_policy(operation, claim_token, source, destination, path, listed, None).await
+    }
+
+    pub(super) async fn copy_external_with_policy(
+        &self,
+        operation: &TopologyOperationRecord,
+        claim_token: &str,
+        source: &SurfacePlacementRecord,
+        destination: &SurfacePlacementRecord,
+        path: &str,
+        listed: Option<&SurfaceListedEvidence>,
+        policy: Option<&aos_hub_core::surface_write::PlacementCopyPolicy>,
+    ) -> Result<Option<u64>> {
         let current = self
             .current_copy(operation, source, destination, true)
             .await?;
@@ -314,6 +359,11 @@ impl HybridSurfaceWrites {
         self.recheck_copy(&current, operation, claim_token, source, destination)
             .await?;
         let selector = metadata.selector(&query)?;
+        if let Some(policy) = policy {
+            ensure!(metadata.profile.profile_digest == policy.profile_digest
+                && metadata.profile.protected_versionless == policy.catalogue_only,
+                "installed placement copy policy changed before object dispatch");
+        }
         ensure!(
             selector.binding_stable_id == current.binding.stable_id
                 && metadata.profile.binding_write_revision.get() == current.revision.revision
@@ -332,14 +382,11 @@ impl HybridSurfaceWrites {
                 expected_sha256 == retained.original.expected_sha256,
                 "retained copy differs from current catalogue SHA-256"
             );
-            if let Some(object) = &catalogue {
-                ensure!(
-                    object
-                        .size
-                        .is_none_or(|bytes| bytes == retained.original.source_object.bytes.get()),
-                    "retained copy differs from current catalogue size"
-                );
-            }
+            require_retained_catalogue_size(
+                retained.original.version,
+                retained.original.source_object.bytes.get(),
+                catalogue.as_ref(),
+            )?;
             if retained.progress.pending {
                 anyhow::bail!("copy retains an unresolved provider turn");
             }
@@ -396,8 +443,34 @@ impl HybridSurfaceWrites {
                     "copy source size differs from current catalogue"
                 );
             }
+            let protected =
+                if metadata.profile.protected_versionless {
+                    let closure = metadata
+                        .source_closure
+                        .as_ref()
+                        .context("versionless copy requires a current positive source receipt")?;
+                    closure.validate()?;
+                    let trusted = expected_sha256
+                        .as_ref()
+                        .context("versionless copy refuses an uncatalogued source hash")?;
+                    let logical = catalogue
+                        .as_ref()
+                        .context("versionless copy requires the exact current catalogue object")?;
+                    ensure!(logical.size == Some(closure.bytes.get())
+                    && closure.bytes.get() as u64 == object.size && &closure.sha256 == trusted
+                    && closure.etag.as_ref().is_none_or(|etag| etag == &object.etag)
+                    && object.provider_version.is_none(),
+                    "versionless source closure differs from trusted catalogue or observed HEAD");
+                    Some(closure)
+                } else {
+                    None
+                };
             ExternalCopyOriginal {
-                version: 1,
+                version: if metadata.profile.protected_versionless {
+                    2
+                } else {
+                    1
+                },
                 deployment_id: self.work.deployment_id.clone(),
                 topology: current.topology.clone(),
                 binding_id: LeaseInteger::new(current.binding.id)?,
@@ -408,11 +481,16 @@ impl HybridSurfaceWrites {
                 destination: current.destination.clone(),
                 path: path.into(),
                 source_object: CopySourceObject {
-                    provider_version: object.provider_version.context(
-                        "external copy requires a real non-null immutable provider version",
-                    )?,
+                    provider_version: if protected.is_some() {
+                        None
+                    } else {
+                        Some(object.provider_version.context(
+                            "external copy requires a real non-null immutable provider version",
+                        )?)
+                    },
                     etag: object.etag,
                     bytes: LeaseInteger::new(i64::try_from(object.size)?)?,
+                    guard_stamp: protected.map(|closure| closure.guard_stamp.clone()),
                 },
                 read_generation: metadata.profile.read_generation,
                 write_generation: metadata.profile.write_generation,
@@ -420,6 +498,7 @@ impl HybridSurfaceWrites {
                 profile_digest: metadata.profile.profile_digest,
                 part_bytes: metadata.profile.part_bytes,
                 expected_sha256,
+                source_receipt_digest: protected.map(|closure| closure.receipt_digest.clone()),
             }
         };
         original.validate()?;
@@ -719,6 +798,23 @@ fn compare_current(pinned: &CurrentCopy, current: &CurrentCopy) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+// Versionless recovery keeps the admission's mandatory trusted catalogue size.
+// Version one preserves its existing optional catalogue-size compatibility.
+fn require_retained_catalogue_size(
+    version: u8,
+    original_bytes: i64,
+    catalogue: Option<&SurfaceObjectRecord>,
+) -> Result<()> {
+    if version == 2 {
+        ensure!(catalogue.and_then(|object| object.size) == Some(original_bytes),
+            "retained protected copy lacks exact current catalogue size");
+    } else if let Some(object) = catalogue {
+        ensure!(object.size.is_none_or(|bytes| bytes == original_bytes),
+            "retained copy differs from current catalogue size");
+    }
+    Ok(())
+}
 
 // Matches the catalogue SHA-256 encodings already accepted by placement scans.
 // The retained copy original always carries one canonical lowercase digest.
