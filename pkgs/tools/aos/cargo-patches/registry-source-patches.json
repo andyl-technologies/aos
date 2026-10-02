@@ -43,5 +43,30 @@
         "afterSha256": "21ca8c213d8898a008bee5fa504b0005b3988ddf1372073c9656f94f7d18f87a"
       }
     ]
+  },
+  {
+    "source": "registry+https://github.com/rust-lang/crates.io-index",
+    "name": "zbus",
+    "version": "5.15.0",
+    "archiveSha256": "c3bcbf15c8708d7fc1be0c993622e0a5cbd5e8b52bfa40afa4c3e0cd8d724ac1",
+    "patch": "pkgs/tools/aos/cargo-patches/zbus-5.15.0-zero-incoming-fds.patch",
+    "patchSha256": "60cdba93bb59267cff3d30eeec5ebe19da980388ed3267333462e4e768ed6c6c",
+    "files": [
+      {
+        "path": "src/connection/builder.rs",
+        "beforeSha256": "57b4875499c6543d528bcc6badc3dc40736fcdff28fd07d7ec3da106ba46a0b0",
+        "afterSha256": "688d6ca92a1398e234bcfc38d742befe307990b19a2c28af18b83d9cd4aae034"
+      },
+      {
+        "path": "src/connection/socket/mod.rs",
+        "beforeSha256": "68894b3e46d5635eababd236e412247964717d662628801bf1f1297bdd512388",
+        "afterSha256": "94141d322099e281ef2a21285bd95b9c1fb0124e1d6987be0329d09d377d0a78"
+      },
+      {
+        "path": "src/connection/socket/unix.rs",
+        "beforeSha256": "2874cd10639951c02322d0ce544039332146ad945c707cebeb1e2ff7a59dfdb7",
+        "afterSha256": "a3600faa4ad1d54ec2ef0de8a14b67b4b25c1132aa905f6983f4220641455d58"
+      }
+    ]
   }
 ]
