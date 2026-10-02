@@ -493,11 +493,32 @@ async fn disclosure_ordinary_original_check_refuses_new_local_supplement() {
         source.guard().original_commit(&head.commit).unwrap(),
         original
     );
+    // The producer's borrowed guard starts with the same strict original map.
+    // Its explicit transition uses the native verifier and the actual holder;
+    // installing the concrete guard alone cannot update this copied context.
+    let held_guard = source
+        .guard()
+        .held_guard(holder.destination(), TokioClock)
+        .unwrap();
+    let held_supplement = held_guard
+        .load_original_import_held(&authority, &import, &identity)
+        .await
+        .unwrap();
+    assert_eq!(
+        held_guard.original_commit(&head.commit).unwrap(),
+        held_supplement
+    );
+    assert_eq!(
+        source.guard().original_commit(&head.commit).unwrap(),
+        original
+    );
+
     let supplement = source
         .guard()
         .load_original_import_held(&authority, &import, &identity)
         .await
         .unwrap();
+    assert_eq!(supplement, held_supplement);
     assert_eq!(supplement.baseline(), original.baseline());
     assert_eq!(supplement.commit(), original.commit());
     source
