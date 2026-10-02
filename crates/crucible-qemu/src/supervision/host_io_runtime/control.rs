@@ -262,11 +262,23 @@ impl QemuLiveHostIoRuntime {
             };
             self.wait_for_poll_interval(remaining);
         }
+
+        let fault_command_indices = match self.region.fault_command_transport_mut(self.vm_slot) {
+            Ok(transport) => {
+                format!(
+                    "{}/{}",
+                    transport.ring.read_index(),
+                    transport.ring.write_index()
+                )
+            }
+            Err(source) => format!("unavailable ({source})"),
+        };
         Err(QemuAsyncDriverRuntimeError::new(
             "acknowledge completed-quantum clamp",
             format!(
-                "QEMU did not publish the post-device control boundary within {timeout:?}: requested token {}, expected current icount {}, retained-or-current idle wake icount {}, fault-event ring initial read/write {}/{}, last read/write {}/{}, drained records {}, last observation {}",
+                "QEMU did not publish the post-device control boundary within {timeout:?}: requested token {}, bound fault-command frontier {}, observed fault-command ring read/write {fault_command_indices}, expected current icount {}, retained-or-current idle wake icount {}, device progress observed {device_progress_observed}, fault-event ring initial read/write {}/{}, last read/write {}/{}, drained records {}, last observation {}",
                 request.generation,
+                request.fault_command_frontier,
                 snapshot.current_icount,
                 if device_progress_observed {
                     snapshot.current_icount
