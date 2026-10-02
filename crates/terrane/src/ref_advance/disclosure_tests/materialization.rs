@@ -183,6 +183,145 @@ pub(super) async fn preserve_relocated_attribute_producer() {
     );
 }
 
+/// Preserves a carried root's producers when replacing another graft.
+///
+/// # Panics
+/// Panics if genuine private publication fails or the displaced occupant's
+/// matching content and attributes override the carried root's checked origins.
+pub(super) async fn preserve_replacement_graft_producers() {
+    let (source, authority, _) = independent_factory("private:writer").await;
+    let reference = "refs/heads/_/main";
+    let plaintext = b"equal bytes do not select the displaced graft producer";
+    let mut session = source
+        .begin(reference, authority.token(), "sdk")
+        .await
+        .unwrap();
+    let staged = private_file_request(Vec::new(), plaintext);
+    let mut proposal = authority.commit_request(staged.commit, "sdk".into());
+    proposal.uploads = staged.uploads;
+    let introduced = source.advance(&mut session, proposal).await.unwrap();
+    let snapshot = source
+        .guard()
+        .read_snapshot(reference, authority.token(), b"/file", "sdk")
+        .await
+        .unwrap();
+    let (location, _) = snapshot.history.locate(introduced.commit, b"file").unwrap();
+    let original = snapshot.history.entry(&location).unwrap();
+    let carried = Tree::build(
+        vec![LeafItem {
+            key: b"file".to_vec(),
+            entry: original.clone(),
+        }],
+        properties(true),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let mut different = original;
+    match &mut different.kind {
+        EntryKind::File { mode, .. } => *mode = 0o600,
+        _ => panic!("fixture must contain an actual file"),
+    }
+    let occupied = Tree::build(
+        vec![LeafItem {
+            key: b"file".to_vec(),
+            entry: different,
+        }],
+        properties(true),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    assert_ne!(carried.root_identity(), occupied.root_identity());
+    let graft = |mount| {
+        Tree::build(
+            vec![
+                LeafItem {
+                    key: b"carried".to_vec(),
+                    entry: entry(EntryKind::Tree {
+                        root: carried.root_identity(),
+                        props: None,
+                    }),
+                },
+                LeafItem {
+                    key: b"mount".to_vec(),
+                    entry: entry(EntryKind::Tree {
+                        root: mount,
+                        props: None,
+                    }),
+                },
+            ],
+            properties(true),
+            262144,
+            TreeUse::Ordinary,
+        )
+        .unwrap()
+    };
+    let parent = graft(occupied.root_identity());
+    let mut staged = stage_graft(introduced.commit, plaintext, &parent, &carried);
+    staged
+        .uploads
+        .extend(occupied.nodes().map(|node| StagedUpload::Meta {
+            kind: IdentityKind::Node,
+            bytes: node.encoded().to_vec(),
+        }));
+    let mut proposal = authority.commit_request(staged.commit, "sdk".into());
+    proposal.uploads = staged.uploads;
+    let displaced = source.advance(&mut session, proposal).await.unwrap();
+    let checked = source
+        .guard()
+        .read_snapshot(reference, authority.token(), b"/mount/file", "sdk")
+        .await
+        .unwrap();
+    let (location, _) = checked
+        .history
+        .locate(displaced.commit, b"mount/file")
+        .unwrap();
+    assert_eq!(
+        checked.history.introducing_commit(&location).unwrap(),
+        displaced.commit
+    );
+    assert_eq!(
+        checked
+            .history
+            .attribute_producer(&location, "note")
+            .unwrap(),
+        displaced.commit
+    );
+
+    let replacement = graft(carried.root_identity());
+    let mut staged = stage_graft(displaced.commit, plaintext, &replacement, &carried);
+    staged
+        .uploads
+        .extend(occupied.nodes().map(|node| StagedUpload::Meta {
+            kind: IdentityKind::Node,
+            bytes: node.encoded().to_vec(),
+        }));
+    let mut proposal = authority.commit_request(staged.commit, "sdk".into());
+    proposal.uploads = staged.uploads;
+    let replaced = source.advance(&mut session, proposal).await.unwrap();
+    let checked = source
+        .guard()
+        .read_snapshot(reference, authority.token(), b"/mount/file", "sdk")
+        .await
+        .unwrap();
+    let (location, _) = checked
+        .history
+        .locate(replaced.commit, b"mount/file")
+        .unwrap();
+    assert_eq!(
+        checked.history.introducing_commit(&location).unwrap(),
+        introduced.commit
+    );
+    assert_eq!(
+        checked
+            .history
+            .attribute_producer(&location, "note")
+            .unwrap(),
+        introduced.commit
+    );
+}
+
 /// Certifies each canonical flattened occurrence under actual paired authority.
 ///
 /// # Panics
