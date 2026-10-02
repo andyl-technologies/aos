@@ -2962,7 +2962,7 @@ impl ProfileScope {
     /// The sysroot uses [`ProfileScope::profile_path`] for
     /// `/var/lib/profiles/system/state.json`, whose schema is
     /// [`ConfigGenerationState`]. Runtime system packages use a separate
-    /// package-generation database so `apm install --system` cannot corrupt
+    /// package-generation database so `apm image install` cannot corrupt
     /// or replace the sysroot generation pointer.
     pub fn package_profile_path(&self) -> PathBuf {
         match self {

@@ -6,7 +6,7 @@
 #   * generate a real static Nix cache
 #   * sync the registry for user and system apm scopes
 #   * delete the local image store path
-#   * download, verify, import, and copy the image via apm install --image
+#   * download, verify, import, and copy the image via apm image download
 {
   testing,
   apm,
@@ -274,7 +274,7 @@
     assert_file_contains /tmp/image-show.out "Image formats.*raw, qcow2" \
       "apm show displays available image formats"
 
-    echo "==> Consumer: sync system registry for apm install --system --image"
+    echo "==> Consumer: sync system registry for apm image download"
     mkdir -p /etc/apm/registries.d /var/lib/apm/registries /var/lib/apm/remote \
       /var/lib/apm/cache /var/lib/profiles/system
     cat > /etc/apm/registries.d/image-reg.toml << CFGEOF
@@ -309,8 +309,8 @@
       testScript = ''
         ${setupImageRegistryWorkflow}
 
-        echo "==> Test: apm install server --system --image ${format}"
-        $APM install server --system --registry image-reg --image ${format} \
+        echo "==> Test: apm image download server --format ${format}"
+        $APM image download server --registry image-reg --format ${format} \
           --output ${output} --dry-run > /tmp/image-${format}-dry-run.out 2>&1 || {
           cat /tmp/image-${format}-dry-run.out
           fail "dry-run plans ${format} image download"
@@ -324,7 +324,7 @@
         delete_store_path "${"$"}${storeVar}" "${format} image"
         rm -f ${output}
 
-        $APM install server --system --registry image-reg --image ${format} \
+        $APM image download server --registry image-reg --format ${format} \
           --output ${output} --yes > /tmp/image-${format}-install.out 2>&1 || {
           cat /tmp/image-${format}-install.out
           fail "apm downloads and writes ${format} image"
@@ -400,7 +400,7 @@ in {
       }
 
       echo "==> Test: unavailable image format fails after package resolution"
-      if $APM install server --system --registry image-reg --image vmdk \
+      if $APM image download server --registry image-reg --format vmdk \
         --output /tmp/server.vmdk --dry-run > /tmp/image-vmdk.out 2>&1; then
         cat /tmp/image-vmdk.out
         fail "vmdk image format should be rejected"
@@ -505,7 +505,7 @@ in {
       }
       cat /tmp/image-system-pull-after-fix.out
 
-      if $APM install server --system --registry image-reg --image qcow2 \
+      if $APM image download server --registry image-reg --format qcow2 \
         --output /tmp/server.qcow2 --dry-run > /tmp/image-qcow2-after-fix.out 2>&1; then
         cat /tmp/image-qcow2-after-fix.out
         fail "pruned qcow2 image format should be rejected"
@@ -520,7 +520,7 @@ in {
 
       delete_store_path "$IMAGE_RAW_DISK_STORE" "raw image after validate fix"
       rm -f /tmp/server-pruned.raw
-      $APM install server --system --registry image-reg --image raw \
+      $APM image download server --registry image-reg --format raw \
         --output /tmp/server-pruned.raw --yes \
         > /tmp/image-raw-after-fix-install.out 2>&1 || {
         cat /tmp/image-raw-after-fix-install.out

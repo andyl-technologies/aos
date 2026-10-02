@@ -1,6 +1,6 @@
 # tests/fleet/apm-system-upgrade.nix - Refuse incomplete A/B system upgrades.
 #
-# Live, single-axis sysroot activation is retired. `apm upgrade --system`
+# Live, single-axis sysroot activation is retired. `apm image upgrade`
 # now accepts only an authenticated raw OTA payload and stages it into the
 # inactive A/B slot; host configuration changes use the evaluator/activation
 # transaction instead. This test preserves the old pre-staged-toplevel fixture
@@ -19,12 +19,12 @@
 #
 # ── Why the upgrade needs no network ───────────────────────────────────
 # `extraClosures` pre-stages the entire server-2 closure onto the target's
-# disk, so `apm upgrade --system` finds every store path present and downloads
+# disk, so `apm image upgrade` finds every store path present and downloads
 # nothing. Two details are handled here:
 #   1. The full image ships `/usr/lib/aos/nix-registration`, and aos-nix-db.service loads it
 #      at boot. That makes the pre-staged server-2 closure visible to
 #      `nix-store --check-validity` without manual test seeding.
-#   2. `apm upgrade --system` reads SYSTEM-scope registries
+#   2. `apm image upgrade` reads SYSTEM-scope registries
 #      (/etc/apm/registries.d for config, /var/lib/apm/remote for the synced
 #      packages — types.rs), NOT the user scope that `apm registry add` /
 #      `apm update` write. So we stage the registry directly in system scope
@@ -150,7 +150,7 @@ in {
     # Python global `target`.
     target = {
       system = server1;
-      # Pre-stage gen-2's full closure so `apm upgrade --system` fetches
+      # Pre-stage gen-2's full closure so `apm image upgrade` fetches
       # nothing over the network (see the header note).
       extraClosures = [server2Top];
     };
@@ -266,7 +266,7 @@ in {
       # available: aos 0.1.0 -> test-2"; both version strings are the
       # unambiguous signal the test-2 entry was recognised.
       out = target.succeed(
-          "HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --dry-run 2>&1",
+          "HOME=/tmp ${pkgs.aos.apm}/bin/apm image upgrade --dry-run 2>&1",
           timeout=120,
       )
       assert "test-2" in out, f"dry-run did not surface the test-2 target: {out!r}"
@@ -274,12 +274,12 @@ in {
 
       # -- Real operation refuses the incomplete image before mutation --------
       target.succeed(
-          "if HOME=/tmp ${pkgs.aos.apm}/bin/apm upgrade --system --yes "
+          "if HOME=/tmp ${pkgs.aos.apm}/bin/apm image upgrade --yes "
           "> /tmp/apm-system-upgrade.out 2>&1; then exit 1; fi",
           timeout=300,
       )
       out = target.succeed("cat /tmp/apm-system-upgrade.out")
-      print("=== rejected apm upgrade --system output ===\n" + out)
+      print("=== rejected apm image upgrade output ===\n" + out)
       assert "no authenticated raw OTA image" in out, out
 
       image_after = json.loads(

@@ -1,5 +1,5 @@
-//! System sysroot management (`apm install --system`, `apm upgrade --system`,
-//! `apm rollback --system`).
+//! System sysroot management (`apm image install`, `apm image upgrade`,
+//! `apm config rollback`).
 //!
 //! A sysroot package is a regular package with `sysroot = true` whose metadata
 //! names both a system toplevel and an authenticated raw OTA payload. Installing

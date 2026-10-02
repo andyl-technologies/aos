@@ -22,7 +22,7 @@
 #      reproduces byte-for-byte (RFC-0006 #3: the recorded value is the
 #      genuine sd-stub section measurement, not a stand-in).
 #   2. REFUSE (unknown signer) — the catalog lists only a decoy db cert, so
-#      the image's real signer is not active. `apm upgrade --system` must
+#      the image's real signer is not active. `apm image upgrade` must
 #      download, then REFUSE without changing either generation axis.
 #   3. REFUSE (SBAT floor) — the real signer is now active, but the SBAT
 #      floor is raised one above the image's generation. `apm upgrade` must
@@ -52,7 +52,7 @@
     ../../systems/server-measured-boot.nix
     {
       # The consumer boots the default 0.1.0 fixture. A distinct release is
-      # required for `apm upgrade --system` to evaluate the candidate policy
+      # required for `apm image upgrade` to evaluate the candidate policy
       # instead of correctly reporting that the system is already current.
       aos.system.version = "test-sb-catalog";
     }
@@ -457,7 +457,7 @@ in {
       # refuses before creating a generation.
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=1800,
       )
       print("=== refuse (unknown signer) ===\n" + out)
@@ -499,7 +499,7 @@ in {
       ], rotated_catalog
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=600,
       )
       print("=== refuse (sbat floor) ===\n" + out)
@@ -521,7 +521,7 @@ in {
       )
       out = target.fail(
           "HOME=/tmp PATH=${pkgs.nix}/bin:$PATH "
-          "${pkgs.aos.apm}/bin/apm upgrade --system --yes 2>&1",
+          "${pkgs.aos.apm}/bin/apm image upgrade --yes 2>&1",
           timeout=600,
       )
       print("=== accept catalog, reach unavailable ESP ===\n" + out)

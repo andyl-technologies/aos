@@ -5,10 +5,10 @@
 //! the exact revision before a candidate becomes ready. Finalization freezes the
 //! revision before the Hub installs its retained prepared pointers.
 
-use anyhow::{bail, ensure, Context as _, Result};
+use anyhow::{Context as _, Result, bail, ensure};
 use aos_registry_surface::staging::wire::{decode_revision, encode_revision};
-use aos_registry_surface::staging::{validate_stage_id, StageRecord, StageRevision, StageState};
-use aos_remote::{hub_rpc, hub_types, HubClient};
+use aos_registry_surface::staging::{StageRecord, StageRevision, StageState, validate_stage_id};
+use aos_remote::{HubClient, hub_rpc, hub_types};
 
 /// Holds the verified portable record and its Hub upload association.
 #[derive(Clone, Debug)]
@@ -459,7 +459,7 @@ mod tests {
     }
 
     fn ready_detail() -> hub_types::StagedRelease {
-        use aos_registry_surface::staging::{inventory_digest, StageObject, STAGE_SCHEMA};
+        use aos_registry_surface::staging::{STAGE_SCHEMA, StageObject, inventory_digest};
 
         let inventory = vec![StageObject {
             path: "releases/1.0.0/release.json".into(),

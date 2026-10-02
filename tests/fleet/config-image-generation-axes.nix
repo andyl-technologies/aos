@@ -294,7 +294,7 @@ in {
           before_boot = machine.succeed("cat /proc/sys/kernel/random/boot_id").strip()
           output = machine.succeed(
               "HOME=/tmp PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH "
-              f"{APM} upgrade --system --yes 2>&1",
+              f"{APM} image upgrade --yes 2>&1",
               timeout=1800,
           )
           assert "Staging inactive A/B image slot" in output, output
@@ -367,7 +367,7 @@ in {
       # creates no generation, and never changes the image or boot identity.
       generation_count = len(second_state["generations"])
       target.succeed(
-          f"{APM} rollback --system --generation {initial['number']}", timeout=300
+          f"{APM} config rollback --generation {initial['number']}", timeout=300
       )
       direct_state, direct = current_config(target)
       assert direct["number"] == initial["number"], direct_state
@@ -630,7 +630,7 @@ in {
           "cat /proc/sys/kernel/random/boot_id"
       ).strip()
       cross_output = target.succeed(
-          f"{APM} rollback --system --generation {second['number']} 2>&1",
+          f"{APM} config rollback --generation {second['number']} 2>&1",
           timeout=300,
       )
       assert "Re-evaluated generation" in cross_output, cross_output
