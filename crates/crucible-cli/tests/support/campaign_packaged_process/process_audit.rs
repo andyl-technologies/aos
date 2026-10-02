@@ -3,6 +3,9 @@
 use super::*;
 use std::io::Write;
 
+#[path = "process_audit/fork_diagnostics.rs"]
+mod fork_diagnostics;
+
 #[derive(Default)]
 pub(super) struct ProcessAudit {
     observed: BTreeSet<u32>,
@@ -11,6 +14,7 @@ pub(super) struct ProcessAudit {
     cpu_reports_remaining: u16,
     cpu_observations: BTreeMap<u32, CpuObservation>,
     service_pid: Option<u32>,
+    fork_diagnostics: fork_diagnostics::ForkDiagnostics,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -44,6 +48,7 @@ impl CpuObservation {
 struct QemuResources {
     pid: u32,
     parent: u32,
+    start_time_ticks: Option<u64>,
     rings: BTreeSet<(String, u64)>,
     overlays: BTreeSet<(u64, u64)>,
 }
@@ -137,6 +142,9 @@ impl ProcessAudit {
             .to_string_lossy()
             .into_owned();
         let mut resources = BTreeMap::new();
+        if fork {
+            self.fork_diagnostics.begin_sample();
+        }
         for (pid, arguments) in descendant_process_commands(service_pid)? {
             if arguments.first() != Some(&expected) {
                 continue;
@@ -152,29 +160,55 @@ impl ProcessAudit {
                     command_line.split_whitespace().map(str::to_owned).collect(),
                 );
             }
-            if fork && let Some(resource) = qemu_resources(pid)? {
-                resources.insert(pid, resource);
+            if fork {
+                let mut incomplete = None;
+                let mut partial = None;
+                let observation = qemu_resources_at(
+                    pid,
+                    &PathBuf::from(format!("/proc/{pid}")),
+                    &mut incomplete,
+                    &mut partial,
+                );
+                if observation.is_err() && incomplete.is_none() {
+                    incomplete = Some("process-parent-malformed".into());
+                }
+                self.fork_diagnostics.record(
+                    pid,
+                    observation
+                        .as_ref()
+                        .ok()
+                        .and_then(Option::as_ref)
+                        .or(partial.as_ref()),
+                    incomplete.as_deref(),
+                );
+                if observation.is_err() {
+                    self.fork_diagnostics
+                        .refusal("resource-read-error", resources.len());
+                    self.fork_diagnostics
+                        .report("owned-process-sampling", &mut std::io::stderr().lock());
+                }
+                if let Some(resource) = observation? {
+                    resources.insert(pid, resource);
+                }
             }
         }
         if !fork || self.private_fork || resources.len() != 2 {
+            if fork && !self.private_fork {
+                self.fork_diagnostics
+                    .refusal("resource-count-not-two", resources.len());
+            }
             return Ok(());
         }
+        self.fork_diagnostics
+            .refusal("no-source-child-parent-pair", resources.len());
         for child in resources.values() {
             let Some(source) = resources.get(&child.parent) else {
                 continue;
             };
-            if source.rings.is_empty()
-                || child.rings.is_empty()
-                || source.overlays.is_empty()
-                || child.overlays.is_empty()
-            {
-                continue;
-            }
             // Inherited descriptors may still be present during child adoption.
             // Count the pair only after both private resource sets are distinct.
-            if !source.rings.is_disjoint(&child.rings)
-                || !source.overlays.is_disjoint(&child.overlays)
-            {
+            if let Some(reason) = fork_diagnostics::pair_refusal(source, child) {
+                self.fork_diagnostics.refusal(reason, resources.len());
                 continue;
             }
             self.private_fork = true;
@@ -187,8 +221,10 @@ impl ProcessAudit {
         Ok(())
     }
 
-    pub(super) fn require_private_fork(&self) -> Result<(), Box<dyn Error>> {
+    pub(super) fn require_private_fork(&mut self, stage: &str) -> Result<(), Box<dyn Error>> {
         if !self.private_fork {
+            self.fork_diagnostics
+                .report(stage, &mut std::io::stderr().lock());
             return Err("one-guest HotFork did not expose an actual source/child pair with distinct live ring and writable root-overlay backing files".into());
         }
         Ok(())
@@ -306,20 +342,43 @@ fn disabled_and_exhausted_cpu_diagnostics_never_read_process_files() {
     assert_eq!(enabled.cpu_reports_remaining, 0);
 }
 
-fn qemu_resources(pid: u32) -> Result<Option<QemuResources>, Box<dyn Error>> {
-    let process = PathBuf::from(format!("/proc/{pid}"));
+fn qemu_resources_at(
+    pid: u32,
+    process: &Path,
+    incomplete: &mut Option<String>,
+    partial: &mut Option<QemuResources>,
+) -> Result<Option<QemuResources>, Box<dyn Error>> {
+    *incomplete = None;
+    *partial = None;
     let Ok(stat) = fs::read_to_string(process.join("stat")) else {
+        *incomplete = Some("stat-unreadable".into());
         return Ok(None);
     };
-    let parent = stat
+    let parent: u32 = stat
         .rsplit_once(") ")
         .and_then(|(_, fields)| fields.split_whitespace().nth(1))
-        .ok_or("QEMU process stat omits its parent")?
-        .parse()?;
+        .ok_or_else(|| {
+            *incomplete = Some("process-parent-field-unavailable".into());
+            "QEMU process stat omits its parent"
+        })?
+        .parse()
+        .inspect_err(|_error| *incomplete = Some("process-parent-malformed".into()))?;
+    let start_time_ticks = stat
+        .rsplit_once(") ")
+        .and_then(|(_, fields)| fields.split_whitespace().nth(19))
+        .and_then(|value| value.parse().ok());
+    *partial = Some(QemuResources {
+        pid,
+        parent,
+        start_time_ticks,
+        rings: BTreeSet::new(),
+        overlays: BTreeSet::new(),
+    });
     let Ok(maps) = fs::read_to_string(process.join("maps")) else {
+        *incomplete = Some("maps-unreadable".into());
         return Ok(None);
     };
-    let rings = maps
+    let rings: BTreeSet<(String, u64)> = maps
         .lines()
         .filter(|line| line.contains("memfd:crucible-qemu-shmem"))
         .filter_map(|line| {
@@ -327,15 +386,21 @@ fn qemu_resources(pid: u32) -> Result<Option<QemuResources>, Box<dyn Error>> {
             Some((fields.get(3)?.to_string(), fields.get(4)?.parse().ok()?))
         })
         .collect();
+    if let Some(progress) = partial.as_mut() {
+        progress.rings.clone_from(&rings);
+    }
     let Ok(descriptors) = fs::read_dir(process.join("fd")) else {
+        *incomplete = Some("fd-directory-unreadable".into());
         return Ok(None);
     };
     let mut overlays = BTreeSet::new();
     for entry in descriptors {
         let Ok(entry) = entry else {
+            *incomplete = Some("fd-entry-unreadable".into());
             return Ok(None);
         };
         let Ok(target) = fs::read_link(entry.path()) else {
+            *incomplete = Some(format!("fd-link-unreadable fd={:?}", entry.file_name()));
             return Ok(None);
         };
         if !target
@@ -345,24 +410,42 @@ fn qemu_resources(pid: u32) -> Result<Option<QemuResources>, Box<dyn Error>> {
             continue;
         }
         let Ok(info) = fs::read_to_string(process.join("fdinfo").join(entry.file_name())) else {
+            *incomplete = Some(format!(
+                "overlay-fdinfo-unreadable fd={:?}",
+                entry.file_name()
+            ));
             return Ok(None);
         };
         let flags = info
             .lines()
             .find_map(|line| line.strip_prefix("flags:"))
             .and_then(|value| u64::from_str_radix(value.trim(), 8).ok())
-            .ok_or("root-overlay descriptor omits its access flags")?;
+            .ok_or_else(|| {
+                *incomplete = Some(format!(
+                    "overlay-access-flags-malformed fd={:?}",
+                    entry.file_name()
+                ));
+                "root-overlay descriptor omits its access flags"
+            })?;
         if flags & 0o3 == 0 {
             continue;
         }
         let Ok(metadata) = fs::metadata(entry.path()) else {
+            *incomplete = Some(format!(
+                "overlay-metadata-unreadable fd={:?}",
+                entry.file_name()
+            ));
             return Ok(None);
         };
         overlays.insert((metadata.dev(), metadata.ino()));
+        if let Some(progress) = partial.as_mut() {
+            progress.overlays.insert((metadata.dev(), metadata.ino()));
+        }
     }
     Ok(Some(QemuResources {
         pid,
         parent,
+        start_time_ticks,
         rings,
         overlays,
     }))

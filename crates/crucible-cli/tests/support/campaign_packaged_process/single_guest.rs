@@ -72,7 +72,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
             discovery.attempt(),
             "HotFork",
         )?;
-        processes.require_private_fork()?;
+        processes.require_private_fork("guest-discovery")?;
         println!("single_guest_private_disk_fork_authenticated=true");
     }
 
