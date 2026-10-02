@@ -35,6 +35,12 @@ async fn disclosure_projection_safe_materialization_certifies_each_flattened_fil
 
 #[cfg(unix)]
 #[tokio::test]
+async fn disclosure_graft_preserves_independent_private_attribute_producer() {
+    materialization::preserve_relocated_attribute_producer().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn disclosure_paired_retry_reopens_a_fresh_destination_before_source_erasure() {
     fresh_recovery::recover_fresh_transition().await;
 }
