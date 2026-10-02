@@ -33,6 +33,7 @@ enum PolicyValue {
     Unsigned(u64),
     Boolean(bool),
     Names(Vec<String>),
+    IndexRoots(Vec<(String, Digest)>),
     Ttl(u64),
     Count(u64),
     Quota(u64, u64),
@@ -50,6 +51,13 @@ impl From<&Value<'_>> for PolicyValue {
             Value::Names(values) => {
                 Self::Names(values.iter().map(|value| (*value).to_string()).collect())
             }
+            Value::IndexRoots(roots) => Self::IndexRoots(
+                roots
+                    .as_bindings()
+                    .iter()
+                    .map(|binding| (binding.attribute.to_string(), binding.node))
+                    .collect(),
+            ),
             Value::Ttl(value) => Self::Ttl(*value),
             Value::Count(value) => Self::Count(*value),
             Value::Quota { root, principal } => Self::Quota(*root, *principal),
