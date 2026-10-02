@@ -93,7 +93,7 @@ recovery inventory; follow the generic
 The epoch-one image is pinned to this prepared public anchor:
 
 ```text
-andyl-experimental:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAID1J77zx10Z/VmgFa5qab2phnJEJ2JEp8mS2HnBAnzbH
+andyl-experimental:Ed25519:AAAAC3NzaC1lZDI1NTE5AAAAIPYTer3cRwGWxUbdiEA2FRYkWlY9YmSHkCRyZEKtCXp4
 ```
 
 Before release, retrieve the `experimental-v1` private key from operator custody,
