@@ -511,6 +511,35 @@ def realize_service(value):
     return {"units": rendered, "links": links, "starts": starts, "resource": unit_name}
 
 
+def image_unit_digest(target):
+    """Reads a regular immutable store member without following any aliases."""
+    path = Path(target)
+    parts = path.parts
+    canonical_member = re.fullmatch(r"/nix/store/[0-9abcdfghijklmnpqrsvwxyz]{32}-[^/]+(?:/[^/]+)*", target)
+    if not canonical_member or str(path) != target or any(part in {".", ".."} for part in parts):
+        raise ValueError("image service definition is not a canonical immutable store member")
+
+    # Directory-relative NOFOLLOW opens authenticate the whole member path,
+    # including intermediate directories, rather than just its final leaf.
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in parts[1:-1]:
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=directory)
+            os.close(directory)
+            directory = child
+        descriptor = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=directory)
+        with os.fdopen(descriptor, "rb") as source:
+            identity = os.fstat(source.fileno())
+            if not stat.S_ISREG(identity.st_mode) or identity.st_mode & 0o222:
+                raise ValueError("image service definition is not an immutable regular file")
+            contents = source.read(2 * 1024 * 1024 + 1)
+            if len(contents) > 2 * 1024 * 1024:
+                raise ValueError("image service definition exceeds the bounded unit size")
+            return digest(contents)
+    finally:
+        os.close(directory)
+
+
 class Handler(ConfigurationHandler):
     """Reconciles systemd state using the shared resource ownership namespace."""
 
@@ -527,6 +556,41 @@ class Handler(ConfigurationHandler):
             names.update(value.get("previous_links", {}))
             value["owned_paths"] = sorted(str(self.unit_directory / name) for name in names)
         super().save(value)
+
+    def image_custody(self, desired, action):
+        """Authenticates projected aliases before adopting their /etc entries."""
+        receipt = self.receipt or {}
+        custody = dict(receipt.get("image_units", {}))
+        owned_names = set(receipt.get("units", {})) | set(receipt.get("previous_units", {}))
+        eligible = self.value.get("bootstrap", False) or self.value.get("activation_owner", "ability") != "ability"
+        if action == "remove" or self.invocation.get("action") == "remove":
+            eligible = False
+        for name, expected in desired.items():
+            path = self.unit_directory / name
+            if not path.is_symlink() or name in custody:
+                continue
+            if name in owned_names:
+                raise ValueError("owned service definition was replaced by an external link")
+            if not eligible:
+                raise ValueError("service definition has no authenticated image projection")
+            target = os.readlink(path)
+            actual = image_unit_digest(target)
+            if actual != expected:
+                raise ValueError("image service definition conflicts with authenticated rendered content")
+            custody[name] = {"target": target, "digest": actual}
+        return custody
+
+    def unit_digest(self, name, custody):
+        """Checks an owned regular leaf or its exact pending image alias."""
+        path = self.unit_directory / name
+        if path.is_symlink():
+            original = custody.get(name)
+            if original is None or os.readlink(path) != original["target"]:
+                raise ValueError("service definition link changed outside its owning effect")
+            if image_unit_digest(original["target"]) != original["digest"]:
+                raise ValueError("image service definition changed outside its retained custody")
+            return original["digest"]
+        return read_digest(path)
 
     def manager(self, *arguments, check=True):
         result = subprocess.run([self.systemctl, *arguments], check=False, capture_output=True, text=True)
@@ -566,7 +630,15 @@ class Handler(ConfigurationHandler):
         prior_units = dict((self.receipt or {}).get("previous_units", {}), **(self.receipt or {}).get("units", {}))
         prior_links = dict((self.receipt or {}).get("previous_links", {}), **(self.receipt or {}).get("links", {}))
         owner = self.value.get("activation_owner", "ability")
-        expected = all(read_digest(self.unit_directory / name) == value for name, value in desired.items())
+        try:
+            custody = self.image_custody(desired, action)
+            for name in desired.keys() | prior_units.keys():
+                self.unit_digest(name, custody)
+        except (ValueError, OSError):
+            if action == "observe":
+                return {"status": "indeterminate"}
+            raise
+        expected = all(self.unit_digest(name, custody) == value for name, value in desired.items())
         expected = expected and self.links_match(realization["links"])
         if action == "observe" and self.invocation.get("action") == "remove":
             if self.receipt is None:
@@ -576,7 +648,7 @@ class Handler(ConfigurationHandler):
                 # A failed stop may have run arbitrary package commands. File
                 # identity alone cannot authorize another lifecycle invocation.
                 return {"status": "indeterminate"}
-            if any(read_digest(self.unit_directory / name) not in {None, value} for name, value in prior_units.items()):
+            if any(self.unit_digest(name, custody) not in {None, value} for name, value in prior_units.items()):
                 return {"status": "indeterminate"}
             if not self.links_safe(prior_links):
                 return {"status": "indeterminate"}
@@ -609,7 +681,7 @@ class Handler(ConfigurationHandler):
                         if self.value["lifecycle"]["execution_model"] != "oneshot":
                             return {"status": "retry-safe"}
                 return {"status": "current", "outputs": result}
-            safe = all(read_digest(self.unit_directory / name) in {None, value, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)} for name, value in desired.items())
+            safe = all(self.unit_digest(name, custody) in {None, value, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)} for name, value in desired.items())
             safe = safe and self.links_safe(dict(prior_links, **realization["links"]))
             if not self.receipt and all(not (self.unit_directory / name).exists() for name in desired):
                 return {"status": "absent"}
@@ -620,7 +692,7 @@ class Handler(ConfigurationHandler):
                     return {}
                 raise ValueError("service removal has no ownership receipt")
             for name, value in prior_units.items():
-                if read_digest(self.unit_directory / name) not in {None, value}:
+                if self.unit_digest(name, custody) not in {None, value}:
                     raise ValueError("service definition changed outside its owning effect")
             if not self.links_safe(prior_links):
                 raise ValueError("service installation link changed outside its owning effect")
@@ -639,7 +711,7 @@ class Handler(ConfigurationHandler):
             self.manager("daemon-reload")
             return self.finish_remove()
         for name, value in desired.items():
-            if read_digest(self.unit_directory / name) not in {None, value, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)}:
+            if self.unit_digest(name, custody) not in {None, value, prior_units.get(name), (self.receipt or {}).get("previous_units", {}).get(name)}:
                 raise ValueError("service definition conflicts with external configuration")
         if not self.links_safe(prior_links):
             raise ValueError("service installation link changed outside its owning effect")
@@ -659,10 +731,12 @@ class Handler(ConfigurationHandler):
             finally:
                 os.close(descriptor)
         self.claim_paths([str(self.unit_directory / name) for name in set(desired) | set(realization["links"])])
-        receipt = {"kind": "service", "units": desired, "links": realization["links"], "resource": unit_name, "starts": realization["starts"], "owner": owner, "pending": True, "previous_units": prior_units, "previous_links": prior_links, "concurrency": (self.value.get("concurrency") or {}).get("group")}
+        receipt = {"kind": "service", "units": desired, "links": realization["links"], "resource": unit_name, "starts": realization["starts"], "owner": owner, "pending": True, "previous_units": prior_units, "previous_links": prior_links, "image_units": custody, "concurrency": (self.value.get("concurrency") or {}).get("group")}
         old_resource = (self.receipt or {}).get("resource")
         self.save(receipt)
         for name, text in realization["units"].items():
+            # Adopt the mutable /etc entry as a regular owned file. Pending
+            # custody authenticates a projected alias only until this conversion.
             durable_write(self.unit_directory / name, text.encode())
         self.remove_links({name: target for name, target in prior_links.items() if realization["links"].get(name) != target})
         self.install_links(realization["links"])
@@ -684,9 +758,9 @@ class Handler(ConfigurationHandler):
             self.save(receipt)
             self.manager(operation, unit_name)
         for name in prior_units.keys() - desired.keys():
-            if read_digest(self.unit_directory / name) == prior_units[name]:
+            if self.unit_digest(name, custody) == prior_units[name]:
                 durable_unlink(self.unit_directory / name)
-        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}))
+        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, image_units={}))
         return result
 
     def links_match(self, links):

@@ -93,11 +93,6 @@ in {
             default = true;
             description = "Start this service during activation.";
           };
-          bootstrap = lib.mkOption {
-            type = lib.types.bool;
-            default = false;
-            description = "Render this service into the image for startup before native activation; its normal handler retains lifecycle ownership.";
-          };
           bootstrapPrincipals = lib.mkOption {
             type = lib.types.listOf lib.types.effectOutput;
             default = [];
