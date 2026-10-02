@@ -628,6 +628,12 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   its generator and public-model consumers exist. These are ordinary format
   records; no signing, checked authority, backend, native reconciliation or
   collection effects are qualified by this registration.
+  The registered local-v1 reconciliation format remains a separate owning-codec
+  gap. A dedicated pure module location and `reconciliation-reference-models`
+  auxiliary reserve complete-field, independent malformed-wire and decoder-limit
+  groups. The check fails explicitly while its codec/model inputs are pending.
+  This scope contains ordinary record fields only; current-fence verification,
+  physical reconciliation and native effects remain unqualified.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

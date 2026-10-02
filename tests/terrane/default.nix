@@ -203,4 +203,5 @@ in {
   integration.refs-reference-models = import ./refs-models.nix {inherit sourceGate;};
   integration.evidence-reference-models = import ./evidence-models.nix {inherit sourceGate;};
   integration.control-reference-models = import ./control-models.nix {inherit sourceGate;};
+  integration.reconciliation-reference-models = import ./reconciliation-models.nix {inherit sourceGate;};
 }

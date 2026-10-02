@@ -15,6 +15,8 @@
 
 mod cbor;
 pub mod evidence;
+/// Owns untrusted fields of the registered local reconciliation record.
+pub mod reconciliation;
 mod validation;
 
 #[cfg(test)]
