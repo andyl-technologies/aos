@@ -305,10 +305,11 @@ mod tests {
             let response = Arc::clone(&service)
                 .serve_oci(
                     ResolvedOciRoute {
-                        registry_id,
+                        registry_id: Some(registry_id),
                         authority: "worker.test".to_string(),
                         scheme: "https".to_string(),
                         access_policy_kind: "hub_auth".to_string(),
+                        repository_prefix: None,
                         request,
                     },
                     method,
