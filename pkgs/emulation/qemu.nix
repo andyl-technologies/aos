@@ -1639,7 +1639,7 @@ in
                 procfd-flags.result
               grep -Fxq 'PROCFD_DIRECT_PASS: retained O_DIRECT; real copy/adoption, aligned read' \
                 procfd-flags.result
-              # Exercise the production TX-stop and lifecycle projection bodies
+              # Exercise the production TX-stop, lifecycle, and control bodies
               # with the compiler and headers that built the complete system API.
               ${python3}/bin/python3 - <<'PYTHON'
               import json
@@ -1672,7 +1672,7 @@ in
               environment["CC"] = command[0]
               environment["CFLAGS"] = shlex.join(flags)
               environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
-              for name in ("net-output-stop", "lifecycle-projection"):
+              for name in ("net-output-stop", "lifecycle-projection", "control-deferred"):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
                           sys.executable,
@@ -1681,11 +1681,13 @@ in
                       ], cwd=entry["directory"], env=environment,
                          stdout=result, check=True)
               PYTHON
-              cat net-output-stop.result lifecycle-projection.result
+              cat net-output-stop.result lifecycle-projection.result control-deferred.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
                 lifecycle-projection.result
+              grep -Fxq 'PASS production control: TX stop overlap, advance settlement, retained generation, explicit resume' \
+                control-deferred.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -4046,7 +4048,7 @@ in
                 "$out/share/aos/crucible/procfd-flags.result"
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
-              for name in net-output-stop lifecycle-projection; do
+              for name in net-output-stop lifecycle-projection control-deferred; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
