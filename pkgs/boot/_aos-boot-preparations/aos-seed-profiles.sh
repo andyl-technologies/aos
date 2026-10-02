@@ -241,7 +241,7 @@ if [ "$AOS_RECOVERY_ENABLED" = true ]; then
   recovery_audit=/run/aos-seed-recovery-audit
   rm -rf "$recovery_audit"
   mkdir -p "$recovery_audit"
-  .aos-package-runtime-unwrapped \
+  @package_runtime@/bin/aos-package-runtime \
     attest __read-uki-identity-section \
     --uki "$recovery_mount/$recovery_uki" --section cmdline \
     > "$recovery_audit/cmdline" \
@@ -249,7 +249,7 @@ if [ "$AOS_RECOVERY_ENABLED" = true ]; then
   recovery_cmdline=$(cat "$recovery_audit/cmdline")
   [ "$recovery_cmdline" = "console=ttyS0,115200 rd.systemd.unit=aos-recovery.target aos.recovery=1 rd.luks=0" ] \
     || fail_image_identity "paired recovery UKI has a noncanonical signed command line"
-  .aos-package-runtime-unwrapped \
+  @package_runtime@/bin/aos-package-runtime \
     attest __read-uki-identity-section \
     --uki "$recovery_mount/$recovery_uki" --section osrel \
     > "$recovery_audit/os-release.clean" \
@@ -377,7 +377,7 @@ ln -sfn "$evaluation_descriptor" "$retention/evaluation-descriptor"
 sync "$retention"
 
 mkdir -p "$profile_dir"
-current=$(.aos-package-runtime-unwrapped deployment-current --profile "$profile_dir" \
+current=$(@package_runtime@/bin/aos-package-runtime deployment-current --profile "$profile_dir" \
   --committed-during-recovery) \
   || fail_image_identity "native profile publication inspection failed"
 GEN=$(printf '%s' "$current" | jq -er '

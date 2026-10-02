@@ -67,7 +67,7 @@ in
       {
         name = "build";
         script = ''
-          export AOS_PACKAGE_RUNTIME=${packageRuntime}/bin/.aos-package-runtime-unwrapped
+          export AOS_PACKAGE_RUNTIME=${packageRuntime}/bin/aos-package-runtime
           export AOS_BOOT_CONFIGURATION=${packageRuntime}/bin/aos-boot-configuration
           export AOS_CONFIGURATION_BOOT=${aos-configuration-lower}/bin/aos-configuration-boot
           export AOS_SHA256SUM=${coreutils}/bin/sha256sum
@@ -84,7 +84,9 @@ in
           cp aos-boot-preparations $out/bin/
           for source in ${./_aos-boot-preparations}/*.sh; do
             destination="$out/bin/$(basename "$source" .sh)"
-            sed 's|@bash@|${bash}|g' "$source" > "$destination"
+            sed -e 's|@bash@|${bash}|g' \
+              -e 's|@package_runtime@|${packageRuntime}|g' \
+              "$source" > "$destination"
             chmod 0555 "$destination"
           done
         '';
