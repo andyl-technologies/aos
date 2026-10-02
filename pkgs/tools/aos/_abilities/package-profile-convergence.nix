@@ -9,7 +9,7 @@
   hostStage =
     (config.aos.boot.stage or "host")
     == "host"
-    && builtins.head config.aos.activation.scope != "container";
+    && lib.take 1 config.aos.activation.scope != ["container"];
   specification = config.aos.abilities.configuration.operations.file.effects.package-profile-specification;
   service = {
     policy.hardening = {

@@ -10,7 +10,7 @@
   hostStage =
     (config.aos.boot.stage or "host")
     == "host"
-    && builtins.head config.aos.activation.scope != "container";
+    && lib.take 1 config.aos.activation.scope != ["container"];
   command = {
     executable = {
       path = "${package.outputs.packageRuntime}/libexec/aos-package-attestation-provider";
