@@ -189,6 +189,57 @@ class ElfClassificationTest(unittest.TestCase):
 class PlanSemanticsTest(unittest.TestCase):
     """Covers alias authority, conflicts, hardlinks, and deterministic output."""
 
+    def test_storage_secret_source_labels_exact_directory_and_three_leaves(self) -> None:
+        source = Path(__file__).with_name("aos_sandbox.fc").read_text()
+        rows = [
+            row.split() for row in source.splitlines()
+            if row.startswith("/var/lib/aos/sandbox-storage-credential-sources")
+        ]
+        self.assertEqual(len(rows), 2)
+        root = "/var/lib/aos/sandbox-storage-credential-sources"
+        names = (
+            "storage-zfs-hold-key-v1",
+            "operator-recovery-controller-public-key-v1",
+            "operator-recovery-storage-owner-key-v1",
+        )
+        for path, marker in ((root, "-d"), *((root + "/" + name, "--") for name in names)):
+            matches = [
+                context for pattern, kind, context in rows
+                if kind == marker and re.fullmatch(pattern, path)
+            ]
+            self.assertEqual(matches, ["system_u:object_r:aos_sandbox_storage_credential_source_t"])
+        for sibling in (root + "-copy", root + "/unknown-key", root + "/" + names[0] + "0",
+                        root + "/" + names[0] + "/child"):
+            self.assertFalse(any(re.fullmatch(pattern, sibling) for pattern, _, _ in rows))
+        self.assertFalse(any(
+            kind == "-l" and re.fullmatch(pattern, root + "/" + names[0])
+            for pattern, kind, _ in rows
+        ))
+
+    def test_storage_delivery_labels_only_exact_service_and_three_leaves(self) -> None:
+        source = Path(__file__).with_name("aos_sandbox.fc").read_text()
+        rows = [
+            row.split() for row in source.splitlines()
+            if row.startswith("/run/credentials/aos-storaged")
+        ]
+        self.assertEqual(len(rows), 2)
+        root = "/run/credentials/aos-storaged.service"
+        names = (
+            "storage-zfs-hold-key-v1",
+            "operator-recovery-controller-public-key-v1",
+            "operator-recovery-storage-owner-key-v1",
+        )
+        for path, marker in ((root, "-d"), *((root + "/" + name, "--") for name in names)):
+            matches = [
+                context for pattern, kind, context in rows
+                if kind == marker and re.fullmatch(pattern, path)
+            ]
+            self.assertEqual(matches, ["system_u:object_r:aos_sandbox_storage_credential_t"])
+        for sibling in (root + "-copy", root + "/unknown-key", root + "/" + names[0] + "0",
+                        root + "/" + names[0] + "/child",
+                        "/run/credentials/other.service/" + names[0]):
+            self.assertFalse(any(re.fullmatch(pattern, sibling) for pattern, _, _ in rows))
+
     def test_gateway_executable_labels_only_the_exact_selected_package_sibling(self) -> None:
         source = Path(__file__).with_name("aos_sandbox.fc").read_text()
         row = next(line for line in source.splitlines() if "/bin/aos-sandbox-git-gateway --" in line)

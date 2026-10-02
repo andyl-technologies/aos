@@ -1,9 +1,8 @@
 """Expected effective matrix for existing normal owners and private TPM helpers.
 
 This is data for the existing SETools checker, not a second checker or an
-installed-policy/currentness producer. PID 1's explicit Root and Controller
-credential delivery exceptions grant no owner state access or preparation
-authority.
+installed-policy/currentness producer. PID 1's explicit owner credential
+delivery exceptions grant no owner state access or preparation authority.
 """
 
 import view_policy
@@ -36,6 +35,14 @@ ROOT_CUSTODY_CUTS = (
     ("file", "ioctl"),
     ("process", "ptrace"),
     ("process", "transition"),
+)
+
+STORAGE_CREDENTIAL_SOURCE = "aos_sandbox_storage_credential_source_t"
+STORAGE_CREDENTIAL = "aos_sandbox_storage_credential_t"
+STORAGE_CREDENTIAL_NAMES = (
+    "storage-zfs-hold-key-v1",
+    "operator-recovery-controller-public-key-v1",
+    "operator-recovery-storage-owner-key-v1",
 )
 
 CREDENTIAL_PID1_FILE_DELIVERY = (
@@ -111,7 +118,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
             if other == domain:
                 continue
             for object_type in (state, credential):
-                if role in ("controller", "policy_authority") and other == "init_t" and object_type == credential:
+                if role in ("controller", "storage", "policy_authority") and other == "init_t" and object_type == credential:
                     negative.extend(accesses(other, object_type, "file", tuple(
                         permission for permission in (*file_mutate, "open", "read")
                         if permission not in CREDENTIAL_PID1_FILE_DELIVERY
@@ -164,6 +171,60 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     )))
     for target in ("usr_t", "proc_t"):
         negative.extend(accesses(storage, target, "file", file_read))
+
+    # Source originals and delivered copies have distinct mutation contracts.
+    positive.extend(accesses("init_t", STORAGE_CREDENTIAL_SOURCE, "file", file_read))
+    positive.extend(accesses(
+        "init_t", STORAGE_CREDENTIAL_SOURCE, "dir", ("getattr", "open", "search"),
+    ))
+    positive.append(Access(STORAGE_CREDENTIAL_SOURCE, "fs_t", "filesystem", "associate"))
+    negative.append(Access(STORAGE_CREDENTIAL_SOURCE, "tmpfs_t", "filesystem", "associate"))
+    for domain in all_roles:
+        negative.extend(accesses(
+            domain, STORAGE_CREDENTIAL_SOURCE, "file",
+            (*file_mutate, "execute", "execute_no_trans", "entrypoint", "map",
+             "ioctl", "relabelfrom", "relabelto"),
+        ))
+        negative.extend(accesses(
+            domain, STORAGE_CREDENTIAL_SOURCE, "dir",
+            (*dir_mutate, "mounton", "relabelfrom", "relabelto"),
+        ))
+        if domain != "init_t":
+            negative.extend(accesses(domain, STORAGE_CREDENTIAL_SOURCE, "file", file_read))
+            negative.extend(accesses(
+                domain, STORAGE_CREDENTIAL_SOURCE, "dir",
+                ("getattr", "open", "read", "search"),
+            ))
+    negative.append(Access("init_t", STORAGE_CREDENTIAL_SOURCE, "dir", "read"))
+
+    positive.extend(accesses(
+        "init_t", STORAGE_CREDENTIAL, "file", CREDENTIAL_PID1_FILE_DELIVERY,
+    ))
+    positive.extend(accesses(
+        "init_t", STORAGE_CREDENTIAL, "dir", CREDENTIAL_PID1_DIR_DELIVERY,
+    ))
+    negative.extend(accesses(
+        "init_t", STORAGE_CREDENTIAL, "file",
+        ("append", "link", "lock", "rename", "ioctl", "map", "execute",
+         "execute_no_trans", "entrypoint", "relabelfrom", "relabelto"),
+    ))
+    negative.extend(accesses(
+        "init_t", STORAGE_CREDENTIAL, "dir", ("rename", "rmdir", "relabelfrom"),
+    ))
+    negative.extend(accesses(
+        storage, STORAGE_CREDENTIAL, "file", (*file_mutate, "relabelfrom", "relabelto"),
+    ))
+    negative.extend(accesses(
+        storage, STORAGE_CREDENTIAL, "dir", (*dir_mutate, "mounton", "relabelfrom", "relabelto"),
+    ))
+    transitions.append(Transition(
+        "init_t", STORAGE_CREDENTIAL, "file", "init_tmpfs_t",
+        filename=Transition.UNNAMED,
+    ))
+    for name in STORAGE_CREDENTIAL_NAMES:
+        transitions.append(Transition(
+            "init_t", STORAGE_CREDENTIAL, "file", STORAGE_CREDENTIAL, filename=name,
+        ))
 
     # Gateway is not a writer-owning OWNERS role. The same checker observes
     # its sole explicit entry, transport/readback cells and authority denials.
