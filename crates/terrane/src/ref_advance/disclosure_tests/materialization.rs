@@ -25,7 +25,8 @@ fn entry(kind: EntryKind<'static>) -> Entry<'static> {
     }
 }
 
-fn properties(private: bool) -> Option<Vec<Property<'static>>> {
+/// Supplies actual public or private root policy for native materialization fixtures.
+pub(super) fn properties(private: bool) -> Option<Vec<Property<'static>>> {
     Some(vec![
         Property {
             name: "acl",
@@ -42,7 +43,8 @@ fn properties(private: bool) -> Option<Vec<Property<'static>>> {
     ])
 }
 
-fn stage_tree(mut proposal: CommitRequest, tree: &Tree<'_>) -> CommitRequest {
+/// Stages every canonical node of an actual materialized tree.
+pub(super) fn stage_tree(mut proposal: CommitRequest, tree: &Tree<'_>) -> CommitRequest {
     proposal.commit.tree = tree.root_identity();
     proposal.uploads.retain(|upload| {
         !matches!(
