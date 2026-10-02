@@ -117,6 +117,14 @@ impl AuthenticatedStorageNativeAcceptanceReadbackQueryV1<'_> {
 }
 
 impl AuthenticatedStorageNativeRequestV2<'_> {
+    pub(crate) fn require_original_root_prepared(
+        &self,
+        root: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        self.trust.require_original_root_prepared(root, self.request, storage)
+    }
+
     pub(crate) fn request(&self) -> &SignedStorageNativeAcquireRequestV2 {
         self.request
     }
@@ -161,6 +169,121 @@ impl AuthenticatedStorageNativeRequestV2<'_> {
 }
 
 impl StorageLiveExportRequestTrustV1 {
+    // Cold authentication checks eligible independently owned roles, not wall
+    // validity. It cannot renew an archive or authorize a current descriptor.
+    pub(crate) fn verify_held_archive(
+        &self,
+        control: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        self.validate_current()?;
+        self.verify_held_archive_at_depth(control, storage, 0)?;
+        self.validate_current()
+    }
+
+    fn verify_held_archive_at_depth(
+        &self,
+        control: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        storage: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
+        depth: usize,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        use aos_sandbox_source_provider_protocol::native_held_completion::{
+            NativeHeldOwnerV1 as Owner, frame::NativeHeldSignerV1,
+        };
+
+        if depth > 4 {
+            return Err(StorageLiveExportRequestTrustErrorV1::InvalidRecord);
+        }
+        let (expected, public) = match control.kind().sender() {
+            Owner::Root => (
+                NativeHeldSignerV1::SourceProvider(self.record.root_signer.clone()),
+                self.record.root_public_key,
+            ),
+            Owner::Provider => (
+                NativeHeldSignerV1::SourceProvider(self.record.provider_signer.clone()),
+                self.record.provider_public_key,
+            ),
+            Owner::Storage => {
+                let (signer, public) = storage.projection();
+                (NativeHeldSignerV1::Storage(signer), public)
+            }
+        };
+        control.verify_signature_claim(&expected, &public)
+            .map_err(|_| StorageLiveExportRequestTrustErrorV1::Signature)?;
+        self.verify_held_sections(control.prepared(), storage, depth)
+    }
+
+    pub(crate) fn verify_stored_held_preparation(
+        &self,
+        prepared: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+        storage: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        use aos_sandbox_source_provider_protocol::native_held_completion::{
+            NativeHeldOwnerV1, frame::NativeHeldSignerV1,
+        };
+        self.validate_current()?;
+        if prepared.kind().sender() != NativeHeldOwnerV1::Storage
+            || prepared.signer() != &NativeHeldSignerV1::Storage(storage.projection().0)
+        {
+            return Err(StorageLiveExportRequestTrustErrorV1::Signature);
+        }
+        self.verify_held_sections(prepared, storage, 0)?;
+        self.validate_current()
+    }
+
+    fn verify_held_sections(
+        &self,
+        prepared: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+        storage: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
+        depth: usize,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        use aos_sandbox_source_provider_protocol::native_held_completion::{
+            NativeHeldSectionTagV1 as Tag, frame::SignedNativeHeldControlV1,
+        };
+        for tag in [Tag::RootPrepared, Tag::StorageHeld, Tag::RootDispositionControl, Tag::RootRecoveryControl] {
+            if let Some(bytes) = prepared.section(tag) {
+                let nested = SignedNativeHeldControlV1::from_canonical_bytes(bytes)
+                    .map_err(|_| StorageLiveExportRequestTrustErrorV1::InvalidRecord)?;
+                self.verify_held_archive_at_depth(&nested, storage, depth + 1)?;
+            }
+        }
+        if let Some(bytes) = prepared.section(Tag::NativeReply) {
+            let reply = aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV3::from_canonical_bytes(bytes)
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::InvalidRecord)?;
+            reply.acceptance().verify(storage)
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Signature)?;
+            storage.verify_retained_signature_claim(reply.receipt())
+                .map_err(|_| StorageLiveExportRequestTrustErrorV1::Signature)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn held_trust_cut(&self) -> Result<(u64, u64, ObjectDigest), StorageLiveExportRequestTrustErrorV1> {
+        self.validate_current()?;
+        Ok((self.journal.snapshot_sequence(), self.record.generation,
+            ObjectDigest::from_bytes(Sha256::digest(self.bytes).into())))
+    }
+
+    pub(crate) fn require_original_root_prepared(
+        &self,
+        root: &aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        request: &SignedStorageNativeAcquireRequestV2,
+        storage: aos_sandbox_source_provider_protocol::StorageZfsHoldVerifierV1,
+    ) -> Result<(), StorageLiveExportRequestTrustErrorV1> {
+        use aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1;
+        self.verify_native_signatures(request)?;
+        self.verify_held_archive(root, storage)?;
+        let claims = request.request().claims();
+        if root.kind() != NativeHeldControlKindV1::RootPrepared
+            || root.scope().original_source_session != claims.holder_session().1
+            || root.scope().provider_acquisition != claims.provider_acquisition().1
+            || root.scope().original_root_request != aos_sandbox_source_provider_protocol::digest_signed_request(request.request().signed_root_request())
+        {
+            return Err(StorageLiveExportRequestTrustErrorV1::Signature);
+        }
+        Ok(())
+    }
+
     /// Authenticates a metadata query without validating historical Acquire.
     ///
     /// The independent query nonce and sequence correlate one current carrier;

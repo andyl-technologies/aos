@@ -70,6 +70,23 @@ enum StorageZfsHoldKeyCustodyV1 {
 }
 
 impl StorageZfsHoldKeyV1 {
+    // This purpose-private crossing accepts only the concrete stored-original
+    // loan. Message/key preparation precedes its final genuine owner/clock cut.
+    pub(crate) fn sign_stored_original_held_control(
+        &self,
+        loan: &mut crate::runtime::StoredOriginalHeldSigningLoanV1<'_, '_, '_>,
+    ) -> Result<
+        aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1,
+        crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3,
+    > {
+        self.recheck()?;
+        let prepared = loan.prepared()?.clone();
+        let message = prepared.signature_message();
+        let key = SigningKey::from_bytes(&self.seed);
+        loan.consume_last_cut(self)?;
+        Ok(prepared.with_signature(key.sign(&message).to_bytes()))
+    }
+
     /// Signs only an owner's exact historical acceptance metadata observation.
     ///
     /// This dedicated metadata domain is not a positive receipt or acceptance.

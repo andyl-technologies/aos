@@ -27,6 +27,10 @@ use super::*;
 const MAXIMUM_RESIDENT_ORIGINALS: usize = 8;
 const ORIGINAL_RESERVATION_BYTES: usize = 8 * 1024 * 1024;
 const MAXIMUM_RESIDENT_BYTES: usize = MAXIMUM_RESIDENT_ORIGINALS * ORIGINAL_RESERVATION_BYTES;
+// Two inbound records, parsed request/Root1, three bounded held rows and three
+// actual PUTs fit here independently of the unchanged reader reservation.
+const HELD_CARRIER_RESERVATION_BYTES: usize = 16 * 1024 * 1024;
+const MAXIMUM_HELD_CARRIER_BYTES: usize = MAXIMUM_RESIDENT_ORIGINALS * HELD_CARRIER_RESERVATION_BYTES;
 pub(super) const MAXIMUM_ORIGINAL_RECHECKS: usize = 24;
 // The sole existing signed Root envelope has 140 framing/signer bytes and a
 // 64-byte signature. This is an allocation bound, not a parallel serializer.
@@ -66,6 +70,94 @@ pub(crate) enum OriginalHeldMeasurementErrorV3 {
     RetainedReceive,
     #[error("original worker connection admission failed; its custody remains resident")]
     RetainedAdmission,
+    #[error(transparent)]
+    HeldAdmission(Box<aos_sandbox_linux::seqpacket::RetainedSeqpacketAdmissionErrorV1>),
+    #[error(transparent)]
+    HeldReceive(Box<aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1>),
+    #[error(transparent)]
+    HeldBinding(#[from] aos_sandbox_linux::seqpacket::RecordBindingError),
+    #[error(transparent)]
+    HeldPeer(#[from] crate::peer::RootServicePeerError),
+    #[error(transparent)]
+    HeldTransport(#[from] aos_sandbox_linux::seqpacket::SeqpacketError),
+    #[error(transparent)]
+    HeldSchema(#[from] aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldCompletionErrorV1),
+    #[error(transparent)]
+    HeldRequest(#[from] aos_sandbox_source_provider_protocol::StorageNativeAcquireErrorV2),
+    #[error(transparent)]
+    HeldRow(#[from] crate::native_issuance::held_completion::StorageHeldCompletionErrorV1),
+    #[error(transparent)]
+    CloneAudit(#[from] crate::live_export_clone::StorageLiveExportCloneErrorV1),
+}
+
+/// Parent-retained original carrier; short trust/subject loans never self-reference.
+pub(crate) struct OriginalHeldCarrierV1 {
+    pub(crate) child: Option<aos_sandbox_linux::seqpacket::SeqpacketSocket>,
+    pub(crate) execution: Option<aos_sandbox_linux::pidfd::PidFdInfo>,
+    pub(crate) pending_record: Option<aos_sandbox_linux::seqpacket::ReceivedRecord>,
+    pub(crate) records: [Option<OriginalHeldRecordV1>; 2],
+    pub(crate) root: Option<aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1>,
+    pub(crate) request: Option<aos_sandbox_source_provider_protocol::SignedStorageNativeAcquireRequestV2>,
+    pub(crate) interest: Option<crate::native_issuance::held_completion::StorageHeldIssuanceRowV2>,
+    pub(crate) prepared: Option<crate::native_issuance::held_completion::StorageHeldIssuanceRowV2>,
+    pub(crate) stored: Option<crate::native_issuance::held_completion::StorageHeldIssuanceRowV2>,
+    pub(crate) appends: [Option<aos_sandbox::JournalTransaction>; 3],
+    pub(crate) readbacks: [Option<u64>; 3],
+    pub(crate) control: Option<aos_sandbox_source_provider_protocol::native_held_completion::frame::SignedNativeHeldControlV1>,
+    pub(crate) control_packet: Option<Vec<u8>>,
+    pub(crate) sends: [Option<Result<(), aos_sandbox_linux::seqpacket::SeqpacketError>>; 2],
+    pub(crate) first_failure: Option<OriginalHeldMeasurementErrorV3>,
+}
+
+pub(crate) struct OriginalHeldRecordV1 {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) subject: aos_sandbox_linux::seqpacket::KernelAuthorizedRecordSubject,
+}
+
+impl OriginalHeldCarrierV1 {
+    fn first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.first_failure.as_ref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static))
+            .or_else(|| self.sends.iter().find_map(|send| match send {
+                Some(Err(cause)) => Some(cause as &(dyn std::error::Error + 'static)),
+                _ => None,
+            }))
+    }
+
+    pub(crate) fn unwind_fence(&self) -> OriginalHeldOfferUnwindV1 {
+        OriginalHeldOfferUnwindV1
+    }
+    // This empty destination carries no positive authority. The real selected
+    // runtime and listener fill it before each following fallible crossing.
+    pub(crate) fn empty() -> Self {
+        Self {
+            child: None,
+            execution: None,
+            pending_record: None,
+            records: [None, None],
+            root: None,
+            request: None,
+            interest: None,
+            prepared: None,
+            stored: None,
+            appends: [None, None, None],
+            readbacks: [None, None, None],
+            control: None,
+            control_packet: None,
+            sends: [None, None],
+            first_failure: None,
+        }
+    }
+}
+
+pub(crate) struct OriginalHeldOfferUnwindV1;
+
+impl Drop for OriginalHeldOfferUnwindV1 {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -83,6 +175,9 @@ pub(super) struct ResidentOriginalMeasurementsV3 {
     reserved_bytes: usize,
     pub(super) closed: bool,
     pub(super) first_admission_failure: Option<OriginalHeldMeasurementErrorV3>,
+    pub(super) failed_carrier: Option<OriginalHeldCarrierV1>,
+    held_carrier_bytes: usize,
+    pub(super) held_carrier_in_flight: bool,
 }
 
 pub(super) struct ResidentOriginalV3 {
@@ -103,9 +198,26 @@ pub(super) struct ResidentOriginalV3 {
     pub(super) deliveries: [Option<Result<(), ()>>; MAXIMUM_ORIGINAL_RECHECKS],
     pub(super) next_delivery: usize,
     pub(super) first_failure: Option<OriginalHeldMeasurementErrorV3>,
+    pub(super) held_carrier: Option<OriginalHeldCarrierV1>,
 }
 
 impl ResidentOriginalMeasurementsV3 {
+    pub(super) fn reserve_held_carrier(&mut self) -> Result<(), OriginalHeldMeasurementErrorV3> {
+        if self.closed
+            || self.held_carrier_in_flight
+            || self.originals.len() >= MAXIMUM_RESIDENT_ORIGINALS
+        {
+            return Err(OriginalHeldMeasurementErrorV3::Bound);
+        }
+        // Pre-arm before arithmetic or any returned child/record can exist.
+        self.held_carrier_in_flight = true;
+        self.held_carrier_bytes = self.held_carrier_bytes
+            .checked_add(HELD_CARRIER_RESERVATION_BYTES)
+            .filter(|bytes| *bytes <= MAXIMUM_HELD_CARRIER_BYTES)
+            .ok_or(OriginalHeldMeasurementErrorV3::Bound)?;
+        Ok(())
+    }
+
     pub(super) fn begin(
         &mut self,
         authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
@@ -175,6 +287,7 @@ impl ResidentOriginalMeasurementsV3 {
             deliveries: [None; MAXIMUM_ORIGINAL_RECHECKS],
             next_delivery: 0,
             first_failure: None,
+            held_carrier: None,
         });
         self.reserved_bytes = reserved;
 
@@ -259,6 +372,96 @@ impl OriginalWorkerLoanV3<'_, '_, '_> {
 }
 
 impl StorageBrokerRuntime {
+    pub(crate) fn retain_original_held_startup_failure(
+        &mut self,
+        cause: OriginalHeldMeasurementErrorV3,
+    ) {
+        self.original_measurements.closed = true;
+        self.readiness = StorageRuntimeReadiness::ReopenRequired;
+        if self.original_measurements.first_admission_failure.is_none() {
+            self.original_measurements.first_admission_failure = Some(cause);
+        }
+    }
+
+    pub(crate) fn begin_original_held_carrier(&mut self) -> Result<OriginalHeldCarrierV1, StorageRuntimeError> {
+        if self.requires_reopen() {
+            return Err(StorageRuntimeError::ReopenRequired);
+        }
+        if !self.readiness.permits_catalog_methods()
+            || self.original_worker_startup.is_none()
+            || !self.native_issuance.as_ref().is_some_and(|owner| owner.uses_original_held_route())
+        {
+            return Err(StorageRuntimeError::Recovery);
+        }
+        if let Err(cause) = self.original_measurements.reserve_held_carrier() {
+            self.original_measurements.closed = true;
+            if self.original_measurements.first_admission_failure.is_none() {
+                self.original_measurements.first_admission_failure = Some(cause);
+            }
+            self.readiness = StorageRuntimeReadiness::ReopenRequired;
+            return Err(StorageRuntimeError::ReopenRequired);
+        }
+        Ok(OriginalHeldCarrierV1::empty())
+    }
+
+    pub(crate) fn retain_original_held_carrier_failure(
+        &mut self, mut carrier: OriginalHeldCarrierV1, cause: OriginalHeldMeasurementErrorV3,
+    ) {
+        self.original_measurements.closed = true;
+        self.readiness = StorageRuntimeReadiness::ReopenRequired;
+        if carrier.first_failure.is_none() {
+            carrier.first_failure = Some(cause);
+        }
+        self.original_measurements.failed_carrier = Some(carrier);
+    }
+
+    pub(crate) fn original_held_first_cause(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.original_measurements.first_admission_failure.as_ref()
+            .map(|cause| cause as &(dyn std::error::Error + 'static))
+            .or_else(|| self.original_measurements.failed_carrier.as_ref()
+                .and_then(OriginalHeldCarrierV1::first_cause))
+            .or_else(|| self.original_measurements.originals.iter().find_map(|original| {
+                original.first_failure.as_ref()
+                    .map(|cause| cause as &(dyn std::error::Error + 'static))
+                    .or_else(|| original.held_carrier.as_ref().and_then(OriginalHeldCarrierV1::first_cause))
+            }))
+    }
+
+    pub(super) fn stored_original_held_signing_loan<'owner, 'request, 'trust>(
+        &'owner mut self,
+        index: usize,
+        authenticated: &'request AuthenticatedStorageNativeRequestV2<'trust>,
+        trust: &'owner crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
+        carrier: &'owner OriginalHeldCarrierV1,
+        verifier: &'owner crate::peer::ProviderLiveExportPeerVerifier,
+    ) -> Result<StoredOriginalHeldSigningLoanV1<'owner, 'request, 'trust>, OriginalHeldMeasurementErrorV3> {
+        let original = &self.original_measurements.originals[index];
+        let held = original.held.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+        Ok(StoredOriginalHeldSigningLoanV1 {
+            inner: OriginalWorkerLoanV3 {
+                startup: self.original_worker_startup.as_mut().ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+                authenticated,
+                coordinator: &self.coordinator,
+                policies: self.resolver_policies.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+                cut: &held.readback.cut,
+                policy_head: held.readback.policy_head,
+                pool_guid: held.readback.pool_guid,
+                first: original.first.ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+                cutoff: original.cutoff.ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+                cutoff_bytes: &original.cutoff_bytes,
+                open: true,
+            },
+            ledger: self.native_issuance.as_mut().ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+            workspaces: self.workspaces.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+            held,
+            reply: original.reply.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+            trust,
+            carrier,
+            verifier,
+            unused: true,
+        })
+    }
+
     /// Returns the resident index, not a replacement mount or portable grant.
     pub(super) fn measure_original_authenticated_request(
         &mut self,
@@ -426,6 +629,95 @@ impl StorageBrokerRuntime {
                 Err(StorageRuntimeError::ReopenRequired)
             }
         }
+    }
+}
+
+/// The concrete original startup/writer/physical carrier loan for unsigned2 only.
+pub(crate) struct StoredOriginalHeldSigningLoanV1<'owner, 'request, 'trust> {
+    inner: OriginalWorkerLoanV3<'owner, 'request, 'trust>,
+
+    ledger: &'owner mut crate::native_issuance::StorageNativeIssuanceLedgerV1,
+    workspaces: &'owner ValidatedPendingStorageWorkspaceCatalogV1,
+
+    held: &'owner StorageHeldSnapshotReadbackWithMountV1,
+    reply: &'owner aos_sandbox_source_provider_protocol::StorageNativeAcquireReplyV3,
+
+    trust: &'owner crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
+    carrier: &'owner OriginalHeldCarrierV1,
+    verifier: &'owner crate::peer::ProviderLiveExportPeerVerifier,
+
+    unused: bool,
+}
+
+impl StoredOriginalHeldSigningLoanV1<'_, '_, '_> {
+    pub(crate) fn prepared(&self) -> Result<&aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1, OriginalHeldMeasurementErrorV3> {
+        self.carrier.prepared.as_ref().and_then(|row| row.suffix().prepared())
+            .ok_or(OriginalHeldMeasurementErrorV3::Closed)
+    }
+
+    // All slow preparation and full observations precede the last paired sample
+    // in inner.check(). The key performs crypto immediately after this returns.
+    pub(crate) fn consume_last_cut(
+        &mut self, key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
+    ) -> Result<(), OriginalHeldMeasurementErrorV3> {
+        use aos_sandbox_source_provider_protocol::native_held_completion::{
+            NativeHeldControlKindV1 as Kind, NativeHeldSectionTagV1 as Tag,
+            frame::NativeHeldSignerV1,
+            witness::NativeHeldOwnerWitnessV1,
+        };
+        if !self.unused {
+            return Err(OriginalHeldMeasurementErrorV3::Closed);
+        }
+        self.unused = false;
+        let prepared = self.prepared()?;
+        if prepared.kind() != Kind::StorageHeld
+            || prepared.signer() != &NativeHeldSignerV1::Storage(key.verifier().projection().0)
+            || prepared.section(Tag::NativeReply) != Some(self.reply.to_canonical_bytes().as_slice())
+        {
+            return Err(OriginalHeldMeasurementErrorV3::Closed);
+        }
+        let NativeHeldOwnerWitnessV1::Storage(witness) =
+            NativeHeldOwnerWitnessV1::from_canonical_bytes(
+                aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldOwnerV1::Storage,
+                prepared.section(Tag::Witness).ok_or(OriginalHeldMeasurementErrorV3::Closed)?,
+            )?
+        else {
+            return Err(OriginalHeldMeasurementErrorV3::Closed);
+        };
+        let next = self.ledger.held_row_readback(self.carrier.prepared.as_ref()
+            .ok_or(OriginalHeldMeasurementErrorV3::Closed)?)?;
+        self.ledger.require_original_held_roles(self.trust, key)?;
+        let primary = self.inner.coordinator.native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))
+            .map_err(StorageRuntimeError::Admission)?;
+        let workspace = self.workspaces.native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))
+            .map_err(StorageRuntimeError::WorkspaceCatalog)?;
+        let (trust_sequence, generation, file) = self.trust.held_trust_cut()?;
+        let child = self.carrier.child.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+        if self.carrier.readbacks[1] != Some(next)
+            || self.carrier.readbacks[0] != Some(witness.issuance_sequence)
+            || witness.primary_sequence != primary.0
+            || witness.workspace_sequence != workspace.journal_sequence()
+            || witness.request_trust_sequence != trust_sequence
+            || witness.request_trust_generation != generation
+            || witness.request_trust_file != file
+            || witness.local_socket_cookie != child.peer().socket_cookie().get()
+        {
+            return Err(OriginalHeldMeasurementErrorV3::Closed);
+        }
+        let execution = self.carrier.execution.ok_or(OriginalHeldMeasurementErrorV3::Closed)?;
+        if self.verifier.verify_connection_typed(child.peer())? != execution {
+            return Err(OriginalHeldMeasurementErrorV3::Closed);
+        }
+        for record in &self.carrier.records {
+            self.verifier.verify_record_typed(execution, child.peer(),
+                &record.as_ref().ok_or(OriginalHeldMeasurementErrorV3::Closed)?.subject)?;
+        }
+        self.held.verify_mount()?;
+        let clock = trusted_paired_clock_sample()?;
+        key.verify_native_reply(self.inner.authenticated, self.held, self.reply, clock)?;
+        key.recheck()?;
+        self.inner.check()?;
+        Ok(())
     }
 }
 
@@ -599,5 +891,32 @@ mod tests {
             reserve_original_budget(0, usize::MAX),
             Err(OriginalHeldMeasurementErrorV3::Bound),
         ));
+    }
+
+    #[test]
+    fn held_carrier_charge_prearms_once_and_refuses_reentry() {
+        let mut residency = ResidentOriginalMeasurementsV3::default();
+        residency.reserve_held_carrier().unwrap();
+        assert!(residency.held_carrier_in_flight);
+        assert_eq!(residency.held_carrier_bytes, HELD_CARRIER_RESERVATION_BYTES);
+
+        assert!(matches!(
+            residency.reserve_held_carrier(), Err(OriginalHeldMeasurementErrorV3::Bound),
+        ));
+        assert_eq!(residency.held_carrier_bytes, HELD_CARRIER_RESERVATION_BYTES);
+    }
+
+    #[test]
+    fn failed_carrier_arithmetic_does_not_clear_its_prearmed_state() {
+        let mut residency = ResidentOriginalMeasurementsV3 {
+            held_carrier_bytes: usize::MAX,
+            ..Default::default()
+        };
+
+        assert!(matches!(
+            residency.reserve_held_carrier(), Err(OriginalHeldMeasurementErrorV3::Bound),
+        ));
+        assert!(residency.held_carrier_in_flight);
+        assert_eq!(residency.held_carrier_bytes, usize::MAX);
     }
 }

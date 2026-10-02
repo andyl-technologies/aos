@@ -325,10 +325,41 @@ impl DormantStorageApplyCompositionV1 {
         mut self,
         state_directory: &Path,
     ) -> Result<Self, crate::service::StorageServiceError> {
-        let ledger = StorageLiveExportCloneLedgerV1::open_root_owned(state_directory)
+        self.open_private_live_export_cold_audit(state_directory)
             .map_err(|error| crate::service::StorageServiceError::Activation(error.to_string()))?;
-        self._private_live_export_clones = Some(ledger);
         Ok(self)
+    }
+
+    fn open_private_live_export_cold_audit(
+        &mut self,
+        state_directory: &Path,
+    ) -> Result<(), crate::live_export_clone::StorageLiveExportCloneErrorV1> {
+        let ledger = StorageLiveExportCloneLedgerV1::open_root_owned(state_directory)?;
+        self._private_live_export_clones = Some(ledger);
+        Ok(())
+    }
+
+    /// Retains the same auxiliary writer in an already parent-owned composition.
+    ///
+    /// # Errors
+    ///
+    /// Rejects duplicate admission or unsafe/interrupted private clone history.
+    /// The selected caller retains the whole composition on error; the legacy
+    /// consuming constructor above keeps its original drop disposition.
+    pub fn retain_private_live_export_cold_audit(
+        &mut self,
+        state_directory: &Path,
+    ) -> Result<(), crate::service::StorageServiceError> {
+        if self._private_live_export_clones.is_some() {
+            return Err(StorageRuntimeError::Recovery.into());
+        }
+        if let Err(cause) = self.open_private_live_export_cold_audit(state_directory) {
+            self.runtime.retain_original_held_startup_failure(
+                crate::runtime::original_held_measurement::OriginalHeldMeasurementErrorV3::CloneAudit(cause),
+            );
+            return Err(StorageRuntimeError::ReopenRequired.into());
+        }
+        Ok(())
     }
 
     /// Serves one Controller-signed operator Repair packet on its separate socket.
@@ -412,6 +443,26 @@ impl DormantStorageApplyCompositionV1 {
             verifier,
             authority_directory,
             key,
+        )
+    }
+
+    /// Stores and offers the first held native prefix on the same genuine carrier.
+    ///
+    /// # Errors
+    ///
+    /// Rejects missing original startup or changed peer, writer, role, request,
+    /// root or cutoff. Returned originals and the first cause stay resident;
+    /// this entry grants neither relay/settlement nor public Acquire.
+    pub fn serve_original_held_offer_once(
+        &mut self,
+        listener: &mut RecordSubjectListener,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        trust: &crate::runtime::StorageOriginalNativeTrustLoanV1<'_>,
+        key: &crate::storage_zfs_hold_key::StorageZfsHoldKeyV1,
+    ) -> Result<crate::zfs_hold_transport::StorageZfsHoldTransportOutcomeV1,
+        crate::service::StorageServiceError> {
+        crate::zfs_hold_transport::serve_original_held_offer_once(
+            listener, &mut self.runtime, verifier, trust, key,
         )
     }
 

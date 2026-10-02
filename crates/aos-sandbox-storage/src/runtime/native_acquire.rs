@@ -131,6 +131,223 @@ pub(crate) fn validate_native_request_clock(
 }
 
 impl StorageBrokerRuntime {
+    /// Stores the original interest/unsigned2/signed2 prefix before its one offer.
+    ///
+    /// The carrier and original reader stay resident on every refusal. This
+    /// fixed route never invokes legacy accept_live, retries an old offer,
+    /// clears dispatch debt, or reconstructs an original after restart.
+    pub(crate) fn offer_original_held_native(
+        &mut self,
+        mut carrier: super::original_held_measurement::OriginalHeldCarrierV1,
+        trust: &crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        key: &StorageZfsHoldKeyV1,
+    ) -> Result<StorageNativeDeliveryOutcomeV2, StorageRuntimeError> {
+        use super::original_held_measurement::{OriginalHeldMeasurementErrorV3 as Error, OriginalPhase};
+        use crate::native_issuance::held_completion::{StorageHeldIssuanceRowV2, StorageHeldStepV1 as Step};
+        use aos_sandbox_source_provider_protocol::native_held_completion::{
+            NativeHeldControlKindV1 as Kind, NativeHeldOwnerV1 as Owner,
+            NativeHeldSectionTagV1 as Tag,
+            frame::{NativeHeldSectionV1, NativeHeldSignerV1, PreparedNativeHeldControlV1},
+            suffix::NativeHeldCompletionSuffixV1,
+            witness::{NativeHeldByteWitnessV1, NativeHeldOwnerWitnessV1,
+                NativeHeldRecordFamilyV1 as Family, StorageNativeHeldWitnessV1,
+                native_held_record_byte_digest_v1},
+        };
+
+        let _crossing = carrier.unwind_fence();
+        let mut resident_index = None;
+        let result = (|| {
+            let request = carrier.request.as_ref().ok_or(Error::Closed)?;
+            let authenticated = trust.verify_native(request)?;
+            let (index, new) = self.original_measurements.begin(&authenticated)?;
+            self.original_measurements.closed = true;
+            if !new || self.original_measurements.originals[index].held_carrier.is_some() {
+                return Err(Error::Closed);
+            }
+            // A refused new child never replaces the earlier offered carrier.
+            resident_index = Some(index);
+            self.initialize_original_scope(index, &authenticated)?;
+            let retained = self.native_issuance.as_mut().ok_or(Error::Closed)?
+                .retained_acceptance(request)?;
+            if retained.is_some() {
+                // Even an equal cold row cannot justify a fresh mount or offer.
+                return Err(Error::Closed);
+            }
+            self.measure_original_authenticated_request(index, &authenticated)?;
+            self.recheck_original_measurement(index, &authenticated)?;
+            let original = &self.original_measurements.originals[index];
+            let first = original.first.ok_or(Error::Closed)?;
+            let cutoff = original.cutoff.ok_or(Error::Closed)?;
+            let clock = trusted_paired_clock_sample()?;
+            validate_original_clock(request, first, clock, cutoff)?;
+            let reply = key.sign_native_reply(&authenticated,
+                original.held.as_ref().ok_or(Error::Closed)?, random_challenge()?, clock)?;
+            self.original_measurements.originals[index].reply = Some(reply);
+
+            let current = self.recheck_original_measurement(index, &authenticated)?;
+            let original = &self.original_measurements.originals[index];
+            let held = original.held.as_ref().ok_or(Error::Closed)?;
+            let reply = original.reply.as_ref().ok_or(Error::Closed)?;
+            let clock = trusted_paired_clock_sample()?;
+            validate_original_clock(request, first, clock, cutoff)?;
+            key.verify_native_reply(&authenticated, held, reply, clock)?;
+            carrier.interest = Some(self.native_issuance.as_mut().ok_or(Error::Closed)?
+                .original_held_interest(&authenticated, held, reply,
+                    carrier.root.as_ref().ok_or(Error::Closed)?, &current, key)?);
+            carrier.readbacks[0] = Some(self.native_issuance.as_mut().ok_or(Error::Closed)?
+                .store_original_held_row(carrier.interest.as_ref().ok_or(Error::Closed)?,
+                    Step::InterestRecorded, &mut carrier.appends[0])?);
+
+            // The witness derives from the actual committed interest and the
+            // same current writers/child, not a prospective TX or decoded pin.
+            let interest = carrier.interest.as_ref().ok_or(Error::Closed)?;
+            let root = carrier.root.as_ref().ok_or(Error::Closed)?;
+            let (trust_sequence, generation, file) = trust.held_trust_cut()?;
+            let witness = NativeHeldOwnerWitnessV1::Storage(StorageNativeHeldWitnessV1 {
+                local_socket_cookie: carrier.child.as_ref().ok_or(Error::Closed)?
+                    .peer().socket_cookie().get(),
+                primary_sequence: self.coordinator.native_metadata_readback_cut(
+                    Path::new("/var/lib/aos/sandbox-storage"))
+                    .map_err(StorageRuntimeError::Admission)?.0,
+                workspace_sequence: self.workspaces.as_ref().ok_or(Error::Closed)?
+                    .native_metadata_readback_cut(Path::new("/var/lib/aos/sandbox-storage"))
+                    .map_err(StorageRuntimeError::WorkspaceCatalog)?.journal_sequence(),
+                request_trust_sequence: trust_sequence,
+                issuance_sequence: carrier.readbacks[0].ok_or(Error::Closed)?,
+                request_trust_generation: generation,
+                request_trust_file: file,
+                issuance: NativeHeldByteWitnessV1::new(Family::StorageIssuance,
+                    interest.key().to_vec(), native_held_record_byte_digest_v1(
+                        Family::StorageIssuance, &interest.key(), &interest.to_canonical_bytes()?)?)?,
+            });
+            let claims = request.request().claims();
+            let scope = aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldScopeV1 {
+                provider_attempt: claims.attempt().1,
+                original_native_request: request.digest(),
+                ..*root.scope()
+            };
+            let prepared = PreparedNativeHeldControlV1::new(Kind::StorageHeld, scope,
+                root.digest(), vec![
+                    NativeHeldSectionV1::new(Tag::Witness, witness.to_canonical_bytes()?)?,
+                    NativeHeldSectionV1::new(Tag::RootPrepared, root.to_canonical_bytes())?,
+                    NativeHeldSectionV1::new(Tag::NativeReply, reply.to_canonical_bytes())?,
+                ], NativeHeldSignerV1::Storage(key.verifier().projection().0))?;
+            carrier.prepared = Some(StorageHeldIssuanceRowV2::new(request.clone(),
+                reply.acceptance().acceptance().clone(), None,
+                NativeHeldCompletionSuffixV1::new(Owner::Storage, 1, scope.flight,
+                    Some(prepared), vec![root.clone()])?)?);
+            carrier.readbacks[1] = Some(self.native_issuance.as_mut().ok_or(Error::Closed)?
+                .store_original_held_row(carrier.prepared.as_ref().ok_or(Error::Closed)?,
+                    Step::HeldPrepared, &mut carrier.appends[1])?);
+
+            // Slow message/key preparation occurs inside the concrete signer,
+            // before its last genuine stored-original paired-clock check.
+            let mut signing = self.stored_original_held_signing_loan(
+                index, &authenticated, trust, &carrier, verifier)?;
+            let control = key.sign_stored_original_held_control(&mut signing)?;
+            drop(signing);
+            carrier.control = Some(control);
+            self.recheck_original_measurement(index, &authenticated)?;
+            let original = &self.original_measurements.originals[index];
+            let reply = original.reply.as_ref().ok_or(Error::Closed)?;
+            let clock = trusted_paired_clock_sample()?;
+            validate_original_clock(request, first, clock, cutoff)?;
+            key.verify_native_reply(&authenticated, original.held.as_ref().ok_or(Error::Closed)?, reply, clock)?;
+            trust.verify_held_archive(carrier.control.as_ref().ok_or(Error::Closed)?, key.verifier())?;
+            carrier.stored = Some(StorageHeldIssuanceRowV2::new(request.clone(),
+                reply.acceptance().acceptance().clone(), None,
+                NativeHeldCompletionSuffixV1::new(Owner::Storage, 2, scope.flight, None,
+                    vec![carrier.root.as_ref().ok_or(Error::Closed)?.clone(),
+                        carrier.control.as_ref().ok_or(Error::Closed)?.clone()])?)?);
+            carrier.readbacks[2] = Some(self.native_issuance.as_mut().ok_or(Error::Closed)?
+                .store_original_held_row(carrier.stored.as_ref().ok_or(Error::Closed)?,
+                    Step::HeldStored, &mut carrier.appends[2])?);
+            carrier.control_packet = Some(carrier.control.as_ref().ok_or(Error::Closed)?.to_canonical_bytes());
+            self.original_measurements.originals[index].packet = Some(reply.to_canonical_bytes());
+
+            self.check_original_held_offer(index, &authenticated, trust, verifier, key, &carrier)?;
+            carrier.sends[0] = Some(carrier.child.as_mut().ok_or(Error::Closed)?
+                .send(carrier.control_packet.as_deref().ok_or(Error::Closed)?));
+            if carrier.sends[0].as_ref().is_some_and(Result::is_err) {
+                return Err(Error::Closed);
+            }
+            self.check_original_held_offer(index, &authenticated, trust, verifier, key, &carrier)?;
+            let original = &self.original_measurements.originals[index];
+            carrier.sends[1] = Some(carrier.child.as_mut().ok_or(Error::Closed)?
+                .send_with_descriptors(original.packet.as_deref().ok_or(Error::Closed)?,
+                    &[original.held.as_ref().ok_or(Error::Closed)?.mount.as_fd()]));
+            if carrier.sends[1].as_ref().is_some_and(Result::is_err) {
+                return Err(Error::Closed);
+            }
+            self.check_original_held_offer(index, &authenticated, trust, verifier, key, &carrier)?;
+            Ok::<_, Error>(StorageNativeDeliveryOutcomeV2::Delivered)
+        })();
+
+        // The actual send error remains in its original result slot; a closed
+        // marker must not replace that first cause or erase attempted transfer.
+        if let Err(cause) = result {
+            if !carrier.sends.iter().any(|send| send.as_ref().is_some_and(Result::is_err)) {
+                carrier.first_failure = Some(cause);
+            }
+            if let Some(index) = resident_index {
+                let original = &mut self.original_measurements.originals[index];
+                original.phase = OriginalPhase::Failed;
+                original.held_carrier = Some(carrier);
+                self.original_measurements.closed = true;
+                self.readiness = StorageRuntimeReadiness::ReopenRequired;
+            } else {
+                self.original_measurements.closed = true;
+                self.original_measurements.failed_carrier = Some(carrier);
+                self.readiness = StorageRuntimeReadiness::ReopenRequired;
+            }
+            return Err(StorageRuntimeError::ReopenRequired);
+        }
+        let index = resident_index.ok_or(StorageRuntimeError::ReopenRequired)?;
+        self.original_measurements.originals[index].held_carrier = Some(carrier);
+        self.original_measurements.held_carrier_in_flight = false;
+        self.original_measurements.closed = false;
+        // Dispatch/reader/child/interest remain held for the unimplemented
+        // relay and settlement route. A successful syscall is not Drain.
+        Ok(StorageNativeDeliveryOutcomeV2::Delivered)
+    }
+
+    fn check_original_held_offer(
+        &mut self, index: usize,
+        authenticated: &AuthenticatedStorageNativeRequestV2<'_>,
+        trust: &crate::live_export_request_trust::StorageLiveExportRequestTrustV1,
+        verifier: &crate::peer::ProviderLiveExportPeerVerifier,
+        key: &StorageZfsHoldKeyV1,
+        carrier: &super::original_held_measurement::OriginalHeldCarrierV1,
+    ) -> Result<(), super::original_held_measurement::OriginalHeldMeasurementErrorV3> {
+        use super::original_held_measurement::OriginalHeldMeasurementErrorV3 as Error;
+        self.native_issuance.as_mut().ok_or(Error::Closed)?
+            .held_row_readback(carrier.stored.as_ref().ok_or(Error::Closed)?)?;
+        self.native_issuance.as_mut().ok_or(Error::Closed)?
+            .require_original_held_roles(trust, key)?;
+        self.recheck_original_measurement(index, authenticated)?;
+        let child = carrier.child.as_ref().ok_or(Error::Closed)?;
+        let execution = carrier.execution.ok_or(Error::Closed)?;
+        if verifier.verify_connection_typed(child.peer())? != execution {
+            return Err(Error::Closed);
+        }
+        for record in &carrier.records {
+            verifier.verify_record_typed(execution, child.peer(),
+                &record.as_ref().ok_or(Error::Closed)?.subject)?;
+        }
+        let original = &self.original_measurements.originals[index];
+        let first = original.first.ok_or(Error::Closed)?;
+        let cutoff = original.cutoff.ok_or(Error::Closed)?;
+        let clock = trusted_paired_clock_sample()?;
+        key.verify_native_reply(authenticated, original.held.as_ref().ok_or(Error::Closed)?,
+            original.reply.as_ref().ok_or(Error::Closed)?, clock)?;
+        key.recheck()?;
+        authenticated.recheck()?;
+        self.original_worker_startup.as_mut().ok_or(Error::Closed)?.recheck()?;
+        validate_original_clock(authenticated.request(), first, trusted_paired_clock_sample()?, cutoff)?;
+        Ok(())
+    }
+
     fn native_clock(&self) -> Result<RawPairedClockSample, StorageRuntimeError> {
         #[cfg(test)]
         if let Some(fixture) = &self.native_fixture {
