@@ -22,7 +22,7 @@ pub(super) fn completion_status_subject(
     .map_err(|_| SourceProviderSecurityError::SessionContinuity)
 }
 
-fn encode_typed_response(
+pub(super) fn encode_typed_response(
     method: SourceProviderMethod,
     signed_status: SignedSourceProviderStatusV1,
     artifact: Option<Vec<u8>>,

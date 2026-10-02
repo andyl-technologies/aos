@@ -3,7 +3,8 @@
 //! Startup installs a signed catalog locator from a named systemd credential.
 //! The service retains the fixed authenticated owner and answers fresh catalog
 //! challenges. A selected LocalLive Acquire may reach authenticated Storage
-//! readback; a genuine native original pair may reach StoragePrepared only.
+//! readback; a genuine native original pair may reach resident Complete readback.
+//! Complete, Provider3, SourceRoot delivery, relay and settlement remain closed.
 //! Holder Inventory
 //! uses the fixed owner's durable admission and
 //! reopens every active source before claiming completeness. A cold selected
@@ -21,7 +22,7 @@ use aos_sandbox_broker_session_security::{
 };
 use aos_sandbox_source_provider::{
     FixedProviderBackendRequestOutcomeV1, FixedProviderIngressProgressV1,
-    FixedProviderOriginalStorageOfferProgressV5, FixedProviderOwnerV1,
+    FixedProviderOriginalCompletionProgressV5, FixedProviderOwnerV1,
     NativeNoDispatchSettlementV1, ProviderLedgerError,
 };
 use aos_sandbox_source_provider_security::{
@@ -123,7 +124,7 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
                             std::thread::sleep(Duration::from_millis(2));
                         }
                         FixedProviderIngressProgressV1::OriginalPairRetained => {
-                            serve_original_storage_offer(&ingress, &mut owner);
+                            serve_original_native_completion(&ingress, &mut owner);
                         }
                         FixedProviderIngressProgressV1::Recovery(query) => {
                             let mut storage = ProductionSourceProviderStorageReadbackV1;
@@ -211,7 +212,7 @@ fn serve_authenticated_ingress() -> Result<(), SourceProviderDaemonErrorV1> {
 // The selected original owner never returns to the consuming legacy route.
 // Both an outer typed cause and all nested offer custody stay resident even
 // after expiry, ambiguous reply, readback refusal or a diagnostic panic.
-fn serve_original_storage_offer(
+fn serve_original_native_completion(
     ingress: &ProductionSourceProviderIngressV1,
     owner: &mut FixedProviderOwnerV1,
 ) -> ! {
@@ -220,13 +221,13 @@ fn serve_original_storage_offer(
     let mut closed = false;
     loop {
         if !closed {
-            match ingress.advance_original_storage_offer(owner) {
-                Ok(FixedProviderOriginalStorageOfferProgressV5::Pending)
-                | Ok(FixedProviderOriginalStorageOfferProgressV5::StoragePrepared) => {}
-                Ok(FixedProviderOriginalStorageOfferProgressV5::Closed) => {
+            match ingress.advance_original_native_completion(owner) {
+                Ok(FixedProviderOriginalCompletionProgressV5::Pending)
+                | Ok(FixedProviderOriginalCompletionProgressV5::CompleteCommitted) => {}
+                Ok(FixedProviderOriginalCompletionProgressV5::Closed) => {
                     closed = true;
-                    if let Some(cause) = owner.original_storage_offer_failure_v5() {
-                        eprintln!("original Storage offer remains closed: {cause}");
+                    if let Some(cause) = owner.original_completion_failure_v5() {
+                        eprintln!("original completion remains closed: {cause}");
                     }
                 }
                 Err(cause) => {
@@ -234,7 +235,7 @@ fn serve_original_storage_offer(
                     closed = true;
                     owner.close_original_storage_offer_after_failure_v5();
                     if let Some(cause) = &first_failure {
-                        eprintln!("original Storage offer remains closed: {cause}");
+                        eprintln!("original completion remains closed: {cause}");
                     }
                 }
             }

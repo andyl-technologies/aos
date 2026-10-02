@@ -274,7 +274,7 @@ fn complete_observed_acquire(
 // These data checks precede signing. The authoritative reducers still derive
 // and encode the final records; they must not be the first overflow checks
 // because completion preparation signs before finalizing those records.
-fn require_completion_headroom(
+pub(crate) fn require_completion_headroom(
     session_revision: u64,
     response_sequence: u64,
     authority_revision: u64,

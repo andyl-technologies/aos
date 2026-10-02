@@ -54,6 +54,7 @@ mod validation;
 
 pub(crate) use completion::complete_acquire;
 pub(crate) use completion::complete_retained_native;
+pub(crate) use completion::require_completion_headroom;
 pub(crate) use native_admission::require_original_packet_profile;
 pub(crate) use native_admission::CurrentSelection;
 pub(crate) use native_admission::select_current_resource_at;

@@ -124,6 +124,17 @@ pub enum FixedProviderOriginalStorageOfferProgressV5 {
     Closed,
 }
 
+/// Reports only the resident original completion checkpoint, never a send permit.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FixedProviderOriginalCompletionProgressV5 {
+    /// The SAME original flight remains held before the phase-4 readback.
+    Pending,
+    /// The canonical six-row Complete and original Source5 were read back.
+    CompleteCommitted,
+    /// All returned originals and the first cause remain permanently held.
+    Closed,
+}
+
 /// Reports exact protected replay performed by the fixed provider owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FixedProviderOpenReportV1 {

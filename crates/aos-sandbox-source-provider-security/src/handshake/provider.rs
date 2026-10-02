@@ -47,6 +47,9 @@ mod storage_export;
 #[path = "provider/storage_native.rs"]
 mod storage_native;
 pub use storage_native::OriginalNativeSigningErrorV5;
+#[path = "provider/original_completion.rs"]
+mod original_completion;
+pub use original_completion::OriginalProviderCompletionSignaturesV5;
 
 pub(super) struct AwaitingRootMountHelloV1 {
     custody: ProtectedProviderCustodyV1,

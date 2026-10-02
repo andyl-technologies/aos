@@ -66,6 +66,26 @@ impl StagedZfsHoldChallengeV1 {
     }
 }
 
+/// Retains the same original nonce's Spent candidate before fallible checks.
+///
+/// This never issues a nonce or calls the issuance-only staging predicates.
+pub(crate) struct StagedOriginalZfsHoldSpendV5 {
+    expected: ChallengeRecordV1,
+    receipt: ObjectDigest,
+    spent: Option<ChallengeRecordV1>,
+    transaction: Option<JournalTransaction>,
+    preflight: Option<ProtectedJournalPreflight>,
+    readback: Option<Vec<u8>>,
+    attempted: bool,
+    failed: bool,
+}
+
+impl StagedOriginalZfsHoldSpendV5 {
+    pub(crate) fn readback(&self) -> Option<&[u8]> {
+        self.readback.as_deref()
+    }
+}
+
 /// Carries one durable Provider-issued challenge for an exact native attempt.
 ///
 /// It is nonauthorizing and can be sent to Storage only after the protected
@@ -487,6 +507,118 @@ impl ProtectedZfsHoldChallengesV1 {
             return Err(ProviderLedgerError::RuntimePoisoned);
         }
         Ok(())
+    }
+
+    /// Parks an actual same-nonce Spent proposal, without an issuance predicate.
+    pub(crate) fn stage_original_spend_v5(
+        &mut self,
+        expected: ChallengeRecordV1,
+        receipt: ObjectDigest,
+        slot: &mut Option<StagedOriginalZfsHoldSpendV5>,
+    ) -> Result<(), ProviderLedgerError> {
+        if let Some(previous) = slot.as_mut() {
+            previous.failed = true;
+            return Err(ProviderLedgerError::InvalidTransition("original challenge spend occupied"));
+        }
+        *slot = Some(StagedOriginalZfsHoldSpendV5 {
+            expected, receipt, spent: None, transaction: None, preflight: None,
+            readback: None, attempted: false, failed: false,
+        });
+        let staged = slot.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let result = (|| {
+            // Preserve the old spend sentinel/subject/equivocation order.
+            if receipt.as_bytes() == &[0; 32] {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            let actual = self.retained_for(expected.challenge.nonce)?;
+            if !actual.same_subject(expected) {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            if actual.state == SPENT {
+                if actual.receipt_digest != receipt {
+                    return Err(ProviderLedgerError::Equivocation);
+                }
+                // The hot caller's prior phase-two headroom check excludes this
+                // case. Idempotent historical DATA does not create another effect.
+                staged.spent = Some(actual);
+                let authority = self.journal.claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+                validate_location(self.location, &authority)?;
+                staged.readback = Some(authority.get(&key(actual.challenge.nonce))?
+                    .ok_or(ProviderLedgerError::RuntimePoisoned)?.to_vec());
+                return Ok(());
+            }
+            if !actual.is_issued_now(current_seconds()?) {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            let mut spent = actual;
+            spent.state = SPENT;
+            spent.receipt_digest = receipt;
+            staged.spent = Some(spent);
+            staged.transaction = Some(challenge_transaction(key(spent.challenge.nonce), spent.encode())?);
+            let authority = self.journal.claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+            validate_location(self.location, &authority)?;
+            staged.preflight = Some(authority.preflight_transactions(std::slice::from_ref(
+                staged.transaction.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
+            ))?);
+            Ok(())
+        })();
+        if result.is_err() {
+            staged.failed = true;
+        }
+        result
+    }
+
+    /// Attempts the retained Spent transaction once and parks actual readback.
+    pub(crate) fn commit_original_spend_v5(
+        &mut self,
+        staged: &mut StagedOriginalZfsHoldSpendV5,
+        clock: &crate::native_completion::NativeAcquireClockGuardV1,
+        receipt_expiry: i64,
+    ) -> Result<(), ProviderLedgerError> {
+        if staged.failed || staged.attempted {
+            staged.failed = true;
+            return Err(ProviderLedgerError::InvalidTransition("original challenge spend already attempted"));
+        }
+        let result = (|| {
+            let actual = self.retained_for(staged.expected.challenge.nonce)?;
+            if !actual.same_subject(staged.expected) {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            if actual.state == SPENT {
+                if actual.receipt_digest != staged.receipt || staged.transaction.is_some() {
+                    return Err(ProviderLedgerError::Equivocation);
+                }
+                staged.attempted = true;
+                return Ok(());
+            }
+            if !actual.is_issued_now(current_seconds()?) {
+                return Err(ProviderLedgerError::Unavailable);
+            }
+            let spent = staged.spent.ok_or(ProviderLedgerError::Unavailable)?;
+            let transaction = staged.transaction.as_ref().ok_or(ProviderLedgerError::Unavailable)?;
+            let mut authority = self.journal.claim_protected_authority(RecordNamespace::SourceProviderAuthority)?;
+            validate_location(self.location, &authority)?;
+            authority.validate_preflight_for_effect(
+                staged.preflight.as_ref().ok_or(ProviderLedgerError::Unavailable)?,
+                std::slice::from_ref(transaction),
+            )?;
+            clock.revalidate(Some(receipt_expiry))?;
+            staged.attempted = true;
+            authority.commit(transaction)?;
+            staged.readback = Some(authority.get(&key(spent.challenge.nonce))?
+                .ok_or(ProviderLedgerError::RuntimePoisoned)?.to_vec());
+            clock.revalidate(Some(receipt_expiry))?;
+            if ChallengeRecordV1::decode(&key(spent.challenge.nonce),
+                staged.readback.as_deref().ok_or(ProviderLedgerError::RuntimePoisoned)?)? != spent
+            {
+                return Err(ProviderLedgerError::RuntimePoisoned);
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            staged.failed = true;
+        }
+        result
     }
 
     /// Reads historical one-shot custody without renewing its validity.
