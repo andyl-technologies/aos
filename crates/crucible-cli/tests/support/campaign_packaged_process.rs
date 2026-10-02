@@ -5,6 +5,7 @@
 //! Startup must capture a real native baked genesis before binding the service.
 
 use super::*;
+use crucible_daemon::{CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5, EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION};
 use crucible_session::engine::{
     Action, ContentAddressedBlobRef, ContentHash, EventGraph, EventId, Icount, NodeId, Plan,
     Predicate, Properties, ReadyPoint, ScenarioDefForm, ScenarioSelectableLimits,
@@ -215,10 +216,17 @@ fn packaged_campaign_flight(mode: PackagedFlight) -> Result<(), Box<dyn Error>> 
     )?;
     let lineage_input = root.join("lineage.toml");
     let lineage = root.join("lineage.bin");
+    let qemu_build = crucible_daemon::packaged_qemu_identity::authenticated_qemu_build_id(
+        &required_path("CRUCIBLE_FLIGHT_QEMU")?,
+        &required_path("CRUCIBLE_FLIGHT_PLUGIN")?,
+    )?;
+    let protocol_versions = toml::to_string(
+        &crucible_daemon::packaged_qemu_identity::packaged_qemu_protocol_versions(),
+    )?;
     fs::write(
         &lineage_input,
         format!(
-            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = \"qemu-11.1.1-crucible\"\nscenario_schema = 3\nexact_closure_schema = 5\n[protocol_versions]\ncontrol = 3\nshared-memory = 26\n",
+            "schema_version = 1\nscenario = {:?}\nscenario_content = {:?}\ngenesis = {:?}\ngenesis_content = {:?}\ncrucible_version = \"0.1.0\"\nqemu_build = {qemu_build:?}\nscenario_schema = {CRUCIBLE_SCENARIO_PAYLOAD_SCHEMA_V5}\nexact_closure_schema = {EXACT_CHECKPOINT_ROOT_SCHEMA_VERSION}\n[protocol_versions]\n{protocol_versions}",
             json_string(&compiled, "scenario")?,
             json_string(&compiled, "scenario_artifact")?,
             json_string(&compiled, "genesis")?,

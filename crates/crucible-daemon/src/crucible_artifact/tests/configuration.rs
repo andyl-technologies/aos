@@ -2,6 +2,8 @@
 
 use super::*;
 
+mod campaign_creation;
+
 #[test]
 fn crucible_payloads_round_trip_and_rederive_semantic_ids() {
     let scenario = crucible::happy_path_scenario()
