@@ -395,6 +395,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and restored exactly after every original terminal. The fixture correction
   is isolated before further combined qualification. The index candidate
   remains unmerged into the trunk, with no task or milestone advancement.
+  The isolated fixture correction fixes all four combined regressions while
+  preserving the published revision-1 vocabulary and old witness bytes. Its
+  final full core suite passes 619/619 with zero skipped (Nextest run
+  `db738614-9b40-4038-8c7b-9756c6e80e39`), with core build, strict all-target
+  core Clippy, strict rustdoc and both formatters passing; all 46 temporary
+  inputs are compared and restored exactly after the original terminal.
+  The reviewed unpublished joint source retains exactly those Rust and
+  namespace-witness bytes after integrating D-103's specification metadata.
+  Independent parent qualification passes `core-fuzz`, `canonical-cbor`,
+  `namespace-reference-models`, `golden-vectors`, `property-resolution`,
+  `integration.index-format`, `integration.property-registry`, `core-no-std`,
+  `registry-complete` and both mandatory formatters. The actual aggregate
+  exits 1 on
+  `bucket::retirement_tests::legacy_state1_without_inventory_blocks_opaque_index_aliases_even_with_empty_key6`
+  in `index-generation-manifest`. Runtime index gates, occurrence-carrier
+  registration, normative index witness publication and the remaining native
+  disclosure cases remain incomplete. These results qualify the corrected
+  pure fixtures only; no task merge, checkbox or milestone status advances.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
