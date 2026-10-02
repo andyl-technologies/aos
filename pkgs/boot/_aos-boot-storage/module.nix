@@ -23,7 +23,10 @@
   sysrootReadiness = "sysroot.mount";
   deviceSettleReadiness = "systemd-udev-settle.service";
   kernelModulesReadiness = "systemd-modules-load.service";
-  bootIdentityReadiness = "aos-boot-identity-guard.service";
+  bootIdentityDependencies =
+    lib.optional
+    (config.aos.security.bootIdentityServices.enable or false)
+    "aos-boot-identity-guard.service";
   initrdStageReadiness = "aos-ability-initrd-controller.service";
   imageBootCommittedReadiness = "aos-image-boot-commit.service";
   service = {
@@ -214,9 +217,9 @@
     arguments = [transactionStorageRoot] ++ cfg.espDevices;
     dependencies = {
       prerequisites = [];
-      after = [deviceSettleReadiness sysrootReadiness bootIdentityReadiness];
+      after = [deviceSettleReadiness sysrootReadiness] ++ bootIdentityDependencies;
       before = [initrdStageReadiness];
-      requires = [deviceSettleReadiness sysrootReadiness bootIdentityReadiness];
+      requires = [deviceSettleReadiness sysrootReadiness] ++ bootIdentityDependencies;
       wants = [];
       requisite = [];
       conflicts = [];

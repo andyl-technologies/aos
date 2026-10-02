@@ -354,6 +354,23 @@ class NativeHandlerTests(unittest.TestCase):
             self.assertEqual(pending.service("observe")["status"], "indeterminate")
             self.assertTrue((Path(root) / "example.service").exists())
 
+    def test_path_conditions_use_scalar_paths_and_literal_specifiers(self):
+        value = service()
+        value["conditions"] = {"all": [
+            {"kind": "path", "predicate": "exists", "path": "/tmp/a path%literal", "negated": True},
+            {"kind": "path", "predicate": "is-mount-point", "path": "/run/etc", "negated": False},
+        ]}
+
+        text = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertIn("ConditionPathExists=!/tmp/a path%%literal\n", text)
+        self.assertIn("ConditionPathIsMountPoint=/run/etc\n", text)
+        self.assertIn('"a b" "$$USER" "%%i"', text)
+
+        value["conditions"]["all"][0]["path"] = "/tmp/path\nInjected=yes"
+        with self.assertRaises(ValueError):
+            handler_module.realize_service(value)
+
     def test_mac_enforcement_uses_an_actual_state_condition(self):
         handler_module.MAC_CONDITION_EXECUTABLE = "/nix/store/service/bin/aos-service-handler"
         value = service()

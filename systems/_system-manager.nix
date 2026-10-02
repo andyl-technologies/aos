@@ -21,6 +21,7 @@
     description = "Register authenticated immutable initrd deployment inputs";
     before = ["aos-ability-initrd-controller.service"];
     requiredBy = ["aos-ability-initrd-controller.service"];
+    path = [pkgs.coreutils];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;

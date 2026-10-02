@@ -36,10 +36,6 @@
   # publication transaction. Keep this test fixture's larger firmware storage
   # contract scoped away from the production server image.
   aos.image.budgets = {
-    maxBootExecutableMiB =
-      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 192
-      else 160;
     maxFirmwarePartitionMiB =
       if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
       then 768
