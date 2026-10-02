@@ -48,7 +48,7 @@ fn file() -> Entry<'static> {
 #[test]
 fn resolution_registry_defaults_and_path_overrides() {
     let default = resolve(&[], defaults()).expect("defaults");
-    assert_eq!(PropertyName::ALL.len(), 33);
+    assert_eq!(PropertyName::ALL.len(), 34);
     for name in PropertyName::ALL {
         assert!(default.get(*name).is_some());
         assert_eq!(PropertyName::parse(name.as_str()), Ok(*name));

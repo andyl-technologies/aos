@@ -321,7 +321,7 @@ fn validate_changed_entry(
             }
             EntryKind::Tree { root, props } => {
                 if let Some(props) = props {
-                    super::validate_preserved_map(props, context.later_registered_properties())?;
+                    super::validate_graft_overrides(props, context.later_registered_properties())?;
                 }
                 if !domain.permits_reference(context.reference_domain(*root)?) {
                     return Err(Error::Domain);

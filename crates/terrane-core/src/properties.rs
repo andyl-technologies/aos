@@ -201,9 +201,8 @@ pub fn resolve_with_registry<'a>(
     let mut values = registry::defaults(defaults)?;
     let mut wipe_set = false;
     for (position, layer) in path.iter().enumerate() {
-        for properties in [layer.properties, layer.overrides] {
-            validate_preserved_map(properties, later_registered)?;
-        }
+        validate_preserved_map(layer.properties, later_registered)?;
+        validate_graft_overrides(layer.overrides, later_registered)?;
         // A graft-local override replaces the whole binding, including its
         // inherit flag. A local non-inheriting override must not uncover the
         // referenced root's own value in descendant roots.
@@ -281,6 +280,29 @@ pub fn validate_map(properties: &[Property<'_>]) -> Result<(), Error> {
         validate_property(property)?;
     }
     Ok(())
+}
+
+/// Validates a graft-entry property map, excluding owner-only index bindings.
+///
+/// Trusted later-version names remain preserved according to
+/// [`validate_preserved_map`]. An `index-roots` binding belongs to the target
+/// root's own node and cannot be supplied by an occurrence's graft override.
+///
+/// # Errors
+/// Rejects owner-only bindings at any graft, unregistered names, malformed
+/// values, duplicates, or oversized maps.
+pub fn validate_graft_overrides(
+    properties: &[Property<'_>],
+    later_registered: &[&str],
+) -> Result<(), Error> {
+    if properties
+        .iter()
+        .any(|property| property.name == PropertyName::IndexRoots.as_str())
+    {
+        return Err(Error::InvalidValue);
+    }
+
+    validate_preserved_map(properties, later_registered)
 }
 
 /// Checks that deduplication cannot exceed the effective domain's scope.
