@@ -223,7 +223,8 @@ fn serve_original_native_completion(
         if !closed {
             match ingress.advance_original_native_completion(owner) {
                 Ok(FixedProviderOriginalCompletionProgressV5::Pending)
-                | Ok(FixedProviderOriginalCompletionProgressV5::CompleteCommitted) => {}
+                | Ok(FixedProviderOriginalCompletionProgressV5::CompleteCommitted)
+                | Ok(FixedProviderOriginalCompletionProgressV5::HeldStored) => {}
                 Ok(FixedProviderOriginalCompletionProgressV5::Closed) => {
                     closed = true;
                     if let Some(cause) = owner.original_completion_failure_v5() {

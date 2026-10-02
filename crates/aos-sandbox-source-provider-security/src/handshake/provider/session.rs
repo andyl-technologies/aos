@@ -1413,16 +1413,14 @@ impl CurrentProviderIngressSessionV1 {
     ) -> Result<super::CurrentProviderRequestV1, SourceProviderSecurityError> {
         self.revalidate()?;
         let now = current_unix_seconds()
-            .map_err(|error| poison_and_close(&mut self.custody, &mut self.carrier, error))?;
+            .map_err(|error| self.fail_current_custody_v5(error))?;
         let root_identity = process_identity(&self.root_mount_execution)
-            .map_err(|error| poison_and_close(&mut self.custody, &mut self.carrier, error))?;
+            .map_err(|error| self.fail_current_custody_v5(error))?;
         let inner = self.custody.inner();
         let maximum_deadline = match now.checked_add(MAXIMUM_CURRENT_REQUEST_LIFETIME_SECONDS) {
             Some(value) => value,
             None => {
-                return Err(poison_and_close(
-                    &mut self.custody,
-                    &mut self.carrier,
+                return Err(self.fail_current_custody_v5(
                     SourceProviderSecurityError::SessionContinuity,
                 ));
             }
@@ -1440,11 +1438,7 @@ impl CurrentProviderIngressSessionV1 {
         let context = match context {
             Ok(context) => context,
             Err(error) => {
-                return Err(poison_and_close(
-                    &mut self.custody,
-                    &mut self.carrier,
-                    error,
-                ));
+                return Err(self.fail_current_custody_v5(error));
             }
         };
         let verified = verify_provider_request(
@@ -1467,11 +1461,7 @@ impl CurrentProviderIngressSessionV1 {
                     provider_start_time_ticks: provider_execution.start_time_ticks,
                 })
             }
-            Err(error) => Err(poison_and_close(
-                &mut self.custody,
-                &mut self.carrier,
-                error,
-            )),
+            Err(error) => Err(self.fail_current_custody_v5(error)),
         }
     }
 
@@ -1490,11 +1480,7 @@ impl CurrentProviderIngressSessionV1 {
                 .ok_or(SourceProviderSecurityError::SessionContinuity)
             });
         if let Err(error) = result {
-            return Err(poison_and_close(
-                &mut self.custody,
-                &mut self.carrier,
-                error,
-            ));
+            return Err(self.fail_current_custody_v5(error));
         }
         Ok(())
     }

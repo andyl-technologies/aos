@@ -82,6 +82,16 @@ impl OriginalStorageOfferV5 {
         self.verified.as_ref().ok_or(ProviderLedgerError::Unavailable)
     }
 
+    pub(super) fn original_socket_cookie_v5(
+        &mut self,
+    ) -> Result<std::num::NonZeroU64, aos_sandbox_source_provider_security::OriginalStorageOfferErrorV5> {
+        self.transport.original_socket_cookie_v5()
+    }
+
+    pub(super) fn original_transport_v5(&mut self) -> &mut OriginalStorageOfferTransportV5 {
+        &mut self.transport
+    }
+
     fn pending() -> Self {
         Self {
             stage: OfferStageV5::StagePackets,
@@ -183,6 +193,7 @@ impl FixedProviderOwnerV1 {
     /// progress before diagnostics. This has no reset, release or fallback.
     #[doc(hidden)]
     pub fn close_original_storage_offer_after_failure_v5(&mut self) {
+        self.close_original_held_upper_failure_v5();
         let guard = OriginalProducerClosureGuardV5 {
             owner: self,
             completed: false,

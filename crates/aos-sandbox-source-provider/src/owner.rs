@@ -131,6 +131,8 @@ pub enum FixedProviderOriginalCompletionProgressV5 {
     Pending,
     /// The canonical six-row Complete and original Source5 were read back.
     CompleteCommitted,
+    /// The same unsigned phase5 and signed phase6 were durably read back, unsent.
+    HeldStored,
     /// All returned originals and the first cause remain permanently held.
     Closed,
 }

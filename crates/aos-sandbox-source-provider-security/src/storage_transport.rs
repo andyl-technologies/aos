@@ -739,6 +739,24 @@ impl OriginalStorageOfferTransportV5 {
         result
     }
 
+    /// Borrows the cookie of the SAME original, revalidated Storage transport.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a closed or changed original connection. No reconnect is attempted.
+    pub fn original_socket_cookie_v5(
+        &mut self,
+    ) -> Result<std::num::NonZeroU64, OriginalStorageOfferErrorV5> {
+        if self.stage != OriginalStorageOfferStageV5::Offered {
+            self.stage = OriginalStorageOfferStageV5::Closed;
+            return Err(OriginalStorageOfferErrorV5::Shape("original Storage not offered"));
+        }
+        self.revalidate_original()?;
+        let cookie = self.socket()?.peer().socket_cookie();
+        self.revalidate_original()?;
+        Ok(cookie)
+    }
+
     fn revalidate_inner(&self) -> Result<(), OriginalStorageOfferErrorV5> {
         let socket = self.socket()?;
         socket.peer().require_peer_filesystem_path(socket.as_fd()?, Path::new(NATIVE_HOLD_SOCKET))?;

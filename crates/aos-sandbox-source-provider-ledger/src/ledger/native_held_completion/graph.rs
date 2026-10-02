@@ -23,7 +23,8 @@ use aos_sandbox_source_provider_protocol::{
         frame::PreparedNativeHeldControlV1,
         witness::{
             NativeHeldByteWitnessV1, NativeHeldOwnerWitnessV1, NativeHeldRecordFamilyV1 as Family,
-            ProviderNativeHeldWitnessV1, native_held_record_byte_digest_v1,
+            NativeHeldGenerationClaimV1, ProviderNativeHeldWitnessV1,
+            native_held_record_byte_digest_v1,
         },
     },
 };
@@ -47,6 +48,91 @@ pub fn validate_native_held_records_v1<'a>(
 ) -> Result<(), LedgerFormatErrorV1> {
     let records = collect(records)?;
     validate(&records)
+}
+
+/// Derives phase-four witness and Complete-artifact DATA from actual before rows.
+///
+/// Cookies and sequences remain comparison claims. The protected caller and
+/// the unchanged transition proposer still hold/validate the complete graph.
+///
+/// # Errors
+///
+/// Rejects anything except original Active phase4, changed selected bindings,
+/// incomplete companions, a non-Spent challenge or an invalid Complete artifact.
+pub fn derive_provider_held_preparation_data_v5<'rows>(
+    records: impl IntoIterator<Item = (&'rows [u8], &'rows [u8])>,
+    acquisition: ObjectDigest,
+    original_spent: &[u8],
+    root_local_cookie: std::num::NonZeroU64,
+    storage_local_cookie: std::num::NonZeroU64,
+    completion_sequence: u64,
+    challenge_sequence: u64,
+    selected: &aos_sandbox_source_provider_protocol::native_held_completion::SourceSelectedNativeExecutionInputDataV1,
+) -> Result<(ProviderNativeHeldWitnessV1, ObjectDigest), LedgerFormatErrorV1> {
+    let records = collect(records)?;
+    let native_key = native_completion::native_completion_key_v2(acquisition);
+    let record = Record::from_canonical_bytes(
+        &native_key,
+        records.get(&native_key).ok_or(corrupt("held phase4 native missing"))?,
+    )?;
+    if record.suffix().phase() != 4
+        || record.original().state != native_completion::NativeAcquireCompletionStateV2::Active
+        || selected.fields().scope != evidence::full_scope(&record)?
+        || selected.fields().provider_id != record.original().provider_id
+        || selected.fields().holder_id != record.original().holder_id
+        || completion_sequence == 0
+        || challenge_sequence == 0
+    {
+        return Err(corrupt("held actual phase4 selected binding"));
+    }
+    validate_challenge(&record, Some(original_spent), true)?;
+    let rows = Companions::read(&records, &record)?;
+    let artifact = rows.validate_and_artifact(&record)?;
+    if artifact.as_bytes() == &[0; 32]
+        || selected.fields().normalized_intent_digest != rows.acquisition.normalized_intent.digest()
+        || selected.fields().publication != publication_digest(&rows.catalog)
+        || selected.fields().binding != record.original().binding_digest
+    {
+        return Err(corrupt("held complete artifact/publication"));
+    }
+
+    let families = [
+        Family::ProviderAuthority, Family::ProviderAttempt, Family::ProviderAcquisition,
+        Family::ProviderHolder, Family::ProviderHistory, Family::ProviderNative,
+    ];
+    let mut witnesses = Vec::with_capacity(7);
+    for (family, key) in families.into_iter().zip(&rows.keys) {
+        let value = records.get(key).ok_or(corrupt("held phase4 witness missing"))?;
+        witnesses.push(NativeHeldByteWitnessV1::new(
+            family, key.clone(), native_held_record_byte_digest_v1(family, key, value)?,
+        ).map_err(super::schema_error)?);
+    }
+    let challenge_key = challenge_key(&record);
+    witnesses.push(NativeHeldByteWitnessV1::new(
+        Family::Challenge, challenge_key.clone(),
+        native_held_record_byte_digest_v1(Family::Challenge, &challenge_key, original_spent)?,
+    ).map_err(super::schema_error)?);
+    let records = witnesses.try_into().map_err(|_| corrupt("held seven witnesses"))?;
+    Ok((ProviderNativeHeldWitnessV1 {
+        root_local_cookie: root_local_cookie.get(),
+        storage_local_cookie: storage_local_cookie.get(),
+        completion_sequence,
+        challenge_sequence,
+        authority: rows.authority.provider,
+        native_namespace: rows.catalog.resource_namespace_digest,
+        catalog_head: NativeHeldGenerationClaimV1 {
+            generation: rows.catalog.catalog_generation, digest: rows.catalog.catalog_digest,
+        },
+        catalog_floor: NativeHeldGenerationClaimV1 {
+            generation: rows.catalog.catalog_floor_generation, digest: rows.catalog.catalog_floor_digest,
+        },
+        head_commitment: catalog_commitment(&rows.catalog),
+        publication: publication_digest(&rows.catalog),
+        selected_manifest: selected.digest(),
+        backend_manifest: selected.fields().backend_enrollment,
+        verifier_manifest: selected.fields().dedicated_enrollment,
+        records,
+    }, artifact))
 }
 
 pub(super) fn collect<'a>(
@@ -387,6 +473,10 @@ impl Companions {
     }
 
     fn validate(&self, record: &Record) -> Result<(), LedgerFormatErrorV1> {
+        self.validate_and_artifact(record).map(|_| ())
+    }
+
+    fn validate_and_artifact(&self, record: &Record) -> Result<ObjectDigest, LedgerFormatErrorV1> {
         let original = &record.original;
         let signed = original
             .canonical_request
@@ -436,7 +526,7 @@ impl Companions {
         {
             return Err(corrupt("held exact completed response artifact"));
         }
-        Ok(())
+        Ok(actual_artifact)
     }
 }
 

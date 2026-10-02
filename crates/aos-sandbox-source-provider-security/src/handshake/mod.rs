@@ -23,7 +23,7 @@ pub use mount_request::{
     VerifiedReceivedMountProviderOutcomeV2,
 };
 pub use provider::{
-    OriginalProviderCompletionSignaturesV5,
+    OriginalProviderCompletionSignaturesV5, OriginalProviderHeldSignaturesV5,
     OriginalNativeSigningErrorV5,
     AcquireReceiptFactsV1, CurrentProviderIngressSessionV1, CurrentProviderOriginalCarrierPacketV1,
     CurrentProviderSessionProjectionV1, CurrentRootPreparedCarrierV1, ProviderCompletionBuilderV1,
