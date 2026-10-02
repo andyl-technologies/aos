@@ -714,6 +714,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   shared harness now requires the normative whole file. Published-input and
   combined qualification remain pending. The isolated aggregate still fails
   on missing `format_properties`; no authority, task or milestone is qualified.
+  A separate `recipe-context-reference-models` auxiliary reserves nonempty
+  outer domain pairs, complete trust selector/version/configuration/accepted-ID
+  and timestamp fields, represented path/fold configuration, and independently
+  malformed inputs in four exact groups. It fails while templates are absent.
+  All proposed models retain `authenticated = false`, empty executable
+  evaluators and no runtime fold filter; this pure format prerequisite creates
+  no verified resolution, trust evaluator or native policy permission.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1403,6 +1410,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   follows that limitation. A legal closing graft-override refusal must still
   distinguish actual occurrence-policy resolution under PROP-1/PROP-2 from
   substitution of the configured label; no production policy change is made.
+  The complete nested/repeated-root candidate now includes that legal closing
+  graft override on a shared physical root. Review verifies independent actual
+  path-policy resolution, legal reference ordering and a genuine credential
+  permitting both domains. The unsupported-placement refusal precedes head,
+  chunk and candidate-root effects, with the homogeneous paired-publication
+  control preserved. Its exact combined case passes run
+  `b463ba3e-67d9-40bc-853e-43d1216a3c5f`, followed by both mandatory formatters.
+  Nine of nineteen boundary contracts now have reviewed passing evidence;
+  full native gates and task merge remain open. An initial misspelled filter
+  selected zero tests and is retained as a failing observation, not qualification.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
