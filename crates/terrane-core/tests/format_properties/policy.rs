@@ -39,7 +39,18 @@ fn property_values(name: PropertyName, value: u64) -> Vec<Vec<u8>> {
     let vocabulary: &[&str] = match name {
         Store | Home | Baseline => &["named", "generated-λ"],
         Chunk => &["cdc-1m"],
-        Compression => &["raw", "zstd", "zstd:elf"],
+        Compression => &[
+            "raw",
+            "zstd",
+            "zstd:elf",
+            "zstd:shebang",
+            "zstd:ar",
+            "zstd:zstd",
+            "zstd:gzip",
+            "zstd:tar",
+            "zstd:text",
+            "zstd:other",
+        ],
         Encryption => &["none"],
         Retain => &["gc", "lease", "forever"],
         Domain => &[
@@ -515,27 +526,57 @@ fn merge_recipe_untrusted_receipt_and_timestamp_fields_reencode_canonically() {
     let mut generator = Generator::new(0x749b_218e_dbae_61cc);
     for count in [0, 1, 7] {
         for timestamps in [false, true] {
-            if timestamps && count == 0 { continue; }
-            let roots: Vec<_> = (0..3).map(|_| generator.bytes::<32>()).collect();
-            let receipts: Vec<_> = (0..count).map(|index| { let mut value = generator.bytes::<32>(); value[0] = index as u8; value }).collect();
-            let mut bytes = vec![];
-            cbor::write_map(&mut bytes, 3); cbor::write_uint(&mut bytes, 1); cbor::write_text(&mut bytes, "merge");
-            cbor::write_uint(&mut bytes, 2); cbor::write_array(&mut bytes, 3);
-            for root in &roots { cbor::write_bytes(&mut bytes, root); }
-            cbor::write_uint(&mut bytes, 3); cbor::write_map(&mut bytes, 2);
-            cbor::write_text(&mut bytes, "trust"); cbor::write_map(&mut bytes, if timestamps { 5 } else { 4 });
-            cbor::write_uint(&mut bytes, 1); bytes.extend(selector_atom("preset", "strict"));
-            cbor::write_uint(&mut bytes, 2); cbor::write_text(&mut bytes, "opaque-evaluator/v2");
-            cbor::write_uint(&mut bytes, 3); bytes.extend_from_slice(&[0xa1, 0, 0x82, 0xf4, 0xf6]);
-            cbor::write_uint(&mut bytes, 4); cbor::write_array(&mut bytes, receipts.len());
-            for receipt in &receipts { cbor::write_bytes(&mut bytes, receipt); }
-            if timestamps {
-                cbor::write_uint(&mut bytes, 5); cbor::write_array(&mut bytes, receipts.len());
-                for receipt in &receipts { cbor::write_array(&mut bytes, 2); cbor::write_bytes(&mut bytes, receipt); cbor::write_uint(&mut bytes, generator.next()); }
+            if timestamps && count == 0 {
+                continue;
             }
-            cbor::write_text(&mut bytes, "policy"); cbor::write_array(&mut bytes, 2);
-            cbor::write_text(&mut bytes, "prefer-trusted"); cbor::write_text(&mut bytes, "prefer-newer");
-            cbor_properties("unverified merge receipt bytes", &bytes, |input| Ok::<_, algebra::RecipeError>(algebra::Recipe::decode(input)?.as_recipe().encode()));
+            let roots: Vec<_> = (0..3).map(|_| generator.bytes::<32>()).collect();
+            let receipts: Vec<_> = (0..count)
+                .map(|index| {
+                    let mut value = generator.bytes::<32>();
+                    value[0] = index as u8;
+                    value
+                })
+                .collect();
+            let mut bytes = vec![];
+            cbor::write_map(&mut bytes, 3);
+            cbor::write_uint(&mut bytes, 1);
+            cbor::write_text(&mut bytes, "merge");
+            cbor::write_uint(&mut bytes, 2);
+            cbor::write_array(&mut bytes, 3);
+            for root in &roots {
+                cbor::write_bytes(&mut bytes, root);
+            }
+            cbor::write_uint(&mut bytes, 3);
+            cbor::write_map(&mut bytes, 2);
+            cbor::write_text(&mut bytes, "trust");
+            cbor::write_map(&mut bytes, if timestamps { 5 } else { 4 });
+            cbor::write_uint(&mut bytes, 1);
+            bytes.extend(selector_atom("preset", "strict"));
+            cbor::write_uint(&mut bytes, 2);
+            cbor::write_text(&mut bytes, "opaque-evaluator/v2");
+            cbor::write_uint(&mut bytes, 3);
+            bytes.extend_from_slice(&[0xa1, 0, 0x82, 0xf4, 0xf6]);
+            cbor::write_uint(&mut bytes, 4);
+            cbor::write_array(&mut bytes, receipts.len());
+            for receipt in &receipts {
+                cbor::write_bytes(&mut bytes, receipt);
+            }
+            if timestamps {
+                cbor::write_uint(&mut bytes, 5);
+                cbor::write_array(&mut bytes, receipts.len());
+                for receipt in &receipts {
+                    cbor::write_array(&mut bytes, 2);
+                    cbor::write_bytes(&mut bytes, receipt);
+                    cbor::write_uint(&mut bytes, generator.next());
+                }
+            }
+            cbor::write_text(&mut bytes, "policy");
+            cbor::write_array(&mut bytes, 2);
+            cbor::write_text(&mut bytes, "prefer-trusted");
+            cbor::write_text(&mut bytes, "prefer-newer");
+            cbor_properties("unverified merge receipt bytes", &bytes, |input| {
+                Ok::<_, algebra::RecipeError>(algebra::Recipe::decode(input)?.as_recipe().encode())
+            });
         }
     }
 }

@@ -309,7 +309,11 @@ fn textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models(
             let parsed = RefName::parse(&reference).unwrap();
             assert_eq!(parsed.as_str(), reference);
             BucketKey::parse(&format!("{reference}:record")).unwrap();
-            for subtree in ["".to_string(), "subtree/λ".into(), super::support::maximum_key()] {
+            for subtree in [
+                "".to_string(),
+                "subtree/λ".into(),
+                super::support::maximum_key(),
+            ] {
                 for policy in [None, Some("policy")] {
                     let selector = format!(
                         "{reference}:/{subtree}{}",
@@ -330,7 +334,11 @@ fn textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models(
     for size in [0, 1, 31, 4096] {
         let digest = generator.bytes::<32>();
         let text: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-        let subtree = if size == 4096 { super::support::maximum_key() } else { "p".repeat(size) };
+        let subtree = if size == 4096 {
+            super::support::maximum_key()
+        } else {
+            "p".repeat(size)
+        };
         assert_eq!(
             View::parse(&format!("commit:{text}:/{subtree}")).unwrap(),
             View {
@@ -359,5 +367,11 @@ fn textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models(
     ] {
         assert!(View::parse(malformed).is_err());
     }
-    assert!(View::parse(&format!("refs/heads/_/a:/{}", format!("{}x", super::support::maximum_key()))).is_err());
+    assert!(
+        View::parse(&format!(
+            "refs/heads/_/a:/{}",
+            format!("{}x", super::support::maximum_key())
+        ))
+        .is_err()
+    );
 }

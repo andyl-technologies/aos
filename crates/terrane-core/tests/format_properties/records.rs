@@ -567,36 +567,92 @@ fn creation_journal_binding_models_cover_pack_index_trash_and_empty_identity_rej
 #[test]
 fn nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip() {
     let mut generator = Generator::new(0x9d40_b8e2_5173_eebb);
-    for surface in ["sdk", "fuse", "erofs", "block", "virtiofs", "virtio-pmem", "nix-cache", "reapi", "gha-cache", "git", "oci", "browse", "api"] {
+    for surface in [
+        "sdk",
+        "fuse",
+        "erofs",
+        "block",
+        "virtiofs",
+        "virtio-pmem",
+        "nix-cache",
+        "reapi",
+        "gha-cache",
+        "git",
+        "oci",
+        "browse",
+        "api",
+    ] {
         let mut model = commit(&mut generator, 1);
-        let locality = refs::Locality { region: Some("region".into()), zone: Some("zone".into()), host: Some("host".into()) };
+        let locality = refs::Locality {
+            region: Some("region".into()),
+            zone: Some("zone".into()),
+            host: Some("host".into()),
+        };
         let context = refs::CommitContext::from_request(&terrane_core::auth::Request {
-            reference: b"refs/heads/_/main", verb: terrane_core::auth::Verb::Commit,
-            roots: &[terrane_core::auth::RequestRoot { path: b"/", domain: "public" }],
-            now: 0, surface, locality: &locality, epochs: &[],
-        }).unwrap();
+            reference: b"refs/heads/_/main",
+            verb: terrane_core::auth::Verb::Commit,
+            roots: &[terrane_core::auth::RequestRoot {
+                path: b"/",
+                domain: "public",
+            }],
+            now: 0,
+            surface,
+            locality: &locality,
+            epochs: &[],
+        })
+        .unwrap();
         model.profile_pair.commit_context = Some(context);
-        let source = refs::EntrySource { commit: generator.bytes(), root: generator.bytes(), path: vec![0; 4096] };
-        for origin in [refs::EntryOrigin::Current, refs::EntryOrigin::Source(source.clone())] {
-            for attributes in [None, Some(vec![]), Some(vec![("a".into(), refs::EntryOrigin::Current), ("zz".into(), refs::EntryOrigin::Source(source.clone()))])] {
+        let source = refs::EntrySource {
+            commit: generator.bytes(),
+            root: generator.bytes(),
+            path: vec![0; 4096],
+        };
+        for origin in [
+            refs::EntryOrigin::Current,
+            refs::EntryOrigin::Source(source.clone()),
+        ] {
+            for attributes in [
+                None,
+                Some(vec![]),
+                Some(vec![
+                    ("a".into(), refs::EntryOrigin::Current),
+                    ("zz".into(), refs::EntryOrigin::Source(source.clone())),
+                ]),
+            ] {
                 model.profile_pair.entry_receipts = Some(vec![refs::EntryReceipt {
-                    root: generator.bytes(), path: vec![0; 4096], origin: origin.clone(), attributes,
-                    reintroduced_from: None, disclosure_proof: None,
+                    root: generator.bytes(),
+                    path: vec![0; 4096],
+                    origin: origin.clone(),
+                    attributes,
+                    reintroduced_from: None,
+                    disclosure_proof: None,
                 }]);
-                check_record!("receipt origin and authoring surface", model.clone(), refs::Commit);
+                check_record!(
+                    "receipt origin and authoring surface",
+                    model.clone(),
+                    refs::Commit
+                );
             }
         }
     }
     for fields in 0..32 {
         let mut record = head(1);
-        record.home = refs::Locality { region: (fields & 1 != 0).then(|| "region".into()), zone: (fields & 2 != 0).then(|| "zone".into()), host: (fields & 4 != 0).then(|| "host".into()) };
+        record.home = refs::Locality {
+            region: (fields & 1 != 0).then(|| "region".into()),
+            zone: (fields & 2 != 0).then(|| "zone".into()),
+            host: (fields & 4 != 0).then(|| "host".into()),
+        };
         record.policy = Some(refs::RefPolicy {
             multi_writer: (fields & 1 != 0).then_some(false),
             merge_policies: (fields & 2 != 0).then(|| vec![refs::MergePolicy::KeepConflict]),
             retention: (fields & 4 != 0).then_some(refs::Retention::Forever),
             conflicted: (fields & 8 != 0).then_some(true),
             snapshot: (fields & 16 != 0).then(|| refs::SnapshotEnvelope {
-                tag: refs::RefName::parse("refs/tags/_/tag").unwrap(), commit: record.commit, attestation: vec![0xa0], signer_key: "key".into(), signature: generator.bytes(),
+                tag: refs::RefName::parse("refs/tags/_/tag").unwrap(),
+                commit: record.commit,
+                attestation: vec![0xa0],
+                signer_key: "key".into(),
+                signature: generator.bytes(),
             }),
         });
         check_record!("ref policy optional fields", record, refs::RefRecord);
@@ -610,18 +666,38 @@ fn nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip() {
 fn collector_kind_models_cover_all_registered_tags_and_flag_constraints() {
     let mut generator = Generator::new(0x8e33_290f_b371_045c);
     let mut model = gc::GcState {
-        cycle: generator.next(), epoch: generator.next(), phase: gc::Phase::Mark, snapshot_at: generator.next(),
-        checkpoints: vec![], pending: vec![], expanded: vec![], progress: vec![], objects: vec![],
+        cycle: generator.next(),
+        epoch: generator.next(),
+        phase: gc::Phase::Mark,
+        snapshot_at: generator.next(),
+        checkpoints: vec![],
+        pending: vec![],
+        expanded: vec![],
+        progress: vec![],
+        objects: vec![],
     };
     for kind in 0..=9 {
         let hash = [kind; 32];
         let flags = if kind == 0 { 0 } else { 8 };
-        model.pending.push(gc::Pending { kind, hash, parent_cutoff: gc::ParentCutoff::Unbounded, flags, proof_context: None });
-        model.objects.push(gc::ExpandedObject { kind, hash, flags, proof_context: None });
+        model.pending.push(gc::Pending {
+            kind,
+            hash,
+            parent_cutoff: gc::ParentCutoff::Unbounded,
+            flags,
+            proof_context: None,
+        });
+        model.objects.push(gc::ExpandedObject {
+            kind,
+            hash,
+            flags,
+            proof_context: None,
+        });
     }
     check_record!("collector registered kinds", model.clone(), gc::GcState);
     for (kind, flags) in [(0, 8), (1, 1), (1, 2), (1, 4), (10, 0)] {
-        let mut invalid = model.clone(); invalid.pending[0].kind = kind; invalid.pending[0].flags = flags;
+        let mut invalid = model.clone();
+        invalid.pending[0].kind = kind;
+        invalid.pending[0].flags = flags;
         assert!(invalid.encode().is_err());
     }
 }
