@@ -1,7 +1,9 @@
 //! Transfers actual dictionary envelopes through paired native receiver validation.
 
 use super::*;
-use crate::ref_advance::{DisclosureCommitRequest, DisclosureCommitSelection};
+use crate::ref_advance::{AdvanceError, DisclosureCommitRequest, DisclosureCommitSelection};
+use crate::repository::Error;
+use crate::store::StoreErrorKind;
 use terrane_core::auth::{Grant, Verbs};
 use terrane_core::chunking::ChunkProfile;
 use terrane_core::codec::{Codec, EncodedChunk, encode_envelope, parse_envelope};
@@ -171,10 +173,23 @@ pub(super) async fn publish_dictionary_codecs() {
                         },
                     )
                     .await;
-                assert!(
-                    rejected.is_err(),
-                    "receiver refusal {refusal} unexpectedly published"
-                );
+                let failure = match rejected {
+                    Err(Error::Store(failure))
+                    | Err(Error::Advance(AdvanceError::Store(failure))) => failure,
+                    other => panic!(
+                        "receiver refusal {refusal} returned an unrelated outcome: {other:?}"
+                    ),
+                };
+                match refusal {
+                    0 => assert!(
+                        matches!(failure.kind(), StoreErrorKind::Denied { verb: "read", pattern } if pattern == reference)
+                    ),
+                    1 | 3 => assert!(
+                        matches!(failure.kind(), StoreErrorKind::Denied { verb: "commit", pattern } if pattern == reference)
+                    ),
+                    2 => assert!(matches!(failure.kind(), StoreErrorKind::Invalid(_))),
+                    _ => unreachable!(),
+                }
                 assert!(destination_session.record().is_none());
             }
         }
