@@ -38,6 +38,8 @@ const MAX_GUEST_SELECTABLE_BOUNDARY_LINE_BYTES: usize = 8 * 1024;
 pub(super) const MATERIALIZATION_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-MATERIALIZATION-V1 ";
 const EXACT_RESUME_PROGRESS_PREFIX: &str = "CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ";
 
+#[path = "guest_choice/diagnostics.rs"]
+mod diagnostics;
 #[path = "guest_choice/lifecycle.rs"]
 mod lifecycle;
 #[path = "guest_choice/maintenance_transfer.rs"]
@@ -764,13 +766,7 @@ fn start_packaged_service_with_artifacts(
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let executor_socket = fixture._temporary.path().join("guest-choice-executor.sock");
     let mut invocation = fixture.service_command(None);
-    if !matches!(diagnostics, FlightDiagnostics::Disabled) {
-        invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "1024");
-    }
-    if matches!(diagnostics, FlightDiagnostics::ControlCallback) {
-        invocation.env("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1");
-        invocation.env("CRUCIBLE_RR_CLAMP_TAIL", "1");
-    }
+    diagnostics::configure_flight_diagnostics(&mut invocation, diagnostics);
     invocation
         .arg("--qemu")
         .arg(qemu)
