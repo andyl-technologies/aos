@@ -698,15 +698,6 @@
           mkdir -p root/etc/systemd/system/network-online.target.wants
           ln -sfn /lib/systemd/system/systemd-networkd-wait-online.service \
             root/etc/systemd/system/network-online.target.wants/systemd-networkd-wait-online.service
-          mkdir -p \
-            root/etc/systemd/system/systemd-networkd-wait-online.service.d
-          cat > \
-            root/etc/systemd/system/systemd-networkd-wait-online.service.d/10-aos-any-link.conf <<EOF
-          [Service]
-          ExecStart=
-          ExecStart=${systemd}/lib/systemd/systemd-networkd-wait-online --any
-          EOF
-
           # ── 8. Masked units ─────────────────────────────────────────────
           chmod u+w root/etc/systemd/system
           ${lib.concatMapStringsSep "\n" (u: ''

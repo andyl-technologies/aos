@@ -3,10 +3,10 @@
   pkgs,
   lib,
 }: let
-  evaluate = rootPartitionMiB:
+  evaluateFor = cpu: rootPartitionMiB:
     lib.evalModules {
       inherit lib;
-      pkgs = {};
+      pkgs.stdenv.hostPlatform.constraints = {inherit cpu;};
       modules = [
         ../../modules/image/default.nix
         ../../modules/base/boot-storage.nix
@@ -25,9 +25,28 @@
   failedMessages = evaluation:
     builtins.map (assertion: assertion.message)
     (builtins.filter (assertion: !assertion.assertion) evaluation.config.assertions);
-  healthy = evaluate 1024;
-  undersized = evaluate 511;
+  healthy = evaluateFor "x86_64" 1024;
+  undersized = evaluateFor "x86_64" 511;
+  foreign = evaluateFor "aarch64" 1024;
   checks = [
+    {
+      ok =
+        healthy.config.aos.image.budgets.maxInitrdMiB
+        == 132
+        && healthy.config.aos.image.budgets.maxBootExecutableMiB == 160
+        && healthy.config.aos.image.budgets.maxFirmwarePartitionMiB == 384
+        && healthy.config.aos.image.budgets.maxRuntimeClosureMiB == 768;
+      message = "x86 image defaults must retain the baseline boot and runtime allowances";
+    }
+    {
+      ok =
+        foreign.config.aos.image.budgets.maxInitrdMiB
+        == 132
+        && foreign.config.aos.image.budgets.maxBootExecutableMiB == 192
+        && foreign.config.aos.image.budgets.maxFirmwarePartitionMiB == 416
+        && foreign.config.aos.image.budgets.maxRuntimeClosureMiB == 896;
+      message = "AArch64 image defaults must accommodate the uncompressed kernel and runtime closure";
+    }
     {
       ok = failedMessages healthy == [];
       message = "healthy image geometry must satisfy image and storage assertions";
