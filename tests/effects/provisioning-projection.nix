@@ -54,11 +54,6 @@
   copiedProjection = copiedSources.extendModules {
     checkDefinitionPaths = [["aos" "provisioning"]];
   };
-  storageJson = storage:
-    builtins.toJSON {
-      partitions = lib.mapAttrs (_: value: builtins.removeAttrs value ["_module"]) storage.partitions;
-      arrays = lib.mapAttrs (_: value: builtins.removeAttrs value ["_module"]) storage.arrays;
-    };
   conditional = project [
     valid
     {
@@ -86,7 +81,7 @@ in {
     builtins.toString packageImportRoots.${builtins.unsafeDiscardStringContext record.configRoot} != record.configRoot)
   packageModules;
   assert copiedSources.documentation.packages == (evaluate false [valid laterPackage]).documentation.packages;
-  assert storageJson copiedProjection.config.aos.provisioning.storage == storageJson selected; true;
+  assert builtins.toJSON copiedProjection.config.aos.provisioning.storage == builtins.toJSON selected; true;
   copiedSourceViewsRequireAdmission = assert rejects
   (copiedSources.extendModules {
     # Models the old extension bug, which silently dropped the source-view map.
