@@ -2237,6 +2237,16 @@ impl LiveVcpuTimeCallbackState {
         if let Some(pending) = pending_slot.as_mut() {
             let _output_stop =
                 self.begin_network_output_stop(pending.target_icount, raw_emit_icount)?;
+
+            // Timer TX belongs to this immutable idle request. Preserve a
+            // differing native sample as a refusal before buffering or output.
+            if raw_emit_icount != pending.raw_icount_at_request {
+                return Err(LiveVcpuTimeCallbackError::IdleAdvanceRawIcountChanged {
+                    expected_raw_icount: pending.raw_icount_at_request,
+                    observed_raw_icount: raw_emit_icount,
+                });
+            }
+
             FrameEntry::new(pending.target_icount, network.tx.src_slot(), 0, payload).map_err(
                 |crucible_shmem::FrameEntryError::PayloadLengthExceedsCapacity {
                      len,
