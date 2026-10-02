@@ -30,6 +30,8 @@
 //! [`RpcService`](crate::service::RpcService); these handlers are pure
 //! transport glue.
 
+mod instance_oci;
+
 use std::sync::Arc;
 
 use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
@@ -40,13 +42,14 @@ use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use unicode_normalization::UnicodeNormalization as _;
 
 use crate::service::{ReadAuthorization, RegistryServeOutcome, RpcError, RpcService};
 use crate::web::browse::{self, Rendered};
+use crate::web::host_delivery::HostRoutes;
 
 /// The reserved human-namespace marker segment (`/{slug}/-/…`).
 ///
@@ -363,12 +366,17 @@ fn browse_page_response(rendered: Rendered) -> Response {
 /// `?q`/`?filter`/`?sort`/`?dir`/`?page`/`?bucket` controls parsed from `query`;
 /// the `/-/api/…` JSON reads stay bearer-only. This is the *same* code the
 /// native hub now serves — the divergence between the two shells is gone.
+///
+/// `host_routes` is the dispatcher's route table for the request host. The
+/// control-plane router passes it so the registry home can report delivery
+/// status; a page reached through a matched delivery route passes `None`.
 async fn browse_dispatch(
     svc: Arc<RpcService>,
     headers: HeaderMap,
     slug: String,
     rest: String,
     query: Option<String>,
+    host_routes: Option<HostRoutes>,
 ) -> Response {
     let q = browse::BrowseQuery::parse(query.as_deref());
     // A cache slug routes to the managed-cache browse pages (caches and
@@ -455,7 +463,7 @@ async fn browse_dispatch(
             }
         },
         None => match rest.as_str() {
-            "" => browse::registry_home(&svc, &headers, &slug).await,
+            "" => browse::registry_home(&svc, &headers, &slug, host_routes.as_ref()).await,
             "packages" => browse::packages(&svc, &headers, &slug, &q).await,
             "docs/children" => {
                 crate::web::documentation_browser::browse(&svc, &headers, &slug, &q, true).await
@@ -814,6 +822,29 @@ fn request_endpoint(
     Ok(Some((host, port, evidence.scheme, evidence.ingress_kind)))
 }
 
+/// Whether a route-relative path is the route's own human browse namespace.
+///
+/// Matches the paths [`serve_resolved_delivery`] maps onto its surface's
+/// browse pages: the surface root and the reserved `-` segment. Any other Web
+/// path under a route can only name a different surface's page or nothing.
+fn is_route_browse_path(surface_path: &str) -> bool {
+    surface_path.is_empty() || surface_path == "-" || surface_path.starts_with("-/")
+}
+
+/// Admits a request to the control-plane router with its host's route table.
+///
+/// Browse pages read the attached [`HostRoutes`] to report which registries
+/// this host delivers, from the same enabled-route rows dispatch just matched.
+fn admit_to_control_plane(
+    mut request: Request,
+    routes: &[crate::db::InboundRouteRecord],
+) -> Request {
+    request
+        .extensions_mut()
+        .insert(HostRoutes::from_inbound(routes));
+    request
+}
+
 /// Strips a route base path on a segment boundary.
 fn strip_route_base_path<'a>(base_path: &str, request_path: &'a str) -> Option<&'a str> {
     let base = base_path.trim_start_matches('/');
@@ -1117,6 +1148,12 @@ fn attested_access_matches_route(
 /// endpoint, route, and access observations. A direct route that reaches Hub
 /// is rejected with 421 Misdirected Request; it is never silently proxied.
 ///
+/// On the exact control authority, reserved control paths, unmatched paths,
+/// and Web paths the matched route does not serve as its own browse pages
+/// continue to the control-plane router, carrying the host's enabled routes
+/// as a [`HostRoutes`] extension. Every other authority still requires an
+/// explicit route.
+///
 /// # Errors
 ///
 /// Returns an early 404 for a disallowed route capability, 421 for a direct
@@ -1166,12 +1203,32 @@ pub async fn rewrite_for_route(
     }
     if is_reserved_control_path(&request_path) {
         return if is_control_authority {
-            Ok(request)
+            Ok(admit_to_control_plane(request, &routes))
         } else if host_is_delivery {
             Err(StatusCode::NOT_FOUND.into_response())
         } else {
             Err(StatusCode::MISDIRECTED_REQUEST.into_response())
         };
+    }
+    // An enabled instance OCI route owns the host's `/v2` namespace ahead of
+    // any registry-bound root route, so a registry can be converted or retired
+    // without a serving gap while both exist.
+    let root_path = request_path.trim_start_matches('/');
+    if root_path == "v2" || root_path.starts_with("v2/") {
+        let instance_route = match svc
+            .db
+            .inbound_instance_oci_route(&host, port, &scheme, &ingress_kind)
+            .await
+        {
+            Ok(route) => route,
+            Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+        };
+        if let Some(route) = instance_route {
+            return instance_oci::rewrite_for_instance_oci_route(
+                svc, request, route, &host, port, &scheme, root_path,
+            )
+            .await;
+        }
     }
     let Some((route, surface_path)) = routes.iter().find_map(|route| {
         strip_route_base_path(&route.base_path, &request_path).map(|path| (route, path))
@@ -1181,7 +1238,7 @@ pub async fn rewrite_for_route(
         // unmatched machine path becomes an ordinary 404. Every non-control
         // authority still requires an explicit route.
         return if is_control_authority {
-            Ok(request)
+            Ok(admit_to_control_plane(request, &routes))
         } else {
             Err(StatusCode::MISDIRECTED_REQUEST.into_response())
         };
@@ -1306,10 +1363,11 @@ pub async fn rewrite_for_route(
         request
             .extensions_mut()
             .insert(crate::oci::ResolvedOciRoute {
-                registry_id,
+                registry_id: Some(registry_id),
                 authority,
                 scheme: scheme.clone(),
                 access_policy_kind: route.access_policy_kind.clone(),
+                repository_prefix: None,
                 request: parsed,
             });
         let mut rewritten = "/_aos-internal/delivery".to_owned();
@@ -1344,6 +1402,18 @@ pub async fn rewrite_for_route(
         DeliveryAudience::NixCache => route.serves_cache,
         DeliveryAudience::Web => route.serves_web,
     };
+    // On the exact control authority, a matched route owns only the Web pages
+    // it actually serves for its own surface. An ancestor route (every OCI
+    // route sits at the root and never serves Web) must not turn another
+    // registry's browse pages into a 404, and a route without Web leaves its
+    // registry's pages to the control router. That router applies the browse
+    // visibility matrix, so absent and hidden registries still 404 there.
+    if is_control_authority
+        && audience == DeliveryAudience::Web
+        && !(serves && is_route_browse_path(surface_path))
+    {
+        return Ok(admit_to_control_plane(request, &routes));
+    }
     if !serves {
         return Err(StatusCode::NOT_FOUND.into_response());
     }
@@ -1457,6 +1527,7 @@ async fn serve_resolved_delivery(
             resolved.route.target_slug,
             browse_path.to_owned(),
             query,
+            None,
         )
         .await;
     }
@@ -2850,6 +2921,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.ContainerService/GetContainerNamespace",
+        get_container_namespace
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanSetContainerNamespace",
+        plan_set_container_namespace
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/SetContainerNamespace",
+        set_container_namespace
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.ContainerService/PlanRunContainerGc",
         plan_run_container_gc
     );
@@ -2857,6 +2943,11 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.ContainerService/RunContainerGc",
         run_container_gc
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/CancelContainerGcRun",
+        cancel_container_gc_run
     );
     r = rpc_route!(
         r,
@@ -2965,6 +3056,56 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
         trigger_instance_maintenance
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/ListInstanceOciRoutes",
+        list_instance_oci_routes
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/GetInstanceOciRoute",
+        get_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanCreateInstanceOciRoute",
+        plan_create_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/CreateInstanceOciRoute",
+        create_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanUpdateInstanceOciRoute",
+        plan_update_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/UpdateInstanceOciRoute",
+        update_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanDeleteInstanceOciRoute",
+        plan_delete_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/DeleteInstanceOciRoute",
+        delete_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanConvertRouteToInstanceOciRoute",
+        plan_convert_route_to_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/ConvertRouteToInstanceOciRoute",
+        convert_route_to_instance_oci_route
     );
     // RegistryConfigurationService
     r = rpc_route!(
@@ -3964,11 +4105,17 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r = r.route(
             "/",
             get(
-                |State(state): State<SharedState>, headers: HeaderMap, uri: axum::http::Uri| {
+                |State(state): State<SharedState>,
+                 headers: HeaderMap,
+                 host_routes: Option<Extension<HostRoutes>>,
+                 uri: axum::http::Uri| {
                     let svc = from_state(state);
                     send_bridge(async move {
                         let q = browse::BrowseQuery::parse(uri.query());
-                        browse_page_response(browse::home(&svc, &headers, &q).await)
+                        let host_routes = host_routes.map(|Extension(routes)| routes);
+                        browse_page_response(
+                            browse::home(&svc, &headers, &q, host_routes.as_ref()).await,
+                        )
                     })
                 },
             ),
@@ -4004,6 +4151,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         // content-negotiates HTML vs the machine `index.html` pointer.
         let registry_home = |State(state): State<SharedState>,
                              headers: HeaderMap,
+                             host_routes: Option<Extension<HostRoutes>>,
                              Path(slug): Path<String>,
                              uri: axum::http::Uri| {
             let svc = from_state(state);
@@ -4013,6 +4161,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                 slug,
                 String::new(),
                 uri.query().map(str::to_owned),
+                host_routes.map(|Extension(routes)| routes),
             ))
         };
         r = r.route("/{slug}/", get(registry_home));
@@ -4022,6 +4171,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             get(
                 |State(state): State<SharedState>,
                  headers: HeaderMap,
+                 host_routes: Option<Extension<HostRoutes>>,
                  Path((slug, rest)): Path<(String, String)>,
                  uri: axum::http::Uri| {
                     let svc = from_state(state);
@@ -4031,6 +4181,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                         slug,
                         rest,
                         uri.query().map(str::to_owned),
+                        host_routes.map(|Extension(routes)| routes),
                     ))
                 },
             ),
@@ -4038,6 +4189,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         let organization_registry_home =
             |State(state): State<SharedState>,
              headers: HeaderMap,
+             host_routes: Option<Extension<HostRoutes>>,
              Path((org, registry)): Path<(String, String)>,
              uri: axum::http::Uri| {
                 let svc = from_state(state);
@@ -4047,6 +4199,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                     format!("{org}/{registry}"),
                     String::new(),
                     uri.query().map(str::to_owned),
+                    host_routes.map(|Extension(routes)| routes),
                 ))
             };
         r = r.route("/{org}/{registry}/", get(organization_registry_home));
@@ -4059,6 +4212,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             get(
                 |State(state): State<SharedState>,
                  headers: HeaderMap,
+                 host_routes: Option<Extension<HostRoutes>>,
                  Path((org, registry, rest)): Path<(String, String, String)>,
                  uri: axum::http::Uri| {
                     let svc = from_state(state);
@@ -4068,6 +4222,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                         format!("{org}/{registry}"),
                         rest,
                         uri.query().map(str::to_owned),
+                        host_routes.map(|Extension(routes)| routes),
                     ))
                 },
             ),
@@ -4082,8 +4237,10 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
             |State(state): State<SharedState>,
              method: Method,
              headers: HeaderMap,
+             host_routes: Option<Extension<HostRoutes>>,
              uri: axum::http::Uri| {
                 let svc = from_state(state);
+                let host_routes = host_routes.map(|Extension(routes)| routes);
                 send_bridge(async move {
                     if method != Method::GET {
                         return StatusCode::NOT_FOUND.into_response();
@@ -4115,6 +4272,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                             slug.to_string(),
                             rest.to_string(),
                             uri.query().map(str::to_owned),
+                            host_routes,
                         )
                         .await;
                     }
@@ -4128,6 +4286,7 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                         slug.to_string(),
                         String::new(),
                         uri.query().map(str::to_owned),
+                        host_routes,
                     )
                     .await
                 })
@@ -4644,5 +4803,361 @@ mod tests {
             delivery_audience(crate::db::SurfaceTarget::BinaryCache(2), "objects/aa"),
             DeliveryAudience::Web
         );
+    }
+
+    #[test]
+    fn only_the_root_and_reserved_segment_are_a_routes_own_browse_pages() {
+        assert!(is_route_browse_path(""));
+        assert!(is_route_browse_path("-"));
+        assert!(is_route_browse_path("-/packages"));
+        assert!(!is_route_browse_path("acme/fresh/"));
+        assert!(!is_route_browse_path("acme/fresh/-/packages"));
+        assert!(!is_route_browse_path("index.html"));
+    }
+
+    const CONTROL_ORIGIN: &str = "https://route-probes.example.test";
+
+    /// Topology whose control host carries one root OCI route.
+    ///
+    /// OCI routes always sit at the root base path and never serve Web, so on
+    /// this host every non-reserved path first matches the route of
+    /// `route-probes/route-probes`. `route-probes/fresh` is a visible registry
+    /// with no route anywhere, and `route-probes/hidden` is a private one.
+    struct ControlHostFixture {
+        service: Arc<RpcService>,
+    }
+
+    impl ControlHostFixture {
+        async fn new(oci_route_enabled: bool) -> Self {
+            let db = control_host_topology(oci_route_enabled).await;
+            let org = db.org_by_slug("route-probes").await.unwrap().unwrap();
+            db.create_managed_registry(org.id, "", "fresh", "public", &[], false)
+                .await
+                .unwrap();
+            db.create_managed_registry(org.id, "", "hidden", "private", &[], false)
+                .await
+                .unwrap();
+
+            let (mut service, _) =
+                crate::service::cache_upload_tests::delivery_test_service().await;
+            service.db = Arc::new(db);
+            service.external_url = CONTROL_ORIGIN.to_string();
+
+            Self {
+                service: Arc::new(service),
+            }
+        }
+
+        /// Uses a different control origin, so the route's host is a pure
+        /// delivery authority.
+        fn into_delivery_host(self) -> Self {
+            let mut service = Arc::into_inner(self.service).unwrap();
+            service.external_url = "https://hub.example.test".to_string();
+            Self {
+                service: Arc::new(service),
+            }
+        }
+
+        /// Runs route dispatch, reducing a refusal to its status code.
+        async fn dispatch(
+            &self,
+            origin: &str,
+            path: &str,
+            accept: &str,
+        ) -> Result<Request, StatusCode> {
+            let url = url::Url::parse(&format!("{origin}{path}")).unwrap();
+            let request = axum::http::Request::builder()
+                .uri(url.as_str())
+                .header(header::ACCEPT, accept)
+                .extension(DeliveryTransportEvidence::from_verified_url(&url, "hub").unwrap())
+                .body(axum::body::Body::empty())
+                .unwrap();
+            rewrite_for_route(&self.service, request)
+                .await
+                .map_err(|response| response.status())
+        }
+
+        /// Dispatches like the native and Worker pipelines, then renders the
+        /// registry home the control router would serve for `slug`.
+        async fn registry_home(&self, slug: &str, accept: &str) -> Response {
+            let request = match self
+                .dispatch(CONTROL_ORIGIN, &format!("/{slug}/"), accept)
+                .await
+            {
+                Ok(request) => request,
+                Err(status) => return status.into_response(),
+            };
+            assert_eq!(request.uri().path(), format!("/{slug}/"));
+
+            let host_routes = request.extensions().get::<HostRoutes>().cloned();
+            assert!(host_routes.is_some(), "control admission lacks host routes");
+            browse_dispatch(
+                Arc::clone(&self.service),
+                request.headers().clone(),
+                slug.to_string(),
+                String::new(),
+                None,
+                host_routes,
+            )
+            .await
+        }
+    }
+
+    /// Builds `route-probes/route-probes` with one root OCI route on the
+    /// `route-probes.example.test:443` endpoint, the shape the topology
+    /// controller creates for container delivery.
+    async fn control_host_topology(oci_route_enabled: bool) -> crate::db::Database {
+        use crate::db::{
+            EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
+            RouteSpec, SurfaceTarget,
+        };
+        use sha2::{Digest as _, Sha256};
+
+        let db = crate::db::Database::open_in_memory().await.unwrap();
+        let org_id = db.create_org("route-probes", "Route probes").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        db.grant_consumer_scope(
+            GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &org.stable_id,
+            "explicit",
+            "test",
+            "request:control-host-public-boundary",
+        )
+        .await
+        .unwrap();
+
+        let binding_id = db
+            .create_topology_binding(
+                Some(org_id),
+                "binding:route-probes",
+                &org.stable_id,
+                "route-probes",
+                "r2",
+                None,
+                Some("route-probes"),
+                Some("routes"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
+            )
+            .await
+            .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "route-probes", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".to_string(),
+                binding_id,
+                prefix: "registry-route-probes".to_string(),
+                kind: "complete".to_string(),
+                desired_state: "active".to_string(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+
+        let domain = db
+            .create_delivery_domain(
+                &org.stable_id,
+                Some(org_id),
+                "route-probes.example.test",
+                "plan:control-host-domain",
+            )
+            .await
+            .unwrap();
+        db.create_endpoint(
+            "endpoint:route-probes",
+            &org.stable_id,
+            Some(org_id),
+            "https",
+            &EndpointHostInput::Domain(domain.stable_id),
+            443,
+            "instance:public",
+            &EndpointRevisionSpec {
+                boundary_revision: 1,
+                ingress_kind: "hub".to_string(),
+                listener_configuration: "listener:route-probes".to_string(),
+                tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_string(),
+                probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+            },
+            None,
+            "test",
+            "request:endpoint-route-probes",
+        )
+        .await
+        .unwrap();
+
+        let access_policy_json = "{}".to_string();
+        let reservation_digest = [7_u8; 32];
+        db.create_route(
+            "route:oci-control-root",
+            SurfaceTarget::Registry(registry_id),
+            &RouteSpec {
+                consumer_scope_key: org.stable_id,
+                endpoint_id: "endpoint:route-probes".to_string(),
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".to_string(),
+                base_path: String::new(),
+                mode: "hub_proxy".to_string(),
+                access_policy_kind: "public".to_string(),
+                access_policy_digest: hex::encode(Sha256::digest(access_policy_json.as_bytes())),
+                access_policy_json,
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                gateway_id: None,
+                gateway_generation: None,
+                target_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(placement.id),
+                placement_policy_revision_id: None,
+                serves_git: false,
+                serves_cache: false,
+                serves_web: false,
+                serves_oci: true,
+                enabled: oci_route_enabled,
+            },
+            CONTROL_ORIGIN,
+            1,
+            &reservation_digest,
+            &[(1, reservation_digest.to_vec())],
+            None,
+            "test",
+        )
+        .await
+        .unwrap();
+
+        db
+    }
+
+    async fn body_text(response: Response) -> String {
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        String::from_utf8(body.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn control_authority_renders_unrouted_registry_behind_a_root_route() {
+        let fixture = ControlHostFixture::new(true).await;
+
+        let response = fixture
+            .registry_home("route-probes/fresh", "text/html")
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("<h1>route-probes/fresh</h1>"), "{html}");
+        assert!(html.contains("no public route on this host yet"), "{html}");
+        assert!(html.contains("Signing keys"), "{html}");
+
+        let packages = fixture
+            .dispatch(
+                CONTROL_ORIGIN,
+                "/route-probes/fresh/-/packages",
+                "text/html",
+            )
+            .await
+            .unwrap();
+        assert_eq!(packages.uri().path(), "/route-probes/fresh/-/packages");
+        assert!(packages.extensions().get::<HostRoutes>().is_some());
+    }
+
+    #[tokio::test]
+    async fn control_authority_explains_a_registry_whose_route_is_disabled() {
+        let fixture = ControlHostFixture::new(false).await;
+
+        let response = fixture
+            .registry_home("route-probes/route-probes", "text/html")
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("delivery route is disabled"), "{html}");
+        assert!(!html.contains("no public route on this host yet"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn control_authority_keeps_absent_hidden_and_machine_requests_404() {
+        let fixture = ControlHostFixture::new(true).await;
+
+        for slug in ["route-probes/missing", "route-probes/hidden"] {
+            let response = fixture.registry_home(slug, "text/html").await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{slug}");
+        }
+
+        // A machine client must not learn that an unrouted surface exists.
+        let response = fixture
+            .registry_home("route-probes/fresh", "application/json")
+            .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn control_home_marks_registries_this_host_does_not_deliver() {
+        let fixture = ControlHostFixture::new(true).await;
+
+        let request = fixture
+            .dispatch(CONTROL_ORIGIN, "/", "text/html")
+            .await
+            .unwrap();
+        let host_routes = request.extensions().get::<HostRoutes>().cloned().unwrap();
+        let Rendered::Html(html) = browse::home(
+            &fixture.service,
+            request.headers(),
+            &browse::BrowseQuery::default(),
+            Some(&host_routes),
+        )
+        .await
+        else {
+            panic!("the control home must render");
+        };
+
+        let fresh = html
+            .split("<tr")
+            .find(|row| row.contains("href=\"/route-probes/fresh/\""))
+            .unwrap();
+        assert!(fresh.contains("no route on this host"), "{fresh}");
+
+        // The OCI route is enabled on this host but has no observations yet.
+        let routed = html
+            .split("<tr")
+            .find(|row| row.contains("href=\"/route-probes/route-probes/\""))
+            .unwrap();
+        assert!(routed.contains("route not ready"), "{routed}");
+        assert!(!routed.contains("no route on this host"), "{routed}");
+    }
+
+    #[tokio::test]
+    async fn delivery_authorities_still_require_an_explicit_route() {
+        let fixture = ControlHostFixture::new(true).await.into_delivery_host();
+
+        let routed_host = fixture
+            .dispatch(CONTROL_ORIGIN, "/route-probes/fresh/", "text/html")
+            .await
+            .unwrap_err();
+        assert_eq!(routed_host, StatusCode::NOT_FOUND);
+
+        let unknown_host = fixture
+            .dispatch(
+                "https://elsewhere.example.test",
+                "/route-probes/fresh/",
+                "text/html",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(unknown_host, StatusCode::MISDIRECTED_REQUEST);
     }
 }
