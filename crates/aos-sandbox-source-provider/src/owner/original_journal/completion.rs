@@ -30,6 +30,8 @@ use crate::ledger::{
 use crate::owner::FixedProviderOriginalCompletionProgressV5 as Progress;
 use crate::zfs_hold_challenge::{StagedOriginalZfsHoldSpendV5, current_seconds};
 
+mod held;
+
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum CompletionStageV5 {
     Headroom,
@@ -69,6 +71,7 @@ pub(super) struct OriginalSourceCompletionV5 {
     before: Vec<(Vec<u8>, Vec<u8>)>,
     after: Vec<(Vec<u8>, Vec<u8>)>,
     failure: Option<CompletionFailureV5>,
+    held: Option<held::OriginalSourceHeldV5>,
 }
 
 impl OriginalSourceCompletionV5 {
@@ -87,16 +90,17 @@ impl OriginalSourceCompletionV5 {
             before: Vec::new(),
             after: Vec::new(),
             failure: None,
+            held: None,
         }
     }
 
     fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self.failure.as_ref()? {
+        (|| match self.failure.as_ref()? {
             CompletionFailureV5::Boundary(cause) => Some(cause),
             CompletionFailureV5::Duplicate => self.duplicate.as_ref()?.as_ref().err().map(|cause| cause as _),
             CompletionFailureV5::Handoff => self.handoff.as_ref()?.as_ref().err().map(|cause| cause as _),
             CompletionFailureV5::Signatures => self.signatures.as_ref()?.failure(),
-        }
+        })().or_else(|| self.held.as_ref()?.failure())
     }
 }
 

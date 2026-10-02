@@ -117,9 +117,7 @@ impl CurrentProviderIngressSessionV1 {
             || current.root_process_instance() != root.peer.root_process_instance()
             || current.provider_process_instance() != root.peer.provider_process_instance()
         {
-            return Err(poison_and_close(
-                &mut self.custody,
-                &mut self.carrier,
+            return Err(self.fail_current_custody_v5(
                 SourceProviderSecurityError::SessionContinuity,
             ));
         }
@@ -143,11 +141,7 @@ impl CurrentProviderIngressSessionV1 {
             .map_err(|_| SourceProviderSecurityError::SessionContinuity)
         });
         if let Err(error) = checked {
-            return Err(poison_and_close(
-                &mut self.custody,
-                &mut self.carrier,
-                error,
-            ));
+            return Err(self.fail_current_custody_v5(error));
         }
         self.revalidate()
     }

@@ -264,7 +264,7 @@ impl ProductionSourceProviderIngressV1 {
         result
     }
 
-    /// Advances the SAME original pair through resident native Complete readback.
+    /// Advances the SAME original pair through resident signed native Held readback.
     ///
     /// This does not deliver Complete, Provider3, SourceRoot or a relay. The
     /// original owner and the caller's first outer cause must remain resident.
@@ -280,7 +280,7 @@ impl ProductionSourceProviderIngressV1 {
         let result = (|| {
             self.listener.validate_current()?;
             let (publication, rows) = self.read_current_catalog_manifest()?;
-            let progress = owner.advance_original_native_completion_v5(&publication, &rows);
+            let progress = owner.advance_original_native_held_v5(&publication, &rows);
             self.listener.validate_current()?;
             Ok(progress)
         })();

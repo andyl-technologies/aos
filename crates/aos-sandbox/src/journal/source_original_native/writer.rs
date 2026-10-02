@@ -77,6 +77,7 @@ pub struct OriginalSourceProtectedReadbackV5 {
     validated: bool,
     original_native_signing_attempted: std::cell::Cell<bool>,
     original_completion_signing: std::cell::Cell<u8>,
+    original_held_signing_attempted: std::cell::Cell<bool>,
 }
 
 /// Binds prospective archive metadata to one held append without proving commit.
@@ -214,6 +215,122 @@ impl Journal {
 }
 
 impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
+    /// Borrows the actual current phase-four physical cut, never a new admission.
+    ///
+    /// # Errors
+    ///
+    /// Rejects stale readback, an absent/ambiguous transaction or non-Complete phase.
+    pub fn original_held_complete_cut_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+    ) -> Result<&SourceOriginalPhysicalCutV5, JournalError> {
+        self.validate_readback(readback)?;
+        let key = aos_sandbox_source_provider_ledger::ledger::native_completion::native_completion_key_v2(acquisition);
+        let bytes = readback.rows.get(&(RecordNamespace::SourceProviderAuthority, key.clone()))
+            .ok_or(invalid("original Held Complete missing"))?;
+        let record = SourceNativeHeldCompletionRecordV1::from_canonical_bytes(&key, bytes)
+            .map_err(|_| invalid("original Held Complete codec"))?;
+        if record.suffix().phase() != 4
+            || record.original().state != aos_sandbox_source_provider_ledger::ledger::native_completion::NativeAcquireCompletionStateV2::Active
+        {
+            return Err(invalid("original Held requires actual Complete"));
+        }
+        self.original_readback_cut_v5(readback)
+    }
+
+    fn original_readback_cut_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+    ) -> Result<&SourceOriginalPhysicalCutV5, JournalError> {
+        let mut cuts = self.authority.journal.source_original_replay.cuts().iter()
+            .filter(|cut| cut.transaction_id() == readback.transaction.id());
+        let cut = cuts.next().ok_or(invalid("original Held physical transaction missing"))?;
+        if cuts.next().is_some() || cut.after_rows() != &readback.rows {
+            return Err(invalid("original Held physical transaction changed"));
+        }
+        Ok(cut)
+    }
+
+    /// Checks unsigned Provider3 against its genuine current phase-five cut.
+    ///
+    /// # Errors
+    ///
+    /// Rejects foreign preparation, stale physical custody, missing full phase4
+    /// before rows, changed Spent history or another original Applying lineage.
+    pub fn original_held_signing_basis_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        exact: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ) -> Result<&SourceOriginalAdmissionDataV5, JournalError> {
+        use aos_sandbox_source_provider_ledger::ledger::native_held_completion::{
+            SourceNativeHeldStepV1, propose_native_held_transition_v1,
+        };
+        use aos_sandbox_source_provider_protocol::native_held_completion::NativeHeldControlKindV1;
+
+        self.validate_readback(readback)?;
+        let cut = self.original_readback_cut_v5(readback)?;
+        let key = aos_sandbox_source_provider_ledger::ledger::native_completion::native_completion_key_v2(acquisition);
+        let read = |rows: &State| {
+            SourceNativeHeldCompletionRecordV1::from_canonical_bytes(
+                &key, rows.get(&(RecordNamespace::SourceProviderAuthority, key.clone()))
+                    .ok_or(invalid("original Held native missing"))?,
+            ).map_err(|_| invalid("original Held native codec"))
+        };
+        let before = read(cut.before_rows())?;
+        let after = read(cut.after_rows())?;
+        if before.suffix().phase() != 4 || after.suffix().phase() != 5
+            || after.suffix().prepared() != Some(exact)
+            || exact.kind() != NativeHeldControlKindV1::ProviderHeld
+        {
+            return Err(invalid("original Held phase5 preparation changed"));
+        }
+        let checkpoints = self.challenges.retained_rows()?;
+        let spent = checkpoints.get(cut.challenge_checkpoint()
+            .ok_or(invalid("original Held Spent checkpoint missing"))?)
+            .ok_or(invalid("original Held Spent checkpoint absent"))?;
+        if checkpoints.iter().rev().find(|row| row.key() == spent.key())
+            .is_none_or(|row| row.value() != spent.value())
+        {
+            return Err(invalid("original Held Spent changed"));
+        }
+        propose_native_held_transition_v1(
+            super::owner_views(cut.before_rows()), super::owner_views(cut.after_rows()),
+            acquisition, SourceNativeHeldStepV1::HeldPrepared, Some(spent.value()),
+        ).map_err(|_| invalid("original Held complete before witness"))?;
+        let origin = self.authority.journal.source_original_replay.origins().iter()
+            .find(|origin| origin.admission_comparison().original().acquisition_id == acquisition)
+            .ok_or(invalid("original Held Applying origin missing"))?;
+        let provenance = origin.initial_floor().original_provenance().claims();
+        if after.original().canonical_request.as_ref().map(|request| request.request().claims())
+                != Some(&provenance.claims)
+            || after.suffix().controls().first() != Some(&provenance.root_prepared)
+        {
+            return Err(invalid("original Held Applying association"));
+        }
+        self.validate_readback(readback)?;
+        Ok(origin)
+    }
+
+    /// Ends the once-only phase-five purpose before any fallible basis check.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a repeated attempt or anything except the same genuine phase5 cut.
+    pub fn claim_original_held_signing_v5(
+        &self,
+        readback: &OriginalSourceProtectedReadbackV5,
+        acquisition: ObjectDigest,
+        exact: &aos_sandbox_source_provider_protocol::native_held_completion::frame::PreparedNativeHeldControlV1,
+    ) -> Result<(), JournalError> {
+        if readback.original_held_signing_attempted.replace(true) {
+            return Err(invalid("original Held signing already attempted"));
+        }
+        self.original_held_signing_basis_v5(readback, acquisition, exact)?;
+        Ok(())
+    }
+
     /// Checks the remaining envelope on the actual phase-two cut before spend.
     ///
     /// This derives symbolic codec bounds, not future Spent rows, signatures,
@@ -802,6 +919,7 @@ impl SourceOriginalNativeJournalAuthorityV5<'_, '_> {
                 validated: false,
                 original_native_signing_attempted: std::cell::Cell::new(false),
                 original_completion_signing: std::cell::Cell::new(0),
+                original_held_signing_attempted: std::cell::Cell::new(false),
             });
 
             self.authority.journal.complete_source_original_replay_v5(self.challenges)?;

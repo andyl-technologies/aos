@@ -104,6 +104,8 @@ pub(in crate::owner) enum OriginalProducerAppendV5 {
     StoragePrepared,
     ChallengeSpent,
     CompletionCommitted,
+    HeldPrepared,
+    HeldStored,
 }
 
 impl OriginalProducerAppendV5 {
@@ -115,7 +117,13 @@ impl OriginalProducerAppendV5 {
             Self::StoragePrepared => 3,
             Self::ChallengeSpent => 4,
             Self::CompletionCommitted => 5,
+            Self::HeldPrepared => 6,
+            Self::HeldStored => 7,
         }
+    }
+
+    pub(super) const fn is_original_held(self) -> bool {
+        matches!(self, Self::HeldPrepared | Self::HeldStored)
     }
 }
 
@@ -137,7 +145,7 @@ pub(super) struct OriginalSourceProducerV5 {
     pub(super) signed: Option<SignedStorageNativeAcquireRequestV2>,
     provenance: Option<OriginalSourceProvenanceV5>,
     pub(super) staged: Option<StagedZfsHoldChallengeV1>,
-    appends: [Option<PreparedSourceOriginalV5>; 6],
+    appends: [Option<PreparedSourceOriginalV5>; 8],
     checkpoint: OriginalProducerCheckpointV5,
     pub(super) physical_plan: Option<crate::backend::AcquirePlanV1>,
     pub(super) selected_execution: Option<SourceSelectedNativeExecutionInputDataV1>,
@@ -174,6 +182,24 @@ impl OriginalSourceProducerV5 {
             .and_then(|append| append.readback.as_ref()).ok_or(ProviderLedgerError::Unavailable)?;
         let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
         Ok((readback, completion))
+    }
+
+    pub(super) fn held_signing_parts_v5(
+        &mut self,
+    ) -> Result<(
+        &OriginalSourceProtectedReadbackV5,
+        &mut super::completion::OriginalSourceCompletionV5,
+        &aos_sandbox_source_provider_security::ProtectedOriginalSelectedInputV1,
+        &mut super::storage_offer::OriginalStorageOfferV5,
+    ), ProviderLedgerError> {
+        let readback = self.appends[OriginalProducerAppendV5::HeldPrepared.index()]
+            .as_ref().and_then(|append| append.readback.as_ref())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let completion = self.original_completion.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        let selected = self.selected_archive.as_ref().and_then(|result| result.as_ref().ok())
+            .ok_or(ProviderLedgerError::Unavailable)?;
+        let offer = self.storage_offer.as_mut().ok_or(ProviderLedgerError::Unavailable)?;
+        Ok((readback, completion, selected, offer))
     }
 
     pub(super) fn append_mut(
@@ -416,7 +442,9 @@ impl FixedProviderOwnerV1 {
         &mut self,
         step: OriginalProducerAppendV5,
     ) -> Result<(), OriginalProducerErrorV5> {
-        if matches!(step, OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted) {
+        if step.is_original_held() {
+            self.require_original_held_current_v5()
+        } else if matches!(step, OriginalProducerAppendV5::ChallengeSpent | OriginalProducerAppendV5::CompletionCommitted) {
             self.require_original_completion_current_v5()
         } else if step == OriginalProducerAppendV5::StoragePrepared {
             self.require_original_offer_current_v5()

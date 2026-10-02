@@ -32,7 +32,7 @@ pub use continuation::{
 };
 pub(crate) use continuation::validate_comparison as validate_original_source_admission_provenance_v5;
 pub(crate) use continuation::validate_current_origin as validate_original_source_current_origin_v5;
-pub use graph::validate_native_held_records_v1;
+pub use graph::{derive_provider_held_preparation_data_v5, validate_native_held_records_v1};
 pub use lifecycle::{
     SourceNativeHeldLifecycleTransactionV1, SourceNativeHeldLifecycleV1,
     native_held_release_status_binding_v1, propose_native_held_lifecycle_v1,

@@ -50,6 +50,16 @@ pub use storage_native::OriginalNativeSigningErrorV5;
 #[path = "provider/original_completion.rs"]
 mod original_completion;
 pub use original_completion::OriginalProviderCompletionSignaturesV5;
+#[path = "provider/original_held.rs"]
+mod original_held;
+pub use original_held::OriginalProviderHeldSignaturesV5;
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CurrentSessionFailureDispositionV5 {
+    LegacyDisposal,
+    OriginalHeldRetention,
+    OriginalHeldEnded,
+}
 
 pub(super) struct AwaitingRootMountHelloV1 {
     custody: ProtectedProviderCustodyV1,
@@ -81,6 +91,28 @@ pub struct CurrentProviderIngressSessionV1 {
     carrier: InertSourceProviderCarrierV1,
     session: SourceProviderIngressSessionV1,
     root_mount_execution: ProcessExecutionEvidenceV1,
+    failure_disposition: CurrentSessionFailureDispositionV5,
+}
+
+impl CurrentProviderIngressSessionV1 {
+    // Eligibility is unchanged. Only the already-armed original continuation
+    // retains its carrier after the SAME validator's concrete failure.
+    fn fail_current_custody_v5(
+        &mut self,
+        error: SourceProviderSecurityError,
+    ) -> SourceProviderSecurityError {
+        match self.failure_disposition {
+            CurrentSessionFailureDispositionV5::LegacyDisposal => {
+                poison_and_close(&mut self.custody, &mut self.carrier, error)
+            }
+            CurrentSessionFailureDispositionV5::OriginalHeldRetention
+            | CurrentSessionFailureDispositionV5::OriginalHeldEnded => {
+                self.custody.inner_mut().poison();
+                self.failure_disposition = CurrentSessionFailureDispositionV5::OriginalHeldEnded;
+                error
+            }
+        }
+    }
 }
 
 enum ProviderSourceProviderOwnerStateV1 {
@@ -1036,6 +1068,7 @@ impl ProviderHelloPreparedV1 {
                     carrier: self.carrier,
                     session: self.session,
                     root_mount_execution: self.root_mount_execution,
+                    failure_disposition: CurrentSessionFailureDispositionV5::LegacyDisposal,
                 })
             }
         }
