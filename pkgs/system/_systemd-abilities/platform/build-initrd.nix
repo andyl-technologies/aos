@@ -95,11 +95,19 @@
       '';
 
   deploymentBundle = config.system.build.initrdDeploymentBundle;
+  initrdRuntimeRoots = lib.unique (map builtins.toString (
+    config.aos.boot.initrd.runtimeRoots
+    ++ [
+      buildContext.packageSet.nix
+      lib.packageModuleLibrary
+      deploymentBundle
+    ]
+  ));
   closureInfoFor = lib.build.closureInfo {
     pkgs = buildContext.packageSet.buildPackages;
   };
   registration = closureInfoFor {
-    rootPaths = lib.unique (config.aos.boot.initrd.runtimeRoots ++ [deploymentBundle initrdUnits]);
+    rootPaths = lib.unique (initrdRuntimeRoots ++ [builtins.toString initrdUnits]);
     pname = "aos-initrd-native-registration";
   };
   handoff = let
@@ -135,15 +143,7 @@
     kernelModulePackages = config.aos.boot.initrd.modulePackages;
     firmwarePackages = lib.optionals config.aos.kernel.includeFirmware config.aos.boot.initrd.firmwarePackages;
     loadModules = config.aos.boot.initrd.loadModules;
-    initrdRuntimeRoots = lib.unique (
-      config.aos.boot.initrd.runtimeRoots
-      ++ [
-        buildContext.packageSet.nix
-        lib.packageModuleLibrary
-        deploymentBundle
-      ]
-    );
-    inherit deploymentBundle registration;
+    inherit deploymentBundle registration initrdRuntimeRoots;
     maskedUnits =
       config.boot.initrd.systemd.maskedUnits
       ++ lib.optionals config.aos.security.verity.enable [

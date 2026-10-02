@@ -44,7 +44,7 @@ in
             mkdir -p "$out"
 
             root_bytes=$(cat "$ROOT_SIZE_FILE")
-            initrd_bytes=$(stat -c %s "$INITRD")
+            initrd_bytes=$(stat -L -c %s "$INITRD")
             uki_bytes=$(stat -c %s "$UKI")
             closure_bytes=$(jq -er '.actual.closureBytes' "$RUNTIME_CLOSURE_REPORT")
             download_bytes=$(jq -er '.byteSize' "$IMAGE_DELIVERY")
