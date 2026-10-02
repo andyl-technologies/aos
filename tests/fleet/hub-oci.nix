@@ -1975,5 +1975,49 @@ in {
         "${nerdctl} pull --platform linux/amd64 hub:8443/aos:latest",
         timeout=900,
     )
+
+    # A disabled instance route hands /v2 back to the registry-bound root
+    # route of the same host; removal requires the disabled state and keeps
+    # the host reservation bound to the instance.
+    private_instance = json.loads(publisher.succeed(
+        hub_command("instance oci-route show oci-private-instance", token)
+    ))["data"]["route"]
+    publisher.fail(hub_command(
+        "instance oci-route remove oci-private-instance "
+        f"--if-version {shlex.quote(private_instance['resource_version'])}",
+        token,
+        "--plan --idempotency-key oci-private-instance-remove-enabled-plan",
+    ))
+    private_instance = reviewed(
+        publisher,
+        "oci-private-instance-disable",
+        "instance oci-route update oci-private-instance --disable "
+        f"--if-version {shlex.quote(private_instance['resource_version'])}",
+        token,
+    )["data"]["route"]
+    assert not private_instance["spec"]["enabled"], private_instance
+    consumer.succeed(
+        "${nerdctl} pull --platform linux/amd64 192.168.50.11:8443/aos:private",
+        timeout=900,
+    )
+    consumer.fail(
+        "${nerdctl} pull --platform linux/amd64 "
+        "192.168.50.11:8443/acme/containers-private/aos:private"
+    )
+    reviewed(
+        publisher,
+        "oci-private-instance-remove",
+        "instance oci-route remove oci-private-instance "
+        f"--if-version {shlex.quote(private_instance['resource_version'])}",
+        token,
+    )
+    publisher.fail(hub_command("instance oci-route show oci-private-instance", token))
+    publisher.fail(hub_command(
+        "instance oci-route add --stable-id oci-private-instance-again "
+        f"--endpoint oci-private --endpoint-generation {private_generation} "
+        "--access hub-auth",
+        token,
+        "--plan --idempotency-key oci-private-instance-again-plan",
+    ))
   '';
 }
