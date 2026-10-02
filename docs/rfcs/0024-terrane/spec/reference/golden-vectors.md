@@ -8732,3 +8732,2009 @@ present signatures are opaque bytes. Separately constructed owning-codec tests
 compare exact bytes and all decoded fields, while primitive negative inputs
 isolate structural rejection. These examples do not derive executable metadata,
 verify provenance, select policy or perform tree and repository operations.
+
+## Chunk-envelope and merged-shard field witnesses
+
+These TEST-1/2/3 witnesses cover CDC-7/9 envelope fields and PACK-17/18/19/20
+shard format only. Plaintext and dictionary identities hash their full bytes
+in terrane-chunk-v1, independently of stored envelopes. Primitive RFC 8878
+single-segment frames include their content size and only raw blocks; they use
+no dictionary references. Core envelope parsing and size checks do not
+establish native decompression, dictionary provenance or admission. Ordinary
+positive envelopes use cdc-1m's registered 4,194,304-byte maximum, which also
+accommodates the dictionary plaintext. Overhead controls instead use a local
+structural size oracle with a 100-byte maximum; that context is not a
+registered profile. Complete merged shards have terrane-index-v1 identities.
+Their embedded content hashes and pack IDs are opaque fixture fields, without
+corresponding bodies, entropy, placements, generations or authority. State
+bytes represent live, tombstone and quarantine fields without performing those
+operations. Negative wires have no identity.
+
+### container-envelope-raw-empty
+
+Positive complete chunk envelope under the registered cdc-1m size maximum.
+
+```text
+{ "body" : h'' , "codec" : 0 , "declared" : 0 , "dictionary" : null ,
+"dictionary_plaintext" : null , "maximum" : 4194304 , "plaintext" : h'' }
+```
+
+```hex
+00
+```
+
+Plaintext chunk identity digest:
+
+```hex
+b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc0
+```
+
+### container-envelope-raw-plain
+
+Positive complete chunk envelope under the registered cdc-1m size maximum.
+
+```text
+{ "body" : h'696e6572740a' , "codec" : 0 , "declared" : 6 , "dictionary" :
+null , "dictionary_plaintext" : null , "maximum" : 4194304 , "plaintext" :
+h'696e6572740a' }
+```
+
+```hex
+00696e6572740a
+```
+
+Plaintext chunk identity digest:
+
+```hex
+049013b76b596ebace7460eb6472c9186e077f6c70261e57697774abe7cd03a2
+```
+
+### container-envelope-zstd-empty
+
+Positive complete chunk envelope under the registered cdc-1m size maximum.
+
+```text
+{ "body" : h'28b52ffd2000010000' , "codec" : 1 , "declared" : 0 , "dictionary"
+: null , "dictionary_plaintext" : null , "maximum" : 4194304 , "plaintext" :
+h'' }
+```
+
+```hex
+0128b52ffd2000010000
+```
+
+Plaintext chunk identity digest:
+
+```hex
+b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc0
+```
+
+### container-envelope-zstd-plain
+
+Positive complete chunk envelope under the registered cdc-1m size maximum.
+
+```text
+{ "body" : h'28b52ffd2006310000696e6572740a' , "codec" : 1 , "declared" : 6 ,
+"dictionary" : null , "dictionary_plaintext" : null , "maximum" : 4194304 ,
+"plaintext" : h'696e6572740a' }
+```
+
+```hex
+0128b52ffd2006310000696e6572740a
+```
+
+Plaintext chunk identity digest:
+
+```hex
+049013b76b596ebace7460eb6472c9186e077f6c70261e57697774abe7cd03a2
+```
+
+### container-envelope-dictionary-empty
+
+Positive complete chunk envelope under the registered cdc-1m size maximum.
+
+```text
+{ "body" : h'28b52ffd2000010000' , "codec" : 2 , "declared" : 0 , "dictionary"
+: h'966959abed4b678e11c65d7987496e7eaec2371111440c256134bec0865dd562' ,
+"dictionary_plaintext" : h'74657272616e6520696e6572742064696374696f6e6172790a'
+, "maximum" : 4194304 , "plaintext" : h'' }
+```
+
+```hex
+02966959abed4b678e11c65d7987496e7eaec2371111440c256134bec0865dd56228b52f
+fd2000010000
+```
+
+Plaintext chunk identity digest:
+
+```hex
+b8c424f844a636a1baddbc5fbc1fe533739c7399de74eae490e9f6d50a120dc0
+```
+
+### container-envelope-dictionary-plain
+
+Positive complete chunk envelope under the registered cdc-1m size maximum.
+
+```text
+{ "body" : h'28b52ffd2006310000696e6572740a' , "codec" : 2 , "declared" : 6 ,
+"dictionary" :
+h'966959abed4b678e11c65d7987496e7eaec2371111440c256134bec0865dd562' ,
+"dictionary_plaintext" : h'74657272616e6520696e6572742064696374696f6e6172790a'
+, "maximum" : 4194304 , "plaintext" : h'696e6572740a' }
+```
+
+```hex
+02966959abed4b678e11c65d7987496e7eaec2371111440c256134bec0865dd56228b52f
+fd2006310000696e6572740a
+```
+
+Plaintext chunk identity digest:
+
+```hex
+049013b76b596ebace7460eb6472c9186e077f6c70261e57697774abe7cd03a2
+```
+
+### container-envelope-zstd-overhead-control
+
+Positive complete chunk envelope with a local structural size oracle.
+
+```text
+{ "body" : h'28b52ffd20640000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000002103'
+h'0071717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171' , "codec" : 1 , "declared" : 100 , "dictionary" : null ,
+"dictionary_plaintext" : null , "maximum" : 100 , "plaintext" :
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'71717171' }
+```
+
+```hex
+0128b52ffd20640000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000002103007171717171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+7171717171717171717171717171
+```
+
+Plaintext chunk identity digest:
+
+```hex
+89a97493550816eefcd444f7c7210bd86fcab79d102286384c65b54edbd30e4f
+```
+
+### container-envelope-dictionary-overhead-control
+
+Positive complete chunk envelope with a local structural size oracle.
+
+```text
+{ "body" : h'28b52ffd20640000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000210300'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'71717171' , "codec" : 2 , "declared" : 100 , "dictionary" :
+h'966959abed4b678e11c65d7987496e7eaec2371111440c256134bec0865dd562' ,
+"dictionary_plaintext" : h'74657272616e6520696e6572742064696374696f6e6172790a'
+, "maximum" : 100 , "plaintext" :
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'71717171' }
+```
+
+```hex
+02966959abed4b678e11c65d7987496e7eaec2371111440c256134bec0865dd56228b52f
+fd2064000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000210300717171717171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+71717171717171717171717171
+```
+
+Plaintext chunk identity digest:
+
+```hex
+89a97493550816eefcd444f7c7210bd86fcab79d102286384c65b54edbd30e4f
+```
+
+### container-shard-empty
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 0 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ ] }
+```
+
+```hex
+545249580000000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+161140f68aab2234125fc083d4be8d4f829736e3b756f44bf635ff7dfb785068
+```
+
+### container-shard-kind-0-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 11 , "codec" : 0 , "hash" :
+h'ab01010101010101010101010101010101010101010101010101010101010101' , "kind" :
+0 , "offset" : 72623859790382857 , "pack" :
+h'41414141414141414141414141414141' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+c37808a52a13c55c1c7e4c0d655c72420bdbc39e128f5c0b4afda96ddc9ad5b0
+```
+
+### container-shard-kind-0-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 11 , "codec" : 0 , "hash" :
+h'ab02020202020202020202020202020202020202020202020202020202020202' , "kind" :
+0 , "offset" : 72623859790382858 , "pack" :
+h'42424242424242424242424242424242' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab0202020202020202020202020202020202020202020202
+0202020202020202424242424242424242424242424242420a070605040302010b000000
+0a0000000000010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+5ebeb567d3068a7d8efce3be6c30f6385345691a102e60abbc16a98605a3dac3
+```
+
+### container-shard-kind-0-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 11 , "codec" : 0 , "hash" :
+h'ab03030303030303030303030303030303030303030303030303030303030303' , "kind" :
+0 , "offset" : 72623859790382859 , "pack" :
+h'43434343434343434343434343434343' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab0303030303030303030303030303030303030303030303
+0303030303030303434343434343434343434343434343430b070605040302010b000000
+0a0000000000020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+a168da1a7e81634c3a51d5e93f5df0c6539a9c853795fd1fe671235b96646c55
+```
+
+### container-shard-kind-0-codec-1-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 20 , "codec" : 1 , "hash" :
+h'ab04040404040404040404040404040404040404040404040404040404040404' , "kind" :
+0 , "offset" : 72623859790382860 , "pack" :
+h'44444444444444444444444444444444' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab0404040404040404040404040404040404040404040404
+0404040404040404444444444444444444444444444444440c0706050403020114000000
+0a0000000100000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+fd33702fad038dac333106b4f92ed48ffb014efc3e2ef1d3e8e0e940b2da893b
+```
+
+### container-shard-kind-0-codec-1-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 20 , "codec" : 1 , "hash" :
+h'ab05050505050505050505050505050505050505050505050505050505050505' , "kind" :
+0 , "offset" : 72623859790382861 , "pack" :
+h'45454545454545454545454545454545' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab0505050505050505050505050505050505050505050505
+0505050505050505454545454545454545454545454545450d0706050403020114000000
+0a0000000100010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+472bbf06efaee79f40299be9be423efae744844c8f0578956754176273ae0865
+```
+
+### container-shard-kind-0-codec-1-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 20 , "codec" : 1 , "hash" :
+h'ab06060606060606060606060606060606060606060606060606060606060606' , "kind" :
+0 , "offset" : 72623859790382862 , "pack" :
+h'46464646464646464646464646464646' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab0606060606060606060606060606060606060606060606
+0606060606060606464646464646464646464646464646460e0706050403020114000000
+0a0000000100020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+43acaa8c183054dda50ea2e0814df0b5b0784f089ffb588dfaa452dacd684c4c
+```
+
+### container-shard-kind-0-codec-2-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 16909060 , "codec" : 2 , "hash" :
+h'ab07070707070707070707070707070707070707070707070707070707070707' , "kind" :
+0 , "offset" : 72623859790382863 , "pack" :
+h'47474747474747474747474747474747' , "plaintext_len" : 84281096 , "reserved"
+: h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab0707070707070707070707070707070707070707070707
+0707070707070707474747474747474747474747474747470f0706050403020104030201
+080706050200000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+7e379ab2c02ee401db6db0209c28d1eed3aa474aefb942a77ec3437411d4cc41
+```
+
+### container-shard-kind-0-codec-2-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 16909060 , "codec" : 2 , "hash" :
+h'ab08080808080808080808080808080808080808080808080808080808080808' , "kind" :
+0 , "offset" : 72623859790382864 , "pack" :
+h'48484848484848484848484848484848' , "plaintext_len" : 84281096 , "reserved"
+: h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab0808080808080808080808080808080808080808080808
+080808080808080848484848484848484848484848484848100706050403020104030201
+080706050200010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+2b287216fc4408fd3a57cf1e2c2304ec596caf4ce9c7b57060e504e096bacee0
+```
+
+### container-shard-kind-0-codec-2-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 16909060 , "codec" : 2 , "hash" :
+h'ab09090909090909090909090909090909090909090909090909090909090909' , "kind" :
+0 , "offset" : 72623859790382865 , "pack" :
+h'49494949494949494949494949494949' , "plaintext_len" : 84281096 , "reserved"
+: h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab0909090909090909090909090909090909090909090909
+090909090909090949494949494949494949494949494949110706050403020104030201
+080706050200020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+e65fa4f10d3cb45aa1b1fd22d8dad6509c82acf83f2eb8d78d9bf24f7d361db8
+```
+
+### container-shard-kind-1-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 11 , "codec" : 0 , "hash" :
+h'ab0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a' , "kind" :
+1 , "offset" : 72623859790382866 , "pack" :
+h'4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a' , "plaintext_len" : 11 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+0a0a0a0a0a0a0a0a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a12070605040302010b000000
+0b0000000001000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+da29eec98cdca360ac7149d78197908e879ccfa0f242c7365721999b07380cfb
+```
+
+### container-shard-kind-1-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 11 , "codec" : 0 , "hash" :
+h'ab0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b' , "kind" :
+1 , "offset" : 72623859790382867 , "pack" :
+h'4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b' , "plaintext_len" : 11 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b
+0b0b0b0b0b0b0b0b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b13070605040302010b000000
+0b0000000001010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+1cf030e0d400558f7b9420a9a9a1bfcbc8edb6358da5ddce65b02d3e8eb554c0
+```
+
+### container-shard-kind-1-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 11 , "codec" : 0 , "hash" :
+h'ab0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c' , "kind" :
+1 , "offset" : 72623859790382868 , "pack" :
+h'4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c' , "plaintext_len" : 11 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c
+0c0c0c0c0c0c0c0c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c14070605040302010b000000
+0b0000000001020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+d806e142285c5203590d871a5b8469329583c00f8e003f324d86e22c425ea299
+```
+
+### container-shard-kind-2-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 12 , "codec" : 0 , "hash" :
+h'ab0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d' , "kind" :
+2 , "offset" : 72623859790382869 , "pack" :
+h'4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d' , "plaintext_len" : 12 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d
+0d0d0d0d0d0d0d0d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d15070605040302010c000000
+0c0000000002000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+19820b5adb6c3ebed866caa5d1729ed3018b907b7a273af22fca888db0658693
+```
+
+### container-shard-kind-2-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 12 , "codec" : 0 , "hash" :
+h'ab0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e' , "kind" :
+2 , "offset" : 72623859790382870 , "pack" :
+h'4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e' , "plaintext_len" : 12 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e
+0e0e0e0e0e0e0e0e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e16070605040302010c000000
+0c0000000002010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+2c159dc291d52020cd5c6a37c097052c7415e3fbb3976b1be292b66c4235630e
+```
+
+### container-shard-kind-2-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 12 , "codec" : 0 , "hash" :
+h'ab0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f' , "kind" :
+2 , "offset" : 72623859790382871 , "pack" :
+h'4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f' , "plaintext_len" : 12 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f
+0f0f0f0f0f0f0f0f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f17070605040302010c000000
+0c0000000002020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+ee1d6b80a04b81ea8b6583f4c1eec873b761cdd4b695cf70c40d02f6a779acb2
+```
+
+### container-shard-kind-3-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 13 , "codec" : 0 , "hash" :
+h'ab10101010101010101010101010101010101010101010101010101010101010' , "kind" :
+3 , "offset" : 72623859790382872 , "pack" :
+h'50505050505050505050505050505050' , "plaintext_len" : 13 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab1010101010101010101010101010101010101010101010
+10101010101010105050505050505050505050505050505018070605040302010d000000
+0d0000000003000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+cd458a6007dcc6b4894c8eda3d26f53099fed4f34710852c5bf35044ff96002a
+```
+
+### container-shard-kind-3-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 13 , "codec" : 0 , "hash" :
+h'ab11111111111111111111111111111111111111111111111111111111111111' , "kind" :
+3 , "offset" : 72623859790382873 , "pack" :
+h'51515151515151515151515151515151' , "plaintext_len" : 13 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab1111111111111111111111111111111111111111111111
+11111111111111115151515151515151515151515151515119070605040302010d000000
+0d0000000003010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+86268ceaa5b24e9b158090937f9f6127373db59d1dfac0fcf3732b728c6793fe
+```
+
+### container-shard-kind-3-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 13 , "codec" : 0 , "hash" :
+h'ab12121212121212121212121212121212121212121212121212121212121212' , "kind" :
+3 , "offset" : 72623859790382874 , "pack" :
+h'52525252525252525252525252525252' , "plaintext_len" : 13 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab1212121212121212121212121212121212121212121212
+1212121212121212525252525252525252525252525252521a070605040302010d000000
+0d0000000003020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+94c3be15c95742ad40c53ce14c31cf86f568176172b82aef6de9e137736fd534
+```
+
+### container-shard-kind-4-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 14 , "codec" : 0 , "hash" :
+h'ab13131313131313131313131313131313131313131313131313131313131313' , "kind" :
+4 , "offset" : 72623859790382875 , "pack" :
+h'53535353535353535353535353535353' , "plaintext_len" : 14 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab1313131313131313131313131313131313131313131313
+1313131313131313535353535353535353535353535353531b070605040302010e000000
+0e0000000004000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+4f9651008f81a1011bdbc57bbc1c11b467b7405129a1abc9b5fd22a6b5173c2f
+```
+
+### container-shard-kind-4-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 14 , "codec" : 0 , "hash" :
+h'ab14141414141414141414141414141414141414141414141414141414141414' , "kind" :
+4 , "offset" : 72623859790382876 , "pack" :
+h'54545454545454545454545454545454' , "plaintext_len" : 14 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab1414141414141414141414141414141414141414141414
+1414141414141414545454545454545454545454545454541c070605040302010e000000
+0e0000000004010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+0fdd6a6f3c7ff5842636c70d04ac3293cb1d29e6028dc259ba25e9a8d14b4fdb
+```
+
+### container-shard-kind-4-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 14 , "codec" : 0 , "hash" :
+h'ab15151515151515151515151515151515151515151515151515151515151515' , "kind" :
+4 , "offset" : 72623859790382877 , "pack" :
+h'55555555555555555555555555555555' , "plaintext_len" : 14 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab1515151515151515151515151515151515151515151515
+1515151515151515555555555555555555555555555555551d070605040302010e000000
+0e0000000004020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+347c50330621e944f0951b3b39fa8fd3b530e812870df105d2797f5cdc3bf38d
+```
+
+### container-shard-kind-5-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 15 , "codec" : 0 , "hash" :
+h'ab16161616161616161616161616161616161616161616161616161616161616' , "kind" :
+5 , "offset" : 72623859790382878 , "pack" :
+h'56565656565656565656565656565656' , "plaintext_len" : 15 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab1616161616161616161616161616161616161616161616
+1616161616161616565656565656565656565656565656561e070605040302010f000000
+0f0000000005000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+f8b85473aa4e5e150213c16de0172adf78c22e3f0c4c74455b0cb801ac29e61d
+```
+
+### container-shard-kind-5-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 15 , "codec" : 0 , "hash" :
+h'ab17171717171717171717171717171717171717171717171717171717171717' , "kind" :
+5 , "offset" : 72623859790382879 , "pack" :
+h'57575757575757575757575757575757' , "plaintext_len" : 15 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab1717171717171717171717171717171717171717171717
+1717171717171717575757575757575757575757575757571f070605040302010f000000
+0f0000000005010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+827f0e1c54f05d332fa72cd0a1e01d9b7b39ae3f51a1f6f712cc97bb05610533
+```
+
+### container-shard-kind-5-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 15 , "codec" : 0 , "hash" :
+h'ab18181818181818181818181818181818181818181818181818181818181818' , "kind" :
+5 , "offset" : 72623859790382880 , "pack" :
+h'58585858585858585858585858585858' , "plaintext_len" : 15 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab1818181818181818181818181818181818181818181818
+18181818181818185858585858585858585858585858585820070605040302010f000000
+0f0000000005020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+87d054b83765c90004f82d3201e195f1be88ccf9c29eb47a3304b4e021e84ec5
+```
+
+### container-shard-kind-6-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 16 , "codec" : 0 , "hash" :
+h'ab19191919191919191919191919191919191919191919191919191919191919' , "kind" :
+6 , "offset" : 72623859790382881 , "pack" :
+h'59595959595959595959595959595959' , "plaintext_len" : 16 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab1919191919191919191919191919191919191919191919
+191919191919191959595959595959595959595959595959210706050403020110000000
+100000000006000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+3b9215556e9ba99cb2a06792b7085771349866b2ede7980b0dfea0732375a759
+```
+
+### container-shard-kind-6-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 16 , "codec" : 0 , "hash" :
+h'ab1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a' , "kind" :
+6 , "offset" : 72623859790382882 , "pack" :
+h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a' , "plaintext_len" : 16 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
+1a1a1a1a1a1a1a1a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a220706050403020110000000
+100000000006010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+60cc296ae47f14c6fac71a489151863ff96f83facbb50731f5251717ec508471
+```
+
+### container-shard-kind-6-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 16 , "codec" : 0 , "hash" :
+h'ab1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b' , "kind" :
+6 , "offset" : 72623859790382883 , "pack" :
+h'5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b' , "plaintext_len" : 16 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+1b1b1b1b1b1b1b1b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b230706050403020110000000
+100000000006020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+06e32b143985cbbefb84bd33af668c800005325099ba9449eb9b6695b3e3c122
+```
+
+### container-shard-kind-7-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 17 , "codec" : 0 , "hash" :
+h'ab1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c' , "kind" :
+7 , "offset" : 72623859790382884 , "pack" :
+h'5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c' , "plaintext_len" : 17 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c
+1c1c1c1c1c1c1c1c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c240706050403020111000000
+110000000007000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+94c566b7e74deedea7caa17ad6403e35cf295524f486ed1b0da2481283671bff
+```
+
+### container-shard-kind-7-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 17 , "codec" : 0 , "hash" :
+h'ab1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d' , "kind" :
+7 , "offset" : 72623859790382885 , "pack" :
+h'5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d' , "plaintext_len" : 17 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d
+1d1d1d1d1d1d1d1d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d250706050403020111000000
+110000000007010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+619bac9be3a6498e3214bc81c15669313aa814b3cec2e0c126d44b74c9bb27f3
+```
+
+### container-shard-kind-7-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 17 , "codec" : 0 , "hash" :
+h'ab1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e' , "kind" :
+7 , "offset" : 72623859790382886 , "pack" :
+h'5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e' , "plaintext_len" : 17 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e
+1e1e1e1e1e1e1e1e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e260706050403020111000000
+110000000007020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+91c7a137e5e17908c21940bf6cc85b3efb1ec37b9754799a37e3d967bc9bedc6
+```
+
+### container-shard-kind-8-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 18 , "codec" : 0 , "hash" :
+h'ab1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f' , "kind" :
+8 , "offset" : 72623859790382887 , "pack" :
+h'5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f' , "plaintext_len" : 18 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f
+1f1f1f1f1f1f1f1f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f270706050403020112000000
+120000000008000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+6fac7543f03671f0d2722777c9d158e206bf3b7ce8f82f449615e840e67cb3a7
+```
+
+### container-shard-kind-8-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 18 , "codec" : 0 , "hash" :
+h'ab20202020202020202020202020202020202020202020202020202020202020' , "kind" :
+8 , "offset" : 72623859790382888 , "pack" :
+h'60606060606060606060606060606060' , "plaintext_len" : 18 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab2020202020202020202020202020202020202020202020
+202020202020202060606060606060606060606060606060280706050403020112000000
+120000000008010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+5ccc36dd344a1992ea505262ed409125fddbd2ca6ffa523d7df3a351ce04ea2c
+```
+
+### container-shard-kind-8-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 18 , "codec" : 0 , "hash" :
+h'ab21212121212121212121212121212121212121212121212121212121212121' , "kind" :
+8 , "offset" : 72623859790382889 , "pack" :
+h'61616161616161616161616161616161' , "plaintext_len" : 18 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab2121212121212121212121212121212121212121212121
+212121212121212161616161616161616161616161616161290706050403020112000000
+120000000008020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+f94164118e48f0139e94a020e74947f8c34e23be4ca380a3351a5b24291ed6a6
+```
+
+### container-shard-kind-9-codec-0-state-0
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 19 , "codec" : 0 , "hash" :
+h'ab22222222222222222222222222222222222222222222222222222222222222' , "kind" :
+9 , "offset" : 72623859790382890 , "pack" :
+h'62626262626262626262626262626262' , "plaintext_len" : 19 , "reserved" :
+h'0000000000' , "state" : 0 } ] }
+```
+
+```hex
+545249580100000000000000ab2222222222222222222222222222222222222222222222
+2222222222222222626262626262626262626262626262622a0706050403020113000000
+130000000009000000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+137c24c93e2ad81b89dc395db6374fbd671873d20c8ec1a086f45b78cb04f0d3
+```
+
+### container-shard-kind-9-codec-0-state-1
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 19 , "codec" : 0 , "hash" :
+h'ab23232323232323232323232323232323232323232323232323232323232323' , "kind" :
+9 , "offset" : 72623859790382891 , "pack" :
+h'63636363636363636363636363636363' , "plaintext_len" : 19 , "reserved" :
+h'0000000000' , "state" : 1 } ] }
+```
+
+```hex
+545249580100000000000000ab2323232323232323232323232323232323232323232323
+2323232323232323636363636363636363636363636363632b0706050403020113000000
+130000000009010000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+e655319af418b8edf88ad4ec826cd077e7be3f4180f316e91a3cbe8dda5c7db3
+```
+
+### container-shard-kind-9-codec-0-state-2
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 1 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ { "body_len"
+: 19 , "codec" : 0 , "hash" :
+h'ab24242424242424242424242424242424242424242424242424242424242424' , "kind" :
+9 , "offset" : 72623859790382892 , "pack" :
+h'64646464646464646464646464646464' , "plaintext_len" : 19 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249580100000000000000ab2424242424242424242424242424242424242424242424
+2424242424242424646464646464646464646464646464642c0706050403020113000000
+130000000009020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+9e0b65f010e34515f822d1a46ae12658f9d6ea7e6eabcf36444459d0668fccf4
+```
+
+### container-shard-all-ordered
+
+Positive complete merged index shard.
+
+```text
+{ "count" : 36 , "magic" : "TRIX" , "prefix" : 171 , "records" : [ {
+"body_len" : 11 , "codec" : 0 , "hash" :
+h'ab01010101010101010101010101010101010101010101010101010101010101' , "kind" :
+0 , "offset" : 72623859790382857 , "pack" :
+h'41414141414141414141414141414141' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 11 , "codec" : 0 , "hash" :
+h'ab02020202020202020202020202020202020202020202020202020202020202' , "kind" :
+0 , "offset" : 72623859790382858 , "pack" :
+h'42424242424242424242424242424242' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 11 , "codec" : 0 , "hash" :
+h'ab03030303030303030303030303030303030303030303030303030303030303' , "kind" :
+0 , "offset" : 72623859790382859 , "pack" :
+h'43434343434343434343434343434343' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 20 , "codec" : 1 , "hash" :
+h'ab04040404040404040404040404040404040404040404040404040404040404' , "kind" :
+0 , "offset" : 72623859790382860 , "pack" :
+h'44444444444444444444444444444444' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 20 , "codec" : 1 , "hash" :
+h'ab05050505050505050505050505050505050505050505050505050505050505' , "kind" :
+0 , "offset" : 72623859790382861 , "pack" :
+h'45454545454545454545454545454545' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 20 , "codec" : 1 , "hash" :
+h'ab06060606060606060606060606060606060606060606060606060606060606' , "kind" :
+0 , "offset" : 72623859790382862 , "pack" :
+h'46464646464646464646464646464646' , "plaintext_len" : 10 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 16909060 , "codec" : 2 , "hash"
+: h'ab07070707070707070707070707070707070707070707070707070707070707' , "kind"
+: 0 , "offset" : 72623859790382863 , "pack" :
+h'47474747474747474747474747474747' , "plaintext_len" : 84281096 , "reserved"
+: h'0000000000' , "state" : 0 } , { "body_len" : 16909060 , "codec" : 2 ,
+"hash" : h'ab08080808080808080808080808080808080808080808080808080808080808' ,
+"kind" : 0 , "offset" : 72623859790382864 , "pack" :
+h'48484848484848484848484848484848' , "plaintext_len" : 84281096 , "reserved"
+: h'0000000000' , "state" : 1 } , { "body_len" : 16909060 , "codec" : 2 ,
+"hash" : h'ab09090909090909090909090909090909090909090909090909090909090909' ,
+"kind" : 0 , "offset" : 72623859790382865 , "pack" :
+h'49494949494949494949494949494949' , "plaintext_len" : 84281096 , "reserved"
+: h'0000000000' , "state" : 2 } , { "body_len" : 11 , "codec" : 0 , "hash" :
+h'ab0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a' , "kind" :
+1 , "offset" : 72623859790382866 , "pack" :
+h'4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a' , "plaintext_len" : 11 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 11 , "codec" : 0 , "hash" :
+h'ab0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b' , "kind" :
+1 , "offset" : 72623859790382867 , "pack" :
+h'4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b' , "plaintext_len" : 11 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 11 , "codec" : 0 , "hash" :
+h'ab0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c' , "kind" :
+1 , "offset" : 72623859790382868 , "pack" :
+h'4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c' , "plaintext_len" : 11 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 12 , "codec" : 0 , "hash" :
+h'ab0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d' , "kind" :
+2 , "offset" : 72623859790382869 , "pack" :
+h'4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d' , "plaintext_len" : 12 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 12 , "codec" : 0 , "hash" :
+h'ab0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e' , "kind" :
+2 , "offset" : 72623859790382870 , "pack" :
+h'4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e' , "plaintext_len" : 12 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 12 , "codec" : 0 , "hash" :
+h'ab0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f' , "kind" :
+2 , "offset" : 72623859790382871 , "pack" :
+h'4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f' , "plaintext_len" : 12 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 13 , "codec" : 0 , "hash" :
+h'ab10101010101010101010101010101010101010101010101010101010101010' , "kind" :
+3 , "offset" : 72623859790382872 , "pack" :
+h'50505050505050505050505050505050' , "plaintext_len" : 13 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 13 , "codec" : 0 , "hash" :
+h'ab11111111111111111111111111111111111111111111111111111111111111' , "kind" :
+3 , "offset" : 72623859790382873 , "pack" :
+h'51515151515151515151515151515151' , "plaintext_len" : 13 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 13 , "codec" : 0 , "hash" :
+h'ab12121212121212121212121212121212121212121212121212121212121212' , "kind" :
+3 , "offset" : 72623859790382874 , "pack" :
+h'52525252525252525252525252525252' , "plaintext_len" : 13 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 14 , "codec" : 0 , "hash" :
+h'ab13131313131313131313131313131313131313131313131313131313131313' , "kind" :
+4 , "offset" : 72623859790382875 , "pack" :
+h'53535353535353535353535353535353' , "plaintext_len" : 14 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 14 , "codec" : 0 , "hash" :
+h'ab14141414141414141414141414141414141414141414141414141414141414' , "kind" :
+4 , "offset" : 72623859790382876 , "pack" :
+h'54545454545454545454545454545454' , "plaintext_len" : 14 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 14 , "codec" : 0 , "hash" :
+h'ab15151515151515151515151515151515151515151515151515151515151515' , "kind" :
+4 , "offset" : 72623859790382877 , "pack" :
+h'55555555555555555555555555555555' , "plaintext_len" : 14 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 15 , "codec" : 0 , "hash" :
+h'ab16161616161616161616161616161616161616161616161616161616161616' , "kind" :
+5 , "offset" : 72623859790382878 , "pack" :
+h'56565656565656565656565656565656' , "plaintext_len" : 15 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 15 , "codec" : 0 , "hash" :
+h'ab17171717171717171717171717171717171717171717171717171717171717' , "kind" :
+5 , "offset" : 72623859790382879 , "pack" :
+h'57575757575757575757575757575757' , "plaintext_len" : 15 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 15 , "codec" : 0 , "hash" :
+h'ab18181818181818181818181818181818181818181818181818181818181818' , "kind" :
+5 , "offset" : 72623859790382880 , "pack" :
+h'58585858585858585858585858585858' , "plaintext_len" : 15 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 16 , "codec" : 0 , "hash" :
+h'ab19191919191919191919191919191919191919191919191919191919191919' , "kind" :
+6 , "offset" : 72623859790382881 , "pack" :
+h'59595959595959595959595959595959' , "plaintext_len" : 16 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 16 , "codec" : 0 , "hash" :
+h'ab1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a' , "kind" :
+6 , "offset" : 72623859790382882 , "pack" :
+h'5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a' , "plaintext_len" : 16 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 16 , "codec" : 0 , "hash" :
+h'ab1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b' , "kind" :
+6 , "offset" : 72623859790382883 , "pack" :
+h'5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b' , "plaintext_len" : 16 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 17 , "codec" : 0 , "hash" :
+h'ab1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c' , "kind" :
+7 , "offset" : 72623859790382884 , "pack" :
+h'5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c' , "plaintext_len" : 17 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 17 , "codec" : 0 , "hash" :
+h'ab1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d' , "kind" :
+7 , "offset" : 72623859790382885 , "pack" :
+h'5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d' , "plaintext_len" : 17 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 17 , "codec" : 0 , "hash" :
+h'ab1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e' , "kind" :
+7 , "offset" : 72623859790382886 , "pack" :
+h'5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e' , "plaintext_len" : 17 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 18 , "codec" : 0 , "hash" :
+h'ab1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f' , "kind" :
+8 , "offset" : 72623859790382887 , "pack" :
+h'5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f' , "plaintext_len" : 18 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 18 , "codec" : 0 , "hash" :
+h'ab20202020202020202020202020202020202020202020202020202020202020' , "kind" :
+8 , "offset" : 72623859790382888 , "pack" :
+h'60606060606060606060606060606060' , "plaintext_len" : 18 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 18 , "codec" : 0 , "hash" :
+h'ab21212121212121212121212121212121212121212121212121212121212121' , "kind" :
+8 , "offset" : 72623859790382889 , "pack" :
+h'61616161616161616161616161616161' , "plaintext_len" : 18 , "reserved" :
+h'0000000000' , "state" : 2 } , { "body_len" : 19 , "codec" : 0 , "hash" :
+h'ab22222222222222222222222222222222222222222222222222222222222222' , "kind" :
+9 , "offset" : 72623859790382890 , "pack" :
+h'62626262626262626262626262626262' , "plaintext_len" : 19 , "reserved" :
+h'0000000000' , "state" : 0 } , { "body_len" : 19 , "codec" : 0 , "hash" :
+h'ab23232323232323232323232323232323232323232323232323232323232323' , "kind" :
+9 , "offset" : 72623859790382891 , "pack" :
+h'63636363636363636363636363636363' , "plaintext_len" : 19 , "reserved" :
+h'0000000000' , "state" : 1 } , { "body_len" : 19 , "codec" : 0 , "hash" :
+h'ab24242424242424242424242424242424242424242424242424242424242424' , "kind" :
+9 , "offset" : 72623859790382892 , "pack" :
+h'64646464646464646464646464646464' , "plaintext_len" : 19 , "reserved" :
+h'0000000000' , "state" : 2 } ] }
+```
+
+```hex
+545249582400000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000ab0202020202020202020202020202020202020202020202
+0202020202020202424242424242424242424242424242420a070605040302010b000000
+0a0000000000010000000000ab0303030303030303030303030303030303030303030303
+0303030303030303434343434343434343434343434343430b070605040302010b000000
+0a0000000000020000000000ab0404040404040404040404040404040404040404040404
+0404040404040404444444444444444444444444444444440c0706050403020114000000
+0a0000000100000000000000ab0505050505050505050505050505050505050505050505
+0505050505050505454545454545454545454545454545450d0706050403020114000000
+0a0000000100010000000000ab0606060606060606060606060606060606060606060606
+0606060606060606464646464646464646464646464646460e0706050403020114000000
+0a0000000100020000000000ab0707070707070707070707070707070707070707070707
+0707070707070707474747474747474747474747474747470f0706050403020104030201
+080706050200000000000000ab0808080808080808080808080808080808080808080808
+080808080808080848484848484848484848484848484848100706050403020104030201
+080706050200010000000000ab0909090909090909090909090909090909090909090909
+090909090909090949494949494949494949494949494949110706050403020104030201
+080706050200020000000000ab0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
+0a0a0a0a0a0a0a0a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a12070605040302010b000000
+0b0000000001000000000000ab0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b
+0b0b0b0b0b0b0b0b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b4b13070605040302010b000000
+0b0000000001010000000000ab0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c
+0c0c0c0c0c0c0c0c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c14070605040302010b000000
+0b0000000001020000000000ab0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d
+0d0d0d0d0d0d0d0d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d4d15070605040302010c000000
+0c0000000002000000000000ab0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e
+0e0e0e0e0e0e0e0e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e16070605040302010c000000
+0c0000000002010000000000ab0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f
+0f0f0f0f0f0f0f0f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f4f17070605040302010c000000
+0c0000000002020000000000ab1010101010101010101010101010101010101010101010
+10101010101010105050505050505050505050505050505018070605040302010d000000
+0d0000000003000000000000ab1111111111111111111111111111111111111111111111
+11111111111111115151515151515151515151515151515119070605040302010d000000
+0d0000000003010000000000ab1212121212121212121212121212121212121212121212
+1212121212121212525252525252525252525252525252521a070605040302010d000000
+0d0000000003020000000000ab1313131313131313131313131313131313131313131313
+1313131313131313535353535353535353535353535353531b070605040302010e000000
+0e0000000004000000000000ab1414141414141414141414141414141414141414141414
+1414141414141414545454545454545454545454545454541c070605040302010e000000
+0e0000000004010000000000ab1515151515151515151515151515151515151515151515
+1515151515151515555555555555555555555555555555551d070605040302010e000000
+0e0000000004020000000000ab1616161616161616161616161616161616161616161616
+1616161616161616565656565656565656565656565656561e070605040302010f000000
+0f0000000005000000000000ab1717171717171717171717171717171717171717171717
+1717171717171717575757575757575757575757575757571f070605040302010f000000
+0f0000000005010000000000ab1818181818181818181818181818181818181818181818
+18181818181818185858585858585858585858585858585820070605040302010f000000
+0f0000000005020000000000ab1919191919191919191919191919191919191919191919
+191919191919191959595959595959595959595959595959210706050403020110000000
+100000000006000000000000ab1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a
+1a1a1a1a1a1a1a1a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a220706050403020110000000
+100000000006010000000000ab1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b
+1b1b1b1b1b1b1b1b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b5b230706050403020110000000
+100000000006020000000000ab1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c
+1c1c1c1c1c1c1c1c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c5c240706050403020111000000
+110000000007000000000000ab1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d
+1d1d1d1d1d1d1d1d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d250706050403020111000000
+110000000007010000000000ab1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e
+1e1e1e1e1e1e1e1e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e260706050403020111000000
+110000000007020000000000ab1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f
+1f1f1f1f1f1f1f1f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f270706050403020112000000
+120000000008000000000000ab2020202020202020202020202020202020202020202020
+202020202020202060606060606060606060606060606060280706050403020112000000
+120000000008010000000000ab2121212121212121212121212121212121212121212121
+212121212121212161616161616161616161616161616161290706050403020112000000
+120000000008020000000000ab2222222222222222222222222222222222222222222222
+2222222222222222626262626262626262626262626262622a0706050403020113000000
+130000000009000000000000ab2323232323232323232323232323232323232323232323
+2323232323232323636363636363636363636363636363632b0706050403020113000000
+130000000009010000000000ab2424242424242424242424242424242424242424242424
+2424242424242424646464646464646464646464646464642c0706050403020113000000
+130000000009020000000000
+```
+
+Index-domain shard identity digest:
+
+```hex
+1c7117ca949fe5f393c88aa9dae81057173f88709cb5fb1bb530213e811e3229
+```
+
+### container-negative-envelope-missing-tag
+
+Negative vector: The codec tag is absent.
+
+```text
+{ "declared" : null , "encoded" : h'' , "maximum" : null }
+```
+
+```hex
+```
+
+### container-negative-envelope-tag-three
+
+Negative vector: Codec three is unregistered.
+
+```text
+{ "declared" : null , "encoded" : h'03' , "maximum" : null }
+```
+
+```hex
+03
+```
+
+### container-negative-envelope-tag-255
+
+Negative vector: Codec 255 is unregistered.
+
+```text
+{ "declared" : null , "encoded" : h'ff' , "maximum" : null }
+```
+
+```hex
+ff
+```
+
+### container-negative-envelope-dictionary-absent
+
+Negative vector: The dictionary digest is absent.
+
+```text
+{ "declared" : null , "encoded" : h'02' , "maximum" : null }
+```
+
+```hex
+02
+```
+
+### container-negative-envelope-dictionary-short
+
+Negative vector: The dictionary digest is truncated.
+
+```text
+{ "declared" : null , "encoded" :
+h'0200000000000000000000000000000000000000000000000000000000000000' ,
+"maximum" : null }
+```
+
+```hex
+0200000000000000000000000000000000000000000000000000000000000000
+```
+
+### container-negative-envelope-raw-declaration-short
+
+Negative vector: The raw body differs from its declaration.
+
+```text
+{ "declared" : 5 , "encoded" : h'00696e6572740a' , "maximum" : 7 }
+```
+
+```hex
+00696e6572740a
+```
+
+### container-negative-envelope-raw-declaration-long
+
+Negative vector: The raw body differs from its declaration.
+
+```text
+{ "declared" : 7 , "encoded" : h'00696e6572740a' , "maximum" : 7 }
+```
+
+```hex
+00696e6572740a
+```
+
+### container-negative-envelope-raw-profile-maximum
+
+Negative vector: The declared length exceeds the profile maximum.
+
+```text
+{ "declared" : 6 , "encoded" : h'00696e6572740a' , "maximum" : 5 }
+```
+
+```hex
+00696e6572740a
+```
+
+### container-negative-envelope-zstd-profile-maximum
+
+Negative vector: The declared length exceeds the profile maximum.
+
+```text
+{ "declared" : 6 , "encoded" : h'0128b52ffd2006310000696e6572740a' , "maximum"
+: 5 }
+```
+
+```hex
+0128b52ffd2006310000696e6572740a
+```
+
+### container-negative-envelope-dictionary-profile-maximum
+
+Negative vector: The declared length exceeds the profile maximum.
+
+```text
+{ "declared" : 6 , "encoded" :
+h'02000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e'
+h'1f28b52ffd2006310000696e6572740a' , "maximum" : 5 }
+```
+
+```hex
+02000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f28b52f
+fd2006310000696e6572740a
+```
+
+### container-negative-envelope-zstd-overhead-excess
+
+Negative vector: The encoded body exceeds the exact overhead bound.
+
+```text
+{ "declared" : 100 , "encoded" :
+h'0128b52ffd206400000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0000210300717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'717171717171717171' , "maximum" : 100 }
+```
+
+```hex
+0128b52ffd20640000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000002103007171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+7171717171717171717171717171717171
+```
+
+### container-negative-envelope-dictionary-overhead-excess
+
+Negative vector: The encoded body exceeds the exact overhead bound.
+
+```text
+{ "declared" : 100 , "encoded" :
+h'02000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e'
+h'1f28b52ffd206400000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0000000000000000000000000000000000000000000000000000000000000000'
+h'0021030071717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171717171717171717171717171717171717171717171717171'
+h'7171717171717171' , "maximum" : 100 }
+```
+
+```hex
+02000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f28b52f
+fd2064000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000000000000000000000000000000000
+000000000000000000000000000000000000000000210300717171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+717171717171717171717171717171717171717171717171717171717171717171717171
+71717171717171717171717171717171
+```
+
+### container-negative-shard-state-three
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000030000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000030000000000
+```
+
+### container-negative-shard-state-255
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000ff0000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000ff0000000000
+```
+
+### container-negative-shard-kind-ten
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a000000000a000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a000000000a000000000000
+```
+
+### container-negative-shard-kind-255
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a00000000ff000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a00000000ff000000000000
+```
+
+### container-negative-shard-codec-three
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000300000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000300000000000000
+```
+
+### container-negative-shard-codec-255
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a000000ff00000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a000000ff00000000000000
+```
+
+### container-negative-shard-offset-before-header
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414117000000'
+h'000000000b0000000a0000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414117000000000000000b000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-zero-body
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'04030201000000000a0000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+010101010101010141414141414141414141414141414141090706050403020100000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-raw-length
+
+Negative vector: The represented row violates its field schema.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b000000090000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+090000000000000000000000
+```
+
+### container-negative-shard-meta-codec-1
+
+Negative vector: Metadata requires the raw codec.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000b0000000101000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0b0000000101000000000000
+```
+
+### container-negative-shard-meta-codec-2
+
+Negative vector: Metadata requires the raw codec.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000b0000000201000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0b0000000201000000000000
+```
+
+### container-negative-shard-meta-raw-length
+
+Negative vector: Raw metadata body and plaintext lengths differ.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010c0000000b0000000001000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010c000000
+0b0000000001000000000000
+```
+
+### container-negative-shard-reserved-0
+
+Negative vector: Every reserved byte must be zero.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000100000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000100000000
+```
+
+### container-negative-shard-reserved-1
+
+Negative vector: Every reserved byte must be zero.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000001000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000001000000
+```
+
+### container-negative-shard-reserved-2
+
+Negative vector: Every reserved byte must be zero.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000010000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000010000
+```
+
+### container-negative-shard-reserved-3
+
+Negative vector: Every reserved byte must be zero.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000100' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000100
+```
+
+### container-negative-shard-reserved-4
+
+Negative vector: Every reserved byte must be zero.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000001' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000001
+```
+
+### container-negative-shard-wrong-prefix
+
+Negative vector: The row hash belongs to another shard.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000000' , "prefix" : 172 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-duplicate
+
+Negative vector: Two rows carry the same identity.
+
+```text
+{ "encoded" :
+h'545249580200000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000000ab0101010101010101010101'
+h'0101010101010101010101010101010101010101424242424242424242424242'
+h'424242420a070605040302010b0000000b0000000001010000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580200000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000ab0101010101010101010101010101010101010101010101
+0101010101010101424242424242424242424242424242420a070605040302010b000000
+0b0000000001010000000000
+```
+
+### container-negative-shard-descending
+
+Negative vector: Hashes are not in ascending order.
+
+```text
+{ "encoded" :
+h'545249580200000000000000ab02020202020202020202020202020202020202'
+h'020202020202020202020202424242424242424242424242424242420a070605'
+h'040302010b0000000b0000000001010000000000ab0101010101010101010101'
+h'0101010101010101010101010101010101010101414141414141414141414141'
+h'4141414109070605040302010b0000000a0000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580200000000000000ab0202020202020202020202020202020202020202020202
+0202020202020202424242424242424242424242424242420a070605040302010b000000
+0b0000000001010000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-count-0
+
+Negative vector: Count disagrees with record bytes.
+
+```text
+{ "encoded" :
+h'545249580000000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580000000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-count-2
+
+Negative vector: Count disagrees with record bytes.
+
+```text
+{ "encoded" :
+h'545249580200000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580200000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-count-18446744073709551615
+
+Negative vector: Count disagrees with record bytes.
+
+```text
+{ "encoded" :
+h'54524958ffffffffffffffffab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+54524958ffffffffffffffffab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-bad-magic
+
+Negative vector: The preamble magic is unknown.
+
+```text
+{ "encoded" :
+h'424144210100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a0000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+424144210100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a0000000000000000000000
+```
+
+### container-negative-shard-short-preamble
+
+Negative vector: The preamble count is truncated.
+
+```text
+{ "encoded" : h'5452495800000000000000' , "prefix" : 171 }
+```
+
+```hex
+5452495800000000000000
+```
+
+### container-negative-shard-short-record
+
+Negative vector: The fixed-width record is truncated.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a00000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a00000000000000000000
+```
+
+### container-negative-shard-trailing-byte
+
+Negative vector: An extra byte follows the complete shard.
+
+```text
+{ "encoded" :
+h'545249580100000000000000ab01010101010101010101010101010101010101'
+h'0101010101010101010101014141414141414141414141414141414109070605'
+h'040302010b0000000a000000000000000000000000' , "prefix" : 171 }
+```
+
+```hex
+545249580100000000000000ab0101010101010101010101010101010101010101010101
+01010101010101014141414141414141414141414141414109070605040302010b000000
+0a000000000000000000000000
+```
