@@ -191,6 +191,7 @@ in {
   integration.foundation-reference-generator = import ./foundation-reference.nix {inherit sourceGate;};
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
+  integration.retirement-reference-models = import ./retirement-models.nix {inherit sourceGate;};
   integration.authorized-principal = import ./authorized-principal.nix {inherit sourceGate;};
   integration.algebra-reference-models = algebraFormatVectors;
   integration.algebra-format-vectors = algebraFormatVectors;

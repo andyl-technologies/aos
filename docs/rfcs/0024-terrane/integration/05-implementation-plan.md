@@ -529,6 +529,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   consumers remain present through qualification and final formatting, then are
   removed. Complete golden coverage and native milestone qualification remain
   open; this combined core checkpoint advances no task or milestone.
+  A separate `retirement-reference-models` auxiliary harness now reserves seven
+  exact owning-codec groups for the existing 34 inert record models: complete
+  authorization, preparation, operation, pass, fence and owner fields plus
+  independently assembled structural rejections. Its input templates remain
+  pending; the check fails explicitly until they exist. Format comparison
+  establishes no current authority, completed wait or physical permission;
+  normative publication and complete golden qualification remain required.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
