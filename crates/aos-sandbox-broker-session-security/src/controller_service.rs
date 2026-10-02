@@ -205,6 +205,8 @@ struct ControllerBrokerSessions {
     host: Option<ControllerHostPublication>,
     mount: Option<crate::DormantMountLifecycleInventoryOwnerV1>,
     storage: Option<crate::DormantStorageLifecycleInventoryOwnerV1>,
+    storage_cold: Option<crate::handshake::RetainedStorageColdOpenV1>,
+    storage_terminal: Option<std::sync::Weak<ControllerWorkerCustodyV1>>,
     storage_root: guest_root::ControllerGuestRootExchangeV1,
     network: Option<crate::DormantNetworkLifecycleInventoryOwnerV1>,
 }
@@ -798,6 +800,7 @@ fn run_retained_controller(
     begin!(Sessions);
     originals.sessions = Some(Arc::new(Mutex::new(ControllerBrokerSessions {
         launch_image: required!(parent.launch.take()),
+        storage_terminal: Some(Arc::downgrade(&worker)),
         ..ControllerBrokerSessions::default()
     })));
     complete!(Sessions);
@@ -1251,6 +1254,8 @@ enum ControllerResidentCauseV1 {
     Receive(mpsc::RecvError),
     // The actual typed cause remains in SAME pending Publisher attempt.
     Publisher,
+    // Typed cause and every partial owner remain in SAME sessions' cold slot.
+    StorageCold,
     Closed(&'static str),
 }
 
@@ -1262,6 +1267,7 @@ impl ControllerResidentCauseV1 {
             Self::ReadySend(_) => "resident Controller readiness delivery failure",
             Self::Receive(_) => "resident Controller event receiver disconnected",
             Self::Publisher => "resident original Publisher startup failure",
+            Self::StorageCold => "resident original Storage cold admission failure",
             Self::Closed(label) => label,
         }
     }
@@ -2541,6 +2547,25 @@ fn ensure_controller_broker_sessions(
     node_id: [u8; 16],
     sessions: &mut ControllerBrokerSessions,
 ) -> Result<(), CycleFailure> {
+    // Required failure closes before reconnect can release either the old
+    // Storage session or the original guest-root exchange. No replacement
+    // owner may overtake a failed/unfinished verified cold flight.
+    if sessions
+        .storage_cold
+        .as_ref()
+        .is_some_and(crate::handshake::RetainedStorageColdOpenV1::is_failed)
+    {
+        if let Some(worker) = sessions
+            .storage_terminal
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            worker.close(ControllerResidentCauseV1::StorageCold);
+        }
+        return Err(CycleFailure::Fatal(
+            "resident Storage cold admission is closed".to_owned(),
+        ));
+    }
     if sessions.storage_root.requires_reconnect() {
         sessions.storage = None;
         sessions.storage_root = guest_root::ControllerGuestRootExchangeV1::default();
@@ -2569,15 +2594,38 @@ fn ensure_controller_broker_sessions(
         );
     }
     if sessions.storage.is_none() {
-        sessions.storage = Some(
-            crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(
-                connect_controller_storage_session(
-                    crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
-                    node_id,
-                    sessions.launch_image.as_ref(),
-                )?,
-            ),
-        );
+        if let Some(image) = sessions.launch_image.as_ref() {
+            // A genuine Required image selects the SAME parent-held worker
+            // destination, including when no Publisher was supplied.
+            let worker = sessions
+                .storage_terminal
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(|| {
+                    CycleFailure::Fatal(
+                        "Required Storage has no resident Controller destination".to_owned(),
+                    )
+                })?;
+            let session = connect_retained_controller_storage(
+                node_id,
+                image,
+                &mut sessions.storage_cold,
+                &worker,
+            )?;
+            sessions.storage = Some(
+                crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(session),
+            );
+        } else {
+            sessions.storage = Some(
+                crate::DormantStorageLifecycleInventoryOwnerV1::from_protected_session(
+                    connect_controller_storage_session(
+                        crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
+                        node_id,
+                        sessions.launch_image.as_ref(),
+                    )?,
+                ),
+            );
+        }
     }
     if sessions.network.is_none() {
         sessions.network = Some(
@@ -2590,6 +2638,35 @@ fn ensure_controller_broker_sessions(
         );
     }
     Ok(())
+}
+
+/// Borrows the actual fixed image and resident destination for one cold flight.
+fn connect_retained_controller_storage(
+    node_id: [u8; 16],
+    image: &crate::production_startup::Pid1LaunchImageV1,
+    cold: &mut Option<crate::handshake::RetainedStorageColdOpenV1>,
+    worker: &ControllerWorkerCustodyV1,
+) -> Result<crate::DormantAuthenticatedBrokerSessionV1, CycleFailure> {
+    let custody = crate::ProtectedBrokerSessionFixedCustodyV1::open_fixed_protected(
+        crate::ProtectedBrokerSessionFixedEndpointV1::ControllerStorageClient,
+    )
+    .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let custody = custody
+        .retain_launch_image(Some(image.clone()))
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+    let deadline = crate::handshake::OriginalBrokerColdDeadlineV1::controller()
+        .map_err(|error| CycleFailure::Fatal(error.to_string()))?;
+
+    match custody.connect_retained_storage_session(deadline, cold, node_id) {
+        Ok(session) => Ok(session),
+        Err(error) if cold.is_some() => {
+            worker.close(ControllerResidentCauseV1::StorageCold);
+            // Diagnostic projection only: the typed cause, packets, writers,
+            // physical owners and debt remain in the SAME cold slot.
+            Err(CycleFailure::Fatal(error.to_string()))
+        }
+        Err(error) => Err(classify_protected_handshake_error(error)),
+    }
 }
 
 fn connect_controller_session(

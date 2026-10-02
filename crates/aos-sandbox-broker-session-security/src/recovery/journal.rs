@@ -721,6 +721,7 @@ enum BrokerMainOpenPhaseV1 {
 enum BrokerMainOpenFailureV1 {
     Endpoint(BrokerSessionSecurityError),
     Floor(tpm_floor::FloorErrorV1),
+    Deadline(crate::DormantBrokerSessionHandshakeErrorV1),
 }
 
 impl BrokerMainOpenFailureV1 {
@@ -730,7 +731,7 @@ impl BrokerMainOpenFailureV1 {
             // or provider errors. The actual Required native cause stays on
             // the resident floor, rather than being cloned into this result.
             Self::Endpoint(error) => error.clone(),
-            Self::Floor(_) => BrokerSessionSecurityError::Currentness,
+            Self::Floor(_) | Self::Deadline(_) => BrokerSessionSecurityError::Currentness,
         }
     }
 }
@@ -743,7 +744,7 @@ impl From<BrokerSessionSecurityError> for BrokerMainOpenFailureV1 {
 
 /// Stages actual endpoint, configured floor and returned main without a shell
 /// that can manufacture endpoint custody or bypass its admission.
-struct BrokerMainOpenV1 {
+pub(crate) struct BrokerMainOpenV1 {
     authority: Option<ProtectedBrokerSessionJournalV1>,
     floor: Option<tpm_floor::runtime::BrokerFloorV1>,
     endpoint: Option<ProtectedEndpointV1>,
@@ -752,11 +753,14 @@ struct BrokerMainOpenV1 {
     limits: JournalLimits,
     phase: BrokerMainOpenPhaseV1,
     first_failure: Option<BrokerMainOpenFailureV1>,
+    cold_deadline: Option<crate::handshake::OriginalBrokerColdDeadlineV1>,
 }
 
 // One native open recipe serves the original consuming boundary and the
 // Required progress slots. The literal arms change storage, not replay policy.
 macro_rules! broker_main_open_step {
+    (Legacy, deadline $place:ident) => {};
+    (Retained, deadline $place:ident) => { $place.check_cold_deadline()?; };
     (Legacy, directory $place:ident, $directory:ident) => { &$directory };
     (Retained, directory $place:ident, $directory:ident) => { &$place.owner.directory };
     (Legacy, name $place:ident, $name:ident) => { $name };
@@ -808,6 +812,7 @@ macro_rules! broker_main_open_step {
 macro_rules! broker_main_open_recipe {
     ($mode:ident, $place:ident, $protocol:ident, $endpoint:ident, $directory:ident,
         $name:ident, $limits:ident, $floor:ident, $owner:ident) => {{
+        broker_main_open_step!($mode, deadline $place);
         let existing = match std::fs::symlink_metadata(
             broker_main_open_step!($mode, directory $place, $directory).join(
                 broker_main_open_step!($mode, name $place, $name),
@@ -817,6 +822,7 @@ macro_rules! broker_main_open_recipe {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
             Err(_) => return Err(BrokerSessionSecurityError::Currentness),
         };
+        broker_main_open_step!($mode, deadline $place);
         let opened = if broker_main_open_step!($mode, requires_existing $place, $floor)
             || $protocol == BrokerSessionProtocolV1::Storage && existing
         {
@@ -833,6 +839,7 @@ macro_rules! broker_main_open_recipe {
             )
         };
         broker_main_open_step!($mode, stage $place, opened, journal);
+        broker_main_open_step!($mode, deadline $place);
         broker_main_open_step!($mode, endpoint $place, $endpoint);
         broker_main_open_step!($mode, construct $place, $endpoint, $directory, $name,
             $limits, $owner, journal);
@@ -841,6 +848,63 @@ macro_rules! broker_main_open_recipe {
 }
 
 impl BrokerMainOpenV1 {
+    /// Prepares only the actual fixed Storage endpoint without moving custody
+    /// across an allocation or validation gate. The caller keeps its slot
+    /// until the prepared shell is complete.
+    ///
+    /// # Errors
+    /// Rejects absent custody or a role/protocol/root other than fixed Storage.
+    pub(crate) fn prepare_storage(
+        root: &'static str,
+        custody: &mut Option<FixedEndpointCustodyV1>,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<Self, BrokerSessionSecurityError> {
+        let expected_root = match custody.as_ref() {
+            Some(FixedEndpointCustodyV1::Client(endpoint))
+                if endpoint.protected_protocol_and_node().0 == BrokerSessionProtocolV1::Storage =>
+            {
+                "/var/lib/aos/sandboxd/broker-session/storage"
+            }
+            Some(FixedEndpointCustodyV1::Broker(endpoint))
+                if endpoint.protected_protocol_and_node().0 == BrokerSessionProtocolV1::Storage =>
+            {
+                "/var/lib/aos/sandbox-storage/broker-session"
+            }
+            _ => return Err(BrokerSessionSecurityError::Currentness),
+        };
+        if root != expected_root {
+            return Err(BrokerSessionSecurityError::Currentness);
+        }
+
+        let directory = PathBuf::from(root);
+        let name = PROTECTED_SESSION_JOURNAL.to_owned();
+        let endpoint = match custody.take() {
+            Some(FixedEndpointCustodyV1::Client(endpoint)) => ProtectedEndpointV1::Client(endpoint),
+            Some(FixedEndpointCustodyV1::Broker(endpoint)) => ProtectedEndpointV1::Broker(endpoint),
+            None => return Err(BrokerSessionSecurityError::Currentness),
+        };
+        Ok(Self {
+            authority: None,
+            floor: None,
+            endpoint: Some(endpoint),
+            directory,
+            name,
+            limits: protected_session_journal_limits(),
+            phase: BrokerMainOpenPhaseV1::Fresh,
+            first_failure: None,
+            cold_deadline: Some(deadline),
+        })
+    }
+
+    pub(crate) fn finish_into(&mut self, destination: &mut Option<ProtectedBrokerSessionOwnerV1>) {
+        // All shape and currentness gates run before this infallible move.
+        if self.phase == BrokerMainOpenPhaseV1::Ready && destination.is_none() {
+            if let Some(journal) = self.authority.take() {
+                *destination = Some(ProtectedBrokerSessionOwnerV1 { journal });
+            }
+        }
+    }
+
     fn prepare(
         endpoint: ProtectedEndpointV1,
         directory: &Path,
@@ -856,10 +920,17 @@ impl BrokerMainOpenV1 {
             limits,
             phase: BrokerMainOpenPhaseV1::Fresh,
             first_failure: None,
+            cold_deadline: None,
         }
     }
 
-    fn open(&mut self) -> Result<(), BrokerSessionSecurityError> {
+    /// Opens only this prepared actual endpoint; failed or unfinished phases
+    /// cannot be repeated.
+    ///
+    /// # Errors
+    /// Preserves endpoint rejection and the old currentness projection while
+    /// native, physical and cutoff causes remain on their resident owners.
+    pub(crate) fn open(&mut self) -> Result<(), BrokerSessionSecurityError> {
         if self.phase != BrokerMainOpenPhaseV1::Fresh {
             self.phase = BrokerMainOpenPhaseV1::Failed;
             return Err(self.first_failure.as_ref().map_or(
@@ -886,6 +957,9 @@ impl BrokerMainOpenV1 {
     }
 
     fn open_inner(&mut self) -> Result<(), BrokerMainOpenFailureV1> {
+        if let Some(deadline) = self.cold_deadline {
+            deadline.check().map_err(BrokerMainOpenFailureV1::Deadline)?;
+        }
         let endpoint = self.endpoint
             .as_mut()
             .ok_or(BrokerSessionSecurityError::Currentness)?;
@@ -893,6 +967,9 @@ impl BrokerMainOpenV1 {
         let protocol = endpoint.protected_protocol_and_node().0;
         if protocol == BrokerSessionProtocolV1::Storage && self.name != PROTECTED_SESSION_JOURNAL {
             return Err(BrokerSessionSecurityError::Currentness.into());
+        }
+        if let Some(deadline) = self.cold_deadline {
+            deadline.check().map_err(BrokerMainOpenFailureV1::Deadline)?;
         }
         let floor = tpm_floor::runtime::BrokerFloorV1::configure(
             &self.directory,
@@ -902,6 +979,12 @@ impl BrokerMainOpenV1 {
         )
         .map_err(BrokerMainOpenFailureV1::Floor)?;
         self.floor = Some(floor);
+        if let Some(deadline) = self.cold_deadline {
+            self.floor.as_mut()
+                .ok_or(BrokerSessionSecurityError::Currentness)?
+                .bind_cold_deadline(deadline)
+                .map_err(BrokerMainOpenFailureV1::Floor)?;
+        }
         if !self.floor.as_ref().is_some_and(
             tpm_floor::runtime::BrokerFloorV1::has_resident_required_attempt,
         ) {
@@ -949,6 +1032,37 @@ impl BrokerMainOpenV1 {
     }
 }
 
+#[cfg(test)]
+mod broker_cold_adapter_tests {
+    use super::{BrokerMainOpenFailureV1, BrokerMainOpenV1, BrokerSessionSecurityError};
+    use crate::handshake::OriginalBrokerColdDeadlineV1;
+
+    #[test]
+    fn missing_actual_custody_refuses_before_name_or_journal_work() {
+        let mut custody = None;
+        let deadline = OriginalBrokerColdDeadlineV1::storage_accept(1);
+
+        let result = BrokerMainOpenV1::prepare_storage(
+            "/var/lib/aos/sandboxd/broker-session/storage",
+            &mut custody,
+            deadline,
+        );
+
+        assert!(matches!(result, Err(BrokerSessionSecurityError::Currentness)));
+        assert!(custody.is_none());
+    }
+
+    #[test]
+    fn cutoff_cause_keeps_existing_currentness_facade() {
+        let cause = BrokerMainOpenFailureV1::Deadline(
+            crate::DormantBrokerSessionHandshakeErrorV1::Deadline,
+        );
+
+        assert!(matches!(cause.projection(), BrokerSessionSecurityError::Currentness));
+        assert!(matches!(cause, BrokerMainOpenFailureV1::Deadline(_)));
+    }
+}
+
 /// Owns the moved floor and a separate borrow of the whole original Journal.
 /// Its Drop restores only the same fenced Required floor. Ordinary unwind
 /// retains the original local-disposal inverse. Forgetting leaves the owner
@@ -960,6 +1074,11 @@ struct BrokerFloorOperationV1<'operation> {
 }
 
 impl<'operation> BrokerFloorOperationV1<'operation> {
+    fn check_cold_deadline(&mut self) -> Result<(), BrokerSessionSecurityError> {
+        self.floor.as_mut().ok_or(BrokerSessionSecurityError::Currentness)?
+            .check_cold_deadline().map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
     fn begin(owner: &'operation mut ProtectedBrokerSessionJournalV1) -> Self {
         let floor = std::mem::replace(
             &mut owner.floor,
@@ -1273,6 +1392,18 @@ impl ProtectedBrokerSessionFixedCustodyV1 {
 }
 
 impl ProtectedBrokerSessionOwnerV1 {
+    /// Removes temporary comparison DATA from the same fully checked owner.
+    ///
+    /// # Errors
+    /// Retains/fences the owner on an unfinished, changed or expired cold cut.
+    pub(crate) fn retire_cold_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), BrokerSessionSecurityError> {
+        self.journal.floor.retire_cold_deadline(deadline)
+            .map_err(|_| BrokerSessionSecurityError::Currentness)
+    }
+
     /// Retains pending Host49 custody without enabling ordinary client captures.
     pub(crate) fn hold_host_worker_comparison<'owner>(
         &'owner mut self,

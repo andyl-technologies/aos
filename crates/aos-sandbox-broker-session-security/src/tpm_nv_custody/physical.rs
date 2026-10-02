@@ -111,11 +111,17 @@ struct BrokerPhysicalAttemptV1 {
     request_attempted: bool,
     acknowledgment: Option<ReceivedRecord>,
     observation: Option<ReceivedRecord>,
+    cold_deadline: Option<crate::handshake::OriginalBrokerColdDeadlineV1>,
+    // Socketpair's child half is resident before the new cutoff bookend.
+    // Its later pure move into Command stdin still enters the existing raw
+    // consuming spawn prefix; this does not claim custody inside that provider.
+    child_channel: Option<SeqpacketSocket>,
 }
 
 enum BrokerPhysicalFailureV1 {
     Carrier(PhysicalTpmFailureV1),
     Lock(aos_sandbox::JournalError),
+    Deadline(crate::DormantBrokerSessionHandshakeErrorV1),
 }
 
 impl BrokerPhysicalAttemptV1 {
@@ -131,7 +137,9 @@ impl BrokerPhysicalAttemptV1 {
     fn failure(&self) -> FloorErrorV1 {
         match self.first_failure.as_ref() {
             Some(BrokerPhysicalFailureV1::Carrier(cause)) => broker_projection(cause),
-            Some(BrokerPhysicalFailureV1::Lock(_)) | None => FloorErrorV1::Unavailable,
+            Some(BrokerPhysicalFailureV1::Lock(_) | BrokerPhysicalFailureV1::Deadline(_)) | None => {
+                FloorErrorV1::Unavailable
+            }
         }
     }
 
@@ -162,6 +170,8 @@ fn broker_projection(cause: &PhysicalTpmFailureV1) -> FloorErrorV1 {
 // retain their original lexical lifetimes; only Retained writes resident slots.
 // These macros have no caller-selected policy, effect callback or owner factory.
 macro_rules! broker_admission_step {
+    (Legacy, deadline $owner:ident) => {};
+    (Retained, deadline $owner:ident) => { $owner.check_broker_cold_deadline()?; };
     // Legacy projects at the original call site; Retained keeps typed causes.
     (Legacy, provisioning) => { return Err(FloorErrorV1::Provisioning) };
     (Retained, provisioning) => { return Err(FloorErrorV1::Provisioning.into()) };
@@ -219,9 +229,27 @@ macro_rules! broker_admission_step {
         $owner.broker_mut()?.hello = Some($hello.clone());
     };
 
-    (Legacy, channel $owner:ident, $channel:ident) => {};
-    (Retained, channel $owner:ident, $channel:ident) => {
+    (Legacy, channel $owner:ident, $channel:ident, $child_channel:ident) => {};
+    (Retained, channel $owner:ident, $channel:ident, $child_channel:ident) => {
         $owner.channel = Some($channel);
+        match &mut $owner.binding {
+            RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
+                attempt.child_channel = Some($child_channel);
+            }
+            _ => std::process::abort(),
+        }
+    };
+    (Legacy, stdin $owner:ident, $child_channel:ident) => { Stdio::from($child_channel) };
+    (Retained, stdin $owner:ident, $child_channel:ident) => {
+        Stdio::from(match &mut $owner.binding {
+            RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => {
+                match attempt.child_channel.take() {
+                    Some(channel) => channel,
+                    None => std::process::abort(),
+                }
+            }
+            _ => std::process::abort(),
+        })
     };
     (Legacy, image_ref $owner:ident, $image:ident) => { $image };
     (Retained, image_ref $owner:ident, $image:ident) => { $owner.broker_image()? };
@@ -299,35 +327,43 @@ macro_rules! broker_admission_step {
 macro_rules! broker_admission_recipe {
     ($mode:ident, $owner:ident, $profile:ident, $salt:ident, $auth:ident,
         $locks:ident, $launch:ident) => {{
+        broker_admission_step!($mode, deadline $owner);
         require_broker_floor_owner_v1($profile.endpoint())?;
         if Sha256::digest($salt).as_slice() != $profile.salt_key_name_digest() {
             broker_admission_step!($mode, provisioning);
         }
+        broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, image $owner, image);
+        broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, service $owner, service, $profile, $launch);
 
         let nonce = broker_admission_step!($mode, error Entropy,
             crate::entropy::nonzero_random::<32, _>(&mut crate::entropy::KernelEntropy));
         broker_admission_step!($mode, nonce $owner, nonce);
+        broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, identities $owner, $locks, identities);
+        broker_admission_step!($mode, deadline $owner);
         let hello = encode_hello_v2($profile.endpoint(), nonce, $salt, identities)?;
         broker_admission_step!($mode, hello $owner, hello);
         let (channel, child_channel) = broker_admission_step!($mode, error Send,
             SeqpacketSocket::pair_with_record_subjects());
-        broker_admission_step!($mode, channel $owner, channel);
+        broker_admission_step!($mode, channel $owner, channel, child_channel);
+        broker_admission_step!($mode, deadline $owner);
         let child = OwnedHelperChildV1(broker_admission_step!($mode, error Child,
             Command::new(broker_admission_step!($mode, image_ref $owner, image).path())
                 .env_clear()
-                .stdin(Stdio::from(child_channel))
+                .stdin(broker_admission_step!($mode, stdin $owner, child_channel))
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn()));
         broker_admission_step!($mode, child $owner, child);
+        broker_admission_step!($mode, deadline $owner);
         let pid = NonZeroU32::new(
             broker_admission_step!($mode, child_ref $owner, child).0.id(),
         ).ok_or(FloorErrorV1::Unavailable)?;
         let pidfd = broker_admission_step!($mode, error Linux, PidFd::open(pid));
         broker_admission_step!($mode, pidfd $owner, pidfd);
+        broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, identity $owner, pidfd, process);
         broker_admission_step!($mode, image_mut $owner, image).require_executed(pid.get())?;
         broker_admission_step!($mode, helper $owner, $profile, pid);
@@ -337,6 +373,7 @@ macro_rules! broker_admission_recipe {
             nonce, channel, child, pidfd, process);
         broker_admission_step!($mode, result $owner.require_custody());
         $owner.require_broker_child()?;
+        broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, measured $owner);
         broker_admission_step!($mode, result $owner.send_frame(
             &hello[..], broker_admission_step!($mode, locks $owner, $locks), None));
@@ -352,15 +389,59 @@ macro_rules! broker_admission_recipe {
             $profile.endpoint(), nonce, broker_admission_step!($mode, auth $owner, $auth),
         )?;
         broker_admission_step!($mode, authentication $owner, authentication);
+        broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, result $owner.send_frame(
             &authentication[..], SentLocksV1::None, None));
         drop(authentication);
         broker_admission_step!($mode, read $owner, $profile);
+        broker_admission_step!($mode, deadline $owner);
         broker_admission_step!($mode, finish $owner)
     }};
 }
 
 impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
+    /// Binds comparison DATA only on the actual fresh retained Broker attempt.
+    ///
+    /// # Errors
+    /// Refuses replacement, a non-Broker/unfinished owner or an expired cutoff.
+    pub(crate) fn bind_broker_cold_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        let attempt = self.broker_mut().map_err(PhysicalTpmFailureV1::broker_error)?;
+        if attempt.phase != BrokerPhysicalPhaseV1::Fresh || attempt.cold_deadline.is_some() {
+            return Err(attempt.close(PhysicalTpmFailureV1::State));
+        }
+        attempt.cold_deadline = Some(deadline);
+        self.check_broker_cold_deadline().map_err(PhysicalTpmFailureV1::broker_error)
+    }
+
+    /// Checks original child custody and the same cutoff before retirement.
+    ///
+    /// # Errors
+    /// Fences a changed, unfinished, replaced or expired retained Broker phase.
+    pub(crate) fn require_broker_cold_retirement(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        let operation = BrokerPhysicalOperationV1::begin(self, BrokerPhysicalPhaseV1::Ready)?;
+        let result = (|| {
+            if operation.owner.broker()?.cold_deadline != Some(deadline) {
+                return Err(PhysicalTpmFailureV1::State);
+            }
+            operation.owner.require_custody()?;
+            operation.owner.check_broker_cold_deadline()
+        })();
+        operation.finish(result)
+    }
+
+    /// Removes only temporary comparison DATA after all outer final bookends.
+    pub(crate) fn clear_broker_cold_deadline(&mut self) {
+        if let RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } = &mut self.binding {
+            attempt.cold_deadline = None;
+        }
+    }
+
     /// Opens the same fixed Broker child from its restricted actual inputs.
     ///
     /// # Errors
@@ -401,6 +482,8 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
                     request_attempted: false,
                     acknowledgment: None,
                     observation: None,
+                    cold_deadline: None,
+                    child_channel: None,
                 }),
             },
             nonce: [0; 32],
@@ -428,6 +511,47 @@ impl RetainedPhysicalTpmOwnerV1<'static, 'static, 'static> {
 }
 
 impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'startup> {
+    fn check_broker_cold_deadline(&mut self) -> Result<(), PhysicalTpmFailureV1> {
+        if let RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } = &mut self.binding {
+            if let Some(deadline) = attempt.cold_deadline {
+                if let Err(cause) = deadline.check() {
+                    if attempt.first_failure.is_none() {
+                        attempt.first_failure = Some(BrokerPhysicalFailureV1::Deadline(cause));
+                    }
+                    attempt.phase = BrokerPhysicalPhaseV1::Failed;
+                    return Err(FloorErrorV1::Unavailable.into());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn broker_wait_deadline(&mut self, frame_limit: Instant) -> Result<Instant, PhysicalTpmFailureV1> {
+        self.check_broker_cold_deadline()?;
+        let original = match &self.binding {
+            RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => attempt.cold_deadline,
+            _ => None,
+        };
+        if let Some(original) = original {
+            let remaining = original.remaining();
+            let remaining = match remaining {
+                Ok(remaining) => remaining,
+                Err(cause) => {
+                    let attempt = self.broker_mut()?;
+                    if attempt.first_failure.is_none() {
+                        attempt.first_failure = Some(BrokerPhysicalFailureV1::Deadline(cause));
+                    }
+                    attempt.phase = BrokerPhysicalPhaseV1::Failed;
+                    return Err(FloorErrorV1::Unavailable.into());
+                }
+            };
+            // BOOTTIME remains the authority for expiry (including suspension).
+            // Instant supplies only the existing poll helper's bounded wait.
+            return Ok(frame_limit.min(Instant::now() + Duration::from_nanos(remaining)));
+        }
+        Ok(frame_limit)
+    }
+
     pub(in crate::tpm_nv_custody) fn retain_host(
         binding: RetainedHostPhysicalBindingV1<'owner, 'origin, 'startup>,
     ) -> Self {
@@ -718,12 +842,14 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
         }
         let deadline = Instant::now() + EXCHANGE_TIMEOUT;
         loop {
+            let wait_deadline = self.broker_wait_deadline(deadline)?;
             wait_channel(
                 self.channel()?.as_fd().map_err(|error| self.send_error(error))?,
                 PollFlags::OUT,
-                deadline,
+                wait_deadline,
             )
             .map_err(|error| self.wait_error(error))?;
+            self.check_broker_cold_deadline()?;
             if let Some(frame) = frame {
                 self.require_custody()?;
                 if Instant::now() >= deadline {
@@ -744,7 +870,10 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 SentLocksV1::None => channel.send(bytes),
             };
             match sent {
-                Ok(()) => return Ok(()),
+                Ok(()) => {
+                    self.check_broker_cold_deadline()?;
+                    return Ok(());
+                }
                 Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {}
                 Err(error) => return Err(self.send_error(error)),
             }
@@ -758,12 +887,14 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
     ) -> Result<ReceivedFrameV1, PhysicalTpmFailureV1> {
         let deadline = Instant::now() + EXCHANGE_TIMEOUT;
         loop {
+            let wait_deadline = self.broker_wait_deadline(deadline)?;
             wait_channel(
                 self.channel()?.as_fd().map_err(|error| self.send_error(error))?,
                 PollFlags::IN,
-                deadline,
+                wait_deadline,
             )
             .map_err(|error| self.wait_error(error))?;
+            self.check_broker_cold_deadline()?;
             let frame = if self.is_host() {
                 self.require_custody()?;
                 if Instant::now() >= deadline {
@@ -807,6 +938,7 @@ impl<'owner, 'origin, 'startup> RetainedPhysicalTpmOwnerV1<'owner, 'origin, 'sta
                 };
                 ReceivedFrameV1::Broker(received)
             };
+            self.check_broker_cold_deadline()?;
             let credentials = self.received_record(&frame)?.subject().credentials();
             if credentials.pid().get() != self.child()?.0.id()
                 || credentials.uid() != rustix::process::geteuid().as_raw()
@@ -1186,6 +1318,10 @@ impl<'operation, 'owner, 'origin, 'startup>
     }
 
     fn finish<T>(mut self, result: Result<T, PhysicalTpmFailureV1>) -> Result<T, FloorErrorV1> {
+        let result = match result {
+            Ok(value) => self.owner.check_broker_cold_deadline().map(|()| value),
+            Err(cause) => Err(cause),
+        };
         let result = match &mut self.owner.binding {
             RetainedPhysicalBindingV1::Broker { attempt: Some(attempt), .. } => match result {
                 Ok(value)

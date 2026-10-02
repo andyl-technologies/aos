@@ -948,6 +948,414 @@ struct InertProvisionalClientSession {
     _transcript: VerifiedBrokerSessionTranscriptV1,
 }
 
+// Only the last verified HELLO edge constructs this move-only handoff. It
+// keeps every original flight/subject while cold journal admission borrows it.
+pub(super) struct VerifiedStorageHandshakeV1 {
+    root: &'static str,
+    custody: Option<FixedEndpointCustodyV1>,
+    carrier: Option<HandshakeCarrier>,
+    transcript: Option<VerifiedBrokerSessionTranscriptV1>,
+    client_packet: Vec<u8>,
+    broker_packet: Vec<u8>,
+    _witnesses: VerifiedStorageWitnessesV1,
+}
+
+enum VerifiedStorageWitnessesV1 {
+    Client {
+        _publication: Vec<u8>,
+        _publication_subject: RetainedSubject,
+        _broker_subject: RetainedSubject,
+    },
+    Broker {
+        _publication: [u8; BROKER_SESSION_ENDPOINT_PUBLICATION_BYTES],
+        _client_subject: RetainedSubject,
+    },
+}
+
+#[derive(Clone, Copy)]
+enum HandshakeCompletionV1 {
+    Legacy,
+    RetainStorage,
+}
+
+/// Carries the original fixed cold-flight cutoff as comparison DATA only.
+///
+/// This does not authorize a socket, floor or operation. Installed fixed
+/// callers derive it once at their old handshake boundary and retain it
+/// through every cold-open phase; no lower phase manufactures a new cutoff.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct OriginalBrokerColdDeadlineV1(u64);
+
+impl OriginalBrokerColdDeadlineV1 {
+    /// Samples the installed Controller's original ten-second cutoff once.
+    ///
+    /// # Errors
+    /// Returns the existing transport projection for clock/overflow failure.
+    pub(crate) fn controller() -> Result<Self, crate::DormantBrokerSessionHandshakeErrorV1> {
+        crate::production_deadline_after(std::time::Duration::from_secs(10))
+            .map(Self)
+            .map_err(|_| crate::DormantBrokerSessionHandshakeErrorV1::Transport)
+    }
+
+    // The installed Storage accept loop already sampled its original 30s D.
+    // Preserve that exact DATA rather than sampling again after acceptance.
+    pub(super) const fn storage_accept(deadline: u64) -> Self {
+        Self(deadline)
+    }
+
+    pub(crate) fn value(self) -> u64 {
+        self.0
+    }
+
+    /// Samples the existing direct BOOTTIME comparator against the same D.
+    ///
+    /// # Errors
+    /// Preserves the existing clock/encoding and expiry error cases.
+    pub(crate) fn remaining(self) -> Result<u64, crate::DormantBrokerSessionHandshakeErrorV1> {
+        crate::dormant_handshake::remaining_handshake_nanoseconds(self.0)
+    }
+
+    /// Rejects expiry without altering the original cutoff.
+    ///
+    /// # Errors
+    /// Preserves direct clock/encoding failure and deadline expiry.
+    pub(crate) fn check(self) -> Result<(), crate::DormantBrokerSessionHandshakeErrorV1> {
+        self.remaining().map(|_| ())
+    }
+}
+
+pub(super) enum ColdClientHandshakeProgressV1 {
+    Pending(DormantControllerClientHandshakeV1),
+    Complete(DormantAuthenticatedBrokerSessionV1),
+    Verified(VerifiedStorageHandshakeV1),
+}
+
+pub(super) enum ColdBrokerHandshakeProgressV1 {
+    Pending(DormantBrokerEndpointHandshakeV1),
+    Complete(DormantAuthenticatedBrokerSessionV1),
+    Verified(VerifiedStorageHandshakeV1),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum StorageColdPhaseV1 {
+    Fresh,
+    Checking,
+    Complete,
+    Failed,
+}
+
+impl StorageColdPhaseV1 {
+    fn may_begin(self) -> bool {
+        self == Self::Fresh
+    }
+
+    fn is_unfinished(self) -> bool {
+        self != Self::Complete
+    }
+}
+
+/// Owns one genuine post-VERIFIED HELLO while cold admission borrows it.
+///
+/// All returned owners are parked before later gates. Its first outer cause
+/// is separate from native/physical causes and cleanup debt retained below.
+/// An unfinished selected owner cannot be silently dropped or resumed.
+pub(crate) struct RetainedStorageColdOpenV1 {
+    verified: VerifiedStorageHandshakeV1,
+    deadline: OriginalBrokerColdDeadlineV1,
+    checkpoint: Option<HistoricalSessionCheckpointV1>,
+    main: Option<crate::recovery::BrokerMainOpenV1>,
+    owner: Option<ProtectedBrokerSessionOwnerV1>,
+    phase: StorageColdPhaseV1,
+    first_failure: Option<crate::DormantBrokerSessionHandshakeErrorV1>,
+}
+
+impl RetainedStorageColdOpenV1 {
+    pub(super) fn retain(
+        verified: VerifiedStorageHandshakeV1,
+        deadline: OriginalBrokerColdDeadlineV1,
+    ) -> Self {
+        Self {
+            verified,
+            deadline,
+            checkpoint: None,
+            main: None,
+            owner: None,
+            phase: StorageColdPhaseV1::Fresh,
+            first_failure: None,
+        }
+    }
+
+    pub(crate) fn is_failed(&self) -> bool {
+        self.phase.is_unfinished()
+    }
+
+    /// Transfers a fully checked session only after final same-D retirement.
+    ///
+    /// # Errors
+    /// Stores the first actual outer rejection and leaves all originals
+    /// resident; an unfinished/failed operation can never be started again.
+    pub(crate) fn finish(
+        &mut self,
+        expected_node: Option<[u8; 16]>,
+    ) -> Result<DormantAuthenticatedBrokerSessionV1, crate::DormantBrokerSessionHandshakeErrorV1> {
+        if !self.phase.may_begin() {
+            return Err(self.failure_projection());
+        }
+        self.phase = StorageColdPhaseV1::Checking;
+        if let Err(cause) = self.admit(expected_node) {
+            self.first_failure = Some(cause);
+            self.phase = StorageColdPhaseV1::Failed;
+            return Err(self.failure_projection());
+        }
+
+        // These shapes were checked before cutoff retirement. No allocation,
+        // observation or fallible gate follows the pure owning handoff.
+        let owner = match self.owner.take() {
+            Some(owner) => owner,
+            None => std::process::abort(),
+        };
+        let checkpoint = match self.checkpoint.take() {
+            Some(checkpoint) => checkpoint,
+            None => std::process::abort(),
+        };
+        let transcript = match self.verified.transcript.take() {
+            Some(transcript) => transcript,
+            None => std::process::abort(),
+        };
+        let socket = match self.verified.carrier.take() {
+            Some(HandshakeCarrier {
+                transport: HandshakeTransport::Ordinary(socket),
+                ..
+            }) => socket,
+            _ => std::process::abort(),
+        };
+        self.phase = StorageColdPhaseV1::Complete;
+        Ok(DormantAuthenticatedBrokerSessionV1 {
+            owner,
+            socket,
+            transcript,
+            checkpoint,
+        })
+    }
+
+    fn admit(
+        &mut self,
+        expected_node: Option<[u8; 16]>,
+    ) -> Result<(), crate::DormantBrokerSessionHandshakeErrorV1> {
+        self.deadline.check()?;
+        let transcript = self.verified.transcript
+            .as_ref()
+            .ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
+        let custody = self.verified.custody
+            .as_mut()
+            .ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
+        let context = match custody {
+            FixedEndpointCustodyV1::Client(custody) => {
+                custody.context_for_handshake(transcript.broker_process())?
+            }
+            FixedEndpointCustodyV1::Broker(custody) => {
+                custody.context_for_handshake(transcript.client_process())?
+            }
+        };
+        self.deadline.check()?;
+        let socket = match self.verified.carrier.as_ref() {
+            Some(HandshakeCarrier {
+                transport: HandshakeTransport::Ordinary(socket),
+                ..
+            }) => socket,
+            _ => return Err(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole),
+        };
+        let credentials = socket.peer().credentials();
+        let peer = PeerCredentials {
+            uid: credentials.uid(),
+            gid: credentials.gid(),
+            pid: Some(credentials.pid().get()),
+        };
+        self.checkpoint = Some(HistoricalSessionCheckpointV1::new(
+            context,
+            &self.verified.client_packet,
+            &self.verified.broker_packet,
+            peer,
+            transcript,
+        )?);
+        self.deadline.check()?;
+
+        let main = crate::recovery::BrokerMainOpenV1::prepare_storage(
+            self.verified.root,
+            &mut self.verified.custody,
+            self.deadline,
+        )?;
+        self.main = Some(main);
+        let main = self.main
+            .as_mut()
+            .ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
+        self.deadline.check()?;
+        main.open()?;
+        main.finish_into(&mut self.owner);
+        self.deadline.check()?;
+        let owner = self.owner
+            .as_mut()
+            .ok_or(crate::DormantBrokerSessionHandshakeErrorV1::EndpointRole)?;
+        match expected_node {
+            Some(node) => owner.require_current_node(node, transcript, socket.peer())?,
+            None => owner.revalidate_transport(transcript, socket.peer())?,
+        }
+        self.deadline.check()?;
+
+        // Final node/startup/currentness observations precede the final same-D
+        // check inside retirement. Witnesses remain here until success drops
+        // this emptied shell; no failure releases them or grants retry.
+        owner.retire_cold_deadline(self.deadline)?;
+        Ok(())
+    }
+
+    fn failure_projection(&self) -> crate::DormantBrokerSessionHandshakeErrorV1 {
+        project_cold_failure(self.first_failure.as_ref())
+    }
+}
+
+fn project_cold_failure(
+    cause: Option<&crate::DormantBrokerSessionHandshakeErrorV1>,
+) -> crate::DormantBrokerSessionHandshakeErrorV1 {
+    use crate::DormantBrokerSessionHandshakeErrorV1 as Error;
+    match cause {
+        Some(Error::EndpointRole) => Error::EndpointRole,
+        Some(Error::Protected(error)) => Error::Protected(error.clone()),
+        Some(Error::RemoteInvalid) => Error::RemoteInvalid,
+        Some(Error::KernelEvidence) => Error::KernelEvidence,
+        Some(Error::Transport) => Error::Transport,
+        Some(Error::Deadline) => Error::Deadline,
+        None => Error::Protected(BrokerSessionSecurityError::Currentness),
+    }
+}
+
+impl Drop for RetainedStorageColdOpenV1 {
+    fn drop(&mut self) {
+        if self.phase.is_unfinished() {
+            // This is a terminal safety fence, not drain or recovery of a raw
+            // pre-return prefix. Originals remain until process termination.
+            std::process::abort();
+        }
+    }
+}
+
+#[cfg(test)]
+mod storage_cold_data_tests {
+    use super::{OriginalBrokerColdDeadlineV1, StorageColdPhaseV1, project_cold_failure};
+    use crate::{BrokerSessionSecurityError, DormantBrokerSessionHandshakeErrorV1 as Error};
+
+    #[test]
+    fn only_fresh_phase_can_begin() {
+        assert!(StorageColdPhaseV1::Fresh.may_begin());
+        for phase in [
+            StorageColdPhaseV1::Checking,
+            StorageColdPhaseV1::Complete,
+            StorageColdPhaseV1::Failed,
+        ] {
+            assert!(!phase.may_begin());
+        }
+    }
+
+    #[test]
+    fn every_unfinished_parked_phase_is_closed_to_replacement() {
+        for phase in [
+            StorageColdPhaseV1::Fresh,
+            StorageColdPhaseV1::Checking,
+            StorageColdPhaseV1::Failed,
+        ] {
+            assert!(phase.is_unfinished());
+        }
+        assert!(!StorageColdPhaseV1::Complete.is_unfinished());
+    }
+
+    #[test]
+    fn storage_deadline_data_preserves_original_without_renewal() {
+        for original in [0, 1, 10_000_000_000, 30_000_000_000, u64::MAX] {
+            let deadline = OriginalBrokerColdDeadlineV1::storage_accept(original);
+            let retained_copy = deadline;
+
+            assert_eq!(deadline.value(), original);
+            assert_eq!(retained_copy.value(), original);
+        }
+    }
+
+    #[test]
+    fn outer_projection_preserves_each_actual_typed_case() {
+        for cause in [
+            Error::EndpointRole,
+            Error::Protected(BrokerSessionSecurityError::Currentness),
+            Error::RemoteInvalid,
+            Error::KernelEvidence,
+            Error::Transport,
+            Error::Deadline,
+        ] {
+            let projected = project_cold_failure(Some(&cause));
+
+            assert_eq!(projected.to_string(), cause.to_string());
+        }
+    }
+
+    #[test]
+    fn absent_diagnostic_is_currentness_not_retry_or_drain() {
+        assert!(matches!(
+            project_cold_failure(None),
+            Error::Protected(BrokerSessionSecurityError::Currentness),
+        ));
+    }
+}
+
+impl VerifiedStorageHandshakeV1 {
+    fn client(root: &'static str, session: InertProvisionalClientSession) -> Self {
+        let InertProvisionalClientSession {
+            _custody: custody,
+            _carrier: carrier,
+            _publication_packet: publication,
+            _client_packet: client_packet,
+            _broker_packet: broker_packet,
+            _publication_subject: publication_subject,
+            _broker_subject: broker_subject,
+            _transcript: transcript,
+        } = session;
+        Self {
+            root,
+            custody: Some(FixedEndpointCustodyV1::Client(custody)),
+            carrier: Some(carrier),
+            transcript: Some(transcript),
+            client_packet,
+            broker_packet,
+            _witnesses: VerifiedStorageWitnessesV1::Client {
+                _publication: publication,
+                _publication_subject: publication_subject,
+                _broker_subject: broker_subject,
+            },
+        }
+    }
+
+    fn broker(root: &'static str, session: InertProvisionalBrokerSession) -> Self {
+        let InertProvisionalBrokerSession {
+            _custody: custody,
+            _carrier: carrier,
+            _publication: publication,
+            _client_packet: client_packet,
+            _client_subject: client_subject,
+            _broker_packet: broker_packet,
+            _transcript: transcript,
+        } = session;
+        Self {
+            root,
+            custody: Some(FixedEndpointCustodyV1::Broker(custody)),
+            carrier: Some(carrier),
+            transcript: Some(transcript),
+            client_packet,
+            broker_packet,
+            _witnesses: VerifiedStorageWitnessesV1::Broker {
+                _publication: publication,
+                _client_subject: client_subject,
+            },
+        }
+    }
+}
+
 /// Reports failure of an explicitly driven dormant protected handshake.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum DormantBrokerSessionHandshakeErrorV1 {
@@ -1025,18 +1433,42 @@ impl DormantControllerClientHandshakeV1 {
     /// protected-custody failure, or a non-retryable transport failure.
     pub(super) fn advance(
         self,
-    ) -> Result<DormantControllerClientHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1>
-    {
+    ) -> Result<DormantControllerClientHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        match self.advance_with_completion(HandshakeCompletionV1::Legacy)? {
+            ColdClientHandshakeProgressV1::Pending(pending) => {
+                Ok(DormantControllerClientHandshakeProgressV1::Pending(pending))
+            }
+            ColdClientHandshakeProgressV1::Complete(session) => {
+                Ok(DormantControllerClientHandshakeProgressV1::Complete(session))
+            }
+            ColdClientHandshakeProgressV1::Verified(_) => {
+                Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole)
+            }
+        }
+    }
+
+    // The same three-flight reducer returns the real verified handoff before
+    // context/checkpoint/main/floor work. Earlier raw receive gaps are unchanged.
+    pub(super) fn advance_retaining_storage(
+        self,
+    ) -> Result<ColdClientHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.advance_with_completion(HandshakeCompletionV1::RetainStorage)
+    }
+
+    fn advance_with_completion(
+        self,
+        completion: HandshakeCompletionV1,
+    ) -> Result<ColdClientHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1> {
         match self.state {
             DormantClientHandshakeStateV1::AwaitPublication(state) => match state.receive() {
                 Transition::Complete(state) => {
-                    Ok(DormantControllerClientHandshakeProgressV1::Pending(Self {
+                    Ok(ColdClientHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantClientHandshakeStateV1::SendHello(state),
                     }))
                 }
                 Transition::Retry(state) => {
-                    Ok(DormantControllerClientHandshakeProgressV1::Pending(Self {
+                    Ok(ColdClientHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantClientHandshakeStateV1::AwaitPublication(state),
                     }))
@@ -1045,13 +1477,13 @@ impl DormantControllerClientHandshakeV1 {
             },
             DormantClientHandshakeStateV1::SendHello(state) => match state.send() {
                 Transition::Complete(state) => {
-                    Ok(DormantControllerClientHandshakeProgressV1::Pending(Self {
+                    Ok(ColdClientHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantClientHandshakeStateV1::AwaitBrokerHello(state),
                     }))
                 }
                 Transition::Retry(state) => {
-                    Ok(DormantControllerClientHandshakeProgressV1::Pending(Self {
+                    Ok(ColdClientHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantClientHandshakeStateV1::SendHello(state),
                     }))
@@ -1059,13 +1491,18 @@ impl DormantControllerClientHandshakeV1 {
                 Transition::Failed(error) => Err(error.into()),
             },
             DormantClientHandshakeStateV1::AwaitBrokerHello(state) => match state.receive() {
-                Transition::Complete(session) => {
-                    Ok(DormantControllerClientHandshakeProgressV1::Complete(
+                Transition::Complete(session) => match completion {
+                    HandshakeCompletionV1::Legacy => Ok(ColdClientHandshakeProgressV1::Complete(
                         DormantAuthenticatedBrokerSessionV1::from_client(self.root, session)?,
-                    ))
-                }
+                    )),
+                    HandshakeCompletionV1::RetainStorage => {
+                        Ok(ColdClientHandshakeProgressV1::Verified(
+                            VerifiedStorageHandshakeV1::client(self.root, session),
+                        ))
+                    }
+                },
                 Transition::Retry(state) => {
-                    Ok(DormantControllerClientHandshakeProgressV1::Pending(Self {
+                    Ok(ColdClientHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantClientHandshakeStateV1::AwaitBrokerHello(state),
                     }))
@@ -1133,18 +1570,42 @@ impl DormantBrokerEndpointHandshakeV1 {
     /// protected-custody failure, or a non-retryable transport failure.
     pub(super) fn advance(
         self,
-    ) -> Result<DormantBrokerEndpointHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1>
-    {
+    ) -> Result<DormantBrokerEndpointHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        match self.advance_with_completion(HandshakeCompletionV1::Legacy)? {
+            ColdBrokerHandshakeProgressV1::Pending(pending) => {
+                Ok(DormantBrokerEndpointHandshakeProgressV1::Pending(pending))
+            }
+            ColdBrokerHandshakeProgressV1::Complete(session) => {
+                Ok(DormantBrokerEndpointHandshakeProgressV1::Complete(session))
+            }
+            ColdBrokerHandshakeProgressV1::Verified(_) => {
+                Err(DormantBrokerSessionHandshakeErrorV1::EndpointRole)
+            }
+        }
+    }
+
+    // The same three-flight reducer returns the real verified handoff before
+    // context/checkpoint/main/floor work. Earlier raw receive gaps are unchanged.
+    pub(super) fn advance_retaining_storage(
+        self,
+    ) -> Result<ColdBrokerHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1> {
+        self.advance_with_completion(HandshakeCompletionV1::RetainStorage)
+    }
+
+    fn advance_with_completion(
+        self,
+        completion: HandshakeCompletionV1,
+    ) -> Result<ColdBrokerHandshakeProgressV1, DormantBrokerSessionHandshakeErrorV1> {
         match self.state {
             DormantBrokerHandshakeStateV1::SendPublication(state) => match state.send() {
                 Transition::Complete(state) => {
-                    Ok(DormantBrokerEndpointHandshakeProgressV1::Pending(Self {
+                    Ok(ColdBrokerHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantBrokerHandshakeStateV1::AwaitClientHello(state),
                     }))
                 }
                 Transition::Retry(state) => {
-                    Ok(DormantBrokerEndpointHandshakeProgressV1::Pending(Self {
+                    Ok(ColdBrokerHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantBrokerHandshakeStateV1::SendPublication(state),
                     }))
@@ -1153,13 +1614,13 @@ impl DormantBrokerEndpointHandshakeV1 {
             },
             DormantBrokerHandshakeStateV1::AwaitClientHello(state) => match state.receive() {
                 Transition::Complete(state) => {
-                    Ok(DormantBrokerEndpointHandshakeProgressV1::Pending(Self {
+                    Ok(ColdBrokerHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantBrokerHandshakeStateV1::SendHello(state),
                     }))
                 }
                 Transition::Retry(state) => {
-                    Ok(DormantBrokerEndpointHandshakeProgressV1::Pending(Self {
+                    Ok(ColdBrokerHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantBrokerHandshakeStateV1::AwaitClientHello(state),
                     }))
@@ -1167,13 +1628,18 @@ impl DormantBrokerEndpointHandshakeV1 {
                 Transition::Failed(error) => Err(error.into()),
             },
             DormantBrokerHandshakeStateV1::SendHello(state) => match state.send() {
-                Transition::Complete(session) => {
-                    Ok(DormantBrokerEndpointHandshakeProgressV1::Complete(
+                Transition::Complete(session) => match completion {
+                    HandshakeCompletionV1::Legacy => Ok(ColdBrokerHandshakeProgressV1::Complete(
                         DormantAuthenticatedBrokerSessionV1::from_broker(self.root, session)?,
-                    ))
-                }
+                    )),
+                    HandshakeCompletionV1::RetainStorage => {
+                        Ok(ColdBrokerHandshakeProgressV1::Verified(
+                            VerifiedStorageHandshakeV1::broker(self.root, session),
+                        ))
+                    }
+                },
                 Transition::Retry(state) => {
-                    Ok(DormantBrokerEndpointHandshakeProgressV1::Pending(Self {
+                    Ok(ColdBrokerHandshakeProgressV1::Pending(Self {
                         root: self.root,
                         state: DormantBrokerHandshakeStateV1::SendHello(state),
                     }))

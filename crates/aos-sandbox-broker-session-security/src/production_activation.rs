@@ -72,6 +72,8 @@ struct FixedListenerV1 {
 /// a time.
 #[must_use = "retain the activation owner while accepting broker sessions"]
 pub struct ProductionBrokerSessionActivationV1 {
+    // Fence a failed selected cold flight before any activation field drops.
+    storage_cold: Option<crate::handshake::RetainedStorageColdOpenV1>,
     listeners: Vec<FixedListenerV1>,
     launch_image: Option<crate::production_startup::Pid1LaunchImageV1>,
 }
@@ -86,6 +88,15 @@ impl core::fmt::Debug for ProductionBrokerSessionActivationV1 {
 }
 
 impl ProductionBrokerSessionActivationV1 {
+    /// Reports only resident unfinished/failed Storage cold admission.
+    ///
+    /// This is a terminal diagnostic, never drain, readiness or retry evidence.
+    pub fn has_failed_storage_cold(&self) -> bool {
+        self.storage_cold
+            .as_ref()
+            .is_some_and(crate::handshake::RetainedStorageColdOpenV1::is_failed)
+    }
+
     pub(crate) fn retain_launch_image(
         &mut self,
         image: Option<crate::production_startup::Pid1LaunchImageV1>,
@@ -162,6 +173,7 @@ impl ProductionBrokerSessionActivationV1 {
         Ok(Self {
             listeners: fixed,
             launch_image: None,
+            storage_cold: None,
         })
     }
 
@@ -202,6 +214,7 @@ impl ProductionBrokerSessionActivationV1 {
         Ok(Self {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
+            storage_cold: None,
         })
     }
 
@@ -283,6 +296,7 @@ impl ProductionBrokerSessionActivationV1 {
         Ok(Self {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
+            storage_cold: None,
         })
     }
 
@@ -316,10 +330,18 @@ impl ProductionBrokerSessionActivationV1 {
     ///
     /// Returns an error for changed listener configuration, failed acceptance,
     /// expired polling, or any protected-handshake rejection.
+    /// A genuine Required Storage launch retains post-verified cold failure
+    /// here; callers must terminate/hold rather than accept a replacement.
     pub fn accept_authenticated(
         &mut self,
         deadline_boottime_nanoseconds: u64,
     ) -> Result<DormantAuthenticatedBrokerSessionV1, ProductionBrokerSessionActivationErrorV1> {
+        if self.has_failed_storage_cold() {
+            return Err(DormantBrokerSessionHandshakeErrorV1::Protected(
+                crate::BrokerSessionSecurityError::Currentness,
+            )
+            .into());
+        }
         loop {
             self.wait_until_ready(deadline_boottime_nanoseconds)?;
 
@@ -336,6 +358,16 @@ impl ProductionBrokerSessionActivationV1 {
                 let custody = custody
                     .retain_launch_image(self.launch_image.clone())
                     .map_err(DormantBrokerSessionHandshakeErrorV1::Protected)?;
+                if fixed.endpoint == ProtectedBrokerSessionFixedEndpointV1::StorageBroker
+                    && self.launch_image.is_some()
+                {
+                    let deadline = crate::handshake::OriginalBrokerColdDeadlineV1::storage_accept(
+                        deadline_boottime_nanoseconds,
+                    );
+                    return custody
+                        .complete_retained_storage_handshake(socket, deadline, &mut self.storage_cold)
+                        .map_err(Into::into);
+                }
                 return custody
                     .complete_production_broker_handshake(socket, deadline_boottime_nanoseconds)
                     .map_err(Into::into);
@@ -387,6 +419,7 @@ impl ProductionBrokerSessionActivationV1 {
         Ok(Self {
             listeners,
             launch_image: None,
+            storage_cold: None,
         })
     }
 
@@ -399,6 +432,7 @@ impl ProductionBrokerSessionActivationV1 {
         Ok(Self {
             listeners: vec![FixedListenerV1 { endpoint, listener }],
             launch_image: None,
+            storage_cold: None,
         })
     }
 

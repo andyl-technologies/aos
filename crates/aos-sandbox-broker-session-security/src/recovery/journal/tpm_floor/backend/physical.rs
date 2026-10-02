@@ -79,6 +79,13 @@ pub(in crate::recovery::journal::tpm_floor) struct PhysicalTpmNvIoV1 {
 }
 
 impl PhysicalTpmNvIoV1 {
+    pub(in crate::recovery::journal::tpm_floor) fn bind_cold_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.owner.bind_broker_cold_deadline(deadline)
+    }
+
     pub(in crate::recovery::journal::tpm_floor) fn open(
         profile: FloorProfileV1,
         salt_name: [u8; 34],
@@ -123,6 +130,20 @@ impl PhysicalTpmNvIoV1 {
 }
 
 impl sealed::Sealed for PhysicalTpmNvIoV1 {}
+
+// Restricted concrete forwarding only; no new sealed transport or factory.
+impl super::TpmNvExtendFloorBackendV1<PhysicalTpmNvIoV1> {
+    pub(in crate::recovery::journal::tpm_floor) fn require_cold_retirement(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        self.io.owner.require_broker_cold_retirement(deadline)
+    }
+
+    pub(in crate::recovery::journal::tpm_floor) fn clear_cold_deadline(&mut self) {
+        self.io.owner.clear_broker_cold_deadline();
+    }
+}
 
 impl AuthenticatedTpmNvIoV1 for PhysicalTpmNvIoV1 {
     fn read(&mut self, index: u32) -> Result<AuthenticatedNvObservationV1, FloorErrorV1> {

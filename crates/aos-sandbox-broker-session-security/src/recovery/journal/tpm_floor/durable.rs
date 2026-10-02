@@ -42,6 +42,7 @@ enum BrokerAttachmentFailureV1 {
     Native(aos_sandbox::JournalError),
     Endpoint(crate::BrokerSessionSecurityError),
     Unfinished,
+    Deadline(crate::DormantBrokerSessionHandshakeErrorV1),
 }
 
 /// Keeps genuine partial attachment owners resident before each later gate.
@@ -56,9 +57,62 @@ pub(super) struct BrokerAttachmentAttemptV1 {
     sidecar_lock: Option<ProtectedJournalLockCustodyV1>,
     phase: BrokerAttachmentPhaseV1,
     first_failure: Option<BrokerAttachmentFailureV1>,
+    cold_deadline: Option<crate::handshake::OriginalBrokerColdDeadlineV1>,
+    cold_failure: Option<crate::DormantBrokerSessionHandshakeErrorV1>,
 }
 
 impl BrokerAttachmentAttemptV1 {
+    pub(super) fn bind_cold_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Fresh || self.cold_deadline.is_some() {
+            self.fence();
+            return Err(FloorErrorV1::Unavailable);
+        }
+        self.cold_deadline = Some(deadline);
+        self.check_cold_deadline()
+    }
+
+    pub(super) fn check_cold_deadline(&mut self) -> Result<(), FloorErrorV1> {
+        if let Some(deadline) = self.cold_deadline {
+            if let Err(cause) = deadline.check() {
+                self.record(BrokerAttachmentFailureV1::Deadline(cause));
+                return Err(FloorErrorV1::Unavailable);
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn retire_cold_deadline(
+        &mut self,
+        deadline: crate::handshake::OriginalBrokerColdDeadlineV1,
+    ) -> Result<(), FloorErrorV1> {
+        if self.phase != BrokerAttachmentPhaseV1::Ready
+            || self.first_failure.is_some()
+            || self.cold_failure.is_some()
+            || self.cold_deadline != Some(deadline)
+        {
+            self.fence();
+            return Err(FloorErrorV1::Unavailable);
+        }
+        let result = self.backend
+            .as_mut()
+            .ok_or(FloorErrorV1::Unavailable)?
+            .require_cold_retirement(deadline);
+        if let Err(cause) = result {
+            self.record(BrokerAttachmentFailureV1::Floor(cause));
+            return Err(cause);
+        }
+        self.check_cold_deadline()?;
+        // No fallible work follows the final original-D observation.
+        if let Some(backend) = self.backend.as_mut() {
+            backend.clear_cold_deadline();
+        }
+        self.cold_deadline = None;
+        Ok(())
+    }
+
     pub(super) const fn fresh() -> Self {
         Self {
             backend: None,
@@ -69,6 +123,8 @@ impl BrokerAttachmentAttemptV1 {
             sidecar_lock: None,
             phase: BrokerAttachmentPhaseV1::Fresh,
             first_failure: None,
+            cold_deadline: None,
+            cold_failure: None,
         }
     }
 
@@ -142,13 +198,16 @@ impl BrokerAttachmentAttemptV1 {
         if self.phase != BrokerAttachmentPhaseV1::Checking {
             return Err(self.failure_projection());
         }
+        self.check_cold_deadline()?;
         traffic::BrokerTrafficWriterV1::borrow(owner).cuts(profile, None)?;
+        self.check_cold_deadline()?;
         self.require_endpoint(owner)?;
         self.opening = Some(BrokerSidecarOpenV1::prepare(
             owner.owner,
             &owner.directory,
             owner.limits,
         )?);
+        self.check_cold_deadline()?;
         let result = self.opening.as_mut()
             .ok_or(FloorErrorV1::Unavailable)?
             .open();
@@ -163,6 +222,7 @@ impl BrokerAttachmentAttemptV1 {
         // Only the empty opening shell moves away; the actual sidecar is now
         // resident BEFORE traffic's original endpoint postcheck.
         self.opening = None;
+        self.check_cold_deadline()?;
         self.require_endpoint(owner)?;
 
         self.main_lock = Some(
@@ -192,9 +252,15 @@ impl BrokerAttachmentAttemptV1 {
                 return Err(FloorErrorV1::Unavailable);
             }
         }
+        if let Some(deadline) = self.cold_deadline {
+            self.physical.as_mut().ok_or(FloorErrorV1::Unavailable)?
+                .bind_cold_deadline(deadline)?;
+        }
+        self.check_cold_deadline()?;
         self.physical.as_mut()
             .ok_or(FloorErrorV1::Unavailable)?
             .admit()?;
+        self.check_cold_deadline()?;
         if let Some(physical) = self.physical.take() {
             self.backend = Some(TpmNvExtendFloorBackendV1::retain(profile, physical));
         } else {
@@ -262,6 +328,8 @@ impl BrokerAttachmentAttemptV1 {
             store: self.store.as_mut().ok_or(FloorErrorV1::Unavailable)?,
             traffic,
             profile,
+            cold_deadline: self.cold_deadline,
+            cold_failure: Some(&mut self.cold_failure),
         })
     }
 }
@@ -274,9 +342,14 @@ pub(super) struct BrokerAttachmentOperationV1<'operation> {
 impl BrokerAttachmentOperationV1<'_> {
     pub(super) fn finish<T>(mut self, result: Result<T, FloorErrorV1>) -> Result<T, FloorErrorV1> {
         let result = match result {
+            Ok(value) => self.attempt.check_cold_deadline().map(|()| value),
+            Err(cause) => Err(cause),
+        };
+        let result = match result {
             Ok(value)
                 if self.attempt.phase == BrokerAttachmentPhaseV1::Checking
-                    && self.attempt.first_failure.is_none() =>
+                    && self.attempt.first_failure.is_none()
+                    && self.attempt.cold_failure.is_none() =>
             {
                 self.attempt.phase = BrokerAttachmentPhaseV1::Ready;
                 Ok(value)
@@ -417,6 +490,8 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1> DurableTpmFloorV1
             store: &mut self.store,
             traffic: &mut self.traffic,
             profile: self.profile,
+            cold_deadline: None,
+            cold_failure: None,
         }
     }
 
@@ -461,22 +536,32 @@ struct BorrowedDurableFloorV1<'operation, Traffic, Io> {
     store: &'operation mut FloorStoreV1,
     traffic: &'operation mut Traffic,
     profile: FloorProfileV1,
+    cold_deadline: Option<crate::handshake::OriginalBrokerColdDeadlineV1>,
+    cold_failure: Option<&'operation mut Option<crate::DormantBrokerSessionHandshakeErrorV1>>,
 }
 
 impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
     BorrowedDurableFloorV1<'_, Traffic, Io>
 {
+    fn check_cold_deadline(&mut self) -> Result<(), FloorErrorV1> {
+        check_borrowed_cold_deadline(self.cold_deadline, &mut self.cold_failure)
+    }
+
     /// Persists the full exact transaction before the first possible NV extension.
     ///
     /// A failure after the append grants no vacant preparation or retry. The
     /// consuming compatibility owner must be reopened; Required production
     /// keeps its failed originals resident and refuses reopening that owner.
     pub(super) fn prepare(&mut self, transaction: &JournalTransaction) -> Result<(), FloorErrorV1> {
+        self.check_cold_deadline()?;
         let stored = self.store.read(self.profile)?;
+        self.check_cold_deadline()?;
         if stored.prepared.is_some() {
             return Err(FloorErrorV1::Diverged);
         }
+        self.check_cold_deadline()?;
         let (current, target) = self.traffic.cuts(self.profile, Some(transaction))?;
+        self.check_cold_deadline()?;
         if current != stored.checkpoint.cut()
             || self.backend.read()? != stored.checkpoint.nv_value()
         {
@@ -484,8 +569,10 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
         }
         let target = target.ok_or(FloorErrorV1::Successor)?;
         let intent = FloorIntentV1::new(self.profile, stored.checkpoint, target, transaction)?;
+        self.check_cold_deadline()?;
         self.store
             .prepare(self.profile, &stored, intent, transaction)?;
+        self.check_cold_deadline()?;
 
         // A changed traffic name/cut after durable prepare closes recovery. It
         // does not replace the retained target or roll the preparation back.
@@ -493,7 +580,9 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
         if after != current || prospective != Some(target) {
             return Err(FloorErrorV1::Diverged);
         }
+        self.check_cold_deadline()?;
         let retained = self.store.read(self.profile)?;
+        self.check_cold_deadline()?;
         if retained.checkpoint != stored.checkpoint
             || !retained
                 .prepared
@@ -528,9 +617,13 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
             let profile = self.profile;
             let traffic = &mut *self.traffic;
             let store = &mut *self.store;
+            let deadline = self.cold_deadline;
+            let cold_failure = &mut self.cold_failure;
             let advanced = self.backend.advance_with_held_cut(*intent, || {
+                check_borrowed_cold_deadline(deadline, cold_failure)?;
                 require_prospective_cut(traffic, profile, *intent, transaction)?;
-                store.validate_final_preflight(&suffix, &stored, profile)
+                store.validate_final_preflight(&suffix, &stored, profile)?;
+                check_borrowed_cold_deadline(deadline, cold_failure)
             })?;
             if advanced == FloorAdvanceV1::NotAdvanced {
                 self.classify()?;
@@ -547,8 +640,10 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
             require_prospective_cut(&mut *self.traffic, self.profile, *intent, transaction)?;
             self.store
                 .validate_final_preflight(&suffix, &stored, self.profile)?;
+            self.check_cold_deadline()?;
             self.traffic
                 .commit_exact(self.profile, *intent, transaction)?;
+            self.check_cold_deadline()?;
         }
 
         let (stored, phase) = self.classify()?;
@@ -559,7 +654,9 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
         if self.backend.read()? != intent.target().nv_value() {
             return Err(FloorErrorV1::Diverged);
         }
+        self.check_cold_deadline()?;
         self.store.finalize(self.profile, &stored)?;
+        self.check_cold_deadline()?;
         let (_, phase) = self.classify()?;
         if phase != FloorRecoveryV1::Current {
             return Err(FloorErrorV1::Diverged);
@@ -577,11 +674,17 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
     }
 
     fn classify(&mut self) -> Result<(StoredFloorV1, FloorRecoveryV1), FloorErrorV1> {
+        self.check_cold_deadline()?;
         let stored = self.store.read(self.profile)?;
+        self.check_cold_deadline()?;
         let (cut, _) = self.traffic.cuts(self.profile, None)?;
+        self.check_cold_deadline()?;
         let nv = self.backend.read()?;
+        self.check_cold_deadline()?;
         self.store.require_same(&stored, self.profile)?;
+        self.check_cold_deadline()?;
         let (after, _) = self.traffic.cuts(self.profile, None)?;
+        self.check_cold_deadline()?;
         if after != cut {
             return Err(FloorErrorV1::Diverged);
         }
@@ -602,10 +705,30 @@ impl<Traffic: HeldTrafficWriterV1, Io: AuthenticatedTpmNvIoV1>
         transaction: &JournalTransaction,
     ) -> Result<FinalSuffixPreflightV1, FloorErrorV1> {
         require_prospective_cut(&mut *self.traffic, self.profile, intent, transaction)?;
+        self.check_cold_deadline()?;
         let suffix = self.store.preflight_final(stored, self.profile)?;
+        self.check_cold_deadline()?;
         self.store.require_same(stored, self.profile)?;
+        self.check_cold_deadline()?;
         Ok(suffix)
     }
+}
+
+fn check_borrowed_cold_deadline(
+    deadline: Option<crate::handshake::OriginalBrokerColdDeadlineV1>,
+    failure: &mut Option<&mut Option<crate::DormantBrokerSessionHandshakeErrorV1>>,
+) -> Result<(), FloorErrorV1> {
+    if let Some(deadline) = deadline {
+        if let Err(cause) = deadline.check() {
+            if let Some(slot) = failure.as_mut() {
+                if slot.is_none() {
+                    **slot = Some(cause);
+                }
+            }
+            return Err(FloorErrorV1::Unavailable);
+        }
+    }
+    Ok(())
 }
 
 fn require_prospective_cut(
@@ -620,6 +743,23 @@ fn require_prospective_cut(
         return Err(FloorErrorV1::Diverged);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cold_cutoff_data_tests {
+    use super::check_borrowed_cold_deadline;
+
+    #[test]
+    fn legacy_none_performs_no_clock_check_or_cause_replacement() {
+        let mut cause = Some(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid);
+        let mut slot = Some(&mut cause);
+
+        assert!(check_borrowed_cold_deadline(None, &mut slot).is_ok());
+        assert!(matches!(
+            cause,
+            Some(crate::DormantBrokerSessionHandshakeErrorV1::RemoteInvalid),
+        ));
+    }
 }
 
 /// Retains the two non-traffic owners between opaque reconciliation borrows.
