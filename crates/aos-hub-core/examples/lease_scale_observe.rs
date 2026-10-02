@@ -8,6 +8,26 @@
 //! The input is an owner-private JSON file containing `version`, `issuerKeyId`,
 //! `issuerPublicKey` and up to 4,096 `pairs`. Each pair names exact private request
 //! and reply files plus their SHA-256 and byte counts and the original owner nonce.
+//!
+//! ```json
+//! {
+//!   "version": 1,
+//!   "issuerKeyId": "selected-issuer",
+//!   "issuerPublicKey": "<64 lowercase hexadecimal characters>",
+//!   "pairs": [{
+//!     "ownerNonce": "<64 lowercase hexadecimal characters>",
+//!     "requestFile": "/private/request.body",
+//!     "requestSha256": "<64 lowercase hexadecimal characters>",
+//!     "requestBytes": 1024,
+//!     "replyFile": "/private/reply.body",
+//!     "replySha256": "<64 lowercase hexadecimal characters>",
+//!     "replyBytes": 2048
+//!   }]
+//! }
+//! ```
+//!
+//! These illustrative values establish neither private file custody nor issuer
+//! trust; the selected files and externally pinned key are validated at execution.
 
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
