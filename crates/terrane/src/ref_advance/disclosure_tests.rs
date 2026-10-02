@@ -13,6 +13,197 @@ use terrane_core::identity::{IdentityKind, TERRANE_V1};
 use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
+/// Creates real independently generated signing credentials and protected state.
+async fn independent_factory() -> (
+    NativeFixture<TokioLocalFs>,
+    crate::repository::local_authority::LocalAuthority,
+    std::path::PathBuf,
+) {
+    use crate::repository::local_authority::{LocalAuthority, LocalAuthorityParameters};
+    use crate::store::LocalFs;
+    use std::os::unix::fs::MetadataExt;
+    use terrane_core::auth::{Authority, Grant, Verbs};
+
+    let raw = raw_fixture().await;
+    let root = raw.store().root().to_owned();
+    let credentials = root.with_file_name(format!(
+        "{}-credentials",
+        root.file_name().unwrap().to_string_lossy(),
+    ));
+    let owner_uid = TokioLocalFs.metadata(&root).await.unwrap().uid();
+    let authority = LocalAuthority::initialize(
+        &TokioLocalFs,
+        &root,
+        &credentials,
+        LocalAuthorityParameters {
+            owner_uid,
+            authority: Authority {
+                issuer: "local".into(),
+                key_id: "initial".into(),
+                subject: "writer".into(),
+                kind: terrane_core::refs::PrincipalKind::Human,
+                groups: Vec::new(),
+                not_after: u64::MAX,
+                not_before: None,
+                token_id: TokioLocalFs
+                    .random_bytes(16)
+                    .await
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+                grants: vec![Grant::new("refs/**".into(), Verbs::new(31).unwrap()).unwrap()],
+                workload: None,
+            },
+        },
+    )
+    .await
+    .unwrap();
+    let guard_config = raw.guard().config().clone();
+    drop(raw);
+    let bucket = FileBucket::open(config(root).await, TokioLocalFs, TokioClock, Validator)
+        .await
+        .unwrap();
+    let coordinator = Coordinator::new(
+        Guard::new(
+            bucket,
+            TokioClock,
+            vec![authority.issuer_key().clone()],
+            guard_config,
+        ),
+        CommitTiming::new(
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        )
+        .unwrap(),
+        TokioLocalFs,
+    );
+    (
+        NativeFixture::initialize(coordinator).await,
+        authority,
+        credentials,
+    )
+}
+
+#[tokio::test]
+async fn disclosure_paired_factories_keep_identical_labels_independent_after_source_erasure() {
+    use super::{DisclosureCommitRequest, DisclosureCommitSelection};
+
+    let (source, source_authority, source_credentials) = independent_factory().await;
+    let (destination, destination_authority, _) = independent_factory().await;
+    assert_eq!(
+        source_authority.issuer_key().issuer,
+        destination_authority.issuer_key().issuer
+    );
+    assert_eq!(
+        source_authority.issuer_key().key_id,
+        destination_authority.issuer_key().key_id
+    );
+    assert_ne!(
+        source_authority.issuer_key().public_key,
+        destination_authority.issuer_key().public_key
+    );
+
+    let reference = "refs/heads/_/main";
+    let plaintext = b"independent factory disclosure";
+    let mut source_session = source
+        .begin(reference, source_authority.token(), "sdk")
+        .await
+        .unwrap();
+    let original = request_file(Vec::new(), plaintext);
+    let mut source_request = source_authority.commit_request(original.commit, "sdk".into());
+    source_request.uploads = original.uploads;
+    let source_head = source
+        .advance(&mut source_session, source_request)
+        .await
+        .unwrap();
+    let mut destination_session = destination
+        .begin(reference, destination_authority.token(), "sdk")
+        .await
+        .unwrap();
+    let proposed = request_file(Vec::new(), plaintext);
+    let mut proposal = destination_authority.commit_request(proposed.commit, "sdk".into());
+    proposal.uploads = proposed.uploads;
+    let published = destination
+        .advance_disclosure(
+            source.guard(),
+            &mut destination_session,
+            DisclosureCommitRequest {
+                selections: vec![DisclosureCommitSelection {
+                    source_reference: reference.into(),
+                    source_commit: source_head.commit,
+                    source_path: b"/file".to_vec(),
+                    source_token: source_authority.token().to_vec(),
+                    destination_path: b"/file".to_vec(),
+                }],
+                proposal,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(destination_session.record(), Some(&published));
+
+    let source_root = source.store().root().to_owned();
+    let source_control = source_root.with_file_name(format!(
+        "{}-original-control",
+        source_root.file_name().unwrap().to_string_lossy()
+    ));
+    let destination_root = destination.store().root().to_owned();
+    let destination_config = destination.guard().config().clone();
+    drop(source_session);
+    drop(source);
+    drop(source_authority);
+    tokio::fs::remove_dir_all(source_root).await.unwrap();
+    tokio::fs::remove_dir_all(source_control).await.unwrap();
+    tokio::fs::remove_dir_all(source_credentials).await.unwrap();
+    drop(destination_session);
+    drop(destination);
+
+    let bucket = FileBucket::open(
+        config(destination_root).await,
+        TokioLocalFs,
+        TokioClock,
+        Validator,
+    )
+    .await
+    .unwrap();
+    let reopened = NativeFixture::reopen(Coordinator::new(
+        Guard::new(
+            bucket,
+            TokioClock,
+            vec![destination_authority.issuer_key().clone()],
+            destination_config,
+        ),
+        CommitTiming::new(
+            Duration::from_secs(30),
+            Duration::from_secs(60),
+            Duration::from_secs(10),
+        )
+        .unwrap(),
+        TokioLocalFs,
+    ))
+    .await;
+    let snapshot = reopened
+        .guard()
+        .read_snapshot(reference, destination_authority.token(), b"/file", "sdk")
+        .await
+        .unwrap();
+    assert_eq!(snapshot.commit.identity(), published.commit);
+    let (location, _) = snapshot.history.locate(published.commit, b"file").unwrap();
+    let EntryKind::File { content, size, .. } = snapshot.history.entry(&location).unwrap().kind
+    else {
+        panic!("published entry is a file");
+    };
+    assert_eq!(
+        reopened
+            .guard()
+            .read_content(&snapshot, b"/file", content, size)
+            .await
+            .unwrap(),
+        plaintext
+    );
+}
+
 #[tokio::test]
 async fn disclosure_factory_checks_actual_source_and_destination_before_fresh_upload() {
     let unused = raw_fixture().await;
@@ -409,7 +600,6 @@ async fn stage_same_local_import(
 #[tokio::test]
 async fn disclosure_same_local_import_cannot_replace_missing_original_records() {
     use crate::bucket::held::SingleHeld;
-    use crate::repository::local_authority::retention::Record;
     use crate::store::LocalFs;
 
     for missing_bootstrap in [true, false] {

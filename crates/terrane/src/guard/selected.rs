@@ -19,7 +19,7 @@ pub(crate) mod cold_fork;
 
 #[path = "selected/disclosure.rs"]
 #[cfg(all(feature = "std", unix))]
-mod disclosure;
+pub(crate) mod disclosure;
 
 #[cfg(not(feature = "send"))]
 use std::rc::Rc as SharedCheck;
@@ -38,6 +38,13 @@ fn retain_final_check<S: crate::store::Store, C: Clock>(
     Ok(super::OwnedFinalCheck {
         check: SharedCheck::new(move || checks.recheck()),
     })
+}
+
+/// Retains genuine paired source rights through the selected destination effect.
+struct PairedSource<'operation, 'held> {
+    observed: &'operation SelectedObservation<'held>,
+    final_check: crate::selected_bridge::OwnedFinalCheck,
+    controls: crate::guard::RetainedControls,
 }
 
 /// Retains local control exclusion with exact data consumed by a held operation.
@@ -170,14 +177,44 @@ where
 /// # Errors
 /// Preserves current-policy, original-context, storage and duration failures;
 /// rejects unknown retained history, stale selected configuration and epochs.
-pub(crate) async fn publish_candidate<F, B, V, C, R, D>(
+pub(crate) async fn publish_candidate<'held, F, B, V, C, R, D>(
     concrete: &Guard<FileBucket<F, B, V>, D>,
     authority: &OriginalAuthority,
-    coordinator: &crate::ref_advance::Coordinator<HeldBucket<'_, F, B, V, true>, C, R>,
-    observed: &SelectedObservation<'_>,
+    coordinator: &'held crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
+    observed: &SelectedObservation<'held>,
     consumed: &ConsumedResolver,
     session: &mut crate::ref_advance::WriterSession,
     publication: &mut crate::ref_advance::RetainedPublication,
+) -> Result<terrane_core::refs::RefRecord, crate::ref_advance::AdvanceError>
+where
+    F: LocalFs + BucketBinding,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C: Clock + BucketBinding,
+    R: LocalFs + BucketBinding,
+{
+    publish_candidate_inner(
+        concrete,
+        authority,
+        coordinator,
+        observed,
+        consumed,
+        session,
+        publication,
+        None,
+    )
+    .await
+}
+
+async fn publish_candidate_inner<'held, F, B, V, C, R, D>(
+    concrete: &Guard<FileBucket<F, B, V>, D>,
+    authority: &OriginalAuthority,
+    coordinator: &'held crate::ref_advance::Coordinator<HeldBucket<'held, F, B, V, true>, C, R>,
+    observed: &SelectedObservation<'held>,
+    consumed: &ConsumedResolver,
+    session: &mut crate::ref_advance::WriterSession,
+    publication: &mut crate::ref_advance::RetainedPublication,
+    paired: Option<PairedSource<'_, 'held>>,
 ) -> Result<terrane_core::refs::RefRecord, crate::ref_advance::AdvanceError>
 where
     F: LocalFs + BucketBinding,
@@ -237,6 +274,10 @@ where
     };
     let proof = observed.identity();
     let history = crate::guard::HistoryObservation::held(proof).tracked(consumed);
+    if let Some(source) = &paired {
+        source.final_check.recheck()?;
+        source.observed.revalidate().await?;
+    }
     let next = coordinator
         .stage_observed_ref(
             session,
@@ -343,17 +384,34 @@ where
             .sort_by(|left, right| left.name.as_bytes().cmp(right.name.as_bytes()));
         CheckedEvidence::Candidate { snapshot, lineage }
     };
-    let final_check = retain_final_check(coordinator.guard(), &requests, started, timing)?;
+    let destination_check = retain_final_check(coordinator.guard(), &requests, started, timing)?;
+    let (final_check, sources, controls) = match paired {
+        Some(source) => {
+            let source_check = source.final_check;
+            let final_check = crate::selected_bridge::OwnedFinalCheck {
+                check: SharedCheck::new(move || {
+                    destination_check.recheck()?;
+                    source_check.recheck()
+                }),
+            };
+            (
+                final_check,
+                vec![source.observed],
+                vec![retained_controls, source.controls],
+            )
+        }
+        None => (destination_check, Vec::new(), vec![retained_controls]),
+    };
     let permit = CheckedMutation {
         observed,
-        sources: Vec::new(),
+        sources,
         next: state,
         changes,
         evidence,
         final_check: Box::new(|| final_check.recheck()),
         effect_context: Some(GuardEffectContext {
             final_check: final_check.clone(),
-            controls: vec![retained_controls],
+            controls,
         }),
     };
     #[cfg(test)]

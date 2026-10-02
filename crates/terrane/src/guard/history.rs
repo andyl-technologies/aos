@@ -258,7 +258,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
         };
         let checked = match observation.held {
             Some(held) => {
-                self.check_original_commit_held(baseline, association, held)
+                self.recheck_original_commit_observed(baseline, association, held)
                     .await?
             }
             None => self.check_original_commit(baseline, association).await?,
