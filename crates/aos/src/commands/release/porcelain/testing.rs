@@ -46,7 +46,6 @@ protected_branch = "master"
 contributor_authorization = "{root}/authorization.json"
 retention_policy = "{root}/retention.md"
 restricted_operator_policy = "{root}/operator.md"
-tooling_closure = "/nix/store/0000000000000000000000000000000a-aos"
 trusted_keys = ["evidence-1={root}/keys/evidence-1.pub", "evidence-2={root}/keys/evidence-2.pub"]
 
 [git]

@@ -32,45 +32,66 @@ the design: *make publishing as expensive as possible so consumption is as cheap
 as possible* (design brief §3). The producer pays once — building large-window
 packs, thin deltas, and zstd-compressing — and every consumer benefits.
 
-A publish has two strictly-ordered halves that must never be confused:
+The public origin upload has two strictly ordered halves. Local preparation
+may construct its refs and channel files before the uploader runs; that is not
+a public visibility transition. Unpublished stages retain their inventory
+without changing the default public catalog or channel pointers:
 
 1. **Materialize immutable release objects.** Build the release commit, create
    and sign the semver tag, generate the full/delta packs, write loose objects to
-   the **root** `/objects/`, and regenerate the per-release pack indices. Everything
-   here is **content-addressed and immutable** — once a sha256 object exists it never
-   changes meaning.
+   the **root** `/objects/`, and regenerate the per-release pack indices. The
+   candidate inventory binds immutable bytes; authoring commits may change
+   before finalization. Published release identities are immutable: a sha256
+   object never changes meaning.
 2. **Flip the mutable pointers.** Regenerate the repo-root `info/refs` / `HEAD` /
    `objects/info/alternates`, bump `refs/heads/<channel>` to the frontier,
    and advance the signed `/channels/<name>/<00..ff>` partition tags. These are the
    *only* mutable surfaces, and they are published **last**, after every object
    they can possibly reference already exists at the origin.
 
-```
-                      PRODUCER (TARGET)                          CONSUMER
-   ┌────────────────────────────────────────────────┐
-   │ 1  build release commit                          │
-   │ 2  create + sign semver tag  (refs/tags/<semver>)│
-   │ 3  libgit2 full packs + Rust thin deltas + zstd  │   immutable, content-addressed
-   │ 4  write loose objects under root /objects/      │──────────────────────────┐
-   │ 5  per-release pack index (info/packs)           │                          │
-   ├──────────────────────────────────────────────────┤   pointers, flipped LAST │
-   │ 6  root update-server-info (info/refs, HEAD)      │                          ▼
-   │ 7  regen objects/info/alternates                 │                  ┌────────────────┐
-   │ 8  bump refs/heads/<channel> → frontier          │                  │  HTTP / CDN     │
-   │ 9  advance /channels/<name>/00..ff partition tags  │─────────────────▶│  origin (dumb   │
-   │ 10 upload with per-path CDN TTLs                  │                  │  git static)    │
-   └────────────────────────────────────────────────┘                  └────────────────┘
-                                                                                 │
-                                                            apm bucket → channel tag → semver
-                                                            tag → commit → delta walk / fetch
+```mermaid
+flowchart LR
+    A[Author candidate] --> B[Immutable artifacts and inventory]
+    B --> C[Upload candidate bytes]
+    C --> D[Inspect exact stage revision]
+    D --> E[Finalize release visibility]
+    E --> F[Publish release pointers]
+    F --> G[Promote channel partitions]
 ```
 
-**Invariant (TARGET).** Immutable release objects (steps 1–5) are uploaded and
-visible **before** any pointer that can name them flips (steps 6–9). A reader
-mid-publish therefore sees **either** the old frontier/partition state **or** the
-new one — never a partition tag pointing at a commit whose objects are missing.
+The common command may run these transitions continuously. An explicit stage
+stops before publication so the maintainer can inspect and resume its exact
+revision. Release finalization and channel selection remain distinct; a
+completed release can be promoted later without changing its signed identity.
+Local preparation may construct release metadata and pointers earlier, but the
+public uploader always writes objects before exposing the pointers that name
+them. A partially uploaded candidate cannot replace the default public catalog.
 
 ---
+
+## Release stages, authoring branches, and environments
+
+`apr release <version>` remains the normal registry maintainer command. With
+`--stage <id>` it retains an unpublished candidate and its immutable upload
+inventory; `apr stage list/show/discard` inspect or discard that state.
+Finalization names `--from-stage <id> --stage-revision <revision>`. Candidate
+updates and resumes compare-and-swap the observed revision. Staging and
+`--from-stage` reject channel convenience flags; promote the published release
+with a separate channel operation. See the
+[operator examples](../users/registry/publishing.md#upload-an-unpublished-candidate)
+and [release-stage architecture](release-stages.md).
+
+Maintainer branches hold authoring workspaces. Configured channel names reserve
+`refs/heads/<channel>` for the published frontier; `HEAD` names the default
+channel, and semver refs remain immutable signed release identities. Public
+default catalogs and partitions omit unfinished stages, even though a known
+ref, digest, cache URL, or CDN path may expose uploaded candidate bytes.
+
+A deployment named staging is independent of a release stage. AOS-specific
+planning and qualification live under `aos maintain release` and use shared
+registry libraries. `advance --stop-after-upload` retains an unpublished
+candidate; `publish --to <destination>` makes the reviewed destination visible.
+The previous `aos release` command is removed without an alias.
 
 ## 2. CURRENT state — the `apr` producer surface
 
@@ -107,17 +128,17 @@ The commands relevant to a release, in workflow order:
 |---|---|---|
 | `apr create <name> [--remote URL] [--trust-key <registry:Ed25519:base64>] [--trust-key-id <id>] [--key <path> \| --key-id <id>] [--dry-run]` | `create` (`registry_ops.rs`) | `git init --object-format=sha256`, set `HEAD` to `refs/heads/stable`, make `packages/`, write a default `registry.toml`, write schema-1 `keys.toml` (seeded by `--trust-key`), initial commit (signed with `--key`/`--key-id` when the roster is seeded), then refresh dumb-HTTP object indexes; optional `git remote add origin`. `--dry-run` checks every precondition and reports the registry it would create without writing anything. |
 | `apr keys generate <id> [--registry <name>] [--add] [--no-commit] [--key \| --key-id]` | `generate_roster_key` (`registry_ops.rs:2922`) | Mints an Ed25519 keypair in-process (hermetic `sshkey` module, no `ssh-keygen`), writes the OpenSSH private key to `apm/keys/<registry>-<id>.key` (`0600`, refuses overwrite), records its path in `[registry.signing_keys]`, prints the public key + fingerprint; with `--add` appends it to `keys.toml` (signed commit unless `--no-commit`). `--add` on an empty roster errors → use `apr create --trust-key`. |
-| `apr keys list/add/retire` | `run_keys` (`registry_ops.rs:2551`) | Maintains committed `keys.toml`: list active/revoked ids; add registry-bound active signing keys; retire active ids into `[[revoked]]` with an active survivor/vouching id and **re-sign** the channel/release tags whose only valid signer was the retired key (`--no-resign` to skip). `add`/`retire` modify `keys.toml`, so they require `--key`/`--key-id` and produce a **signed** commit; then commit + refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
-| `apr publish <store-path> […]` | `publish` (`registry_ops.rs`) | For an ordinary package, evaluate `DerivationInventoryV1`, require `<store-path>` to be its exact primary output, and atomically author metadata, generated documentation, every named output, the exact package contract and selector bindings, provenance, and the complete `store/` graph in one signed commit. No package or contract is rediscovered by basename. Manual metadata and `--no-commit` are accepted only for `--sysroot` image catalog entries. |
+| `apr keys list/add/retire` | `run_keys` (`registry_ops.rs:2551`) | Maintains committed `keys.toml`: list active/revoked ids; add registry-bound active signing keys; retire active ids into `[[revoked]]` with an active survivor/vouching id and preserve immutable release tags; default retirement rejects lost active-key release trust, while `--no-resign` explicitly permits that revocation. `add`/`retire` modify `keys.toml`, so they require `--key`/`--key-id` and produce a **signed** commit; then commit + refresh dumb-HTTP object indexes unless `--no-commit` is passed. |
+| `apr publish <store-path> […]` | `publish` (`registry_ops.rs`) | For an ordinary package, evaluate `DerivationInventoryV1`, require `<store-path>` to be its exact primary output, and atomically author metadata, generated documentation, every named output, the exact package contract and selector bindings, provenance, and the complete `store/` graph in one signed commit. No package or contract is rediscovered by basename. Manual metadata and `--no-commit` are accepted only for `--sysroot` image catalog entries. Image publication additionally enforces `[registry] require_signed_ukis = true`: primary and slot UKIs must be signed by active committed `sb-certs.toml` signers and verify against local `sb-certs/db.pem`. |
 | `apr commit <path>... --message <text> [--key <path> \| --key-id <id>]` | `commit_changes` (`registry_ops.rs`) | Commit an explicit set of registry-relative paths with the in-process SSH signer, refusing absolute/traversal paths and an already-staged index. A non-empty `keys.toml` roster requires an active maintainer key; only an empty-roster bootstrap may commit unsigned. The command refreshes the static object indexes after the commit. |
 | `apr store bless/revoke/verify/backfill [--registry <name>] [--key \| --key-id]` | `run_store` (`registry_ops.rs`) | Maintains the `store/` realisation graph (RFC-0005): `bless` records a path's closure from the local Nix store; `revoke` removes a blessed realisation (a security event - signed, reviewable diff); `verify` checks graph health + closure coverage (`--deep` recomputes local NAR hashes); `backfill` records every published closure so an existing registry becomes fully covered in one signed commit. |
 | `apr tag <name> [--message] (--key <path> \| --key-id <id>)` | `tag` (`registry_ops.rs`) | Resolves the signing key directly from `--key` or from committed `keys.toml` + local `[registry.signing_keys]`, then runs `git -c gpg.format=ssh -c user.signingkey=<key> tag -s <name> -m … HEAD`; semver tags also prepare a release object dir during the object-store refresh. |
-| `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Re-signs an existing release tag as a signed tag object with `git tag -s -f`, then refreshes dumb-HTTP object indexes; it no longer signs commits. |
+| `apr sign <tag> (--key <path> \| --key-id <id>)` | `sign` (`registry_ops.rs`) | Signs only nonrelease maintenance tags; existing semver refs are immutable, including unsigned/lightweight refs. |
 | `apr channel init/advance/status` | `run_channel` (`registry_ops.rs`) | Initializes or advances raw signed partition tag files under `channels/<name>/00..ff`, using the same `--key` / `--key-id` signing-key selection as release tags, updates `refs/heads/<channel>` to the frontier, and reports partition counts. |
 | `apr cache generate [--output <dir>] [--key <key>] [--cache-url <url>] [--upload-url <backend>]... [--no-skip]` | `run_cache` (`registry_ops.rs`) | Generates `nix-cache-info`, signed `<storehash>.narinfo`, and `nar/*.nar.zst` for every registry-listed store path into the internal per-registry staging dir unless `--output` is supplied; fails closed when a path is absent locally; skips remotely present narinfos unless `--no-skip`; optionally uploads the generated files to repeatable `--upload-url` destinations via `aos-cache`, supports HTTP/S3/SFTP auth flags, and commits the root `registry.toml` `[[caches]]` pointer. |
-| `apr cache gc [--registry <name>] [--max-age <days>] [--dry-run]` | `run_cache` (`registry_ops.rs`) | Removes old internal static-cache staging narinfo/NAR pairs, defaulting to `[registry.cache].max_age_days` or 30 days. |
+| `apr cache gc [--registry <name>] [--max-age <days>] [--dry-run]` | `run_cache` (`registry_ops.rs`) | Removes eligible aged internal narinfo/NAR pairs and canonical stage CAS objects under the producer lock, preserving active/released candidates and the 24-hour discarded/superseded grace; defaults cache age to `[registry.cache].max_age_days` or 30 days. Stage metadata/history/workspaces remain retained. |
 | `apr origin upload --upload-url <backend>... [--cache-dir <dir>]` | `run_origin` (`registry_ops.rs`) | Refreshes static git indexes, then uploads the full dumb-HTTP origin surface in immutable-first / mutable-last order: `objects/**`, `releases/**`, optional static-cache `nar/**` and `*.narinfo`, then `HEAD`, `info/refs`, `objects/info/**`, `channels/**`, and `nix-cache-info`; uses the same backend auth flags and partial-failure semantics as static cache uploads. |
-| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-url <url>] [--cache-key <key>] [--cache-priority N] [--upload-url <backend>]... [--no-skip] [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, generates static Nix-cache files into internal staging when publishing store roots, commits the cache pointer, creates/reuses the signed semver tag, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, initializes/advances channel partitions, and uploads cache bytes plus the static origin in producer-safe order. A lock file prevents concurrent local publishers; `--dry-run` prints the plan without mutation and `--resume` skips already-present tag/pack artifacts that match HEAD. |
+| `apr release <semver> [--store-path <path>] (--key <path> \| --key-id <id>) [--channel <name> (--init-channel \| --count N \| --partitions ...)] [--cache-url <url>] [--cache-key <key>] [--cache-priority N] [--upload-url <backend>]... [--stage <id> \| --from-stage <id>] [--stage-revision N] [--no-skip] [--dry-run] [--resume]` | `release` / `release_registry_tree` (`registry_ops.rs`) | Runs the ordered producer pipeline: optionally publishes a store path into a committed metadata tree, generates static Nix-cache files into internal staging when publishing store roots, prepares the cache pointer and catalog TUF metadata, finalizes through the common signed commit/tag lifecycle, generates full packs at `X.Y.0` anchors plus compressed guaranteed thin deltas, refreshes dumb-HTTP indexes, initializes/advances channel partitions, and uploads cache bytes plus the static origin in producer-safe order. A lock file prevents concurrent local publishers. `--stage` retains an unpublished candidate with revision-checked inventory; `--from-stage` finalizes the exact reviewed revision. `--dry-run` validates without mutation; `--resume` reuses verified immutable artifacts. |
 | `apr push [--branch] [--set-upstream] [--force]` | `push` (`registry_ops.rs:1398`) | `git push [-u origin] [branch] [--force]`. |
 
 The signed-UKI gate is release policy, not a build-time default. Enable it in
@@ -127,8 +148,8 @@ the committed root only after its public certificate is active in
 
 The current Secure Boot image module signs during the Nix build, so a key path
 used there is copied into the local Nix store. That is acceptable only for
-disposable development or staging identities on a controlled single-user
-builder. Do not use that path for production keys. Production requires the
+disposable development or staging-environment identities on a controlled
+single-user builder. Do not use that path for production keys. Production requires the
 external signing/key-custody stage described by RFC-0006; until that stage is
 implemented, the release gate verifies signed artifacts but does not make the
 in-build signer a production-safe workflow.
@@ -154,9 +175,9 @@ subcommands available for repair, inspection, and unusual workflows.
 |---|---|
 | `<semver>` | Standard semver, **no `v` prefix** (`1.2.0`, `1.0.0-beta+exp.sha.5114f85`). |
 | release commit | The commit the semver tag points at (the new registry tree content). |
-| `<channel>` | The release line being advanced (e.g. `stable`, `testing`). |
-| partition plan | How many of the 256 partitions `00..ff` advance to `<semver>` this publish (rollout fraction). |
-| signing key | One SSH-format Ed25519 key (reused from `apr sign` / `security.rs`). |
+| `<channel>` | Optional channel selected by a direct release; explicit stages publish releases without channel assignment. |
+| partition plan | Optional plan for a separate channel operation or direct-release convenience flags. |
+| signing key | An active SSH-format Ed25519 registry maintainer key. |
 
 It produces, under [the HTTP/object layout](./http-layout.md):
 
@@ -200,9 +221,9 @@ The third `/releases` path segment is **everything after `major.minor`** — e.g
    The tag **name** is the bare semver (`1.2.0`), the signature lives on the tag
    *object*, and the embedded tag-name field is bound to the serving path during
    verification (see §10 and [signing-and-trust.md](./signing-and-trust.md)).
-   The signing primitive is the existing SSH-format Ed25519 git signature reused
-   from `apr sign` (`git`-resolved `user.signingkey` + `gpg.format = ssh`;
-   `security.rs` `parse_signing_key` `name:Ed25519:<base64>`).
+   The shared producer uses an in-process SSH-format Ed25519 signer, selected
+   by explicit `--key` or roster-backed `--key-id`. AOS uses the same registry
+   lifecycle with its independently verified external provider adapter.
 
 Release tags carry no in-band expiry, which fits releases being
 immutable and carrying a long CDN TTL. Release freshness is carried by committed
@@ -490,7 +511,12 @@ A reader caught mid-publish sees **one** of two consistent states:
 There is no torn state in which a partition points at a release whose objects are
 absent.
 
-### 11.2 Why immutability removes the need for a lock
+### 11.2 Coordination of candidate revisions and public pointers
+
+Stage updates and finalization compare-and-swap the observed candidate revision.
+Active stages retain partial uploads; discarded or superseded revisions receive
+a grace period, and shared/released roots remain retained. See
+[release stages](release-stages.md#retention).
 
 Because release objects are **content-addressed sha256**, two producers
 materializing the same release write byte-identical objects — uploading them is
@@ -586,9 +612,10 @@ ssh_password = "..."
 ssh_ask_pass = false
 ```
 
-`apr release` wraps the same focused operations into one guarded producer
-workflow. Operators can still run the lower-level commands directly for
-repair/resume work or for unusual staging topologies.
+`apr release` composes the same producer library operations into one guarded
+workflow, including revision-checked unpublished candidates. Operators can run
+the lower-level commands directly for repair/resume work or unusual staging
+topologies.
 
 ### 12.2 Release orchestrator
 

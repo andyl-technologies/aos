@@ -457,15 +457,10 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
             "--stage-only",
         ],
     );
-    let staged_output = successful_json("publish --stage-only", &staged);
-    assert_eq!(staged_output["state"], "staged");
-    assert_eq!(
-        staged_output["verification"],
-        "pending-control-plane-commit"
-    );
-    assert_eq!(staged_output["tag_updated"], false);
-    assert_eq!(staged_output["object_count"], 20);
+    assert_eq!(staged.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&staged.stderr).contains("--registry-stage"));
     assert_output_is_redacted(&staged);
+    assert_eq!(registry.state.token_requests.load(Ordering::SeqCst), 0);
     assert!(
         registry
             .state
@@ -474,11 +469,30 @@ async fn process_publish_finalizes_complete_signed_graph_without_a_data_plane_ta
             .expect("stage control calls")
             .is_empty()
     );
-    {
-        let manifests = registry.state.manifests.lock().expect("staged manifests");
-        assert!(manifests.contains_key(&release.oci.index.digest.to_string()));
-        assert!(!manifests.contains_key("stable"));
-    }
+    assert!(
+        registry
+            .state
+            .events
+            .lock()
+            .expect("registry events")
+            .is_empty()
+    );
+    assert!(
+        registry
+            .state
+            .blobs
+            .lock()
+            .expect("registry blobs")
+            .is_empty()
+    );
+    assert!(
+        registry
+            .state
+            .manifests
+            .lock()
+            .expect("registry manifests")
+            .is_empty()
+    );
 
     let publish = run_aos(
         workspace.path(),

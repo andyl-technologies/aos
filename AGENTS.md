@@ -145,17 +145,34 @@ correctly. Stubbing is acceptable only for truly complex bootstrapping problems
 ## The `aos-dev` development entry point
 
 Use the in-repository Bash CLI for build targets, checks, formatting, cache
-maintenance, and release preparation. Run `bash ./aos-dev help` for commands,
-flags, and completion; the entry point has no host-specific shebang.
+maintenance, and release preparation. Assume `aos-dev` is in PATH through
+direnv or `nix develop`; the dev shell also provides the ordinary packaged
+`aos` CLI. Run `aos-dev help` for commands, flags, and completion.
 
 ```sh
-bash ./aos-dev list packages crucible
-bash ./aos-dev build package crucible --no-out-link
-bash ./aos-dev build image server:qcow2
-bash ./aos-dev all checks
-bash ./aos-dev cache init
-bash ./aos-dev cache rust status
+aos-dev list packages crucible
+aos-dev build package crucible --no-out-link
+aos-dev build image server:qcow2
+aos-dev all checks
+aos-dev cache init
+aos-dev cache rust status
 ```
+
+Run `aos-dev run aos <arguments>`, `aos-dev run apm <arguments>`, or
+`aos-dev run apr <arguments>` to fetch or build the ordinary packaged tool and
+execute it. These commands and `release` keep production derivation identities
+without shared compiler caches; explicit `build` commands use the development
+settings below.
+
+The flake and `aos-dev` use the production testing binary cache at
+`https://cdn.aos.andyl.org/andyl/testing/` with its dedicated public Nix signing
+key and source fallback. Direnv's `use flake . --accept-flake-config` accepts
+these settings when loading the shell. For manual Nix commands, accept the
+settings when prompted or use `--accept-flake-config`; multi-user hosts must
+authorize the cache and key in their daemon configuration. Missing binaries
+build from source, and failed substitutions also fall back to source builds.
+The cache settings append to
+the caller's configuration and do not introduce nixpkgs build dependencies.
 
 Development builds default to shared Go and Bazel caches, a persistent Cargo
 target directory, Rust incremental compilation, and accache. Leading `--no-go-cache`,
@@ -188,10 +205,13 @@ The `aos` CLI is a Rust tool (`crates/`) for working with this repo. Run it via
 the Nix flake — do NOT use `cargo run` directly (it needs alejandra in PATH):
 
 ```sh
-# Enter the dev shell (provides aos + just in PATH):
+# Enter the dev shell (provides aos + aos-dev + just in PATH):
 nix develop
 
-# Or run a one-off command without entering the shell:
+# Fetch or build aos on demand inside the shell:
+aos-dev run aos <subcommand>
+
+# Or run the packaged CLI directly without entering the shell:
 nix run . -- <subcommand>
 ```
 
@@ -229,8 +249,9 @@ crates/target/debug/aos <subcommand>
   entry points with disjoint parsers backed by shared Rust libraries. Build and
   run the exact binary whose command surface you are testing; there is no
   `aos package` compatibility path.
-- `crates/target/debug/` is independent of the flake-installed `aos`; `nix run`
-  and any installed CLI keep the last packaged build until rebuilt.
+- `crates/target/debug/` is independent of the packaged `aos`; `aos-dev run aos`
+  and `nix run` use the hermetic package, while any installed CLI keeps its
+  last packaged build until rebuilt.
 
 ### Subcommands
 

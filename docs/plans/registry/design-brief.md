@@ -1,5 +1,11 @@
 # AOS Registry — Design Brief & Decision Log
 
+> The original transport decision log predates explicit unpublished release
+> stages. [Release stages](../../registry/release-stages.md) records the current
+> candidate/revision, workspace, discovery, retention, and shared orchestration
+> contract. `apr release <version>` is the stable registry porcelain; AOS policy
+> runs under `aos maintain release`.
+
 > **Status:** Design capture (current). This is the authoritative grounding source
 > for the `docs/registry/` reference set and the `docs/plans/registry/` plan set.
 > When a doc disagrees with the code, the code wins for *current state*; this brief

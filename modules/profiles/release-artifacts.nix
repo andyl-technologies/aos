@@ -143,8 +143,10 @@ in {
         message = "release registry identity must encode every trust-root epoch after epoch one";
       }
       {
-        assertion = cfg.tier != "testing" || cfg.warning != "";
-        message = "testing artifacts require a non-empty user-visible warning";
+        # Neither a testing artifact nor an edge artifact comes with a support
+        # promise, so both tell the user before they rely on it.
+        assertion = (cfg.tier != "testing" && cfg.channel != "edge") || cfg.warning != "";
+        message = "testing and edge artifacts require a non-empty user-visible warning";
       }
     ];
 

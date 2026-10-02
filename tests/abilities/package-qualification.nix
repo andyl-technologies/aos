@@ -98,6 +98,8 @@
     version = "1";
     src = null;
     phases = [];
+    # Same-name bootstrap/test variants must not replace the subject's outputs.
+    buildDeps = [package];
     outputs = ["out" "dev"];
     qualification.packageProbe = commandProbe;
   };

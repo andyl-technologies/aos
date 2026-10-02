@@ -69,7 +69,7 @@ pub struct BuildSourceEvidence {
     pub nar_size: u64,
 }
 
-/// Closed report produced by `aos release build`.
+/// Closed report produced by `aos maintain release step build`.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct BuildReportV1 {

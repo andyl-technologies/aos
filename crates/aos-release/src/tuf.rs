@@ -38,6 +38,8 @@ use crate::signing::{
     TrustedEd25519Key, verify_ed25519_response,
 };
 
+pub mod staging;
+
 /// TUF specification profile implemented by canonical AOS releases.
 pub const TUF_SPEC_VERSION: &str = "1.0.31";
 /// Schema for root metadata.

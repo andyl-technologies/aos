@@ -477,6 +477,13 @@ fn destinations() -> Value {
                 "surface": "production"
             },
             {
+                "after": ["staging"],
+                "channel": "edge",
+                "profile": "smoke",
+                "registry_tier": "production",
+                "surface": "production"
+            },
+            {
                 "after": [
                     "staging"
                 ],
@@ -497,6 +504,13 @@ fn destinations() -> Value {
             {
                 "after": [],
                 "channel": "candidate",
+                "profile": "build",
+                "registry_tier": "production",
+                "surface": "staging"
+            },
+            {
+                "after": [],
+                "channel": "edge",
                 "profile": "build",
                 "registry_tier": "production",
                 "surface": "staging"

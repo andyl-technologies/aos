@@ -210,10 +210,11 @@ impl Database {
             .transpose()
     }
 
-    /// Loads the browsing default from the indexed registry configuration.
+    /// Loads the released catalog selected by the verified default channel.
     ///
-    /// Preparing a newer commit does not change the preference until that
-    /// commit becomes the registry's indexed generation.
+    /// A prepared authoring commit or an unassigned release tag never changes
+    /// this selection. Registries without an assigned default channel return
+    /// no default, while their verified release pages remain available.
     ///
     /// # Errors
     /// Returns an error on database failure or malformed row values.
@@ -221,17 +222,33 @@ impl Database {
         Ok(self
             .backend
             .query_opt(
-                "SELECT catalog.default_release FROM release_browse_catalogs catalog
-             JOIN registry_index current_index
-               ON current_index.registry_id = catalog.registry_id
-              AND current_index.last_indexed_commit = catalog.source_commit
-             WHERE catalog.registry_id = ?1",
+                "SELECT head.release_tag FROM registry_public_catalog_heads head
+                 JOIN registry_index current_index ON current_index.registry_id = head.registry_id
+                 WHERE head.registry_id = ?1",
                 &vals![registry_id],
             )
             .await?
             .map(|row| row.get::<Option<String>>(0))
             .transpose()?
             .flatten())
+    }
+
+    /// Loads the default released projection, distinguishing an old index without a selection.
+    ///
+    /// # Errors
+    /// Returns an error on database failure or malformed row values.
+    pub(crate) async fn public_catalog_head(
+        &self,
+        registry_id: i64,
+    ) -> Result<Option<(Option<String>, Option<String>)>> {
+        self.backend
+            .query_opt(
+                "SELECT source_commit, release_tag FROM registry_public_catalog_heads WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await?
+            .map(|row| Ok((row.get(0)?, row.get(1)?)))
+            .transpose()
     }
 
     /// Checks whether every published release has its browse projections.
@@ -256,10 +273,14 @@ impl Database {
              WHERE rel.registry_id = ?1 AND (catalog.source_commit IS NULL OR note.tag_oid IS NULL)
              UNION ALL
              SELECT 1 FROM registry_index current_index
+             LEFT JOIN registry_public_catalog_heads head
+               ON head.registry_id = current_index.registry_id
              LEFT JOIN release_browse_catalogs catalog
-               ON catalog.registry_id = current_index.registry_id
-              AND catalog.source_commit = current_index.last_indexed_commit
-             WHERE current_index.registry_id = ?1 AND catalog.source_commit IS NULL
+               ON catalog.registry_id = head.registry_id
+              AND catalog.source_commit = head.source_commit
+             WHERE current_index.registry_id = ?1
+               AND (head.registry_id IS NULL
+                 OR (head.source_commit IS NOT NULL AND catalog.source_commit IS NULL))
              LIMIT 1",
                 &vals![registry_id],
             )
@@ -410,6 +431,8 @@ mod tests {
         );
         let snapshot = IndexSnapshot {
             commit: "head-commit".into(),
+            public_catalog_commit: Some("branch-commit".into()),
+            public_catalog_release: Some("1.0.0".into()),
             name: "Catalog".into(),
             refs_digest: Some("refs".into()),
             releases: vec![ReleaseRow {

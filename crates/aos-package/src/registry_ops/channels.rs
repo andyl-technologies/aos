@@ -3,15 +3,22 @@
 use crate::ChannelCommand;
 use crate::config::ApmConfig;
 use crate::registry::channel::PartitionMap;
-use crate::registry::verify::{TagTarget, parse_tag_object, verify_name_binding};
 use crate::registry::{channel, objectstore};
 use crate::registry_ops::config::{registry_dir, resolve_registry_name};
-use crate::registry_ops::git::{git, git_raw, refresh_registry_object_store, semver_tag_versions};
+use crate::registry_ops::git::{
+    ensure_commit_identity, git, git2_identity, refresh_registry_object_store, semver_tag_versions,
+};
 use crate::registry_ops::signing::resolve_producer_signing_key;
-use crate::registry_ops::tags::{assert_release_tag_exists, release_commit, sign_tag};
+use crate::registry_ops::tags::{assert_release_tag_exists, format_git_tz, release_commit};
 use crate::types::validate_channel_name;
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use aos_core::output::{OutputMode, Printer};
+#[cfg(test)]
+use aos_registry_surface::channel::parse_partition_list;
+use aos_registry_surface::channel::{PartitionTag, parse_partition_target};
+pub(in crate::registry_ops) use aos_registry_surface::channel::{
+    ensure_channel_advance_fix_forward, select_partitions_for_advance,
+};
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -349,85 +356,6 @@ pub(in crate::registry_ops) fn channel_advance_dir(
     Ok(selected.len())
 }
 
-/// Resolve which partitions a channel advance should touch: `--count`
-/// picks the lowest-numbered partitions not yet on the target version
-/// (ascending fill), while `--partitions` names buckets explicitly.
-/// Exactly one of the two must be given.
-pub(in crate::registry_ops) fn select_partitions_for_advance(
-    count: Option<usize>,
-    partitions: Option<&str>,
-    map: &PartitionMap,
-    version: &semver::Version,
-) -> Result<Vec<u8>> {
-    match (count, partitions) {
-        (Some(_), Some(_)) => bail!("use only one of --count or --partitions"),
-        (None, None) => bail!("one of --count or --partitions is required"),
-        (Some(count), None) => {
-            if count > channel::PARTITION_COUNT {
-                bail!("--count must be <= {}", channel::PARTITION_COUNT);
-            }
-            Ok(channel::ascending_fill(count, map, version))
-        }
-        (None, Some(spec)) => parse_partition_list(spec),
-    }
-}
-
-/// Refuse producer-side channel rewrites that would lower any selected
-/// partition's semver target.
-fn ensure_channel_advance_fix_forward(
-    map: &PartitionMap,
-    selected: &[u8],
-    version: &semver::Version,
-) -> Result<()> {
-    for bucket in selected {
-        let Some(current) = map.get(*bucket) else {
-            continue;
-        };
-        if version < current {
-            bail!(
-                "channel advance would decrement partition {} from {} to {}; publish a newer fix-forward release instead",
-                channel::bucket_hex(*bucket),
-                current,
-                version,
-            );
-        }
-    }
-    Ok(())
-}
-
-fn parse_partition_list(spec: &str) -> Result<Vec<u8>> {
-    let mut buckets = Vec::new();
-    for raw in spec.split(',') {
-        let raw = raw.trim();
-        if raw.is_empty() {
-            continue;
-        }
-        let bucket = parse_partition(raw)?;
-        if !buckets.contains(&bucket) {
-            buckets.push(bucket);
-        }
-    }
-    if buckets.is_empty() {
-        bail!("partition list is empty");
-    }
-    Ok(buckets)
-}
-
-/// Parse a single partition bucket: `0x`-prefixed or letter-containing
-/// strings are hex, everything else is decimal.
-fn parse_partition(raw: &str) -> Result<u8> {
-    if let Some(hex) = raw.strip_prefix("0x") {
-        return u8::from_str_radix(hex, 16)
-            .with_context(|| format!("invalid hex partition '{raw}'"));
-    }
-    if raw.bytes().any(|b| matches!(b, b'a'..=b'f' | b'A'..=b'F')) {
-        return u8::from_str_radix(raw, 16)
-            .with_context(|| format!("invalid hex partition '{raw}'"));
-    }
-    raw.parse::<u8>()
-        .with_context(|| format!("invalid decimal partition '{raw}'"))
-}
-
 /// Reconstruct a channel's partition map from the signed tag payloads
 /// under `.git/channels/<name>/`, verifying each payload's channel-name
 /// binding and resolving its target tag object to a release version.
@@ -447,16 +375,8 @@ pub(in crate::registry_ops) fn read_channel_partition_map(
         }
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("reading {}", path.display()))?;
-        let tag = parse_tag_object(&content)
+        let tag = parse_partition_target(content.as_bytes(), channel_name, None)
             .with_context(|| format!("parsing channel partition {}", path.display()))?;
-        verify_name_binding(&tag, channel_name)?;
-        if tag.target_type != TagTarget::Tag {
-            bail!(
-                "channel partition {} targets {:?}, expected tag",
-                path.display(),
-                tag.target_type,
-            );
-        }
         let version = release_tags.get(&tag.object).ok_or_else(|| {
             anyhow::anyhow!(
                 "channel partition {} points at unknown release tag object {}",
@@ -483,11 +403,9 @@ pub(in crate::registry_ops) fn semver_tag_object_map(
 
 /// Sign and store the payload for one channel partition.
 ///
-/// Git can only sign tags through refs, so a temporary tag named after the
-/// channel is force-created against the release tag object, its signed
-/// payload is copied into `.git/channels/<channel>/<bucket>`, and the
-/// temporary ref is deleted. The payload file is the durable artifact
-/// consumers fetch and verify.
+/// The shared partition renderer preserves Git's annotated-tag layout. The
+/// signed payload is written directly into the object database and served as a
+/// raw partition file, without creating or deleting a temporary tag reference.
 pub(in crate::registry_ops) fn write_channel_partition_tag(
     dir: &Path,
     channel_name: &str,
@@ -495,22 +413,31 @@ pub(in crate::registry_ops) fn write_channel_partition_tag(
     version: &semver::Version,
     signing_key: &str,
 ) -> Result<()> {
-    let target = format!("{version}^{{tag}}");
+    validate_channel_name(channel_name)?;
+    let release_tag = assert_release_tag_exists(dir, version)?;
+    ensure_commit_identity(dir)?;
+    let repo = git2::Repository::open(dir)
+        .with_context(|| format!("opening git repository at {}", dir.display()))?;
+    let identity = git2_identity(&repo)?;
+    let tagger = format!(
+        "{} <{}> {} {}",
+        identity.name().unwrap_or(""),
+        identity.email().unwrap_or(""),
+        identity.when().seconds(),
+        format_git_tz(identity.when()),
+    );
     let message = format!(
         "AOS channel {channel_name} partition {}",
         channel::bucket_hex(bucket)
     );
-    sign_tag(
-        dir,
-        channel_name,
-        &target,
-        Some(&message),
-        signing_key,
-        true,
-    )?;
-    let tag_ref = format!("refs/tags/{channel_name}^{{tag}}");
-    let oid = git(dir, &["rev-parse", &tag_ref])?;
-    let payload = git_raw(dir, &["cat-file", "-p", &oid])?;
+    let partition_tag = PartitionTag::new(channel_name, &release_tag, &tagger, &message)?;
+    let payload = partition_tag.sign_with(|bytes| {
+        crate::security::sign_payload_signature(Path::new(signing_key), "git", bytes)
+    })?;
+    repo.odb()
+        .context("opening object database")?
+        .write(git2::ObjectType::Tag, &payload)
+        .context("writing channel partition tag object")?;
 
     let git_dir = objectstore::repo_git_dir(dir)?;
     let channel_dir = git_dir.join("channels").join(channel_name);
@@ -520,8 +447,6 @@ pub(in crate::registry_ops) fn write_channel_partition_tag(
     std::fs::write(&partition, payload)
         .with_context(|| format!("writing {}", partition.display()))?;
 
-    git(dir, &["tag", "-d", channel_name])
-        .with_context(|| format!("deleting temporary channel tag '{channel_name}'"))?;
     Ok(())
 }
 

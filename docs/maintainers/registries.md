@@ -6,17 +6,29 @@ enough isolation for an experimental trust root or disposable data.
 
 | Registry | Local APM alias | Purpose | Channels | Destinations | Data policy |
 | --- | --- | --- | --- | --- | --- |
-| `andyl/testing` | `andyl-testing` | Experimental integration releases | `edge` | `staging/edge`, `production/edge` | Disposable |
-| `andyl/main` | `andyl` | Supported releases after graduation | `candidate`, `stable` | `staging/candidate`, `staging/stable`, `production/candidate`, `production/stable` | Durable |
+| `andyl/main` | `andyl` | The supported registry: hardware-backed keys, strict provenance, durable history | `edge`, `candidate`, `stable` | `staging/edge`, `staging/candidate`, `staging/stable`, `production/edge`, `production/candidate`, `production/stable` | Durable |
+| `andyl/testing` | `andyl-testing` | Rehearsal of new build, release, and key mechanisms on experimental infrastructure | `edge` | `staging/edge`, `production/edge` | Disposable |
+
+The two registries differ in infrastructure, not in the maturity of what they
+carry. `andyl/main` has hardware-backed key custody, threshold signing, and
+the production publication pipeline; `andyl/testing` uses lighter key
+management and continuous-deployment infrastructure that is still being
+proven, so the registry itself is of a different quality. Maturity is a
+channel property: `edge` is the integration stream, `candidate` the weekly
+release candidate, and `stable` the supported stream. Main carries all three so
+that developers following `edge` trust the same root, and exercise the same
+pipeline, as the supported releases they will eventually receive.
 
 Each destination selects a qualification profile, listed in the
-[qualification contract](qualification.md#surfaces-and-destinations).
-Testing epochs (`andyl/testing-vN`) carry the same destinations as
-`andyl/testing`.
+[qualification contract](qualification.md#surfaces-and-destinations). A channel
+kind selects the same profile on both registries. Testing epochs
+(`andyl/testing-vN`) carry the same destinations as `andyl/testing`.
 
-Never publish `edge` to `andyl/main`, and never move a testing release into
-main. Graduation is a new main-registry release plan built from a reviewed
-source commit; it is not a channel move across registries.
+Never move a testing release into main. Graduation is a new main-registry
+release plan built from a reviewed source commit; it is not a channel move
+across registries. Testing carries only `edge` because its releases never
+graduate: a candidate or stable stream on experimental infrastructure would
+be a second supported stream in name only.
 
 There is no emergency release class. An emergency on main is a
 [signed profile override](qualification.md#profile-overrides) of
@@ -24,7 +36,7 @@ There is no emergency release class. An emergency on main is a
 its soak and rollout rings. Every other obligation still applies.
 
 Do not create a separate `andyl/nightly` registry. `edge` is the rapidly moving
-channel inside `andyl/testing`; adding a registry is reserved for a genuinely
+channel inside each registry; adding a registry is reserved for a genuinely
 different trust root, owner, legal boundary, dependency universe, or data
 lifecycle. Testing carries no other channel; a staged rollout within a channel
 uses the destination profile's rings, not additional channels.
@@ -79,7 +91,7 @@ according to its disposable-data policy.
   creating, releasing, updating, rotating, resetting, auditing, and retiring
   the experimental registry.
 - [`registry-main.md`](registry-main.md) is the fail-closed production runbook.
-- [`canonical-releases.md`](canonical-releases.md) documents every `aos release`
+- [`canonical-releases.md`](canonical-releases.md) documents every `aos maintain release`
   phase and the signed evidence it produces.
 - [`trust-model.md`](trust-model.md) defines the authority chain, image-baked
   anchors, signed registry metadata, and runtime trust boundary that these
@@ -95,7 +107,7 @@ according to its disposable-data policy.
 
 Package maintenance and registry release are distinct. `aos maintain` discovers,
 gates, records, and proposes source updates. After those commits merge to the
-protected source branch, `aos release` freezes and publishes a complete registry
+protected source branch, `aos maintain release` freezes and publishes a complete registry
 release. A maintenance run must never write a hosted registry directly.
 
 ## One-machine operating model

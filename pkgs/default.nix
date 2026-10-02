@@ -184,6 +184,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       in
         if !(builtins.elem selector projected.selectors)
         then knownOutputs
+        # A package qualifies its own outputs, even when building or testing
+        # it needs an earlier variant of that same package. Dependency
+        # selectors still require a unique artifact in the declared closure.
+        else if selector.package == packageName && item.key != builtins.toString package
+        then knownOutputs
         else if knownOutputs ? ${key} && knownOutputs.${key} != path
         then throw "Package '${packageName}' qualification selects conflicting artifacts for ${key}."
         else knownOutputs // {${key} = path;};

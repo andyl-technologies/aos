@@ -332,7 +332,8 @@ pub struct FitnessKind {
 /// # Errors
 /// Returns an error for an empty table, a duplicate or malformed entry, an
 /// invalid profile, a destination outside the tier's channel policy, a
-/// production destination with claims but no review, or a malformed `after`.
+/// candidate or stable destination with claims but no review, or a malformed
+/// `after`.
 pub(super) fn validate_tables(contract: &QualificationContract) -> Result<()> {
     if contract.profiles.is_empty() || contract.destinations.is_empty() {
         bail!("current contracts require profiles and destinations");
@@ -397,14 +398,14 @@ pub(super) fn validate_tables(contract: &QualificationContract) -> Result<()> {
             );
         }
         let profile = contract.profile(&destination.profile)?;
-        // Every publication to consumers is reviewed by a human when it
-        // carries any assurance claim, regardless of software maturity.
-        if destination.registry_tier == RegistryTier::Production
-            && profile.claims != ClaimSelection::None
-            && profile.review_threshold == 0
+        // A supported channel publishes assurance claims only after a human
+        // review, on every tier. Edge makes no support promise and is cut on
+        // every changed business day, so its A2 claims may rest on automated
+        // evidence alone.
+        if kind != "edge" && profile.claims != ClaimSelection::None && profile.review_threshold == 0
         {
             bail!(
-                "production destination {}/{} carries claims without independent review",
+                "supported destination {}/{} carries claims without independent review",
                 destination.surface,
                 destination.channel
             );

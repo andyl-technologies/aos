@@ -18,8 +18,10 @@ use crate::registry_ops::signing::{
     ResolvedSigningKey, resolve_producer_signing_key, resolve_signing_key_source,
     trusted_key_from_line,
 };
-use crate::registry_ops::tags::{release_commit, sign_tag};
-use crate::security::{KeyStore, key_fingerprint, parse_signing_key, verify_tag_signature};
+use crate::registry_ops::tags::release_tag_version;
+use crate::security::{
+    KeyStore, key_fingerprint, parse_signing_key, verify_payload_signature, verify_tag_signature,
+};
 use crate::types::{SigningKeySource, SigningKeySpec, validate_registry_name};
 use crate::{KeysCommand, TrustCommand, sshkey};
 use anyhow::{Context, Result, bail};
@@ -187,10 +189,11 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
 /// `list` prints active and revoked keys with fingerprints; `generate`
 /// creates a new maintainer keypair; `register` adopts an externally-held
 /// key without persisting key material; `add` appends a public key to the
-/// active roster; `retire` moves a key to the revoked list and re-signs
-/// every release tag and channel partition the retired key still covered
-/// (the vouching survivor signs by default; `--no-resign` prints the plan
-/// instead of executing it).
+/// active roster; `retire` moves a key to the revoked list and refreshes
+/// affected channel partition signatures. Retirement fails before mutation
+/// when a release would lose trust: released SemVer tag objects are immutable.
+/// `--no-resign` explicitly revokes the key while preserving those objects and
+/// reports the releases and partitions that no longer verify.
 ///
 /// Roster-changing commits must be signed by an active maintainer key
 /// whenever the roster was already non-empty, because clients verify
@@ -200,7 +203,8 @@ pub fn run_trust(config: &ApmConfig, command: &TrustCommand, printer: &Printer) 
 ///
 /// Fails when a key id is invalid, duplicated, or revoked; when a
 /// retirement would leave no active survivor key; when the commit signing
-/// key cannot be resolved; or when the roster write, commit, re-signing,
+/// key cannot be resolved; when default retirement would invalidate an immutable
+/// release; or when the roster write, commit, partition re-signing,
 /// or object-store refresh fails.
 pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) -> Result<()> {
     match command {
@@ -383,119 +387,167 @@ pub fn run_keys(config: &ApmConfig, command: &KeysCommand, printer: &Printer) ->
         } => {
             let registry_name = resolve_registry_name(config, registry.as_deref())?;
             let dir = config.scope.registries_path().join(&registry_name);
-            let mut roster = load_committed_roster(&dir)?;
-            let roster_before = roster.clone();
-            let provenance_before_sequence = read_package_provenance_transparency_log_state(
-                &dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG),
-            )?
-            .0;
-            let vouching_id = retire_roster_key(
-                &mut roster,
-                id,
-                reason.as_deref(),
-                vouched_by,
-                provenance_before_sequence,
-            )?;
-            // The vouching survivor signs the retirement by default; the
-            // key resolution runs against the pre-retire roster, where the
-            // voucher is still active. Re-signing also needs this key, so
-            // resolution failures abort before anything is modified.
-            let signer = if *no_commit && *no_resign {
-                None
-            } else if signing_key.is_none() && signing_key_id.is_none() {
-                Some(resolve_producer_signing_key(
-                    config,
-                    &dir,
-                    &registry_name,
-                    None,
-                    Some(&vouching_id),
-                )?)
-            } else {
-                resolve_roster_commit_key(
-                    config,
-                    &dir,
-                    &registry_name,
-                    &roster_before,
-                    signing_key.as_deref(),
-                    signing_key_id.as_deref(),
-                )?
-            };
-            // Signatures by the retired key become invalid on clients, so
-            // every tag a client still resolves must be re-signed by a
-            // survivor. Plan against the post-retirement active set before
-            // mutating anything.
-            let survivors: Vec<String> = roster
-                .active
-                .iter()
-                .map(|entry| entry.key.clone())
-                .collect();
-            let plan = plan_retirement_resign(&dir, &survivors)?;
-
-            if crate::dry_run::active() {
-                printer.info(&format!(
-                    "Would retire signing key '{id}' from registry '{registry_name}' \
-                     (vouched by '{vouching_id}')"
-                ));
-                if let Some(reason) = reason.as_deref() {
-                    printer.kv("Reason", reason);
-                }
-                // The re-sign plan is the consequential half: retiring a key
-                // invalidates every signature it still covers, so show exactly
-                // which tags and partitions a real run would rewrite.
-                print_resign_plan(&plan, printer);
-                if *no_resign {
-                    printer.info("  --no-resign: those signatures would be left stale.");
-                }
-                printer.info("Dry run: the roster and every signature are unchanged.");
-                return Ok(());
-            }
-
-            persist_committed_roster(
+            retire_committed_key(
+                config,
                 &dir,
-                &roster,
-                *no_commit,
-                &format!("registry: retire signing key {id}"),
-                if *no_commit {
-                    None
-                } else {
-                    signer.as_ref().map(|k| k.path())
+                &registry_name,
+                RetirementOptions {
+                    id,
+                    reason: reason.as_deref(),
+                    vouched_by,
+                    no_commit: *no_commit,
+                    signing_key: signing_key.as_deref(),
+                    signing_key_id: signing_key_id.as_deref(),
+                    no_resign: *no_resign,
                 },
-            )?;
-            if *no_resign {
-                print_resign_plan(&plan, printer);
-            } else if let Some(vouch_key) = signer.as_ref().map(|k| k.path()) {
-                execute_retirement_resign(&dir, &plan, vouch_key, printer)?;
-            }
-            if printer.mode() == OutputMode::Json {
-                printer.json(&serde_json::json!({
-                    "action": "keys_retire",
-                    "status": "retired",
-                    "registry": registry_name,
-                    "id": id,
-                    "reason": reason.as_deref(),
-                    "vouched_by": vouching_id,
-                    "committed": !*no_commit,
-                    "resigned": !*no_resign,
-                    "resign_plan": resign_plan_json(&plan),
-                }));
-                return Ok(());
-            }
-            printer.success(&format!(
-                "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
-            ));
-            Ok(())
+                printer,
+            )
         }
     }
 }
 
-/// Tags whose signatures must be refreshed after a key retirement.
+/// Inputs for a roster retirement and its signature refresh policy.
+struct RetirementOptions<'a> {
+    id: &'a str,
+    reason: Option<&'a str>,
+    vouched_by: &'a Option<String>,
+    no_commit: bool,
+    signing_key: Option<&'a str>,
+    signing_key_id: Option<&'a str>,
+    no_resign: bool,
+}
+
+/// Validate and persist a key retirement in the selected registry clone.
+fn retire_committed_key(
+    config: &ApmConfig,
+    dir: &Path,
+    registry_name: &str,
+    options: RetirementOptions<'_>,
+    printer: &Printer,
+) -> Result<()> {
+    let RetirementOptions {
+        id,
+        reason,
+        vouched_by,
+        no_commit,
+        signing_key,
+        signing_key_id,
+        no_resign,
+    } = options;
+
+    let mut roster = load_committed_roster(dir)?;
+    let roster_before = roster.clone();
+    let provenance_before_sequence = read_package_provenance_transparency_log_state(
+        &dir.join(PACKAGE_PROVENANCE_TRANSPARENCY_LOG),
+    )?
+    .0;
+    let vouching_id = retire_roster_key(
+        &mut roster,
+        id,
+        reason,
+        vouched_by,
+        provenance_before_sequence,
+    )?;
+
+    // Check the post-retirement trust set before resolving private key
+    // sources or writing the roster. Published identities cannot change
+    // to compensate for revoked signatures.
+    let survivors: Vec<String> = roster
+        .active
+        .iter()
+        .map(|entry| entry.key.clone())
+        .collect();
+    let plan = plan_retirement_resign(dir, &survivors)?;
+    if !no_resign {
+        ensure_retirement_preserves_releases(&plan)?;
+    }
+
+    // The vouching survivor signs the retirement by default; the
+    // key resolution runs against the pre-retire roster, where the
+    // voucher is still active. Re-signing also needs this key, so
+    // resolution failures abort before anything is modified.
+    let signer = if no_commit && no_resign {
+        None
+    } else if signing_key.is_none() && signing_key_id.is_none() {
+        Some(resolve_producer_signing_key(
+            config,
+            dir,
+            registry_name,
+            None,
+            Some(&vouching_id),
+        )?)
+    } else {
+        resolve_roster_commit_key(
+            config,
+            dir,
+            registry_name,
+            &roster_before,
+            signing_key,
+            signing_key_id,
+        )?
+    };
+
+    if crate::dry_run::active() {
+        printer.info(&format!(
+            "Would retire signing key '{id}' from registry '{registry_name}' \
+             (vouched by '{vouching_id}')"
+        ));
+        if let Some(reason) = reason {
+            printer.kv("Reason", reason);
+        }
+        // Show the signatures that retirement invalidates, including
+        // immutable releases when explicitly revoking without re-signing.
+        print_resign_plan(&plan, printer);
+        if no_resign {
+            printer.info("  --no-resign: affected releases and partitions would lose trust.");
+        }
+        printer.info("Dry run: the roster and every signature are unchanged.");
+        return Ok(());
+    }
+
+    persist_committed_roster(
+        dir,
+        &roster,
+        no_commit,
+        &format!("registry: retire signing key {id}"),
+        if no_commit {
+            None
+        } else {
+            signer.as_ref().map(|k| k.path())
+        },
+    )?;
+    if no_resign {
+        print_resign_plan(&plan, printer);
+    } else if let Some(vouch_key) = signer.as_ref().map(|k| k.path()) {
+        execute_retirement_resign(dir, &plan, vouch_key, printer)?;
+    }
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::json!({
+            "action": "keys_retire",
+            "status": "retired",
+            "registry": registry_name,
+            "id": id,
+            "reason": reason,
+            "vouched_by": vouching_id,
+            "committed": !no_commit,
+            "resigned": !no_resign,
+            "resign_plan": resign_plan_json(&plan),
+        }));
+        return Ok(());
+    }
+    printer.success(&format!(
+        "Retired signing key '{id}' from registry '{registry_name}' (vouched by '{vouching_id}')."
+    ));
+    Ok(())
+}
+
+/// Signatures that lose trust after a key retirement.
 ///
-/// `affected_partitions` carries the release each partition payload must
-/// be rewritten against, captured *before* release tags are force-retagged
-/// (re-signing changes the tag-object id, which would otherwise orphan the
-/// payload's reference).
+/// Release tags cannot be rewritten. Their presence blocks automatic
+/// retirement, while affected channel partitions can be re-signed against
+/// unchanged release objects when every release retains trust.
 struct ResignPlan {
-    affected_releases: Vec<semver::Version>,
+    affected_releases: Vec<String>,
     affected_partitions: Vec<(String, u8, semver::Version)>,
 }
 
@@ -508,11 +560,10 @@ impl ResignPlan {
 /// Enumerate the tags clients resolve and check which no longer verify
 /// against the surviving active keys.
 ///
-/// Covers every channel partition payload under `.git/channels/` and each
-/// release tag those partitions reference. A partition is also marked
-/// affected when its release tag must be re-signed: the new release tag
-/// object gets a different id, so the payload has to be regenerated even
-/// when its own signature is fine.
+/// Covers every SemVer release tag, including releases without channels, and
+/// every channel partition payload under `.git/channels/`. A partition is also
+/// affected when its referenced release no longer verifies, even if its own
+/// signature remains trusted.
 fn plan_retirement_resign(dir: &Path, survivors: &[String]) -> Result<ResignPlan> {
     let release_tags = semver_tag_object_map(dir)?;
     let git_dir = objectstore::repo_git_dir(dir)?;
@@ -549,28 +600,33 @@ fn plan_retirement_resign(dir: &Path, survivors: &[String]) -> Result<ResignPlan
                         tag.object,
                     )
                 })?;
-                let oid = hash_tag_object(dir, &payload)?;
-                let verified = verify_tag_signature(dir, &oid, survivors)?;
+                // Inspect the served bytes directly: retirement preflight must
+                // not write objects before deciding whether it can proceed.
+                let verified = verify_partition_signature(&payload, survivors)?;
                 partitions.push((channel_name.clone(), bucket, version.clone(), !verified));
             }
         }
     }
 
-    let mut release_versions: Vec<semver::Version> = release_tags.values().cloned().collect();
-    release_versions.sort();
-    release_versions.dedup();
-
-    let mut affected_releases: Vec<semver::Version> = Vec::new();
-    for version in release_versions {
-        if !verify_tag_signature(dir, &version.to_string(), survivors)? {
-            affected_releases.push(version);
+    let names = git(dir, &["tag", "--list"])?;
+    let mut affected_releases = Vec::new();
+    for name in names.lines() {
+        if release_tag_version(name).is_some() && !verify_tag_signature(dir, name, survivors)? {
+            // Preserve the actual ref spelling: resolving a normalized alias
+            // would inspect a different signed object or a nonexistent ref.
+            affected_releases.push(name.to_owned());
         }
     }
     affected_releases.sort();
 
     let affected_partitions = partitions
         .into_iter()
-        .filter(|(_, _, version, failing)| *failing || affected_releases.contains(version))
+        .filter(|(_, _, version, failing)| {
+            *failing
+                || affected_releases
+                    .iter()
+                    .any(|name| release_tag_version(name).as_ref() == Some(version))
+        })
         .map(|(channel, bucket, version, _)| (channel, bucket, version))
         .collect();
 
@@ -580,29 +636,51 @@ fn plan_retirement_resign(dir: &Path, survivors: &[String]) -> Result<ResignPlan
     })
 }
 
-/// Re-sign every affected tag with the vouching survivor's private key.
+/// Verify a partition payload without inserting it into the object database.
+fn verify_partition_signature(payload: &[u8], survivors: &[String]) -> Result<bool> {
+    let Ok(signed) = aos_registry_surface::tag::parse_signed_tag(payload) else {
+        return Ok(false);
+    };
+    for key in survivors {
+        if verify_payload_signature(&signed.signed_payload, &signed.signature, key, "git")? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Reject automatic retirement that would require rewriting release identity.
+fn ensure_retirement_preserves_releases(plan: &ResignPlan) -> Result<()> {
+    if !plan.affected_releases.is_empty() {
+        let versions = plan
+            .affected_releases
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        bail!(
+            "key retirement would invalidate immutable release tags ({versions}); \
+             publish replacement releases with a surviving key, then use --no-resign \
+             to explicitly revoke the key without rewriting released tag objects"
+        );
+    }
+    Ok(())
+}
+
+/// Re-sign affected channel partitions with the vouching survivor's private key.
 ///
-/// Release tags are force-retagged against their original commit and
-/// message; affected channel partitions are regenerated against the new
-/// tag objects, and each touched channel's branch head and object store
-/// are refreshed.
+/// Release identities are checked before any mutation. Partitions continue to
+/// reference the original release tag objects, and each touched channel's
+/// branch head and object store are refreshed.
 fn execute_retirement_resign(
     dir: &Path,
     plan: &ResignPlan,
     vouch_key: &str,
     printer: &Printer,
 ) -> Result<()> {
+    ensure_retirement_preserves_releases(plan)?;
     if plan.is_empty() {
         return Ok(());
-    }
-
-    for version in &plan.affected_releases {
-        let tag = version.to_string();
-        let commit = release_commit(dir, version)?;
-        let payload = git(dir, &["cat-file", "-p", &format!("{tag}^{{tag}}")])?;
-        let message = tag_message_without_signature(&payload);
-        sign_tag(dir, &tag, &commit, message.as_deref(), vouch_key, true)?;
-        printer.info(&format!("Re-signed release tag {tag}."));
     }
 
     let mut touched_channels: Vec<&str> = Vec::new();
@@ -626,12 +704,12 @@ fn execute_retirement_resign(
 /// Print the re-sign plan for manual handling (`--no-resign`).
 fn print_resign_plan(plan: &ResignPlan, printer: &Printer) {
     if plan.is_empty() {
-        printer.info("No tags need re-signing.");
+        printer.info("No release or channel partition signatures would lose trust.");
         return;
     }
-    printer.warning("Skipped re-signing (--no-resign). Affected tags:");
+    printer.warning("Affected signatures after retirement:");
     for version in &plan.affected_releases {
-        printer.plain(&format!("  release tag {version}"));
+        printer.plain(&format!("  immutable release tag {version} loses trust"));
     }
     for (channel, bucket, version) in &plan.affected_partitions {
         printer.plain(&format!(
@@ -662,28 +740,6 @@ fn resign_plan_json(plan: &ResignPlan) -> serde_json::Value {
             .collect::<Vec<_>>(),
         "channel_partitions": partitions,
     })
-}
-
-/// Extract a signed tag's original message, dropping the SSH signature
-/// block git appends to the payload.
-fn tag_message_without_signature(payload: &str) -> Option<String> {
-    let (_, body) = payload.split_once("\n\n")?;
-    let message = match body.find("-----BEGIN SSH SIGNATURE-----") {
-        Some(position) => &body[..position],
-        None => body,
-    };
-    Some(message.trim_end().to_string())
-}
-
-/// Write a tag object payload into the object database, returning its id.
-fn hash_tag_object(dir: &Path, payload: &[u8]) -> Result<String> {
-    let repo = git2::Repository::open(dir)
-        .with_context(|| format!("opening git repository at {}", dir.display()))?;
-    let odb = repo.odb().context("opening object database")?;
-    let oid = odb
-        .write(git2::ObjectType::Tag, payload)
-        .context("writing tag object")?;
-    Ok(oid.to_string())
 }
 
 /// Load the committed `keys.toml` roster, defaulting to an empty roster

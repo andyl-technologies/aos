@@ -4,12 +4,13 @@ Registry automation should make the same guarded transitions an operator makes
 manually. It must not turn a mutable build directory or an unreviewed package
 set directly into the production channel.
 
-The normal pipeline has four separately observable stages:
+The normal pipeline has separately observable transitions:
 
 1. build and test the package;
-2. publish signed package metadata;
-3. create and upload an immutable registry release;
-4. advance a bounded set of channel partitions.
+2. author signed package metadata in a maintainer workspace;
+3. upload an unpublished candidate with a stable stage id and revision;
+4. inspect the exact inventory and finalize its immutable signed release;
+5. advance a bounded set of channel partitions.
 
 Keep one logical publisher for each registry. The local authoring clone has a
 release lock, but publishers on different machines can still race over remote
@@ -121,6 +122,17 @@ The release pipeline uploads immutable objects before mutable pointers. A
 successful command does not replace an external availability probe. Read the
 public release and a representative NAR through the same hostname consumers
 use before advancing a channel.
+
+For a job that must stop before publication, select an ordinary maintainer
+branch in the authoring clone; default and configured channel branches are
+reserved. Use `apr release "$RELEASE_VERSION"
+--stage "$STAGE_ID"` with the same signing and upload options. Persist the stage
+id and the revision from `apr --json stage show "$STAGE_ID" --registry acme` in
+the job record. Retry with `--stage "$STAGE_ID" --stage-revision "$REVISION"
+--resume`; finalization uses `--from-stage "$STAGE_ID" --stage-revision
+"$REVISION"`. A stale revision is a conflict to reconcile, not a retry that may
+silently adopt changed workspace content. See the
+[complete staged workflow](publishing.md#upload-an-unpublished-candidate).
 
 ## Advance a canary ring
 

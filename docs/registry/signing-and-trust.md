@@ -101,8 +101,9 @@ the PKI design and [`publishing.md`](publishing.md).
 Git is configured for SSH signing (`gpg.format = ssh`). Signature production now
 uses **signed annotated tag objects** (`git tag -s <name>`, with an optional
 freeform `-m <message>`), not signed commits. `apr tag <name> --key <key>` creates
-a signed release tag; `apr sign <tag> --key <key>` re-signs an existing release
-tag object. Both commands also accept `--key-id <id>`, which resolves `<id>`
+a signed release tag. Existing semver refs are immutable, including unsigned
+or lightweight refs: they cannot be repaired by replacing the tag object.
+`apr sign <tag> --key <key>` signs only nonrelease maintenance tags. Both commands also accept `--key-id <id>`, which resolves `<id>`
 through the committed active `keys.toml` roster and the producer's local
 `registries.d/<name>.toml` `[registry.signing_keys]` private-key map. Channel
 partition signing uses the same `--key` / `--key-id` rules for
@@ -249,9 +250,12 @@ key it already trusts.
 key to `[[revoked]]` in a commit **signed by one of the *other* overlapping active
 keys** — a key cannot credibly revoke itself, so retirement always rides on a second
 still-trusted active key. Because signatures by a revoked key are invalid (§2.3),
-`retire` also **re-signs** the channel partition tags and the release tags they
-reference whose only valid signer was the retired key, using the vouching key
-(§2.6); `--no-resign` skips this and prints the affected tag list instead. The
+`retire` fails before changing the roster if a published release would lose its
+last active signer. Published semver tag objects remain immutable. Prepare
+replacement releases with a higher version before retiring the key, or use
+`--no-resign` for an intentional revocation that leaves the affected releases
+and channels untrusted. Partition tags may be re-signed only when their release
+tags already verify with surviving keys; no revoked signature is grandfathered. The
 revocation propagates to clients on their **next sync**, not a package upgrade.
 
 **Compromise.** Revocation is the same `apr keys retire` operation with `--reason`.
@@ -622,9 +626,9 @@ ways:
 | Any-active-key verification | `verify_commit_signature`/`verify_tag_signature` take `trusted_keys: &[String]`; empty set is an error. CLI tests call this production verifier directly, while the focused security, Hub, and change-request interoperability tests generate stock-Git signatures to preserve the independent parser check. Nix checks route every stock-Git/OpenSSH signing fixture command through test helpers that supply the otherwise passwd-less builder identity from a repository-owned build-only preload fixture; production artifacts retain no OpenSSH or identity-shim runtime path. |
 | Roster consumption (client) | `sync_git` assembles `T`, verifies the head commit, fast-forwards, validates + pins the roster, masks revoked anchor keys, re-verifies the chain post-pin (`registry/git.rs:85`,`:314`,`:329`,`:358`; `pin_rotated_keys` `registry/keys.rs:134`) |
 | Strict-by-default signing | absent `[registry.signing]` enforces verification; `required = false` (or `apm registry add --no-verify`) is the only opt-out (`signing_enforced` `git.rs:299`) |
-| Key rotation / revocation | `apr keys add/retire` with survivor + vouching checks; retirement re-signs affected channel/release tags via the vouching key (`--no-resign` to skip) (`registry_ops.rs:2551`,`2742`,`2815`) |
+| Key rotation / revocation | `apr keys add/retire` with survivor + vouching checks; retirement preserves immutable release tags and fails closed on lost release trust (`--no-resign` explicitly accepts that revocation) (`registry_ops.rs:2551`,`2742`,`2815`) |
 | Signed roster commits | `apr keys add/retire` require `--key`/`--key-id` and produce signed `keys.toml` commits (`resolve_roster_commit_key` `registry_ops.rs:3059`) |
-| Signature *production* | `apr tag` / `apr sign <tag>` create signed release tag objects; `apr channel init/advance` writes signed partition tag files; all accept `--key` or roster-backed `--key-id` |
+| Signature *production* | `apr tag` creates signed release tag objects; `apr sign <tag>` is restricted to nonrelease maintenance tags; `apr channel init/advance` writes signed partition tag files; all accept `--key` or roster-backed `--key-id` |
 | What is signed | **`tag → tag → commit`** chain (partition + release tags), plus signed `keys.toml` commits |
 | Name-binding | embedded tag-name == expected path name (channel / semver) |
 | Anti-rollback | semver monotonic floor + fix-forward |

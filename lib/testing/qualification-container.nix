@@ -412,7 +412,7 @@ in
         if reportOnly
         then "${pkgs.coreutils}/bin/cat scenario-report.json"
         else ''
-          exec ${pkgs.aos}/bin/aos release step qualification respond \
+          exec ${pkgs.aos}/bin/aos maintain release step qualification respond \
             --request "$request" \
             --scenarios scenario-registry.json \
             --report scenario-report.json \

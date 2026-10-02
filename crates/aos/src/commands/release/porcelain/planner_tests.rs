@@ -287,7 +287,7 @@ fn production_publication_requires_after_reviewed_staging_evidence_and_fitness()
     destination.fitness_blocker = Some("production/stable requires fresh key-rotation".into());
     assert!(waits(
         &next(&release, &destination, &options())?,
-        "aos release fitness run"
+        "aos maintain release fitness run"
     ));
 
     destination.fitness_blocker = None;
@@ -537,6 +537,8 @@ fn first_staging_publication_carries_tuf_metadata_then_publishes_its_timestamp()
         run(Step::Publish)
     );
 
+    assert!(super::super::advance::publication_step(&Step::Publish));
+
     // The timestamp moves only after the immutable metadata is served.
     destination.state = Some(ReleaseState::Published);
     destination.published_at = Some(now());
@@ -545,11 +547,18 @@ fn first_staging_publication_carries_tuf_metadata_then_publishes_its_timestamp()
         run(Step::PublishTimestamp)
     );
 
+    assert!(super::super::advance::publication_step(
+        &Step::PublishTimestamp
+    ));
+
     metadata(&mut destination).timestamp_published = true;
     assert_eq!(
         next(&release, &destination, &options())?,
         run(Step::AdvanceRing(1))
     );
+    assert!(!super::super::advance::publication_step(
+        &Step::AdvanceRing(1)
+    ));
     Ok(())
 }
 
@@ -576,7 +585,7 @@ fn first_production_publication_records_after_signed_staging_and_fitness() -> an
     destination.fitness_blocker = Some("production/stable requires fresh key-rotation".into());
     assert!(waits(
         &next(&release, &destination, &options())?,
-        "aos release fitness run"
+        "aos maintain release fitness run"
     ));
 
     destination.fitness_blocker = None;

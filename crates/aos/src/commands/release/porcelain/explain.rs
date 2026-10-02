@@ -1,4 +1,4 @@
-//! `aos release explain --to <destination>`: every obligation and its status.
+//! `aos maintain release explain --to <destination>`: every obligation and its status.
 //!
 //! ```text
 //! production/stable: profile soak (sha256:...)

@@ -3,6 +3,15 @@
 //! Conditional writes map onto `PutObject` with `If-Match` /
 //! `If-None-Match: *`, so the service evaluates the precondition atomically.
 //! Object versions are `ETag`s; see [`super::conditional`].
+//!
+//! Native AWS immutable multipart uploads resume accepted parts and apply the
+//! destination condition at completion. Custom S3 endpoints, including R2,
+//! use a streamed conditional PutObject up to 5 GiB: repeat runs reuse verified
+//! complete objects, while an interrupted single request restarts its bytes.
+//! Larger conditional objects fail until that provider has verified atomic
+//! multipart completion support. Provider guarantees are documented in
+//! [AWS conditional writes](https://docs.aws.amazon.com/AmazonS3/latest/userguide/conditional-writes.html)
+//! and [R2 S3 compatibility](https://developers.cloudflare.com/r2/api/s3/api/).
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -82,6 +91,28 @@ impl CacheBackend for S3Backend {
         let url = self.s3_url(relative_path.trim_start_matches('/'));
         let result = self.engine.head(&url).await?;
         Ok(result.status != 404)
+    }
+
+    async fn static_file_identity(
+        &self,
+        relative_path: &str,
+    ) -> Result<Option<super::StaticFileIdentity>> {
+        validate_relative_path(relative_path)?;
+        let url = self.s3_url(relative_path);
+        if self.engine.head(&url).await?.status == 404 {
+            return Ok(None);
+        }
+        let snapshot = tempfile::NamedTempFile::new()?;
+        self.engine
+            .execute(TransferRequest::get_to_file(
+                &url,
+                snapshot.path().to_path_buf(),
+            ))
+            .await?;
+        let (byte_size, sha256) = crate::upload_resume::source_identity(
+            &aos_net::MultipartSource::File(snapshot.path().to_path_buf()),
+        )?;
+        Ok(Some(super::StaticFileIdentity { byte_size, sha256 }))
     }
 
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {

@@ -57,7 +57,7 @@ pub(super) fn run(args: &ReleasePlanArgs, nix: &NixRunner, printer: &Printer) ->
     qualification.validate()?;
     if request.public_evidence_policy_digest != qualification.digest()? {
         bail!(
-            "reviewed request must bind the complete shared qualification policy; inspect aos release step contract"
+            "reviewed request must bind the complete shared qualification policy; inspect aos maintain release step contract"
         );
     }
     let accepted = apply_overrides(args, &qualification, &mut request)?;
@@ -310,13 +310,7 @@ fn derive_source_identity(
             bail!("normal release source is not the protected branch head");
         }
     }
-    let tag_ref = format!("refs/tags/{}", source_policy.source_tag);
-    let tag_probe = git(root, &["rev-parse", "--quiet", "--verify", &tag_ref])?;
-    if tag_probe.status.success() {
-        bail!("source tag already exists: {}", source_policy.source_tag);
-    } else if tag_probe.status.code() != Some(1) {
-        bail!("Git failed while checking whether the source tag exists");
-    }
+    require_unused_or_matching_source_tag(root, &source_policy.source_tag, &commit)?;
 
     Ok(SourceIdentity {
         commit,
@@ -325,6 +319,36 @@ fn derive_source_identity(
         source_tag: source_policy.source_tag.clone(),
         contributor_authorization_digest: authorization_digest,
     })
+}
+
+/// Requires the source tag to be absent or to already name the planned commit.
+///
+/// The tag is `release/<version>`, which is not registry-qualified. A main
+/// edge release and a testing edge release of the same version are planned
+/// from the same protected commit, so the second plan finds the tag the first
+/// one created. That is the same immutable source identity, not a reuse of a
+/// version for different content, so it is accepted. A tag naming any other
+/// commit is a version collision and fails closed.
+fn require_unused_or_matching_source_tag(
+    root: &Path,
+    source_tag: &str,
+    commit: &str,
+) -> Result<()> {
+    let tag_ref = format!("refs/tags/{source_tag}");
+    let tag_probe = git(root, &["rev-parse", "--quiet", "--verify", &tag_ref])?;
+    if tag_probe.status.code() == Some(1) {
+        return Ok(());
+    }
+    if !tag_probe.status.success() {
+        bail!("Git failed while checking whether the source tag exists");
+    }
+
+    let peeled = format!("{tag_ref}^{{commit}}");
+    let tagged_commit = git_text(root, &["rev-parse", "--verify", &peeled])?;
+    if tagged_commit != commit {
+        bail!("source tag {source_tag} already names a different commit");
+    }
+    Ok(())
 }
 
 /// Rejects profile evaluation from a checkout other than the frozen clean source.
@@ -514,6 +538,84 @@ mod tests {
         assert!(require_planned_source(directory.path(), &identity).is_err());
         assert!(
             derive_source_identity(directory.path(), false, &source, authorization_digest).is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn source_tag_may_already_name_the_planned_commit_but_no_other() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let root = directory.path();
+        assert!(
+            git(
+                root,
+                &["init", "--initial-branch=master", "--object-format=sha1"]
+            )?
+            .status
+            .success()
+        );
+        let commit = |message: &str| -> Result<()> {
+            fs::write(root.join("source.txt"), message.as_bytes())?;
+            assert!(git(root, &["add", "source.txt"])?.status.success());
+            assert!(
+                git(
+                    root,
+                    &[
+                        "-c",
+                        "user.name=AOS Test",
+                        "-c",
+                        "user.email=aos-test@example.invalid",
+                        "commit",
+                        "-m",
+                        message,
+                    ],
+                )?
+                .status
+                .success()
+            );
+            Ok(())
+        };
+
+        commit("first")?;
+        let authorization_digest = Sha256Digest::of_bytes("authorization");
+        let source = PlanningSource {
+            protected_branch: "master".to_owned(),
+            source_tag: "release/2026.10.0-dev.20261001.1".to_owned(),
+            contributor_authorization_digest: authorization_digest,
+        };
+
+        // Planning the same version twice from the same commit, as a main and
+        // a testing edge release do, sees the first plan's tag and accepts it.
+        let first = derive_source_identity(root, false, &source, authorization_digest)?;
+        // A lightweight tag is enough here; the operator's signing config must
+        // not reach into the fixture repository.
+        let tagged = git(
+            root,
+            &[
+                "-c",
+                "tag.gpgSign=false",
+                "tag",
+                &source.source_tag,
+                &first.commit,
+            ],
+        )?;
+        assert!(
+            tagged.status.success(),
+            "{}",
+            String::from_utf8_lossy(&tagged.stderr)
+        );
+        let second = derive_source_identity(root, false, &source, authorization_digest)?;
+        assert_eq!(second.commit, first.commit);
+
+        // Once the protected branch moves, the tag names a different commit
+        // and the version can no longer be planned.
+        commit("second")?;
+        let error = derive_source_identity(root, false, &source, authorization_digest)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("already names a different commit"),
+            "{error}"
         );
         Ok(())
     }

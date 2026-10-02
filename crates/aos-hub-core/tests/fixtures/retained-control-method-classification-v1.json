@@ -537,6 +537,56 @@
   },
   {
     "service": "PublishService",
+    "method": "UpsertStagedRelease",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "GetStagedRelease",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "ListStagedReleases",
+    "exposure": "public",
+    "durability": "read_only",
+    "class": {
+      "class": "read"
+    },
+    "external_effects": false
+  },
+  {
+    "service": "PublishService",
+    "method": "FinalizeStagedRelease",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "PublishService",
+    "method": "DiscardStagedRelease",
+    "exposure": "public",
+    "durability": "durable",
+    "class": {
+      "class": "data_plane_write"
+    },
+    "external_effects": true
+  },
+  {
+    "service": "PublishService",
     "method": "BeginRegistryPublication",
     "exposure": "public",
     "durability": "durable",

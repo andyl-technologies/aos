@@ -20,6 +20,7 @@
 
 pub mod conditional;
 pub mod fs;
+mod fs_resume;
 pub mod http;
 pub mod s3;
 pub mod sftp;
@@ -31,6 +32,9 @@ use anyhow::Result;
 pub use conditional::{
     ConditionalOutcome, ConditionalWriteUnsupported, Expectation, ObjectVersion,
 };
+
+/// Re-exports the provider-confirmed absent-session transfer error.
+pub use aos_net::MultipartSessionMissing as MultipartSessionExpired;
 
 /// One admitted cache-object upload returned by a batch control request.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +287,58 @@ pub trait CacheBackend: Send + Sync {
         sha256: Option<&str>,
     ) -> Result<()>;
 
+    /// Creates an immutable object only when absent, or verifies exact existing bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for changed source bytes, conflicting existing objects,
+    /// unavailable conditional writes, or failed transfer verification.
+    async fn put_immutable_file(
+        &self,
+        relative_path: &str,
+        source: &std::path::Path,
+        sha256: &str,
+    ) -> Result<()> {
+        conditional::validate_relative_path(relative_path)?;
+        let (size, actual) = crate::upload_resume::source_identity(
+            &aos_net::MultipartSource::File(source.to_path_buf()),
+        )?;
+        anyhow::ensure!(
+            actual == sha256,
+            "immutable source differs from its admitted SHA-256"
+        );
+        if let Some(identity) = self.static_file_identity(relative_path).await? {
+            anyhow::ensure!(
+                identity.byte_size == size && identity.sha256 == sha256,
+                "immutable object already exists with conflicting bytes: {relative_path}"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            !self.exists(relative_path).await?,
+            "immutable object already exists without verifiable identity: {relative_path}"
+        );
+        self.put_static_file_conditional(
+            relative_path,
+            source,
+            None,
+            Some(IMMUTABLE_CACHE_CONTROL),
+            Expectation::Absent,
+        )
+        .await?;
+        let identity = self
+            .static_file_identity(relative_path)
+            .await?
+            .ok_or_else(|| {
+                anyhow::anyhow!("immutable object has no verifiable identity after transfer")
+            })?;
+        anyhow::ensure!(
+            identity.byte_size == size && identity.sha256 == sha256,
+            "immutable object failed exact transfer verification: {relative_path}"
+        );
+        Ok(())
+    }
+
     /// Reads a small static object and its current [`ObjectVersion`].
     ///
     /// Returns `Ok(None)` when no object exists at `relative_path`. The
@@ -366,6 +422,22 @@ pub trait CacheBackend: Send + Sync {
     /// single request can carry is uploadable only when this is `true`.
     fn supports_multipart(&self) -> bool {
         false
+    }
+
+    /// Returns the stable destination identity used for durable multipart journals.
+    ///
+    /// Backends returning a namespace promise that upload ids and accepted part
+    /// receipts survive a client restart. Credentials must never be included.
+    fn multipart_resume_namespace(&self) -> Option<String> {
+        None
+    }
+
+    /// Overrides the private checkpoint root for a configured multipart destination.
+    ///
+    /// The default follows the user's cache directory. Callers may select a
+    /// private persistent directory when their runtime has no home directory.
+    fn multipart_resume_directory(&self) -> Option<std::path::PathBuf> {
+        None
     }
 
     /// Begin a multipart upload of the NAR at `nar_path` (e.g.

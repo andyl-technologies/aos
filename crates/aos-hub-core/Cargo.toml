@@ -119,6 +119,12 @@ tokio = { workspace = true, features = ["test-util"] }
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
 
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The staged-release contract test exercises the actual maintainer client
+# against the shared Connect router with an ephemeral native HTTP listener.
+aos-package = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
+
 # The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches
 # the browser/Workers `crypto.getRandomValues` through getrandom's JS backend on
 # wasm32. getrandom 0.2 (via password-hash/rand_core 0.6) uses the `js` feature;
