@@ -158,7 +158,7 @@ in {
         mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf" "$host_bin"
         # System registry commands require an explicitly identified AOS root.
         mkdir -p "$aos_root/etc"
-        printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=1' > "$aos_root/etc/os-release"
+        printf '%s\n' 'ID=aos' 'AOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library' > "$aos_root/etc/os-release"
 
         profile="$profile_root/per-user/unknown"
         default_profile="/var/lib/profiles/per-user/unknown"
