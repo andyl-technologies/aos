@@ -17,7 +17,8 @@ mod import;
 #[cfg(all(feature = "std", unix))]
 mod local;
 #[cfg(all(feature = "std", unix))]
-mod local_authority;
+/// Persists protected local signing and retained original-authority evidence.
+pub(crate) mod local_authority;
 mod path;
 mod prepared;
 pub(crate) mod read;
