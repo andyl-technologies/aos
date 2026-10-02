@@ -65,9 +65,9 @@ aos_dev_target_attr() {
       local variant=${name%%:*} kind=${name#*:}
       [[ $variant != "$kind" ]] || aos_dev_error "container name must be VARIANT:KIND; see 'list containers'"
       local prefix="containerImages.$variant"
-      # The testing image is assembled by its system module, whereas release
+      # The experimental image is assembled by its system module, whereas release
       # containers are exposed by the top-level containerImages attrset.
-      if [[ $variant == aos-testing || $variant == aos-testing-staging ]]; then
+      if [[ $variant == aos-experimental || $variant == aos-experimental-staging ]]; then
         prefix="systems.$variant.build.defaultContainer"
       fi
       case $kind in

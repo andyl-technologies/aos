@@ -273,7 +273,7 @@ mod tests {
             schema_version: SIGNING_REQUEST_DOMAIN.into(),
             request_id: "test/request-1".into(),
             nonce: "ab".repeat(32),
-            registry: "andyl/testing".into(),
+            registry: "andyl/experimental".into(),
             release_id: "release-1".into(),
             plan_digest: Sha256Digest::of_bytes("plan"),
             manifest_digest: None,
@@ -300,7 +300,7 @@ mod tests {
         SignerConfigV1 {
             schema_version: CONFIG_SCHEMA_V1.into(),
             provider_revision: "test-provider-v1".into(),
-            registries: vec!["andyl/testing".into()],
+            registries: vec!["andyl/experimental".into()],
             tools: ToolPaths::default(),
             keys: vec![
                 KeyEntry {

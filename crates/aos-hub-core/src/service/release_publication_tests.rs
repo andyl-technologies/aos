@@ -10,7 +10,7 @@ use base64::Engine as _;
 
 const STAGING: &str = "staging-deployment";
 const PRODUCTION: &str = "production-deployment";
-const REGISTRY: &str = "andyl/testing";
+const REGISTRY: &str = "andyl/experimental";
 const BASE_COMMIT: &str = "base-commit";
 
 struct Fixture {
@@ -70,7 +70,7 @@ async fn fixture(deployment: &str) -> Fixture {
     let (service, db, auth) = super::cache_upload_tests::release_test_service().await;
     let service = service.with_release_evidence(authority(deployment));
     let org_id = db.create_org("andyl", "Andyl").await.unwrap();
-    db.create_managed_registry(org_id, "", "testing", "public", &[], true)
+    db.create_managed_registry(org_id, "", "experimental", "public", &[], true)
         .await
         .unwrap();
     let registry = db.registry_by_slug(REGISTRY).await.unwrap().unwrap();

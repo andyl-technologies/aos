@@ -27,7 +27,7 @@ All three ship through main's hardware-backed keys and production pipeline, so
 a developer following `edge` trusts the same root and exercises the same
 delivery path as the supported releases it leads to.
 
-The experimental `andyl/testing` registry also carries an `edge` channel. It
+The experimental `andyl/experimental` registry also carries an `edge` channel. It
 exists because it has its own trust root, lighter key management and
 continuous-deployment infrastructure, and disposable data, not because of
 maturity: it is where a change to the release mechanism itself is rehearsed
@@ -82,9 +82,9 @@ authority.
 
 | Question | Decision |
 | --- | --- |
-| How many public registries? | One supported catalog, `andyl/main`, plus the experimental `andyl/testing` with its own trust root and disposable data. Add another only for a different owner, trust root, legal/distribution policy, or intentionally independent dependency universe. |
+| How many public registries? | One supported catalog, `andyl/main`, plus the experimental `andyl/experimental` with its own trust root and disposable data. Add another only for a different owner, trust root, legal/distribution policy, or intentionally independent dependency universe. |
 | What is the Debian analogue? | AOS channels correspond to Debian's maturity suites. APM registries are closer to independently trusted archives, not suites. |
-| Which channels? | `edge`, `candidate`, and `stable` in `andyl/main`; `edge` only in `andyl/testing`. No environment-named registry. |
+| Which channels? | `edge`, `candidate`, and `stable` in `andyl/main`; `edge` only in `andyl/experimental`. No environment-named registry. |
 | What decides a release's obligations? | The destination's profile: `build` for staging, `smoke` for edge, `functional` for candidate, `soak` for stable. A channel kind selects the same profile on both registries. An emergency is a signed profile override of stable soak and rings, not a class. |
 | How is environment recovery proven? | By signed, identity-bound fitness attestations: weekly automated restore and alert checks, quarterly operator exercises. They are not repeated per release. |
 | Which package targets? | `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`, subject to the fail-closed package eligibility inventory. |

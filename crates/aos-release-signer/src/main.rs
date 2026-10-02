@@ -5,7 +5,7 @@
 //! verify whatever comes back against independently pinned public material.
 //! This binary is such an executable for deployments whose keys live in
 //! operator-owned files rather than an HSM or remote signing service, such as
-//! the `andyl/testing` registry.
+//! the `andyl/experimental` registry.
 //!
 //! Modules:
 //!

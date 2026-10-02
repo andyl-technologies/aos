@@ -813,7 +813,7 @@ mod tests {
         Ok(QualificationExecutorRequest {
             schema_version: aos_release::evidence::QUALIFICATION_EXECUTOR_REQUEST.into(),
             qualification_case: case.clone(),
-            registry: "andyl/testing".into(),
+            registry: "andyl/experimental".into(),
             release_id: "release-2026.9.0".into(),
             staging_receipt_digest: Sha256Digest::of_bytes(b"receipt"),
             manifest_digest: Sha256Digest::of_bytes(b"manifest"),
@@ -823,7 +823,7 @@ mod tests {
             subjects: case.subjects,
             objects: vec![aos_release::evidence::QualificationObject {
                 artifact_id: "package/example/x86_64-linux".into(),
-                url: "https://aos.staging.andyl.org/andyl/testing/packages/example.nar.zst".into(),
+                url: "https://aos.staging.andyl.org/andyl/experimental/packages/example.nar.zst".into(),
                 size_bytes: 42,
                 sha256: Sha256Digest::of_bytes(b"nar"),
             }],
@@ -835,7 +835,7 @@ mod tests {
     fn package_report() -> serde_json::Value {
         serde_json::json!({
             "schema_version": SCENARIO_REPORT,
-            "registry": "andyl/testing",
+            "registry": "andyl/experimental",
             "release_id": "release-2026.9.0",
             "staging_receipt_digest": Sha256Digest::of_bytes(b"receipt"),
             "manifest_digest": Sha256Digest::of_bytes(b"manifest"),
@@ -1198,20 +1198,20 @@ mod tests {
         request.objects = vec![
             aos_release::evidence::QualificationObject {
                 artifact_id: "control/release-manifest-envelope".into(),
-                url: "https://aos.staging.andyl.org/andyl/testing/release-manifest.json".into(),
+                url: "https://aos.staging.andyl.org/andyl/experimental/release-manifest.json".into(),
                 size_bytes: 4096,
                 sha256: Sha256Digest::of_bytes(b"manifest"),
             },
             aos_release::evidence::QualificationObject {
                 artifact_id: "image/aos/x86_64-linux/metadata".into(),
-                url: "https://aos.staging.andyl.org/andyl/testing/images/aos/x86_64-linux/metadata"
+                url: "https://aos.staging.andyl.org/andyl/experimental/images/aos/x86_64-linux/metadata"
                     .into(),
                 size_bytes: 8192,
                 sha256: Sha256Digest::of_bytes(b"metadata"),
             },
             aos_release::evidence::QualificationObject {
                 artifact_id: "image/aos/x86_64-linux/raw".into(),
-                url: "https://aos.staging.andyl.org/andyl/testing/images/aos/x86_64-linux/raw"
+                url: "https://aos.staging.andyl.org/andyl/experimental/images/aos/x86_64-linux/raw"
                     .into(),
                 size_bytes: 32768,
                 sha256: Sha256Digest::of_bytes(b"raw"),
@@ -1276,7 +1276,7 @@ mod tests {
         let mut request = package_request()?;
         request.qualification_case.predecessor = Some(
             aos_release::qualification_evidence::QualificationPredecessor {
-                registry: "andyl/testing".into(),
+                registry: "andyl/experimental".into(),
                 release_id: "qualification-snapshot-2026.9.0".into(),
                 manifest_digest: Sha256Digest::of_bytes(b"predecessor-manifest"),
             },

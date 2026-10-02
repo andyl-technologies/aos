@@ -984,6 +984,7 @@ async fn bounded_candidate_frontier_and_expired_history_compaction_make_progress
             idempotency_key: "frontier-first".to_string(),
             expected_resource_version: 1,
             now: 10_000_000,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -1034,6 +1035,7 @@ async fn bounded_candidate_frontier_and_expired_history_compaction_make_progress
             idempotency_key: "frontier-second".to_string(),
             expected_resource_version: 1,
             now: 10_000_001,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -1195,6 +1197,7 @@ async fn grace_root_protects_forward_closure_and_apply_rejects_new_survivor_edge
             idempotency_key: "grace-plan".to_string(),
             expected_resource_version: 1,
             now: 1_000,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -1429,6 +1432,7 @@ async fn fresh_untag_and_retained_unlinked_history_protect_manifest_closure() {
             idempotency_key: "history-retained".to_string(),
             expected_resource_version: 1,
             now: 105,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -1451,6 +1455,7 @@ async fn fresh_untag_and_retained_unlinked_history_protect_manifest_closure() {
             idempotency_key: "history-expired-still-grace".to_string(),
             expected_resource_version: 2,
             now: 109,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -1462,6 +1467,7 @@ async fn fresh_untag_and_retained_unlinked_history_protect_manifest_closure() {
             idempotency_key: "history-expired-after-grace".to_string(),
             expected_resource_version: 2,
             now: 112,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -1501,6 +1507,7 @@ async fn fresh_untag_and_retained_unlinked_history_protect_manifest_closure() {
             idempotency_key: "history-expired-payload-frontier".to_string(),
             expected_resource_version: 2,
             now: 113,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -3340,6 +3347,7 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
             idempotency_key: "plan-lifecycle".to_string(),
             expected_resource_version: 0,
             now: 999_993,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -3459,6 +3467,7 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
             idempotency_key: "plan-lifecycle-after-credential-rotation".to_string(),
             expected_resource_version: 0,
             now: 999_994,
+            retire_registry: false,
         })
         .await
         .unwrap();
@@ -3889,4 +3898,363 @@ async fn reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete() {
         1,
         "terminal GC must release its transient frozen-credential hold"
     );
+}
+
+/// Creates one enabled hub-proxied OCI route through the topology API so
+/// retirement planning observes a surface that clients still resolve through.
+async fn seed_enabled_oci_route(
+    database: &Database,
+    registry_id: i64,
+    placement: &crate::db::SurfacePlacementRecord,
+) -> String {
+    let registry = database.registry_by_id(registry_id).await.unwrap().unwrap();
+    let org_id = registry.org_id.unwrap();
+    let owner = database.org_by_id(org_id).await.unwrap().unwrap();
+    database
+        .grant_consumer_scope(
+            crate::db::GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &owner.stable_id,
+            "explicit",
+            "test",
+            "request:retire-public-boundary",
+        )
+        .await
+        .unwrap();
+    let domain = database
+        .create_delivery_domain(
+            &owner.stable_id,
+            Some(org_id),
+            "retire.example.test",
+            "plan:retire-domain",
+        )
+        .await
+        .unwrap();
+    let endpoint_spec = crate::db::EndpointRevisionSpec {
+        boundary_revision: 1,
+        ingress_kind: "hub".to_string(),
+        listener_configuration: "listener:retire".to_string(),
+        tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_string(),
+        probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+    };
+    database
+        .create_endpoint(
+            "endpoint:retire",
+            &owner.stable_id,
+            Some(org_id),
+            "https",
+            &crate::db::EndpointHostInput::Domain(domain.stable_id),
+            443,
+            "instance:public",
+            &endpoint_spec,
+            None,
+            "test",
+            "request:endpoint-retire",
+        )
+        .await
+        .unwrap();
+
+    let access_policy_json = "{}".to_string();
+    let spec = crate::db::RouteSpec {
+        consumer_scope_key: owner.stable_id,
+        endpoint_id: "endpoint:retire".to_string(),
+        endpoint_generation: 1,
+        endpoint_ingress_kind: "hub".to_string(),
+        base_path: String::new(),
+        mode: "hub_proxy".to_string(),
+        access_policy_kind: "public".to_string(),
+        access_policy_digest: crate::auth::token::sha256_hex(&access_policy_json),
+        access_policy_json,
+        access_boundary_id: None,
+        access_boundary_revision: None,
+        external_provider_kind: None,
+        external_provider_resource_id: None,
+        external_provider_revision: None,
+        gateway_id: None,
+        gateway_generation: None,
+        target_binding_id: None,
+        gateway_client_base_path: None,
+        target_placement_prefix: None,
+        placement_id: Some(placement.id),
+        placement_policy_revision_id: None,
+        serves_git: false,
+        serves_cache: false,
+        serves_web: false,
+        serves_oci: true,
+        enabled: true,
+    };
+    database
+        .create_route(
+            "route:retire",
+            SurfaceTarget::Registry(registry_id),
+            &spec,
+            "https://retire.example.test",
+            1,
+            &[7_u8; 32],
+            &[(1, vec![7_u8; 32])],
+            None,
+            "test",
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+async fn set_oci_route_enabled(database: &Database, route_id: &str, enabled: bool) {
+    database
+        .backend
+        .execute(
+            "UPDATE routes SET enabled = ?1 WHERE id = ?2",
+            &vals![i64::from(enabled), route_id],
+        )
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn retirement_plan_blocks_on_serving_routes_then_collects_catalog_roots() {
+    let database = Database::open_in_memory().await.unwrap();
+    let (registry_id, placement) = seed_inventory_topology(&database).await;
+    let repository = RepositoryName::parse("retire").unwrap();
+    let repository = database
+        .ensure_oci_repository(registry_id, &repository, 10)
+        .await
+        .unwrap();
+    let manifest = Sha256Digest::digest(b"retire-manifest");
+    let config = Sha256Digest::digest(b"retire-config");
+    let layer = Sha256Digest::digest(b"retire-layer");
+    let objects = [
+        (501_i64, manifest, 21_u64),
+        (502, config, 22),
+        (503, layer, 23),
+    ];
+    for (id, digest, size) in objects {
+        database
+            .backend
+            .execute(
+                "INSERT INTO surface_objects
+                   (id, registry_id, object_key, object_kind, partition_key,
+                    content_hash, size, lifecycle_state, created_at, updated_at,
+                    resource_version)
+                 VALUES(?1, ?2, ?3, 'immutable', zeroblob(32), ?4, ?5,
+                        'active', 1, 1, 1)",
+                &vals![
+                    id,
+                    registry_id,
+                    crate::db::oci_blob_object_key(digest),
+                    digest.encoded(),
+                    i64::try_from(size).unwrap()
+                ],
+            )
+            .await
+            .unwrap();
+        database
+            .backend
+            .execute(
+                "INSERT INTO oci_blobs
+                   (registry_id, digest, byte_size, media_type, surface_object_id,
+                    quota_bytes, lifecycle_state, created_at, updated_at,
+                    unreferenced_since)
+                 VALUES(?1, ?2, ?3, 'application/octet-stream', ?4, ?3,
+                        'active', 1, 1, NULL)",
+                &vals![
+                    registry_id,
+                    digest.to_string(),
+                    i64::try_from(size).unwrap(),
+                    id
+                ],
+            )
+            .await
+            .unwrap();
+    }
+    database
+        .backend
+        .execute(
+            "INSERT INTO oci_repository_objects
+               (repository_id, registry_id, digest, object_kind, media_type, linked_at)
+             VALUES(?1, ?2, ?3, 'manifest', 'application/test.manifest', 1)",
+            &vals![repository.id, registry_id, manifest.to_string()],
+        )
+        .await
+        .unwrap();
+    database
+        .backend
+        .execute(
+            "INSERT INTO oci_manifests
+               (registry_id, digest, media_type, byte_size, schema_version,
+                artifact_type, annotations_json, descriptor_count, created_at)
+             VALUES(?1, ?2, 'application/test.manifest', 21, 2,
+                    'application/test.artifact', '{}', 2, 1)",
+            &vals![registry_id, manifest.to_string()],
+        )
+        .await
+        .unwrap();
+    for (role, target, size) in [("config", config, 22_i64), ("layer", layer, 23)] {
+        database
+            .backend
+            .execute(
+                "INSERT INTO oci_descriptor_edges
+                   (registry_id, manifest_digest, edge_role, ordinal,
+                    target_digest, media_type, byte_size, annotations_json)
+                 VALUES(?1, ?2, ?3, 0, ?4, 'application/octet-stream', ?5, '{}')",
+                &vals![
+                    registry_id,
+                    manifest.to_string(),
+                    role,
+                    target.to_string(),
+                    size
+                ],
+            )
+            .await
+            .unwrap();
+    }
+    database
+        .backend
+        .execute(
+            "INSERT INTO oci_tags
+               (repository_id, registry_id, name, digest, source_kind, updated_at)
+             VALUES(?1, ?2, 'latest', ?3, 'manual', 1)",
+            &vals![repository.id, registry_id, manifest.to_string()],
+        )
+        .await
+        .unwrap();
+    database
+        .backend
+        .execute(
+            "UPDATE oci_registry_state SET charged_bytes = 66, charged_objects = 3
+             WHERE registry_id = ?1",
+            &vals![registry_id],
+        )
+        .await
+        .unwrap();
+    seal_inventory_for_digests(
+        &database,
+        registry_id,
+        &placement,
+        &objects.map(|(_, digest, size)| (digest, size)),
+        990,
+    )
+    .await;
+    let plan_input = |idempotency_key: &str, now: i64, retire_registry: bool| PlanOciGc {
+        registry_id,
+        actor_id: "retire-operator".to_string(),
+        idempotency_key: idempotency_key.to_string(),
+        expected_resource_version: 0,
+        now,
+        retire_registry,
+    };
+
+    // An ordinary plan keeps the tagged manifest and its closure alive.
+    let ordinary = database
+        .plan_oci_gc(&plan_input("ordinary", 1_000, false))
+        .await
+        .unwrap();
+    assert_eq!(ordinary.state, "planned");
+    assert_eq!(ordinary.planned_objects, 0);
+    assert!(!ordinary.retire_registry);
+
+    // Retirement fails closed while a route still serves the OCI surface.
+    let route_id = seed_enabled_oci_route(&database, registry_id, &placement).await;
+    let blocked = database
+        .plan_oci_gc(&plan_input("retire-blocked", 1_001, true))
+        .await
+        .unwrap();
+    assert_eq!(blocked.state, "failed");
+    let blockers = database.list_oci_gc_blockers(&blocked.id).await.unwrap();
+    assert!(
+        blockers
+            .iter()
+            .any(|blocker| blocker.kind == "oci_route_enabled")
+    );
+
+    // With the route disabled, only the frontier manifest is collectable:
+    // the config and layer still have inbound edges from an active manifest.
+    set_oci_route_enabled(&database, &route_id, false).await;
+    let plan = database
+        .plan_oci_gc(&plan_input("retire", 1_002, true))
+        .await
+        .unwrap();
+    assert_eq!(plan.state, "planned");
+    assert!(plan.retire_registry);
+    let candidates = database
+        .list_oci_gc_candidates(&plan.id, 100, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        candidates
+            .items
+            .iter()
+            .map(|candidate| candidate.digest)
+            .collect::<Vec<_>>(),
+        vec![manifest]
+    );
+
+    // A route re-enabled after review fails the apply closed.
+    let apply_input = |idempotency_key: &str, now: i64| ApplyOciGc {
+        generation_id: plan.id.clone(),
+        actor_id: "retire-operator".to_string(),
+        idempotency_key: idempotency_key.to_string(),
+        confirmation_hash: plan.confirmation_hash,
+        now,
+    };
+    set_oci_route_enabled(&database, &route_id, true).await;
+    assert!(
+        database
+            .apply_oci_gc(&apply_input("retire-apply-reenabled", 1_003))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        database
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_tags WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<i64>(0)
+            .unwrap(),
+        1
+    );
+
+    set_oci_route_enabled(&database, &route_id, false).await;
+    let applied = database
+        .apply_oci_gc(&apply_input("retire-apply", 1_004))
+        .await
+        .unwrap();
+    assert_eq!(applied.state, "applying");
+    assert!(applied.retire_registry);
+    assert_eq!(
+        database
+            .backend
+            .query_opt(
+                "SELECT COUNT(*) FROM oci_tags WHERE registry_id = ?1",
+                &vals![registry_id],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<i64>(0)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        database
+            .backend
+            .query_opt(
+                "SELECT lifecycle_state FROM oci_blobs
+                 WHERE registry_id = ?1 AND digest = ?2",
+                &vals![registry_id, manifest.to_string()],
+            )
+            .await
+            .unwrap()
+            .unwrap()
+            .get::<String>(0)
+            .unwrap(),
+        "deleting"
+    );
+    assert!(database.oci_catalog_retired(registry_id).await.unwrap());
 }

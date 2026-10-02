@@ -65,7 +65,7 @@ mod tests {
         let config = SignerConfigV1 {
             schema_version: CONFIG_SCHEMA_V1.into(),
             provider_revision: "test-provider-v1".into(),
-            registries: vec!["andyl/testing".into()],
+            registries: vec!["andyl/experimental".into()],
             tools: ToolPaths::default(),
             keys: vec![KeyEntry {
                 key_id: "evidence-v1".into(),

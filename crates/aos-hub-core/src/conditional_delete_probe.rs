@@ -135,20 +135,10 @@ impl ConditionalDeleteProbeController {
         let capability_fingerprint = capability_fingerprint(&binding.kind, binding_write_revision);
         let expected_resource_version = existing.map(|capability| capability.resource_version);
 
-        if binding.kind == "deployment_r2" {
-            self.record(
-                &binding,
-                binding_write_revision,
-                None,
-                None,
-                capability_fingerprint,
-                "invalid",
-                expected_resource_version,
-                now,
-            )
-            .await?;
-            return Ok(());
-        }
+        // The deployment bucket is probed through the Worker binding like
+        // local IO: it has no external delete credential, and its fenced
+        // head-then-delete must prove the same semantics as every other
+        // backend before any plan may rely on it.
         if matches!(binding.kind.as_str(), "s3" | "r2") && delete_credential.is_none() {
             self.record(
                 &binding,

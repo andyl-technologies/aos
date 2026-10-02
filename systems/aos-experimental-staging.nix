@@ -1,6 +1,6 @@
-##! systems/aos-testing-staging.nix — Testing artifacts for the staging Hub
+##! systems/aos-experimental-staging.nix — Experimental artifacts for the staging Hub
 {lib, ...}: {
-  imports = [./aos-testing.nix];
+  imports = [./aos-experimental.nix];
 
   # Destination identity is baked before signing so consumers use the same
   # deployment that publishes the immutable disk and OCI artifacts.

@@ -98,7 +98,7 @@ fn unrelated_expired_profile_does_not_block_explicit_hub_command() {
             "show",
             "--hub",
             "http://127.0.0.1:9",
-            "andyl/testing",
+            "andyl/experimental",
         ])
         .current_dir(workspace.path())
         .env_clear()

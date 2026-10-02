@@ -25,7 +25,7 @@
   };
   registryToml = registryRenderer.registryToml cfg.clientName registry;
   trustedKeys = registryRenderer.trustedKeys registry;
-  testingRegistryPattern = "andyl/testing(-v([2-9]|[1-9][0-9]+))?";
+  experimentalRegistryPattern = "andyl/experimental(-v([2-9]|[1-9][0-9]+))?";
   expectedClientName =
     if cfg.registry == "andyl/main"
     then "andyl"
@@ -124,8 +124,8 @@ in {
         assertion =
           if cfg.tier == "production"
           then cfg.registry == "andyl/main" && cfg.rootEpoch == 1
-          else builtins.match testingRegistryPattern cfg.registry != null;
-        message = "production artifacts use andyl/main; testing artifacts use an epoch-scoped andyl/testing identity";
+          else builtins.match experimentalRegistryPattern cfg.registry != null;
+        message = "production artifacts use andyl/main; experimental artifacts use an epoch-scoped andyl/experimental identity";
       }
       {
         assertion = cfg.clientName == expectedClientName;
@@ -138,15 +138,15 @@ in {
       {
         assertion =
           if cfg.rootEpoch == 1
-          then cfg.registry == "andyl/main" || cfg.registry == "andyl/testing"
-          else cfg.registry == "andyl/testing-v${toString cfg.rootEpoch}";
+          then cfg.registry == "andyl/main" || cfg.registry == "andyl/experimental"
+          else cfg.registry == "andyl/experimental-v${toString cfg.rootEpoch}";
         message = "release registry identity must encode every trust-root epoch after epoch one";
       }
       {
-        # Neither a testing artifact nor an edge artifact comes with a support
+        # Neither a experimental artifact nor an edge artifact comes with a support
         # promise, so both tell the user before they rely on it.
         assertion = (cfg.tier != "testing" && cfg.channel != "edge") || cfg.warning != "";
-        message = "testing and edge artifacts require a non-empty user-visible warning";
+        message = "experimental and edge artifacts require a non-empty user-visible warning";
       }
     ];
 
@@ -202,12 +202,12 @@ in {
       annotations = {
         "org.opencontainers.image.title" = lib.mkForce (
           if cfg.tier == "testing"
-          then "AOS Testing"
+          then "AOS Experimental"
           else "AOS"
         );
         "org.opencontainers.image.description" = lib.mkForce (
           if cfg.tier == "testing"
-          then "Experimental AOS testing userland; not for production workloads or important data"
+          then "Experimental AOS experimental userland; not for production workloads or important data"
           else "AOS base userland built entirely from AOS packages"
         );
         "dev.andyl.aos.release.tier" = cfg.tier;
@@ -219,7 +219,7 @@ in {
       };
       publication.repository = lib.mkForce (
         if cfg.tier == "testing"
-        then "aos-testing"
+        then "aos-experimental"
         else "aos"
       );
       publication.referenceTag = lib.mkForce cfg.channel;

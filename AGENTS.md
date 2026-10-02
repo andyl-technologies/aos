@@ -164,8 +164,8 @@ execute it. These commands and `release` keep production derivation identities
 without shared compiler caches; explicit `build` commands use the development
 settings below.
 
-The flake and `aos-dev` use the production testing binary cache at
-`https://cdn.aos.andyl.org/andyl/testing/` with its dedicated public Nix signing
+The flake and `aos-dev` use the production experimental binary cache at
+`https://cdn.aos.andyl.org/andyl/experimental/` with its dedicated public Nix signing
 key and source fallback. Direnv's `use flake . --accept-flake-config` accepts
 these settings when loading the shell. For manual Nix commands, accept the
 settings when prompted or use `--accept-flake-config`; multi-user hosts must

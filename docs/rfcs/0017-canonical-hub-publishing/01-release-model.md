@@ -6,7 +6,7 @@ Six names answer six different questions:
 
 | Layer | Question | AOS decision |
 | --- | --- | --- |
-| Registry | Who owns and authorizes this package universe? | `andyl/main`; the experimental `andyl/testing` |
+| Registry | Who owns and authorizes this package universe? | `andyl/main`; the experimental `andyl/experimental` |
 | Channel | How mature and supported is this snapshot? | `edge`, `candidate`, and `stable` in main; `edge` only in testing |
 | Partition | Which rollout cohort receives the channel's next release? | One of 256 stable buckets, `00` through `ff` |
 | Surface | Where is the content qualified or served? | A `staging` and a `production` surface: a Hub deployment such as `aos.staging.andyl.org` or `aos.andyl.org`, or a static origin |
@@ -29,8 +29,8 @@ Each registry has a closed destination table in the qualification contract:
 | `andyl/main` | `production/edge` | `smoke` |
 | `andyl/main` | `production/candidate` | `functional` |
 | `andyl/main` | `production/stable` | `soak` |
-| `andyl/testing` | `staging/edge` | `build` |
-| `andyl/testing` | `production/edge` | `smoke` |
+| `andyl/experimental` | `staging/edge` | `build` |
+| `andyl/experimental` | `production/edge` | `smoke` |
 
 A channel kind selects the same profile on both registries. The registry
 decides the keys and pipeline a release ships through; the channel decides what
@@ -69,7 +69,7 @@ placement, and staging do not by themselves justify another registry. Package
 metadata already carries platform and system-image variants; the Hub already
 models multiple placements and routes; channels already carry stream selection.
 
-`andyl/testing` meets the trust-root and data-lifecycle criteria: it is an
+`andyl/experimental` meets the trust-root and data-lifecycle criteria: it is an
 experimental registry with its own out-of-band root, disposable history, and
 lighter key-management and continuous-deployment infrastructure, and its
 content is never promoted into `andyl/main`. It carries only the `edge`
@@ -185,7 +185,7 @@ stable-eligible candidate is signed. Earlier experimental candidates use the
 The monthly train follows this sequence:
 
 1. Any number of `YYYY.M.0-dev.*` edge releases, on `andyl/main` and on
-   `andyl/testing`. The two registries may publish the same version from the
+   `andyl/experimental`. The two registries may publish the same version from the
    same protected commit and share its `release/<version>` source tag.
 2. Any number of `YYYY.M.0-rc.N` qualification releases.
 3. A final `YYYY.M.0` candidate, signed and staged as the stable-eligible
@@ -258,7 +258,7 @@ empty or unqualified artifact.
 
 | Item | Normal cadence | Triggered cadence |
 | --- | --- | --- |
-| `edge` release (`andyl/main`, `andyl/testing`) | Once per changed business day | Important integration fix |
+| `edge` release (`andyl/main`, `andyl/experimental`) | Once per changed business day | Important integration fix |
 | `candidate` registry release | Weekly | Security or release-blocking fix |
 | `stable` registry release | Monthly | Supported security or critical reliability fix |
 | Staging system-image upload | Each image-affecting candidate, and at least one stable-eligible candidate per monthly train | Targeted edge qualification or an emergency image fix |

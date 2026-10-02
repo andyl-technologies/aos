@@ -115,15 +115,16 @@ mod tests {
             !MIGRATIONS.is_empty(),
             "production schema has no migrations"
         );
-        for migration in MIGRATIONS {
-            for statement in split_statements(migration) {
-                let (translated, parameters) =
-                    prepare(Dialect::Sqlite, &statement, &[]).expect("Worker SQLite translation");
-                let (positional, bound) = numbered_to_positional(&translated, &parameters);
-                assert_eq!(positional, translated);
-                assert!(bound.is_empty());
-                assert!(parameters.is_empty());
-            }
+        for statement in MIGRATIONS
+            .iter()
+            .flat_map(|migration| split_statements(migration))
+        {
+            let (translated, parameters) =
+                prepare(Dialect::Sqlite, &statement, &[]).expect("Worker SQLite translation");
+            let (positional, bound) = numbered_to_positional(&translated, &parameters);
+            assert_eq!(positional, translated);
+            assert!(bound.is_empty());
+            assert!(parameters.is_empty());
         }
     }
 

@@ -4,7 +4,7 @@
   lib,
   mkSystem,
   serverModule,
-  testingModule,
+  experimentalModule,
   aosSystem,
 }: let
   evaluate = name: modules:
@@ -52,14 +52,14 @@
     serverModule
     {aos.boot.initrd.abilityHandoff.enable = lib.mkForce false;}
   ];
-  testing = evaluate "aos-testing-eval" [testingModule];
+  experimental = evaluate "aos-experimental-eval" [experimentalModule];
   aos = definitionFor server;
-  testingAos = testing.config.aos.containers.definitions.aos;
-  testingChannels = builtins.map (channel: let
+  experimentalAos = experimental.config.aos.containers.definitions.aos;
+  experimentalChannels = builtins.map (channel: let
     evaluated =
       if channel == "edge"
-      then testing
-      else evaluate "testing-channel-eval" [testingModule {aos.release.channel = channel;}];
+      then experimental
+      else evaluate "experimental-channel-eval" [experimentalModule {aos.release.channel = channel;}];
   in {
     inherit channel;
     profile = evaluated.config.aos.release;
@@ -171,20 +171,20 @@
       }
     ];
   };
-  invalidTestingRegistry = trySystem [
-    testingModule
+  invalidExperimentalRegistry = trySystem [
+    experimentalModule
     {aos.release.registry = lib.mkForce "andyl/main";}
   ];
-  invalidTestingChannel = trySystem [
-    testingModule
+  invalidExperimentalChannel = trySystem [
+    experimentalModule
     {aos.release.channel = lib.mkForce "unknown";}
   ];
-  invalidTestingAlias = trySystem [
-    testingModule
-    {aos.release.clientName = lib.mkForce "testing";}
+  invalidExperimentalAlias = trySystem [
+    experimentalModule
+    {aos.release.clientName = lib.mkForce "experimental";}
   ];
-  invalidTestingUrl = trySystem [
-    testingModule
+  invalidExperimentalUrl = trySystem [
+    experimentalModule
     {aos.release.url = lib.mkForce "https://aos.andyl.org/andyl/main/";}
   ];
   invalidCases = {
@@ -203,16 +203,16 @@
       shellEntrypoint
       imageDefaultRuntimeGrant
       mismatchedEvidenceOverrideOutput
-      invalidTestingRegistry
-      invalidTestingChannel
-      invalidTestingAlias
-      invalidTestingUrl
+      invalidExperimentalRegistry
+      invalidExperimentalChannel
+      invalidExperimentalAlias
+      invalidExperimentalUrl
       invalidSystemName
       ;
   };
   acceptedInvalidCases = builtins.attrNames (lib.filterAttrs (_: result: result.success) invalidCases);
-  testingFilePaths = map (file: file.path) testingAos.filesystem.files;
-  testingFileText = lib.concatMapStringsSep "\n" (file: file.text) testingAos.filesystem.files;
+  experimentalFilePaths = map (file: file.path) experimentalAos.filesystem.files;
+  experimentalFileText = lib.concatMapStringsSep "\n" (file: file.text) experimentalAos.filesystem.files;
   containerFilePaths = map (file: file.path) aos.filesystem.files;
   containerNodes = builtins.attrValues (builtins.head server.config.system.build.containers.aos.deploymentArtifact.platforms).transaction.graph.nodes;
 in
@@ -290,56 +290,56 @@ in
     else "arm64"
   );
   assert aos.platform.aosSystem == aosSystem;
-  assert testing.config.aos.release.registry == "andyl/testing";
-  assert builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]{8}\\.[0-9]+" testing.config.aos.system.version != null;
-  assert lib.hasInfix "\nVERSION_ID=${testing.config.aos.system.version}\n" testing.config.environment.etc."os-release".text;
-  assert lib.hasInfix "\nID=aos\n" testing.config.environment.etc."os-release".text;
-  assert lib.hasInfix "\nAOS_REGISTRY=andyl/testing\n" testing.config.environment.etc."os-release".text;
-  assert testing.config.system.build.defaultContainer.coordination.definitionAttribute
-  == "systems.aos-testing-eval.build.containers.aos";
+  assert experimental.config.aos.release.registry == "andyl/experimental";
+  assert builtins.match "[0-9]+\\.[0-9]+\\.[0-9]+-dev\\.[0-9]{8}\\.[0-9]+" experimental.config.aos.system.version != null;
+  assert lib.hasInfix "\nVERSION_ID=${experimental.config.aos.system.version}\n" experimental.config.environment.etc."os-release".text;
+  assert lib.hasInfix "\nID=aos\n" experimental.config.environment.etc."os-release".text;
+  assert lib.hasInfix "\nAOS_REGISTRY=andyl/experimental\n" experimental.config.environment.etc."os-release".text;
+  assert experimental.config.system.build.defaultContainer.coordination.definitionAttribute
+  == "systems.aos-experimental-eval.build.containers.aos";
   assert builtins.all (entry:
     entry.profile.registry
-    == "andyl/testing"
+    == "andyl/experimental"
     && entry.profile.channel == entry.channel
     && entry.container.publication.referenceTag == entry.channel
-    && entry.container.runtime.environment.AOS_REGISTRY == "andyl/testing")
-  testingChannels;
-  assert testing.config.aos.release.url == "https://cdn.aos.andyl.org/andyl/testing/";
-  assert testing.config.aos.apm.registries.andyl-testing.url == "https://cdn.aos.andyl.org/andyl/testing/";
-  assert lib.hasInfix "https://cdn.aos.andyl.org/andyl/testing/" testingFileText;
-  assert testing.config.aos.apm.registries.andyl-testing.rootOwnerSigners == ["andyl-testing-provenance-v1"];
+    && entry.container.runtime.environment.AOS_REGISTRY == "andyl/experimental")
+  experimentalChannels;
+  assert experimental.config.aos.release.url == "https://cdn.aos.andyl.org/andyl/experimental/";
+  assert experimental.config.aos.apm.registries.andyl-experimental.url == "https://cdn.aos.andyl.org/andyl/experimental/";
+  assert lib.hasInfix "https://cdn.aos.andyl.org/andyl/experimental/" experimentalFileText;
+  assert experimental.config.aos.apm.registries.andyl-experimental.rootOwnerSigners == ["andyl-experimental-provenance-v1"];
   assert lib.hasInfix
-  ''root_owner_signers = ["andyl-testing-provenance-v1"]''
-  testing.config.environment.etc."apm/registries.d/andyl-testing.toml".text;
+  ''root_owner_signers = ["andyl-experimental-provenance-v1"]''
+  experimental.config.environment.etc."apm/registries.d/andyl-experimental.toml".text;
   assert lib.hasInfix
-  ''root_owner_signers = ["andyl-testing-provenance-v1"]''
-  testingFileText;
-  assert testing.config.aos.release.channel == "edge";
-  assert builtins.attrNames testing.config.aos.apm.registries == ["andyl-testing"];
-  assert testingAos.publication.repository == "aos-testing";
-  assert testingAos.publication.releaseIdentity == testing.config.aos.system.version;
-  assert testingAos.publication.referenceTag == "edge";
-  assert testingAos.runtime.environment.AOS_RELEASE_TIER == "testing";
-  assert testingAos.runtime.environment.AOS_REGISTRY == "andyl/testing";
-  assert testingAos.runtime.environment.AOS_CHANNEL == "edge";
-  assert testing.config.aos.release.rootEpoch == 1;
-  assert testing.config.system.build.defaultContainer.definition.annotations."dev.andyl.aos.registry-root-epoch"
+  ''root_owner_signers = ["andyl-experimental-provenance-v1"]''
+  experimentalFileText;
+  assert experimental.config.aos.release.channel == "edge";
+  assert builtins.attrNames experimental.config.aos.apm.registries == ["andyl-experimental"];
+  assert experimentalAos.publication.repository == "aos-experimental";
+  assert experimentalAos.publication.releaseIdentity == experimental.config.aos.system.version;
+  assert experimentalAos.publication.referenceTag == "edge";
+  assert experimentalAos.runtime.environment.AOS_RELEASE_TIER == "testing";
+  assert experimentalAos.runtime.environment.AOS_REGISTRY == "andyl/experimental";
+  assert experimentalAos.runtime.environment.AOS_CHANNEL == "edge";
+  assert experimental.config.aos.release.rootEpoch == 1;
+  assert experimental.config.system.build.defaultContainer.definition.annotations."dev.andyl.aos.registry-root-epoch"
   == "1";
-  assert testing.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.title"
-  == "AOS Testing";
+  assert experimental.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.title"
+  == "AOS Experimental";
   assert lib.hasInfix
   "not for production"
-  testing.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.description";
+  experimental.config.system.build.defaultContainer.definition.annotations."org.opencontainers.image.description";
   assert builtins.all
-  (path: builtins.elem path testingFilePaths)
+  (path: builtins.elem path experimentalFilePaths)
   [
     "/etc/aos/release-profile"
-    "/etc/apm/registries.d/andyl-testing.toml"
-    "/etc/apm/trusted-keys.d/andyl-testing.pub"
+    "/etc/apm/registries.d/andyl-experimental.toml"
+    "/etc/apm/trusted-keys.d/andyl-experimental.pub"
     "/etc/issue"
   ];
-  assert lib.hasInfix "ANDYL OS TESTING" testing.config.environment.etc.issue.text;
-  assert !lib.hasInfix "andyl/main" testingFileText;
+  assert lib.hasInfix "ANDYL OS EXPERIMENTAL" experimental.config.environment.etc.issue.text;
+  assert !lib.hasInfix "andyl/main" experimentalFileText;
   assert acceptedInvalidCases == [] || throw "invalid container fixtures accepted: ${lib.concatStringsSep ", " acceptedInvalidCases}";
     pkgs.mkDerivation {
       pname = "aos-container-evaluator-check";

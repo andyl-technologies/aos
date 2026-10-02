@@ -6,14 +6,14 @@
 //! {
 //!   "enabled": true,
 //!   "tier": "testing",
-//!   "registry": "andyl/testing",
+//!   "registry": "andyl/experimental",
 //!   "rootEpoch": 1,
-//!   "clientName": "andyl-testing",
+//!   "clientName": "andyl-experimental",
 //!   "registryOrigin": "https://cdn.aos.andyl.org",
 //!   "hubUrl": "https://aos.andyl.org",
-//!   "url": "https://cdn.aos.andyl.org/andyl/testing/",
+//!   "url": "https://cdn.aos.andyl.org/andyl/experimental/",
 //!   "channel": "edge",
-//!   "trustKeys": ["andyl-testing:Ed25519:<OpenSSH public-key blob>"],
+//!   "trustKeys": ["andyl-experimental:Ed25519:<OpenSSH public-key blob>"],
 //!   "warning": "Experimental image; not for production workloads."
 //! }
 //! ```
@@ -194,10 +194,10 @@ mod tests {
 
     #[test]
     fn artifact_destinations_cannot_cross_registry_or_epoch_boundaries() {
-        for registry in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
+        for registry in ["andyl/main", "andyl/experimental", "andyl/experimental-v2"] {
             let artifact = profile(registry);
             assert!(artifact.require_release(registry).is_ok());
-            for other in ["andyl/main", "andyl/testing", "andyl/testing-v2"] {
+            for other in ["andyl/main", "andyl/experimental", "andyl/experimental-v2"] {
                 if other != registry {
                     assert!(artifact.require_release(other).is_err());
                 }
@@ -208,9 +208,9 @@ mod tests {
     #[test]
     fn baked_channels_follow_the_registry_tier() {
         for (registry, channel, allowed) in [
-            ("andyl/testing", "edge", true),
-            ("andyl/testing", "candidate", false),
-            ("andyl/testing-v2", "stable", false),
+            ("andyl/experimental", "edge", true),
+            ("andyl/experimental", "candidate", false),
+            ("andyl/experimental-v2", "stable", false),
             ("andyl/main", "edge", true),
             ("andyl/main", "candidate", true),
             ("andyl/main", "stable", true),
@@ -241,13 +241,13 @@ mod tests {
 
     #[test]
     fn testing_clients_cannot_fall_back_to_main_or_drop_their_warning() {
-        let valid = profile("andyl/testing");
+        let valid = profile("andyl/experimental");
         for change in [
             |profile: &mut ArtifactProfile| {
                 profile.url = "https://cdn.aos.andyl.org/andyl/main/".into()
             },
             |profile: &mut ArtifactProfile| {
-                profile.url = "https://aos.andyl.org/andyl/testing/".into()
+                profile.url = "https://aos.andyl.org/andyl/experimental/".into()
             },
             |profile: &mut ArtifactProfile| profile.client_name = "andyl".into(),
             |profile: &mut ArtifactProfile| profile.channel = "unknown".into(),
@@ -262,7 +262,7 @@ mod tests {
         ] {
             let mut invalid = valid.clone();
             change(&mut invalid);
-            assert!(invalid.require_release("andyl/testing").is_err());
+            assert!(invalid.require_release("andyl/experimental").is_err());
         }
     }
 }

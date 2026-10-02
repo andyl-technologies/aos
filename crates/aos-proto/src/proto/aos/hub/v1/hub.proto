@@ -1324,6 +1324,10 @@ message PlanRunContainerGcRequest {
   string registry = 1;
   string expected_resource_version = 2;
   string idempotency_key = 3;
+  // Retire the whole catalog ahead of registry deletion: signed-release, tag,
+  // and tag-history roots stop protecting objects and no grace applies. The
+  // plan fails closed while any enabled route still serves the OCI surface.
+  bool retire_registry = 4;
 }
 
 message GetContainerGcRunRequest {
@@ -1409,6 +1413,8 @@ message ContainerGcRun {
   string policy_digest = 28;
   // Provider bytes across all exact frozen placement inventories.
   uint64 inventory_byte_size = 29;
+  // Whether the run was reviewed as a catalog retirement.
+  bool retire_registry = 30;
 }
 
 message ContainerGcRunResponse {

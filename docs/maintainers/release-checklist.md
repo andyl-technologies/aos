@@ -38,8 +38,8 @@ The destinations and what each one requires:
 
 | Registry | Destination | Profile | Tests before publication | Reviews | Rollout | Fitness |
 | --- | --- | --- | --- | --- | --- | --- |
-| `andyl/main`, `andyl/testing` | `staging/edge` | `build` | build only | none | all partitions on publish | none |
-| `andyl/main`, `andyl/testing` | `production/edge` | `smoke` | changed targets and cells | none | all partitions; completes automatically | none |
+| `andyl/main`, `andyl/experimental` | `staging/edge` | `build` | build only | none | all partitions on publish | none |
+| `andyl/main`, `andyl/experimental` | `production/edge` | `smoke` | changed targets and cells | none | all partitions; completes automatically | none |
 | `andyl/main` | `staging/candidate`, `staging/stable` | `build` | build only | none | all partitions on publish | none |
 | `andyl/main` | `production/candidate` | `functional` | every target and cell | 1 per report | all partitions after fresh health; completes automatically | 14-day automated, 90-day operator |
 | `andyl/main` | `production/stable` | `soak` | every target and cell, complete matrix | 1 per report, including each ring; completion approvals | 4, 32, 128, 256 partitions; 7-day soak; complete-phase report | as candidate plus key rotation |
@@ -74,7 +74,7 @@ Complete this section before starting builds or requesting signatures.
   destinations, source commit, operator, and reviewer. Use a version whose
   class matches the intended channel: `-dev.YYYYMMDD.N` for `edge` on either
   registry, `-rc.N` for a main candidate, or a final `YYYY.M.P` for a main
-  stable release. `andyl/testing` accepts only edge versions.
+  stable release. `andyl/experimental` accepts only edge versions.
 
   **Check when:** those fields are filled in and the registry/version
   combination is valid. A final version plans both candidate and stable
@@ -118,7 +118,7 @@ Complete this section before starting builds or requesting signatures.
   Complete the executor setup described above.
 
 - [ ] **Verify the registry and both surfaces.** Follow the preconditions
-  and live-state commands in the [testing](registry-testing.md#preconditions)
+  and live-state commands in the [experimental](registry-experimental.md#preconditions)
   or [main](registry-main.md#inspect-live-state) runbook. For each surface,
   confirm its identity: the Hub deployment ID, or the `.aos-surface` identity of
   a [static surface](canonical-releases.md#static-surfaces). Record the
@@ -138,7 +138,7 @@ Complete this section before starting builds or requesting signatures.
 
   **Check when:** every fitness kind required by this release's production
   destinations is fresh and its bindings match the live values. For
-  `andyl/testing` releases, record that no fitness is required. A stale or
+  `andyl/experimental` releases, record that no fitness is required. A stale or
   mismatched attestation is not a per-release task to rush: perform the
   corresponding [fitness exercise](#fitness-exercises) on its own procedure
   before production publication, or schedule this release after it.
@@ -189,7 +189,7 @@ Complete this section before starting builds or requesting signatures.
   release to a JSON file, then from the clean source checkout run:
 
   ```sh
-  aos maintain release new --registry andyl/testing --version 2026.9.0-dev.20260929.1 --images images.json
+  aos maintain release new --registry andyl/experimental --version 2026.9.0-dev.20260929.1 --images images.json
   ```
 
   For an emergency, add `--override DIR`, or immediately run
@@ -267,7 +267,7 @@ so only the channel moves.
   keys do not satisfy this item.
 
 - [ ] **Review the isolated registry transaction.** Mark inapplicable for
-  `andyl/testing`, whose `smoke` profile does not stop here. For `andyl/main`
+  `andyl/experimental`, whose `smoke` profile does not stop here. For `andyl/main`
   the driver waits after
   [prepare-registry](canonical-releases.md#prepare-and-finalize-the-isolated-registry).
   Review `registry/transaction.json` and the retained tree in
@@ -318,7 +318,7 @@ publish, and advance rings. `production/edge` and `production/candidate`
 complete with their final ring; only `production/stable` adds a complete-phase
 report and completion approvals.
 
-### 4a. `production/edge` (`smoke`) on `andyl/main` or `andyl/testing`
+### 4a. `production/edge` (`smoke`) on `andyl/main` or `andyl/experimental`
 
 - [ ] **Confirm the change scope.** Run
   `aos maintain release explain --to production/edge`.
@@ -358,7 +358,7 @@ report and completion approvals.
   `channels/production-edge/ring-1/channel-receipt.json` exist, and
   `aos maintain release status` reports `production/edge` `complete`. Then complete the
   clean-client, profile, and warning checks in
-  [the testing runbook](registry-testing.md#publish-the-first-or-a-later-edge-release);
+  [the experimental runbook](registry-experimental.md#publish-the-first-or-a-later-edge-release);
   they apply unchanged to a main edge release, whose artifacts also bake an
   edge warning.
 
@@ -601,7 +601,7 @@ the report.
 
 - [ ] **Test key rotation and interrupted publication (quarterly).** In the
   isolated environment, follow the
-  [testing rotation procedure](registry-testing.md#rotate-keys-without-resetting-trust)
+  [experimental rotation procedure](registry-experimental.md#rotate-keys-without-resetting-trust)
   or [main key policy](registry-main.md#keys-rollback-recovery-and-removal).
   Verify that a clean client starting with the old anchor accepts the
   legitimate successor and rejects an unauthorized replacement. Interrupt
@@ -627,5 +627,5 @@ evidence to force a retry or edit signed artifacts to make a check pass.
 Changed source, artifacts, or policy need a new release. After public discovery
 changes, publish a reviewed corrective release using the registry runbook. A
 failure on one destination does not undo another destination's admission. A
-testing root reset is a separate operation, not an automatic response to a
+experimental root reset is a separate operation, not an automatic response to a
 failed release.
