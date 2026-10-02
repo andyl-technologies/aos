@@ -790,6 +790,7 @@ enum HubTopologyMethod {
     SetContainerNamespace,
     PlanRunContainerGc,
     RunContainerGc,
+    CancelContainerGcRun,
     GetContainerGcRun,
     ListContainerGcRuns,
     ListContainerGcCandidates,
@@ -1364,6 +1365,7 @@ impl HubTopologyMethod {
             SetContainerNamespace => "aos.hub.v1.ContainerService/SetContainerNamespace",
             PlanRunContainerGc => "aos.hub.v1.ContainerService/PlanRunContainerGc",
             RunContainerGc => "aos.hub.v1.ContainerService/RunContainerGc",
+            CancelContainerGcRun => "aos.hub.v1.ContainerService/CancelContainerGcRun",
             GetContainerGcRun => "aos.hub.v1.ContainerService/GetContainerGcRun",
             ListContainerGcRuns => "aos.hub.v1.ContainerService/ListContainerGcRuns",
             ListContainerGcCandidates => "aos.hub.v1.ContainerService/ListContainerGcCandidates",
@@ -1863,6 +1865,7 @@ pub mod hub_rpc {
         SetContainerNamespace: ApplyTopologyPlanRequest => ContainerNamespaceResponse;
         PlanRunContainerGc: PlanRunContainerGcRequest => ContainerGcPlanResponse;
         RunContainerGc: ApplyContainerMutationRequest => OperationResponse;
+        CancelContainerGcRun: CancelContainerGcRunRequest => ContainerGcRunResponse;
         GetContainerGcRun: GetContainerGcRunRequest => ContainerGcRunResponse;
         ListContainerGcRuns: ListContainerGcRunsRequest => ListContainerGcRunsResponse;
         ListContainerGcCandidates: ListContainerGcCandidatesRequest => ListContainerGcCandidatesResponse;
@@ -2430,6 +2433,10 @@ mod tests {
             ),
             (HubTopologyMethod::PlanRunContainerGc, "PlanRunContainerGc"),
             (HubTopologyMethod::RunContainerGc, "RunContainerGc"),
+            (
+                HubTopologyMethod::CancelContainerGcRun,
+                "CancelContainerGcRun",
+            ),
             (HubTopologyMethod::GetContainerGcRun, "GetContainerGcRun"),
             (
                 HubTopologyMethod::ListContainerGcRuns,
