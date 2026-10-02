@@ -35,6 +35,17 @@ let
     ];
   };
   input = evaluation.config.aos.abilities.serviceManagement.operations.realize.effects."control-plane.aos-activate".input;
+  projectedEvaluation = evaluation.extendModules {
+    modules = [
+      {
+        aos.services."control-plane.aos-activate" = {
+          bootstrap = true;
+          activationOwner = lib.mkForce "ability";
+        };
+      }
+    ];
+  };
+  projectedInput = projectedEvaluation.config.aos.abilities.serviceManagement.operations.realize.effects."control-plane.aos-activate".input;
   specification = evaluation.config.aos.abilities.configuration.operations.file.effects.package-profile-specification;
   convergenceInput = evaluation.config.aos.abilities.serviceManagement.operations.realize.effects."package-profile-convergence.package-profile-convergence".input;
   # Resolve the one declared file output as the native dispatcher would before
@@ -62,8 +73,10 @@ let
         };
     };
 in {
-  inherit input convergenceInput convergenceRenderInput;
+  inherit input projectedInput convergenceInput convergenceRenderInput;
   checks = {
+    bootstrapProjectionIsOperationInput = projectedInput.bootstrap && !input.bootstrap;
+
     activatorRetainsHostNamespace =
       input.isolation.temporary_directory
       == "shared"

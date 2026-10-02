@@ -17,6 +17,11 @@ in {
         default = "";
         description = "Domain instance key used for an unnamed manager resource.";
       };
+      bootstrap = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Render this service into the image for startup before native activation; its normal handler retains lifecycle ownership.";
+      };
       dependencyValues = lib.mkOption {
         type = lib.types.json;
         default = [];

@@ -21,6 +21,8 @@ configuration_wrapper = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 systemd_analyze = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 host_activation_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 package_convergence_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+projected_service_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+projected_service_units = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
 configuration_module = importlib.util.module_from_spec(configuration_spec)
 sys.modules["aos_configuration"] = configuration_module
@@ -136,6 +138,184 @@ class NativeHandlerTests(unittest.TestCase):
         self.assertIn("After=aos-activate.service", text)
         self.assertIn("Requires=aos-registry-sync.service", text)
         self.assertEqual(directives["TimeoutStartSec"], "120000ms")
+
+    def projected_service(self, root):
+        self.assertIsNotNone(projected_service_input, "requires the actual bootstrap operation projection")
+        self.assertIsNotNone(projected_service_units, "requires immutable units from the actual renderer")
+        value = json.loads(projected_service_input.read_text())
+        rendered = handler_module.realize_service(value)
+        units = Path(root) / "units"
+        units.mkdir()
+        originals = {}
+        for name, text in rendered["units"].items():
+            target = projected_service_units / name
+            self.assertEqual(target.read_bytes(), text.encode())
+            (units / name).symlink_to(target)
+            originals[name] = target.read_bytes()
+        for name, target in rendered["links"].items():
+            path = units / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.symlink_to(target)
+        instance = handler_module.Handler(
+            invocation("serviceManagement", "realize", value), "unused", units, Path(root) / "state",
+        )
+        calls = []
+        instance.manager = active_bus_manager(calls)
+        return value, rendered, instance, calls, originals
+
+    def test_image_projection_converts_exact_aliases_then_removes_only_namespace_entries(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+
+            instance.service("apply")
+
+            self.assertEqual(instance.service("observe")["status"], "current")
+            self.assertEqual(instance.receipt["image_units"], {})
+            for name in rendered["units"]:
+                self.assertFalse((instance.unit_directory / name).is_symlink())
+                self.assertEqual((instance.unit_directory / name).read_bytes(), originals[name])
+            self.assertEqual(instance.receipt["id"], instance.invocation["id"])
+            self.assertEqual(instance.receipt["revision"], "first")
+            self.assertTrue(instance.links_match(rendered["links"]))
+
+            instance.service("remove")
+
+            for name in rendered["units"] | rendered["links"]:
+                self.assertFalse((instance.unit_directory / name).exists())
+                self.assertFalse((instance.unit_directory / name).is_symlink())
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
+            self.assertFalse(instance.receipt_path.exists())
+            instance.invocation["action"] = "remove"
+            self.assertEqual(instance.service("observe")["status"], "absent")
+
+    def test_image_projection_update_recovers_pending_replacement_without_mutating_source(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, initial, calls, originals = self.projected_service(root)
+            previous = initial.service("apply")
+            changed = dict(value, lifecycle=dict(value["lifecycle"], description="Changed authenticated service"))
+            document = invocation("serviceManagement", "realize", changed, "changed", previous)
+            updated = handler_module.Handler(document, "unused", initial.unit_directory, initial.state_directory)
+            updated.manager = active_bus_manager(calls)
+            original_write = handler_module.durable_write
+
+            def interrupted_write(path, contents, *args):
+                original_write(path, contents, *args)
+                if Path(path).parent == updated.unit_directory:
+                    raise RuntimeError("interrupted after durable unit replacement")
+
+            with patch.object(handler_module, "durable_write", interrupted_write):
+                with self.assertRaisesRegex(RuntimeError, "durable unit replacement"):
+                    updated.service("apply")
+
+            recovered = handler_module.Handler(document, "unused", initial.unit_directory, initial.state_directory)
+            recovered.manager = active_bus_manager(calls)
+            self.assertTrue(recovered.receipt["pending"])
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+            recovered.service("apply")
+
+            self.assertEqual(recovered.service("observe")["status"], "current")
+            self.assertFalse(recovered.receipt["pending"])
+            main = rendered["resource"]
+            self.assertFalse((recovered.unit_directory / main).is_symlink())
+            self.assertIn("Changed authenticated service", (recovered.unit_directory / main).read_text())
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
+            recovered.service("remove")
+            self.assertFalse((recovered.unit_directory / main).exists())
+
+    def test_image_projection_interrupted_before_conversion_retains_exact_pending_custody(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            original_write = handler_module.durable_write
+
+            def interrupted_write(path, contents, *args):
+                if Path(path).parent == instance.unit_directory:
+                    raise RuntimeError("interrupted before unit conversion")
+                return original_write(path, contents, *args)
+
+            with patch.object(handler_module, "durable_write", interrupted_write):
+                with self.assertRaisesRegex(RuntimeError, "before unit conversion"):
+                    instance.service("apply")
+
+            recovered = handler_module.Handler(instance.invocation, "unused", instance.unit_directory, instance.state_directory)
+            recovered.manager = active_bus_manager(calls)
+            self.assertTrue(recovered.receipt["pending"])
+            for name in rendered["units"]:
+                self.assertTrue((instance.unit_directory / name).is_symlink())
+                self.assertEqual(recovered.receipt["image_units"][name], {
+                    "target": str(projected_service_units / name),
+                    "digest": handler_module.digest(originals[name]),
+                })
+            with patch.object(handler_module, "image_unit_digest", side_effect=FileNotFoundError("pending source disappeared")):
+                self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+                with self.assertRaises(FileNotFoundError):
+                    recovered.service("apply")
+            self.assertEqual(recovered.service("observe")["status"], "retry-safe")
+            recovered.service("apply")
+            self.assertEqual(recovered.service("observe")["status"], "current")
+            self.assertEqual(recovered.receipt["image_units"], {})
+
+    def test_owned_projection_no_longer_depends_on_original_store_target(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            instance.service("apply")
+            changed = dict(value, lifecycle=dict(value["lifecycle"], description="Owned update"))
+            updated = handler_module.Handler(
+                invocation("serviceManagement", "realize", changed, "changed", instance.service("apply")),
+                "unused", instance.unit_directory, instance.state_directory,
+            )
+            updated.manager = active_bus_manager(calls)
+
+            # Simulate GC of the old immutable source without deleting the
+            # shared fixture. Completed ownership must never query it again.
+            with patch.object(handler_module, "image_unit_digest", side_effect=FileNotFoundError("old image source collected")):
+                self.assertEqual(instance.service("observe")["status"], "current")
+                updated.service("apply")
+                self.assertEqual(updated.service("observe")["status"], "current")
+                updated.service("remove")
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
+
+    def test_image_projection_rejects_unselected_mutable_and_changed_aliases(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, initial, calls, originals = self.projected_service(root)
+            ordinary = dict(value, bootstrap=False)
+            unselected = handler_module.Handler(
+                invocation("serviceManagement", "realize", ordinary), "unused", initial.unit_directory, initial.state_directory,
+            )
+            with self.assertRaisesRegex(ValueError, "no authenticated image projection"):
+                unselected.service("apply")
+            self.assertIsNone(unselected.receipt)
+
+            mismatched = dict(value, lifecycle=dict(value["lifecycle"], description="Different authenticated content"))
+            mismatch = handler_module.Handler(
+                invocation("serviceManagement", "realize", mismatched), "unused", initial.unit_directory, initial.state_directory,
+            )
+            with self.assertRaisesRegex(ValueError, "conflicts with authenticated rendered content"):
+                mismatch.service("apply")
+            self.assertIsNone(mismatch.receipt)
+
+            main = rendered["resource"]
+            mutable = Path(root) / "mutable.service"
+            mutable.write_bytes(originals[main])
+            leaf = initial.unit_directory / main
+            leaf.unlink()
+            leaf.symlink_to(mutable)
+            with self.assertRaisesRegex(ValueError, "canonical immutable store member"):
+                initial.service("apply")
+            self.assertIsNone(initial.receipt)
+            self.assertEqual(calls, [])
+
+            leaf.unlink()
+            leaf.symlink_to(projected_service_units / main)
+            initial.service("apply")
+            saved_receipt = initial.receipt_path.read_bytes()
+            leaf.unlink()
+            leaf.symlink_to(projected_service_units / main)
+            for action in ["apply", "remove"]:
+                with self.subTest(action=action), self.assertRaisesRegex(ValueError, "replaced by an external link"):
+                    initial.service(action)
+            self.assertEqual(initial.service("observe")["status"], "indeterminate")
+            self.assertEqual(initial.receipt_path.read_bytes(), saved_receipt)
+            self.assertEqual(originals, {name: (projected_service_units / name).read_bytes() for name in originals})
 
     def test_workload_profiles_preserve_master_syscall_filters(self):
         for profile, expected in [
