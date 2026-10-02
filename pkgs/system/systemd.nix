@@ -52,7 +52,6 @@
   jq,
   less,
   mtools,
-  qemu,
   sbsigntools,
   sed,
   tar,
@@ -231,6 +230,7 @@ in
     ];
 
     buildDeps = [
+      binutils
       gnumake
       pkg-config
       gawk
@@ -248,9 +248,10 @@ in
     # Installed helpers and the cryptsetup/ukify wrappers execute the target
     # interpreters. TPM2 supplies libtss2-esys/rc/mu and the device TCTI for
     # systemd-cryptsetup's TPM2 token, systemd-pcrextend, and systemd-measure.
-    # Image assembly selects binutils and QEMU through the package contract.
-    # Keep them addressable without adding their libraries to every ELF RPATH.
-    runtimeDeps = systemdRuntimeDeps ++ [binutils qemu aos-systemd-provider aos-configuration-provider];
+    # Image assembly pins its build-platform tools independently. The ukify
+    # wrapper retains binutils only in `tools`, while these native providers
+    # are executed by wrappers installed in the runtime output.
+    runtimeDeps = systemdRuntimeDeps ++ [aos-systemd-provider aos-configuration-provider];
     propagatedDeps = [];
 
     # systemd's many [0]/[1] trailing-array structs get narrowed to a fixed
