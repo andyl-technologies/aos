@@ -277,6 +277,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   target and refuses empty or ignored execution. Its implementation and
   format-by-format coverage review remain pending; registering that harness
   does not qualify TEST-3.
+  A separate `checks.terrane.integration.pack-format-vectors` harness requires
+  independent reproduction and four exact cases for a two-entry pack, its
+  detached index and explicit CRC/reserved-field rejection witnesses. Its
+  generator, published vectors and tests remain pending; this prerequisite
+  establishes no golden-vector or pack conformance claim.
   Mandatory repository formatting passes. The actual trunk aggregate remains
   red on the historical-bootstrap candidate: `index-generation-manifest`
   rejects its legacy-state compatibility assertion. That run does not prove
