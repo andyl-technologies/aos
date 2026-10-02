@@ -8,6 +8,7 @@
 pub mod assignment;
 pub mod domain;
 pub mod execution;
+pub mod git_upload_capacity;
 pub mod policy;
 pub mod snapshot;
 pub mod spec;

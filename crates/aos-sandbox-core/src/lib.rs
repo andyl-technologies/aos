@@ -94,6 +94,10 @@ pub use model::execution::{
     MAX_EXECUTION_SUPPLEMENTARY_GROUPS, PayloadBootId, UnrepresentableLegacyExecutionObservation,
 };
 pub use model::{KeyUsage, SignaturePurpose};
+pub use model::git_upload_capacity::{
+    GitUploadCapacityV1, InvalidGitUploadCapacityV1, MAXIMUM_GIT_UPLOAD_CAPACITY_BYTES_V1,
+};
+pub use format::{decode_git_upload_capacity_v1, encode_git_upload_capacity_v1};
 pub use ownership_lease::{
     BrokerAdmissionIntersection, CLOCK_PAIR_TOLERANCE_NANOSECONDS,
     DurableHistoricalWallClockInstant, HistoricalOwnershipLeaseExpectation, InvalidOwnershipLease,

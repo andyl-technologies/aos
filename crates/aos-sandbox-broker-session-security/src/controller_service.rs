@@ -858,6 +858,7 @@ fn run_retained_controller(
             genesis,
             profile,
             publisher_registration,
+            publisher_policy_bootstrap,
             ..
         } = &mut *originals;
         let controller = required!(controller.as_mut());
@@ -876,14 +877,32 @@ fn run_retained_controller(
                     .map_err(ControllerRuntimeError::from)
             );
         }
+        if configuration.git_upload_bootstrap
+            && required!(publisher_registration.as_ref()).is_none()
+        {
+            worker.terminate(ControllerResidentCauseV1::Closed(
+                "Git bootstrap original publisher registration is absent",
+            ));
+        }
         if let Some(scope) = required!(publisher_registration.as_ref())
             .as_ref()
             .map(|owner| owner.service_scope())
         {
-            checked!(
-                publisher_policy_source::install_from_process_credentials(controller, scope)
-                    .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))
-            );
+            if configuration.git_upload_bootstrap {
+                // Park the empty fixed destination before capture or parsing.
+                *publisher_policy_bootstrap = Some(
+                    publisher_policy_source::PublisherPolicyBootstrapAttemptV1::new(),
+                );
+                let attempt = required!(publisher_policy_bootstrap.as_mut());
+                if attempt.install_bootstrap_once(controller, scope).is_err() {
+                    worker.terminate(ControllerResidentCauseV1::PublisherPolicyBootstrap);
+                }
+            } else {
+                checked!(
+                    publisher_policy_source::install_from_process_credentials(controller, scope)
+                        .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))
+                );
+            }
         }
         if !replay_genesis {
             checked!(
@@ -1085,6 +1104,7 @@ fn run_retained_controller(
 struct ControllerWorkerOriginalsV1 {
     publisher_attempt: Option<publisher_ingress::PublisherStartupAttemptV1>,
     publisher_registration: Option<Option<publisher_ingress::PublisherRegistrationOwnerV1>>,
+    publisher_policy_bootstrap: Option<publisher_policy_source::PublisherPolicyBootstrapAttemptV1>,
     node: Option<[u8; 16]>,
     profile: Option<
         Option<Arc<aos_sandbox::normal_root::ProductionControllerNormalRootProfileV1>>,
@@ -1254,6 +1274,8 @@ enum ControllerResidentCauseV1 {
     Receive(mpsc::RecvError),
     // The actual typed cause remains in SAME pending Publisher attempt.
     Publisher,
+    // Actual original lower/verification/Journal cause stays in the SAME slot.
+    PublisherPolicyBootstrap,
     // Typed cause and every partial owner remain in SAME sessions' cold slot.
     StorageCold,
     Closed(&'static str),
@@ -1267,6 +1289,7 @@ impl ControllerResidentCauseV1 {
             Self::ReadySend(_) => "resident Controller readiness delivery failure",
             Self::Receive(_) => "resident Controller event receiver disconnected",
             Self::Publisher => "resident original Publisher startup failure",
+            Self::PublisherPolicyBootstrap => "resident original Publisher policy bootstrap failure",
             Self::StorageCold => "resident original Storage cold admission failure",
             Self::Closed(label) => label,
         }
@@ -3249,6 +3272,7 @@ struct RuntimeConfiguration {
     diagnostic_socket: PathBuf,
     public_api: bool,
     publisher_ingress: bool,
+    git_upload_bootstrap: bool,
     nix_start_admission: bool,
     issue_source_successor: bool,
 }
@@ -3266,12 +3290,14 @@ impl RuntimeConfiguration {
         let gid = parse_identity(arguments.next(), "controller GID")?;
         let mut public_api = false;
         let mut publisher_ingress = false;
+        let mut git_upload_bootstrap = false;
         let mut nix_start_admission = false;
         let mut issue_source_successor = false;
         for argument in arguments {
             match argument.as_str() {
                 "--public-api" if !public_api => public_api = true,
                 "--publisher-ingress" if !publisher_ingress => publisher_ingress = true,
+                "--git-upload-bootstrap" if !git_upload_bootstrap => git_upload_bootstrap = true,
                 "--nix-start-admission" if !nix_start_admission => nix_start_admission = true,
                 "--issue-source-successor" if !issue_source_successor => {
                     issue_source_successor = true;
@@ -3283,9 +3309,16 @@ impl RuntimeConfiguration {
                 }
             }
         }
-        if issue_source_successor && (public_api || publisher_ingress || nix_start_admission) {
+        if issue_source_successor
+            && (public_api || publisher_ingress || nix_start_admission || git_upload_bootstrap)
+        {
             return Err(ControllerRuntimeError::InvalidArguments(
                 "issue mode is exclusive",
+            ));
+        }
+        if git_upload_bootstrap && !publisher_ingress {
+            return Err(ControllerRuntimeError::InvalidArguments(
+                "Git bootstrap requires original publisher ingress",
             ));
         }
         Ok(Self {
@@ -3295,6 +3328,7 @@ impl RuntimeConfiguration {
             diagnostic_socket: PathBuf::from(DIAGNOSTIC_SOCKET),
             public_api,
             publisher_ingress,
+            git_upload_bootstrap,
             nix_start_admission,
             issue_source_successor,
         })
@@ -7507,9 +7541,24 @@ mod tests {
             diagnostic_socket: directory.path().join("diagnostics.sock"),
             public_api: false,
             publisher_ingress: false,
+            git_upload_bootstrap: false,
             nix_start_admission: false,
             issue_source_successor: false,
         }
+    }
+
+    #[test]
+    fn git_bootstrap_is_default_off_and_requires_original_publisher_ingress() {
+        let parse = |flags: &[&str]| RuntimeConfiguration::from_arguments(
+            ["sandboxd", "1000", "1000"].into_iter()
+                .chain(flags.iter().copied()).map(str::to_owned),
+        );
+
+        assert!(!parse(&[]).unwrap().git_upload_bootstrap);
+        assert!(parse(&["--git-upload-bootstrap"]).is_err());
+        assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap"]).unwrap().git_upload_bootstrap);
+        assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap", "--issue-source-successor"]).is_err());
+        assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap", "--git-upload-bootstrap"]).is_err());
     }
 
     #[tokio::test]

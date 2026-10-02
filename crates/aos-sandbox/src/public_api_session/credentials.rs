@@ -838,7 +838,47 @@ fn open_read_credential(
     maximum_bytes: u64,
     slot: &mut CredentialReadSlot,
 ) -> CredentialResult<CredentialReadOutcome> {
-    if maximum_bytes == 0 || maximum_bytes > MAXIMUM_CREDENTIAL_BYTES {
+    open_read_credential_with_profile(
+        directory,
+        name,
+        uid,
+        CredentialReadProfile::Ordinary(maximum_bytes),
+        slot,
+    )
+}
+
+// Only this closed fixed-name profile can exceed the ordinary one-MiB bound.
+#[derive(Clone, Copy)]
+enum CredentialReadProfile {
+    Ordinary(u64),
+    PublisherPolicy,
+}
+
+impl CredentialReadProfile {
+    fn maximum(self) -> u64 {
+        match self {
+            Self::Ordinary(maximum) => maximum,
+            Self::PublisherPolicy => 4 * 1024 * 1024,
+        }
+    }
+}
+
+fn open_read_credential_with_profile(
+    directory: &OwnedFd,
+    name: &str,
+    uid: u32,
+    profile: CredentialReadProfile,
+    slot: &mut CredentialReadSlot,
+) -> CredentialResult<CredentialReadOutcome> {
+    let maximum_bytes = profile.maximum();
+    let allowed = match profile {
+        CredentialReadProfile::Ordinary(_) => MAXIMUM_CREDENTIAL_BYTES,
+        CredentialReadProfile::PublisherPolicy if name == "publisher-policy-v1.cbor" => {
+            4 * 1024 * 1024
+        }
+        CredentialReadProfile::PublisherPolicy => 0,
+    };
+    if maximum_bytes == 0 || maximum_bytes > allowed {
         return Err(ControllerNixPublicCredentialErrorV1::rejected(
             CredentialFailureClass::Configuration,
             CredentialOperation::FileProvenance,
@@ -972,13 +1012,15 @@ struct OriginalControllerCredential {
     read: CredentialReadSlot,
 }
 
-struct ControllerCredentialReadback {
-    original_bytes: [Option<Zeroizing<Vec<u8>>>; 12],
-    named: [CredentialReadSlot; 12],
+struct CredentialReadback<const COUNT: usize> {
+    original_bytes: [Option<Zeroizing<Vec<u8>>>; COUNT],
+    named: [CredentialReadSlot; COUNT],
     ancestors: CredentialAncestors,
 }
 
-impl ControllerCredentialReadback {
+type ControllerCredentialReadback = CredentialReadback<12>;
+
+impl<const COUNT: usize> CredentialReadback<COUNT> {
     fn new() -> Self {
         Self {
             original_bytes: std::array::from_fn(|_| None),
@@ -1185,43 +1227,15 @@ impl ControllerNixPublicCredentialCustodyV1 {
         let directory = self.readback.ancestors.directory()?;
         for (index, name) in NIX_PUBLIC_NAMES.iter().enumerate() {
             let original = &mut self.originals[index];
-            let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
-            let file = original.read.file.as_mut().ok_or_else(credential_state_rejected)?;
-            recheck_credential_file(file, public.file_identity)?;
-            file.seek(SeekFrom::Start(0)).map_err(|error| {
-                ControllerNixPublicCredentialErrorV1::io(
-                    CredentialFailureClass::Stale,
-                    CredentialOperation::FileSeek,
-                    error,
-                )
-            })?;
-            let bytes = &mut self.readback.original_bytes[index];
-            let observed = read_opened_credential(file, bytes, uid, MAXIMUM_CREDENTIAL_BYTES)?;
-            if observed != public.file_identity
-                || bytes.as_ref().map(|bytes| bytes.as_slice()) != Some(public.bytes())
-            {
-                return Err(ControllerNixPublicCredentialErrorV1::rejected(
-                    CredentialFailureClass::Stale,
-                    CredentialOperation::FileChanged,
-                ));
-            }
-
-            let named = &mut self.readback.named[index];
-            let observed = require_present_credential(open_read_credential(
+            observe_credential_readback(
+                original,
+                &mut self.readback.original_bytes[index],
+                &mut self.readback.named[index],
                 directory,
                 name,
                 uid,
-                MAXIMUM_CREDENTIAL_BYTES,
-                named,
-            )?)?;
-            if observed != public.file_identity
-                || named.bytes.as_ref().map(|bytes| bytes.as_slice()) != Some(public.bytes())
-            {
-                return Err(ControllerNixPublicCredentialErrorV1::rejected(
-                    CredentialFailureClass::Stale,
-                    CredentialOperation::FileChanged,
-                ));
-            }
+                CredentialReadProfile::Ordinary(MAXIMUM_CREDENTIAL_BYTES),
+            )?;
         }
 
         // These are descriptor bookends of a bounded local observation, not an
@@ -1248,6 +1262,320 @@ impl ControllerNixPublicCredentialCustodyV1 {
         Ok(())
     }
 }
+
+fn observe_credential_readback(
+    original: &mut OriginalControllerCredential,
+    bytes: &mut Option<Zeroizing<Vec<u8>>>,
+    named: &mut CredentialReadSlot,
+    directory: &OwnedFd,
+    name: &str,
+    uid: u32,
+    profile: CredentialReadProfile,
+) -> CredentialResult<()> {
+    let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
+    let file = original.read.file.as_mut().ok_or_else(credential_state_rejected)?;
+    recheck_credential_file(file, public.file_identity)?;
+    file.seek(SeekFrom::Start(0)).map_err(|error| {
+        ControllerNixPublicCredentialErrorV1::io(
+            CredentialFailureClass::Stale,
+            CredentialOperation::FileSeek,
+            error,
+        )
+    })?;
+    let observed = read_opened_credential(file, bytes, uid, profile.maximum())?;
+    if observed != public.file_identity
+        || bytes.as_ref().map(|bytes| bytes.as_slice()) != Some(public.bytes())
+    {
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Stale,
+            CredentialOperation::FileChanged,
+        ));
+    }
+
+    let observed = require_present_credential(open_read_credential_with_profile(
+        directory,
+        name,
+        uid,
+        profile,
+        named,
+    )?)?;
+    if observed != public.file_identity
+        || named.bytes.as_ref().map(|bytes| bytes.as_slice()) != Some(public.bytes())
+    {
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Stale,
+            CredentialOperation::FileChanged,
+        ));
+    }
+    Ok(())
+}
+
+
+#[cfg(test)]
+mod publisher_bootstrap_tests {
+    use super::*;
+
+    #[test]
+    fn fixed_profiles_preserve_ordinary_and_nix_ceiling() {
+        assert_eq!(MAXIMUM_CREDENTIAL_BYTES, 1024 * 1024);
+        assert_eq!(CredentialReadProfile::Ordinary(MAXIMUM_CREDENTIAL_BYTES).maximum(), 1024 * 1024);
+        assert_eq!(publisher_read_profile(0).maximum(), 272);
+        assert_eq!(publisher_read_profile(1).maximum(), 4 * 1024 * 1024);
+        assert_eq!(publisher_read_profile(2).maximum(), 32);
+        assert_eq!(publisher_read_profile(3).maximum(), 645);
+    }
+
+    #[test]
+    fn fresh_and_fenced_fixed_holders_expose_no_ready_bytes() {
+        let mut owner = PublisherPolicyBootstrapCredentialCustodyV1::new();
+        assert!(owner.ready().is_none());
+        assert!(owner.failure().is_none());
+
+        owner.fence();
+        assert!(owner.ready().is_none());
+        assert!(owner.originals.iter().all(|original|
+            original.public.is_none() && original.read.file.is_none() && original.read.bytes.is_none()));
+    }
+}
+
+/// Owns the first actual fixed Publisher credential failure.
+#[derive(Debug)]
+pub struct PublisherPolicyBootstrapCredentialErrorV1(ControllerNixPublicCredentialErrorV1);
+
+impl std::fmt::Display for PublisherPolicyBootstrapCredentialErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("Publisher bootstrap credential custody failed")
+    }
+}
+
+impl std::error::Error for PublisherPolicyBootstrapCredentialErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// Retains only the four fixed Publisher bootstrap credentials and ancestry.
+///
+/// This is local DATA custody, not PID1, policy, funding or admission authority.
+/// Every returned original and partial read remains resident on Err or unwind.
+pub struct PublisherPolicyBootstrapCredentialCustodyV1 {
+    originals: [OriginalControllerCredential; 4],
+    ancestors: CredentialAncestors,
+    readback: CredentialReadback<4>,
+    uid: Option<u32>,
+    phase: ControllerCredentialPhase,
+    failure: Option<PublisherPolicyBootstrapCredentialErrorV1>,
+}
+
+const PUBLISHER_BOOTSTRAP_NAMES: [&str; 4] = [
+    "publisher-policy-source-v1",
+    "publisher-policy-v1.cbor",
+    "publisher-policy-source-public-key-v1",
+    "git-upload-capacity-v1.cbor",
+];
+
+impl std::fmt::Debug for PublisherPolicyBootstrapCredentialCustodyV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PublisherPolicyBootstrapCredentialCustodyV1(<original fixed DATA>)")
+    }
+}
+
+impl Default for PublisherPolicyBootstrapCredentialCustodyV1 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PublisherPolicyBootstrapCredentialCustodyV1 {
+    /// Prepares empty fixed slots without opening files or granting authority.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            originals: std::array::from_fn(|_| OriginalControllerCredential {
+                public: None,
+                read: CredentialReadSlot::new(),
+            }),
+            ancestors: CredentialAncestors::new(),
+            readback: CredentialReadback::new(),
+            uid: None,
+            phase: ControllerCredentialPhase::Fresh,
+            failure: None,
+        }
+    }
+
+    /// Captures the four original fixed inputs exactly once.
+    ///
+    /// # Errors
+    ///
+    /// Permanently closes on reentry, unsafe files, bounded read failure or
+    /// changed original/named bindings; borrows the resident first typed cause.
+    pub fn capture(&mut self) -> Result<(), &PublisherPolicyBootstrapCredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Fresh {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.uid = Some(rustix::process::geteuid().as_raw());
+        let result = self.capture_originals();
+        self.finish(result)
+    }
+
+    /// Rechecks the same originals and fixed names under the same size profile.
+    ///
+    /// # Errors
+    ///
+    /// Closes on interruption, reentry or changed/unsafe input without replacing
+    /// originals or retiring a partially failed readback batch.
+    pub fn recheck(&mut self) -> Result<(), &PublisherPolicyBootstrapCredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return self.finish(Err(credential_state_rejected()));
+        }
+        self.phase = ControllerCredentialPhase::Closed;
+        self.readback = CredentialReadback::new();
+        let result = self.observe_originals();
+        self.finish(result)
+    }
+
+    /// Borrows complete input DATA without moving bytes or descriptors.
+    #[must_use]
+    pub fn ready(&self) -> Option<[&[u8]; 4]> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        Some([
+            self.originals[0].public.as_ref()?.bytes(),
+            self.originals[1].public.as_ref()?.bytes(),
+            self.originals[2].public.as_ref()?.bytes(),
+            self.originals[3].public.as_ref()?.bytes(),
+        ])
+    }
+
+    /// Borrows the first failure without displacing any retained originals.
+    #[must_use]
+    pub fn failure(&self) -> Option<&PublisherPolicyBootstrapCredentialErrorV1> {
+        self.failure.as_ref()
+    }
+
+    /// Closes DATA observation without asserting physical drain.
+    pub fn fence(&mut self) {
+        self.phase = ControllerCredentialPhase::Closed;
+    }
+
+    fn finish(&mut self, result: CredentialResult<()>)
+        -> Result<(), &PublisherPolicyBootstrapCredentialErrorV1>
+    {
+        match result {
+            Ok(()) => {
+                self.phase = ControllerCredentialPhase::Ready;
+                Ok(())
+            }
+            Err(error) => {
+                self.phase = ControllerCredentialPhase::Closed;
+                Err(self.failure.get_or_insert(PublisherPolicyBootstrapCredentialErrorV1(error)))
+            }
+        }
+    }
+
+    fn capture_originals(&mut self) -> CredentialResult<()> {
+        let uid = self.uid.ok_or_else(credential_state_rejected)?;
+        open_directory_with_custody(
+            Path::new(NIX_CONTROLLER_DIRECTORY),
+            uid,
+            &mut DirectoryCustody::Resident(&mut self.ancestors),
+        )?;
+        let directory = self.ancestors.directory()?;
+        let directory_identity = self.ancestors.slots[3].identity
+            .ok_or_else(credential_state_rejected)?;
+
+        for (index, name) in PUBLISHER_BOOTSTRAP_NAMES.iter().enumerate() {
+            let original = &mut self.originals[index];
+            let file_identity = require_present_credential(open_read_credential_with_profile(
+                directory,
+                name,
+                uid,
+                publisher_read_profile(index),
+                &mut original.read,
+            )?)?;
+            let observed_bytes = original.read.bytes.as_ref()
+                .ok_or_else(credential_state_rejected)?;
+            if (index == 0 && observed_bytes.len() != 272)
+                || (index == 2 && observed_bytes.len() != 32)
+            {
+                return Err(credential_state_rejected());
+            }
+
+            let path = PathBuf::from(NIX_CONTROLLER_DIRECTORY);
+            let bytes = original.read.bytes.take().ok_or_else(credential_state_rejected)?;
+            original.public = Some(PinnedSystemdCredential {
+                name: *name,
+                path,
+                uid,
+                directory_identity,
+                file_identity,
+                bytes,
+                exact_bytes: None,
+            });
+        }
+        self.observe_originals()
+    }
+
+    fn observe_originals(&mut self) -> CredentialResult<()> {
+        let uid = self.uid.ok_or_else(credential_state_rejected)?;
+        if rustix::process::geteuid().as_raw() != uid {
+            return Err(credential_state_rejected());
+        }
+        recheck_credential_ancestors(&self.ancestors, uid)?;
+        open_directory_with_custody(
+            Path::new(NIX_CONTROLLER_DIRECTORY),
+            uid,
+            &mut DirectoryCustody::Resident(&mut self.readback.ancestors),
+        )?;
+        for (original, named) in self.ancestors.slots.iter().zip(&self.readback.ancestors.slots) {
+            if original.identity != named.identity {
+                return Err(credential_state_rejected());
+            }
+        }
+
+        let directory = self.readback.ancestors.directory()?;
+        for (index, name) in PUBLISHER_BOOTSTRAP_NAMES.iter().enumerate() {
+            observe_credential_readback(
+                &mut self.originals[index],
+                &mut self.readback.original_bytes[index],
+                &mut self.readback.named[index],
+                directory,
+                name,
+                uid,
+                publisher_read_profile(index),
+            )?;
+        }
+        for (original, named) in self.originals.iter().zip(&self.readback.named) {
+            let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
+            recheck_credential_file(
+                original.read.file.as_ref().ok_or_else(credential_state_rejected)?,
+                public.file_identity,
+            )?;
+            recheck_credential_file(
+                named.file.as_ref().ok_or_else(credential_state_rejected)?,
+                public.file_identity,
+            )?;
+        }
+        recheck_credential_ancestors(&self.ancestors, uid)?;
+        recheck_credential_ancestors(&self.readback.ancestors, uid)?;
+        if rustix::process::geteuid().as_raw() != uid {
+            return Err(credential_state_rejected());
+        }
+        Ok(())
+    }
+}
+
+fn publisher_read_profile(index: usize) -> CredentialReadProfile {
+    match index {
+        0 => CredentialReadProfile::Ordinary(272),
+        1 => CredentialReadProfile::PublisherPolicy,
+        2 => CredentialReadProfile::Ordinary(32),
+        _ => CredentialReadProfile::Ordinary(645),
+    }
+}
+
 
 fn require_present_credential(
     observed: CredentialReadOutcome,

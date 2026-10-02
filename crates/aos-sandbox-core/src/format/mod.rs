@@ -11,6 +11,7 @@ mod attachment;
 mod broker_authorization;
 mod cbor;
 mod execution;
+mod git_upload_capacity;
 mod ownership_lease;
 mod policy;
 mod publisher;
@@ -39,6 +40,7 @@ pub use execution::{
     encode_execution_spec_v1, execution_spec_digest_v1, resource_profile_digest_v1,
 };
 pub use ownership_lease::{decode_ownership_lease, encode_ownership_lease};
+pub use git_upload_capacity::{decode_git_upload_capacity_v1, encode_git_upload_capacity_v1};
 pub use policy::{decode_optimization, decode_policy, encode_optimization, encode_policy};
 pub use publisher::{decode_publisher_domain_plan, encode_publisher_domain_plan};
 pub(crate) use publisher_request::encode_publisher_admission_draft_v1;

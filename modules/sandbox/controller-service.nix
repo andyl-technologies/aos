@@ -144,6 +144,9 @@
     "publisher-policy-v1.cbor:/run/credentials/@system/${cfg.credentials.publisherPolicy}"
     "publisher-policy-source-public-key-v1:/run/credentials/@system/${cfg.credentials.publisherPolicySourcePublicKey}"
   ];
+  gitUploadBootstrapCredentials = lib.optionals cfg.gitUploadBootstrap.enable [
+    "git-upload-capacity-v1.cbor:/run/credentials/@system/git-upload-capacity-v1.cbor"
+  ];
   projectAuthorizationIssuerCredential =
     lib.optional (cfg.credentials.projectAuthorizationIssuer != null)
     "project-authorization-issuer-v2:/run/credentials/@system/${cfg.credentials.projectAuthorizationIssuer}";
@@ -167,6 +170,8 @@ in {
     sourceSuccessorIssuance.enable = lib.mkEnableOption "the exclusive one-shot first Source successor issuer; never the Source mutation consumer";
 
     publisherIngress.enable = lib.mkEnableOption "the exact-process project publisher registration channel; publication effects remain unavailable";
+
+    gitUploadBootstrap.enable = lib.mkEnableOption "the non-admitting Git capacity bootstrap under an independently designated full-project admin policy issuer; no upload/export activation";
 
     publisherIngress.uid = lib.mkOption {
       type = lib.types.int;
@@ -380,6 +385,14 @@ in {
         }
         {
           assertion =
+            !cfg.gitUploadBootstrap.enable
+            || (cfg.publisherIngress.enable
+              && !cfg.sourceSuccessorIssuance.enable
+              && cfg.credentials.publisherPolicy == "publisher-policy-v1.cbor");
+          message = "Git bootstrap requires publisher ingress and the exact protected plaintext @system policy mapping; external admin designation/signing/capacity provisioning remain required.";
+        }
+        {
+          assertion =
             !cfg.publisherIngress.enable
             || (cfg.credentials.publisherPolicySource
               != null
@@ -572,6 +585,7 @@ in {
           "${cfg.package}/bin/aos-sandboxd ${toString controller.uid} ${toString controller.gid}"
           + lib.optionalString cfg.publicApi.enable " --public-api"
           + lib.optionalString cfg.publisherIngress.enable " --publisher-ingress"
+          + lib.optionalString cfg.gitUploadBootstrap.enable " --git-upload-bootstrap"
           + lib.optionalString cfg.sourceSuccessorIssuance.enable " --issue-source-successor";
         Sockets = lib.optional cfg.publisherIngress.enable "aos-sandboxd-publisher.socket";
         # Deliver the same configuration-selected inputs independently. Root's
@@ -598,6 +612,7 @@ in {
           ++ operatorRecoveryCredentials
           ++ publisherScopeCredential
           ++ publisherPolicySourceCredentials
+          ++ gitUploadBootstrapCredentials
           ++ projectAuthorizationIssuerCredential
           ++ controllerSourceTreeSeedIssuerCredential
           ++ sourceGenesisPacketCredentials

@@ -97,6 +97,8 @@ pub enum PortableMediaType {
     OwnershipTransactionReceipt,
     /// One controller-signed project-scoped publisher-domain plan.
     PublisherDomainPlan,
+    /// One signed-policy-committed Git upload capacity declaration.
+    GitUploadCapacity,
 }
 
 impl PortableMediaType {
@@ -127,6 +129,9 @@ impl PortableMediaType {
             Self::PublisherDomainPlan => {
                 "application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor"
             }
+            Self::GitUploadCapacity => {
+                "application/vnd.aos.sandbox.git-upload-capacity.v1+cbor"
+            }
         }
     }
 
@@ -147,7 +152,7 @@ impl PortableMediaType {
     }
 }
 
-const ALL_MEDIA_TYPES: [PortableMediaType; 17] = [
+const ALL_MEDIA_TYPES: [PortableMediaType; 18] = [
     PortableMediaType::Content,
     PortableMediaType::Directory,
     PortableMediaType::Tree,
@@ -165,6 +170,7 @@ const ALL_MEDIA_TYPES: [PortableMediaType; 17] = [
     PortableMediaType::OwnershipLease,
     PortableMediaType::OwnershipTransactionReceipt,
     PortableMediaType::PublisherDomainPlan,
+    PortableMediaType::GitUploadCapacity,
 ];
 
 /// Identifies the semantic field in which a descriptor appears.
@@ -214,6 +220,8 @@ pub enum DescriptorRole {
     ContentRetention,
     /// Signature verification policy.
     SignatureVerificationPolicy,
+    /// The single fixed Git upload capacity input committed by a policy.
+    GitUploadCapacityInput,
 }
 
 /// Validates that a descriptor's registered media type is legal for its field.
@@ -270,6 +278,9 @@ pub fn validate_descriptor_role(
         }
         DescriptorRole::SignatureVerificationPolicy => {
             matches!(kind, PortableMediaType::TrustPolicy)
+        }
+        DescriptorRole::GitUploadCapacityInput => {
+            matches!(kind, PortableMediaType::GitUploadCapacity)
         }
     };
     if allowed {
@@ -387,7 +398,14 @@ pub const NIX_PROXY_MAXIMUM_REQUEST_BODY_BYTES_V2: u32 = 262_144;
 /// Maximum body size for the descriptor-free FUSE intent reservation purpose.
 pub const MOUNT_FUSE_RESERVE_INTENT_MAXIMUM_REQUEST_BYTES_V1: u32 = 1024 * 1024;
 
-const BASE_FEATURES: [FeatureDefinition; 22] = [
+/// Exact feature name for whole immutable Git object-database read semantics.
+pub const GIT_WHOLE_ODB_READ_FEATURE_NAMESPACE: &str = "aos.sandbox.git.whole-odb-read";
+
+/// Exact feature name for the signed Git upload capacity declaration.
+pub const GIT_UPLOAD_CAPACITY_FEATURE_NAMESPACE: &str =
+    "aos.sandbox.git.upload-operation-capacity";
+
+const BASE_FEATURES: [FeatureDefinition; 24] = [
     feature("aos.sandbox.runtime.linux-systemd"),
     feature("aos.sandbox.identity.posix32"),
     feature("aos.sandbox.metadata.posix-acl"),
@@ -410,6 +428,8 @@ const BASE_FEATURES: [FeatureDefinition; 22] = [
     feature("aos.sandbox.storage.zfs-held-snapshot"),
     feature("aos.sandbox.quiesce.guest"),
     feature("aos.sandbox.quiesce.storage"),
+    feature(GIT_WHOLE_ODB_READ_FEATURE_NAMESPACE),
+    feature(GIT_UPLOAD_CAPACITY_FEATURE_NAMESPACE),
 ];
 
 const fn feature(namespace: &'static str) -> FeatureDefinition {
