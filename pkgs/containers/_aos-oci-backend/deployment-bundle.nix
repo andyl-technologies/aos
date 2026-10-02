@@ -3,6 +3,7 @@
   lib,
   pkgs,
   packages,
+  packageArtifacts ? lib.packageModules.payloads packages,
   graph,
   retire ? [],
   scope,
@@ -19,7 +20,7 @@
   moduleDependencies = import ../../../lib/packages/module-dependencies.nix;
   resolved = {
     inherit system;
-    artifacts = modules.payloads packages;
+    artifacts = packageArtifacts;
     modules = modules.closure packages;
   };
   sourceLibrary = lib.packageModuleLibrary;
@@ -118,7 +119,7 @@
     then evaluationInput
     else
       lib.build.evaluationInput {
-        inherit lib pkgs packages scope system configuration runtimeConfiguration osRelease;
+        inherit lib pkgs packages packageArtifacts scope system configuration runtimeConfiguration osRelease;
       };
   profileTemplate = writeArtifact {
     name = "aos-image-installed-template";
