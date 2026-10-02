@@ -268,10 +268,13 @@ def process_features(unit, value):
         else:
             unit.add("ReadOnlyPaths" if entry["access"] == "read-only" else "ReadWritePaths", quote(path))
     for entry in (value.get("credentials") or {}).get("views", []):
+        name = checked_text(entry["name"])
+        if name in {".", ".."} or len(name) > 128 or not re.fullmatch(r"[A-Za-z0-9._-]+", name):
+            raise ValueError("invalid credential identifier")
         key = "LoadCredentialEncrypted" if entry["encrypted"] else "LoadCredential"
-        unit.add(key, quote(token(entry["name"]) + ":" + absolute(entry["reference"])))
+        unit.add(key, name + ":" + scalar_path(entry["reference"]))
         if entry.get("environment_variable"):
-            unit.add("Environment", quote(token(entry["environment_variable"]) + "=%d/" + token(entry["name"])).replace("%%d", "%d"))
+            unit.add("Environment", quote(token(entry["environment_variable"]) + "=%d/" + name).replace("%%d", "%d"))
     isolation = value.get("isolation")
     if isolation:
         unit.add("PrivateNetwork", yes(isolation["network"] != "host"))
@@ -312,7 +315,10 @@ def condition_features(unit, value):
             path = absolute(condition["path"]).replace("%", "%%")
             unit.add(keys[condition["predicate"]], prefix + path, "Unit")
         elif condition["kind"] == "kernel-argument":
-            unit.add("ConditionKernelCommandLine", prefix + quote(condition["argument"]), "Unit")
+            argument = scalar_value(condition["argument"])
+            if argument.startswith(("|", "!")):
+                raise ValueError("kernel argument cannot introduce condition control prefixes")
+            unit.add("ConditionKernelCommandLine", prefix + argument, "Unit")
         elif condition["kind"] == "mandatory-access-control":
             if condition["state"] == "available":
                 unit.add("ConditionSecurity", prefix + "selinux", "Unit")
@@ -336,7 +342,7 @@ def realize_service(value):
         raise ValueError("enabled service has no lifecycle")
     unit_name = service_identity(value)
     unit = Unit()
-    unit.add("Description", quote(lifecycle["description"]), "Unit")
+    unit.add("Description", scalar_value(lifecycle["description"]), "Unit")
     dependencies = value.get("dependencies") or {}
     for field, key in {"after": "After", "before": "Before", "requires": "Requires", "wants": "Wants", "requisite": "Requisite", "conflicts": "Conflicts", "binds_to": "BindsTo", "part_of": "PartOf", "upholds": "Upholds"}.items():
         unit.repeat(key, filter(None, map(unit_ref, dependencies.get(field, []))), "Unit")
@@ -442,7 +448,7 @@ def realize_service(value):
             raise ValueError("managed directory requires a relative path")
         directory_name = "aos-directory-" + hashlib.sha256((unit_name + ":" + directory["purpose"] + ":" + path).encode()).hexdigest()[:24] + ".service"
         directory_unit = Unit()
-        directory_unit.add("Description", quote("Managed " + directory["purpose"] + " directory " + path), "Unit")
+        directory_unit.add("Description", scalar_value("Managed " + directory["purpose"] + " directory " + path), "Unit")
         directory_unit.add("Before", unit_name, "Unit")
         directory_unit.add("PartOf", unit_name, "Unit")
         directory_unit.add("Type", "oneshot")
@@ -488,7 +494,7 @@ def realize_service(value):
     for socket in sockets:
         name = socket_names[socket["name"]]
         document = Unit()
-        document.add("Description", quote(lifecycle["description"] + " (" + socket["name"] + ")"), "Unit")
+        document.add("Description", scalar_value(lifecycle["description"] + " (" + socket["name"] + ")"), "Unit")
         document.add("Service", unit_name, "Socket")
         document.add("SocketMode", socket["mode"], "Socket")
         document.add("DirectoryMode", socket.get("directory_mode", "0755"), "Socket")
