@@ -25,7 +25,7 @@
   controllerArtifactContract = controllerArtifacts.passthru.cargoArtifactContract;
   campaignFlightFeatures = lib.optionalString (campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) " --features packaged-midpoint-flight";
   campaignFlightBuildCommands = [
-    "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process${campaignFlightFeatures}"
+    "test --frozen --offline --release --no-run -j$NIX_BUILD_CORES -p crucible-cli --test campaign_process --test campaign_store_process ${campaignFlightFeatures}"
     # A test-only build does not promise the normal CLI executable.
     "build --frozen --offline --release -j$NIX_BUILD_CORES -p crucible-cli --bin crucible${campaignFlightFeatures}"
   ];
