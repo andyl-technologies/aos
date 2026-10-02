@@ -674,7 +674,7 @@ one state transition; when it deactivates, the declaration baseline resumes.
 
 | Action `kind` | Fields | Effect |
 | --- | --- | --- |
-| `arm_timer` | `name`, `after_nanos` | Arm or replace a relative timer. |
+| `arm_timer` | `name`, `after_ticks` | Arm or replace a relative timer using exact picosecond ticks. |
 | `cancel_timer` | `name` | Cancel the timer. |
 | `start_node` | `node` | Start a declared stopped node. |
 | `stop_node` | `node` | Stop a declared node. |
@@ -1126,7 +1126,7 @@ same vocabulary is accepted for assertion predicates and event triggers.
 | `kind` | Required/optional fields | True when | Reference |
 | --- | --- | --- | --- |
 | `at` | `at_ticks` | Virtual time equals the exact coordinate. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
-| `after` | `duration_nanos`, `of` | The duration has elapsed since event ID `of` last fired. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
+| `after` | `duration_ticks`, `of` | The exact picosecond duration has elapsed since event ID `of` last fired. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `timer` | `name` | The named relative timer fires. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `network_match` | `predicate`, `link?` | A delivered frame, optionally restricted to a link ID, matches the nested frame predicate. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
 | `console_match` | `node`, `regex` | The node's captured serial output matches the regex program. | [TOML schema source](../../../crates/crucible/src/model/toml.rs) |
