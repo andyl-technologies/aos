@@ -218,7 +218,7 @@ fn hot_fork_rejects_uncommitted_node_state_before_process_creation() -> Result<(
 #[test]
 #[cfg(target_os = "linux")]
 fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box<dyn Error>> {
-    let (mut node, _log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerContinuation)?;
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerContinuation)?;
     let expected_cancellation = node
         .hot_fork_child_process_contract_stage
         .as_ref()
@@ -242,7 +242,7 @@ fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box
     );
     assert_eq!(scheduler.node_state().next_network_output_sequence(), 31);
 
-    let installed = scheduler.into_qemu_node(
+    let mut installed = scheduler.into_qemu_node(
         node_id("child"),
         ScriptedExternalProcessControl {
             basis: process.basis,
@@ -264,6 +264,94 @@ fn hot_fork_scheduler_continuation_owns_exact_private_planes() -> Result<(), Box
         expected_cancellation,
     );
     assert!(installed._hot_fork_scheduler_authority.is_some());
+
+    log.lock().unwrap().clear();
+    assert_eq!(
+        installed.advance_to_ceiling(Icount { retired: 97 })?,
+        AdvanceOutcome::ReachedHorizon
+    );
+    let calls = recorded(&log);
+    let publication = calls
+        .iter()
+        .position(|call| *call == ChannelCall::ShmemStart(97))
+        .unwrap();
+    let resume = calls
+        .iter()
+        .position(|call| *call == ChannelCall::QmpContinue)
+        .unwrap();
+    let completion = calls
+        .iter()
+        .position(|call| *call == ChannelCall::ShmemFinish(97))
+        .unwrap();
+    assert!(publication < resume && resume < completion);
+
+    log.lock().unwrap().clear();
+    assert_eq!(
+        installed.advance_to_ceiling(Icount { retired: 101 })?,
+        AdvanceOutcome::ReachedHorizon
+    );
+    assert!(!recorded(&log).contains(&ChannelCall::QmpContinue));
+
+    drop(installed);
+    node.release_hot_fork_plugin_endpoints()?;
+    node.release_hot_fork_child_console()?;
+    node.release_hot_fork_child_qmp()?;
+    let _capture = node.release_hot_fork_child_diagnostics_with_consumer(&mut diagnostics)?;
+    drop(node.release_hot_fork_private_ring_mapping()?);
+    node.shutdown_child()?;
+    Ok(())
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn hot_fork_first_advance_retains_activation_after_resume_rejection() -> Result<(), Box<dyn Error>>
+{
+    let (mut node, log) = sealed_hot_fork_node_with_log(DescriptorScript::SchedulerResumeFailure)?;
+    let mut process_owner = ScriptedHotForkChildOwner::default();
+    let launch = node.fork_prepared_hot_fork_template(&mut process_owner)?;
+    let (_parent, process, child_qmp, mut diagnostics, continuation) = launch.into_parts();
+    let scheduler = continuation.into_scheduler_node_continuation(child_qmp)?;
+    let mut installed = scheduler.into_qemu_node(
+        node_id("child"),
+        ScriptedExternalProcessControl {
+            basis: process.basis,
+        },
+        QemuShutdownPolicy::fast_test(),
+        QemuAsyncDriverPolicy::fast_test(),
+        QemuCrashDetector::new("child"),
+    )?;
+
+    log.lock().unwrap().clear();
+    let error = installed
+        .advance_to_ceiling(Icount { retired: 97 })
+        .expect_err("rejected native resume must not execute a quantum");
+    assert!(
+        error
+            .to_string()
+            .contains("injected child resume rejection")
+    );
+    assert!(installed.hot_fork_resume_pending);
+    let calls = recorded(&log);
+    assert!(
+        calls
+            .iter()
+            .position(|call| *call == ChannelCall::ShmemStart(97))
+            .unwrap()
+            < calls
+                .iter()
+                .position(|call| *call == ChannelCall::QmpContinue)
+                .unwrap()
+    );
+    assert!(!calls.contains(&ChannelCall::ShmemFinish(97)));
+
+    log.lock().unwrap().clear();
+    assert_eq!(
+        installed.advance_to_ceiling(Icount { retired: 101 })?,
+        AdvanceOutcome::ReachedHorizon
+    );
+    assert!(recorded(&log).contains(&ChannelCall::QmpContinue));
+    assert!(!installed.hot_fork_resume_pending);
+
     drop(installed);
     node.release_hot_fork_plugin_endpoints()?;
     node.release_hot_fork_child_console()?;

@@ -258,6 +258,7 @@ struct ScriptedQmpMachineControl {
     mismatch_endpoint_disposition: bool,
     request_basis_mismatch_after_queries: Option<u64>,
     serve_child_qmp: bool,
+    fail_child_resume: bool,
     template_query_count: Arc<Mutex<u64>>,
     hot_fork_aborted: Arc<Mutex<bool>>,
     hot_fork_script: HotForkScript,
@@ -267,6 +268,7 @@ struct ScriptedQmpMachineControl {
 enum DescriptorScript {
     Success,
     SchedulerContinuation,
+    SchedulerResumeFailure,
     InstallFailure,
     CloseFailure,
     EndpointInstallFailure,
@@ -431,6 +433,8 @@ fn serve_scripted_hot_fork_child_qmp(
     name: &crate::QmpDescriptorName,
     socket_cookie: u64,
     template_generation: u64,
+    log: SharedLog,
+    mut fail_resume: bool,
 ) -> Result<(), QemuNodeChannelError> {
     let descriptor = descriptor.try_clone_to_owned().map_err(|source| {
         QemuNodeChannelError::new("clone scripted child QMP endpoint", source.to_string())
@@ -478,8 +482,40 @@ fn serve_scripted_hot_fork_child_qmp(
             {
                 return;
             }
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.write_all(b"\r\n");
+            if stream.write_all(response.as_bytes()).is_err()
+                || stream.write_all(b"\r\n").is_err()
+            {
+                return;
+            }
+
+            loop {
+                request.clear();
+                if reader
+                    .read_line(&mut request)
+                    .ok()
+                    .filter(|read| *read > 0)
+                    .is_none()
+                {
+                    return;
+                }
+                let command: serde_json::Value = match serde_json::from_str(&request) {
+                    Ok(command) => command,
+                    Err(_) => return,
+                };
+                if command.get("execute").and_then(serde_json::Value::as_str) != Some("cont") {
+                    return;
+                }
+                log.lock().unwrap().push(ChannelCall::QmpContinue);
+                let response = if fail_resume {
+                    fail_resume = false;
+                    b"{\"error\":{\"class\":\"GenericError\",\"desc\":\"injected child resume rejection\"}}\r\n".as_slice()
+                } else {
+                    b"{\"return\":{}}\r\n".as_slice()
+                };
+                if stream.write_all(response).is_err() {
+                    return;
+                }
+            }
         })
         .map(|_handle| ())
         .map_err(|source| {
@@ -2009,7 +2045,14 @@ fn scripted_hot_fork_capture_node(
                 DescriptorScript::PreparationRequestBasisMismatch => Some(1),
                 _ => None,
             },
-            serve_child_qmp: matches!(descriptor_script, DescriptorScript::SchedulerContinuation),
+            serve_child_qmp: matches!(
+                descriptor_script,
+                DescriptorScript::SchedulerContinuation | DescriptorScript::SchedulerResumeFailure
+            ),
+            fail_child_resume: matches!(
+                descriptor_script,
+                DescriptorScript::SchedulerResumeFailure
+            ),
             template_query_count: Arc::new(Mutex::new(0)),
             hot_fork_aborted: Arc::new(Mutex::new(false)),
             hot_fork_script: match descriptor_script {
@@ -2019,6 +2062,7 @@ fn scripted_hot_fork_capture_node(
                 }
                 DescriptorScript::Success
                 | DescriptorScript::SchedulerContinuation
+                | DescriptorScript::SchedulerResumeFailure
                 | DescriptorScript::InstallFailure
                 | DescriptorScript::CloseFailure
                 | DescriptorScript::EndpointInstallFailure
@@ -2037,7 +2081,14 @@ fn scripted_hot_fork_capture_node(
         QemuCrashDetector::new("vm-a"),
         ScriptedHostIoRuntime {
             log,
-            outcomes: VecDeque::new(),
+            outcomes: if matches!(
+                descriptor_script,
+                DescriptorScript::SchedulerContinuation | DescriptorScript::SchedulerResumeFailure
+            ) {
+                VecDeque::from([QemuAsyncWaitOutcome::Completed; 2])
+            } else {
+                VecDeque::new()
+            },
             fault_results: VecDeque::new(),
             staged_fault_events: Vec::new(),
             fingerprint_fault_events: VecDeque::new(),
@@ -2172,6 +2223,7 @@ fn scripted_node_with_fault_events(
             mismatch_endpoint_disposition: false,
             request_basis_mismatch_after_queries: None,
             serve_child_qmp: false,
+            fail_child_resume: false,
             template_query_count: Arc::new(Mutex::new(0)),
             hot_fork_aborted: Arc::new(Mutex::new(false)),
             hot_fork_script: HotForkScript::Rejected,
@@ -2279,6 +2331,7 @@ fn scripted_node_with_coverage(
             mismatch_endpoint_disposition: false,
             request_basis_mismatch_after_queries: None,
             serve_child_qmp: false,
+            fail_child_resume: false,
             template_query_count: Arc::new(Mutex::new(0)),
             hot_fork_aborted: Arc::new(Mutex::new(false)),
             hot_fork_script: HotForkScript::Rejected,

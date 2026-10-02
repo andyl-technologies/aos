@@ -493,6 +493,8 @@ impl QemuQmpMachineControlChannel for ScriptedQmpMachineControl {
                 name,
                 socket_cookie,
                 template_generation,
+                Arc::clone(&self.log),
+                self.fail_child_resume,
             )?;
         }
         Ok(state)
