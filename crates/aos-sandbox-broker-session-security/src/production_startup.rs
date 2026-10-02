@@ -1,10 +1,12 @@
-//! Closed startup tables for the two existing method-46 floor owners.
+//! Closed startup tables for the existing floor and original Storage owners.
 //!
 //! The original PID 1 image is observed only through the fixed unit's named
 //! `OpenFile=/proc/1/exe:aos-method46-pid1-image:read-only` entry. Environment
 //! names select slots, not authority. This module exposes no caller-supplied
 //! FD/image constructor. The floor's measured-image and genuine-manager guard
 //! independently validate this parent-only observation before any TPM use.
+//! Genuine original Storage worker startup may retain the same image in
+//! legacy-closed mode without constructing a method-46 launch or floor owner.
 
 use std::fs::File;
 use std::os::fd::OwnedFd;
@@ -17,7 +19,9 @@ use aos_sandbox::normal_root::{
     ProductionControllerNormalRootStartupPartsV1,
 };
 use aos_sandbox_linux::seqpacket::RecordSubjectListener;
-use aos_sandbox_storage::activation::take_systemd_startup;
+use aos_sandbox_storage::activation::{
+    StorageOriginalWorkerStartupErrorV3, StorageOriginalWorkerStartupV3, take_systemd_startup,
+};
 use aos_sandbox_storage::service::StorageServiceError;
 
 use crate::{ProductionBrokerSessionActivationV1, ProtectedBrokerSessionFixedEndpointV1};
@@ -145,7 +149,8 @@ enum ControllerBindingFailure {
 /// Retains all existing Storage listeners and its private launch observation.
 ///
 /// Construction captures the actual process-start table; it accepts no caller
-/// descriptor or image claim. The image never leaves the parent floor owner.
+/// descriptor or image claim. Optional floor image and worker custody remain
+/// separate; worker-only delivery creates no method-46 launch owner.
 pub struct ProductionStorageStartupV1 {
     activation: ProductionBrokerSessionActivationV1,
     export: RecordSubjectListener,
@@ -165,6 +170,54 @@ pub type ProductionStorageStartupPartsV1 = (
     Option<RecordSubjectListener>,
 );
 
+// Own the genuine startup BEFORE the additional mode observation. This guard
+// fences only this synchronous Security route: interruption closes the worker
+// before disposal, but does not return a caught-unwind custody reservoir.
+struct StorageWorkerImageRouteObservation {
+    startup: Option<StorageOriginalWorkerStartupV3>,
+    finished: bool,
+}
+
+impl StorageWorkerImageRouteObservation {
+    fn begin(startup: Option<StorageOriginalWorkerStartupV3>) -> Self {
+        Self {
+            startup,
+            finished: false,
+        }
+    }
+
+    fn fail(
+        mut self,
+        cause: StorageServiceError,
+    ) -> StorageOriginalWorkerStartupErrorV3 {
+        let failure = StorageOriginalWorkerStartupErrorV3::retain_service_failure(
+            cause,
+            self.startup.take(),
+        );
+        self.finished = true;
+        failure
+    }
+
+    fn finish(mut self) -> Option<StorageOriginalWorkerStartupV3> {
+        self.finished = true;
+        self.startup.take()
+    }
+}
+
+impl Drop for StorageWorkerImageRouteObservation {
+    fn drop(&mut self) {
+        if !self.finished {
+            // An empty Activation marker denotes route interruption, not an
+            // invented I/O/Floor cause. It needs no string allocation.
+            let interruption = StorageServiceError::Activation(String::new());
+            let _closed = StorageOriginalWorkerStartupErrorV3::retain_service_failure(
+                interruption,
+                self.startup.take(),
+            );
+        }
+    }
+}
+
 impl ProductionStorageStartupV1 {
     /// Captures the closed table before opening any retained service state.
     ///
@@ -179,8 +232,10 @@ impl ProductionStorageStartupV1 {
 
     /// Captures once and transfers genuine original worker startup downward.
     ///
-    /// The existing six-listener tuple and separate method-46 launch owner are
-    /// unchanged. Missing original image yields no worker owner, not a grant.
+    /// The existing six-listener tuple is unchanged. In legacy-closed mode,
+    /// an admitted worker retains the image without a method-46 launch owner.
+    /// Required mode still uses the original strict floor image admission.
+    /// Missing original image yields no worker owner, not a grant.
     ///
     /// # Errors
     ///
@@ -194,20 +249,52 @@ impl ProductionStorageStartupV1 {
         ),
         aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3,
     > {
-        use aos_sandbox_storage::activation::StorageOriginalWorkerStartupErrorV3;
-
         let captured = take_systemd_startup()?;
         let (listeners, image, startup) = captured.into_original_worker_parts()?;
-        let startup_owner = match Self::admit_captured_parts(listeners, image) {
-            Ok(owner) => owner,
-            Err(error) => {
-                return Err(StorageOriginalWorkerStartupErrorV3::retain_service_failure(
-                    error,
-                    startup,
-                ));
+        let route = StorageWorkerImageRouteObservation::begin(startup);
+
+        // This extra retained mode interval is worker-only. No-image capture
+        // keeps the old strict admission, without another mode observation.
+        let mode = if image.is_some() {
+            if route.startup.is_none() {
+                return Err(route.fail(startup_error(
+                    "Storage worker image has no genuine startup owner",
+                )));
             }
+            match crate::recovery::ModePinV1::open_storage_worker_image_mode() {
+                Ok(mode) => Some(mode),
+                Err(_) => {
+                    // Preserve the existing Service projection; the old
+                    // strict presence checker also redacts its Floor cause.
+                    return Err(route.fail(startup_error(
+                        "Storage launch image differs from image floor mode",
+                    )));
+                }
+            }
+        } else {
+            None
         };
-        Ok((startup_owner, startup))
+
+        // Only the already admitted genuine worker may carry a LegacyClosed
+        // image. The floor receives None; Required keeps its original image.
+        let floor_image = if mode.as_ref().is_some_and(|mode| !mode.is_required()) {
+            None
+        } else {
+            image
+        };
+        let startup_owner = match Self::admit_captured_parts(listeners, floor_image) {
+            Ok(owner) => owner,
+            Err(cause) => return Err(route.fail(cause)),
+        };
+
+        if let Some(mode) = &mode {
+            if mode.revalidate().is_err() {
+                return Err(route.fail(startup_error(
+                    "Storage launch image differs from image floor mode",
+                )));
+            }
+        }
+        Ok((startup_owner, route.finish()))
     }
 
     // Both capture paths consume the same complete table through the original
@@ -905,5 +992,53 @@ mod retained_destination_tests {
         assert!(slot.is_none());
         assert!(destination.as_ref().is_none());
         assert!(retained.as_ref().is_none());
+    }
+}
+
+#[cfg(test)]
+mod storage_worker_image_route_tests {
+    use super::*;
+
+    // These cover only pure guard/error behavior with no startup owner. They
+    // do not manufacture genuine image, mode, listener or worker custody.
+    #[test]
+    fn route_is_armed_before_any_mode_observation() {
+        let route = StorageWorkerImageRouteObservation::begin(None);
+
+        assert!(!route.finished);
+        assert!(route.startup.is_none());
+    }
+
+    #[test]
+    fn successful_empty_route_returns_no_worker_authority() {
+        let route = StorageWorkerImageRouteObservation::begin(None);
+
+        let startup = route.finish();
+
+        assert!(startup.is_none());
+    }
+
+    #[test]
+    fn failed_route_keeps_the_existing_activation_projection() {
+        let route = StorageWorkerImageRouteObservation::begin(None);
+        let cause = startup_error("the original activation cause");
+        let expected = cause.to_string();
+
+        let failure = route.fail(cause);
+
+        assert_eq!(failure.to_string(), expected);
+        assert!(std::error::Error::source(&failure).is_some());
+    }
+
+    #[test]
+    fn failed_route_keeps_an_existing_nonactivation_typed_cause() {
+        let route = StorageWorkerImageRouteObservation::begin(None);
+        let cause = StorageServiceError::Clock;
+        let expected = cause.to_string();
+
+        let failure = route.fail(cause);
+
+        assert_eq!(failure.to_string(), expected);
+        assert!(std::error::Error::source(&failure).is_some());
     }
 }

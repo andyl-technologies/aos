@@ -41,6 +41,8 @@
     cfg.operatorRecoveryControllerPublicKey
     != null
     && cfg.operatorRecoveryStorageOwnerKey != null;
+  sourceOriginalWorkerStartup = cfg.sourceOriginalWorkerStartup.enable;
+  startupImageDelivery = cfg.method46TpmFloor.required || sourceOriginalWorkerStartup;
 in {
   options.aos.sandbox.storageBroker = {
     enable = lib.mkEnableOption "the fixed AOS sandbox Storage repair broker";
@@ -88,6 +90,22 @@ in {
     credentials = brokerSession.mkOptions brokerSessionEndpoints;
 
     method46TpmFloor = method46Floor.options;
+
+    sourceOriginalWorkerStartup.enable = lib.mkOption {
+      type = lib.types.bool;
+      default = false;
+      apply = enabled:
+        if enabled && !cfg.enable
+        then throw "Source original-worker startup requires explicitly enabled Storage"
+        else enabled;
+      description = ''
+        Deliver the existing fixed PID1 image to genuine original Source worker
+        startup without enabling the method-46 TPM floor. This requires an
+        explicitly configured Source/Storage deployment, external ZFS hold
+        key, exact AOS packages, and immutable enforcing production SELinux.
+        Image delivery grants no Source dispatch, floor, or readiness.
+      '';
+    };
 
     kernelExportStageSignerCredential = lib.mkOption {
       type = lib.types.nullOr lib.serviceTypes.credentialName;
@@ -200,6 +218,21 @@ in {
         {
           assertion = !cfg.method46TpmFloor.required || (config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0" && config.aos.security.selinux.mode == "enforcing" && cfg.package == pkgs.aos-storaged);
           message = "required Storage TPM floor requires immutable enforcing SELinux and the exact AOS Storage package";
+        }
+        {
+          assertion =
+            !sourceOriginalWorkerStartup
+            || (
+              config.aos.sandbox.sourceProvider.enable
+              && cfg.zfsHoldSigningKey != null
+              && cfg.package == pkgs.aos-storaged
+              && config.systemd.package == pkgs.systemd
+              && config.aos.security.selinux.enable
+              && config.aos.security.selinux.bootMode == "immutable-stage0"
+              && config.aos.security.selinux.mode == "enforcing"
+              && config.aos.security.selinux.policy == "aos"
+            );
+          message = "Source original-worker startup requires Source, an external ZFS hold key, exact AOS Storage/PID1 packages, and explicitly selected immutable enforcing production SELinux";
         }
         {
           assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || worker.package == pkgs.aos-sandbox-zfs-worker;
@@ -387,9 +420,11 @@ in {
       };
       serviceConfig = {
         Type = "simple";
-        SELinuxContext = lib.mkIf cfg.method46TpmFloor.required "system_u:system_r:aos_sandbox_storage_t";
-        OpenFile = lib.mkIf cfg.method46TpmFloor.required ["/proc/1/exe:aos-method46-pid1-image:read-only"];
-        FileDescriptorStoreMax = lib.mkIf cfg.method46TpmFloor.required 0;
+        # Source-only delivery reuses the same read-only image and subject;
+        # all TPM credentials, devices and lifetime settings remain separate.
+        SELinuxContext = lib.mkIf startupImageDelivery "system_u:system_r:aos_sandbox_storage_t";
+        OpenFile = lib.mkIf startupImageDelivery ["/proc/1/exe:aos-method46-pid1-image:read-only"];
+        FileDescriptorStoreMax = lib.mkIf startupImageDelivery 0;
         ExecStartPre = brokerSessionConfiguration.installCommands;
         ExecStart = ''
           ${cfg.package}/bin/aos-storaged \

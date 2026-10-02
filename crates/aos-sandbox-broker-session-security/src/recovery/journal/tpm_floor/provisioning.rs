@@ -55,6 +55,17 @@ impl ModePinV1 {
         Self::open_fixed(path)
     }
 
+    /// Retains the fixed Storage mode for worker-only startup image routing.
+    ///
+    /// This is immutable comparison DATA, not a floor owner or permission to
+    /// adopt an extra image through the ordinary method-46 capture path.
+    ///
+    /// # Errors
+    /// Rejects absent, unsafe, noncanonical or changed fixed Storage mode data.
+    pub(crate) fn open_storage_worker_image_mode() -> Result<Self, FloorErrorV1> {
+        Self::open(FloorEndpointV1::StorageBroker)
+    }
+
     /// Retains only the immutable mode named by the signed Host contract.
     ///
     /// # Errors
