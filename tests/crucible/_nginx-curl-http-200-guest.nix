@@ -1,6 +1,7 @@
 {
   pkgs,
   hotForkEquivalence ? false,
+  strictHttpResponse ? false,
 }: let
   closureDeps = [
     pkgs.bash
@@ -148,16 +149,29 @@ in
                 status=$(curl \
                   --connect-timeout 30 \
                   --max-time 60 \
-                  --output /dev/null \
+                  --output ${
+            if strictHttpResponse
+            then "/tmp/http-response"
+            else "/dev/null"
+          } \
                   --silent \
                   --write-out '%{http_code}' \
                   http://10.0.0.2:8080/ || true)
                 if [ "$status" = 200 ]; then
                   if [ "$reported" = 0 ]; then
+                    ${pkgs.lib.optionalString strictHttpResponse ''
+            # The marker authenticates a complete application response,
+            # not only a successful TCP connection or status line.
+            test "$(cat /tmp/http-response)" = 'Crucible reached nginx'
+            test "$(wc -c < /tmp/http-response)" -eq 23
+          ''}
                     crucible-guest sometimes \
                       curl-receives-http-200 \
                       'Curl receives an HTTP 200 response from Nginx' \
                       1
+                    ${pkgs.lib.optionalString strictHttpResponse ''
+            crucible-guest semantic-marker http.request-response instance-1
+          ''}
                     reported=1
                   fi
                   if [ "${hotForkEquivalenceEnabled}" = 1 ] \

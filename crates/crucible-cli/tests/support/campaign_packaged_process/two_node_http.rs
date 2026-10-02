@@ -1,0 +1,244 @@
+//! Bounded two-guest HTTP exchange through the public packaged campaign runtime.
+//!
+//! Completion requires routed request and response bytes plus an authenticated
+//! client marker emitted only after checking the exact response body. This cold
+//! execution flight does not claim retained-source or hot-fork functionality.
+
+use super::*;
+use crucible_core::{FramePredicate, LinkId};
+use crucible_daemon::{AttemptExecutionOrigin, AttemptRuntimeState};
+use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
+
+const HTTP_VIRTUAL_BUDGET_TICKS: u64 = 2_000_000_000_000;
+// This watchdog bounds a broken host/runtime operation; it is not simulation
+// time and does not determine the canonical outcome.
+const HTTP_HOST_WATCHDOG: Duration = Duration::from_secs(180);
+const HTTP_RESPONSE: &[u8] = b"Crucible reached nginx\n";
+const HTTP_MARKER: &str = "http.request-response";
+
+#[test]
+#[ignore = "requires packaged QEMU and isolated cgroup-v2/project-quota roots"]
+fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), Box<dyn Error>> {
+    let fixture = FlightFixture::new()?;
+    println!("two_node_http_stage=compile");
+    let compiled = compile_http_scenario(&fixture)?;
+    println!("two_node_http_stage=import");
+    guest_choice::create_guest_choice_campaign_with_timeout(
+        &fixture,
+        &compiled,
+        "qemu-11.1.1-crucible",
+        Some(HTTP_VIRTUAL_BUDGET_TICKS),
+    )?;
+    let authority = guest_choice::write_component_authority(&fixture)?;
+    println!("two_node_http_stage=start-runtime");
+    let mut service =
+        guest_choice::start_materialization_flight_service(&fixture, &authority, None)?;
+
+    println!("two_node_http_virtual_budget_ticks={HTTP_VIRTUAL_BUDGET_TICKS}");
+    println!("two_node_http_host_watchdog_seconds=180");
+    let exchange = (|| {
+        guest_choice::grant_and_start_guest_choice_campaign(&fixture)?;
+        println!("two_node_http_campaign_started=true");
+        let explanation = wait_for_http_completion(&fixture, &mut service)?;
+        assert_eq!(explanation["observation"]["stop"], "terminal-success");
+        assert_eq!(
+            explanation["observation"]["discovered_choices"],
+            serde_json::json!([])
+        );
+        envoy_network::require_semantic_marker(&explanation, HTTP_MARKER, "curl")?;
+        println!("two_node_http_attempt={explanation}");
+        Ok::<(), Box<dyn Error>>(())
+    })();
+    println!("two_node_http_stage=cleanup");
+    let shutdown = service.stop();
+    match (exchange, shutdown) {
+        (Ok(()), Ok(())) => {}
+        (Err(exchange), Err(shutdown)) => {
+            return Err(
+                format!("HTTP exchange failed: {exchange}; cleanup failed: {shutdown}").into(),
+            );
+        }
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+    }
+
+    let run_root = required_path("CRUCIBLE_FLIGHT_RUN_ROOT")?;
+    if fs::read_dir(&run_root)?.next().transpose()?.is_some() {
+        return Err(format!(
+            "HTTP cleanup retained an attempt directory in {}",
+            run_root.display()
+        )
+        .into());
+    }
+    if fixture
+        ._temporary
+        .path()
+        .join("guest-choice-executor.sock")
+        .exists()
+    {
+        return Err("HTTP cleanup retained its executor socket".into());
+    }
+    println!("two_node_http_request_response_authenticated=true");
+    println!("two_node_http_exact_body_authenticated=true");
+    println!("two_node_http_cold_execution=true");
+    println!("two_node_http_cleanup_authenticated=true");
+    Ok(())
+}
+
+fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error>> {
+    let kernel = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&fs::read(
+        required_path("CRUCIBLE_KERNEL")?,
+    )?));
+    let root_image = ContentAddressedBlobRef::from_hash(ContentHash::from_bytes(&fs::read(
+        required_path("CRUCIBLE_ROOT_IMAGE")?,
+    )?));
+    let client = WorldNode {
+        id: NodeId { name: "curl".into() },
+        arch: VmArchitecture::X86_64,
+        memory_mib: 256,
+        cmdline: "console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init quiet nokaslr norandmaps random.trust_cpu=off crucible.workload=httpget".into(),
+        ready_point: ReadyPoint::FixedIcount { icount: Icount { retired: 0 } },
+        white_box: WhiteBoxPolicy::Enabled,
+        smp_vcpus: 1,
+        kernel: Some(kernel),
+        root_image: Some(root_image),
+        initrd: None,
+    };
+    let server = WorldNode {
+        id: NodeId {
+            name: "nginx".into(),
+        },
+        cmdline: client.cmdline.replace("httpget", "httpd"),
+        white_box: WhiteBoxPolicy::Disabled,
+        ..client.clone()
+    };
+    let link_id = LinkId::for_endpoints(&client.id, &server.id);
+    let link = LinkDef::with_transport(
+        client.id.clone(),
+        server.id.clone(),
+        SimDuration { ticks: 250_000_000 },
+        SimDuration { ticks: 0 },
+        LinkLossProbability::ZERO,
+        None,
+    )?;
+    let world = World::from_nodes_and_links(vec![client, server], vec![link])?;
+    let graph = EventGraph::builder()
+        .event("complete-http-exchange")
+        .entrypoint()
+        .when(Predicate::all_of(vec![
+            Predicate::once(Predicate::network_match(
+                Some(link_id.clone()),
+                FramePredicate::contains(b"GET / HTTP/1.1".to_vec()),
+            )),
+            Predicate::once(Predicate::network_match(
+                Some(link_id),
+                FramePredicate::contains(HTTP_RESPONSE.to_vec()),
+            )),
+            Predicate::once(Predicate::guest_marker(MarkerId::from_name(HTTP_MARKER))),
+        ]))
+        .action(Action::Pass)
+        .build_for_world(&world)?;
+    let plan = Plan::from_event_graph_for_world(&world, graph)?;
+    let scenario =
+        ScenarioDefForm::from_components(&world, &plan, &Properties::empty(), Seed::from_u64(104))?;
+    let source = fixture
+        ._temporary
+        .path()
+        .join("two-node-http.scenario.toml");
+    fs::write(&source, scenario.to_canonical_toml()?)?;
+    run_json(
+        command(&["--format", "jsonl", "campaign", "scenario", "compile"])
+            .arg(source)
+            .arg("--output")
+            .arg(&fixture.fixture),
+        "compile two-node HTTP scenario",
+    )
+}
+
+fn wait_for_http_completion(
+    fixture: &FlightFixture,
+    service: &mut CampaignServiceChild,
+) -> Result<Value, Box<dyn Error>> {
+    let began = Instant::now();
+    let deadline = began + HTTP_HOST_WATCHDOG;
+    let mut last_report = began;
+    let mut last_states = String::new();
+    let completed = wait_for_process_observation(deadline, || {
+        let stderr = service.stderr_tail();
+        if let Some(error) = first_execution_error(&stderr) {
+            return Err(format!("HTTP packaged execution failed: {error}; stderr={stderr}").into());
+        }
+        if let Some(status) = service.child.try_wait()? {
+            return Err(format!(
+                "HTTP service exited before completion: {status}; stderr={stderr}"
+            )
+            .into());
+        }
+        let states = guest_choice::attempt_states(fixture)?;
+        last_states = format!("{states:?}");
+        if last_report.elapsed() >= Duration::from_secs(5) {
+            println!(
+                "two_node_http_wait elapsed_host_seconds={} states={last_states}",
+                began.elapsed().as_secs()
+            );
+            for diagnostic in stderr.lines().filter(|line| {
+                line.starts_with("CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ")
+                    || line.starts_with("CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ")
+            }) {
+                println!("two_node_http_runtime_diagnostic={diagnostic}");
+            }
+            last_report = Instant::now();
+        }
+        for (key, state) in states {
+            if state.origin() != AttemptExecutionOrigin::Initial {
+                continue;
+            }
+            match state {
+                AttemptRuntimeState::Completed { .. } => {
+                    return guest_choice::wait_for_attempt_observation(fixture, key).map(Some);
+                }
+                AttemptRuntimeState::TerminalFailure { .. } => {
+                    return Err(format!(
+                        "HTTP execution failed: {key:?}; stderr={}",
+                        service.stderr_tail()
+                    )
+                    .into());
+                }
+                _ => {}
+            }
+        }
+        Ok(None)
+    })?;
+    completed.ok_or_else(|| {
+        format!(
+            "HTTP host watchdog expired; states={last_states}; stderr={}",
+            service.stderr_tail()
+        )
+        .into()
+    })
+}
+
+fn first_execution_error(stderr: &str) -> Option<&str> {
+    // A retryable worker failure can leave the durable attempt Running. Surface
+    // its original diagnostic promptly instead of waiting for TerminalFailure.
+    stderr
+        .lines()
+        .find(|line| line.starts_with("packaged campaign execution ") && line.contains(" failed:"))
+}
+
+#[test]
+fn http_wait_reports_retryable_execution_failure_without_misclassifying_warnings() {
+    let failure = "packaged campaign execution example failed: backend refused request";
+    assert_eq!(first_execution_error(failure), Some(failure));
+    assert_eq!(
+        first_execution_error("qemu-system-x86_64: warning: unrelated diagnostic"),
+        None
+    );
+    assert_eq!(
+        first_execution_error("a guest printed packaged campaign execution example failed: text"),
+        None
+    );
+    assert_eq!(
+        first_execution_error("packaged campaign execution example completed"),
+        None
+    );
+}

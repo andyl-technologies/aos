@@ -435,7 +435,7 @@ pub(crate) fn guest_choice_selectables(
     guest_choice_selectables_with_prefix(world, "campaign")
 }
 
-fn guest_choice_selectables_with_prefix(
+pub(super) fn guest_choice_selectables_with_prefix(
     world: &World,
     prefix: &str,
 ) -> Result<ScenarioSelectables, Box<dyn Error>> {
@@ -501,6 +501,15 @@ fn create_guest_choice_campaign(
     compiled: &Value,
     qemu_build: &str,
 ) -> Result<(), Box<dyn Error>> {
+    create_guest_choice_campaign_with_timeout(fixture, compiled, qemu_build, None)
+}
+
+pub(super) fn create_guest_choice_campaign_with_timeout(
+    fixture: &FlightFixture,
+    compiled: &Value,
+    qemu_build: &str,
+    virtual_timeout_picoseconds: Option<u64>,
+) -> Result<(), Box<dyn Error>> {
     let root = fixture._temporary.path();
     let lineage_input = root.join("guest-choice-lineage.toml");
     let lineage = root.join("guest-choice-lineage.bin");
@@ -543,9 +552,12 @@ novelty_reserve = 0
 retain_all_findings = true
 survivor_limit = 8
 exact_findings = true
-exact_user_pins = true
+exact_user_pins = true{}
 "#,
-            json_string(compiled, "scenario")?
+            json_string(compiled, "scenario")?,
+            virtual_timeout_picoseconds
+                .map(|ticks| format!("\n[attempt_timeout]\nvirtual_time_picoseconds = {ticks}"))
+                .unwrap_or_default(),
         ),
     )?;
     run_json(
@@ -569,7 +581,9 @@ exact_user_pins = true
     service.stop()
 }
 
-fn write_component_authority(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn write_component_authority(
+    fixture: &FlightFixture,
+) -> Result<PathBuf, Box<dyn Error>> {
     let authority = fixture._temporary.path().join("guest-choice-authority.bin");
     let mut authority_bytes = b"CRUCCA01".to_vec();
     authority_bytes.extend_from_slice(&[0x41; 32]);
@@ -667,7 +681,7 @@ fn start_packaged_service(
     start_packaged_service_with_artifacts(fixture, authority, &deployment, &qemu, &plugin, false)
 }
 
-fn start_materialization_flight_service(
+pub(super) fn start_materialization_flight_service(
     fixture: &FlightFixture,
     authority: &Path,
     hot_fork_deployment: Option<&Path>,
@@ -712,7 +726,9 @@ fn start_packaged_service_with_artifacts(
     fixture.start_service_command(invocation, Duration::from_secs(120))
 }
 
-fn materialization_flight_deployment(fixture: &FlightFixture) -> Result<PathBuf, Box<dyn Error>> {
+pub(super) fn materialization_flight_deployment(
+    fixture: &FlightFixture,
+) -> Result<PathBuf, Box<dyn Error>> {
     let deployment = fixture._temporary.path().join("hot-fork-executor.toml");
     let authored = fs::read_to_string(required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?)?;
     fs::write(
@@ -743,7 +759,9 @@ pub(super) fn assert_materialization_tier(
     Err(format!("packaged QEMU did not attest {expected}; events={events:?}").into())
 }
 
-fn grant_and_start_guest_choice_campaign(fixture: &FlightFixture) -> Result<(), Box<dyn Error>> {
+pub(super) fn grant_and_start_guest_choice_campaign(
+    fixture: &FlightFixture,
+) -> Result<(), Box<dyn Error>> {
     let initial = campaign_status(fixture)?;
     run_json(
         connected_campaign(fixture)

@@ -14,7 +14,10 @@
   maintenanceTransfer ? false,
   storageRecovery ? false,
   policyTimeout ? false,
+  singleGuest ? null,
+  twoNodeHttp ? false,
 }: let
+  singleGuestMaterialization = singleGuest == "materialization";
   envoyProduct = envoyNetwork || envoyKnownFinding;
   source = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   controllerArtifacts = pkgs.crucible-controller.passthru.cargoArtifacts;
@@ -100,7 +103,7 @@
     attempt_namespace = "packaged-flight"
     first_project_id = 30000
     project_id_count = ${
-      if findingForkWrite || hotForkFlight || envoyProduct
+      if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization
       then "2"
       else "1"
     }
@@ -122,7 +125,7 @@
       else "15000"
     }
     maximum_slots = ${
-      if findingForkWrite || hotForkFlight || envoyProduct
+      if findingForkWrite || hotForkFlight || envoyProduct || singleGuestMaterialization
       then "2"
       else "1"
     }
@@ -134,17 +137,19 @@
     maximum_resident_bytes = ${toString (
       if envoyProduct
       then 7516192768
-      else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
+      else if guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuestMaterialization || twoNodeHttp
       then 1073741824
       else 536870912
     )}
     maximum_disk_bytes = ${
       if envoyProduct
       then "10737418240"
+      else if twoNodeHttp
+      then "8589934592"
       else "2147483648"
     }
     maximum_execution_quanta = ${
-      if envoyProduct
+      if envoyProduct || twoNodeHttp
       then "250000"
       # The choice promotion charges each 10us runnable replay step across
       # both nodes. The measured source has about 58,200 such steps.
@@ -175,7 +180,7 @@
     executor_scan_limit = 1024
     worker_slots_per_campaign = 1
 
-    ${lib.optionalString (guestChoice || hotForkFlight) ''
+    ${lib.optionalString (guestChoice || hotForkFlight || singleGuest != null || twoNodeHttp) ''
       [guest_selectable_boundary_diagnostics]
       maximum_events = 256
     ''}
@@ -187,6 +192,10 @@
     campaignFlight = true;
   };
   envoyNetworkRootImage = import ./_envoy-network-guest.nix {inherit pkgs;};
+  httpRootImage = import ./_nginx-curl-http-200-guest.nix {
+    inherit pkgs;
+    strictHttpResponse = true;
+  };
   storageRecoveryRunner = pkgs.writeTextFile {
     name = "campaign-storage-recovery-garage";
     text = builtins.readFile ./_campaign-storage-recovery-garage.sh;
@@ -195,7 +204,11 @@
   testing = import ../../lib/testing {inherit pkgs lib;};
   vmTest = testing.mkVMTest {
     name =
-      if policyTimeout
+      if singleGuest != null
+      then "crucible-single-guest-${singleGuest}"
+      else if twoNodeHttp
+      then "crucible-two-node-http"
+      else if policyTimeout
       then "crucible-packaged-campaign-policy-timeout"
       else if storageRecovery
       then "crucible-campaign-storage-recovery"
@@ -223,11 +236,11 @@
     memory =
       if envoyProduct
       then 8192
-      else if findingForkWrite || hotForkFlight || storageRecovery
+      else if findingForkWrite || hotForkFlight || storageRecovery || singleGuestMaterialization || twoNodeHttp
       then 3072
       else 2048;
     headlessVcpuCount =
-      if envoyProduct || guestChoice
+      if envoyProduct || guestChoice || twoNodeHttp
       then 6
       else 1;
     # Five 512 MiB RAM and 512 MiB disk snapshots need at least 5 GiB for
@@ -236,22 +249,25 @@
     extraWritableMiB =
       if envoyProduct || storageRecovery
       then 16384
+      else if twoNodeHttp
+      then 8192
       else 0;
     rootfsDeps =
       [flight deployment gateway pkgs.qemu-crucible pkgs.crucible-qemu-plugin pkgs.linux pkgs.e2fsprogs pkgs.coreutils pkgs.util-linux pkgs.grep]
       ++ (lib.optional envoyProduct envoyNetworkRootImage)
+      ++ (lib.optional twoNodeHttp httpRootImage)
       ++ (lib.optionals storageRecovery [storageRecoveryRunner pkgs.garage pkgs.bash pkgs.gawk])
       ++ (lib.optional (findingExactBundle || findingSignalBundle || findingForkWrite || envoyKnownFinding) pkgs.crucible)
       ++ (
         if guestChoice || hotForkFlight
         then [networkChoiceInitramfs]
-        else if campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite
+        else if campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || singleGuest != null
         then [choiceInitramfs]
         else []
       );
     testScript = ''
       set -eu
-      ${lib.optionalString (envoyProduct || storageRecovery) ''
+      ${lib.optionalString (envoyProduct || storageRecovery || twoNodeHttp) ''
         # The headless harness mounts /tmp as a RAM-sized tmpfs. Put the
         # checkpoint and store workspace on the already-sized ext4 rootfs.
         ${pkgs.util-linux}/bin/mount -o remount,rw /
@@ -295,6 +311,8 @@
       setup_step quota-image truncate -s ${
         if envoyProduct
         then "16G"
+        else if twoNodeHttp
+        then "8G"
         else "4G"
       } /tmp/attempts.img
       setup_step quota-format ${pkgs.e2fsprogs}/sbin/mkfs.ext4 -F -O quota,project -E quotatype=prjquota /tmp/attempts.img
@@ -315,13 +333,105 @@
       export CRUCIBLE_ROOT_IMAGE=${
         if envoyProduct
         then "${envoyNetworkRootImage}/root.ext4"
+        else if twoNodeHttp
+        then "${httpRootImage}/root.ext4"
         else "${flight}/root.raw"
       }
-      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
+      ${lib.optionalString (guestChoice || hotForkFlight || campaignMidpoint || findingExactBundle || findingSignalBundle || findingForkWrite || maintenanceTransfer || singleGuest != null) "export CRUCIBLE_INITRD=${choiceInitramfs}/initrd.img"}
       export CRUCIBLE_RUN_STATE_ROOT=/tmp/run-state
       export CRUCIBLE_NATIVE_GUEST_ARCHITECTURE=x86_64
       ${
-        if storageRecovery
+        if singleGuest != null
+        then ''
+          single_selector=packaged::single_guest::${
+            if singleGuestMaterialization
+            then "public_single_guest_forks_replays_and_restores"
+            else "public_single_guest_executes_and_cleans_up"
+          }
+          single_log=/tmp/single-guest-${singleGuest}.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/single-guest-${singleGuest}-list.log 2>&1
+          ${pkgs.grep}/bin/grep -Fqx "$single_selector: test" \
+            /tmp/single-guest-${singleGuest}-list.log
+
+          # Scenario boundaries and the 2s virtual budget determine success.
+          # This host watchdog only bounds a stuck host or unavailable service.
+          : > "$single_log"
+          ${pkgs.coreutils}/bin/timeout -k 5 600 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$single_selector" --nocapture > "$single_log" 2>&1 &
+          single_test=$!
+          (
+            ${pkgs.coreutils}/bin/tail --pid="$single_test" -n +1 -F "$single_log" \
+              | ${pkgs.coreutils}/bin/head -c 1048576
+          ) &
+          single_tail=$!
+          if ! wait "$single_test"; then
+            wait "$single_tail" || true
+            cat "$single_log"
+            exit 1
+          fi
+          wait "$single_tail" || true
+          for evidence in \
+            single_guest_selected_result=selected-fast-q7 \
+            single_guest_public_execution_authenticated=true \
+            single_guest_process_cleanup_authenticated=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$single_log"
+          done
+          ${lib.optionalString singleGuestMaterialization ''
+            for evidence in \
+              single_guest_private_disk_fork_authenticated=true \
+              single_guest_thin_replay_authenticated=true \
+              single_guest_exact_restore_authenticated=true
+            do
+              ${pkgs.grep}/bin/grep -Fxq "$evidence" "$single_log"
+            done
+          ''}
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$single_log"
+          printf '%s\n' 'gate=gate:single-guest-${singleGuest}'
+        ''
+        else if twoNodeHttp
+        then ''
+          http_selector=packaged::two_node_http::public_two_node_http_request_and_response_are_authenticated
+          http_log=/tmp/two-node-http.log
+          ${flight}/bin/campaign-store-process-flight --ignored --list \
+            > /tmp/two-node-http-list.log 2>&1
+          ${pkgs.grep}/bin/grep -Fqx "$http_selector: test" \
+            /tmp/two-node-http-list.log
+
+          # The scenario requires the routed exchange within its virtual budget.
+          # This watchdog bounds only a stuck host or unavailable service.
+          : > "$http_log"
+          ${pkgs.coreutils}/bin/timeout -k 5 600 \
+            ${flight}/bin/campaign-store-process-flight --ignored --exact \
+            "$http_selector" --nocapture > "$http_log" 2>&1 &
+          http_test=$!
+          (
+            ${pkgs.coreutils}/bin/tail --pid="$http_test" -n +1 -F "$http_log" \
+              | ${pkgs.coreutils}/bin/head -c 1048576
+          ) &
+          http_tail=$!
+          if ! wait "$http_test"; then
+            wait "$http_tail" || true
+            cat "$http_log"
+            exit 1
+          fi
+          wait "$http_tail" || true
+          for evidence in \
+            two_node_http_request_response_authenticated=true \
+            two_node_http_exact_body_authenticated=true \
+            two_node_http_cold_execution=true \
+            two_node_http_cleanup_authenticated=true
+          do
+            ${pkgs.grep}/bin/grep -Fxq "$evidence" "$http_log"
+          done
+          ${pkgs.grep}/bin/grep -Fq \
+            'test result: ok. 1 passed; 0 failed; 0 ignored;' "$http_log"
+          printf '%s\n' 'gate=gate:two-node-http'
+        ''
+        else if storageRecovery
         then ''
           export CRUCIBLE_STORAGE_GARAGE=${pkgs.garage}/bin/garage
           export CRUCIBLE_STORAGE_KILL=${pkgs.coreutils}/bin/kill
