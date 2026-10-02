@@ -3,14 +3,8 @@
 `apm` is the AOS package manager. Use it to find software, install and remove
 packages, and update the packages you use.
 
-The usual command sequence is to fetch the package lists, install a package
-by name, and update it when a new version becomes available:
-
-```sh
-apm update
-apm install curl
-apm upgrade
-```
+Start by finding a package, then install it by name. Use `--system` for
+machine-wide packages; omit it for packages belonging to your account.
 
 ## Find a package
 
@@ -20,7 +14,7 @@ APM gets its list of available packages from registries. AOS comes with the
 First, fetch the latest package lists:
 
 ```sh
-apm update
+apm update --system
 ```
 
 `update` tells APM which packages and versions are available. It does not
@@ -29,8 +23,8 @@ install or upgrade anything.
 Search by name or description, then inspect a result:
 
 ```sh
-apm search curl
-apm show curl
+apm search nginx --system
+apm show nginx --system
 ```
 
 `search` lists matching package names, versions, and descriptions. `show`
@@ -41,18 +35,114 @@ If a package is available from more than one registry, check its versions and
 sources:
 
 ```sh
-apm policy curl
+apm policy nginx --system
 ```
 
 To search a particular registry, add `--registry`:
 
 ```sh
-apm search curl --registry andyl
+apm search nginx --system --registry andyl
 ```
 
 See [Configure package registries](registries.md) to add or change sources.
 
-## Install packages
+For your account's packages, use the same commands without `--system`.
+
+## Manage machine-wide packages
+
+### Install packages by name
+
+Run machine-wide package commands as an administrator. To install `nginx`,
+fetch the package lists, preview the install, then apply it:
+
+> **Implementation status:** The name-based system installation examples below
+> describe the intended APM interface. The current CLI routes these commands to
+> OS-image installation and cannot yet install ordinary system packages by name.
+> Until that gap is fixed, the package-list method below is the supported way
+> to install ordinary machine-wide packages.
+
+```sh
+apm update --system
+apm install --system nginx --dry-run
+apm install --system nginx
+```
+
+APM should install `nginx` and its dependencies: other packages it needs to
+work. This adds the requested package to the existing machine-wide set without
+requiring you to list the packages already installed.
+
+Install several packages by supplying their names:
+
+```sh
+apm install --system nginx curl
+```
+
+To select a particular configured registry, add `--registry`:
+
+```sh
+apm install --system nginx --registry andyl
+```
+
+### Check installed packages
+
+```sh
+apm list --installed --system
+apm files nginx --system
+apm depends nginx --system
+```
+
+`list --installed` shows the installed packages. `files` lists the files a
+package provides. `depends` shows the store references making up the package
+and its dependencies. Installed commands are available in new login sessions
+through the machine-wide package directory on `PATH`.
+
+### Manage a package list
+
+For provisioning or keeping several hosts on the same package set, you can
+instead maintain a TOML file. For example, save this as `desired.toml`:
+
+```toml
+packages = ["nginx", "curl"]
+```
+
+**This is the complete list of packages you want APM to manage for the
+machine.** If the host already has such a file, edit that file to preserve its
+other packages. Applying a shorter list removes packages omitted from it.
+Packages supplied by the base OS are managed separately.
+
+Refresh the package lists, preview the complete change, and apply it:
+
+```sh
+apm update --system
+apm install --system --from ./desired.toml --dry-run
+apm install --system --from ./desired.toml
+```
+
+Review additions and removals before confirming. Add `--yes` to accept the
+confirmation prompts automatically.
+
+To add a package, add its name to the file. To remove `nginx` while keeping
+`curl`, change the list to `packages = ["curl"]`. Preview and apply the file
+again. APM also removes dependencies that are no longer needed.
+
+A dry run uses the package lists already fetched. Applying a list with
+additions also attempts an update, falling back to cached lists with a warning
+if that update fails. Reapplying the list adds and removes packages; it does
+not upgrade packages already present.
+
+The file can also carry package configuration and credential inputs. See
+[Supplement host.nix at runtime](configuration.md#supplement-hostnix-at-runtime).
+Prefer systemd credential references; protect any file containing secret
+values as secret state.
+
+### Update the operating system
+
+`apm upgrade --system` currently updates the OS image. For OS updates and
+rollback, follow [Upgrade and roll back a host](upgrades.md).
+
+## Manage user packages
+
+### Install packages
 
 Install one or more packages by name. You do not need to write a package-list
 file:
@@ -97,7 +187,7 @@ apm depends curl
 provides. `depends` shows the store references making up the package and its
 dependencies.
 
-## Upgrade packages
+### Upgrade packages
 
 Fetch the latest package lists and check which installed packages have updates:
 
@@ -128,7 +218,7 @@ apm hold curl
 apm unhold curl
 ```
 
-## Remove packages
+### Remove packages
 
 ```sh
 apm remove curl --dry-run
@@ -143,7 +233,7 @@ apm remove curl --autoremove --dry-run
 apm remove curl --autoremove
 ```
 
-## Undo a package change
+### Undo a package change
 
 APM saves a numbered version of your installed package set each time you
 install, remove, or upgrade packages. These saved sets are called generations.
@@ -164,103 +254,6 @@ apm rollback --generation N
 
 This changes your account's installed package set. For host configuration and
 OS rollback, use [Upgrade and roll back a host](upgrades.md).
-
-## Manage machine-wide packages
-
-Administrators can also manage a complete machine-wide package set from a
-file. This workflow is available on stock hosts without setting up personal
-installs. Run these commands as an administrator.
-
-For example, save this as `desired.toml`:
-
-```toml
-packages = ["nginx", "curl"]
-```
-
-**This is the complete list of packages you want APM to manage for the
-machine.** If the host already has such a file, edit that file to preserve its
-other packages. Applying a shorter list removes packages omitted from it.
-Packages supplied by the base OS are managed separately.
-
-### Install packages
-
-Refresh the package lists and preview the change:
-
-```sh
-apm update --system
-apm install --system --from ./desired.toml --dry-run
-```
-
-Review the planned additions and removals. A package may need other packages
-to work; these are its dependencies, and APM installs them as needed.
-
-Apply the list once you are satisfied with the plan:
-
-```sh
-apm install --system --from ./desired.toml
-```
-
-APM asks for confirmation before installing or removing packages. Add `--yes`
-to accept those prompts automatically. Installed commands are available in
-new login sessions through the machine-wide package directory on `PATH`.
-
-To add another package later, add its name to the same file, preview, and
-apply it again.
-
-A dry run uses the package lists already fetched. Applying a list with
-additions also attempts an update, falling back to cached lists with a warning
-if that update fails. Run `apm update --system` before previewing so you can
-catch update failures and review a plan based on current information.
-
-### Remove packages
-
-Remove the package name from `desired.toml`. For example, to remove `nginx`
-and keep `curl`, change the file to:
-
-```toml
-packages = ["curl"]
-```
-
-Then preview and apply it:
-
-```sh
-apm install --system --from ./desired.toml --dry-run
-apm install --system --from ./desired.toml
-```
-
-APM also removes dependencies that are no longer needed. Review the removal
-plan before confirming. Machine-wide removal uses this file workflow; there
-is no `apm remove --system` command.
-
-### Check installed packages
-
-```sh
-apm list --installed --system
-apm files nginx --system
-apm depends nginx --system
-```
-
-`list --installed` shows the installed packages. `files` lists the files a
-package provides. `depends` shows the store references making up the package
-and its dependencies.
-
-### Update the operating system
-
-`apm upgrade --system` updates the OS image. It does not upgrade the ordinary
-machine-wide package list. Reapplying `desired.toml` adds and removes packages;
-it does not upgrade packages already present in that list.
-
-For OS updates, follow [Upgrade and roll back a host](upgrades.md). That guide
-also covers installing a selected OS image with `apm install aos --system`.
-
-### Configure a package
-
-For package settings and services, see
-[Discover package configuration](configuration.md#discover-package-configuration)
-and [Supplement host.nix at runtime](configuration.md#supplement-hostnix-at-runtime).
-The desired file can carry configuration and credential inputs as well as the
-package list. Prefer systemd credential references; protect any file containing
-secret values as secret state.
 
 ## Free disk space
 
