@@ -23,6 +23,7 @@ in
     packageImportRoots ? {},
     evaluationInputs ? [],
     evaluationInput ? null,
+    checkDefinitions ? true,
   }: let
     records = moduleLib.canonicalize packageModules;
     # Retained envelope metadata supplies policy for payloads without modules too.
@@ -51,6 +52,10 @@ in
       records));
     evaluated = lib.evalModules {
       inherit lib operatorModules runtimeModules packageImportRoots;
+      # Discovery projects declared options before all package modules are
+      # available. Publication always evaluates the complete set with checks.
+      enforcePackageAuthorship = checkDefinitions;
+      enforceRuntimeDeclarations = checkDefinitions;
       packageModules = builtins.map (record:
         record
         // {
@@ -62,6 +67,7 @@ in
           ../effects/module.nix
           {
             aos.activation.scope = scope;
+            _module.strict = lib.mkForce checkDefinitions;
             # A caller may retain a descriptor of evaluation inputs before this
             # fixed point runs. It never contains the resulting graph itself.
             _module.args.evaluationInput = evaluationInput;

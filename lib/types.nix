@@ -1087,7 +1087,9 @@ in rec {
     merge = loc: defs: let
       val = lastValue loc defs;
     in
-      if builtins.match regex val == null
+      if !builtins.isString val
+      then throw "The option '${showLoc loc}' must be a string matching '${regex}'."
+      else if builtins.match regex val == null
       then throw "The option '${showLoc loc}' must match the regex '${regex}' but is '${val}'."
       else val;
     _aosDocType = {

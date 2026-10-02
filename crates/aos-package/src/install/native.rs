@@ -1,5 +1,6 @@
 //! Native evaluation and transaction publication for signed registry installs.
 
+pub(crate) mod configuration;
 mod module_upgrade;
 
 #[cfg(test)]
@@ -611,6 +612,8 @@ pub(crate) fn prepare(
         obsolete,
         refresh_names,
         None,
+        None,
+        &BTreeSet::new(),
     )
 }
 
@@ -624,6 +627,8 @@ fn prepare_with_inputs(
     obsolete: &HashSet<String>,
     refresh_names: Option<&BTreeSet<String>>,
     runtime: Option<&crate::runtime_modules::RuntimeModuleSnapshot>,
+    base: Option<(EvaluationInput, Deployment)>,
+    configured_names: &BTreeSet<String>,
 ) -> Result<Prepared> {
     for meta in closures.iter().flat_map(|closure| &closure.closure) {
         ensure!(
@@ -655,16 +660,27 @@ fn prepare_with_inputs(
     let current_os_release = crate::environment::os_release()?;
     let mut retained_modules = BTreeSet::new();
     let mut retained_context = None;
-    let mut evaluation_inputs = match profile.current_generation()? {
-        Some(generation) if generation.path.join("native-deployment.json").is_file() => {
-            let committed =
-                crate::profile::deployment::committed_generation(&profile.path, generation.number)?;
-            let (_, descriptor) = crate::native_deployment::read_retained_evaluation_in(
-                &generation.path.join("evaluation.json"),
-                &committed.deployment,
-                &executable,
-                &aos_ability_runtime::adapter::CancellationToken::default(),
-            )?;
+    let retained = match base {
+        Some(retained) => Some(retained),
+        None => match profile.current_generation()? {
+            Some(generation) if generation.path.join("native-deployment.json").is_file() => {
+                let committed = crate::profile::deployment::committed_generation(
+                    &profile.path,
+                    generation.number,
+                )?;
+                let (_, descriptor) = crate::native_deployment::read_retained_evaluation_in(
+                    &generation.path.join("evaluation.json"),
+                    &committed.deployment,
+                    &executable,
+                    &aos_ability_runtime::adapter::CancellationToken::default(),
+                )?;
+                Some((descriptor, committed.deployment))
+            }
+            _ => None,
+        },
+    };
+    let mut evaluation_inputs = match retained {
+        Some((descriptor, desired)) => {
             retained_modules.extend(
                 descriptor
                     .packages
@@ -672,7 +688,7 @@ fn prepare_with_inputs(
                     .iter()
                     .map(|module| module.name.clone()),
             );
-            retained_context = Some((descriptor.clone(), committed.deployment));
+            retained_context = Some((descriptor.clone(), desired));
             let inputs = EvaluationInputs {
                 os_release: descriptor.os_release,
                 library: descriptor.library,
@@ -750,6 +766,7 @@ fn prepare_with_inputs(
             let envelope = resolver.installed(meta)?;
             if (retained_modules.contains(&envelope.package.name)
                 && meta.apm.as_ref().is_some_and(|meta| meta.explicit))
+                || configured_names.contains(&envelope.package.name)
                 || (envelope.module.is_none()
                     && !envelope.module_dependencies.is_empty()
                     && meta.apm.as_ref().is_some_and(|meta| meta.explicit))
@@ -1001,22 +1018,57 @@ pub(crate) fn reconfigure_at(
         .context("native configuration requires an active profile")?;
     let base = crate::profile::deployment::committed_generation(&profile.path, current.number)?;
     let installed = crate::profile::meta::list_meta(&profile)?;
-    let registries = crate::registry::RegistrySet::new(Vec::new());
+    let (_, mut descriptor) = crate::native_deployment::read_retained_evaluation_in(
+        &current.path.join("evaluation.json"),
+        &base.deployment,
+        &packaged_path("AOS_NIX_STORE")?,
+        &Default::default(),
+    )?;
+    descriptor.runtime_configuration = runtime.entrypoints.clone();
+    let names = configuration::selected_packages(
+        &descriptor,
+        &packaged_path("AOS_NIX_STORE")?,
+        &Default::default(),
+    )?;
+    if dry_run {
+        let absent = names
+            .iter()
+            .filter(|name| {
+                !installed.iter().any(|entry| {
+                    entry
+                        .apm
+                        .as_ref()
+                        .is_some_and(|package| &package.name == *name)
+                })
+            })
+            .collect::<Vec<_>>();
+        if !absent.is_empty() {
+            if printer.mode() == aos_core::output::OutputMode::Json {
+                printer
+                    .json(&serde_json::json!({"action":"switch", "dry_run":true,"acquire":absent}));
+            } else {
+                printer.info(&format!(
+                    "Configuration requires acquiring packages before full evaluation: {}.",
+                    absent.into_iter().cloned().collect::<Vec<_>>().join(", ")
+                ));
+            }
+            return Ok(());
+        }
+    }
+    let packages = configuration::acquire(config, names, &installed, printer)?;
     let prepared = prepare_with_inputs(
         config,
         &profile,
-        &registries,
+        &packages.registries,
         &installed,
-        &[],
-        &[],
+        &packages.closures,
+        &packages.modules,
         &HashSet::new(),
         None,
         Some(runtime),
+        None,
+        &packages.names,
     )?;
-    ensure!(
-        prepared.additional.is_empty(),
-        "runtime configuration selected uninstalled native packages"
-    );
     let before: BTreeSet<_> = base.deployment.graph().graph().nodes.keys().collect();
     let after: BTreeSet<_> = prepared.deployment.graph().graph().nodes.keys().collect();
     let changed = after
@@ -1043,22 +1095,7 @@ pub(crate) fn reconfigure_at(
         return Ok(());
     }
     let generation = profile.new_generation()?;
-    super::copy_roots_except_hashes(&current, &generation, &HashSet::new())?;
-    let selected = prepared.selected_paths();
-    let staged = Profile {
-        path: generation.path.clone(),
-        scope: profile.scope,
-    };
-    for (hash, path) in generation.roots()? {
-        if !selected.contains(path.to_str().context("profile root is not UTF-8")?) {
-            std::fs::remove_file(generation.path.join("usr").join(hash))?;
-        }
-    }
-    for meta in &installed {
-        if selected.contains(meta.store_path.as_str()) {
-            crate::profile::meta::write_meta(&staged, store_path_hash(&meta.store_path), meta)?;
-        }
-    }
+    configuration::stage(&generation, profile, &installed, &packages, &prepared)?;
     crate::profile::merge::build_generation_fhs_tree(&generation, printer)?;
     prepared.commit(&profile, &generation)?;
     printer.success(&format!("Configured generation {}.", generation.number));
@@ -1103,6 +1140,8 @@ pub(crate) fn append_runtime_snapshot(
         &HashSet::new(),
         None,
         Some(&combined),
+        None,
+        &BTreeSet::new(),
     )?;
     ensure!(
         prepared.additional.is_empty(),

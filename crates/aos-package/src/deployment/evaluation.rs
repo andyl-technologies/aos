@@ -122,6 +122,7 @@ impl Evaluation {
         &self,
         output: &str,
         views: &super::source_views::SourceViews,
+        check_definitions: bool,
     ) -> Result<String> {
         let lock = |path: &Path| views.expression(path);
         let library = lock(&self.library)?;
@@ -170,6 +171,7 @@ impl Evaluation {
         Ok(format!(
             "let lib = import {library} {{ system = {system}; }};\n\
              evaluated = lib.evalPackageModules {{\n\
+               checkDefinitions = {check_definitions};\n\
                scope = builtins.fromJSON {scope};\n\
                evaluationInputs = builtins.fromJSON {inputs};\n\
                evaluationInput = {evaluation_input};\n\
@@ -296,6 +298,39 @@ impl Evaluation {
         ))
     }
 
+    /// Projects package roots before their configuration modules are acquired.
+    ///
+    /// Only the declared selection option is demanded. Definitions belonging to
+    /// unavailable packages remain unchecked until the complete, ordinary
+    /// evaluation; this projection never produces an executable deployment.
+    ///
+    /// # Errors
+    /// Returns an error for malformed package names, conflicting or mistyped
+    /// selection definitions, source failure, cancellation, or timeout.
+    pub(crate) fn selected_packages(
+        &self,
+        staging: &Path,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<String>> {
+        let value = self.run_output_checked(
+            staging,
+            60_000,
+            cancellation,
+            "evaluated.config.aos.apm.desiredPackages or []",
+            false,
+        )?;
+        let names: Vec<String> = serde_json::from_value(value)?;
+        ensure!(names.len() <= 16_384, "package selection exceeds its bound");
+        for name in &names {
+            crate::types::validate_package_name(name)?;
+        }
+        Ok(names
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect())
+    }
+
     fn inputs(&self) -> Result<Vec<String>> {
         std::iter::once(&self.library)
             .chain(self.configuration.iter())
@@ -342,6 +377,21 @@ impl Evaluation {
         cancellation: &CancellationToken,
         output: &str,
     ) -> Result<Value> {
+        self.run_output_checked(staging, timeout_ms, cancellation, output, true)
+    }
+
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "evaluation uses one monotonic subprocess deadline"
+    )]
+    fn run_output_checked(
+        &self,
+        staging: &Path,
+        timeout_ms: u64,
+        cancellation: &CancellationToken,
+        output: &str,
+        check_definitions: bool,
+    ) -> Result<Value> {
         ensure!(!cancellation.is_cancelled(), "package evaluation cancelled");
         let control = EvaluationBudget {
             cancellation,
@@ -358,7 +408,7 @@ impl Evaluation {
             );
         let views =
             super::source_views::SourceViews::prepare(&self.nix_store, paths, staging, &control)?;
-        let expression = self.expression_for(output, &views)?;
+        let expression = self.expression_for(output, &views, check_definitions)?;
         let store = evaluator_store()?;
         let mut command = pure_eval_command_in(
             &self.nix_store,

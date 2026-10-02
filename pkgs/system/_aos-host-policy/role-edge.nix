@@ -25,6 +25,9 @@ in {
   };
 
   config = lib.mkIf (cfg.enable && (config.aos.boot.stage or "host") == "host") {
+    # Admit these role requirements before evaluating their service policy.
+    aos.apm.desiredPackages = lib.mkAfter ["openssh" "chrony"];
+
     # Time sync
     aos.services.chrony.enable = lib.mkDefault true;
 

@@ -8,6 +8,11 @@
   cfg = config.aos.bootstrapFixture;
   field = type: lib.mkOption {inherit type;};
 in {
+  options.aos.apm.desiredPackages = lib.mkOption {
+    type = lib.types.listOf (lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9+._=-]*");
+    default = [];
+    extensible = true;
+  };
   options.aos.bootstrapFixture = {
     value = lib.mkOption {
       type = lib.types.nullOr lib.types.str;

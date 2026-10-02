@@ -614,6 +614,28 @@ fn apply_profile(
                     .to_str()
                     .context("bootstrap descriptor is not UTF-8")?,
             )?;
+            let names = crate::install::native::configuration::selected_packages(
+                &descriptor,
+                &command.nix_store,
+                cancellation,
+            )?;
+            if !names.is_empty() {
+                // Metadata authorizes only these source bytes. Package roots
+                // are acquired separately under their original registry release.
+                admission.persist(&command.state_directory.join("registry-admissions"))?;
+                drop(consumer);
+                let config = crate::config::ApmConfig::load(ProfileScope::System)?;
+                return crate::install::native::configuration::apply_from_descriptor(
+                    &config,
+                    &profile,
+                    &installed,
+                    descriptor,
+                    deployment,
+                    names,
+                    cancellation,
+                    &aos_core::output::Printer::new(0, true, false),
+                );
+            }
             let supplemental = descriptor
                 .supplemental_inputs
                 .iter()
