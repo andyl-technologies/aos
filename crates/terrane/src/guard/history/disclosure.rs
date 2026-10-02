@@ -35,6 +35,22 @@ pub(crate) struct DisclosureSourceSelection<'a> {
 }
 
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Loads a completed history for union before disclosure candidate staging.
+    ///
+    /// # Errors
+    /// Rejects invalid signed roots, incomplete provenance, changed original
+    /// authority or public trust, and unavailable held canonical evidence.
+    #[cfg(all(feature = "std", unix))]
+    pub(crate) async fn completed_history_for_disclosure(
+        &self,
+        identity: Digest,
+        observation: HistoryObservation<'_>,
+    ) -> Result<VerifiedHistory, StoreFailure> {
+        self.verified_tree_history_observed(identity, observation)
+            .await
+            .map(|(_, history)| history)
+    }
+
     /// Captures independently checked live and historical source Read requests.
     ///
     /// This preserves the private read implementation's complete root, token,

@@ -77,6 +77,9 @@ where
         &markers,
         concrete.guard().config().min_chunk_size,
     )?;
+    if normalized.roots.get(&request.commit.tree) != Some(&normalized.root) {
+        return Err(invalid().into());
+    }
     request.commit.tree = normalized.root;
     request.uploads.extend(normalized.uploads);
     request.uploads = coalesce_metadata(request.uploads)?;
@@ -134,6 +137,11 @@ where
         .collect::<Vec<_>>();
     let mut checked =
         capture_source(source, &source_guard, &source_observed, &selections, timing).await?;
+    if checked.retained.owner() != source_observed.configured_operator_uid()
+        || checked.retained.exclusions().is_empty()
+    {
+        return Err(invalid().into());
+    }
     for (selected, snapshot) in preloaded.iter().zip(&checked.snapshots) {
         if selected.physical_source != checked.authority {
             return Err(invalid().into());
@@ -289,7 +297,24 @@ where
             });
         }
     }
-    let mut prototype_history = checked.snapshots[0].history.clone();
+    let mut prototype_history = VerifiedHistory::new(destination.guard().config().min_chunk_size);
+    for snapshot in &checked.snapshots {
+        prototype_history
+            .append_verified(&snapshot.history)
+            .map_err(|_| invalid())?;
+    }
+    let retained_destination = if let Some(previous) = session.record() {
+        let history = destination
+            .guard()
+            .completed_history_for_disclosure(previous.commit, history_observation)
+            .await?;
+        prototype_history
+            .append_verified(&history)
+            .map_err(|_| invalid())?;
+        Some(history)
+    } else {
+        None
+    };
     let prototype = resign(destination.guard(), record, &secret, session.epoch())?;
     prototype_history
         .insert_commit(prototype.clone())
@@ -367,7 +392,13 @@ where
     // precedes any immutable transfer and chooses every public dependency.
     let public = candidate.required_commits().iter().copied().collect();
     candidate.finish().map_err(|_| invalid())?;
-    let mut transfers = public_transfers(&source_guard, &checked, public).await?;
+    let mut transfers = public_transfers(
+        &source_guard,
+        &checked,
+        retained_destination.as_ref(),
+        public,
+    )
+    .await?;
     transfers.append(&mut admitted.uploads);
     let mut transfers = coalesce_metadata(transfers)?;
     // Chunk dictionaries precede their dependent chunks in the source staging
@@ -458,14 +489,16 @@ where
         &authority,
         &destination,
         &current_observed,
-        &consumed,
-        session,
-        &mut publication,
-        Some(super::super::PairedSource {
-            observed: &source_latest,
-            final_check: checked.final_check.clone(),
-            controls: retained,
-        }),
+        super::super::CandidateInputs {
+            consumed: &consumed,
+            session,
+            publication: &mut publication,
+            paired: Some(super::super::PairedSource {
+                observed: &source_latest,
+                final_check: checked.final_check.clone(),
+                controls: retained,
+            }),
+        },
     )
     .await
 }
@@ -644,6 +677,7 @@ fn attribute_location(
 async fn public_transfers<F, B, V, C>(
     source: &Guard<crate::bucket::held::HeldBucket<'_, F, B, V, false>, C>,
     checked: &DisclosureSource<'_, F>,
+    retained_destination: Option<&VerifiedHistory>,
     roots: BTreeSet<Digest>,
 ) -> Result<Vec<StagedUpload>, StoreFailure>
 where
@@ -657,6 +691,13 @@ where
     let mut uploads = Vec::new();
     while let Some(identity) = pending.pop() {
         if !seen.insert(identity) {
+            continue;
+        }
+        // Candidate completion establishes public retainability. A dependency
+        // freshly verified under the destination observation already has its
+        // complete ancestry and immutable witnesses there; raw byte presence
+        // alone never permits this transfer omission.
+        if retained_destination.is_some_and(|history| history.commit(&identity).is_some()) {
             continue;
         }
         let history = checked
