@@ -55,7 +55,7 @@ impl RemoteStorageWorkClient {
             let (reply, signature) = self
                 .copy_exchange(EXTERNAL_COPY_METADATA_PATH, body, signature, &mut exchange)
                 .await?;
-            CopyMetadataReply::authenticate(
+            let authenticated = CopyMetadataReply::authenticate(
                 &self.key,
                 &signature,
                 &reply,
@@ -63,7 +63,9 @@ impl RemoteStorageWorkClient {
                 &self.deployment_id,
                 aos_hub_core::clock::now_unix_secs(),
             )
-            .inspect_err(|_| exchange.finish("invalid_result"))
+            .inspect_err(|_| exchange.finish("invalid_result"))?;
+            exchange.authenticated_control(&reply);
+            Ok(authenticated)
         }
         .await;
         if result.is_ok() {
@@ -93,7 +95,7 @@ impl RemoteStorageWorkClient {
             let (reply, signature) = self
                 .copy_exchange(EXTERNAL_COPY_PATH, body, signature, &mut exchange)
                 .await?;
-            let reply = ExternalCopyReply::authenticate(
+            let authenticated = ExternalCopyReply::authenticate(
                 &self.key,
                 &signature,
                 &reply,
@@ -101,7 +103,8 @@ impl RemoteStorageWorkClient {
                 aos_hub_core::clock::now_unix_secs(),
             )
             .inspect_err(|_| exchange.finish("invalid_result"))?;
-            Ok(reply.progress)
+            exchange.authenticated_control(&reply);
+            Ok(authenticated.progress)
         }
         .await;
         if result.is_ok() {
@@ -126,7 +129,7 @@ impl RemoteStorageWorkClient {
         endpoint.set_path(path);
         // This client has retries disabled. A timeout cannot acknowledge or
         // redispatch the immutable provider turn retained by the Worker guard.
-        exchange.offer_plan(body.len());
+        exchange.offer_control(path, &body);
         let response = self
             .semantic_observation_http
             .post(endpoint)

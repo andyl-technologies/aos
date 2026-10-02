@@ -4,6 +4,7 @@
   serverCertificate,
   serverPrivateKey,
 }: let
+  protectedHeaders = import ./_hub-protected-header-format.nix;
   format = name: root: extra: ''
     log_format ${name} escape=json
       '{"procedure":"$uri","phase":"$http_x_aos_hybrid_upload_phase",'
@@ -42,6 +43,7 @@
 in {
   nativeHttp = ''
     ${format "native_outbound" nativeRoot ""}
+    ${protectedHeaders "native_outbound_headers"}
     server {
       listen 443 ssl;
       server_name aos.andyl.org;
@@ -49,6 +51,7 @@ in {
       ssl_certificate_key ${serverPrivateKey}/value;
       client_max_body_size 0;
       access_log ${nativeRoot}/requests.jsonl native_outbound;
+      access_log ${nativeRoot}/protected-headers.jsonl native_outbound_headers;
       location / {
         ${capture nativeRoot}
         ${forwarding "https://worker:443" "aos.andyl.org"}
@@ -64,6 +67,7 @@ in {
     events { worker_connections 256; }
     http {
       ${format "worker_storage" workerRoot '',"origin_request_id":"$http_x_aos_fleet_request_id","caller":"$remote_addr"''}
+      ${protectedHeaders "worker_storage_headers"}
       access_log off;
       client_max_body_size 0;
       client_body_temp_path ${workerRoot}/client-body;
@@ -78,6 +82,7 @@ in {
         ssl_certificate_key ${serverPrivateKey}/value;
         location /_internal/storage/ {
           access_log ${workerRoot}/requests.jsonl worker_storage;
+          access_log ${workerRoot}/protected-headers.jsonl worker_storage_headers;
           ${capture workerRoot}
           ${forwarding "https://127.0.0.1:4443" "localhost"}
         }

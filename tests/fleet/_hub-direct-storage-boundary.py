@@ -25,6 +25,10 @@ def start_direct_boundary_proxy(machine, tools, root, configuration, body_roots)
             metadata = directory.lstat()
             if not stat.S_ISDIR(metadata.st_mode) or metadata.st_uid != os.getuid() or metadata.st_mode & 0o077:
                 raise ValueError('observation directory custody differs')
+            # nginx opens this precreated file without changing its private mode.
+            descriptor = os.open(directory / 'protected-headers.jsonl',
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.close(descriptor)
             for name in ('client-body', 'proxy-temp', 'response-bodies',
                          'fastcgi-temp', 'uwsgi-temp', 'scgi-temp'):
                 (directory / name).mkdir(mode=0o700, exist_ok=False)

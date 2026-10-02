@@ -122,7 +122,15 @@ async fn requests() -> (ExternalCopyRequest, CopyMetadataRequest, StorageWorkKey
     (control, metadata, writer.work.key.clone())
 }
 
-async fn exchange(metadata: bool, outcome: &str) -> (BTreeMap<String, String>, usize, usize) {
+async fn exchange(
+    metadata: bool,
+    outcome: &str,
+) -> (
+    BTreeMap<String, String>,
+    usize,
+    usize,
+    Vec<serde_json::Value>,
+) {
     let (control, query, key) = requests().await;
     let mut response = if metadata {
         let reply = CopyMetadataReply {
@@ -163,6 +171,8 @@ async fn exchange(metadata: bool, outcome: &str) -> (BTreeMap<String, String>, u
     };
     let expected_request = request_body.clone();
     let response_bytes = response.0.len();
+    let request_sha256 = hex::encode(Sha256::digest(&request_body));
+    let reply_sha256 = hex::encode(Sha256::digest(&response.0));
     let rejected = outcome == "http_rejected";
     let route = if metadata {
         super::EXTERNAL_COPY_METADATA_PATH
@@ -209,28 +219,53 @@ async fn exchange(metadata: bool, outcome: &str) -> (BTreeMap<String, String>, u
     };
     server.abort();
     assert_eq!(accepted, outcome == "success");
-    (recorded.exchange(), request_body.len(), response_bytes)
+    let controls = recorded.authenticated_controls();
+    if accepted {
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0]["requestSha256"], request_sha256);
+        assert_eq!(controls[0]["replySha256"], reply_sha256);
+        assert_eq!(controls[0]["requestBytes"], request_body.len());
+        assert_eq!(controls[0]["replyBytes"], response_bytes);
+        assert_eq!(controls[0]["route"], route);
+        assert_eq!(
+            controls[0]["planId"],
+            if metadata {
+                query.plan.plan_id.as_str()
+            } else {
+                control.plan.plan_id.as_str()
+            }
+        );
+    } else {
+        assert!(controls.is_empty());
+    }
+    (
+        recorded.exchange(),
+        request_body.len(),
+        response_bytes,
+        controls,
+    )
 }
 
 #[tokio::test]
 async fn copy_accounting_requires_authentication_and_measures_actual_reply_payload() {
     for metadata in [false, true] {
-        let (event, request, response) = exchange(metadata, "success").await;
+        let (event, request, response, controls) = exchange(metadata, "success").await;
         assert_eq!(event["outcome"], "success");
         assert_eq!(event["exchange_attempts"], "1");
         assert_eq!(event["offered_plan_bytes"], request.to_string());
         assert_eq!(event["observed_body_bytes"], response.to_string());
         assert_eq!(event["discarded_status_responses"], "0");
+        assert_eq!(controls[0].as_object().unwrap().len(), 8);
     }
 }
 
 #[tokio::test]
 async fn copy_accounting_keeps_consumed_invalid_and_unread_rejected_replies_distinct() {
     for metadata in [false, true] {
-        let (event, _, response) = exchange(metadata, "bad_mac").await;
+        let (event, _, response, _) = exchange(metadata, "bad_mac").await;
         assert_eq!(event["outcome"], "invalid_result");
         assert_eq!(event["observed_body_bytes"], response.to_string());
-        let (event, _, _) = exchange(metadata, "http_rejected").await;
+        let (event, _, _, _) = exchange(metadata, "http_rejected").await;
         assert_eq!(event["outcome"], "http_rejected");
         assert_eq!(event["observed_body_bytes"], "0");
         assert_eq!(event["discarded_status_responses"], "1");
@@ -283,4 +318,5 @@ async fn copy_accounting_cancellation_retains_offered_plan_without_claiming_cons
     assert_eq!(event["exchange_attempts"], "1");
     assert_eq!(event["offered_plan_bytes"], expected.to_string());
     assert_eq!(event["observed_body_bytes"], "0");
+    assert!(recorded.authenticated_controls().is_empty());
 }

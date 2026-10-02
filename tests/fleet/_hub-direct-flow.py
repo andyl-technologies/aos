@@ -634,6 +634,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     baseline_first = page_cumulative_values(baseline, "time_starttransfer")
     native_executable = observe_direct_native_executable(native, tools,
         tools["installedNativeExecutableSha256"])
+    native_copy_capture = begin_native_copy_capture(native, tools, native_executable)
     provider_callers = observe_direct_provider_callers(s3, tools)
     workload_started = time.monotonic_ns()
     before_worker = direct_log_position(worker, tools["python"], process["logFile"])
@@ -643,6 +644,14 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "/var/lib/hybrid-native-outbound/requests.jsonl")
     before_worker_storage = direct_log_position(worker, tools["python"],
         "/var/lib/hybrid-worker-boundary/requests.jsonl")
+    header_positions = {
+        "native-inbound": (native, direct_log_position(native, tools["python"],
+            "/var/lib/hybrid-native-observations/protected-headers.jsonl")),
+        "native-outbound": (native, direct_log_position(native, tools["python"],
+            "/var/lib/hybrid-native-outbound/protected-headers.jsonl")),
+        "worker-received": (worker, direct_log_position(worker, tools["python"],
+            "/var/lib/hybrid-worker-boundary/protected-headers.jsonl")),
+    }
     observe_direct_boundary_lifetimes(native, worker, tools, "loaded-start")
     try:
         publications, concurrent = run_direct_concurrent_publications(client, worker, tools,
@@ -656,8 +665,17 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
             before_native_storage, "publication-native-storage.jsonl")
         worker_storage_log, worker_storage_window = retain_direct_log_window(worker, tools["python"],
             before_worker_storage, "publication-worker-storage.jsonl")
+        header_windows = {}
+        header_paths = {}
+        for label, (machine, position) in header_positions.items():
+            header_paths[label], header_windows[label] = retain_direct_log_window(machine, tools["python"],
+                position, "publication-" + label + "-protected-headers.jsonl")
+        native_copy_log, native_copy_window = finish_native_copy_capture(
+            native, tools, native_copy_capture)
         proxy_lifetimes = observe_direct_boundary_lifetimes(native, worker, tools, "loaded-finish")
     workload_finished = time.monotonic_ns()
+    protected_headers = {label: capture_protected_headers(path, label)
+        for label, path in header_paths.items()}
     workload_interval = {"clock": "controller_monotonic",
         "startedNanoseconds": str(workload_started), "finishedNanoseconds": str(workload_finished),
         "elapsedNanoseconds": str(workload_finished - workload_started)}
@@ -689,6 +707,33 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     storage_boundary = capture_direct_storage_boundary(native, worker, tools,
         native_storage_log.read_text(), worker_storage_log.read_text(), worker_log.read_text(),
         identity["identity"]["sourceDigest"], tools["storageBoundaryInstallation"]["routing"]["nativeAddress"])
+    copy_transports = join_copy_captured_transports(
+        storage_boundary["nativeOriginalBodies"]["bodies"],
+        storage_boundary["workerReceivedBodies"]["bodies"],
+        protected_headers["native-outbound"], protected_headers["worker-received"],
+        copy_authenticated_transport_receipts(native_copy_log.read_text(), native_copy_capture))
+    copy_codec_input = prepare_copy_codec_cases(copy_transports,
+        storage_boundary["nativeOriginalBodies"]["bodies"],
+        storage_boundary["workerReceivedBodies"]["bodies"],
+        identity["identity"]["sourceDigest"], tools["deploymentId"])
+    copy_codec_reference = None
+    if copy_codec_input is not None:
+        body = json.dumps(copy_codec_input, sort_keys=True).encode()
+        name = "actual-copy-codec-selection.json"
+        copy_codec_reference = {"file": str(Path("external-direct-flow") / name),
+            "sha256": retain_direct_flow(name, body), "byteSize": len(body)}
+    workflow_capture = {"version": 1, "protectedHeaders": protected_headers,
+        "headerLogWindows": header_windows, "nativeJournalWindow": native_copy_window,
+        "nativeProcess": {name: native_copy_capture[name] for name in
+            ("pid", "startTicks", "executableSha256")},
+        "copyAuthenticatedTransports": copy_transports,
+        "copyCodecSelection": copy_codec_reference,
+        "providerApplicationBodies": {"rawReportSha256": provider_window["sha256"],
+            "observedReceiptCount": len(provider_boundary["receipts"]),
+            "groups": provider_boundary["groups"], "unknownCallers": provider_boundary["unknownCallers"]},
+        "nativeBulkBytes": None,
+        "scope": "actual private controls and authenticated consumed Copy metadata; actor/purpose/object/provider attribution and final-source codec joins pending"}
+    retain_direct_flow("actual-storage-workflow-captures.json", workflow_capture)
     provider_classification = classify_direct_provider_object_receipts(provider_boundary, original_mapping)
     throughput = summarize_direct_provider_throughput(provider_boundary, provider_classification,
         original_mapping, corpus, workload_interval)
@@ -715,6 +760,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         "nativeOriginalsSnapshot": originals_receipt, "providerObjectClassification": provider_classification,
         "nativeBulkAssessment": None,
         "nativeStorageBoundary": storage_boundary,
+        "storageWorkflowCaptures": workflow_capture,
         "nativeStorageLogWindow": native_storage_window,
         "workerStorageLogWindow": worker_storage_window,
         "boundaryProxyLifetimes": proxy_lifetimes,

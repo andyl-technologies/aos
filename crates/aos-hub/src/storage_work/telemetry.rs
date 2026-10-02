@@ -3,11 +3,26 @@
 //! Request bodies offered to the HTTP client are not proof of delivery. Response
 //! bytes count only chunks exposed by the client, excluding transport framing,
 //! unread error bodies, and any internal prefetch. Provider telemetry supplies
-//! wire usage; this event preserves the application-side evidence on every exit.
+//! independent measurements; this event preserves application payload evidence
+//! on every exit without claiming wire billing.
 
 use std::time::Instant;
 
 use aos_hub_core::storage_work::StorageWorkPlan;
+use sha2::{Digest as _, Sha256};
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AuthenticatedControlBody {
+    version: u8,
+    route: String,
+    plan_id: String,
+    operation: String,
+    request_sha256: String,
+    reply_sha256: String,
+    request_bytes: usize,
+    reply_bytes: usize,
+}
 
 /// Retains counters until the exchange completes or its future is dropped.
 pub(super) struct ExchangeTelemetry<'a> {
@@ -21,6 +36,7 @@ pub(super) struct ExchangeTelemetry<'a> {
     observed_body_bytes: u64,
     discarded_status_responses: usize,
     outcome: &'static str,
+    control_body: Option<AuthenticatedControlBody>,
 }
 
 impl<'a> ExchangeTelemetry<'a> {
@@ -41,12 +57,36 @@ impl<'a> ExchangeTelemetry<'a> {
             observed_body_bytes: 0,
             discarded_status_responses: 0,
             outcome: "cancelled",
+            control_body: None,
         }
     }
 
     pub(super) fn offer_plan(&mut self, length: usize) {
         self.attempts += 1;
         self.offered_plan_bytes = self.offered_plan_bytes.saturating_add(length as u64);
+    }
+
+    /// Retains hashes of an actual offered control without claiming acceptance.
+    pub(super) fn offer_control(&mut self, route: &str, body: &[u8]) {
+        self.offer_plan(body.len());
+        self.control_body = Some(AuthenticatedControlBody {
+            version: 1,
+            route: route.into(),
+            plan_id: self.plan_id.into(),
+            operation: self.operation.into(),
+            request_sha256: hex::encode(Sha256::digest(body)),
+            reply_sha256: String::new(),
+            request_bytes: body.len(),
+            reply_bytes: 0,
+        });
+    }
+
+    /// Marks exact consumed bytes only after the caller's existing authenticator.
+    pub(super) fn authenticated_control(&mut self, reply: &[u8]) {
+        if let Some(body) = self.control_body.as_mut() {
+            body.reply_sha256 = hex::encode(Sha256::digest(reply));
+            body.reply_bytes = reply.len();
+        }
     }
 
     pub(super) fn observe_body(&mut self, length: usize) {
@@ -60,6 +100,23 @@ impl<'a> ExchangeTelemetry<'a> {
     pub(super) fn finish(&mut self, outcome: &'static str) {
         self.outcome = outcome;
     }
+
+    fn emit_authenticated_control(&self) {
+        let Some(body) = &self.control_body else {
+            return;
+        };
+        if self.outcome != "success" || body.reply_sha256.is_empty() {
+            return;
+        }
+
+        // Instrumentation failure cannot change the authenticated reply.
+        // The receipt proves transport acceptance only: SQL, purpose,
+        // placement and provider joins remain independent obligations.
+        let Ok(encoded) = serde_json::to_string(body) else {
+            return;
+        };
+        tracing::info!("external_copy_authenticated {encoded}");
+    }
 }
 
 impl Drop for ExchangeTelemetry<'_> {
@@ -68,6 +125,7 @@ impl Drop for ExchangeTelemetry<'_> {
         // Retain the original dispatcher and task context for this final event.
         let _subscriber = tracing::dispatcher::set_default(&self.dispatcher);
         let _span = self.span.enter();
+        self.emit_authenticated_control();
         tracing::info!(
             plan_id = %self.plan_id,
             operation = self.operation,
@@ -117,6 +175,20 @@ pub(super) mod tests {
     }
 
     impl RecordedEvents {
+        pub(in crate::storage_work) fn authenticated_controls(&self) -> Vec<serde_json::Value> {
+            self.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter_map(|fields| {
+                    fields
+                        .get("message")
+                        .and_then(|message| message.strip_prefix("external_copy_authenticated "))
+                        .map(|encoded| serde_json::from_str(encoded).unwrap())
+                })
+                .collect()
+        }
+
         pub(in crate::storage_work) fn exchange(&self) -> Fields {
             let events = self.0.lock().unwrap();
             let exchanges: Vec<_> = events

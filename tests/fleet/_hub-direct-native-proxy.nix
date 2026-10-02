@@ -1,16 +1,20 @@
 # Observe numeric Native HTTP boundaries and retain owner-private body files for
-# exact codec classification. Authentication headers are omitted from the log.
+# exact codec classification. Compact controls have a separate private log;
+# bearer and cookie credentials are omitted from both logs.
 # Both baseline and loaded traffic use the same observation buffering/storage.
 {
   serverCertificate,
   serverPrivateKey,
   storageHttp ? "",
-}: ''
+}: let
+  protectedHeaders = import ./_hub-protected-header-format.nix;
+in ''
   user root;
   pid /var/lib/hybrid-native-observations/nginx.pid;
   error_log /var/lib/hybrid-native-observations/error.log warn;
   events { worker_connections 256; }
   http {
+    ${protectedHeaders "native_protected_headers"}
     log_format native_control escape=json
       '{"procedure":"$uri","phase":"$http_x_aos_hybrid_upload_phase",'
       '"status":"$status","request_http_bytes":"$request_length",'
@@ -23,6 +27,7 @@
       '"request_transfer_encoding":"$http_transfer_encoding",'
       '"response_content_encoding":"$sent_http_content_encoding"}';
     access_log /var/lib/hybrid-native-observations/requests.jsonl native_control;
+    access_log /var/lib/hybrid-native-observations/protected-headers.jsonl native_protected_headers;
     # Private body files let the observer classify actual bytes and match the
     # signed envelopes. They are never included in the published numeric ledger.
     client_body_in_file_only on;

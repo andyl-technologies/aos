@@ -55,12 +55,12 @@ def native_control_observations(text, body_root="/var/lib/hybrid-native-observat
             raise ValueError("Native boundary observation changed shape")
         procedure = raw["procedure"]
         if not isinstance(procedure, str) or not re.fullmatch(
-            r"/[A-Za-z0-9_./-]{1,512}", procedure,
+            r"/[A-Za-z0-9_./:@%-]{1,2048}", procedure,
         ):
             raise ValueError("Native boundary observation has an invalid procedure")
         phase = raw["phase"]
-        if phase and phase not in DIRECT_NATIVE_PHASES | LEGACY_UPLOAD_PHASES:
-            raise ValueError("Native boundary observation has an unknown phase")
+        if not isinstance(phase, str) or not re.fullmatch(r"[a-z0-9-]{0,64}", phase):
+            raise ValueError("Native boundary observation has a malformed phase")
 
         observation = {"procedure": procedure, "phase": phase}
         for name in ("request_id", "request_body_file", "response_body_file", "method",
@@ -71,7 +71,8 @@ def native_control_observations(text, body_root="/var/lib/hybrid-native-observat
         if not re.fullmatch(r"[0-9a-f]{32}", observation["request_id"]):
             raise ValueError("Native request identity is invalid")
         if (observation["response_body_file"] != body_root + "/response-bodies/"
-                + observation["request_id"] or observation["method"] not in {"GET", "POST"}):
+                + observation["request_id"] or observation["method"] not in {
+                    "GET", "POST", "PUT", "PATCH", "HEAD", "DELETE", "OPTIONS"}):
             raise ValueError("Native body reference or method changed")
         for field in (
             "status", "request_http_bytes", "request_body_bytes",
