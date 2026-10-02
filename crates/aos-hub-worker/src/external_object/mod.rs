@@ -11,13 +11,18 @@ mod config;
 mod copy;
 
 #[cfg(target_arch = "wasm32")]
-pub(crate) use copy::{execute_scan_read, fetch_control as fetch_copy, fetch_metadata as fetch_copy_metadata};
+pub(crate) use copy::{
+    execute_scan_read, fetch_control as fetch_copy, fetch_metadata as fetch_copy_metadata,
+};
 mod delete_config;
 mod deletion;
 mod observation;
 mod protocol;
 mod stage;
 mod state;
+
+#[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
+pub(crate) use stage::lease_scale::fetch as fetch_lease_scale;
 
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
 pub(crate) use copy::conformance_fetch as copy_conformance_fetch;

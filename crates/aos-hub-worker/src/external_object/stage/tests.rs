@@ -125,7 +125,7 @@ fn publication() -> StorageAuthorityPublication {
     publication
 }
 
-fn config() -> Config {
+pub(super) fn config() -> Config {
     let publication = publication();
     let write = LeaseCohort::from_publication(
         &publication,

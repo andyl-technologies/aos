@@ -101,6 +101,13 @@ pub async fn fetch(request: Request, env: &Env, context: &worker::Context) -> Re
     if path == aos_hub_core::storage_authority::external_object::copy::metadata::EXTERNAL_COPY_METADATA_PATH {
         return crate::external_object::fetch_copy_metadata(request, env).await;
     }
+    if path == "/__hub/lease-scale-acquire" {
+        #[cfg(feature = "do-e2e")]
+        return crate::external_object::fetch_lease_scale(request, env).await;
+
+        #[cfg(not(feature = "do-e2e"))]
+        return Response::error("not found", 404);
+    }
     if path == STORAGE_WORK_PATH {
         return execute_storage_work(request, env, context).await;
     }
@@ -1452,7 +1459,14 @@ async fn execute_storage_work(
             Ok(publication) => publication,
             Err(_) => return Response::error("binding snapshot is unavailable", 409),
         };
-        match crate::surface::execute_external_storage_work(env, &plan, &publication, &request.inner().signal()).await {
+        match crate::surface::execute_external_storage_work(
+            env,
+            &plan,
+            &publication,
+            &request.inner().signal(),
+        )
+        .await
+        {
             Ok(Some(result)) => Ok(result),
             Ok(None) => return Response::error("external storage operation is unavailable", 501),
             Err(error) => Err(error),
