@@ -33,7 +33,7 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
     let authority = guest_choice::write_component_authority(&fixture)?;
     println!("two_node_http_stage=start-runtime");
     let mut service =
-        guest_choice::start_materialization_flight_service(&fixture, &authority, None)?;
+        guest_choice::start_callback_witness_flight_service(&fixture, &authority, None)?;
     let mut processes = process_audit::ProcessAudit::with_cpu_diagnostics(256);
 
     println!("two_node_http_virtual_budget_ticks={HTTP_VIRTUAL_BUDGET_TICKS}");
@@ -53,6 +53,9 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
         println!("two_node_http_attempt={explanation}");
         Ok::<(), Box<dyn Error>>(())
     })();
+    if exchange.is_err() {
+        guest_choice::report_recent_control_callback_witness(&service);
+    }
     processes.report_observed_processes("before-http-cleanup");
     println!("two_node_http_stage=cleanup");
     let shutdown = service.stop();

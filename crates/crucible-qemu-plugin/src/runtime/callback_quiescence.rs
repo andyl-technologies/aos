@@ -45,7 +45,15 @@ impl LiveCallbackQuiescence {
 
     /// Admits one callback unless teardown or a reversible hot-fork hold closed the gate.
     pub(crate) fn enter(self: &std::sync::Arc<Self>) -> Option<LiveCallbackInFlight> {
-        self.enter_with_hook(|| {})
+        self.enter_with_rejection(|_| {})
+    }
+
+    /// Reports the exact rejecting admission observation to an observational hook.
+    pub(crate) fn enter_with_rejection(
+        self: &std::sync::Arc<Self>,
+        rejected: impl FnOnce(LiveCallbackQuiescenceSnapshot),
+    ) -> Option<LiveCallbackInFlight> {
+        self.enter_with_hooks(|| {}, rejected)
     }
 
     /// Prevents every later callback from beginning work.
@@ -87,14 +95,28 @@ impl LiveCallbackQuiescence {
         self.state.load(Ordering::SeqCst) & CLOSED_MASK != 0
     }
 
+    #[cfg(test)]
     fn enter_with_hook(
         self: &std::sync::Arc<Self>,
         after_initial_load: impl FnOnce(),
+    ) -> Option<LiveCallbackInFlight> {
+        self.enter_with_hooks(after_initial_load, |_| {})
+    }
+
+    fn enter_with_hooks(
+        self: &std::sync::Arc<Self>,
+        after_initial_load: impl FnOnce(),
+        rejected: impl FnOnce(LiveCallbackQuiescenceSnapshot),
     ) -> Option<LiveCallbackInFlight> {
         let mut observed = self.state.load(Ordering::SeqCst);
         after_initial_load();
         loop {
             if observed & CLOSED_MASK != 0 {
+                rejected(LiveCallbackQuiescenceSnapshot {
+                    hot_fork_held: observed & HOT_FORK_HELD != 0,
+                    teardown_closed: observed & TEARDOWN_CLOSED != 0,
+                    in_flight: observed & IN_FLIGHT_MASK,
+                });
                 return None;
             }
             let count = observed & IN_FLIGHT_MASK;

@@ -69,6 +69,7 @@ mod service_diagnostics;
 
 use service_diagnostics::{
     append_process_diagnostics, descendant_process_commands, matching_lines_bounded,
+    recent_matching_lines_bounded,
 };
 
 #[test]
@@ -1278,6 +1279,25 @@ impl CampaignServiceChild {
     ) -> Result<Vec<String>, Box<dyn Error>> {
         let stderr = self.stderr.reopen()?;
         matching_lines_bounded(stderr, prefix, maximum_lines, maximum_line_bytes)
+    }
+
+    /// Retains recent exact records while streaming unrelated stderr without buffering it.
+    fn stderr_recent_lines_with_prefix(
+        &self,
+        prefix: &str,
+        maximum_lines: usize,
+        maximum_line_bytes: usize,
+    ) -> Result<Vec<String>, Box<dyn Error>> {
+        let stderr = self.stderr.reopen()?;
+        // The service may still be writing after a flight fails. Freeze the
+        // read length so diagnostics cannot chase a continuously growing file.
+        let length = stderr.metadata()?.len();
+        recent_matching_lines_bounded(
+            stderr.take(length),
+            prefix,
+            maximum_lines,
+            maximum_line_bytes,
+        )
     }
 }
 

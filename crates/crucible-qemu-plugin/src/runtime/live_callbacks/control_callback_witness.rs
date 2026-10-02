@@ -1,0 +1,261 @@
+//! Bounded, opt-in observations of native control callback delivery and admission.
+//!
+//! `CRUCIBLE_CONTROL_CALLBACK_WITNESS=1` enables stderr records. An observed
+//! token epoch in one process permits at most ten records: entry, admission,
+//! four rejection reasons, and four exit outcomes. QEMU serializes this native
+//! main-loop control callback under the BQL. Token reuse after another epoch or
+//! a fork may emit new records for the same numeric token. Repeated callbacks
+//! at a stalled token do not exhaust the budget for a later request. Hot-fork
+//! copies this diagnostic state, but a PID change clears its token epoch before
+//! callback entry. This state is neither canonical nor part of the shared-memory
+//! ABI.
+//!
+//! Entry and rejection use only the last admitted token, explicitly labelled
+//! cached (initially unavailable). Reading shared memory before admission could
+//! race teardown unmapping. Admission and exit read only the ACK atomic, never
+//! a slot snapshot. The current PID distinguishes fork children and guests in
+//! merged stderr. Records carry no host-clock measurement or payload state.
+//!
+//! ```text
+//! CRUCIBLE-CONTROL-CALLBACK-V1 phase=exit reason=pending pid=42 raw_icount=7 token_kind=observed token_before=2 token_after=2
+//! ```
+
+use std::io::{self, Write};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+
+use super::super::callback_quiescence::LiveCallbackQuiescenceSnapshot;
+use super::{LiveVcpuTimeCallbackError, LiveVcpuTimeCallbackState, PluginShmemOrdering};
+
+const TOKEN_VALID: u64 = 1;
+
+/// Diagnostic state independent of callback admission and canonical replay state.
+pub(super) struct ControlCallbackWitness {
+    enabled: bool,
+    process_id: AtomicU32,
+    token_and_events: AtomicU64,
+}
+
+impl ControlCallbackWitness {
+    pub(super) fn from_env() -> Self {
+        Self::from_setting(std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS").as_deref())
+    }
+
+    fn from_setting(value: Option<&std::ffi::OsStr>) -> Self {
+        Self::new(value == Some(std::ffi::OsStr::new("1")))
+    }
+
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            process_id: AtomicU32::new(if enabled { std::process::id() } else { 0 }),
+            token_and_events: AtomicU64::new(0),
+        }
+    }
+
+    fn entry_record(&self, raw_icount: u64) -> Option<Record> {
+        if !self.enabled {
+            return None;
+        }
+        let process_id = std::process::id();
+        if self.process_id.swap(process_id, Ordering::Relaxed) != process_id {
+            // A fork child must witness its first callback even if the parent's
+            // copied token/phase budget had already been exhausted.
+            self.token_and_events.store(0, Ordering::Relaxed);
+        }
+        self.record(Event::Entry, raw_icount, None)
+    }
+
+    fn observe_token(&self, token: u32) {
+        let mut observed = self.token_and_events.load(Ordering::Relaxed);
+        loop {
+            if observed & TOKEN_VALID != 0 && (observed >> 32) as u32 == token {
+                return;
+            }
+            let next = (u64::from(token) << 32) | TOKEN_VALID;
+            match self.token_and_events.compare_exchange_weak(
+                observed,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(actual) => observed = actual,
+            }
+        }
+    }
+
+    fn record(&self, event: Event, raw_icount: u64, token_after: Option<u32>) -> Option<Record> {
+        if !self.enabled {
+            return None;
+        }
+        let event_bit = 1_u64 << (event as u8 + 1);
+        let previous = self.token_and_events.fetch_or(event_bit, Ordering::Relaxed);
+        if previous & event_bit != 0 {
+            return None;
+        }
+        Some(Record {
+            event,
+            process_id: self.process_id.load(Ordering::Relaxed),
+            raw_icount,
+            token_before: (previous & TOKEN_VALID != 0).then_some((previous >> 32) as u32),
+            token_after,
+        })
+    }
+}
+
+/// Exact admission rejection supplied by the original guard observation.
+pub(super) enum Rejection {
+    Admission(LiveCallbackQuiescenceSnapshot),
+    SharedShutdown,
+}
+
+impl Rejection {
+    fn event(self) -> Event {
+        match self {
+            Self::SharedShutdown => Event::SharedShutdown,
+            Self::Admission(snapshot) if snapshot.teardown_closed && snapshot.hot_fork_held => {
+                Event::TeardownAndHotFork
+            }
+            Self::Admission(snapshot) if snapshot.teardown_closed => Event::Teardown,
+            Self::Admission(_) => Event::HotFork,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Event {
+    Entry,
+    Admitted,
+    HotFork,
+    Teardown,
+    TeardownAndHotFork,
+    SharedShutdown,
+    Pending,
+    Acknowledged,
+    NoRequest,
+    Error,
+}
+
+impl Event {
+    fn labels(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Entry => ("entry", "native-delivery", "cached"),
+            Self::Admitted => ("admitted", "guard-open", "observed"),
+            Self::HotFork => ("rejected", "hot-fork-held", "cached"),
+            Self::Teardown => ("rejected", "teardown-closed", "cached"),
+            Self::TeardownAndHotFork => ("rejected", "teardown-and-hot-fork", "cached"),
+            Self::SharedShutdown => ("rejected", "shared-shutdown", "cached"),
+            Self::Pending => ("exit", "pending", "observed"),
+            Self::Acknowledged => ("exit", "acknowledged", "observed"),
+            Self::NoRequest => ("exit", "no-request", "observed"),
+            Self::Error => ("exit", "error", "observed"),
+        }
+    }
+}
+
+struct Record {
+    event: Event,
+    process_id: u32,
+    raw_icount: u64,
+    token_before: Option<u32>,
+    token_after: Option<u32>,
+}
+
+impl Record {
+    fn write_to(&self, writer: &mut impl Write) -> io::Result<()> {
+        // One compact write avoids interleaved fragments when several QEMU
+        // processes share stderr. Overflow is treated like any failed sink.
+        let mut bytes = [0_u8; 256];
+        let mut cursor = io::Cursor::new(bytes.as_mut_slice());
+        self.write_fields_to(&mut cursor)?;
+        let length = cursor.position() as usize;
+        writer.write_all(&bytes[..length])
+    }
+
+    fn write_fields_to(&self, writer: &mut impl Write) -> io::Result<()> {
+        let (phase, reason, token_kind) = self.event.labels();
+        write!(
+            writer,
+            "CRUCIBLE-CONTROL-CALLBACK-V1 phase={phase} reason={reason} pid={} raw_icount={} token_kind={token_kind} token_before=",
+            self.process_id, self.raw_icount
+        )?;
+        write_token(writer, self.token_before)?;
+        write!(writer, " token_after=")?;
+        write_token(writer, self.token_after)?;
+        writeln!(writer)
+    }
+}
+
+fn write_token(writer: &mut impl Write, token: Option<u32>) -> io::Result<()> {
+    match token {
+        Some(token) => write!(writer, "{token}"),
+        None => write!(writer, "unavailable"),
+    }
+}
+
+impl LiveVcpuTimeCallbackState {
+    pub(super) fn control_callback_with_witness(&self, raw_icount: u64) {
+        self.run_control_callback(
+            raw_icount,
+            |record| {
+                // crucible-lint: allow direct-diagnostic -- bounded opt-in records
+                // diagnose callbacks rejected before shared memory can be read.
+                let _write_result = record.write_to(&mut io::stderr().lock());
+            },
+            |error| super::abort_live_callback(error),
+        );
+    }
+
+    fn run_control_callback(
+        &self,
+        raw_icount: u64,
+        mut emit: impl FnMut(Record),
+        on_error: impl FnOnce(LiveVcpuTimeCallbackError),
+    ) {
+        let witness = &self.control_callback_witness;
+        if let Some(record) = witness.entry_record(raw_icount) {
+            emit(record);
+        }
+        let Some(_in_flight) = self.callback_guard_with_rejection(|rejection| {
+            if let Some(record) = witness.record(rejection.event(), raw_icount, None) {
+                emit(record);
+            }
+        }) else {
+            return;
+        };
+
+        // Disabled diagnostics add no shared-memory reads, snapshots, or writes.
+        let token_before = witness.enabled.then(|| {
+            let token = PluginShmemOrdering::control_boundary_token(self.slot.get());
+            witness.observe_token(token);
+            if let Some(record) = witness.record(Event::Admitted, raw_icount, Some(token)) {
+                emit(record);
+            }
+            token
+        });
+
+        let result = self.on_control_boundary(raw_icount);
+        if let Some(token_before) = token_before {
+            let token_after = PluginShmemOrdering::control_boundary_token(self.slot.get());
+            let event = if result.is_err() {
+                Event::Error
+            } else if token_before & 1 != 0 {
+                Event::NoRequest
+            } else if token_after == token_before.wrapping_add(1) {
+                Event::Acknowledged
+            } else {
+                Event::Pending
+            };
+            if let Some(record) = witness.record(event, raw_icount, Some(token_after)) {
+                emit(record);
+            }
+        }
+        if let Err(error) = result {
+            // Keep the admitted guard alive through the original fatal handler.
+            on_error(error);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests;

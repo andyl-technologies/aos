@@ -126,6 +126,12 @@ impl PluginShmemOrdering {
         slot.control_boundary_is_requested()
     }
 
+    /// Acquire-observes the control request or acknowledgement without a snapshot.
+    #[must_use]
+    pub fn control_boundary_token(slot: &NodeSlot) -> u32 {
+        slot.control_boundary_token()
+    }
+
     /// Release-acknowledges a drained host-control request after publication.
     pub fn acknowledge_control_boundary(slot: &NodeSlot) -> u32 {
         slot.acknowledge_control_boundary()

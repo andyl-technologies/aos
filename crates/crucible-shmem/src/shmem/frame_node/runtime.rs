@@ -600,6 +600,15 @@ impl NodeSlot {
         self.control_boundary_ack.load(Ordering::Acquire) & 1 == 0
     }
 
+    /// Returns the control request or acknowledgement from one acquire load.
+    ///
+    /// Even values identify pending requests; their odd successors acknowledge
+    /// completion. This observational read does not snapshot other slot fields.
+    #[must_use]
+    pub fn control_boundary_token(&self) -> u32 {
+        self.control_boundary_ack.load(Ordering::Acquire)
+    }
+
     /// Release-acknowledges the currently requested QEMU main-loop boundary.
     ///
     /// The caller must publish the exact boundary state first. If no request is

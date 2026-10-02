@@ -1,21 +1,42 @@
 //! Bounded campaign-service stderr and process-state diagnostics.
 
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 
 use super::*;
 
 pub(super) fn matching_lines_bounded(
+    reader: impl Read,
+    prefix: &str,
+    maximum_lines: usize,
+    maximum_line_bytes: usize,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    matching_lines(reader, prefix, maximum_lines, maximum_line_bytes, false)
+}
+
+/// Streams all stderr while retaining only the latest bounded matching records.
+pub(super) fn recent_matching_lines_bounded(
+    reader: impl Read,
+    prefix: &str,
+    maximum_lines: usize,
+    maximum_line_bytes: usize,
+) -> Result<Vec<String>, Box<dyn Error>> {
+    matching_lines(reader, prefix, maximum_lines, maximum_line_bytes, true)
+}
+
+fn matching_lines(
     mut reader: impl Read,
     prefix: &str,
     maximum_lines: usize,
     maximum_line_bytes: usize,
+    retain_recent: bool,
 ) -> Result<Vec<String>, Box<dyn Error>> {
     if prefix.is_empty() || maximum_lines == 0 || maximum_line_bytes < prefix.len() {
         return Err("stderr prefix capture has invalid bounds".into());
     }
 
     let prefix = prefix.as_bytes();
-    let mut lines = Vec::new();
+    let mut lines = VecDeque::new();
     let mut chunk = [0_u8; 8 * 1024];
     let mut matched_prefix_bytes = 0;
     let mut possible_match = true;
@@ -29,7 +50,7 @@ pub(super) fn matching_lines_bounded(
 
         for &byte in &chunk[..count] {
             if byte == b'\n' {
-                finish_matching_line(&mut matching_line, &mut lines, maximum_lines)?;
+                finish_matching_line(&mut matching_line, &mut lines, maximum_lines, retain_recent)?;
                 matched_prefix_bytes = 0;
                 possible_match = true;
                 continue;
@@ -59,14 +80,15 @@ pub(super) fn matching_lines_bounded(
         }
     }
 
-    finish_matching_line(&mut matching_line, &mut lines, maximum_lines)?;
-    Ok(lines)
+    finish_matching_line(&mut matching_line, &mut lines, maximum_lines, retain_recent)?;
+    Ok(lines.into_iter().collect())
 }
 
 fn finish_matching_line(
     matching_line: &mut Option<Vec<u8>>,
-    lines: &mut Vec<String>,
+    lines: &mut VecDeque<String>,
     maximum_lines: usize,
+    retain_recent: bool,
 ) -> Result<(), Box<dyn Error>> {
     let Some(mut line) = matching_line.take() else {
         return Ok(());
@@ -75,11 +97,56 @@ fn finish_matching_line(
         line.pop();
     }
     if lines.len() == maximum_lines {
-        return Err(format!("stderr prefix capture exceeds {maximum_lines} records").into());
+        if !retain_recent {
+            return Err(format!("stderr prefix capture exceeds {maximum_lines} records").into());
+        }
+        lines.pop_front();
     }
 
-    lines.push(String::from_utf8(line)?);
+    lines.push_back(String::from_utf8(line)?);
     Ok(())
+}
+
+#[test]
+fn recent_prefix_capture_retains_late_records_after_capacity_and_large_unrelated_lines() {
+    const PREFIX: &str = "CRUCIBLE-CONTROL-CALLBACK-V1 ";
+    let unrelated = "x".repeat(32 * 1024);
+    let mut stderr = String::new();
+    for token in 0..100 {
+        writeln!(stderr, "{PREFIX}token={token}")
+            .unwrap_or_else(|error| panic!("test stderr should format: {error}"));
+        writeln!(stderr, "{unrelated}")
+            .unwrap_or_else(|error| panic!("test stderr should format: {error}"));
+    }
+
+    let records = recent_matching_lines_bounded(std::io::Cursor::new(stderr), PREFIX, 2, 256)
+        .unwrap_or_else(|error| panic!("recent witness records should parse: {error}"));
+
+    assert_eq!(
+        records,
+        [format!("{PREFIX}token=98"), format!("{PREFIX}token=99")]
+    );
+}
+
+#[test]
+fn recent_prefix_capture_enforces_line_size_utf8_and_valid_bounds() {
+    const PREFIX: &str = "witness ";
+    for (stderr, capacity, line_bytes) in [
+        (b"witness oversized\n".as_slice(), 2, 8),
+        (b"witness \xff\n".as_slice(), 2, 256),
+        (b"witness ok\n".as_slice(), 0, 256),
+        (b"witness ok\n".as_slice(), 2, 1),
+    ] {
+        assert!(
+            recent_matching_lines_bounded(
+                std::io::Cursor::new(stderr),
+                PREFIX,
+                capacity,
+                line_bytes
+            )
+            .is_err()
+        );
+    }
 }
 
 #[test]
