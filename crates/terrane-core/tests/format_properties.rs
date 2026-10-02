@@ -9,6 +9,7 @@
 mod containers;
 #[path = "format_properties/content.rs"]
 mod content;
+#[path = "format_properties/contexts.rs"]
 mod contexts;
 #[path = "format_properties/foreign.rs"]
 mod foreign;

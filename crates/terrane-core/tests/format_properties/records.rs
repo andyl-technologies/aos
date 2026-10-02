@@ -127,7 +127,18 @@ fn commit_ref_reflog_and_annotation_models_preserve_optional_fields() {
                 }),
             }]);
         }
-        check_record!("commit and provenance/profile/receipt", model, refs::Commit);
+        check_record!(
+            "commit and provenance/profile/receipt",
+            model.clone(),
+            refs::Commit
+        );
+        let mut unsigned = model.clone();
+        unsigned.signature = None;
+        let preimage = model.signature_preimage().unwrap();
+        assert_eq!(preimage, unsigned.encode().unwrap());
+        cbor_properties("unsigned commit preimage", &preimage, |input| {
+            refs::Commit::decode(input)?.encode()
+        });
         let mut record = head([1, 23, 24, u64::MAX][case % 4]);
         record.commit = generator.bytes();
         record.writer_epoch = generator.next();
@@ -154,11 +165,35 @@ fn commit_ref_reflog_and_annotation_models_preserve_optional_fields() {
             snapshot: (case % 2 == 0).then(|| refs::SnapshotEnvelope {
                 tag: refs::RefName::parse("refs/tags/_/snapshot").unwrap(),
                 commit: record.commit,
-                attestation: vec![0xa1, 0x61, b'a', 0xf4],
+                attestation: if case % 4 == 0 {
+                    vec![0xa0]
+                } else {
+                    vec![0xa1, 0x61, b'a', 0xf4]
+                },
                 signer_key: "key".into(),
                 signature: generator.bytes(),
             }),
         });
+        if let Some(snapshot) = record
+            .policy
+            .as_ref()
+            .and_then(|policy| policy.snapshot.as_ref())
+        {
+            let mut expected = vec![];
+            terrane_core::cbor::write_map(&mut expected, 4);
+            terrane_core::cbor::write_uint(&mut expected, 1);
+            terrane_core::cbor::write_text(&mut expected, snapshot.tag.as_str());
+            terrane_core::cbor::write_uint(&mut expected, 2);
+            terrane_core::cbor::write_bytes(&mut expected, &snapshot.commit);
+            terrane_core::cbor::write_uint(&mut expected, 3);
+            expected.extend_from_slice(&snapshot.attestation);
+            terrane_core::cbor::write_uint(&mut expected, 4);
+            terrane_core::cbor::write_text(&mut expected, &snapshot.signer_key);
+            assert_eq!(snapshot.signature_preimage().unwrap(), expected);
+            let mut changed = snapshot.clone();
+            changed.signature = generator.bytes();
+            assert_eq!(changed.signature_preimage().unwrap(), expected);
+        }
         check_record!("ref and annotation", record.clone(), refs::RefRecord);
         record.candidate_id = None;
         check_record!(

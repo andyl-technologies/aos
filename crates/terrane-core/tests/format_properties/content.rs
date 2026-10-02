@@ -440,6 +440,16 @@ fn derived_attribute_values_and_records_cover_every_registered_variant() {
             });
             let mut model = AttrRecord::new(generator.bytes(), value, generator.bytes());
             model.signature = (case % 2 == 0).then(|| generator.bytes());
+            let mut unsigned = model.clone();
+            unsigned.signature = None;
+            assert_eq!(
+                model.signature_preimage().unwrap(),
+                [
+                    b"terrane-attr-signature-v1\0".as_slice(),
+                    &unsigned.encode().unwrap()
+                ]
+                .concat()
+            );
             check_record!("attribute record", model, AttrRecord);
         }
     }

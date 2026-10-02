@@ -111,6 +111,10 @@ impl SelectedRow {
         cbor::write_text(&mut bytes, &self.domain);
         cbor::write_bytes(&mut bytes, &self.path);
 
+        if self.row_width == 4 {
+            return bytes;
+        }
+
         cbor::write_array(&mut bytes, self.tuple_width);
         cbor::write_bytes(&mut bytes, &self.record);
         cbor::write_bytes(&mut bytes, &[7; 32]);
@@ -120,9 +124,17 @@ impl SelectedRow {
         cbor::write_bytes(&mut bytes, &self.value);
         cbor::write_bytes(&mut bytes, &self.producer);
         location(&mut bytes, &self.carrying_commit, &[8; 32], &self.path);
-        cbor::write_array(&mut bytes, 2);
-        cbor::write_text(&mut bytes, "public");
-        cbor::write_bytes(&mut bytes, &self.path);
+        if self.tuple_width >= 9 {
+            cbor::write_array(&mut bytes, 2);
+            cbor::write_text(&mut bytes, "public");
+            cbor::write_bytes(&mut bytes, &self.path);
+        }
+        if self.tuple_width == 10 {
+            bytes.push(0xf6);
+        }
+        if self.row_width == 6 {
+            bytes.push(0xf6);
+        }
         bytes
     }
 }
@@ -193,7 +205,7 @@ fn untrusted_context_models_cover_both_versions_and_selected_evidence_boundaries
         for version in [1, 2] {
             if version == 2 {
                 let path = match case % 3 {
-                    0 => vec![],
+                    0 => b"a".to_vec(),
                     1 => b"file".to_vec(),
                     _ => maximum_key().into_bytes(),
                 };
@@ -244,6 +256,9 @@ fn selected_context_schema_rejects_malformed_rows_and_nested_value_encodings() {
         altered.record.resize(length, 0);
         malformed.push(("record digest width", selected(&[altered])));
     }
+    let mut altered = first.clone();
+    altered.path.clear();
+    malformed.push(("empty file path", selected(&[altered])));
     let mut altered = first.clone();
     altered.path = vec![b'x'; 4097];
     malformed.push(("path limit", selected(&[altered])));
