@@ -228,6 +228,13 @@ pub(super) struct PublicListener {
     handshakes: JoinSet<Option<(PublicConnection, SocketAddr)>>,
 }
 
+impl PublicListener {
+    // Shares only the already loaded fixed acceptor; no second credential open.
+    pub(super) fn git_read_acceptor(&self) -> Arc<PublicApiSessionAcceptor> {
+        Arc::clone(&self.acceptor)
+    }
+}
+
 impl Listener for PublicListener {
     type Io = PublicConnection;
     type Addr = SocketAddr;

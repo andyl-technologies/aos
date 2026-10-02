@@ -13,7 +13,7 @@ use crate::public_api_session::PublicApiSessionAcceptor;
 
 use super::gateway_registry::GatewayTransportRegistryV1;
 
-mod startup;
+pub(super) mod startup;
 
 use startup::{GatewayAdmissionV1, GatewayListenerV1, GatewayStartupV1};
 
@@ -85,8 +85,9 @@ pub enum GitGatewayServiceErrorV1 {
 ///
 /// # Panics
 ///
-/// Tokio, TLS and H2 providers may panic. Driving loans unwind before the
-/// service's local disposal guard; crash, abort and OOM recovery are not claimed.
+/// Tokio, TLS and H2 providers may panic. Ordinary driving loans unwind before
+/// local disposal. The selected inspection lifecycle aborts on abandonment
+/// before retained fields drop; crash, abort and OOM recovery are not claimed.
 pub fn run_git_gateway_transport_from_environment_v1() -> Result<(), GitGatewayServiceErrorV1> {
     // This one-shot table observation precedes every reactor or retained open.
     let startup = GatewayStartupV1::capture()?;
@@ -106,6 +107,11 @@ pub fn run_git_gateway_transport_from_environment_v1() -> Result<(), GitGatewayS
         );
         admission.recheck().await?;
         let mut residents = GatewayResidentsV1::new(acceptor);
+        if admission.delegation_controller_ids().is_some() {
+            residents.inspection_selected = true;
+            residents.first.select_delegated_read();
+            residents.second.select_delegated_read();
+        }
         let mut stop = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
             .map_err(|_| GitGatewayServiceErrorV1::Runtime)?;
 
@@ -131,6 +137,11 @@ pub fn run_git_gateway_transport_from_environment_v1() -> Result<(), GitGatewayS
 
         // Try both residents even if the first release fails. No replacement
         // registry is constructed to erase either original debt.
+        if admission.delegation_controller_ids().is_some() && driven.is_err() {
+            // Terminal inspection errors retain the actual local channel,
+            // original HTTP/TLS graph and first cause until process exit.
+            std::process::exit(1);
+        }
         let retired = residents.retire();
         driven?;
         retired
@@ -138,6 +149,7 @@ pub fn run_git_gateway_transport_from_environment_v1() -> Result<(), GitGatewayS
 }
 
 struct GatewayResidentsV1 {
+    inspection_selected: bool,
     first: GatewayTransportRegistryV1,
     second: GatewayTransportRegistryV1,
     retirement_attempted: bool,
@@ -146,6 +158,7 @@ struct GatewayResidentsV1 {
 impl GatewayResidentsV1 {
     fn new(acceptor: Arc<PublicApiSessionAcceptor>) -> Self {
         Self {
+            inspection_selected: false,
             first: GatewayTransportRegistryV1::from_fixed_acceptor(Arc::clone(&acceptor)),
             second: GatewayTransportRegistryV1::from_fixed_acceptor(acceptor),
             retirement_attempted: false,
@@ -163,6 +176,12 @@ impl GatewayResidentsV1 {
 
 impl Drop for GatewayResidentsV1 {
     fn drop(&mut self) {
+        if self.inspection_selected && !self.retirement_attempted {
+            // Abort before fields release on abandonment or uncaught unwind.
+            // Ordinary transport disposal and explicit local retirement retain
+            // their existing order; this fence proves neither recovery nor Drain.
+            std::process::abort();
+        }
         // Bounded synchronous disposal also covers unwind after driver loans
         // drop. Errors never authorize reuse, restart or a remote Drain ACK.
         if !self.retirement_attempted {
@@ -197,8 +216,12 @@ async fn drive_slot(
 
                         // Do not retain the returned error outside this scope:
                         // it may own the transport's actual first Arc cause.
-                        let current = ready.recheck().await;
-                        drop(current);
+                        if admission.delegation_controller_ids().is_some() {
+                            ready.inspect_delegated(admission).await?;
+                        } else {
+                            let current = ready.recheck().await;
+                            drop(current);
+                        }
                         admission.recheck().await?;
                         drop(ready);
                     }

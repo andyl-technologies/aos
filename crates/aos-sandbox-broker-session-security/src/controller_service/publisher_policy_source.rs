@@ -340,6 +340,23 @@ impl PublisherPolicyBootstrapAttemptV1 {
         }
     }
 
+    /// Checks route DATA against the SAME original signed bootstrap and capacity.
+    /// The short store borrow ends before the evaluator mutates its Journal.
+    pub(super) fn check_git_read_route(
+        &mut self,
+        controller: &mut ProductionController,
+        project: aos_sandbox_core::ProjectId,
+        resource: aos_sandbox_core::ResourceId,
+    ) -> Result<(), ()> {
+        let current = self.current_cache_project(controller)?;
+        let capacity = self.capacity.as_ref().and_then(|result| result.as_ref().ok());
+        if current != project || capacity.map(|capacity| capacity.resource()) != Some(resource) {
+            self.first_failure.get_or_insert(BootstrapCauseV1::Rejected);
+            return Err(());
+        }
+        Ok(())
+    }
+
     // Diagnostics borrow the original cause; no stringification or move-out.
     pub(super) fn failure(&self) -> Option<&(dyn std::error::Error + 'static)> {
         let cause = self.first_failure.as_ref().or(self.postcheck_debt.as_ref())?;

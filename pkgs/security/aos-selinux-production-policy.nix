@@ -19,9 +19,11 @@
   aos-sandbox-view-preparer-tools,
   viewPreparers ? [],
   homeContextAliases ? "",
+  gitReadDelegation ? false,
 }: let
   policyVersion = "33";
   policySupport = ./_aos-selinux-production-policy;
+  gitReadCheckerArgument = if gitReadDelegation then "--git-read-delegation" else "";
   homeAliases = builtins.toFile "aos-selinux-home-context-aliases" homeContextAliases;
   # toFile cannot carry an output reference, and the policy must not build
   # the executable it labels. The system module co-installs this exact output.
@@ -70,6 +72,7 @@
     + builtins.readFile (policySupport + "/owner_confinement.te")
     + "\n"
     + builtins.readFile (policySupport + "/view_confinement.te")
+    + (if gitReadDelegation then "\n" + builtins.readFile (policySupport + "/git_read_delegation.te") else "")
   );
   viewEntrypointContext = entry: let
     basename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString entry.package));
@@ -132,6 +135,7 @@
         [netdBasenameRegex workerBasenameRegex publisherBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools) systemdBasenameRegex]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
         + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
+        + (if gitReadDelegation then builtins.readFile (policySupport + "/git_read_delegation.fc") else "")
       )
     else throw "fixed service SELinux labels must match only their evaluated package roots";
 in
@@ -216,7 +220,7 @@ in
             -o final-policy.cil final-policy.${policyVersion}
           grep -Fx '(policycap nnp_nosuid_transition)' final-policy.cil
           ${python3}/bin/python3 ${policySupport}/effective_policy.py \
-            final-policy.${policyVersion} > effective-policy.tsv
+            ${gitReadCheckerArgument} final-policy.${policyVersion} > effective-policy.tsv
           test -s effective-policy.tsv
 
           # Separate mutants restore textrel, translation, Guest host-file
@@ -231,7 +235,7 @@ in
               "$narrow_negative_module-linked.mod" \
               "$narrow_negative_module-policy.${policyVersion}"
             if ${python3}/bin/python3 ${policySupport}/effective_policy.py \
-              "$narrow_negative_module-policy.${policyVersion}" \
+              ${gitReadCheckerArgument} "$narrow_negative_module-policy.${policyVersion}" \
               > "$narrow_negative_module-effective.tsv" \
               2> "$narrow_negative_module-diagnostic"
             then
@@ -305,7 +309,7 @@ in
             attribute-negative-linked-policy.mod \
             attribute-negative-policy.${policyVersion}
           if ${python3}/bin/python3 ${policySupport}/effective_policy.py \
-            attribute-negative-policy.${policyVersion} \
+            ${gitReadCheckerArgument} attribute-negative-policy.${policyVersion} \
             > attribute-negative-effective-policy.tsv \
             2> attribute-negative-diagnostic
           then

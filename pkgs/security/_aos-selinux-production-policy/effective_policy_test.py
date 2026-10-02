@@ -1919,5 +1919,50 @@ class SelectedLauncherImageIoctlTest(unittest.TestCase):
                 effective_policy._check_selected_launcher_image_ioctls(FAKE_SETOOLS, FakePolicy())
 
 
+class GitReadDelegationTest(unittest.TestCase):
+    """Exercises selected DATA queries, never installed service authority."""
+
+    def selected_policy(self) -> FakePolicy:
+        policy = FakePolicy()
+        positive, _, transitions = effective_policy.owner_policy.git_read_matrix(
+            effective_policy.Access, effective_policy.Transition,
+            effective_policy.accesses, effective_policy.DOMAINS,
+        )
+        for access in positive:
+            policy.allows[access] = [FakeRule(f"fixed selected {access}")]
+        for transition in transitions:
+            policy.transitions[transition] = [FakeRule(
+                "fixed named transition", default=transition.default,
+                filename_value=transition.filename,
+            )]
+        return policy
+
+    def test_selected_fixed_cells_and_no_automatic_default_change(self) -> None:
+        self.assertEqual(effective_policy._check_git_read_delegation(
+            FAKE_SETOOLS, self.selected_policy(),
+        ), ["git-read-delegation\tselected-fixed-inspection-only"])
+        self.assertNotIn(effective_policy.owner_policy.GIT_READ_RUNTIME,
+                         FakePolicy().attributes["domain"])
+
+    def test_disabled_write_and_foreign_task_read_are_rejected(self) -> None:
+        for access in (
+            effective_policy.Access(effective_policy.owner_policy.GATEWAY,
+                effective_policy.owner_policy.GIT_READ_RUNTIME, "dir", "write"),
+            effective_policy.Access(effective_policy.owner_policy.GATEWAY,
+                "aos_sandbox_storage_t", "file", "read"),
+        ):
+            policy = self.selected_policy()
+            policy.allows[access] = [FakeRule("disabled foreign grant", active=False)]
+            with self.assertRaisesRegex(ValueError, "forbidden selected Git allow"):
+                effective_policy._check_git_read_delegation(FAKE_SETOOLS, policy)
+
+    def test_missing_current_task_cell_cannot_be_replaced_by_type_presence(self) -> None:
+        policy = self.selected_policy()
+        policy.allows[effective_policy.Access(effective_policy.owner_policy.GATEWAY,
+            effective_policy.owner_policy.GIT_READ_CONTROLLER, "file", "open")] = []
+        with self.assertRaisesRegex(ValueError, "missing selected Git allow"):
+            effective_policy._check_git_read_delegation(FAKE_SETOOLS, policy)
+
+
 if __name__ == "__main__":
     unittest.main()

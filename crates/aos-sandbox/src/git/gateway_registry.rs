@@ -25,6 +25,7 @@ use super::http_owner::{
     GitHttpConnectionV1, GitHttpErrorV1, GitHttpRequestV1, RetainedGitHttpConnectionCustodyV1,
 };
 use super::{GitChannelBindingDigestV1, GitSmartRequestV1};
+use super::delegated_read::{GitDelegatedClientV1, NegativeGitResponseV1};
 
 enum EntryV1 {
     Handshake(GitHttpHandshakeOwnerV1),
@@ -48,6 +49,7 @@ pub(super) enum GatewayTransportCauseV1<'a> {
     Accept(&'a io::Error),
     Handshake(GitHttpHandshakeCauseV1<'a>),
     Formed(Option<&'a GitHttpErrorV1>),
+    NegativeDelivery(&'a (dyn std::error::Error + 'static)),
 }
 
 /// Describes explicit local disposal, never a peer or protected Drain ACK.
@@ -68,6 +70,8 @@ pub(super) struct GatewayTransportRegistryV1 {
     funding: GatewayFundingV1,
     failure: Option<LocalFailureV1>,
     retirement_debt: Option<GatewayFundingErrorV1>,
+    delegated_read: bool,
+    delegation: Option<GitDelegatedClientV1>,
 }
 
 impl GatewayTransportRegistryV1 {
@@ -90,6 +94,14 @@ impl GatewayTransportRegistryV1 {
             funding: GatewayFundingV1::new(),
             failure: None,
             retirement_debt: None,
+            delegated_read: false,
+            delegation: None,
+        }
+    }
+
+    pub(super) fn select_delegated_read(&mut self) {
+        if self.entry.is_none() && self.funding.is_vacant() {
+            self.delegated_read = true;
         }
     }
 
@@ -193,6 +205,9 @@ impl GatewayTransportRegistryV1 {
                 return Some(GatewayTransportCauseV1::Formed(owner.handshake_cause()));
             }
             Some(EntryV1::EndedConnection(owner)) => {
+                if let Some(cause) = owner.negative_delivery_failure() {
+                    return Some(GatewayTransportCauseV1::NegativeDelivery(cause));
+                }
                 return Some(GatewayTransportCauseV1::Formed(owner.actual_cause()));
             }
             _ => {}
@@ -232,11 +247,13 @@ impl GatewayTransportRegistryV1 {
     ) -> Result<LocalTransportDisposedV1, GatewayTransportFailedV1> {
         self.end_handshake();
         self.end_connection();
-        let shutdown_debt_observed = self.shutdown_debt().is_some();
+        let shutdown_debt_observed = self.shutdown_debt().is_some()
+            || self.delegation.as_ref().is_some_and(|owner| owner.shutdown_debt_observed());
 
         // Destruction precedes release, including all internal peer/FD clones.
         drop(self.entry.take());
         drop(self.failure.take());
+        drop(self.delegation.take());
         match self.funding.release_destroyed() {
             Ok(()) => Ok(LocalTransportDisposedV1 { shutdown_debt_observed }),
             Err(cause) => {
@@ -380,7 +397,10 @@ impl<'a> ReceiveAttemptV1<'a> {
         }
         let facts = match self.registry.as_mut() {
             Some(registry) => match &mut registry.entry {
-                Some(EntryV1::Formed(owner)) => owner.receive_ready_facts().await,
+                Some(EntryV1::Formed(owner)) => {
+                    if registry.delegated_read { owner.select_delegated_read(); }
+                    owner.receive_ready_facts().await
+                }
                 _ => return Err(GatewayTransportFailedV1),
             },
             None => return Err(GatewayTransportFailedV1),
@@ -390,7 +410,7 @@ impl<'a> ReceiveAttemptV1<'a> {
         self.armed = false;
         match &mut registry.entry {
             Some(EntryV1::Formed(owner)) => owner.ready_view(facts)
-                .map(|request| GatewayReadyLoanV1 { request })
+                .map(|request| GatewayReadyLoanV1 { request, delegation: &mut registry.delegation })
                 .map_err(|_failure| GatewayTransportFailedV1),
             _ => Err(GatewayTransportFailedV1),
         }
@@ -410,9 +430,34 @@ impl Drop for ReceiveAttemptV1<'_> {
 /// Loans only actual original request DATA and its existing bookend engine.
 pub(super) struct GatewayReadyLoanV1<'a> {
     request: GitHttpRequestV1<'a>,
+    delegation: &'a mut Option<GitDelegatedClientV1>,
 }
 
 impl GatewayReadyLoanV1<'_> {
+    pub(super) async fn inspect_delegated(
+        &mut self,
+        admission: &super::gateway_service::startup::GatewayAdmissionV1,
+    ) -> Result<(), super::gateway_service::GitGatewayServiceErrorV1> {
+        use super::gateway_service::GitGatewayServiceErrorV1 as Error;
+
+        let (_, basic) = self.request.delegated_input().ok_or(Error::Runtime)?;
+        let negative = if basic.handle().is_none() {
+            basic.negative()
+        } else {
+            let (uid, gid) = admission.delegation_controller_ids().ok_or(Error::Configuration)?;
+            if self.delegation.is_some() { return Err(Error::Runtime); }
+            *self.delegation = Some(GitDelegatedClientV1::new(uid, gid));
+            let client = self.delegation.as_mut().ok_or(Error::Runtime)?;
+            match client.inspect(&mut self.request, admission).await {
+                Ok(negative) => negative,
+                Err(_) => {
+                    let _queued = self.request.send_negative(NegativeGitResponseV1::Unavailable).await;
+                    return Err(Error::Runtime);
+                }
+            }
+        };
+        self.request.send_negative(negative).await.map_err(|_| Error::Runtime)
+    }
     pub(super) fn principal(&self) -> PrincipalId {
         self.request.peer().principal()
     }

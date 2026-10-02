@@ -156,6 +156,7 @@ pub(crate) mod execution_output_reserve;
 )]
 mod execution_output_storage_reserve;
 mod guest_root;
+mod git_read_inspection;
 #[allow(
     dead_code,
     reason = "Local Nix input custody awaits genuine configured worker and independently floored session ingress"
@@ -214,6 +215,11 @@ struct ControllerBrokerSessions {
 }
 
 enum ControllerCommand {
+    InspectGitRead {
+        original: Box<Option<aos_sandbox::git::delegated_read::GitReadRequestOwnerV1>>,
+        index: usize,
+        reply: tokio::sync::oneshot::Sender<()>,
+    },
     BootstrapPublicCapability {
         peer: aos_sandbox::public_api_session::PublicApiPeer,
         idempotency_key: Vec<u8>,
@@ -962,6 +968,17 @@ fn run_retained_controller(
     }
     complete!(Public);
 
+    if let Some(gateway) = configuration.git_read_inspection {
+        parent.git_read.bind(configuration.uid, configuration.gid, gateway, &worker);
+        let Some(Some(public)) = parent.public.as_ref() else {
+            worker.terminate(ControllerResidentCauseV1::GitRead);
+        };
+        originals.git_read = Some(git_read_inspection::GitReadWorkerInputsV1::new(
+            public.git_read_acceptor(),
+            required!(parent.runtime.as_ref()).handle().clone(),
+        ));
+    }
+
     begin!(Capabilities);
     originals.capabilities = Some(Arc::new(Mutex::new(CapabilityState::starting(node_id))));
     complete!(Capabilities);
@@ -985,6 +1002,9 @@ fn run_retained_controller(
     begin!(Commands);
     let (commands_tx, commands_rx) = mpsc::sync_channel(CONTROLLER_COMMAND_CAPACITY);
     parent.commands = Some(commands_tx);
+    if configuration.git_read_inspection.is_some() {
+        parent.git_read_commands = Some(required!(parent.commands.as_ref()).clone());
+    }
     originals.commands = Some(commands_rx);
     complete!(Commands);
     if !originals.complete_worker_inputs(&parent.stage) {
@@ -1061,6 +1081,12 @@ fn run_retained_controller(
     });
     let _diagnostic_unwind = AbortControllerCustodyUnwindV1;
 
+    let git_read = std::pin::pin!(parent.git_read.serve(
+        parent.git_read_commands.as_ref(),
+        worker.as_ref(),
+    ));
+    let _git_read_unwind = AbortControllerCustodyUnwindV1;
+
     // Only the concrete listener/router enters that future. Runtime remains
     // in the parent, and the receiver stays in its independent original slot.
     begin!(Monitor);
@@ -1075,7 +1101,9 @@ fn run_retained_controller(
     let _stopped: () = runtime.block_on(async {
         let mut public = public;
         let mut diagnostic = diagnostic;
+        let mut git_read = git_read;
         tokio::select! {
+            () = &mut git_read => worker.terminate(ControllerResidentCauseV1::GitRead),
             result = &mut public => {
                 let cause = match result {
                     Err(cause) => ControllerResidentCauseV1::Runtime(cause),
@@ -1114,6 +1142,7 @@ fn run_retained_controller(
 // observed optional absence. The worker only borrows a completed destination.
 #[derive(Default)]
 struct ControllerWorkerOriginalsV1 {
+    git_read: Option<git_read_inspection::GitReadWorkerInputsV1>,
     publisher_attempt: Option<publisher_ingress::PublisherStartupAttemptV1>,
     publisher_registration: Option<Option<publisher_ingress::PublisherRegistrationOwnerV1>>,
     publisher_policy_bootstrap: Option<publisher_policy_source::PublisherPolicyBootstrapAttemptV1>,
@@ -1255,6 +1284,7 @@ impl ControllerWorkerOriginalsV1 {
             genesis: self.genesis.as_ref()?.as_ref(),
             publisher: self.publisher_registration.as_mut()?.as_mut(),
             cache_bootstrap: self.publisher_policy_bootstrap.as_mut(),
+            git_read: self.git_read.as_mut(),
             capabilities: self.capabilities.as_ref()?,
             sessions: self.sessions.as_ref()?,
             commands: self.commands.as_ref()?,
@@ -1275,6 +1305,7 @@ struct ControllerWorkerLoanV1<'owner> {
     genesis: Option<&'owner ProvisionedControllerSourceGenesisInputV1>,
     publisher: Option<&'owner mut publisher_ingress::PublisherRegistrationOwnerV1>,
     cache_bootstrap: Option<&'owner mut publisher_policy_source::PublisherPolicyBootstrapAttemptV1>,
+    git_read: Option<&'owner mut git_read_inspection::GitReadWorkerInputsV1>,
     capabilities: &'owner Arc<Mutex<CapabilityState>>,
     sessions: &'owner SharedControllerBrokerSessions,
     commands: &'owner mpsc::Receiver<ControllerCommand>,
@@ -1282,6 +1313,8 @@ struct ControllerWorkerLoanV1<'owner> {
 }
 
 enum ControllerResidentCauseV1 {
+    // The real native cause and channel/Journal outcomes remain in fixed slots.
+    GitRead,
     Runtime(ControllerRuntimeError),
     Worker(String),
     ReadySend(mpsc::SendError<WorkerEvent>),
@@ -1300,6 +1333,7 @@ enum ControllerResidentCauseV1 {
 impl ControllerResidentCauseV1 {
     fn diagnostic(&self) -> &'static str {
         match self {
+            Self::GitRead => "resident original Git read inspection failure",
             Self::Runtime(_) => "resident Controller startup/server failure",
             Self::Worker(_) => "resident Controller worker failure",
             Self::ReadySend(_) => "resident Controller readiness delivery failure",
@@ -1384,6 +1418,8 @@ struct ControllerParentCustodyV1 {
     thread: Option<std::thread::JoinHandle<()>>,
     monitor: Option<tokio::task::JoinHandle<ControllerMonitorOutcomeV1>>,
     commands: Option<mpsc::SyncSender<ControllerCommand>>,
+    git_read_commands: Option<mpsc::SyncSender<ControllerCommand>>,
+    git_read: git_read_inspection::GitReadIngressV1,
 }
 
 impl ControllerParentCustodyV1 {
@@ -1414,6 +1450,8 @@ impl ControllerParentCustodyV1 {
             thread: None,
             monitor: None,
             commands: None,
+            git_read_commands: None,
+            git_read: git_read_inspection::GitReadIngressV1::new(),
         }
     }
 }
@@ -1602,6 +1640,7 @@ fn controller_worker(
             genesis: source_genesis_input.as_ref(),
             publisher: publisher_registration.as_mut(),
             cache_bootstrap: None,
+            git_read: None,
             capabilities: &capabilities,
             sessions: &sessions,
             commands: &commands,
@@ -1642,6 +1681,7 @@ fn controller_worker_loop(
         genesis: source_genesis_input,
         publisher: mut publisher_registration,
         mut cache_bootstrap,
+        mut git_read,
         capabilities,
         sessions,
         commands,
@@ -1800,6 +1840,16 @@ fn controller_worker_loop(
             wait = wait.min(Duration::from_millis(250));
         }
         match commands.recv_timeout(wait) {
+            Ok(ControllerCommand::InspectGitRead { original, index, reply }) => {
+                // Move the genuine returned owner into its destination before
+                // any ended check, currentness gate or evaluator can fail.
+                let (Some(inputs), Some(bootstrap), Some(terminal)) =
+                    (git_read.as_mut(), cache_bootstrap.as_mut(), custody)
+                else {
+                    std::process::abort();
+                };
+                inputs.inspect(controller, bootstrap, original, index, reply, terminal);
+            }
             Ok(command) => {
                 if custody.is_some_and(|owner| owner.ended.load(Ordering::Acquire)) {
                     return;
@@ -1931,6 +1981,7 @@ fn handle_controller_command(
         return Ok(());
     }
     match command {
+        ControllerCommand::InspectGitRead { .. } => std::process::abort(),
         ControllerCommand::BootstrapPublicCapability {
             peer,
             idempotency_key,
@@ -3304,6 +3355,7 @@ struct RuntimeConfiguration {
     public_api: bool,
     publisher_ingress: bool,
     git_upload_bootstrap: bool,
+    git_read_inspection: Option<(u32, u32)>,
     nix_start_admission: bool,
     issue_source_successor: bool,
 }
@@ -3322,6 +3374,7 @@ impl RuntimeConfiguration {
         let mut public_api = false;
         let mut publisher_ingress = false;
         let mut git_upload_bootstrap = false;
+        let mut git_read_inspection = None;
         let mut nix_start_admission = false;
         let mut issue_source_successor = false;
         for argument in arguments {
@@ -3333,6 +3386,27 @@ impl RuntimeConfiguration {
                 "--issue-source-successor" if !issue_source_successor => {
                     issue_source_successor = true;
                 }
+                value if value.starts_with("--git-read-inspection=")
+                    && git_read_inspection.is_none() => {
+                    let pair = &value["--git-read-inspection=".len()..];
+                    let Some((gateway_uid, gateway_gid)) = pair.split_once(':') else {
+                        return Err(ControllerRuntimeError::InvalidArguments("Git role tuple"));
+                    };
+                    let parse = |value: &str| -> Result<u32, ControllerRuntimeError> {
+                        let parsed = value.parse::<u32>().map_err(|_| {
+                            ControllerRuntimeError::InvalidArguments("Git role identity")
+                        })?;
+                        if parsed == 0 || parsed >= 65_536 || parsed.to_string() != value {
+                            return Err(ControllerRuntimeError::InvalidArguments("Git role identity"));
+                        }
+                        Ok(parsed)
+                    };
+                    let gateway = (parse(gateway_uid)?, parse(gateway_gid)?);
+                    if gateway.0 == uid || gateway.1 == gid {
+                        return Err(ControllerRuntimeError::InvalidArguments("Git roles overlap"));
+                    }
+                    git_read_inspection = Some(gateway);
+                }
                 _ => {
                     return Err(ControllerRuntimeError::InvalidArguments(
                         "unknown or duplicate activation flag",
@@ -3341,7 +3415,8 @@ impl RuntimeConfiguration {
             }
         }
         if issue_source_successor
-            && (public_api || publisher_ingress || nix_start_admission || git_upload_bootstrap)
+            && (public_api || publisher_ingress || nix_start_admission || git_upload_bootstrap
+                || git_read_inspection.is_some())
         {
             return Err(ControllerRuntimeError::InvalidArguments(
                 "issue mode is exclusive",
@@ -3352,6 +3427,11 @@ impl RuntimeConfiguration {
                 "Git bootstrap requires original publisher ingress",
             ));
         }
+        if git_read_inspection.is_some() && !(public_api && publisher_ingress && git_upload_bootstrap) {
+            return Err(ControllerRuntimeError::InvalidArguments(
+                "Git inspection requires public credentials and original Cache bootstrap",
+            ));
+        }
         Ok(Self {
             uid,
             gid,
@@ -3360,6 +3440,7 @@ impl RuntimeConfiguration {
             public_api,
             publisher_ingress,
             git_upload_bootstrap,
+            git_read_inspection,
             nix_start_admission,
             issue_source_successor,
         })
@@ -7607,6 +7688,7 @@ mod tests {
             public_api: false,
             publisher_ingress: false,
             git_upload_bootstrap: false,
+            git_read_inspection: None,
             nix_start_admission: false,
             issue_source_successor: false,
         }
@@ -7624,6 +7706,25 @@ mod tests {
         assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap"]).unwrap().git_upload_bootstrap);
         assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap", "--issue-source-successor"]).is_err());
         assert!(parse(&["--publisher-ingress", "--git-upload-bootstrap", "--git-upload-bootstrap"]).is_err());
+    }
+
+    #[test]
+    fn git_inspection_requires_closed_roles_and_existing_producers() {
+        let parse = |flags: &[&str]| RuntimeConfiguration::from_arguments(
+            ["sandboxd", "979", "979"].into_iter()
+                .chain(flags.iter().copied()).map(str::to_owned),
+        );
+        let flags = ["--public-api", "--publisher-ingress", "--git-upload-bootstrap",
+            "--git-read-inspection=980:980"];
+        assert_eq!(parse(&flags).unwrap().git_read_inspection, Some((980, 980)));
+        assert!(parse(&flags[3..]).is_err());
+        for value in ["--git-read-inspection=979:980", "--git-read-inspection=0:980",
+            "--git-read-inspection=0980:980", "--git-read-inspection=980:65536"]
+        {
+            assert!(parse(&[flags[0], flags[1], flags[2], value]).is_err());
+        }
+        assert!(parse(&[flags[0], flags[1], flags[2], flags[3], flags[3]]).is_err());
+        assert!(parse(&[]).unwrap().git_read_inspection.is_none());
     }
 
     #[tokio::test]

@@ -6,6 +6,8 @@
   ...
 }: let
   cfg = config.aos.sandbox.gitGatewayTransport;
+  inspection = config.aos.sandbox.controllerService.gitReadInspection.enable;
+  controller = config.aos.sandbox.controller;
   selinux = config.aos.security.selinux;
   name = "aos-git-gateway";
   program = "${cfg.package}/bin/aos-sandbox-git-gateway";
@@ -16,7 +18,8 @@
     if cfg.minimumObservedNodeAvailableBytes == null
     then ""
     else toString cfg.minimumObservedNodeAvailableBytes;
-  arguments = [program cfg.endpoint (toString cfg.uid) (toString cfg.gid) policyPath selectedProfile selectedMinimum];
+  arguments = [program cfg.endpoint (toString cfg.uid) (toString cfg.gid) policyPath selectedProfile selectedMinimum]
+    ++ lib.optionals inspection ["--read-scope-inspection" (toString controller.uid) (toString controller.gid)];
   credentialNames = {
     serverCert = "public-api-server-cert";
     serverKey = "public-api-server-key";
@@ -137,7 +140,7 @@ in {
           && (service.FileDescriptorStoreMax or null) == 0
           && (service.ReadWritePaths or []) == [] && (service.BindPaths or []) == []
           && (service.StateDirectory or []) == [] && (service.RuntimeDirectory or []) == []
-          && (service.ProtectProc or null) == "invisible" && (service.ProcSubset or null) == "all"
+          && (service.ProtectProc or null) == (if inspection then "default" else "invisible") && (service.ProcSubset or null) == "all"
           && (service.RootDirectory or "") == "" && (service.RootImage or "") == ""
           && (service.RestrictAddressFamilies or []) == ["AF_UNIX" "AF_INET" "AF_INET6"];
         message = "Gateway final unit must retain the fixed dedicated launch, credential delivery, two-slot hard envelope and read-only confinement without owner/helper authority.";
@@ -197,7 +200,7 @@ in {
         PrivateTmp = true;
         ProtectSystem = "strict";
         ProtectHome = true;
-        ProtectProc = "invisible";
+        ProtectProc = if inspection then "default" else "invisible";
         # Original clocks and advisory node-memory reads need global proc files.
         # No proc networking allocator or reservation authority is inferred.
         ProcSubset = "all";

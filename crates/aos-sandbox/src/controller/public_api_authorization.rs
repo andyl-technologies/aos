@@ -24,6 +24,36 @@ use crate::cli_model::authorization_adapter::{
 use crate::public_api_session::PublicApiPeer;
 use crate::public_mutation_compiler::ResolvedPublicMutationRequestV1;
 
+/// Inspects an original fixed Gateway request against the sole protected engine.
+/// The opaque owner, not received scalar fields, establishes its live origin.
+/// No public mutation/operation authorization object is constructed here.
+#[cfg(target_os = "linux")]
+pub(crate) fn inspect_original_gateway_git_read_v1(
+    journal: &mut crate::Journal,
+    original: &mut crate::git::delegated_read::GitReadRequestOwnerV1,
+    acceptor: &crate::public_api_session::PublicApiSessionAcceptor,
+) {
+    use crate::publisher_authority::PublisherCapabilityRegistry;
+
+    let facts = match original.begin_evaluation(acceptor) {
+        Ok(facts) => facts,
+        Err(cause) => { original.decision = Some(Err(cause)); return; }
+    };
+    let lookup = (|| {
+        let registry = PublisherCapabilityRegistry::load(journal, PublisherAuthorityLimits::default())?;
+        registry.resolve_holder_handle(&facts.holder, facts.principal, facts.binding)
+    })();
+    let capability = match lookup {
+        Ok(capability) => capability,
+        Err(cause) => {
+            original.lookup_failure = Some(cause);
+            original.decision = Some(Err(CliAuthorizationAdapterError::ProtectedAuthorizationRejected));
+            return;
+        }
+    };
+    original.evaluate_current(journal, capability, facts);
+}
+
 /// Authorizes one resolved public mutation using the sole protected journal.
 ///
 /// This helper is the only bridge from endpoint resolution into the dormant
