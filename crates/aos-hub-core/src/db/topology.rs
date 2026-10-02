@@ -509,11 +509,11 @@ fn canonical_json<T: Serialize>(value: &T) -> Result<String> {
     serde_json::to_string(value).context("serializing canonical topology configuration")
 }
 
-fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
+pub(super) fn sha256_hex(bytes: impl AsRef<[u8]>) -> String {
     hex::encode(Sha256::digest(bytes.as_ref()))
 }
 
-fn validate_stable_id(value: &str, field: &str) -> Result<()> {
+pub(super) fn validate_stable_id(value: &str, field: &str) -> Result<()> {
     if value.is_empty() || value.len() > 64 {
         bail!("{field} must contain 1..=64 bytes");
     }

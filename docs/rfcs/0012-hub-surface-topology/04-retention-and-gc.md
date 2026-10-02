@@ -435,9 +435,10 @@ Registry deletion requires an empty catalog, but signed releases and tags are
 permanent roots of ordinary collection. A reviewed *retiring* run drops the
 catalog-owned roots (signed releases, tags, retained tag history) and collects
 without grace. It fails closed while any enabled route serves the registry's
-OCI surface, at planning and inside the apply transaction, and once it is
-applying the indexer refuses to re-project container-release roots for that
-registry. Every physical deletion of a retiring run uses the same inventory,
+OCI surface, including an enabled registry OCI namespace or an enabled instance
+OCI route that names the registry as its default, at planning and inside the
+apply transaction, and once it is applying the indexer refuses to re-project
+container-release roots for that registry. Every physical deletion of a retiring run uses the same inventory,
 capability, and finalization fences as an ordinary run.
 
 An OCI GC run is `planned` after review, `applying` once apply tombstones its

@@ -314,6 +314,16 @@ mod connect_path_tests {
                 "retire_registry",
             ]
         );
+        assert_eq!(request_fields("GetContainerNamespace"), ["registry"]);
+        assert_eq!(
+            request_fields("PlanSetContainerNamespace"),
+            [
+                "registry",
+                "enabled",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+        );
         assert_eq!(
             request_fields("CancelContainerGcRun"),
             [
@@ -397,7 +407,7 @@ mod connect_path_tests {
             .filter(|descriptor| descriptor.service == "ContainerService")
             .map(|descriptor| descriptor.method)
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(methods.len(), 47);
+        assert_eq!(methods.len(), 50);
         for method in [
             "ListContainerRepositories",
             "GetContainerRepository",
@@ -432,6 +442,9 @@ mod connect_path_tests {
             "PlanContainerRegistryPurgeFence",
             "ApplyContainerRegistryPurgeFence",
             "GetContainerRegistryPurgeFence",
+            "GetContainerNamespace",
+            "PlanSetContainerNamespace",
+            "SetContainerNamespace",
         ] {
             assert!(
                 methods.contains(method),

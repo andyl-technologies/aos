@@ -12,9 +12,9 @@ use aos_remote::{HubClient, hub_types};
 use crate::cli::{
     HubAccessArgs, HubContainerCmd, HubContainerGcCmd, HubContainerGcPurgeFenceCmd,
     HubContainerGcUntrackedCmd, HubContainerLayerCmd, HubContainerManifestCmd,
-    HubContainerPlatformCmd, HubContainerProvenanceCmd, HubContainerPublicationCmd,
-    HubContainerReferrerCmd, HubContainerRepositoryCmd, HubContainerRetentionCmd,
-    HubContainerTagCmd,
+    HubContainerNamespaceCmd, HubContainerPlatformCmd, HubContainerProvenanceCmd,
+    HubContainerPublicationCmd, HubContainerReferrerCmd, HubContainerRepositoryCmd,
+    HubContainerRetentionCmd, HubContainerTagCmd,
 };
 
 use super::hub::{
@@ -40,7 +40,97 @@ pub async fn run(printer: &Printer, command: &HubContainerCmd) -> Result<()> {
         HubContainerCmd::Provenance { command } => provenance(printer, command).await,
         HubContainerCmd::Retention { command } => retention(printer, command).await,
         HubContainerCmd::Gc { command } => gc(printer, command).await,
+        HubContainerCmd::Namespace { command } => namespace(printer, command).await,
     }
+}
+
+/// Handles `aos hub registry container namespace …`.
+async fn namespace(printer: &Printer, command: &HubContainerNamespaceCmd) -> Result<()> {
+    match command {
+        HubContainerNamespaceCmd::Show { access, registry } => {
+            let client = client(access).await?;
+            topology_read::<_, hub_types::ContainerNamespaceResponse>(
+                printer,
+                &client,
+                Method::GetContainerNamespace,
+                &hub_types::GetContainerNamespaceRequest {
+                    registry: registry.clone(),
+                },
+            )
+            .await
+        }
+        HubContainerNamespaceCmd::Enable {
+            access,
+            registry,
+            mutation,
+        } => namespace_mutation(printer, access, registry.as_deref(), true, mutation).await,
+        HubContainerNamespaceCmd::Disable {
+            access,
+            registry,
+            mutation,
+        } => namespace_mutation(printer, access, registry.as_deref(), false, mutation).await,
+    }
+}
+
+/// Plans or applies one namespace exposure change.
+///
+/// The current resource version is read from the Hub unless `--if-version`
+/// pins it, so an operator can enable or disable without a prior show.
+async fn namespace_mutation(
+    printer: &Printer,
+    access: &HubAccessArgs,
+    registry: Option<&str>,
+    enabled: bool,
+    mutation: &crate::cli::HubMutationArgs,
+) -> Result<()> {
+    let client = client(access).await?;
+    let request = if mutation.plan_id.is_some() {
+        hub_types::PlanSetContainerNamespaceRequest::default()
+    } else {
+        let registry = registry.context("namespace changes require REGISTRY when creating a plan")?;
+        let expected_resource_version = match mutation.if_version.clone() {
+            Some(version) => version,
+            None => {
+                let current: hub_types::ContainerNamespaceResponse = client
+                    .call_topology(
+                        Method::GetContainerNamespace,
+                        &hub_types::GetContainerNamespaceRequest {
+                            registry: registry.to_string(),
+                        },
+                    )
+                    .await?;
+                current
+                    .namespace
+                    .context("the Hub returned no container namespace")?
+                    .resource_version
+            }
+        };
+        hub_types::PlanSetContainerNamespaceRequest {
+            registry: registry.to_string(),
+            enabled,
+            expected_resource_version,
+            idempotency_key: new_idempotency_key(),
+        }
+    };
+    topology_mutation::<
+        _,
+        hub_types::ApplyTopologyPlanRequest,
+        hub_types::ContainerNamespaceResponse,
+        _,
+    >(
+        printer,
+        &client,
+        Method::PlanSetContainerNamespace,
+        Method::SetContainerNamespace,
+        &request,
+        mutation,
+        |plan_id, idempotency_key, confirmation_hash| hub_types::ApplyTopologyPlanRequest {
+            plan_id: plan_id.into(),
+            idempotency_key: idempotency_key.into(),
+            confirmation_hash: confirmation_hash.into(),
+        },
+    )
+    .await
 }
 
 async fn client(access: &HubAccessArgs) -> Result<HubClient> {
