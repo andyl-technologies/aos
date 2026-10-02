@@ -508,7 +508,7 @@ fn read_only_system_registry_update_persists_state_in_user_override() -> Result<
     fs::create_dir_all(registry.join("packages/h"))?;
     git_ok(
         &registry,
-        &["init", "--object-format=sha256"],
+        &["init", "--object-format=sha256", "--initial-branch=main"],
         "initializing registry",
     )?;
     git_ok(
@@ -565,7 +565,9 @@ references = []
     fs::write(
         &system_config,
         format!(
-            "[registry]\nname = \"readonly-update\"\nurl = \"file://{}\"\npriority = 500\n\n[registry.signing]\nrequired = false\n",
+            // Implicit tracking selects a signed channel release, so this
+            // unsigned fixture follows its branch explicitly.
+            "[registry]\nname = \"readonly-update\"\nurl = \"file://{}\"\nbranch = \"main\"\npriority = 500\n\n[registry.signing]\nrequired = false\n",
             registry.display()
         ),
     )?;
