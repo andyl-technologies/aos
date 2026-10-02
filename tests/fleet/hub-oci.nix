@@ -1746,6 +1746,7 @@ in {
           --key-id initial \
           --no-commit
         mkdir -p /var/lib/hub-oci-container-fixtures
+        printf '%s\n' "$trust" > /var/lib/hub-oci-container-fixtures/trust-key
         NIX_CONFIG='experimental-features = nix-command' \
           "$APR" cache generate \
           --registry hub-oci-runtime \
@@ -1837,9 +1838,16 @@ in {
         "hub:8443/aos:stable --hub https://hub:8443",
         timeout=900,
     )
+    # Default-channel selection verifies signed channel partitions, so the
+    # consumer pins the fixture registry's signing key instead of skipping
+    # verification.
+    runtime_trust_key = consumer.succeed(
+        "cat /var/lib/hub-oci-container-fixtures/trust-key"
+    ).strip()
     consumer.succeed(
         "${nerdctl} exec aos-hub-runtime /usr/bin/apm registry add "
-        "--no-verify file:///fixtures/registry --name hub-oci-runtime"
+        f"--trust-key '{runtime_trust_key}' file:///fixtures/registry "
+        "--name hub-oci-runtime"
     )
     consumer.succeed(
         "${nerdctl} exec aos-hub-runtime /usr/bin/apm install "
