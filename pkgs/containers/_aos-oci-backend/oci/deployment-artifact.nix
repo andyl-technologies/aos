@@ -9,6 +9,7 @@
 }: {
   pkgs ? null,
   packages ? [],
+  packageArtifacts ? lib.packageModules.payloads packages,
   evaluated ? null,
   platform ? null,
   targetPlatform ? null,
@@ -36,7 +37,7 @@
     then evaluationInput
     else
       lib.build.evaluationInput {
-        inherit lib pkgs packages scope configuration runtimeConfiguration osRelease;
+        inherit lib pkgs packages packageArtifacts scope configuration runtimeConfiguration osRelease;
         system = lib.platform.system;
       };
   nativeEvaluation =
@@ -46,7 +47,7 @@
     then evaluated
     else
       lib.evalPackageModules {
-        inherit packages scope osRelease;
+        inherit packages packageArtifacts scope osRelease;
         enforceOsRequirements = true;
         operatorModules = operatorModules ++ configuration;
         runtimeModules = runtimeConfiguration;
@@ -62,7 +63,7 @@
     then null
     else
       import ../deployment-bundle.nix {
-        inherit lib pkgs packages scope configuration runtimeConfiguration osRelease;
+        inherit lib pkgs packages packageArtifacts scope configuration runtimeConfiguration osRelease;
         evaluationInput = preparedInput;
         inherit (evaluatedTransaction) graph system inputs retire;
       };

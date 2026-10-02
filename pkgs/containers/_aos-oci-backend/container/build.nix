@@ -216,7 +216,8 @@
       lib.build.evaluationInput {
         inherit lib pkgs configuration runtimeConfiguration;
         osRelease = hostOsRelease;
-        packages = container.packageRoots;
+        packages = container.packageModules;
+        packageArtifacts = lib.packageModules.payloads container.packageRoots;
         scope = ["container" container.name];
         system = lib.platform.system;
       };
@@ -224,7 +225,8 @@
     osRelease = hostOsRelease;
     enforceOsRequirements = true;
     scope = ["container" container.name];
-    packages = container.packageRoots;
+    packages = container.packageModules;
+    packageArtifacts = lib.packageModules.payloads container.packageRoots;
     operatorModules = operatorModules ++ configuration;
     runtimeModules = runtimeConfiguration;
     evaluationInput = preparedInput;
@@ -237,7 +239,8 @@
     evaluated = evaluatedDeployment;
     evaluationInput = preparedInput;
     inherit configuration runtimeConfiguration;
-    packages = container.packageRoots;
+    packages = container.packageModules;
+    packageArtifacts = lib.packageModules.payloads container.packageRoots;
     scope = ["container" container.name];
     platform = {inherit (container.platform) os architecture;};
     runtimeRoots = auditRoots;

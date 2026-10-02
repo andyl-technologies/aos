@@ -35,6 +35,7 @@
           ;
         pkgs = args.pkgs;
         packages = args.packages;
+        packageArtifacts = args.packageArtifacts or (lib.packageModules.payloads args.packages);
         evaluated = args.evaluated or null;
         configuration = args.configuration or [];
         runtimeConfiguration = args.runtimeConfiguration or [];

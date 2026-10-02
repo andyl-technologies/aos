@@ -214,6 +214,7 @@
   testingFilePaths = map (file: file.path) testingAos.filesystem.files;
   testingFileText = lib.concatMapStringsSep "\n" (file: file.text) testingAos.filesystem.files;
   containerFilePaths = map (file: file.path) aos.filesystem.files;
+  containerNodes = builtins.attrValues (builtins.head server.config.system.build.containers.aos.deploymentArtifact.platforms).transaction.graph.nodes;
 in
   assert aos.name == "aos";
   assert !aos.runtimePolicy.allowTestArtifacts;
@@ -232,6 +233,19 @@ in
   == "systems.container-eval.build.containers.aos";
   assert map builtins.toString aos.packageRoots
   == map builtins.toString (lib.uniqueBy builtins.toString (builtins.concatMap (layer: layer.roots) aos.layers));
+  assert builtins.elem (builtins.toString pkgs.aos-filesystem-provider) (map builtins.toString aos.packageModules);
+  assert !(builtins.elem (builtins.toString pkgs.aos-filesystem-provider) (map builtins.toString aos.packageRoots));
+  assert builtins.elem (builtins.toString pkgs.aos-configuration-provider) (map builtins.toString aos.packageModules);
+  assert !(builtins.elem (builtins.toString pkgs.aos-configuration-provider) (map builtins.toString aos.packageRoots));
+  assert !(builtins.elem (builtins.toString pkgs.systemd) (map builtins.toString aos.packageModules));
+  assert builtins.all (node:
+    builtins.elem (builtins.elemAt node.identity 3) ["filesystem" "configuration" "nixStoreDatabase"])
+  containerNodes;
+  assert builtins.all (layer: let
+    paths = map builtins.toString layer.subtractRoots;
+  in
+    builtins.length paths == builtins.length (lib.unique paths))
+  aos.layers;
   assert map builtins.toString (builtins.elemAt aos.layers 1).roots
   == slicePaths;
   assert builtins.all (path: builtins.elem path systemProfilePaths) slicePaths;

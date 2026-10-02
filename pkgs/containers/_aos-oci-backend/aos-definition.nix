@@ -25,6 +25,9 @@ in {
     # outputs are not necessarily members of the selected system slice, and a
     # daemonless container must retain them across an explicit APM/Nix GC.
     inherit packageRoots;
+    # Available handlers retain their implementations only when selected by
+    # the checked graph, rather than installing the host provider set.
+    packageModules = lib.uniqueBy builtins.toString (packageRoots ++ [pkgs.aos-filesystem-provider pkgs.aos-configuration-provider]);
     layers = [
       {
         name = "runtime-core";
@@ -38,7 +41,7 @@ in {
       {
         name = "aos-cli";
         roots = cliRoots;
-        subtractRoots = coreRoots ++ shellRoots ++ systemPackageSlice;
+        subtractRoots = lib.uniqueBy builtins.toString (coreRoots ++ shellRoots ++ systemPackageSlice);
       }
     ];
 
