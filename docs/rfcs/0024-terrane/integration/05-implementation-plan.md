@@ -270,7 +270,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   complete path semantics without changing fields or encoded bytes. Five new
   source regressions pass, including actual version-1/version-2 encoders from
   completed legacy evidence. The 37-case hermetic selector gate, `core-no-std`
-  and mandatory formatting pass. Full core/strict qualification remains live;
+  and mandatory formatting pass. Full core Nextest passes all 474 tests;
+  strict Clippy/rustdoc qualification remains live;
   the actual aggregate still rejects the absent `format_properties` target.
   The shared `core-fuzz` gate also requires two exact private signature-omission
   properties and three private disclosure/context/side-evidence encoder
@@ -317,6 +318,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   fails `index-generation-manifest`'s legacy-state compatibility assertion.
   Neither failure proves the remaining native disclosure gates green; no
   task or milestone advances.
+  An independent collection-record generator now constructs 20 wire models
+  from CDDL fields and the registered GC-7 hint rule: lease, roots, mark,
+  checkpoint state, tombstone and generation manifest, including five negative
+  inputs. Source-built Python passes explicit CBOR/hint oracles and temporary
+  reference insertion, preservation, overwrite-refusal and tamper-rejection
+  checks. The hermetic `collection-reference-generator` check runs those
+  primitive oracles and emits all models using only the AOS Python package.
+  Its output is preparation for the remaining reference corpus;
+  publication and actual Rust model/decoder comparisons remain pending.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

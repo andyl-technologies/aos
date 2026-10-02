@@ -184,4 +184,5 @@ in {
   integration.local-workflow-ext4 = import ./local-workflow-ext4.nix {inherit pkgs lib;};
   integration.publication-format-vectors = import ./publication-vectors.nix {inherit sourceGate;};
   integration.pack-format-vectors = import ./pack-vectors.nix {inherit sourceGate;};
+  integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
 }
