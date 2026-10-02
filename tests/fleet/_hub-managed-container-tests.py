@@ -36,7 +36,7 @@ class ProducerTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.coordinates = {"runId": RUN, "clientRoot": str(self.root), "workerOrigin": ORIGIN}
-        self.source = {"helperSha256": "b" * 64, "sourceCommit": "1" * 40,
+        self.source = {"helperSha256": "b" * 64, "sourceCommit": "1" * 64,
             "surfaceRoot": str(self.root / "surface"), "registryRoot": str(self.root / "registry"),
             "finalized": {"index_digest": "sha256:" + "c" * 64, "release_identity": "1.0.0",
                 "release": str(self.root / "release.json"), "layout": str(self.root / "layout"),
@@ -52,7 +52,7 @@ class ProducerTests(unittest.TestCase):
 
     def test_actual_pipeline_waits_for_exact_index_before_final_publish(self):
         calls = []
-        signed_commit = "2" * 40
+        signed_commit = "2" * 64
 
         class Controls:
             def call(self, service, method, request):
@@ -77,11 +77,11 @@ class ProducerTests(unittest.TestCase):
 
         class Controls:
             def call(self, *arguments):
-                return {"registry": {"indexState": "fresh", "lastIndexedCommit": "9" * 40}}
+                return {"registry": {"indexState": "fresh", "lastIndexedCommit": "9" * 64}}
 
         def guest(client, tools, coordinates, action, **values):
             actions.append(action)
-            return {"sourceCommit": "2" * 40}
+            return {"sourceCommit": "2" * 64}
 
         with patch.object(producer, "_guest", side_effect=guest), \
                 patch.object(producer.time, "monotonic", side_effect=[0, 241]):
@@ -135,7 +135,7 @@ class ProducerTests(unittest.TestCase):
             if label == "signed-commit":
                 output = root / "test-signed-commit"
                 output.mkdir()
-                (output / "stdout.private").write_text("2" * 40 + "\n")
+                (output / "stdout.private").write_text("2" * 64 + "\n")
                 return output
 
         with patch.object(producer, "_run", side_effect=execute):
@@ -143,8 +143,10 @@ class ProducerTests(unittest.TestCase):
         self.assertEqual(commands[0][2], TOOLS["aosStorePath"])
         release = commands[1]
         self.assertIn("--container-release", release)
+        self.assertEqual(release[release.index("--channel") + 1], "stable")
+        self.assertIn("--init-channel", release)
         self.assertIn(self.source["finalized"]["signature_input"], release)
-        self.assertEqual(result["sourceCommit"], "2" * 40)
+        self.assertEqual(result["sourceCommit"], "2" * 64)
 
     def test_final_publication_requires_actual_ready_and_exact_index(self):
         selected = self.selection("publish")
@@ -153,15 +155,15 @@ class ProducerTests(unittest.TestCase):
                 producer._publish_action(self.root, selected, {})
         run.assert_not_called()
         self.retain("registry-upload-result.private.json", {"state": "ready"})
-        self.retain("signed-source.json", {"sourceCommit": "2" * 40})
-        self.retain("index-observations.json", [{"indexState": "fresh", "lastIndexedCommit": "2" * 40}])
+        self.retain("signed-source.json", {"sourceCommit": "2" * 64})
+        self.retain("index-observations.json", [{"indexState": "fresh", "lastIndexedCommit": "2" * 64}])
         with patch.object(producer, "_run", return_value={"index_digest": "sha256:" + "c" * 64,
                 "verified_release_root": "sha256:" + "c" * 64, "verification": "pending"}):
             with self.assertRaisesRegex(ValueError, "verified ready"):
                 producer._publish_action(self.root, selected, {})
 
     def test_registry_upload_uses_actual_flat_data_result(self):
-        self.retain("signed-source.json", {"sourceCommit": "2" * 40})
+        self.retain("signed-source.json", {"sourceCommit": "2" * 64})
         with patch.object(producer, "_run", return_value={"data": {"state": "ready", "publication_id": "actual"}}):
             result = producer._publish_action(self.root, self.selection("registry-upload"), {})
         self.assertEqual(result["publication_id"], "actual")
@@ -200,7 +202,7 @@ class ProducerTests(unittest.TestCase):
                     "release": str(finalized / "release.json"),
                     "signature_input": str(finalized / "signature-input.json")}
             if label == "initial-commit":
-                (output / "stdout.private").write_text("1" * 40 + "\n")
+                (output / "stdout.private").write_text("1" * 64 + "\n")
             return output
 
         with patch.object(producer, "_run", side_effect=execute), \
@@ -212,12 +214,60 @@ class ProducerTests(unittest.TestCase):
         self.assertIn("--local", commands[2][1])
         self.assertNotIn("--global", commands[2][1])
         self.assertIn("aos-container-signature-dsse-v1", commands[5][1])
-        self.assertEqual(result["sourceCommit"], "1" * 40)
+        self.assertEqual(result["sourceCommit"], "1" * 64)
         self.assertEqual(result["trustKey"], "containers:Ed25519:controlled")
+
+    def documentation(self, *, options=None, identity_digest=None):
+        package = {"storePath": "/nix/store/selected-hub", "version": "0.1.0",
+            "baseLib": "/nix/store/selected-base-lib"}
+        body = json.dumps({"schema": "aos.package-documentation/v1",
+            "options": [{"path": "aos.hub.enable"}] if options is None else options}).encode()
+        source = self.root / "canonical-document"
+        source.write_bytes(body)
+        digest = hashlib.sha256(body).hexdigest()
+        registry = self.root / "documentation-registry"
+        (registry / "packages/a").mkdir(parents=True)
+        identity = {"store_path": str(source), "document_sha256": "sha256:" + (identity_digest or digest),
+            "document_size": len(body)}
+        (registry / "packages/a/aos-hub.toml").write_text(
+            '[[versions]]\nversion = "0.1.0"\n[versions.platforms.x86_64-linux.documentation]\n'
+            + ''.join(name + ' = ' + json.dumps(value) + '\n' for name, value in identity.items()))
+        return package, body, registry
+
+    def test_documentation_is_real_publish_command_then_independent_canonical_read(self):
+        package, body, registry = self.documentation()
+        with patch.object(producer, "_run") as run:
+            result = producer._prepare_documentation(self.root, {},
+                {**TOOLS, "documentedPackage": package}, registry)
+        command = run.call_args.args[3]
+        self.assertEqual(command[:3], [TOOLS["apr"], "publish", package["storePath"]])
+        self.assertEqual(command[command.index("--documentation-base-lib") + 1], package["baseLib"])
+        self.assertEqual(Path(result["file"]).read_bytes(), body)
+        self.assertEqual(Path(result["file"]).stat().st_mode & 0o777, 0o600)
+        self.assertEqual(result["sha256"], hashlib.sha256(body).hexdigest())
+
+    def test_documentation_refuses_noncanonical_identity_or_empty_option_content(self):
+        for options, identity_digest in (([], None), (None, "a" * 64)):
+            with self.subTest(options=options, digest=identity_digest):
+                with tempfile.TemporaryDirectory() as temporary:
+                    previous = self.root
+                    self.root = Path(temporary)
+                    package, _, registry = self.documentation(options=options, identity_digest=identity_digest)
+                    with patch.object(producer, "_run"), self.assertRaisesRegex(ValueError, "canonical option"):
+                        producer._prepare_documentation(self.root, {}, {**TOOLS, "documentedPackage": package}, registry)
+                    self.assertFalse((self.root / "document.private.json").exists())
+                    self.root = previous
+
+    def test_documentation_rejects_unselected_source_before_command(self):
+        for selected in ({"storePath": "/host/hub", "version": "0.1.0", "baseLib": "/nix/store/base"},
+                {"storePath": "/nix/store/hub", "version": "0.1.0", "baseLib": "/nix/store/base", "extra": True}):
+            with patch.object(producer, "_run") as run, self.assertRaises(ValueError):
+                producer._prepare_documentation(self.root, {}, {**TOOLS, "documentedPackage": selected}, self.root)
+            run.assert_not_called()
 
     def test_source_drift_refuses_before_external_command(self):
         selected = self.selection("stage")
-        selected["source"] = {**self.source, "sourceCommit": "4" * 40}
+        selected["source"] = {**self.source, "sourceCommit": "4" * 64}
         with patch.object(producer, "_run") as run:
             with self.assertRaisesRegex(ValueError, "selection changed"):
                 producer._publish_action(self.root, selected, {})

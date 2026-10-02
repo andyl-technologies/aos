@@ -10,6 +10,7 @@
     inherit (aos) lib mkSystem pkgs;
     inherit separateDatabase;
     externalDirect = true;
+    runtimeSource = source;
   };
   # Retain the exact authored test phase while constructing the ordinary
   # derivation. Its manifest and Python inputs include the image/helper closure.

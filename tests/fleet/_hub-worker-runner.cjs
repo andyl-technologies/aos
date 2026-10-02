@@ -11,7 +11,7 @@ const path = require('node:path');
 function acceptanceRegistryServer(
   runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation,
   ociAnchorCreation, ociAcceptanceStaging, publicDocumentCacheObservation,
-  managedCleanupFixtureInstallation,
+  managedCleanupFixtureInstallation, managedGcObservation,
 ) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
@@ -20,6 +20,7 @@ function acceptanceRegistryServer(
   const sockets = new Set();
   let ociStagingActive = false;
   let publicCacheActive = false;
+  let managedGcActive = false;
   let managedCleanupActive = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     sockets.add(socket);
@@ -59,6 +60,23 @@ function acceptanceRegistryServer(
             socket.end(JSON.stringify(await publicDocumentCacheObservation(request)) + '\n');
           } finally {
             publicCacheActive = false;
+          }
+          return;
+        }
+        if (request.version === 1
+            && ['managed-gc-snapshot', 'managed-gc-positive-replay'].includes(request.kind)) {
+          if (!managedGcObservation) throw new Error('Managed GC observation is not configured');
+          if (managedGcActive) throw new Error('Managed GC observation is already active');
+          managedGcActive = true;
+          try {
+            const result = await managedGcObservation(request);
+            const body = JSON.stringify(result) + '\n';
+            if (Buffer.byteLength(body) > 1024 * 1024) {
+              throw new Error('Managed GC response exceeds its bound');
+            }
+            socket.end(body);
+          } finally {
+            managedGcActive = false;
           }
           return;
         }
@@ -769,7 +787,7 @@ async function main() {
     certificatePath, privateKeyPath, queueObservationPath, namespaceObservationPath,
     acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled,
     ociSdkAcceptanceRegistryKey, publicDocumentCacheCase, publicDocumentCacheObserverPath,
-    managedCleanupInstallerPath, ...options
+    managedGcObserverSelection, managedGcObserverPath, managedCleanupInstallerPath, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
@@ -848,6 +866,23 @@ async function main() {
       writeFileSync(`${namespaceObservationPath}.${process.pid}.json`,
         JSON.stringify(await namespaceObservation()) + '\n', { flag: 'wx', mode: 0o600 });
     }
+    let managedGcObserver;
+    const managedGcObservation = async request => {
+      if (typeof managedGcObserverPath !== 'string'
+          || !managedGcObserverPath.startsWith('/nix/store/')) {
+        throw new Error('Managed GC requires an explicit immutable fixture module');
+      }
+      if (!managedGcObserver) {
+        ociHashFile(managedGcObserverPath, 64 * 1024);
+        const { createManagedGcObserver } = require(managedGcObserverPath);
+        managedGcObserver = await createManagedGcObserver(runtime, options, configurationBytes,
+          managedGcObserverSelection,
+          () => observeOciSdkNamespace(runtime, load, options, configurationBytes,
+            ociSdkNamespaceObservation, configurationPath), namespaceObservation);
+      }
+      return request.kind === 'managed-gc-snapshot'
+        ? managedGcObserver.snapshot(request) : managedGcObserver.physicalReplay(request);
+    };
     if (acceptanceSocketPath) {
       acceptanceServer = acceptanceRegistryServer(
         runtime, acceptanceSocketPath, options.bindings, namespaceObservation,
@@ -883,6 +918,7 @@ async function main() {
                 ...receipt, installerSha256: installer.sha256,
               }));
         },
+        managedGcObserverSelection ? managedGcObservation : undefined,
       );
       await acceptanceServer.ready;
     }

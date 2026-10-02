@@ -602,7 +602,7 @@ def prepare_direct_client_provider_policy(client, tools, credentials):
 
 
 def run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
-                                   authority, process, identity, acceptance):
+                                   authority, process, identity, acceptance, database_machine):
     """Publish the real signed business corpus and retain runtime gates separately."""
     tools = prepare_direct_client_provider_policy(client, tools, credentials)
     sources = {}
@@ -829,6 +829,10 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
     assert native_bulk["nativeBulkBytes"] == 0, native_bulk
     summary["nativeBulkAssessment"] = native_bulk
     retain_direct_flow("actual-publication-assessed.json", summary)
+    summary["stalePlacementCommitRefusal"] = qualify_direct_stale_index(
+        native, worker, client, database_machine, tools, controls, registries["a"], sources["a"],
+        process, tools["installedRuntimeArtifacts"])
+    retain_direct_flow("actual-publication-with-stale-index-refusal.json", summary)
     # The HTTP byte totals and consumed stream counters are independent actual
     # measurements. Their distinction remains explicit in the retained ledger.
     print("Actual External publication measurements and scoped Native bulk assessment retained:",
@@ -841,7 +845,8 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     """Execute the genuine External path with no legacy snapshot/material shortcut."""
     private_guest_command(worker, "umask 077; install -d -m 0700 /var/lib/hybrid-worker")
     artifacts = capture_direct_artifacts(worker, tools)
-    tools = {**tools, "installedNativeExecutableSha256": artifacts["files"]["nativeHub"]["sha256"]}
+    tools = {**tools, "installedNativeExecutableSha256": artifacts["files"]["nativeHub"]["sha256"],
+        "installedRuntimeArtifacts": artifacts}
     artifact_sha = retain_direct_flow("immutable-artifacts.json", artifacts)
     native_trust = observe_direct_native_trust(native, tools, artifacts, "bootstrap")
     initial_review = await_direct_review("external-installation-inputs", {
@@ -944,7 +949,9 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     })
     observe_direct_native_trust(native, tools, artifacts, "accepted-runtime")
     publication = run_external_direct_publication(client, native, worker, s3, tools, controls, credentials,
-        authority, process, identity, acceptance)
+        authority, process, identity, acceptance, database_machine)
+    managed = run_managed_pair_window(client, native, worker, database_machine, tools,
+        database_host, original_configuration, artifacts)
     issuer_lifecycle = run_direct_issuer_lifecycle(native, worker, tools, shared_controls, authority)
     issuer_cutoff = run_direct_issuer_cutoff(native, worker, tools, shared_controls, controls, authority)
     failures = run_direct_dependency_outages(client, native, worker, database_machine, tools, process)
@@ -953,7 +960,9 @@ def run_external_direct_fleet(client, native, worker, s3, database_machine, tool
     # Cold startup has no supported reviewed clock-session resolution. Observe
     # its real refusal last so the live issuer supports the other scenarios.
     cold_refusal = run_direct_issuer_terminal_refusal(native, worker, tools, shared_controls, authority)
+    lease_scale = run_direct_lease_scale_window(client, native, worker, database_machine,
+        tools, database_host, artifacts)
     return {"publication": publication, "queueRestart": queue_restart, "nativePrebody": prebody,
             "issuerLifecycle": issuer_lifecycle, "issuerCutoff": issuer_cutoff,
             "dependencyFailures": failures, "browserSession": browser,
-            "terminalColdRefusal": cold_refusal}
+            "terminalColdRefusal": cold_refusal, "managedR2Window": managed, "leaseScale": lease_scale}

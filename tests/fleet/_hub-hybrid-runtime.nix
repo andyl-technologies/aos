@@ -12,7 +12,7 @@
   fixture = import (fixtureSource + "/tests/fleet/hub-hybrid.nix") {
     inherit (runtime) lib mkSystem;
     pkgs = runtimePkgs;
-    inherit separateDatabase externalDirect;
+    inherit runtimeSource separateDatabase externalDirect;
   };
   fleetHarness = import (runtimeSource + "/lib/testing/fleet.nix") {
     inherit (runtime) lib;

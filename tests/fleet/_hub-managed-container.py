@@ -13,7 +13,9 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import stat
 import time
+import tomllib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -185,6 +187,53 @@ def _container_arguments(tools, coordinates, source, slug, token):
         "--registry-origin", coordinates["workerOrigin"], "--registry-token", token]
 
 
+def _prepare_documentation(root, environment, tools, registry_root):
+    """Publish and retain real option documentation before runtime selection."""
+    selected = tools.get("documentedPackage")
+    if selected is None:
+        return None
+    if (not isinstance(selected, dict) or set(selected) != {"storePath", "version", "baseLib"}
+            or any(not isinstance(selected[field], str)
+                or not selected[field].startswith("/nix/store/") for field in ("storePath", "baseLib"))
+            or not isinstance(selected["version"], str)
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", selected["version"])):
+        raise ValueError("Documented package must use the selected source-built package and base library")
+    _run(root, environment, "apr-publish-documentation", [tools["apr"], "publish", selected["storePath"],
+        "--registry", "containers", "--name", "aos-hub", "--version", selected["version"],
+        "--description", "Native and Worker registry Hub service.", "--license", "Apache-2.0",
+        "--maintainer", "fleet-publisher@example.test", "--documentation-base-lib", selected["baseLib"],
+        "--key-id", "initial"])
+    catalog = tomllib.loads((registry_root / "packages/a/aos-hub.toml").read_text())
+    matches = [entry["platforms"]["x86_64-linux"]["documentation"]
+        for entry in catalog["versions"] if entry["version"] == selected["version"]]
+    if len(matches) != 1:
+        raise ValueError("Actual documented package identity is missing or ambiguous")
+    identity = matches[0]
+    descriptor = os.open(identity["store_path"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, "rb") as source:
+        before = os.fstat(source.fileno())
+        if not stat.S_ISREG(before.st_mode) or not 16 <= before.st_size <= 262144:
+            raise ValueError("Actual canonical documentation exceeds the cache admission bound")
+        body = source.read(262145)
+        after = os.fstat(source.fileno())
+    if (len(body) != before.st_size or any(getattr(before, field) != getattr(after, field)
+            for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns"))):
+        raise ValueError("Actual documentation changed during independent readback")
+    digest = hashlib.sha256(body).hexdigest()
+    document = json.loads(body)
+    if (identity["document_sha256"] != "sha256:" + digest or identity["document_size"] != len(body)
+            or document.get("schema") != "aos.package-documentation/v1" or not document.get("options")):
+        raise ValueError("Actual signed documentation lacks canonical option content")
+    path = root / "document.private.json"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as output:
+        output.write(body)
+        output.flush()
+        os.fsync(output.fileno())
+    return {"file": str(path), "sha256": digest, "byteSize": len(body),
+        "relativePath": "-/api/v1/documentation/sha256:" + digest, "identity": identity}
+
+
 def _prepare(root, selected):
     tools = selected["tools"]
     environment = _environment(root, tools)
@@ -231,15 +280,18 @@ def _prepare(root, selected):
         path = Path(finalized[field])
         if not path.resolve().is_relative_to(root.resolve()) or not path.exists():
             raise ValueError("Finalized container output escaped its fresh root")
+    document = _prepare_documentation(root, environment, tools, registry_root)
     commit_root = _run(root, environment, "initial-commit", [tools["git"], "-C",
         str(registry_root), "rev-parse", "HEAD"])
     commit = (commit_root / "stdout.private").read_text().strip()
-    if not re.fullmatch(r"[a-f0-9]{40}", commit):
+    if not re.fullmatch(r"[a-f0-9]{64}", commit):
         raise ValueError("APR registry commit is invalid")
     source = {"version": 1, "helperSha256": selected["helperSha256"], "trustKey": trust_key,
         "sourceCommit": commit, "surfaceRoot": str(root / "surface"),
         "publisherHome": str(root / "publisher"), "registryRoot": str(registry_root),
         "privateEnvironmentPath": str(root / "environment.private.json"), "finalized": finalized}
+    if document is not None:
+        source["document"] = document
     configured_environment = {key: value for key, value in environment.items()
         if key in {"HOME", "PATH", "NIX_REMOTE", "NIX_CONF_DIR"}
         or key.startswith("XDG_") or key.startswith("GIT_AUTHOR_")
@@ -298,13 +350,14 @@ def _publish_action(root, selected, environment):
             "--store-path", tools["helperStorePath"], "--name", "hub-helper",
             "--description", "Managed release indexing fixture", "--license", "MIT",
             "--maintainer", "fleet-publisher@example.test", "--key-id", "initial",
+            "--channel", "stable", "--init-channel",
             "--cache-url", coordinates["workerOrigin"] + "/" + slug,
             "--upload-url", "file://" + source["surfaceRoot"]])
         _run(root, environment, "apr-verify", [tools["apr"], "verify", "--registry", "containers"])
         commit_root = _run(root, environment, "signed-commit", [tools["git"], "-C",
             source["registryRoot"], "rev-parse", "HEAD"])
         commit = (commit_root / "stdout.private").read_text().strip()
-        if not re.fullmatch(r"[a-f0-9]{40}", commit) or commit == source["sourceCommit"]:
+        if not re.fullmatch(r"[a-f0-9]{64}", commit) or commit == source["sourceCommit"]:
             raise ValueError("Signed container sidecar did not create a new source commit")
         result = {"sourceCommit": commit, "surfaceRoot": source["surfaceRoot"],
             "indexDigest": finalized["index_digest"]}

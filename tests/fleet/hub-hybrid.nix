@@ -9,6 +9,7 @@
   lib,
   mkSystem,
   pkgs,
+  runtimeSource ? null,
   separateDatabase ? false,
   externalDirect ? false,
 }: let
@@ -44,6 +45,46 @@
     ];
   };
   containerPublicationInputs = containerFixture.config.system.build.containers.aos.publicationInputs;
+  managedCleanupNativeHelper = import ./_hub-managed-cleanup-native-helper.nix {inherit pkgs;};
+  leaseScaleReplyCodec = import ./_hub-lease-scale-reply-codec.nix {inherit pkgs;};
+  # This dependent fixture measures the installed ELF after normal package fixup.
+  # Its source coordinates and bytes receive independent tuple review before launch.
+  managedCleanupHelperProvenance =
+    pkgs.runCommand "hub-managed-cleanup-helper-provenance" {
+      buildDeps = [pkgs.python3];
+    } ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 - "$out/provenance.json" <<'CLEANUP_HELPER_PROVENANCE'
+      import hashlib, json, os, stat, sys
+      from pathlib import Path
+
+      path = Path("${managedCleanupNativeHelper}/bin/aos-hub-managed-cleanup-contract")
+      with path.open("rb") as executable:
+          before = os.fstat(executable.fileno())
+          if not stat.S_ISREG(before.st_mode) or not 0 < before.st_size <= 536870912:
+              raise ValueError("Installed cleanup ELF exceeded the selected bound")
+          if executable.read(4) != b"\x7fELF":
+              raise ValueError("Cleanup artifact is not an installed ELF")
+          executable.seek(0)
+          digest = hashlib.file_digest(executable, "sha256").hexdigest()
+          after = os.fstat(executable.fileno())
+      if any(getattr(before, name) != getattr(after, name)
+              for name in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")):
+          raise ValueError("Installed cleanup ELF changed during observation")
+      proof = {"version": 1,
+          "commonSourceStorePath": "${
+        if runtimeSource == null
+        then throw "External fleet needs its immutable runtimeSource"
+        else toString runtimeSource
+      }",
+          "workerFilteredSourceStorePath": "${workerDist.src}",
+          "testExecutableSha256": digest, "testExecutableBytes": str(before.st_size)}
+      with Path(sys.argv[1]).open("x") as output:
+          json.dump(proof, output, sort_keys=True, separators=(",", ":"))
+          output.write("\n")
+      CLEANUP_HELPER_PROVENANCE
+    '';
+
   caCertificate = builtins.readFile ../fixtures/hub-hybrid-fleet-ca.crt;
   s3CaCertificate = builtins.readFile ../fixtures/hub-hybrid-fleet-s3-ca.crt;
   writeFixture = name: text:
@@ -122,7 +163,13 @@
       }
     }
   '';
-  storageObservationProxies = import ./_hub-direct-storage-proxies.nix {inherit serverCertificate serverPrivateKey;};
+  storageObservationProxies = import ./_hub-direct-storage-proxies.nix {
+    inherit serverCertificate serverPrivateKey;
+    heldExecuteUpstream =
+      if externalDirect
+      then "https://localhost:4650"
+      else null;
+  };
   nativeObservationProxyConfig = writeFixture "hub-hybrid-fleet-native-observation-nginx.conf" (
     import ./_hub-direct-native-proxy.nix {
       inherit serverCertificate serverPrivateKey;
@@ -130,7 +177,10 @@
     }
   );
   workerObservationProxyConfig = writeFixture "hub-hybrid-fleet-worker-observation-nginx.conf" storageObservationProxies.workerConfiguration;
-  managedObservationProxies = import ./_hub-managed-storage-proxies.nix {inherit serverCertificate serverPrivateKey;};
+  managedObservationProxies = import ./_hub-managed-storage-proxies.nix {
+    inherit serverCertificate serverPrivateKey;
+    managedCleanupLossUpstream = "http://127.0.0.1:4660";
+  };
   managedNativeObservationProxyTemplate = writeFixture "hub-hybrid-fleet-managed-native-observation-template.conf" managedObservationProxies.nativeConfiguration;
   managedWorkerObservationProxyTemplate = writeFixture "hub-hybrid-fleet-managed-worker-observation-template.conf" managedObservationProxies.workerConfiguration;
   databaseUrl =
@@ -214,7 +264,7 @@
         aos.security.pki.certificates = [caCertificate s3CaCertificate];
         aos.firewall.allowedTCP =
           [443]
-          ++ lib.optional externalDirect 8443
+          ++ lib.optionals externalDirect [8443 8453 4644]
           ++ lib.optional (externalDirect && !separateDatabase) 5432;
         aos.kernel.modules = ["9pnet_virtio" "9p"];
         environment.systemPackages = [pkgs.util-linux];
@@ -245,7 +295,7 @@
     ../../systems/server-test.nix
     {
       aos.security.pki.certificates = [caCertificate s3CaCertificate];
-      aos.firewall.allowedTCP = [443];
+      aos.firewall.allowedTCP = [443] ++ lib.optionals externalDirect [8453 4643 4644];
       aos.kernel.modules = ["9pnet_virtio" "9p"];
       environment.systemPackages = [pkgs.util-linux];
     }
@@ -276,6 +326,37 @@
   };
 
   workerRunner = writeFixture "hub-hybrid-fleet-worker-runner" (builtins.readFile ./_hub-worker-runner.cjs);
+  # Adjacent imports select the same reviewed fixture files in every guest.
+  managedFixtureModules = pkgs.runCommand "hub-managed-fleet-fixture-modules" {} ''
+    mkdir -p "$out"
+    cp ${./_hub-direct-issuer-scale-setup.py} "$out/_hub-direct-issuer-scale-setup.py"
+    cp ${./_hub-direct-issuer-scale-workload.py} "$out/_hub-direct-issuer-scale-workload.py"
+    cp ${./_hub-direct-issuer-scale.py} "$out/_hub-direct-issuer-scale.py"
+    cp ${./_hub-direct-issuer-scale-process.py} "$out/_hub-direct-issuer-scale-process.py"
+    cp ${./_hub-direct-issuer-scale-runtime.py} "$out/_hub-direct-issuer-scale-runtime.py"
+    cp ${./_hub-direct-issuer-scale-joins.py} "$out/_hub-direct-issuer-scale-joins.py"
+    cp ${./_hub-oci-sdk-namespace.py} "$out/_hub-oci-sdk-namespace.py"
+    cp ${./_hub-oci-sdk-anchor.py} "$out/_hub-oci-sdk-anchor.py"
+    cp ${./_hub-oci-sdk-install.py} "$out/_hub-oci-sdk-install.py"
+    cp ${./_hub-managed-container.py} "$out/_hub-managed-container.py"
+    cp ${./_hub-worker-cache-observer.cjs} "$out/_hub-worker-cache-observer.cjs"
+    cp ${./_hub-direct-read-parity.py} "$out/_hub-direct-read-parity.py"
+    cp ${./_hub-index-parity.py} "$out/_hub-index-parity.py"
+    cp ${./_hub-direct-read-window.py} "$out/_hub-direct-read-window.py"
+    cp ${./_hub-managed-gc.py} "$out/_hub-managed-gc.py"
+    cp ${./_hub-managed-gc-observer.py} "$out/_hub-managed-gc-observer.py"
+    cp ${./_hub-managed-gc-sql.py} "$out/_hub-managed-gc-sql.py"
+    cp ${./_hub-inventory-gc.py} "$out/_hub-inventory-gc.py"
+    cp ${./_hub-managed-gc-runner-observer.cjs} "$out/_hub-managed-gc-runner-observer.cjs"
+    cp ${./_hub-managed-cleanup-install.cjs} "$out/_hub-managed-cleanup-install.cjs"
+    cp ${./_hub-managed-cleanup-loss.py} "$out/_hub-managed-cleanup-loss.py"
+    cp ${./_hub-managed-cleanup-runtime.py} "$out/_hub-managed-cleanup-runtime.py"
+    cp ${./_hub-direct-stale-index.py} "$out/_hub-direct-stale-index.py"
+    cp ${./_hub-direct-stale-index-listener.mjs} "$out/_hub-direct-stale-index-listener.mjs"
+    cp ${./_hub-direct-stale-index-process.py} "$out/_hub-direct-stale-index-process.py"
+    cp ${./_hub-direct-stale-placement.py} "$out/_hub-direct-stale-placement.py"
+    cp ${./_hub-direct-stale-placement-hold.mjs} "$out/_hub-direct-stale-placement-hold.mjs"
+  '';
   processSampler = writeFixture "hub-hybrid-fleet-process-sampler" (builtins.readFile ./_hub-perf-proc.py);
   installationObserver = writeFixture "hub-hybrid-fleet-installation-observer" (builtins.readFile ./_hub-direct-installation.py);
   namespaceObserver = writeFixture "hub-hybrid-fleet-namespace-observer" (builtins.readFile ./_hub-direct-namespace.py);
@@ -398,6 +479,7 @@
         pkgs.nodejs
         pkgs.workerd-source
         pkgs.python3
+        pkgs.socat
         pkgs.garage
         pkgs.nginx
         pkgs.nix
@@ -410,6 +492,8 @@
         fixture.helperV1
         fixture.helperV2
         containerPublicationInputs
+        containerFixture.config.aos.config.evalAtBoot.baseLib
+        pkgs.aos-hub-console-dist
         databaseUrl
         ingressKey
         storageKey
@@ -449,6 +533,10 @@
         authorityFlow
         qualificationFlow
         qualificationDriver
+        managedFixtureModules
+        managedCleanupNativeHelper
+        managedCleanupHelperProvenance
+        leaseScaleReplyCodec
         independentReview
         sqlObserver
       ];
@@ -530,6 +618,15 @@ in {
     + builtins.readFile ./_hub-direct-transport.py
     + lib.optionalString externalDirect (
       builtins.readFile ./_hub-direct-controls.py
+      + builtins.readFile ./_hub-managed-pair.py
+      + builtins.readFile ./_hub-managed-window.py
+      + builtins.readFile ./_hub-managed-control.py
+      + builtins.readFile ./_hub-managed-route.py
+      + builtins.readFile ./_hub-managed-terminal-cleanup.py
+      + builtins.readFile ./_hub-managed-read.py
+      + builtins.readFile ./_hub-managed-gc-window.py
+      + builtins.readFile ./_hub-direct-issuer-scale-main.py
+      + builtins.readFile ./_hub-direct-stale-index-setup.py
       + builtins.readFile ./_hub-direct-operator.py
       + builtins.readFile ./_hub-direct-configuration.py
       + builtins.readFile ./_hub-direct-review.py
@@ -761,7 +858,72 @@ in {
               "python": "${pkgs.python3}/bin/python3", "node": "${pkgs.nodejs}/bin/node",
               "runner": "${workerRunner}/value", "miniflare": "${pkgs.miniflare}",
               "workerd": "${pkgs.workerd-source}/bin/workerd", "curl": CURL,
-              "nginx": "${pkgs.nginx}/bin/nginx",
+              "nginx": "${pkgs.nginx}/bin/nginx", "socat": "${pkgs.socat}/bin/socat",
+              "ociNamespaceObserver": "${managedFixtureModules}/_hub-oci-sdk-namespace.py",
+              "ociAnchor": "${managedFixtureModules}/_hub-oci-sdk-anchor.py",
+              "ociInstaller": "${managedFixtureModules}/_hub-oci-sdk-install.py",
+              "managedDnsJsonEndpoint": "https://localhost:4644/.aos/dns-json-unavailable",
+              "separateDatabase": ${
+            if separateDatabase
+            then "True"
+            else "False"
+          },
+              "leaseScaleSources": {
+                  "setup": {"path": "${managedFixtureModules}/_hub-direct-issuer-scale-setup.py",
+                      "sha256": "${builtins.hashFile "sha256" ./_hub-direct-issuer-scale-setup.py}"},
+                  "workload": {"path": "${managedFixtureModules}/_hub-direct-issuer-scale-workload.py",
+                      "sha256": "${builtins.hashFile "sha256" ./_hub-direct-issuer-scale-workload.py}"},
+                  "collector": {"path": "${managedFixtureModules}/_hub-direct-issuer-scale.py",
+                      "sha256": "${builtins.hashFile "sha256" ./_hub-direct-issuer-scale.py}"},
+                  "process": {"path": "${managedFixtureModules}/_hub-direct-issuer-scale-process.py",
+                      "sha256": "${builtins.hashFile "sha256" ./_hub-direct-issuer-scale-process.py}"},
+                  "runtime": {"path": "${managedFixtureModules}/_hub-direct-issuer-scale-runtime.py",
+                      "sha256": "${builtins.hashFile "sha256" ./_hub-direct-issuer-scale-runtime.py}"},
+                  "joins": {"path": "${managedFixtureModules}/_hub-direct-issuer-scale-joins.py",
+                      "sha256": "${builtins.hashFile "sha256" ./_hub-direct-issuer-scale-joins.py}"},
+              },
+              "leaseScaleReplyCodec": {"path": "${leaseScaleReplyCodec}/bin/lease_scale_observe",
+                  "sha256": hashlib.sha256(Path("${leaseScaleReplyCodec}/bin/lease_scale_observe").read_bytes()).hexdigest(),
+                  "sourceDigest": "${leaseScaleReplyCodec.passthru.nativeSourceDigest}"},
+              "leaseScaleCertificateFile": "${serverCertificate}/value",
+              "leaseScaleCertificateSha256": "${builtins.hashFile "sha256" ../fixtures/hub-hybrid-fleet-server.crt}",
+              "commonSourceStorePath": ${
+            if runtimeSource == null
+            then "None"
+            else builtins.toJSON (toString runtimeSource)
+          },
+              "managedContainerProducer": "${managedFixtureModules}/_hub-managed-container.py",
+              "documentedPackage": {"storePath": "${pkgs.aos-hub}", "version": "${pkgs.aos-hub.version}",
+                  "baseLib": "${containerFixture.config.aos.config.evalAtBoot.baseLib}"},
+              "publicDocumentCacheObserver": "${managedFixtureModules}/_hub-worker-cache-observer.cjs",
+              "readParityModule": "${managedFixtureModules}/_hub-direct-read-parity.py",
+              "readIndexModule": "${managedFixtureModules}/_hub-index-parity.py",
+              "readWindowModule": "${managedFixtureModules}/_hub-direct-read-window.py",
+              "managedCleanupNativeHelper": "${managedCleanupNativeHelper}/bin/aos-hub-managed-cleanup-contract",
+              "managedCleanupNativeHelperProvenance": "${managedCleanupHelperProvenance}/provenance.json",
+              "consoleAssetInputs": [
+                  "${pkgs.aos-hub.src}/crates/aos-hub-core/src/web/static_assets/style.css",
+                  "${pkgs.aos-hub.src}/crates/aos-hub-core/src/web/static_assets/app.js",
+                  "${pkgs.aos-hub.src}/crates/aos-hub-core/src/web/static_assets/theme.js",
+                  "${pkgs.aos-hub-console-dist}/hub-console.js",
+                  "${pkgs.aos-hub-console-dist}/hub-console_bg.wasm",
+                  "${pkgs.aos-hub-console-dist}/hub-console.css"],
+              "managedGcHelper": "${managedFixtureModules}/_hub-managed-gc.py",
+              "managedGcCollector": "${managedFixtureModules}/_hub-managed-gc-observer.py",
+              "managedGcSql": "${managedFixtureModules}/_hub-managed-gc-sql.py",
+              "managedGcObserver": "${managedFixtureModules}/_hub-managed-gc-runner-observer.cjs",
+              "managedCleanupInstaller": "${managedFixtureModules}/_hub-managed-cleanup-install.cjs",
+              "managedCleanupLossListener": "${managedFixtureModules}/_hub-managed-cleanup-loss.py",
+              "managedCleanupRuntime": "${managedFixtureModules}/_hub-managed-cleanup-runtime.py",
+              "staleIndexController": "${managedFixtureModules}/_hub-direct-stale-index.py",
+              "staleIndexListener": "${managedFixtureModules}/_hub-direct-stale-index-listener.mjs",
+              "staleIndexProcess": "${managedFixtureModules}/_hub-direct-stale-index-process.py",
+              "staleIndexHold": "${managedFixtureModules}/_hub-direct-stale-placement-hold.mjs",
+              "stalePlacementHelper": "${managedFixtureModules}/_hub-direct-stale-placement.py",
+              "managedNativeObservationProxyTemplate": {"path": "${managedNativeObservationProxyTemplate}/value",
+                  "sha256": hashlib.sha256(Path("${managedNativeObservationProxyTemplate}/value").read_bytes()).hexdigest()},
+              "managedWorkerObservationProxyTemplate": {"path": "${managedWorkerObservationProxyTemplate}/value",
+                  "sha256": hashlib.sha256(Path("${managedWorkerObservationProxyTemplate}/value").read_bytes()).hexdigest()},
               "nativeObservationProxyConfiguration": "${nativeObservationProxyConfig}/value",
               "workerObservationProxyConfiguration": "${workerObservationProxyConfig}/value",
               "managedNativeObservationProxyTemplate": {"path": "${managedNativeObservationProxyTemplate}/value",
@@ -780,6 +942,7 @@ in {
               "reviewer": "${pkgs.aos-hub}/bin/aos-hub-direct-review", "postgres": POSTGRES,
               "chroot": "${pkgs.coreutils}/bin/chroot",
               "aos": AOS, "apr": APR, "git": "${pkgs.git}/bin/git", "opensshBin": "${pkgs.openssh}/bin",
+              "aosStorePath": "${pkgs.aos}", "containerPublicationInputs": "${containerPublicationInputs}",
               "openssl": "${pkgs.openssl}/bin/openssl", "helperStorePath": "${fixture.helperV1}",
               "deploymentId": "fleet-hybrid-v1", "workerUrl": "https://aos.andyl.org",
               "nativeOriginUrl": "https://aos.staging.andyl.org", "garage": GARAGE,
@@ -806,6 +969,7 @@ in {
                   "route_keys": "${parityRouteKeys}/value",
               },
           }
+          direct_tools["staleIndexInstallation"] = install_direct_stale_index_path(native, direct_tools)
           direct_tools["storageBoundaryInstallation"] = install_direct_storage_boundaries(native, worker, direct_tools)
           native.succeed("systemctl restart aos-hub.service", timeout=60)
           native.wait_for_unit("aos-hub.service", timeout=90)

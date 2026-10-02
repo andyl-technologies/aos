@@ -12,21 +12,24 @@ import shlex
 import time
 
 
-def direct_root_browser_token(client, curl, python, private_command, reuse_session=False):
+def direct_root_browser_token(client, curl, python, private_command, reuse_session=False,
+                              *, origin="https://aos.andyl.org",
+                              evidence_root="/var/lib/hybrid-client/browser-session"):
     """Obtain the genuine root browser bearer without retaining its material in logs."""
+    validate_control_destination(origin, evidence_root)
     arguments = shlex.split(curl)
     command = (
         "# Private root browser fixture authentication.\n"
         f"{shlex.quote(python)} - <<'DIRECT_BROWSER_LOGIN'\n"
         "import json,os,re,subprocess\nfrom pathlib import Path\n"
-        "root=Path('/var/lib/hybrid-client/browser-session')\n"
+        f"root=Path({evidence_root!r})\n"
         f"reuse_session={reuse_session!r}\n"
         "if reuse_session:\n"
         "    if not root.is_dir() or not (root/'cookies').is_file():raise RuntimeError('root browser session absent')\n"
         "else:root.mkdir(mode=0o700,parents=True,exist_ok=False)\n"
         "os.umask(0o077)\n"
         f"curl={arguments!r}\n"
-        "origin='https://aos.andyl.org'\n"
+        f"origin={origin!r}\n"
         "cookie=str(root/'cookies')\n"
         "def request(arguments):\n"
         "    result=subprocess.run(curl+['-sS','--max-time','60','--max-filesize','262144']+arguments,capture_output=True,timeout=65)\n"
@@ -59,10 +62,31 @@ def direct_root_browser_token(client, curl, python, private_command, reuse_sessi
     return json.loads(private_command(client, command, timeout=210))["accessToken"]
 
 
+def validate_control_destination(origin, evidence_root):
+    """Constrain a fixture API destination and its retained private captures."""
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(origin)
+    if (parsed.scheme != "https" or parsed.username or parsed.password
+            or parsed.path or parsed.query or parsed.fragment
+            or parsed.hostname != "aos.andyl.org" and parsed.hostname != "localhost"
+            or parsed.port is not None and not 1024 <= parsed.port <= 65535):
+        raise ValueError("fixture control requires the selected HTTPS origin")
+    if (not isinstance(evidence_root, str)
+            or not evidence_root.startswith("/var/lib/hybrid-client/")
+            or any(part in {"", ".", ".."} for part in evidence_root.split("/")[1:])):
+        raise ValueError("fixture control evidence root differs")
+
+
 class DirectBootstrapControls:
     """Retain actual metadata controls and apply the server's persisted plans."""
 
-    def __init__(self, client, curl, python, token, private_command, refresh_token=None):
+    def __init__(self, client, curl, python, token, private_command, refresh_token=None,
+                 *, origin="https://aos.andyl.org",
+                 evidence_root="/var/lib/hybrid-client/bootstrap-controls"):
+        validate_control_destination(origin, evidence_root)
+        self.origin = origin
+        self.evidence_root = evidence_root
         self.client = client
         self.curl = curl
         self.python = python
@@ -71,7 +95,7 @@ class DirectBootstrapControls:
         self.refresh_token = refresh_token
         self.token_refreshed_at = time.monotonic()
         self.observations = []
-        client.succeed("install -d -m 0700 /var/lib/hybrid-client/bootstrap-controls")
+        client.succeed("install -d -m 0700 " + shlex.quote(evidence_root))
 
     def call(self, service, method, request):
         """Send one actual bounded metadata request without logging its bearer."""
@@ -83,7 +107,8 @@ class DirectBootstrapControls:
         if service not in {
             "BindingService", "StorageAuthorityService", "IdentityService",
             "OrganizationService", "OperationService", "RegistryService",
-            "TopologyService", "ContainerService",
+            "TopologyService", "ContainerService", "DomainService", "NetworkPolicyService",
+            "DeliveryService", "DeliveryControllerService", "RouteService", "RouteControllerService",
         }:
             raise ValueError("bootstrap control service is not allowed")
         if not re.fullmatch(r"[A-Z][A-Za-z]{0,63}", method):
@@ -93,7 +118,7 @@ class DirectBootstrapControls:
         if len(body_bytes) >= 64 * 1024:
             raise ValueError("bootstrap metadata request exceeds the legacy request gate")
         sequence = len(self.observations)
-        root = f"/var/lib/hybrid-client/bootstrap-controls/{sequence:04d}"
+        root = f"{self.evidence_root}/{sequence:04d}"
         route = f"/aos.hub.v1.{service}/{method}"
         observation = {
             "sequence": sequence, "route": route, "outcome": "pending",
@@ -111,7 +136,7 @@ class DirectBootstrapControls:
             "-H 'Content-Type: application/json' -H 'Connect-Protocol-Version: 1' "
             "-H 'cf-connecting-ip: 192.0.2.10' "
             f"-H {shlex.quote('Authorization: Bearer ' + self.token)} "
-            f"--data-binary @{root}.request.json https://aos.andyl.org{route}\n"
+            f"--data-binary @{root}.request.json {self.origin}{route}\n"
         )
         try:
             status_text = self.private_command(self.client, command, timeout=120).strip()

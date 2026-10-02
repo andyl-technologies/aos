@@ -15,7 +15,8 @@ import urllib.parse
 
 
 def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, snapshot_assert,
-                                   corpus_fixture=None, process_observer=None, process_stop=None):
+                                   corpus_fixture=None, process_observer=None, process_stop=None,
+                                   run_id=None, hybrid_reader=None, publication_setup=None, read_window=None):
     """Require identical signed package and channel indexes in all three modes."""
     if corpus_fixture is not None:
         if (set(corpus_fixture) != {"surfaceRoot", "registrySlug", "trustKey", "sourceCommit"}
@@ -27,9 +28,14 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     native_origin = f"https://aos.staging.andyl.org:{port}"
     worker_origin = f"https://aos.andyl.org:{port}"
     registry_slug = "fleet/containers" if corpus_fixture is None else corpus_fixture["registrySlug"]
-    native_root = "/var/lib/hub-parity-native"
-    worker_root = "/var/lib/hub-parity-worker"
-    source_root = "/tmp/hub-parity-source"
+    if run_id is not None and (not re.fullmatch(r"[0-9a-f]{32}", run_id)
+            or corpus_fixture is None or hybrid_reader is None or publication_setup is None
+            or read_window is None or process_observer is None or process_stop is None):
+        raise ValueError("complete Managed read parity requires its live source, process and publication callbacks")
+    suffix = "" if run_id is None else "-" + run_id
+    native_root = "/var/lib/hub-parity-native" + suffix
+    worker_root = "/var/lib/hub-parity-worker" + suffix
+    source_root = "/tmp/hub-parity-source" + suffix
     password = "runtime-parity-root-password"
     email = "runtime-parity-root@example.test"
     seal_key = "2" * 64
@@ -39,7 +45,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
 
     # Exclude the unrelated large web-upload probe. Every signed Git, channel,
     # semantic, and package object remains byte identical to the hybrid corpus.
-    corpus_path = "/tmp/hub-parity-corpus.tar"
+    corpus_path = "/tmp/hub-parity-corpus" + suffix + ".tar"
     corpus_root = "/tmp/hybrid-publication-surface" if corpus_fixture is None else corpus_fixture["surfaceRoot"]
     client.succeed(
         f"{tools['tar']} -C {shlex.quote(corpus_root)} --exclude=./web "
@@ -58,7 +64,7 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         set -eu
         umask 077
         mkdir -p {native_root}
-        printf '[]' > {native_root}/probe-signers.json
+        printf '%s' {shlex.quote(json.dumps(fixture.get('probe_signers', [])))} > {native_root}/probe-signers.json
         {coreutils}/install -m 0600 {fixture['route_keys']} {native_root}/route-keys.json
         {coreutils}/install -m 0600 {fixture['release_seed']} {native_root}/release-receipt.key
         {coreutils}/install -m 0600 {fixture['channel_seed']} {native_root}/channel-receipt.key
@@ -100,19 +106,20 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         "HUB_SEAL_KEY": seal_key,
         "HUB_JWT_SECRET": "fleet-worker-parity-stable-jwt-key-with-thirty-two-bytes",
         "HUB_CLOUDFLARE_API_TOKEN": "parity-fixture-token",
-        "HUB_DOMAIN_PROBE_SIGNER_MANIFEST": "[]",
+        "HUB_DOMAIN_PROBE_SIGNER_MANIFEST": json.dumps(fixture.get("probe_signers", []), separators=(",", ":")),
         "HUB_ROUTE_RESERVATION_KEYRING": route_keys,
         "HUB_RELEASE_EVIDENCE_CONFIG": json.dumps(evidence, separators=(",", ":")),
     }
     worker_config = worker_only_configuration(
         tools["worker_main"], worker_origin, worker_root, fixture, secrets, port=port,
     )
+    workerd_environment = "" if run_id is None else "MINIFLARE_WORKERD_PATH=" + shlex.quote(tools["workerd"])
     worker.succeed(textwrap.dedent(f"""
         set -eu
         umask 077
         mkdir -p {worker_root}
         printf '%s' {shlex.quote(json.dumps(worker_config))} > {worker_root}/runner.json
-        SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
+        {workerd_environment} SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \\
         {tools['node']} {tools['worker_runner']} {tools['miniflare']} \\
           {worker_root}/runner.json \\
           > {worker_root}/worker.log 2>&1 < /dev/null &
@@ -146,12 +153,18 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
     ):
         copy_signed_surface(client, machine, corpus_path, corpus_size, corpus_digest, source_root, tools)
         token = browser_session_token(machine, origin, email, password, curl)
-        setup_and_publish_same_registry(
-            machine, origin, token, trust_key, source_root, tools, fixture,
-            refresh_token=lambda: browser_session_token(machine, origin, email, password, curl),
-            provision_worker_binding=mode == "worker_only",
-            registry_slug=registry_slug, include_container=corpus_fixture is None,
-        )
+        refresh = lambda: browser_session_token(machine, origin, email, password, curl)
+        if publication_setup is None:
+            setup_and_publish_same_registry(
+                machine, origin, token, trust_key, source_root, tools, fixture,
+                refresh_token=refresh, provision_worker_binding=mode == "worker_only",
+                registry_slug=registry_slug, include_container=corpus_fixture is None,
+            )
+        else:
+            publication_setup(mode=mode, machine=machine, origin=origin, token=token,
+                source_root=source_root, trust_key=trust_key, registry_slug=registry_slug,
+                refresh_token=refresh, process=process_receipts[mode],
+                configuration_file=worker_root + "/runner.json" if mode == "worker_only" else None)
         print("signed parity registry published:", mode)
 
     def native_query(sql):
@@ -184,23 +197,44 @@ def qualify_registry_runtime_parity(client, native, worker, *, tools, fixture, s
         )
         return [list(row.values()) for row in json.loads(output)]
 
-    compared = snapshot_assert({
-        "hybrid": hybrid_query,
+    readers = {
+        "hybrid": hybrid_query if hybrid_reader is None else hybrid_reader,
         "native_only": native_query,
         "worker_only": worker_query,
-    }, registry_slug, container_index_digest=fixture.get("container_index_digest"))
-
-    for machine, root in ((native, native_root), (worker, worker_root)):
-        pid_file = "server.pid" if machine is native else "worker.pid"
-        if process_stop is None:
-            machine.succeed(f"kill $(cat {root}/{pid_file})")
-        else:
-            mode = "native_only" if machine is native else "worker_only"
-            process_stop(machine, process_receipts[mode])
+    }
+    compared, reads = observe_runtime_parity_before_stop(
+        readers=readers, registry_slug=registry_slug, snapshot_assert=snapshot_assert,
+        container_index_digest=fixture.get("container_index_digest"), read_window=read_window,
+        origins={"native_only": native_origin, "worker_only": worker_origin},
+        process_receipts=process_receipts, worker_configuration=worker_config,
+        native=native, worker=worker, native_root=native_root, worker_root=worker_root,
+        process_stop=process_stop)
     return {"version": 1, "corpusSha256": corpus_digest, "corpusBytes": corpus_size,
         "registrySlug": registry_slug, "sourceCommit": None if corpus_fixture is None else corpus_fixture["sourceCommit"],
-        "companionPort": port, "indexes": compared, "processes": process_receipts,
+        "companionPort": port, "indexes": compared, "processes": process_receipts, "reads": reads,
         "scope": "actual same signed semantic corpus in Native-only, ordinary Worker-only emulator and External hybrid; no managed direct-upload acceptance"}
+
+
+def observe_runtime_parity_before_stop(*, readers, registry_slug, snapshot_assert,
+        container_index_digest, read_window, origins, process_receipts, worker_configuration,
+        native, worker, native_root, worker_root, process_stop):
+    """Keep both actual companions alive through the index and fixed read window."""
+    try:
+        compared = snapshot_assert(readers, registry_slug,
+            container_index_digest=container_index_digest)
+        reads = None if read_window is None else read_window(
+            origins=origins, index_readers=readers, processes=process_receipts,
+            configurations={"worker_only": {"file": worker_root + "/runner.json", "value": worker_configuration}},
+            roots={"native_only": native_root, "worker_only": worker_root})
+        return compared, reads
+    finally:
+        for mode, machine, root, pid_file in (
+                ("native_only", native, native_root, "server.pid"),
+                ("worker_only", worker, worker_root, "worker.pid")):
+            if process_stop is None:
+                machine.succeed(f"kill $(cat {root}/{pid_file})")
+            else:
+                process_stop(machine, process_receipts[mode])
 
 
 def browser_session_token(machine, origin, email, password, curl):
