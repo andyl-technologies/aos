@@ -121,7 +121,10 @@ pub struct RegistryDeletionBlockers {
     pub staged_container_objects: u64,
     /// OCI GC runs in the `applying` state.
     pub applying_gc_runs: u64,
-    /// Pending, claimed, or failed OCI GC placement actions.
+    /// Pending, claimed, or failed placement actions of applied OCI GC runs.
+    ///
+    /// Actions frozen by a run that was never applied (`planned` or
+    /// `aborted`) can never be claimed, so they are not GC work.
     pub pending_gc_actions: u64,
     /// Planned or in-progress untracked-object repairs.
     pub active_untracked_repairs: u64,
@@ -134,6 +137,9 @@ pub struct RegistryDeletionBlockers {
     /// Image snapshot references and snapshot lease holds.
     pub snapshot_references: u64,
     /// Planned, never-applied OCI GC runs that deletion abandons.
+    ///
+    /// Expired and unexpired plans alike: apply moves a run out of
+    /// `planned` atomically, so no planned run has physical work in flight.
     pub abandonable_gc_runs: u64,
     /// Placements that can never be inventoried as configured.
     pub unavailable_placements: u64,
@@ -517,8 +523,11 @@ const REGISTRY_FACTS_SQL: &str = "SELECT registry.resource_version,
            AND (staged_revision.retire_after IS NULL
              OR staged_revision.retire_after > ?2)),
        (SELECT COUNT(*) FROM oci_gc_runs WHERE registry_id = ?1 AND state = 'applying'),
-       (SELECT COUNT(*) FROM oci_gc_placement_actions
-         WHERE registry_id = ?1 AND state IN('pending', 'claimed', 'failed')),
+       (SELECT COUNT(*) FROM oci_gc_placement_actions action
+         WHERE action.registry_id = ?1 AND action.state IN('pending', 'claimed', 'failed')
+           AND NOT EXISTS (SELECT 1 FROM oci_gc_runs action_run
+             WHERE action_run.id = action.run_id
+               AND action_run.state IN('planned', 'aborted'))),
        (SELECT COUNT(*) FROM oci_untracked_repair_plans
          WHERE registry_id = ?1
            AND state IN('planned', 'pending', 'claimed', 'failed')),

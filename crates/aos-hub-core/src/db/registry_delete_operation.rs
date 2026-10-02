@@ -457,7 +457,9 @@ fn fence_statements(
                AND NOT EXISTS (SELECT 1 FROM oci_publication_sessions
                  WHERE registry_id = ?1 AND state IN('preparing', 'committing'))
                AND NOT EXISTS (SELECT 1 FROM oci_gc_runs
-                 WHERE registry_id = ?1 AND state IN('planned', 'applying'))
+                 WHERE registry_id = ?1
+                   AND (state = 'applying'
+                     OR (state = 'planned' AND expires_at > ?4)))
                AND NOT EXISTS (SELECT 1 FROM oci_untracked_repair_plans
                  WHERE registry_id = ?1
                    AND state IN('planned', 'pending', 'claimed', 'failed'))
