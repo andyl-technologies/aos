@@ -11,6 +11,8 @@ use aos_hub_core::hybrid_ingress::{body_sha256, HybridIngressAssertion, HybridIn
 
 use super::*;
 
+mod managed_cleanup;
+
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);

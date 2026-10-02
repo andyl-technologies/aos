@@ -94,6 +94,21 @@ pub(super) fn classify(
                 request.nonce,
             )
         }
+        aos_hub_core::oci_cleanup::MANAGED_OCI_CLEANUP_PATH => {
+            control_case(case)?;
+            let (request, _) = aos_hub_core::oci_cleanup::observation::decode_managed_oci_cleanup_observation(
+                request, reply, deployment,
+            )?;
+            ensure!(
+                request.issuer.source_digest == source_digest,
+                "Managed cleanup implementation differs"
+            );
+            (
+                "managed_oci_cleanup",
+                "managed_oci_terminal_cleanup_metadata",
+                request.nonce,
+            )
+        }
         aos_hub_core::oci_projection::guard::OCI_PROJECTION_PATH => {
             control_case(case)?;
             let (request, reply) = decode_oci_projection_observation(request, reply, deployment)?;

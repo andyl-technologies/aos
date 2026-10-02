@@ -25,6 +25,9 @@ pub const MANAGED_OCI_CLEANUP_PATH: &str = "/_internal/storage/managed-oci-clean
 pub const MANAGED_OCI_CLEANUP_HEADER: &str = "x-aos-managed-oci-cleanup-signature";
 /// Closed metadata bound, with no encoded object content in either direction.
 pub const MAX_MANAGED_OCI_CLEANUP_BYTES: usize = 16 * 1024;
+/// Decodes bounded retained metadata without authenticating or renewing cleanup.
+pub mod observation;
+
 const REQUEST_DOMAIN: &[u8] = b"aos.managed-oci-terminal-cleanup-request.v1\0";
 const REPLY_DOMAIN: &[u8] = b"aos.managed-oci-terminal-cleanup-reply.v1\0";
 
@@ -208,6 +211,22 @@ impl ManagedOciCleanupRequest {
     /// # Errors
     /// Refuses malformed, expired or foreign requests.
     pub fn validate(&self, deployment: &str, latest: u64) -> Result<()> {
+        self.validate_checked(deployment, Some(latest))
+    }
+
+    /// Checks intrinsic retained request shape without accepting a current window.
+    ///
+    /// This observation does not verify a MAC, SQL claim, provider profile or
+    /// current Delete capability. It cannot grant or renew cleanup permission.
+    ///
+    /// # Errors
+    /// Refuses invalid originals, audience, issuer, uncertainty, nonce or an
+    /// impossible control window exceeding the original thirty-second bound.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_checked(deployment, None)
+    }
+
+    fn validate_checked(&self, deployment: &str, latest: Option<u64>) -> Result<()> {
         self.original.validate()?;
         ensure!(
             self.deployment_id == deployment
@@ -220,12 +239,12 @@ impl ManagedOciCleanupRequest {
                 && (1..30).contains(&self.clock_uncertainty_seconds)
                 && digest(&self.nonce)
                 && self.issued_at > 0
-                && self.issued_at <= latest
-                && latest < self.expires_at
+                && latest.is_none_or(|latest| self.issued_at <= latest)
+                && latest.is_none_or(|latest| latest < self.expires_at)
                 && self
                     .expires_at
                     .checked_sub(self.issued_at)
-                    .is_some_and(|span| span <= 30),
+                    .is_some_and(|span| span > 0 && span <= 30),
             "Managed OCI cleanup audience, shape or cutoff refused"
         );
         Ok(())
@@ -357,6 +376,14 @@ fn authenticated<T: serde::de::DeserializeOwned + Serialize>(
         "Managed OCI cleanup metadata exceeds bound"
     );
     key.verify_body(signature, &[domain, bytes].concat())?;
+    decode_canonical(bytes)
+}
+
+fn decode_canonical<T: serde::de::DeserializeOwned + Serialize>(bytes: &[u8]) -> Result<T> {
+    ensure!(
+        bytes.len() <= MAX_MANAGED_OCI_CLEANUP_BYTES,
+        "Managed OCI cleanup metadata exceeds bound"
+    );
     let value: T = serde_json::from_slice(bytes)?;
     ensure!(
         serde_json::to_vec(&value)? == bytes,

@@ -77,3 +77,17 @@ compact ingress pairs must match before selected Distribution decoding runs.
 Every unsupported, unrelated, missing or ambiguous row remains accounted for;
 successful shape decoding alone leaves `nativeBulkBytes` null. The proxy's
 completion UTC and private file collection brackets are distinct observations.
+
+## Managed terminal cleanup metadata
+
+The exact `/_internal/storage/managed-oci-cleanup/v1` positive metadata class
+uses the production 16 KiB canonical request/reply parser and full intrinsic
+original/nonce/key/size/opaque-R2-version/strong-ETag correlation. Selected
+issuer source must match the current observation source. Historical decoding
+does not check a MAC, current clock, SQL claim, Delete capability or provider
+effect and grants no cleanup permission. Empty, partial, expanded, substituted
+or unsupported replies refuse. The listener's fully consumed authenticated
+upstream response must never substitute for the Native application's actually
+consumed downstream reply. Lost/reset calls remain incomplete until independent
+actual body/consumption evidence exists. A codec metadata partition alone does
+not establish whole-window Native bulk bytes of zero.
