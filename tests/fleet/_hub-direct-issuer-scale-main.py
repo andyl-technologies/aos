@@ -364,7 +364,22 @@ def run_direct_lease_scale_window(client, native, worker, database_machine, tool
     report = {"version": 1, "cases": outputs, "selectedPolicy": modules["collector"]["LOCAL_LEASE_SCALE_POLICY"],
         "qualification": None, "scope": "actual called local source/process/issuer captures; reviewed measurement assessment required"}
     retain_direct_flow("lease-scale-window.json", report)
-    return report
+    return _scale_finish_window(report)
+
+
+def _scale_finish_window(report):
+    """Retain the local assessment before refusing failed or unresolved budgets."""
+    cases = report["cases"]
+    assessments = [row.get("policyAssessment", {"case": row.get("case"), "status": "unknown"}) for row in cases]
+    complete = [row.get("case") for row in cases] == ["ttl-8", "ttl-120", "cap-120"]
+    statuses = [row.get("status") for row in assessments]
+    status = "failed" if "failed" in statuses else "satisfied" if complete and statuses == ["satisfied"] * 3 else "unknown"
+    result = {"version": 1, "status": status, "cases": assessments, "rawReport": "lease-scale-window.json",
+        "qualification": None, "scope": "local scheduled CPU/latency/evidence completion; no Hosted or fleet headroom qualification"}
+    retain_direct_flow("lease-scale-policy-assessment.json", result)
+    if status != "satisfied":
+        raise RuntimeError("lease-scale local policy " + status + "; raw captures and assessment retained")
+    return {**report, "localPolicyAssessment": result}
 
 
 def _scale_namespace(worker, tools, process, socket_file):
@@ -725,10 +740,12 @@ def _scale_measure_case(native, worker, tools, artifacts, selection, case, sourc
     details = modules["joins"]["scale_native_request_details"](issuer_event_path.resolve(), native_selected)
     result = json.loads(read_direct_guest_file(worker, python, runtime_root + "/result.json", 1048576))
     wave_names = [row["wave"] for row in result.get("waves", [])] if not case["attestationCapped"] else ["cap-candidate", "cap-expired"]
-    waves = []
+    waves, wave_references = [], []
     for name in wave_names:
         body = _scale_capture_file(worker, python, runtime_root + "/waves/" + name + ".jsonl", 64 * 1024 * 1024)
-        retain_direct_flow(label + "-" + name + ".jsonl", body)
+        filename = label + "-" + name + ".jsonl"
+        digest = retain_direct_flow(filename, body)
+        wave_references.append({"wave": name, "file": filename, "sha256": digest, "bytes": len(body)})
         rows = [json.loads(line, object_pairs_hook=_scale_closed) for line in body.splitlines()]
         if len(rows) != 4224:
             raise ValueError("actual retained scale wave omitted an original outcome")
@@ -752,8 +769,18 @@ def _scale_measure_case(native, worker, tools, artifacts, selection, case, sourc
         "dispatchAndIssuerCalls": joined, "waves": wave_facts, "budgets": budgets, "loadedCpu": loaded_cpu,
         "requiredMeasurementSamplesPresent": required_samples_present,
         "qualification": None, "scope": "actual local evidence; policy budget failures remain failures, no Hosted/fleet headroom claim"}
-    retain_direct_flow(label + "-measurement.json", receipt)
-    return receipt
+    measurement_sha = retain_direct_flow(label + "-measurement.json", receipt)
+    wave_inventory_sha = retain_direct_flow(label + "-wave-inventory.json", wave_references)
+    # Assess only after every raw report is retained. The previous all-wave
+    # aggregate, including unknown outage CPU, remains byte-for-byte evidence.
+    publication = projection["configurations"][0]["objectConsumer"]["publications"][0]
+    assessment = modules["joins"]["scale_case_policy_assessment"](
+        case["case"], waves, contexts, projection["cohortDigests"], joined, details,
+        loaded_cpu, result, issuer_process, stopped, publication["attestation"]["valid_until"],
+        {"measurement": "sha256:" + measurement_sha, "waves": "sha256:" + wave_inventory_sha,
+            "publication": "sha256:" + projection["publicationSha256"]})
+    retain_direct_flow(label + "-policy-assessment.json", assessment)
+    return {**receipt, "policyAssessment": assessment}
 
 
 

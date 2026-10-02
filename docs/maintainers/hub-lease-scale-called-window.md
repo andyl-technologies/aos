@@ -109,14 +109,15 @@ upper allowance. The denominator uses the actual offered-wave monotonic duration
 minus twice its measured clock resolution. CPU sampling handshakes and owner/TTL
 waits do not enlarge that denominator. Every retained request body/hash/original
 and both raw endpoints must join the exact wave. No process average is interpreted
-as CPU for an individual signature. Outage or missing samples cannot satisfy a
-loaded budget.
+as CPU for an individual signature. Missing required positive or live cap samples cannot satisfy a loaded budget.
+Outage CPU remains unknown; its stopped issuer is checked separately against
+the actual original/expiry/refusal sequence.
 
 The prospective targets remain warm p95 <100 ms/p99 <250 ms, cold p95 <500 ms/p99
 <1 s, and whole dedicated-issuer CPU during each offered wave at most 50% of its
 observed allocation. Missing latency, queue/signing CPU or loaded process samples
-stay unknown. Their actual acceptance is a separate review; an observed failed
-budget remains a failure even if the serving-window average is lower.
+stay unknown. The called final consumer enforces these budgets for the authored phases; an
+observed failed budget remains a failure even if the serving-window average is lower.
 
 Closed private logs and wave files cross machine-agent transport in chunks of at
 most 4 MiB, each checked against the complete original identity and final digest.
@@ -130,3 +131,40 @@ Source tests and the Core example gate establish fixture correctness only.
 No actual 32-cohort workload, jitter, maximum-fleet ratio, Hosted clock, provider
 capacity, Native bulk-zero or whole-isolate memory qualification follows from
 those tests, a configuration, an invocation marker or supplied dictionary.
+
+
+## Called final completion
+
+Raw per-case measurements, including `requiredMeasurementSamplesPresent` and the
+all-wave CPU aggregate, are retained unchanged before assessment. In the TTL
+cases an unavailable outage CPU endpoint leaves that aggregate unknown. The
+separate consumer checks the fixed `ttl-8`, `ttl-120`, `cap-120` case order and
+complete 4,224-original waves against the selected four processes and 32 cohorts.
+It never selects exclusions from an observed status or drops negative raw work.
+
+Each TTL case requires positive `cold`, `reuse-candidate`,
+`renewal-candidate-1` and `renewal-candidate-2` waves, two actual replacement
+issuances, and a contiguous bounded `outage-NN` sequence ending in complete
+HTTP refusals beyond the last real token expiry. Its exact issuer terminal must
+precede outage requests. Earlier outage token consumers still require the
+shared signed-token/owner joins; unknown transport and CPU stay in the report.
+Every required positive wave needs its real joined loaded CPU upper bound at
+most 50%. Missing positive CPU cannot be excluded as if it were outage work.
+
+Both TTL cases require actual cold and warm issuer latency populations at the
+stated limits, queue/signing samples and acknowledged lease commits. The
+`cap-120` mechanism case requires its actual cold latency population and exact
+returned expiry equal to the independently exported attestation bound. Its
+`cap-expired` wave requires actual HTTP refusals beyond that bound while the
+same issuer remains live. Both cap phases need loaded CPU observations; an
+unavailable cap endpoint is unknown, not an outage exemption. No warm population
+is invented for this separate cap mechanism case.
+
+`lease-scale-window.json` retains the raw report. Separate per-case policy files
+and `lease-scale-policy-assessment.json` retain `satisfied`, `failed` or `unknown`
+requirements with raw digest references. The existing Fleet entry point returns
+normally only when all scheduled local requirements are satisfied. Otherwise it
+retains the assessment and raises an explicit error, preventing capture completion
+from passing the called local policy. Even a satisfied result keeps `qualification`
+null: it establishes only this measured local policy, not Hosted behavior, fleet
+headroom, provider permission or unrelated business qualification.

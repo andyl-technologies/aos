@@ -336,3 +336,185 @@ def scale_loaded_cpu_facts(intervals, waves, records, issuer, workload):
     complete = bool(results) and all(row["loadedCpuBudgetSatisfied"] is not None for row in results)
     return {"waves": results, "loadedCpuBudgetSatisfied": all(row["loadedCpuBudgetSatisfied"] for row in results) if complete else None,
         "qualification": None, "scope": "actual offered-wave process CPU upper bound; no per-signature CPU or peak/headroom claim"}
+
+
+SCALE_POSITIVE_PHASES = ("cold", "reuse-candidate", "renewal-candidate-1", "renewal-candidate-2")
+
+
+def _scale_policy_originals(waves, contexts, cohorts):
+    """Check the complete fixed fanout against independently selected contexts."""
+    selected = {row["isolateLabel"]: row for row in contexts}
+    if len(contexts) != 4 or len(selected) != 4 or len(cohorts) != 32 or len(set(cohorts)) != 32:
+        raise ValueError("policy inventory has no exact four-process/thirty-two-cohort selection")
+    expected = {(label, cohort, index) for label in selected for cohort in cohorts for index in range(33)}
+    nonces, previous_end = set(), 0
+    for name, rows in waves:
+        groups = set()
+        if len(rows) != 4224:
+            raise ValueError("policy wave omitted offered outcomes")
+        for row in rows:
+            original = row["original"]
+            context = selected[row["isolateLabel"]]
+            if type(row["offeredIndex"]) is not int or any(type(original[key]) is not int or original[key] < 0
+                    for key in ("version", "issued_at", "expires_at")):
+                raise ValueError("policy original integer shape differs")
+            _digest(original["nonce"])
+            identity = (row["isolateLabel"], original["cohort_digest"], row["offeredIndex"])
+            if identity not in expected or identity in groups or original["nonce"] in nonces:
+                raise ValueError("policy original is reused or outside the fixed fanout")
+            body = json.dumps(original, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()
+            if (row["wave"] != name or original["version"] != 1
+                    or original["run_id"] != context["runId"] or original["source_digest"] != context["sourceDigest"]
+                    or original["configuration_digest"] != context["configurationDigest"]
+                    or row["requestSha256"] != hashlib.sha256(body).hexdigest()
+                    or row["requestBodyBytesOffered"] != len(body)
+                    or original["expires_at"] - original["issued_at"] != 30
+                    or not previous_end <= row["startedUnixNs"] <= row["completedUnixNs"]):
+                raise ValueError("policy source, bytes, original window or phase ordering differs")
+            groups.add(identity)
+            nonces.add(original["nonce"])
+        if groups != expected:
+            raise ValueError("policy wave lost selected cohort/follower coverage")
+        previous_end = max(row["completedUnixNs"] for row in rows)
+
+
+def _scale_policy_cpu(name, rows, loaded_cpu):
+    """Assess the existing independently joined upper bound for one required wave."""
+    matches = [row for row in loaded_cpu["waves"] if row["wave"] == name]
+    if len(matches) != 1 or matches[0]["outcome"] != "observed":
+        return None
+    fact = matches[0]
+    offered = [{field: row[field] for field in ("original", "isolateLabel", "offeredIndex", "wave")} for row in rows]
+    digest = hashlib.sha256(json.dumps(offered, ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode()).hexdigest()
+    bound = fact["normalizedUpperBound"]
+    if fact["waveOriginalsSha256"] != digest or any(type(bound[key]) is not int or bound[key] <= 0 for key in ("numerator", "denominator")):
+        raise ValueError("required CPU wave does not join its actual offered originals")
+    passed = bound["numerator"] * 2 <= bound["denominator"]
+    if fact["loadedCpuBudgetSatisfied"] is not passed:
+        raise ValueError("CPU summary differs from its actual conservative bound")
+    return passed
+
+
+def scale_case_policy_assessment(case, waves, contexts, cohorts, joined, native,
+                                 loaded_cpu, transport, issuer, terminal,
+                                 attestation_until, evidence):
+    """Assess the authored local schedule without rewriting raw aggregate facts.
+
+    Inputs are existing retained collectors and their actual selected originals,
+    never an authentication or dispatch entry point. Outage CPU remains unknown;
+    it is not substituted for required positive or live cap CPU. Missing evidence
+    cannot satisfy local completion, and this result confers no live authority.
+    """
+    requirements = []
+
+    def requirement(name, value, reference):
+        requirements.append({"name": name, "status": "unknown" if value is None else "satisfied" if value else "failed",
+            "evidence": reference})
+
+    try:
+        if case not in {"ttl-8", "ttl-120", "cap-120"} or not 0 < len(waves) <= 16:
+            raise ValueError("policy case or bounded phase inventory differs")
+        names = [name for name, _ in waves]
+        lifetime = 8 if case == "ttl-8" else 120
+        if case == "cap-120":
+            positive = ("cap-candidate",)
+            scheduled = names == ["cap-candidate", "cap-expired"]
+        else:
+            positive = SCALE_POSITIVE_PHASES
+            outage_count = len(names) - len(positive)
+            scheduled = (1 <= outage_count <= (lifetime + 29) // 30 + 2
+                and names == list(positive) + [f"outage-{index:02d}" for index in range(outage_count)])
+        requirement("fixed phase schedule", scheduled, evidence["waves"])
+        if not scheduled:
+            raise ValueError("actual phase order differs from authored positive/negative schedule")
+        _scale_policy_originals(waves, contexts, cohorts)
+        requirement("complete original fanout and source joins", True, evidence["waves"])
+        if (terminal != transport["issuerTerminalReceipt"] or terminal["pid"] != issuer["pid"]
+                or terminal["startTicks"] != issuer["startTicks"] or terminal["exitCode"] != 0
+                or terminal["resourceRoot"] != issuer["processRoot"]):
+            raise ValueError("issuer terminal does not join its exact selected lifetime")
+        stopped_at = terminal["completedUnixNs"]
+        by_name = dict(waves)
+        known = {row["verified"]["leaseDigest"]: row for row in joined["calls"] if row["verified"] is not None}
+        if len(known) != sum(row["verified"] is not None for row in joined["calls"]):
+            raise ValueError("signed issuance has ambiguous token ownership")
+        previous = None
+        for name in positive:
+            rows = by_name[name]
+            complete = all(row["outcome"] == "authenticated_probe_metadata" and row["httpStatus"] == 200 for row in rows)
+            requirement(name + " positive outcomes", complete, evidence["waves"] + "#" + name)
+            if not complete:
+                raise ValueError("required positive phase contains refused or unresolved calls")
+            # Reuse the existing exact Core-token/owner/process/cohort correlation.
+            scale_wave_rpc_facts(rows, name, joined)
+            groups = defaultdict(list)
+            for row in rows:
+                reply = row["reply"]
+                original = row["original"]
+                pins = {"version": 1, "runId": original["run_id"], "nonce": original["nonce"],
+                    "requestSha256": row["requestSha256"], "sourceDigest": original["source_digest"],
+                    "configurationDigest": original["configuration_digest"], "cohortDigest": original["cohort_digest"],
+                    "isolateLabel": row["isolateLabel"]}
+                if any(reply[key] != value for key, value in pins.items()):
+                    raise ValueError("actual probe reply belongs to another offered original")
+                if (reply["maximumLifetime"] != lifetime or reply["clockUncertainty"] != 2
+                        or reply["attestationValidUntil"] != attestation_until
+                        or reply["notAfter"] > attestation_until
+                        or row["completedUnixNs"] // 10**9 + 2 >= min(reply["notAfter"], row["original"]["expires_at"])):
+                    raise ValueError("positive token exceeds selected cap or actual consumption cutoff")
+                groups[(row["isolateLabel"], row["original"]["cohort_digest"])].append(reply)
+            if name.startswith("renewal-"):
+                requirement(name + " actual replacement", all(min(row["issuedAt"] for row in replies)
+                    > max(row["issuedAt"] for row in previous[identity]) for identity, replies in groups.items()), evidence["waves"] + "#" + name)
+            previous = groups
+            requirement(name + " loaded CPU <=50%", _scale_policy_cpu(name, rows, loaded_cpu), evidence["measurement"] + "#loadedCpu/" + name)
+            requirement(name + " issuer still live", max(row["completedUnixNs"] for row in rows) < stopped_at, evidence["measurement"] + "#issuerTerminal")
+
+        # Budget classes follow all actual acknowledged positive issuer work,
+        # including an issued token not consumed by a probe. Negative transport
+        # observations remain raw; none can supply a latency or CPU zero.
+        calls = [row for row in joined["calls"] if row["verified"] is not None]
+        required_native = [row["native"] for row in calls]
+        missing_sign = sum(signature.get("threadCpuNs") is None or signature.get("wallNs") is None
+            for row in required_native for signature in row["signatures"])
+        selected_native = {**native, "requests": {row["ownerNonce"]: row["native"] for row in calls},
+            "missingSigningCpuSamples": missing_sign}
+        budgets = scale_budget_facts({"calls": calls}, selected_native, issuer["allocatedMillicores"])
+        for kind in (("cold",) if case == "cap-120" else ("cold", "warm")):
+            latency = budgets["latency"][kind]
+            passed = None if not latency["samples"] or budgets["missingLatencySamples"].get(kind) else (
+                latency["p95Ns"] < LOCAL_LEASE_SCALE_POLICY[kind + "P95NsExclusive"]
+                and latency["p99Ns"] < LOCAL_LEASE_SCALE_POLICY[kind + "P99NsExclusive"])
+            requirement(kind + " actual issuer latency", passed, evidence["measurement"] + "#dispatchAndIssuerCalls")
+        requirement("positive signing CPU/wall and queue samples", None if missing_sign or any(row["queueWaitNs"] is None for row in required_native) else True,
+            evidence["measurement"] + "#dispatchAndIssuerCalls")
+        requirement("positive acknowledged issuance commits", all(row["outcome"] == "verified_acknowledged_issuance"
+            and len([commit for commit in row["native"]["commits"] if commit["kind"] == "lease" and commit["outcome"] == "acknowledged"]) == 1 for row in calls),
+            evidence["measurement"] + "#dispatchAndIssuerCalls")
+
+        if case == "cap-120":
+            initial, final = by_name["cap-candidate"], by_name["cap-expired"]
+            requirement("selected attestation cap", all(row["reply"]["notAfter"] == attestation_until
+                and row["reply"]["issuedAt"] < attestation_until < row["reply"]["issuedAt"] + 120 for row in initial), evidence["publication"])
+            requirement("cap-expired loaded CPU <=50%", _scale_policy_cpu("cap-expired", final, loaded_cpu), evidence["measurement"] + "#loadedCpu/cap-expired")
+            requirement("cap-expired issuer still live", max(row["completedUnixNs"] for row in final) < stopped_at, evidence["measurement"] + "#issuerTerminal")
+            boundary = attestation_until
+        else:
+            final = waves[-1][1]
+            boundary = max(row["reply"]["notAfter"] for row in by_name["renewal-candidate-2"])
+            outage_rows = [row for name, rows in waves if name.startswith("outage-") for row in rows]
+            requirement("issuer stopped before outage originals", all(stopped_at <= row["startedUnixNs"]
+                and row["original"]["issued_at"] >= stopped_at // 10**9 for row in outage_rows), evidence["measurement"] + "#issuerTerminal")
+            # Before expiry, retained positive tokens are permitted, but their
+            # real owner joins remain required. Unknown transport stays raw.
+            for name, rows in waves[len(positive):]:
+                scale_wave_rpc_facts(rows, name, joined)
+        requirement("final originals beyond actual expiry", all(row["original"]["issued_at"] >= boundary + 1 for row in final), evidence["waves"] + "#" + names[-1])
+        requirement("final complete HTTP refusals", all(row["outcome"] == "http_refused" and type(row["httpStatus"]) is int
+            and 400 <= row["httpStatus"] <= 599 for row in final), evidence["waves"] + "#" + names[-1])
+    except (KeyError, IndexError, TypeError, ValueError) as error:
+        requirement("complete policy evidence", None, str(error))
+    states = {row["status"] for row in requirements}
+    status = "failed" if "failed" in states else "unknown" if "unknown" in states else "satisfied"
+    return {"case": case, "status": status, "requirements": requirements,
+        "qualification": None, "scope": "scheduled local measurement assessment only; raw outage/aggregate unknowns retained"}

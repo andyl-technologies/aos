@@ -383,5 +383,198 @@ class LoadedCpuTests(unittest.TestCase):
         self.assertEqual(PROCESS["scale_sample_process_cpu"](selected)["outcome"], "unknown")
 
 
+class FinalPolicyTests(unittest.TestCase):
+    """Exercise real consumer code with explicitly supplied source-test evidence."""
+
+    def fixture(self, case="ttl-8"):
+        lifetime = 8 if case == "ttl-8" else 120
+        contexts = [{"isolateLabel": f"{index:032x}", "configurationDigest": "4" * 64,
+            "sourceDigest": "1" * 64, "runId": "2" * 32} for index in range(4)]
+        cohorts = [f"{index:064x}" for index in range(32)]
+        if case == "cap-120":
+            schedule = [("cap-candidate", 200), ("cap-expired", 251)]
+            stopped, cap = 253, 250
+        else:
+            schedule = [("cold", 100), ("reuse-candidate", 101),
+                ("renewal-candidate-1", 132), ("renewal-candidate-2", 164),
+                ("outage-00", 166), ("outage-01", 297)]
+            stopped, cap = 166, 1000
+        issuer = {"pid": 7, "startTicks": "8", "processRoot": "/actual-unit-root", "allocatedMillicores": 1000}
+        terminal = {"pid": 7, "startTicks": "8", "resourceRoot": issuer["processRoot"],
+            "exitCode": 0, "completedUnixNs": stopped * 10**9}
+        calls, owners, waves, cpu, requests = [], {}, [], [], {}
+        for phase_index, (name, at) in enumerate(schedule):
+            rows = []
+            positive = name in JOINS["SCALE_POSITIVE_PHASES"] or name == "cap-candidate"
+            for context_index, context in enumerate(contexts):
+                for cohort_index, cohort in enumerate(cohorts):
+                    group = context_index * 32 + cohort_index
+                    owner_phase = 0 if name == "reuse-candidate" else phase_index
+                    identity = (owner_phase, group)
+                    if positive and identity not in owners:
+                        owner = f"{1000000 + owner_phase * 128 + group:064x}"
+                        issued = schedule[owner_phase][1]
+                        lease = f"{2000000 + owner_phase * 128 + group:064x}"
+                        observed = {"queueWaitNs": 1, "wallNs": 10, "outcome": "success",
+                            "signatures": [{"purpose": purpose, "threadCpuNs": 1, "wallNs": 2} for purpose in ("lease", "reply")],
+                            "commits": [{"kind": "lease", "outcome": "acknowledged"}]}
+                        checked = {"leaseDigest": lease, "issuedAt": issued,
+                            "notAfter": cap if case == "cap-120" else issued + lifetime, "leaseSequence": owner_phase + 1}
+                        item = {"ownerNonce": owner, "outcome": "verified_acknowledged_issuance", "native": observed,
+                            "dispatch": {"ownerNonce": owner, "isolateLabel": context["isolateLabel"],
+                                "cohortDigest": cohort, "issuedAt": issued}, "verified": checked}
+                        owners[identity] = item
+                        calls.append(item)
+                        requests[owner] = observed
+                    for offered in range(33):
+                        original = {"version": 1, "run_id": context["runId"],
+                            "nonce": f"{phase_index * 4224 + group * 33 + offered:064x}",
+                            "source_digest": context["sourceDigest"], "configuration_digest": context["configurationDigest"],
+                            "cohort_digest": cohort, "issued_at": at, "expires_at": at + 30}
+                        body = json.dumps(original, separators=(",", ":")).encode()
+                        digest = hashlib.sha256(body).hexdigest()
+                        reply = None
+                        if positive:
+                            reply = {**owners[identity]["verified"], "version": 1,
+                                "runId": context["runId"], "nonce": original["nonce"], "requestSha256": digest,
+                                "sourceDigest": context["sourceDigest"], "configurationDigest": context["configurationDigest"],
+                                "cohortDigest": cohort, "isolateLabel": context["isolateLabel"],
+                                "maximumLifetime": lifetime, "clockUncertainty": 2, "attestationValidUntil": cap}
+                        rows.append({"original": original, "wave": name, "offeredIndex": offered,
+                            "isolateLabel": context["isolateLabel"], "requestSha256": digest,
+                            "requestBodyBytesOffered": len(body), "startedUnixNs": at * 10**9,
+                            "completedUnixNs": at * 10**9 + 1000000,
+                            "httpStatus": 200 if positive else 409,
+                            "outcome": "authenticated_probe_metadata" if positive else "http_refused", "reply": reply})
+            offered_rows = [{field: row[field] for field in ("original", "isolateLabel", "offeredIndex", "wave")} for row in rows]
+            digest = hashlib.sha256(json.dumps(offered_rows, separators=(",", ":")).encode()).hexdigest()
+            cpu.append({"wave": name, "outcome": "observed" if positive or case == "cap-120" else "unknown",
+                "normalizedUpperBound": {"numerator": 1, "denominator": 10},
+                "loadedCpuBudgetSatisfied": True if positive or case == "cap-120" else None, "waveOriginalsSha256": digest})
+            waves.append((name, rows))
+        native = {"requests": requests, "wholeProcessCpuNs": 1, "wholeProcessWindowWallNs": 100,
+            "missingSigningCpuSamples": 0, "signatures": {}, "commits": {}}
+        return [case, waves, contexts, cohorts, {"calls": calls}, native,
+            {"waves": cpu, "loadedCpuBudgetSatisfied": None}, {"issuerTerminalReceipt": terminal},
+            issuer, terminal, cap, {name: "sha256:" + "a" * 64 for name in ("measurement", "waves", "publication")}]
+
+    def assess(self, inputs):
+        return JOINS["scale_case_policy_assessment"](*inputs)
+
+    def test_fixed_schedules_accept_required_facts_without_changing_outage_unknown(self):
+        for case in ("ttl-8", "ttl-120", "cap-120"):
+            with self.subTest(case=case):
+                inputs = self.fixture(case)
+                before = copy.deepcopy(inputs[6])
+                result = self.assess(inputs)
+                self.assertEqual(result["status"], "satisfied", result)
+                self.assertIsNone(result["qualification"])
+                self.assertEqual(inputs[6], before)
+
+    def test_positive_cpu_missing_and_failed_budget_cannot_use_serving_average(self):
+        inputs = self.fixture()
+        inputs[6]["waves"][0]["outcome"] = "unknown"
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+        inputs[6]["waves"][0].update(outcome="observed", normalizedUpperBound={"numerator": 6, "denominator": 10}, loadedCpuBudgetSatisfied=False)
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+
+    def test_actual_latency_failure_missing_warm_and_signing_queue_samples(self):
+        inputs = self.fixture()
+        inputs[4]["calls"][0]["native"]["wallNs"] = 2_000_000_000
+        # All cold samples must fail, rather than hiding one in a percentile.
+        for row in inputs[4]["calls"][:128]:
+            row["native"]["wallNs"] = 2_000_000_000
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+        for row in inputs[4]["calls"]:
+            row["native"]["wallNs"] = None
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+        inputs = self.fixture()
+        inputs[4]["calls"][0]["native"]["signatures"][0]["threadCpuNs"] = None
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+        inputs = self.fixture()
+        inputs[4]["calls"][0]["native"]["queueWaitNs"] = None
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+
+    def test_unconsumed_actual_positive_work_still_enters_latency_budget(self):
+        inputs = self.fixture()
+        for index in range(128):
+            item = copy.deepcopy(inputs[4]["calls"][-128 + index])
+            item["ownerNonce"] = f"{3000000 + index:064x}"
+            item["dispatch"]["ownerNonce"] = item["ownerNonce"]
+            item["dispatch"]["issuedAt"] += 1
+            item["verified"]["leaseDigest"] = f"{4000000 + index:064x}"
+            item["native"]["wallNs"] = 2_000_000_000
+            inputs[4]["calls"].append(item)
+            inputs[5]["requests"][item["ownerNonce"]] = item["native"]
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+
+    def test_missing_actual_warm_and_acknowledged_commit_stay_unresolved(self):
+        inputs = self.fixture()
+        for item in inputs[4]["calls"][128:]:
+            item["native"]["wallNs"] = None
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+        inputs = self.fixture()
+        inputs[4]["calls"][0]["native"]["commits"][0]["outcome"] = "unknown"
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+
+    def test_cap_expired_requires_live_cpu_refusal_and_independent_bound(self):
+        inputs = self.fixture("cap-120")
+        inputs[6]["waves"][1]["outcome"] = "unknown"
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+        inputs = self.fixture("cap-120")
+        inputs[1][1][1][0].update(outcome="unknown", httpStatus=None)
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+        inputs = self.fixture("cap-120")
+        inputs[10] += 1
+        self.assertNotEqual(self.assess(inputs)["status"], "satisfied")
+        inputs = self.fixture("cap-120")
+        inputs[9]["completedUnixNs"] = 250 * 10**9
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+
+    def test_source_body_duplicate_geometry_and_wrong_token_refuse(self):
+        for field, value in (("requestSha256", "f" * 64), ("offeredIndex", 1), ("isolateLabel", "f" * 32)):
+            inputs = self.fixture()
+            inputs[1][0][1][0][field] = value
+            self.assertEqual(self.assess(inputs)["status"], "unknown")
+        inputs = self.fixture()
+        inputs[1][0][1][0]["reply"]["nonce"] = "f" * 64
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+        inputs = self.fixture()
+        inputs[4]["calls"].pop()
+        self.assertEqual(self.assess(inputs)["status"], "unknown")
+
+    def test_missing_phases_and_final_http200_do_not_pass(self):
+        inputs = self.fixture()
+        inputs[1].pop(1)
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+        inputs = self.fixture()
+        inputs[1][-1][1][0].update(outcome="unknown", httpStatus=200)
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+        inputs = self.fixture()
+        inputs[9]["completedUnixNs"] = 170 * 10**9
+        self.assertEqual(self.assess(inputs)["status"], "failed")
+
+    def test_caller_retains_failure_unknown_and_requires_all_three_satisfied(self):
+        captured = []
+        namespace = dict(MAIN)
+        namespace["retain_direct_flow"] = lambda name, value: captured.append((name, copy.deepcopy(value)))
+        exec(compile(ROOT.joinpath('_hub-direct-issuer-scale-main.py').read_bytes(), 'main', 'exec'), namespace)
+        for state in ("failed", "unknown"):
+            report = {"cases": [{"case": case, "policyAssessment": {"case": case, "status": state}}
+                for case in ("ttl-8", "ttl-120", "cap-120")], "qualification": None}
+            before = copy.deepcopy(report)
+            with self.assertRaisesRegex(RuntimeError, state):
+                namespace["_scale_finish_window"](report)
+            self.assertEqual(report, before)
+            self.assertEqual(captured[-1][1]["status"], state)
+        report = {"cases": [{"case": case, "policyAssessment": {"case": case, "status": "satisfied"}}
+            for case in ("ttl-8", "ttl-120", "cap-120")], "qualification": None}
+        self.assertEqual(namespace["_scale_finish_window"](report)["localPolicyAssessment"]["status"], "satisfied")
+        report["cases"].pop()
+        with self.assertRaisesRegex(RuntimeError, "unknown"):
+            namespace["_scale_finish_window"](report)
+
+
+
 if __name__ == "__main__":
     unittest.main()
