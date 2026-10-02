@@ -15,7 +15,7 @@ pub(in super::super) fn run_remote_workflow(
     let client = remote_rpc_client(daemon, backend_plan)?;
     let report = if matches!(run_plan.execution_mode, RunExecutionMode::Interactive) {
         runtime.block_on(run_control_client_workflow_stdin_async(
-            &client, run_plan, true,
+            &client, run_plan, true, false,
         ))?
     } else {
         runtime.block_on(run_control_client_workflow_async(&client, run_plan, &[]))?

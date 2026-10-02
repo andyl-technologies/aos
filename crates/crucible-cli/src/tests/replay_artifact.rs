@@ -1,6 +1,7 @@
 //! Search, replay, artifact, and deterministic execution tests.
 
 use super::*;
+use std::sync::Mutex;
 
 #[test]
 pub(super) fn cli_search_fuzz_help_surface_lists_wip_flags() {
@@ -2076,6 +2077,7 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
         &mut acknowledged,
         io::Cursor::new("query\nquery\n# ignored\n\nstop\nquery\n"),
         &mut output,
+        None,
     )
     .await?;
 
@@ -2180,6 +2182,7 @@ pub(super) async fn cli_interactive_continue_hands_control_back_before_autonomou
         &mut acknowledged,
         io::Cursor::new("continue\npause\nquery\nstop\n"),
         &mut output,
+        None,
     )
     .await;
 
@@ -2316,6 +2319,202 @@ pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_c
     assert!(report.watch_statuses.iter().any(|status| {
         status.starts_with("state=stopped\tfrontier_ticks=1\tquanta=1\toutcome=stopped")
     }));
+    assert!(client.list_sessions().await?.sessions.is_empty());
+
+    Ok(())
+}
+
+fn terminal_sampling_client(
+    refuse_sample: bool,
+    operations: Arc<Mutex<Vec<&'static str>>>,
+) -> impl ControlClient + Sync {
+    struct ObservedLoop {
+        inner: QuiescentLifecycleLoop,
+        refuse_sample: bool,
+        operations: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl EngineLoop for ObservedLoop {
+        fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
+            self.operations
+                .lock()
+                .map_err(|_| QErr::BoundaryViolation {
+                    message: String::from("sampling test operations lock poisoned"),
+                })?
+                .push("run");
+            self.inner.drive_quantum(request)
+        }
+
+        fn sample_fingerprint(
+            &mut self,
+            node: crucible::NodeId,
+        ) -> Result<crucible::FingerprintSample, QErr> {
+            self.operations
+                .lock()
+                .map_err(|_| QErr::BoundaryViolation {
+                    message: String::from("sampling test operations lock poisoned"),
+                })?
+                .push("sample");
+            if self.refuse_sample {
+                return Err(QErr::BoundaryViolation {
+                    message: String::from("terminal sampling refused"),
+                });
+            }
+            self.inner.sample_fingerprint(node)
+        }
+
+        fn shutdown(&mut self) -> Result<Vec<crucible::SchedulerEventLogEntry>, QErr> {
+            self.operations
+                .lock()
+                .map_err(|_| QErr::BoundaryViolation {
+                    message: String::from("sampling test operations lock poisoned"),
+                })?
+                .push("shutdown");
+            Ok(Vec::new())
+        }
+    }
+
+    InProcessLifecycleClient::new(
+        LifecycleControlPlane::new(
+            "crucible-cli-terminal-sampling-test",
+            Vec::new(),
+            move |_scenario: &crucible::ScenarioDef, _seed| ObservedLoop {
+                inner: QuiescentLifecycleLoop::new(),
+                refuse_sample,
+                operations: operations.clone(),
+            },
+        )
+        .with_terminal_session_retention(true),
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_interactive_terminal_sampling_precedes_shutdown_without_initial_run()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let scenario = write_valid_run_scenario(&temp)?;
+    let cli = Cli::parse_from([
+        "crucible",
+        "run",
+        &scenario.display().to_string(),
+        "--interactive",
+    ]);
+    let Commands::Run(args) = &cli.command else {
+        panic!("expected run command");
+    };
+    let plan = plan_run_invocation(args, temp.path())?;
+    assert!(!plan.collect_execution_fingerprints);
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let client = terminal_sampling_client(false, operations.clone());
+
+    let report = run_control_client_workflow_with_interactive_driver(
+        &client,
+        &plan,
+        InteractiveCommandDriver::Preparsed(&[
+            SessionCommandKind::Continue,
+            SessionCommandKind::Pause,
+            SessionCommandKind::Query,
+            SessionCommandKind::Stop,
+        ]),
+        false,
+        false,
+        true,
+    )
+    .await?;
+
+    let nodes = plan.scenario.scenario_form().world().vm_nodes().len();
+    assert_eq!(report.execution_fingerprints.len(), nodes);
+    assert!(
+        report
+            .execution_fingerprints
+            .iter()
+            .all(|sample| sample.at.ticks == 0)
+    );
+    assert_eq!(report.final_quanta, 0);
+    assert!(report.final_snapshot.is_some());
+
+    let evidence = live_qemu_artifact_evidence_from_run(
+        LiveQemuArtifactRecipe {
+            producer: "run",
+            terminal_condition: plan.terminal_condition,
+            max_virtual_time_ticks: plan.max_virtual_time_ticks,
+            max_quanta: plan.max_quanta,
+            coverage: false,
+            execution_mode: plan.execution_mode,
+            startup_commands: &plan.startup_commands,
+            initial_control_commands: &plan.initial_control_commands,
+            branch: LiveQemuReplayBranch::None,
+        },
+        plan.scenario.scenario_form(),
+        &report,
+    )?;
+    assert_eq!(
+        evidence.contract.fingerprint_scope,
+        LiveQemuFingerprintScope::TerminalAllNodes
+    );
+    assert_eq!(evidence.contract.final_quanta, 0);
+    assert_eq!(
+        evidence.contract.final_frontier_ticks,
+        report.final_frontier_ticks
+    );
+    assert_eq!(
+        evidence.fingerprint_samples,
+        run_fingerprint_samples(&report)
+    );
+    assert_eq!(
+        evidence.fingerprint_stream,
+        verify_fingerprint_stream_bytes(&evidence.fingerprint_samples)
+    );
+    let mut expected = vec!["sample"; nodes];
+    expected.push("shutdown");
+    assert_eq!(
+        *operations.lock().map_err(|_| "operations lock poisoned")?,
+        expected
+    );
+    assert!(client.list_sessions().await?.sessions.is_empty());
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_interactive_terminal_sampling_refusal_retires_original_owner()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let scenario = write_valid_run_scenario(&temp)?;
+    let cli = Cli::parse_from([
+        "crucible",
+        "run",
+        &scenario.display().to_string(),
+        "--interactive",
+    ]);
+    let Commands::Run(args) = &cli.command else {
+        panic!("expected run command");
+    };
+    let plan = plan_run_invocation(args, temp.path())?;
+    let operations = Arc::new(Mutex::new(Vec::new()));
+    let client = terminal_sampling_client(true, operations.clone());
+
+    let error = run_control_client_workflow_with_interactive_driver(
+        &client,
+        &plan,
+        InteractiveCommandDriver::Preparsed(&[SessionCommandKind::Stop]),
+        false,
+        false,
+        true,
+    )
+    .await
+    .err()
+    .ok_or("refused terminal sample must fail capture")?;
+
+    // The authenticated streaming boundary maps scheduler BoundaryViolation
+    // to Internal; the CLI must preserve that rejection rather than fabricate
+    // a sample or turn capture into a successful Stop.
+    assert!(matches!(error, CliError::Backend(ref message)
+        if message == "execution fingerprint query for node `client` was rejected: Internal"));
+    assert_eq!(
+        *operations.lock().map_err(|_| "operations lock poisoned")?,
+        vec!["sample", "shutdown"]
+    );
     assert!(client.list_sessions().await?.sessions.is_empty());
 
     Ok(())

@@ -488,7 +488,7 @@ pub(super) async fn run_local_double_workflow_stdin_async(
     )
     .with_terminal_session_retention(true);
     let client = InProcessLifecycleClient::new(control_plane);
-    run_control_client_workflow_stdin_async(&client, run_plan, false).await
+    run_control_client_workflow_stdin_async(&client, run_plan, false, false).await
 }
 
 #[path = "verify_serve/service.rs"]
@@ -507,6 +507,7 @@ where
         client,
         run_plan,
         InteractiveCommandDriver::Preparsed(interactive_commands),
+        false,
         false,
         false,
     )
