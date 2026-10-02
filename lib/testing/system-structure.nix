@@ -11,6 +11,9 @@
   renderedPaths =
     map (path: lib.removePrefix "systemd/system/" path)
     (builtins.attrNames config.system.build.systemdEtcEntries);
+  bootstrapServices = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
+    inherit config lib pkgs;
+  };
   outputs = [manager config.system.build.etcDump config.environment.etc."os-release".source];
   hasContext = value: builtins.attrNames (builtins.getContext (toString value)) != [];
 in
@@ -19,9 +22,10 @@ in
       pname = "aos-system-structure-${variant}";
       version = "0";
       src = null;
-      buildDeps = outputs ++ [pkgs.coreutils pkgs.grep];
-      expectedSystemdPaths = lib.concatStringsSep "\n" renderedPaths + "\n";
-      passAsFile = ["expectedSystemdPaths"];
+      buildDeps = outputs ++ [pkgs.coreutils pkgs.diffutils pkgs.findutils pkgs.grep pkgs.buildPackages.systemd];
+      expectedSystemdPaths = lib.concatStringsSep "\n" (renderedPaths ++ ["nix-support/aos-target-platform"]) + "\n";
+      bootstrapServicesJSON = builtins.toJSON bootstrapServices;
+      passAsFile = ["expectedSystemdPaths" "bootstrapServicesJSON"];
       phases = [
         {
           name = "check";
@@ -31,9 +35,18 @@ in
             [ -d "${manager}/systemd-presets" ]
             [ -s "${config.system.build.etcDump}" ]
             [ -s "${config.environment.etc."os-release".source}" ]
-            while IFS= read -r path; do
-              [ -z "$path" ] || [ -e "${units}/$path" ] || [ -L "${units}/$path" ]
-            done < "$expectedSystemdPathsPath"
+            # Native bootstrap units supplement the declarative image units.
+            # Compare their exact union so undeclared extra files also fail.
+            ${pkgs.buildPackages.systemd}/bin/aos-service-handler render \
+              --output-dir expected-bootstrap-units < "$bootstrapServicesJSONPath"
+            ${pkgs.findutils}/bin/find expected-bootstrap-units \
+              \( -type f -o -type l \) -printf '%P\n' > bootstrap-systemd-paths
+            cat "$expectedSystemdPathsPath" bootstrap-systemd-paths \
+              | ${pkgs.coreutils}/bin/sort -u > expected-systemd-paths
+            ${pkgs.findutils}/bin/find "${units}/" \
+              \( -type f -o -type l \) -printf '%P\n' \
+              | ${pkgs.coreutils}/bin/sort > actual-systemd-paths
+            ${pkgs.diffutils}/bin/diff -u expected-systemd-paths actual-systemd-paths
             if ${pkgs.grep}/bin/grep -r '#aos-jobscript:' "${units}"; then
               echo 'unresolved job-script reference in manager output' >&2
               exit 1

@@ -133,7 +133,7 @@
     inherit (buildContext) mkDerivation;
     kernel = selectedKernel;
     kernelModulePackages = config.aos.boot.initrd.modulePackages;
-    firmwarePackages = config.aos.boot.initrd.firmwarePackages;
+    firmwarePackages = lib.optionals config.aos.kernel.includeFirmware config.aos.boot.initrd.firmwarePackages;
     loadModules = config.aos.boot.initrd.loadModules;
     initrdRuntimeRoots = lib.unique (
       config.aos.boot.initrd.runtimeRoots

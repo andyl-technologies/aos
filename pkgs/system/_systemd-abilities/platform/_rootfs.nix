@@ -73,7 +73,7 @@
       erofsCompressionLevel = config.aos.image.erofsCompressionLevel;
       extraClosures = config.aos.image.hostConfigClosures;
       kernelModulePackages = config.aos.kernel.modulePackages;
-      firmwarePackages = config.aos.kernel.firmwarePackages;
+      firmwarePackages = lib.optionals config.aos.kernel.includeFirmware config.aos.kernel.firmwarePackages;
       postPopulate = ''
         ${lib.optionalString ((config.system.build.bootMetadataBinding or null) != null) ''
           mkdir -p rootfs/usr/lib/aos

@@ -15,6 +15,9 @@
   pkgs,
   ...
 }: let
+  # Conversion tools execute on the build machine; image payloads stay target-specific.
+  buildPackages = pkgs.buildPackages or pkgs;
+  targetPlatform = pkgs.stdenv.hostPlatform;
   cfg = config.aos.image;
   buildingImage = cfg.enable && lib.attrByPath ["aos" "config" "evaluationMode"] "image-build" config == "image-build";
   externalFinalization = config.aos.boot.secureBoot.externalFinalization.enable;
@@ -62,10 +65,10 @@
     mediaType,
     targets,
   }:
-    pkgs.mkDerivation {
+    buildPackages.mkDerivation {
       name = "aos-image-${config.aos.system.name}-${format}";
       src = null;
-      buildDeps = [pkgs.qemu pkgs.coreutils pkgs.jq pkgs.zstd];
+      buildDeps = [buildPackages.qemu buildPackages.coreutils buildPackages.jq buildPackages.zstd];
       IMAGE_FORMAT = format;
       IMAGE_FILENAME = "aos-${config.aos.system.name}.${format}";
       IMAGE_MEDIA_TYPE = mediaType;
@@ -91,14 +94,14 @@
               exit 1
             fi
             sha256=$(sha256sum "$out/$filename" | cut -d ' ' -f1)
-            virtual_size=$(${pkgs.qemu}/bin/qemu-img info --output=json "$out/$filename" \
-              | ${pkgs.jq}/bin/jq -er '.["virtual-size"]')
-            expected_virtual_size=$(${pkgs.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/${plan.rawDeliveryFilename})
+            virtual_size=$(${buildPackages.qemu}/bin/qemu-img info --output=json "$out/$filename" \
+              | ${buildPackages.jq}/bin/jq -er '.["virtual-size"]')
+            expected_virtual_size=$(${buildPackages.jq}/bin/jq -er '.virtualSizeBytes' ${rawImage}/${plan.rawDeliveryFilename})
             if [ "$virtual_size" -ne "$expected_virtual_size" ]; then
               echo "converted image virtual size does not match the raw logical disk" >&2
               exit 1
             fi
-            ${pkgs.jq}/bin/jq -S \
+            ${buildPackages.jq}/bin/jq -S \
               --arg format "$IMAGE_FORMAT" \
               --arg filename "$filename" \
               --arg mediaType "$IMAGE_MEDIA_TYPE" \
@@ -137,10 +140,10 @@
     source,
     description,
   }:
-    pkgs.mkDerivation {
+    buildPackages.mkDerivation {
       inherit name;
       src = null;
-      buildDeps = [pkgs.coreutils];
+      buildDeps = [buildPackages.coreutils];
       outputChecks.out = {};
       unsafeDiscardReferences.out = true;
       phases = [
@@ -276,10 +279,23 @@ in {
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
-      maxInitrdMiB = positiveMiB 128 "Maximum selected early-boot artifact size.";
-      maxBootExecutableMiB = positiveMiB 160 "Maximum selected boot executable size.";
-      maxFirmwarePartitionMiB = positiveMiB 384 "Firmware partition capacity, including two boot executables and update headroom.";
-      maxRuntimeClosureMiB = positiveMiB 768 "Maximum NAR size of the system toplevel runtime closure.";
+      maxInitrdMiB = positiveMiB 132 "Maximum selected early-boot artifact size.";
+      # AArch64 carries an uncompressed kernel image and a larger runtime closure.
+      maxBootExecutableMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 192
+        else 160
+      ) "Maximum selected boot executable size.";
+      maxFirmwarePartitionMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 416
+        else 384
+      ) "Firmware partition capacity, including two boot executables and update headroom.";
+      maxRuntimeClosureMiB = positiveMiB (
+        if targetPlatform.constraints.cpu == "aarch64"
+        then 896
+        else 768
+      ) "Maximum NAR size of the system toplevel runtime closure.";
       maxDevelopmentPayloadMiB = positiveMiB 48 "Maximum headers, static archives, and build metadata retained in the image runtime closure.";
       maxDownloadMiB = positiveMiB 640 "Maximum compressed raw disk-image object size.";
       maxConvertedDownloadMiB = positiveMiB cfg.budgets.maxDownloadMiB "Maximum uncompressed qcow2, VMDK, or VHD disk-image object size.";
