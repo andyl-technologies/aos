@@ -5,6 +5,8 @@ use terrane_core::identity::Digest;
 use terrane_core::provenance::{self, VerifiedCommit, VerifiedHistory};
 
 mod disclosure;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use disclosure::DisclosureSourceSelection;
 
 use super::{Guard, TreeEvidence, invalid};
 #[cfg(not(feature = "std"))]

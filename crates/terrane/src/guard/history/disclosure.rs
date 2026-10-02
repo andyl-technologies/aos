@@ -19,7 +19,73 @@ enum Stage {
 
 type EntryChecks = Vec<(EntryLocation, Vec<String>)>;
 
+/// Borrows untrusted source selection fields for independent held Read checks.
+#[cfg(all(feature = "std", unix))]
+pub(crate) struct DisclosureSourceSelection<'a> {
+    /// Separate current source policy reference.
+    pub(crate) reference: &'a str,
+    /// Exact immutable source commit selected by the request.
+    pub(crate) commit: Digest,
+    /// Capability checked against current configured source keys.
+    pub(crate) token: &'a [u8],
+    /// Full canonical source entry path.
+    pub(crate) path: &'a [u8],
+    /// Registered operation surface.
+    pub(crate) surface: &'a str,
+}
+
 impl<S: Store, C: Clock> Guard<S, C> {
+    /// Captures independently checked live and historical source Read requests.
+    ///
+    /// This preserves the private read implementation's complete root, token,
+    /// epoch, ACL and content-origin checks within the actual held observation.
+    ///
+    /// # Errors
+    /// Rejects another policy reference, differing complete live ref values,
+    /// invalid history, unauthorized paths and unavailable source evidence.
+    #[cfg(all(feature = "std", unix))]
+    pub(crate) async fn capture_disclosure_source_observed(
+        &self,
+        selection: DisclosureSourceSelection<'_>,
+        observation: HistoryObservation<'_>,
+    ) -> Result<
+        (
+            crate::guard::AuthorizedSnapshot,
+            Vec<crate::guard::AuthorizedRef>,
+        ),
+        StoreFailure,
+    > {
+        let (snapshot, mut requests) = self
+            .read_commit_snapshot_authorizations_observed(
+                selection.commit,
+                selection.token,
+                selection.path,
+                selection.surface,
+                observation,
+            )
+            .await?;
+        requests.extend(
+            self.snapshot_authorizations_observed(&snapshot, selection.path, observation)
+                .await?,
+        );
+        let current = requests.first().ok_or_else(invalid)?;
+        if current.reference() != selection.reference
+            || current.record().is_none()
+            || requests.iter().any(|request| {
+                request.reference() != selection.reference
+                    || request.record() != current.record()
+                    || request.subject() != current.subject()
+                    || request.verb() != terrane_core::auth::Verb::Read
+            })
+        {
+            return Err(crate::guard::denied(
+                selection.reference,
+                terrane_core::auth::Verb::Read,
+            ));
+        }
+        Ok((snapshot, requests))
+    }
+
     /// Checks every ordinary dependency and completes each certified candidate.
     ///
     /// # Errors
@@ -50,6 +116,12 @@ impl<S: Store, C: Clock> Guard<S, C> {
                     let verified = self.signed_tree(identity).await?;
                     #[cfg(feature = "std")]
                     if let Some(consumed) = observation.consumed {
+                        #[cfg(unix)]
+                        consumed.historical_issuer(
+                            &verified.commit,
+                            &self.original_commit(&identity)?,
+                        )?;
+                        #[cfg(not(unix))]
                         consumed.issuer(&verified.commit)?;
                         consumed.view(
                             identity,

@@ -52,6 +52,8 @@ use crate::store::{Clock, Store, StoreErrorKind, StoreFailure};
 pub(crate) use admission::AdmittedCommit;
 #[cfg(feature = "std")]
 pub(crate) use consumed::ConsumedResolver;
+#[cfg(all(feature = "std", unix))]
+pub(crate) use history::DisclosureSourceSelection;
 pub(crate) use history::HistoryObservation;
 #[cfg(feature = "std")]
 pub(crate) use join::{JoinKind, JoinRequest};

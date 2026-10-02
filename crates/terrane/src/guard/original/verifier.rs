@@ -477,6 +477,17 @@ impl<
 }
 
 impl<S, C> Guard<S, C> {
+    /// Returns the actual physical binding captured by the native factory.
+    ///
+    /// This grants no current operation rights. Each producer rechecks the
+    /// registration under its genuinely held backend and control exclusions.
+    ///
+    /// # Errors
+    /// Rejects missing native dispatch or unavailable synchronized state.
+    pub(crate) fn configured_original_authority(&self) -> Result<OriginalAuthority, StoreFailure> {
+        self.original_verifier().map(|verifier| verifier.authority)
+    }
+
     /// Borrows a held backend while preserving independently checked trust state.
     ///
     /// The adapter cannot outlive its exclusion. Every subsequent historical
