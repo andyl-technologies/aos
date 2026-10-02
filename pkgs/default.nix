@@ -373,6 +373,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   }:
     import ./containers/_aos-oci-backend/oci {
       inherit lib mkReferenceGraph;
+      runArtifact = lib.build.runArtifact {pkgs = buildPackages;};
       deploymentChecker = buildPackages.aos-deployment-check;
       inherit (buildPackages) mkDerivation coreutils findutils gzip jq tar;
     };

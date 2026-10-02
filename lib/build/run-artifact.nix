@@ -10,7 +10,7 @@ in
         builder = "${buildPackages.bash}/bin/bash";
         args = ["--noprofile" "--norc" "-euc" ''source "$scriptPath"''];
         PATH = "${buildPackages.coreutils}/bin";
-        passAsFile = ["script"];
+        passAsFile = ["script"] ++ (attrs.passAsFile or []);
         # A compiler closure can turn inert catalog locators into output
         # references. Script contexts retain the actual tools and payloads.
         preferLocalBuild = true;

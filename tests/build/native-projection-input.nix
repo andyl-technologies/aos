@@ -149,6 +149,97 @@
   metadataCompanionInventory = inventory metadataCompanion;
   selectedCompanionInventory = inventory selectedCompanion;
   glibcToolsEnvelopeInventory = inventory pkgs.glibc-tools.deploymentArtifact;
+  ociDeployment = pkgs.ociTools.mkDeploymentArtifact {
+    inherit pkgs;
+    pname = "native-projection-oci-glibc";
+    packages = [pkgs.glibc];
+    scope = ["container" "native-projection-oci"];
+    platform = {
+      os = "linux";
+      architecture = pkgs.stdenv.hostPlatform.go.arch;
+    };
+  };
+  ociDeploymentInventory = inventory ociDeployment.artifact;
+  glibcCatalog = lib.packageArtifacts.metadata (lib.packageArtifacts.canonicalReference pkgs.glibc);
+  qualificationTool = pkgs.mkDerivation {
+    pname = "native-projection-qualification-tool";
+    version = "1";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''mkdir -p "$out"; echo probe > "$out/probe"'';
+      }
+    ];
+  };
+  qualificationSelector = name: output:
+    lib.qualification.template [
+      (lib.qualification.artifactRoot {
+        artifact = {
+          _type = "aos-package-output-selector";
+          package = name;
+          inherit output;
+        };
+      })
+    ];
+  qualificationOperation = rejectsInput:
+    lib.qualification.operation {
+      input = "The selected runtime output, qualification tool, and debug output.";
+      operation = "Select exact release qualification artifacts.";
+      expected = "Release qualification retains its artifacts independently of image admission.";
+      files = {};
+      artifacts = [];
+      steps = [
+        (lib.qualification.step {
+          argv = [
+            (qualificationSelector "native-projection-qualified-payload" "out")
+            (qualificationSelector "native-projection-qualified-payload" "vmlinux")
+            (qualificationSelector "native-projection-qualification-tool" "out")
+          ];
+          exit_code =
+            if rejectsInput
+            then 2
+            else 0;
+          observes_rejection = rejectsInput;
+        })
+      ];
+    };
+  qualifiedPackage = pkgs.mkDerivation {
+    pname = "native-projection-qualified-payload";
+    version = "1";
+    src = null;
+    module = ../effects/package-interface;
+    buildDeps = [qualificationTool];
+    runtimeDeps = [dependency];
+    outputs = ["out" "vmlinux"];
+    qualification.packageProbe = lib.qualification.packageProbe {
+      primary = qualificationOperation false;
+      badInput = qualificationOperation true;
+    };
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out" "$vmlinux"
+          printf '%s\n' ${dependency} > "$out/runtime-reference"
+          echo debug > "$vmlinux/debug"
+        '';
+      }
+    ];
+  };
+  qualifiedEvaluation = lib.evalPackageModules {
+    packages = [qualifiedPackage];
+    scope = ["projection-qualified-image"];
+  };
+  qualifiedImage = import ../../pkgs/containers/_aos-oci-backend/deployment-bundle.nix {
+    inherit lib pkgs;
+    packages = [qualifiedPackage];
+    withProfileRecords = true;
+    inherit (qualifiedEvaluation.deployment) graph scope;
+    system = pkgs.stdenv.hostPlatform.system;
+  };
+  qualifiedImageInventory = inventory qualifiedImage;
+  releaseQualificationInventory = inventory qualifiedPackage.qualificationArtifact;
 in
   pkgs.mkDerivation {
     pname = "native-projection-input-check";
@@ -168,6 +259,9 @@ in
       sourceOnlyDescriptorInventory
       sourceOnlyInventory
       sourceOnlyConsumedInventory
+      ociDeploymentInventory
+      qualifiedImageInventory
+      releaseQualificationInventory
     ];
     phases = [
       {
@@ -293,6 +387,45 @@ in
             --arg static ${lib.escapeShellArg (toString pkgs.glibc.static)} \
             '.available == $dev and .selected == $static' \
             ${metadataCompanion}/catalog.json >/dev/null
+          # The OCI metadata writer must preserve authenticated sibling output
+          # locators without importing the compiler's development payloads.
+          ${pkgs.jq}/bin/jq -e --arg selected ${lib.escapeShellArg (toString pkgs.glibc)} \
+            --arg dev ${lib.escapeShellArg (toString pkgs.glibc.dev)} \
+            --arg static ${lib.escapeShellArg (toString pkgs.glibc.static)} \
+            'any(.paths[]; .path == $selected)
+              and all(.paths[]; .path != $dev and .path != $static)' \
+            ${ociDeploymentInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --argjson expected ${lib.escapeShellArg (builtins.toJSON glibcCatalog)} \
+            '.platforms[0].packages.artifacts == [$expected]
+              and .platforms[0].transaction.artifacts == [$expected]' \
+            ${ociDeployment.artifact}/deployment.json >/dev/null
+          # Image admission needs runtime roots and native envelopes. Release
+          # probes retain their own tools and debug outputs separately.
+          ${pkgs.jq}/bin/jq -e --arg runtime ${lib.escapeShellArg (toString qualifiedPackage)} \
+            --arg dependency ${lib.escapeShellArg (toString dependency)} \
+            --arg envelope ${lib.escapeShellArg (toString qualifiedPackage.deploymentArtifact)} \
+            --arg qualification ${lib.escapeShellArg (toString qualifiedPackage.qualificationArtifact)} \
+            --arg debug ${lib.escapeShellArg (toString qualifiedPackage.vmlinux)} \
+            --arg probe ${lib.escapeShellArg (toString qualificationTool)} \
+            'any(.paths[]; .path == $runtime)
+              and any(.paths[]; .path == $dependency)
+              and any(.paths[]; .path == $envelope)
+              and all(.paths[]; .path != $qualification and .path != $debug and .path != $probe)' \
+            ${qualifiedImageInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e 'length == 1 and .[0].apm.qualification == null
+            and .[0].apm.deployment != null' ${qualifiedImage}/installed.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg runtime ${lib.escapeShellArg (toString qualifiedPackage)} \
+            --arg debug ${lib.escapeShellArg (toString qualifiedPackage.vmlinux)} \
+            --arg probe ${lib.escapeShellArg (toString qualificationTool)} \
+            'any(.paths[]; .path == $runtime)
+              and any(.paths[]; .path == $debug)
+              and any(.paths[]; .path == $probe)' \
+            ${releaseQualificationInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg debug ${lib.escapeShellArg (toString qualifiedPackage.vmlinux)} \
+            --arg probe ${lib.escapeShellArg (toString qualificationTool)} \
+            'any(.artifacts[]; .selector.output == "vmlinux" and .path == $debug)
+              and any(.artifacts[]; .selector.package == "native-projection-qualification-tool" and .path == $probe)' \
+            ${qualifiedPackage.qualificationArtifact}/qualification.json >/dev/null
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';

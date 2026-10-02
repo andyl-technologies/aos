@@ -1,8 +1,7 @@
 ##! Packages evaluated native transactions and exact immutable inputs for OCI.
 {
   lib,
-  mkDerivation,
-  coreutils,
+  runArtifact,
   jq,
   common,
   deploymentChecker,
@@ -90,40 +89,35 @@
     schema = "aos.artifact.deployment/v1";
     inherit artifactClass executionStage platforms;
   };
-  artifact = mkDerivation {
-    inherit pname;
-    version = "1";
-    src = null;
-    buildDeps = [coreutils jq deploymentChecker];
-    deploymentInput = builtins.toJSON envelope;
-    passAsFile = ["deploymentInput"];
-    phases = [
-      {
-        name = "assemble";
-        script = ''
-          set -eu
-          mkdir -p "$out"
-          ${common.jsonScript}
-          cp "$deploymentInputPath" deployment.input.json
-          write_compact_json deployment.input.json "$out/deployment.json"
-          ${lib.optionalString (!aggregate) ''
-            for name in transaction.json packages.json admission.json admission-sha256 module-library registration evaluation.json; do
-              cp -P ${bundle}/"$name" "$out/$name"
-            done
-          ''}
-          ${builtins.readFile ./deployment-validation.sh}
-          validate_deployment_artifact "$out/deployment.json" \
-            ${deploymentChecker}/bin/aos-deployment-check ${jq}/bin/jq
-          digest=$(sha256sum "$out/deployment.json")
-          size=$(stat -c %s "$out/deployment.json")
-          jq -nc --arg digest "sha256:''${digest%% *}" --argjson size "$size" \
-            --arg mediaType 'application/vnd.aos.artifact.deployment.v1+json' \
-            '{mediaType:$mediaType,digest:$digest,size:$size}' > "$out/descriptor.json"
-        '';
-      }
-    ];
-    meta.description = "Native OCI deployment transactions and retained evaluation inputs";
-  };
+  # Available output locators must not become references through a compiler's
+  # build closure. This document uses only its explicitly selected tools.
+  artifact =
+    runArtifact "${pname}-1" {
+      inherit pname;
+      version = "1";
+      deploymentInput = builtins.toJSON envelope;
+      passAsFile = ["deploymentInput"];
+    } ''
+      set -eu
+      export PATH="${jq}/bin:$PATH"
+      mkdir -p "$out"
+      ${common.jsonScript}
+      cp "$deploymentInputPath" deployment.input.json
+      write_compact_json deployment.input.json "$out/deployment.json"
+      ${lib.optionalString (!aggregate) ''
+        for name in transaction.json packages.json admission.json admission-sha256 module-library registration evaluation.json; do
+          cp -P ${bundle}/"$name" "$out/$name"
+        done
+      ''}
+      ${builtins.readFile ./deployment-validation.sh}
+      validate_deployment_artifact "$out/deployment.json" \
+        ${deploymentChecker}/bin/aos-deployment-check ${jq}/bin/jq
+      digest=$(sha256sum "$out/deployment.json")
+      size=$(stat -c %s "$out/deployment.json")
+      jq -nc --arg digest "sha256:''${digest%% *}" --argjson size "$size" \
+        --arg mediaType 'application/vnd.aos.artifact.deployment.v1+json' \
+        '{mediaType:$mediaType,digest:$digest,size:$size}' > "$out/descriptor.json"
+    '';
   evidence =
     if aggregate
     then {
