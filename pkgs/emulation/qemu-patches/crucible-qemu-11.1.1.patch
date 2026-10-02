@@ -1,9 +1,17 @@
-From 8ae5f48bdcd540352168190b3c71a0dc5fb5e790 Mon Sep 17 00:00:00 2001
+From 56aea68b8af3988a6af46106004cfac7174bc8f7 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 2 Oct 2026 07:38:05 -0700
-Subject: [PATCH] sim: preserve exact native control and lifecycle boundaries
+Date: Fri, 2 Oct 2026 08:38:28 -0700
+Subject: [PATCH] crucible: retain exact control intent through stopped RR
+ drain
 
-Retain the selected native control, device, process and fault-state implementation. Admit exact registered packet-output stops, separate canonical lifecycle state from process-local custody, retain deferred control intent across advance/stop settlement, and permit unlocked atomic intent observation while preserving BQL custody mutation gates. Add a disabled-by-default native control delivery trace with per-process diagnostic ownership deduplication and distinct registered callback entry/return records. Include scoped standalone production-body regressions.
+Include deterministic native control, time, VM-stop, packet output and
+lifecycle projection support, with exact admission and custody checks.
+Rearm retained control intent only when the RR VM-stop park settles a
+reasserted CPU stop request. Preserve the current observational delivery
+trace and atomic advisory lock contract.
+
+The native body fixtures provide bounded causal regressions. Linked
+QEMU and running-guest qualification remain separate acceptance work.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3457,10 +3465,10 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327a566857f 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..2ea7c216c9fd0194ba09569875a9ec29c6fe7993 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1779 @@
+@@ -27,45 +27,1786 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4854,6 +4862,8 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
 +{
 +    rr_hot_fork_note_parked();
 +    while (qemu_plugin_crucible_vmstop_pending()) {
++        bool stop_or_unplug_pending = rr_crucible_sim_stop_or_unplug_pending();
++
 +        /*
 +         * The main-loop stop handshake sets CPUState::stop for every vCPU and
 +         * waits for this shared RR thread to acknowledge each one.  Servicing
@@ -4861,6 +4871,11 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
 +         * converts those stop requests into CPUState::stopped before we park.
 +         */
 +        rr_crucible_sim_drain_vcpu_work();
++        if (stop_or_unplug_pending &&
++            !rr_crucible_sim_stop_or_unplug_pending()) {
++            /* A retained control wake may have refused the unsettled stop. */
++            qemu_plugin_crucible_rr_control_boundary_rearm();
++        }
 +        if (qemu_plugin_crucible_vmstop_resume_consume()) {
 +            /*
 +             * Complete the plugin stop fence on its RR owner before firing
@@ -5259,7 +5274,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1818,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1825,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -5292,7 +5307,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
      }
  }
  
-@@ -110,15 +1856,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1863,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -5426,7 +5441,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
      }
  }
  
-@@ -140,6 +2002,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2009,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -5445,7 +5460,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2058,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2065,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -5454,7 +5469,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2080,199 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2087,199 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -5672,7 +5687,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2288,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2295,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5705,7 +5720,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2330,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2337,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5844,7 +5859,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2454,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2461,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5984,7 +5999,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327
      }
  
      g_assert_not_reached();
-@@ -318,13 +2593,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2600,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -62005,7 +62020,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..b543d76af5a56600318452a2d7d4358461f2b9d6 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..963a54d2d9bf961145bdb756e9a5463a5635d470 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,6 +9,7 @@
@@ -62028,7 +62043,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..b543d76af5a56600318452a2d7d43584
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -183,6 +189,89 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +189,91 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -62069,6 +62084,8 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..b543d76af5a56600318452a2d7d43584
 +void qemu_plugin_crucible_rr_control_boundary_acknowledge(void);
 +void qemu_plugin_crucible_rr_control_boundary_cancel(void);
 +void qemu_plugin_crucible_rr_control_boundary_defer(void);
++/* BQL-owned notification after native CPU stop requests have settled. */
++void qemu_plugin_crucible_rr_control_boundary_rearm(void);
 +/* Unlocked atomic advisory observation; custody mutation requires BQL. */
 +bool qemu_plugin_crucible_control_boundary_outstanding(void);
 +bool qemu_plugin_crucible_vmstop_pending(void);
@@ -62118,7 +62135,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..b543d76af5a56600318452a2d7d43584
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -237,6 +326,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -237,6 +328,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  static inline void qemu_plugin_add_opts(void)
  { }
  
@@ -62130,7 +62147,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..b543d76af5a56600318452a2d7d43584
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +400,164 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +402,167 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -62189,6 +62206,9 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..b543d76af5a56600318452a2d7d43584
 +{ }
 +
 +static inline void qemu_plugin_crucible_rr_control_boundary_defer(void)
++{ }
++
++static inline void qemu_plugin_crucible_rr_control_boundary_rearm(void)
 +{ }
 +
 +static inline bool qemu_plugin_crucible_control_boundary_outstanding(void)
@@ -74654,7 +74674,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..59e364e33f57b70583b25427ccec771368772396 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..348410829328a553c5acc725c150d5274d330986 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -75597,7 +75617,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..59e364e33f57b70583b25427ccec7713
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1032,1703 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1032,1708 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -76027,6 +76047,11 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..59e364e33f57b70583b25427ccec7713
 +    /* Preserve request/ack/complete until a valid owner actually calls back. */
 +    qemu_plugin_rearm_deferred_control_boundary();
 +    qemu_plugin_trace_control_delivery("defer");
++}
++
++void qemu_plugin_crucible_rr_control_boundary_rearm(void)
++{
++    qemu_plugin_rearm_deferred_control_boundary();
 +}
 +
 +static void qemu_plugin_rearm_deferred_control_boundary(void)
@@ -166072,10 +166097,10 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +}
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7edc93c230dfb8edc1035c9f48c50507299c9e54
+index 0000000000000000000000000000000000000000..b342bf7974f874ded1f09c993dc6fdb8c3adf41e
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,658 @@
+@@ -0,0 +1,659 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -166687,6 +166712,7 @@ index 0000000000000000000000000000000000000000..7edc93c230dfb8edc1035c9f48c50507
 +        "static void qemu_plugin_trace_control_delivery(const char *phase)\n{",
 +        "bool qemu_plugin_crucible_rr_control_boundary_pending(void)",
 +        "void qemu_plugin_crucible_rr_control_boundary_defer(void)",
++        "void qemu_plugin_crucible_rr_control_boundary_rearm(void)",
 +        "static void qemu_plugin_rearm_deferred_control_boundary(void)\n{",
 +        "static bool qemu_plugin_quiesced_control_boundary_available(void)\n{",
 +        "static void qemu_plugin_request_rr_control_boundary(void)\n{",
@@ -173826,6 +173852,207 @@ index 0000000000000000000000000000000000000000..99c5e4e0e5e6c2b1687a34c93c5d3c2d
 +    g_test_add_func("/sparc/ordinary", test_ordinary);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-stopped-control-rearm.py b/tests/unit/test-crucible-stopped-control-rearm.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..814fd7b675996aafc922110a64b2058ddffa882e
+--- /dev/null
++++ b/tests/unit/test-crucible-stopped-control-rearm.py
+@@ -0,0 +1,195 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise retained control intent when native pause reasserts CPU stop.
++
++Native pause, CPU stop/event processing, RR drain/park, wake reader and control
++ownership bodies execute here. CPU topology, empty work queues, host dispatch,
++replay, device authorities and explicit resume are bounded providers. Eventfd
++I/O is real; no linked guest, physical fork or full RR outer loop is executed.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++SUPPORT = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-control-deferred.py")))
++definition = SUPPORT["definition"]
++NETWORK = SUPPORT["SUPPORT"]
++
++EXTRA = r"""
++#include <sys/eventfd.h>
++#define bql locked
++static int qemu_pause_cond;
++static unsigned int empty_pause_waits;
++static void pause_all_vcpus(void);
++static void rr_crucible_sim_drain_vcpu_work(void);
++static bool rr_crucible_sim_stop_or_unplug_pending(void);
++static bool rr_crucible_sim_vcpu_work_pending(void);
++static void qemu_cond_timedwait_bql(void *condition, int milliseconds);
++static void qemu_clock_enable(int clock, bool enabled)
++{ g_assert_false(enabled); }
++static void qemu_cond_wait(void *condition, bool *mutex)
++{ empty_pause_waits++; g_assert_not_reached(); }
++static void process_queued_cpu_work(CPUState *target) { }
++static bool cpu_work_list_empty(CPUState *target) { return true; }
++"""
++
++CHECKS = r"""
++static void count_control(unsigned int index, uint64_t coordinate, void *userdata)
++{
++    g_assert_cmpuint(coordinate, ==, 2);
++    g_assert_true(locked);
++    g_assert_false(cpu.stop);
++    g_assert_true(cpu.stopped);
++    g_assert_true(qemu_plugin_crucible_vmstop_quiesced());
++    control_calls++;
++}
++
++static void qemu_cond_timedwait_bql(void *condition, int milliseconds)
++{
++    CPUState *rr_owner = current_cpu;
++
++    waits++;
++    g_assert_cmpuint(waits, <=, 3);
++    g_assert_false(cpu.stop);
++    g_assert_true(cpu.stopped);
++    g_assert_cmpuint(raw_icount, ==, 2);
++    g_assert_cmpint(qemu_plugin_time_advance_pending, ==, 0);
++    g_assert_true(qemu_plugin_crucible_vmstop_quiesced());
++    current_cpu = NULL;
++    service_events();
++    g_assert_cmpuint(control_calls, ==, 1);
++    g_assert_false(qemu_plugin_crucible_control_boundary_outstanding());
++    g_assert_cmpuint(qemu_plugin_control_boundary_schedule_sequence, ==, 1);
++    if (waits == 3) {
++        /* A modeled explicit resume is issued only after stopped host passes. */
++        qemu_plugin_crucible_vmstop_request_complete();
++        cpu.stop = cpu.stopped = false;
++    }
++    current_cpu = rr_owner;
++}
++
++int main(void)
++{
++    uint64_t stop_generation;
++    int wake;
++
++    reset();
++    raw_icount = timers_state.qemu_icount = 2;
++    cpu.stop = cpu.stopped = false;
++    current_cpu = &cpu;
++    qemu_plugin_control_boundary_cb = count_control;
++    qemu_plugin_crucible_exact_boundary_enter();
++    g_assert_cmpint(qemu_plugin_request_vmstop(), ==, 0);
++    qemu_plugin_crucible_exact_boundary_leave();
++    g_assert_true(cpu.stop);
++    rr_crucible_sim_drain_vcpu_work();
++    g_assert_false(cpu.stop);
++    g_assert_true(cpu.stopped);
++
++    /* Real main-loop pause reasserts stop despite the earlier acknowledgment. */
++    current_cpu = NULL;
++    g_assert_cmpint(do_vm_stop(RUN_STATE_PAUSED, true), ==, 0);
++    g_assert_true(cpu.stop);
++    g_assert_true(cpu.stopped);
++    g_assert_cmpuint(empty_pause_waits, ==, 0);
++    g_assert_true(qemu_plugin_crucible_vmstop_quiesced());
++    stop_generation = qemu_plugin_crucible_vmstop_generation_value;
++
++    wake = eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC);
++    g_assert_cmpint(wake, >=, 0);
++    g_assert_cmpint(eventfd_write(wake, 1), ==, 0);
++    qemu_plugin_wake_fd_read((void *)(intptr_t)wake);
++    g_assert_cmpint(close(wake), ==, 0);
++    g_assert_true(qemu_plugin_control_boundary_deferred);
++    g_assert_cmpuint(qemu_plugin_control_boundary_scheduled, ==, 0);
++    g_assert_true(qemu_plugin_crucible_control_boundary_outstanding());
++    g_assert_false(crucible_hot_fork_exact_paused_boundary());
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_cold_begin(), ==, -EBUSY);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==,
++                     stop_generation);
++    service_events();
++    g_assert_cmpuint(control_calls, ==, 0);
++
++    /* The genuine RR park must rearm at the stop-request clearing edge. */
++    current_cpu = &cpu;
++    rr_crucible_sim_park_vmstop();
++    g_assert_cmpuint(waits, ==, 3);
++    g_assert_cmpuint(control_calls, ==, 1);
++    g_assert_cmpuint(resumes, ==, 1);
++    g_assert_cmpuint(raw_icount, ==, 2);
++    g_assert_cmpuint(qemu_plugin_crucible_vmstop_generation_value, ==,
++                     stop_generation);
++    puts("PASS native stop reassertion, retained intent, RR drain edge, explicit resume");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", action="store_true")
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    prelude = NETWORK["PRELUDE"]
++    for signature in [
++        "static void pause_all_vcpus(void)",
++        "static bool rr_crucible_sim_stop_or_unplug_pending(void)",
++        "static bool rr_crucible_sim_vcpu_work_pending(void)",
++        "static void rr_crucible_sim_drain_vcpu_work(void)",
++        "static void qemu_cond_timedwait_bql(",
++    ]:
++        prelude = prelude.replace(definition(prelude, signature), "")
++    prelude = prelude.replace(
++        "/* Model the CPU stop acknowledgment before pause_all_vcpus returns. */", "")
++    prelude = prelude.replace("bool running, stop, stopped, unplug, exit_request;",
++                              "bool running, stop, stopped, unplug, exit_request, thread_kicked;")
++    prelude = prelude.replace("return self;", "return current_cpu == target;")
++    bodies = SUPPORT["production_bodies"]()
++    bodies += "\n\n" + definition((ROOT / "plugins/api-system.c").read_text(),
++                                 "void qemu_plugin_crucible_rr_control_boundary_rearm(void)")
++    cpus = (ROOT / "system/cpus.c").read_text()
++    bodies += "\n\n" + "\n\n".join(definition(cpus, signature) for signature in [
++        "static void qemu_cpu_stop(CPUState *cpu, bool exit)",
++        "void qemu_process_cpu_events_common(CPUState *cpu)",
++        "void cpu_pause(CPUState *cpu)",
++        "static bool all_vcpus_paused(void)",
++        "void pause_all_vcpus(void)",
++    ])
++    rr = (ROOT / "accel/tcg/tcg-accel-ops-rr.c").read_text()
++    bodies += "\n\n" + "\n\n".join(definition(rr, signature) for signature in [
++        "static bool rr_crucible_sim_mode(void)\n{",
++        "static bool rr_crucible_sim_stop_or_unplug_pending(void)\n{",
++        "static void rr_crucible_sim_process_vcpu_events(CPUState *cpu)",
++        "static bool rr_crucible_sim_vcpu_work_pending(void)\n{",
++        "static void rr_crucible_sim_drain_vcpu_work(void)\n{",
++        "static void rr_crucible_sim_park_vmstop(void)",
++    ])
++    if arguments.negative_control:
++        statement = "            qemu_plugin_crucible_rr_control_boundary_rearm();\n"
++        assert bodies.count(statement) == 1
++        bodies = bodies.replace(statement, "")
++    support = NETWORK["TESTS"].split("int main(void)")[0]
++    generated = arguments.output_dir / "stopped-control-rearm.c"
++    generated.write_text(prelude + SUPPORT["EXTRA"] + EXTRA + bodies + support + CHECKS)
++    binary = arguments.output_dir / "stopped-control-rearm"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
++               str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-vcpu-service-time.c b/tests/unit/test-crucible-vcpu-service-time.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..fdafa1613411f94c367055016735de55d7469f1c

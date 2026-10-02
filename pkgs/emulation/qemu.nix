@@ -1675,6 +1675,7 @@ in
               for name in (
                   "net-output-stop", "lifecycle-projection", "control-deferred",
                   "control-observer", "control-delivery",
+                  "stopped-control-rearm",
               ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
@@ -1685,7 +1686,8 @@ in
                          stdout=result, check=True)
               PYTHON
               cat net-output-stop.result lifecycle-projection.result \
-                control-deferred.result control-observer.result control-delivery.result
+                control-deferred.result control-observer.result control-delivery.result \
+                stopped-control-rearm.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -1696,6 +1698,8 @@ in
                 control-observer.result
               grep -Fxq 'PASS native delivery witness: disabled, deduplicated, late, callback, child PID' \
                 control-delivery.result
+              grep -Fxq 'PASS native stop reassertion, retained intent, RR drain edge, explicit resume' \
+                stopped-control-rearm.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -1847,6 +1851,13 @@ in
               ]
               control_ack_code = re.sub(
                   r"/\*.*?\*/", "", control_ack, flags=re.DOTALL
+              )
+              vmstop_park = rr[
+                  rr.index("static void rr_crucible_sim_park_vmstop(void)\n{"):
+                  rr.index("static unsigned int rr_crucible_sim_tcg_batch_limit")
+              ]
+              vmstop_park_code = re.sub(
+                  r"/\*.*?\*/", "", vmstop_park, flags=re.DOTALL
               )
               main_loop_handoff_finish = rr[
                   rr.index("static void rr_crucible_sim_finish_main_loop_handoff"):
@@ -3754,6 +3765,26 @@ in
                    r"qatomic_(?:store_release|cmpxchg)\(\s*"
                    r"&qemu_plugin_rr_control_(?:request|ack|complete)_generation",
                    0),
+                  ("stopped RR rearms only the cleared native stop edge",
+                   vmstop_park_code,
+                   r"while \(qemu_plugin_crucible_vmstop_pending\(\)\) \{\s*"
+                   r"bool stop_or_unplug_pending = "
+                   r"rr_crucible_sim_stop_or_unplug_pending\(\);\s*"
+                   r"rr_crucible_sim_drain_vcpu_work\(\);\s*"
+                   r"if \(stop_or_unplug_pending &&\s*"
+                   r"!rr_crucible_sim_stop_or_unplug_pending\(\)\) \{\s*"
+                   r"qemu_plugin_crucible_rr_control_boundary_rearm\(\);\s*"
+                   r"\}\s*"
+                   r"if \(qemu_plugin_crucible_vmstop_resume_consume\(\)\)",
+                   1),
+                  ("stopped RR park has one edge-triggered rearm",
+                   vmstop_park_code,
+                   r"qemu_plugin_crucible_rr_control_boundary_rearm\(\);", 1),
+                  ("stopped RR rearm retains the guarded control owner", plugin,
+                   r"void qemu_plugin_crucible_rr_control_boundary_rearm"
+                   r"\(void\)\s*\{\s*"
+                   r"qemu_plugin_rearm_deferred_control_boundary\(\);\s*\}",
+                   1),
                   ("deferred control rearms only at a valid owner", control_rearm,
                    r"g_assert\(bql_locked\(\)\);\s*"
                    r"if \(!qatomic_load_acquire\("
@@ -4165,7 +4196,7 @@ in
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
               for name in net-output-stop lifecycle-projection control-deferred \
-                control-observer control-delivery; do
+                control-observer control-delivery stopped-control-rearm; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
