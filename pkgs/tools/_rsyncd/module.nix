@@ -123,7 +123,7 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    service = "main";
+    service = "rsyncd";
     lifecycle = {
       description = "Rsync file-transfer daemon";
       execution_model = "foreground";

@@ -458,8 +458,14 @@ in {
       ];
       aos.abilities = {
         identity.operations.group.effects = {
-          libvirt-qemu.input.name = "libvirt-qemu";
-          libvirt-access.input.name = "libvirt";
+          libvirt-qemu.input = {
+            name = "libvirt-qemu";
+            requested_id = 64054;
+          };
+          libvirt-access.input = {
+            name = "libvirt";
+            requested_id = 64055;
+          };
           libvirt-kvm.input = {
             name = "kvm";
             allocation = "existing";
@@ -469,6 +475,7 @@ in {
           {
             libvirt-qemu.input = {
               name = "libvirt-qemu";
+              requested_id = 64054;
               description = "Libvirt QEMU virtual machine";
               home_directory = "/var/lib/libvirt";
               primary_group = operations.identity.operations.group.effects.libvirt-qemu.outputs.name;

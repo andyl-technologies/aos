@@ -334,7 +334,7 @@
   ];
   initService = {
     policy.hardening = commonHardening;
-    service = "initialize";
+    service = "postgresql-init";
     lifecycle = {
       description = "Initialize PostgreSQL database state";
       execution_model = "oneshot";
@@ -406,7 +406,7 @@
     configuredCredentials);
   mainService = {
     policy.hardening = commonHardening;
-    service = "main";
+    service = "postgresql";
     lifecycle = {
       description = "PostgreSQL database server";
       execution_model = "foreground";

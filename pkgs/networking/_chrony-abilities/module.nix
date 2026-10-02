@@ -161,6 +161,7 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
+      prerequisites = [configuration.outputs.resource];
       after = [network.outputs.resource];
       before = [];
       requires = [];
@@ -228,6 +229,7 @@
     isolation = {
       privilege = "privileged";
       filesystem = "read-only-software";
+      home_access = "inaccessible";
       network = "host";
       process_visibility = "private";
       termination_scope = "all-processes";
@@ -336,9 +338,13 @@ in {
       system.checks.chrony = import ./runtime-tests.nix {inherit cfg lib;};
       aos.abilities = {
         identity.operations = {
-          group.effects.chrony.input.name = principalName;
+          group.effects.chrony.input = {
+            name = principalName;
+            requested_id = 994;
+          };
           principal.effects.chrony.input = {
             name = principalName;
+            requested_id = 994;
             primary_group = groups.chrony.outputs.name;
             home_directory = statePath;
             description = "chrony NTP daemon";

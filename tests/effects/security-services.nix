@@ -173,6 +173,7 @@ in {
   sudoFollowsActiveSystemProfiles = lib.hasInfix ''Defaults secure_path="/run/wrappers/bin:/var/lib/profiles/system-packages/current/bin:/var/lib/profiles/system-packages/current/sbin:/var/lib/profiles/system/current/bin:/var/lib/profiles/system/current/sbin"'' (sudoPolicy nativeSudo);
   sudoExcludesUserProfilePaths = sudoPolicy userPathSudo == sudoPolicy nativeSudo;
   sudoPreservesImageSystemPath = lib.hasInfix ''Defaults secure_path="${imageSecurePath}"'' (sudoPolicy imageSudo);
+  sshStableManagerIdentities = sshProjection.config.aos.abilities.serviceManagement.operations.realize.effects.ssh.input.service == "sshd" && sshProjection.config.aos.abilities.serviceManagement.operations.realize.effects."ssh.sshd-keygen".input.service == "sshd-keygen";
   sshPreservesPublicHostKeyDirectoryAccess = sshProjection.config.aos.abilities.filesystem.operations.directory.effects.ssh-host-keys.input.mode == "0755";
   developmentRetainsOriginalPingWrappers = builtins.all originalPingMetadata ["ping" "ping6"];
   standardProfileDoesNotEnablePrivilegedPing = pingEffects false == {};

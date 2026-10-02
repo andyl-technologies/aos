@@ -120,7 +120,7 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    service = "main";
+    service = "openldap";
     lifecycle = {
       description = "OpenLDAP directory server";
       execution_model = "foreground";

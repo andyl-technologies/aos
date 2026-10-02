@@ -289,9 +289,9 @@ class NativeHandlerTests(unittest.TestCase):
         self.assertIn("StateDirectoryMode=0750", directory)
         self.assertIn('StateDirectory="example/state"', directory)
 
-    def test_typed_instance_keys_prevent_default_service_collisions(self):
-        first = dict(service(), service="main", instance="first.main")
-        second = dict(service(), service="main", instance="second.main")
+    def test_unnamed_services_use_distinct_domain_instance_keys(self):
+        first = dict(service(), service="", instance="first.main")
+        second = dict(service(), service="", instance="second.main")
         self.assertNotEqual(handler_module.service_identity(first), handler_module.service_identity(second))
 
     def test_configuration_receipts_reject_other_scope_ownership(self):
@@ -545,9 +545,65 @@ class NativeHandlerTests(unittest.TestCase):
         self.assertIn("After=dbus.service", text)
         self.assertNotIn("configuration:path-hash", text)
 
+    def test_service_identity_preserves_declared_name_before_domain_instance(self):
+        value = dict(service(), service="tailscaled", instance="tailscale")
+
+        self.assertEqual(handler_module.service_identity(value), "tailscaled.service")
+        value["manager_identity"] = {"name": "custom-vpn", "aliases": []}
+        self.assertEqual(handler_module.service_identity(value), "custom-vpn.service")
+        value.pop("manager_identity")
+        value.pop("service")
+        self.assertEqual(handler_module.service_identity(value), "tailscale.service")
+
+    def test_no_new_privileges_combines_policy_and_isolation_once(self):
+        for policy, isolation, expected in [
+            (False, "privileged", "yes"),
+            (True, "unprivileged", "yes"),
+            (True, "privileged", "no"),
+            (None, "unprivileged", "yes"),
+        ]:
+            with self.subTest(policy=policy, isolation=isolation):
+                value = {"isolation": {
+                    "privilege": isolation, "network": "host", "temporary_directory": "shared",
+                    "filesystem": "host", "home_access": "host", "process_visibility": "host",
+                    "termination_scope": "all-processes", "permit_core_dumps": False,
+                    "devices": [], "host_paths": [],
+                }}
+                if policy is not None:
+                    value["policy"] = {"hardening": {"allow_privilege_escalation": policy}}
+                unit = handler_module.Unit()
+                with patch.object(handler_module, "hardening"):
+                    handler_module.process_features(unit, value)
+
+                directives = [line for line in unit.sections["Service"] if line.startswith("NoNewPrivileges=")]
+                self.assertEqual(directives, ["NoNewPrivileges=" + expected])
+
     def test_template_identity_uses_the_declared_template_name(self):
         value = dict(service(), instantiation={"kind": "template", "template": "worker"})
         self.assertEqual(handler_module.service_identity(value), "worker@.service")
+
+    def test_search_path_preserves_package_bin_and_sbin_tools(self):
+        value = service()
+        value["environment"] = {
+            "variables": {},
+            "search_path": ["/nix/store/bridge-utils", "/nix/store/iptables"],
+        }
+
+        text = handler_module.realize_service(value)["units"]["example.service"]
+
+        self.assertIn(
+            "ExecSearchPath=/nix/store/bridge-utils/bin:/nix/store/bridge-utils/sbin:"
+            "/nix/store/iptables/bin:/nix/store/iptables/sbin",
+            text,
+        )
+
+    def test_instance_identity_preserves_template_resource(self):
+        value = dict(service(), service="ignored", instance="domain.instance")
+        value["instantiation"] = {
+            "kind": "instance", "template_resource": "worker@.service", "instance": "member",
+        }
+
+        self.assertEqual(handler_module.service_identity(value), "worker@member.service")
 
     def test_environment_preserves_literal_dollars_without_exec_expansion(self):
         value = service()

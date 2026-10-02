@@ -236,7 +236,7 @@
       operation_profile = "restricted";
       isolated_identity_mapping = "none";
     };
-    service = "main";
+    service = "envoy";
     lifecycle = {
       description = "Envoy proxy";
       execution_model = "foreground";

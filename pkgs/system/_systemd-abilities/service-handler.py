@@ -124,7 +124,7 @@ class Unit:
 
 def service_identity(value):
     identity = value.get("manager_identity") or {}
-    name = token(identity.get("name") or value.get("instance") or value["service"])
+    name = token(identity.get("name") or value.get("service") or value["instance"])
     selection = value.get("instantiation") or {"kind": "singleton"}
     if selection["kind"] == "template":
         return token(selection["template"]) + "@.service"
@@ -150,7 +150,6 @@ def hardening(unit, value):
     if set(policy["operation_allow"]) & set(policy["operation_deny"]):
         raise ValueError("operation allow and deny sets overlap")
     unit.add("AmbientCapabilities", " ".join(CAPABILITIES[p] for p in policy["ambient_privileges"]))
-    unit.add("NoNewPrivileges", yes(not policy["allow_privilege_escalation"] or (value.get("isolation") or {}).get("privilege") == "unprivileged"))
     unit.add("Delegate", yes(policy["resource_control_delegation"]))
     unit.add("ProtectControlGroups", {"host": "no", "read-only": "yes", "private": "strict"}[policy["resource_control_access"]])
     unit.add("PrivateDevices", yes(policy["device_access_scope"] == "private"))
@@ -189,6 +188,14 @@ def hardening(unit, value):
 
 
 def process_features(unit, value):
+    hardening_policy = (value.get("policy") or {}).get("hardening") or {}
+    isolation = value.get("isolation") or {}
+    deny_privilege_escalation = (
+        hardening_policy.get("allow_privilege_escalation") is False
+        or isolation.get("privilege") == "unprivileged"
+    )
+    unit.add("NoNewPrivileges", yes(deny_privilege_escalation))
+
     identity = value.get("identity")
     if identity:
         unit.add("User", token(identity["principal"]) if identity.get("principal") else None)
@@ -199,7 +206,12 @@ def process_features(unit, value):
     environment = value.get("environment")
     if environment:
         unit.repeat("Environment", [f"{token(k)}={v}" for k, v in environment["variables"].items()], encode=quote)
-        unit.add("ExecSearchPath", ":".join(absolute(p) + "/bin" for p in environment["search_path"]))
+        search_path = [
+            absolute(path) + suffix
+            for path in environment["search_path"]
+            for suffix in ("/bin", "/sbin")
+        ]
+        unit.add("ExecSearchPath", ":".join(search_path))
     resources = value.get("resources") or {}
     unit.add("Slice", token(resources["resource_group"]) + ".slice" if resources.get("resource_group") else None)
     for field, directive in {"open_files": "LimitNOFILE", "processes": "LimitNPROC", "tasks": "TasksMax", "locked_memory_bytes": "LimitMEMLOCK", "memory_high_bytes": "MemoryHigh", "memory_max_bytes": "MemoryMax", "memory_swap_max_bytes": "MemorySwapMax"}.items():
@@ -241,7 +253,6 @@ def process_features(unit, value):
             unit.add("Environment", quote(token(entry["environment_variable"]) + "=%d/" + token(entry["name"])).replace("%%d", "%d"))
     isolation = value.get("isolation")
     if isolation:
-        unit.add("NoNewPrivileges", yes(isolation["privilege"] == "unprivileged"))
         unit.add("PrivateNetwork", yes(isolation["network"] != "host"))
         if isolation["network"] == "none":
             unit.add("IPAddressDeny", "any")
