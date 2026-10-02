@@ -24,6 +24,14 @@ pub const IMMUTABLE_CACHE_CONTROL: &str = "public, max-age=31536000, immutable";
 /// Cache-control for pointers and replaceable metadata.
 pub const MUTABLE_CACHE_CONTROL: &str = "public, max-age=60, must-revalidate";
 
+/// Registry-surface key namespace holding immutable OCI blobs.
+///
+/// Every blob lives at `oci/blobs/sha256/<64 lowercase hex>` directly under
+/// this prefix. Producers, staging admission, the Hub catalog, and provider
+/// inventory share this one constant so key construction, classification, and
+/// scoped listing agree on the namespace boundary.
+pub const OCI_BLOB_KEY_PREFIX: &str = "oci/blobs/sha256/";
+
 /// Reports whether a relative path belongs to the machine surface.
 #[must_use]
 pub fn is_machine_path(path: &str) -> bool {
@@ -199,7 +207,7 @@ fn is_image_object_path(path: &str) -> bool {
 #[must_use]
 pub fn immutable_object_sha256(path: &str) -> Option<&str> {
     image_object_sha256(path).or_else(|| {
-        let digest = path.strip_prefix("oci/blobs/sha256/")?;
+        let digest = path.strip_prefix(OCI_BLOB_KEY_PREFIX)?;
         (digest.len() == 64
             && digest
                 .bytes()

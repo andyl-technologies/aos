@@ -74,10 +74,10 @@ pub async fn copy_surface(from: &dyn SurfaceFetch, to: &dyn SurfaceWrite) -> Res
             "surface migration exceeded the page limit"
         );
         let page = from
-            .list_page(cursor.as_deref(), page_limit)
+            .list_page("", cursor.as_deref(), page_limit)
             .await
             .context("listing source surface")?;
-        page.validate(page_limit, cursor.as_deref())?;
+        page.validate(page_limit, "", cursor.as_deref())?;
         for path in &page.paths {
             anyhow::ensure!(
                 prior_path.as_ref().is_none_or(|prior| prior < path),
@@ -129,6 +129,7 @@ mod tests {
         }
         async fn list_page(
             &self,
+            _prefix: &str,
             cursor: Option<&str>,
             limit: usize,
         ) -> Result<crate::fetch::SurfaceListPage> {

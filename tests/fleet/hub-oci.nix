@@ -320,6 +320,9 @@
   hubOciModule = {
     imports = [certificateAdmission];
     aos.firewall.allowedTCP = [8443];
+    # The provider-inventory assertion reads the Hub's durable generation
+    # checkpoints directly; the packaged sqlite shell is an AOS-built tool.
+    environment.systemPackages = [pkgs.sqlite];
     aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
     aos.registry-hub.credentials.deliveryAttestationKey = "hub-oci-delivery-attestation-key";
     environment.etc."tmpfiles.d/hub-oci-delivery-attestation.conf".text = ''
@@ -823,6 +826,30 @@ in {
 
     prepare_registry("containers", "public", "public", public_trust)
     prepare_registry("containers-private", "private", "private", private_trust)
+
+    # A registry placement also carries the binary cache that the signed APR
+    # release publishes beside the OCI blobs. Seed deterministic non-OCI keys
+    # that sort on both sides of `oci/blobs/sha256/` before any inventory can
+    # begin, so every provider inventory generation of this placement must
+    # enumerate the blob namespace alone rather than page through them.
+    PUBLIC_PLACEMENT_ROOT = "/var/lib/aos-hub/storage/public"
+    SEEDED_NON_OCI_KEYS = [
+        "0000000000000000000000000000000a.narinfo",
+        "nar/0000000000000000000000000000000a.nar.zst",
+        "nar/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.nar.zst",
+        "nix-cache-info",
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.narinfo",
+    ]
+    hub.succeed(textwrap.dedent(f"""
+        set -eu
+        for key in {" ".join(shlex.quote(key) for key in SEEDED_NON_OCI_KEYS)}; do
+            mkdir -p "$(dirname {PUBLIC_PLACEMENT_ROOT}/$key)"
+            printf 'seeded non-OCI placement key %s\n' "$key" \
+              > {PUBLIC_PLACEMENT_ROOT}/$key
+            chmod 0644 {PUBLIC_PLACEMENT_ROOT}/$key
+        done
+    """))
+    inventory_seeded_at = int(hub.succeed("date +%s").strip())
 
     endpoints = [
         ("oci-public", "https://hub:8443", "hub-oci-public"),
@@ -1718,5 +1745,47 @@ in {
         "--idempotency-key hub-oci-purge-wrong-confirm --yes",
         token,
     ))
+
+    # The native Hub inventories the public placement on its maintenance tick.
+    # The placement holds the seeded keys plus the published binary cache and
+    # git objects, yet a complete generation bound to the current mutation
+    # epoch must have paged exactly one object per checkpoint and only the
+    # blobs: its page count and object count both equal the blob count on disk.
+    for key in SEEDED_NON_OCI_KEYS:
+        hub.succeed(f"test -f {PUBLIC_PLACEMENT_ROOT}/{key}")
+    hub.succeed(
+        f"test -n \"$(ls {PUBLIC_PLACEMENT_ROOT}/nar)\" "
+        f"&& ls {PUBLIC_PLACEMENT_ROOT}/*.narinfo >/dev/null"
+    )
+    blob_count = int(hub.succeed(
+        f"find {PUBLIC_PLACEMENT_ROOT}/oci/blobs/sha256 -type f | wc -l"
+    ).strip())
+    assert blob_count > 0, blob_count
+    SQLITE = "${pkgs.sqlite}/bin/sqlite3 -readonly -separator ' ' /var/lib/aos-hub/hub.db"
+    CURRENT_INVENTORY_QUERY = textwrap.dedent("""
+        SELECT inventory.state, inventory.checkpoint_ordinal,
+               inventory.object_count, inventory.started_at
+        FROM oci_provider_inventory_generations inventory
+        JOIN surface_placements placement ON placement.id = inventory.placement_id
+        JOIN oci_registry_state registry_state
+          ON registry_state.registry_id = inventory.registry_id
+        WHERE placement.prefix = 'public'
+          AND inventory.state = 'complete'
+          AND inventory.captured_mutation_epoch = registry_state.mutation_epoch
+        ORDER BY inventory.started_at DESC
+        LIMIT 1
+    """).strip()
+    hub.wait_until_succeeds(
+        f"{SQLITE} {shlex.quote(CURRENT_INVENTORY_QUERY)} | grep -q '^complete '",
+        timeout=600,
+    )
+    state, page_count, object_count, started_at = hub.succeed(
+        f"{SQLITE} {shlex.quote(CURRENT_INVENTORY_QUERY)}"
+    ).split()
+    inventory = (state, int(page_count), int(object_count), int(started_at))
+    assert inventory[0] == "complete", inventory
+    assert inventory[3] >= inventory_seeded_at, (inventory, inventory_seeded_at)
+    assert inventory[1] == blob_count, (inventory, blob_count)
+    assert inventory[2] == blob_count, (inventory, blob_count)
   '';
 }

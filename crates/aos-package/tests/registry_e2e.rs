@@ -621,14 +621,23 @@ async fn static_origin_upload_e2e_syncs_uploaded_filesystem_destination() -> Res
 #[tokio::test]
 async fn release_orchestrator_e2e_uploads_channel_origin_and_syncs_consumer() -> Result<()> {
     let fixture = RegistryFixture::new("release-orchestrator")?;
-    fixture.write_registry_toml_with_caches(&[])?;
+    // A catalog with store roots must advertise a binary cache.
+    fixture.write_registry_toml_with_caches(&[("https://cache.example/nar", 100)])?;
     fixture.write_gitattributes()?;
     fixture.write_keys_toml()?;
     let store_path = fixture.write_package("hello", "1.1.0")?;
     fixture.write_closure(&store_path)?;
     let source_commit = fixture.commit_all("release 1.1.0")?;
 
+    // The closure is already published at the origin, so cache generation
+    // skips it without reading a local Nix store.
     let uploaded = tempfile::TempDir::new()?;
+    let store_hash = store_path
+        .strip_prefix("/nix/store/")
+        .and_then(|rest| rest.split_once('-'))
+        .map(|(hash, _)| hash)
+        .context("fixture store path has a hash")?;
+    fs::write(uploaded.path().join(format!("{store_hash}.narinfo")), b"narinfo")?;
     let options = ReleaseTreeOptions {
         version: v("1.1.0"),
         signing_key: fixture.private_key_path().to_string_lossy().into_owned(),
