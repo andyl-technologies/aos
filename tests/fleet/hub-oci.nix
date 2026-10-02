@@ -2249,7 +2249,7 @@ in {
         "--stable-id oci-public-instance "
         f"--if-version {shlex.quote(public_route['resource_version'])}",
         token,
-    )["data"]["route"]
+    )["data"]["result"]["route"]
     assert converted["stable_id"] == "oci-public-instance", converted
     assert converted["spec"]["default_registry"] == "acme/containers", converted
     assert converted["spec"]["enabled"], converted
@@ -2367,7 +2367,7 @@ in {
         "oci-private-instance-create",
         private_instance_add + " --bind-existing-reservation",
         token,
-    )["data"]["route"]
+    )["data"]["result"]["route"]
     assert private_instance["ready"], private_instance
     assert "hub_auth" in private_instance["spec"]["access_policy"], private_instance
     reviewed(
@@ -2467,11 +2467,14 @@ in {
     scratch = json.loads(publisher.succeed(
         hub_command("registry show acme/scratch", token)
     ))["data"]["registry"]
+    # Deletion runs as an operation; --wait returns once it has succeeded.
     reviewed(
         publisher,
         "scratch-registry-delete",
-        f"registry delete acme/scratch --if-version {shlex.quote(scratch['resource_version'])}",
+        f"registry delete acme/scratch --if-version {shlex.quote(scratch['resource_version'])} "
+        "--wait --timeout 3m",
         token,
+        timeout=240,
     )
     publisher.fail(hub_command("registry show acme/scratch", token))
     surviving = json.loads(publisher.succeed(
@@ -2509,7 +2512,7 @@ in {
         "instance oci-route update oci-private-instance --disable "
         f"--if-version {shlex.quote(private_instance['resource_version'])}",
         token,
-    )["data"]["route"]
+    )["data"]["result"]["route"]
     # ProtoJSON omits false booleans, so a disabled route has no flag.
     assert not private_instance["spec"].get("enabled", False), private_instance
     consumer.succeed(
