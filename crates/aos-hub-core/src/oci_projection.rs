@@ -120,9 +120,11 @@ pub(crate) fn manifest_original_digest(
     binding: &crate::db::BindingRecord,
     write_revision: i64,
     authority: &crate::db::SurfaceWriteAuthorityRecord,
+    managed_effect: Option<&crate::hybrid_ingress::OciDocumentEffect>,
 ) -> anyhow::Result<String> {
     use sha2::{Digest as _, Sha256};
     let original = (
+        managed_effect,
         (
             registry_id,
             repository_id,
@@ -150,5 +152,10 @@ pub(crate) fn manifest_original_digest(
             authority.observed_generation,
         ),
     );
-    Ok(hex::encode(Sha256::digest(serde_json::to_vec(&original)?)))
+    let bytes = if managed_effect.is_some() {
+        serde_json::to_vec(&original)?
+    } else {
+        serde_json::to_vec(&(original.1, original.2, original.3, original.4))?
+    };
+    Ok(hex::encode(Sha256::digest(bytes)))
 }

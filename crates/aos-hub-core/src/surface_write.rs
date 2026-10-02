@@ -542,6 +542,50 @@ pub trait SurfaceWriteProvider: BackendBounds {
             .await
     }
 
+    /// Selects independently installed Managed OCI document effect permission.
+    ///
+    /// `expires_at` preserves an existing upload cutoff during exact recovery.
+    /// External providers return `None` and retain their own document original.
+    ///
+    /// # Errors
+    /// Rejects unavailable acceptance or a cutoff outside its original window.
+    async fn oci_document_effect(
+        &self,
+        placement: &SurfacePlacementRecord,
+        expires_at: Option<u64>,
+    ) -> Result<Option<crate::hybrid_ingress::OciDocumentEffect>> {
+        let _ = (placement, expires_at);
+        Ok(None)
+    }
+
+    /// Composes a Managed document under its retained effect permission.
+    ///
+    /// # Errors
+    /// Rejects implementations without explicit document effect enforcement.
+    async fn compose_oci_document(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        expected_digest: aos_oci_types::Sha256Digest,
+        expected_size: u64,
+        effect: &crate::hybrid_ingress::OciDocumentEffect,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        let _ = (
+            destination,
+            revision,
+            staging,
+            path,
+            chunks,
+            expected_digest,
+            expected_size,
+            effect,
+        );
+        anyhow::bail!("Managed OCI document composition is unavailable")
+    }
+
     /// Composes a claimed OCI upload beside storage and returns physical evidence.
     ///
     /// `None` means this runtime uses the ordinary in-process writer path.

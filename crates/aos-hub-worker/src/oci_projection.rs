@@ -25,11 +25,11 @@ use crate::{
     hybrid_object::HybridObjectGuard,
 };
 
-mod lifetime;
+pub(crate) mod lifetime;
 
 pub(crate) const PHYSICAL_PATH: &str = "/oci-document-projection";
 
-fn guard_key(env: &Env) -> Result<StorageWorkKey> {
+pub(crate) fn guard_key(env: &Env) -> Result<StorageWorkKey> {
     let guard = env.secret("HUB_DIRECT_UPLOAD_GUARD_KEY")?.to_string();
     ensure!(
         guard != env.secret("HUB_STORAGE_WORK_KEY")?.to_string(),
@@ -151,16 +151,19 @@ async fn physical_reply(
         storage.get("pending-delete").await?;
     crate::hybrid_object_state::ensure_ready(pending.as_ref(), deleting.as_ref())?;
 
-    let qualified = config::QualifiedConfig::load(&guard.env).await?;
+    let qualified = crate::oci_sdk_emulation::OciProviderConfig::load(&guard.env).await?;
+    qualified
+        .verify_anchor(&guard.env, Some(lookup.expires_at))
+        .await?;
     ensure!(
-        qualified.managed(&guard.env)?.0.digest()? == lookup.protected_profile_digest,
+        qualified.profile_digest(&guard.env)? == lookup.protected_profile_digest,
         "OCI projection actual provider/runtime/policy changed"
     );
     let before_dispatch = || {
         lookup.validate(&lookup.deployment_id, config::guard_latest_now(&guard.env)?)?;
-        qualified.latest_now()?;
+        qualified.check(&guard.env)?;
         ensure!(
-            qualified.managed(&guard.env)?.0.digest()? == lookup.protected_profile_digest,
+            qualified.profile_digest(&guard.env)? == lookup.protected_profile_digest,
             "OCI projection actual provider/runtime/policy changed"
         );
         Ok(())
@@ -260,7 +263,7 @@ async fn physical_reply(
 // The caller holds one metadata SDK permit across HEAD, conditional GET and
 // body consumption, and checks current qualification immediately before each
 // dispatch. This helper creates no object or business authority.
-async fn sdk_read(
+pub(crate) async fn sdk_read(
     state: &worker::State,
     bucket: &JsValue,
     method: &str,

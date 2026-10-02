@@ -11,14 +11,14 @@ use anyhow::{ensure, Result};
 use std::cell::RefCell;
 use std::{cell::Cell, rc::Rc};
 
-pub(super) struct Owner<R> {
+pub(crate) struct Owner<R> {
     closed: Cell<bool>,
     cleanup: RefCell<Option<Box<dyn FnOnce()>>>,
     _resources: R,
 }
 
 impl<R> Owner<R> {
-    pub(super) fn new(resources: R) -> Rc<Self> {
+    pub(crate) fn new(resources: R) -> Rc<Self> {
         Rc::new(Self {
             closed: Cell::new(false),
             cleanup: RefCell::new(None),
@@ -26,12 +26,12 @@ impl<R> Owner<R> {
         })
     }
 
-    pub(super) fn check_open(&self) -> Result<()> {
+    pub(crate) fn check_open(&self) -> Result<()> {
         ensure!(!self.closed.get(), "OCI observation closed");
         Ok(())
     }
 
-    pub(super) fn close(&self) {
+    pub(crate) fn close(&self) {
         if self.closed.replace(true) {
             return;
         }
@@ -53,7 +53,7 @@ impl<R> Owner<R> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(super) fn attach(&self, reader: Reader) -> Result<Rc<Reader>> {
+    pub(crate) fn attach(&self, reader: Reader) -> Result<Rc<Reader>> {
         let reader = Rc::new(reader);
         let held = Rc::clone(&reader);
         self.install_cleanup(Box::new(move || drop(held)))?;
@@ -67,7 +67,7 @@ impl<R> Drop for Owner<R> {
     }
 }
 
-pub(super) struct Scope<R>(pub(super) Rc<Owner<R>>);
+pub(crate) struct Scope<R>(pub(crate) Rc<Owner<R>>);
 impl<R> Drop for Scope<R> {
     fn drop(&mut self) {
         self.0.close();

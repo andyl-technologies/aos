@@ -142,6 +142,7 @@ impl Database {
             &binding,
             revision_number,
             &authority,
+            admission.managed_effect.as_ref(),
         )?;
         anyhow::ensure!(
             original == admission.original_digest

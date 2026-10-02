@@ -37,6 +37,7 @@ pub struct NativeDirectUploadAcceptances {
     accepted: Vec<AcceptedProfile>,
     source_digest: String,
     script_version: String,
+    evidence_digest: String,
 }
 
 impl NativeDirectUploadAcceptances {
@@ -164,6 +165,36 @@ impl NativeDirectUploadAcceptances {
             accepted,
             source_digest: artifact.source_digest,
             script_version: artifact.script_version,
+            evidence_digest: artifact.evidence_sha256,
+        })
+    }
+
+    pub(crate) fn oci_document_effect(
+        &self,
+        deployment: &str,
+        origin: &str,
+        profile_digest: &str,
+    ) -> Result<aos_hub_core::hybrid_ingress::OciDocumentEffect> {
+        let accepted = self
+            .accepted
+            .iter()
+            .find(|item| {
+                item.deployment == deployment
+                    && item.origin == origin
+                    && matches!(&item.profile, DirectProtectedProfile::Managed { .. })
+                    && item
+                        .profile
+                        .digest()
+                        .is_ok_and(|digest| digest == profile_digest)
+            })
+            .context("OCI document has no independently accepted Managed profile")?;
+        let (_, _, uncertainty) = self.retained_guard_issuer(deployment, origin, profile_digest)?;
+        Ok(aos_hub_core::hybrid_ingress::OciDocumentEffect {
+            protected_profile_digest: profile_digest.into(),
+            acceptance_digest: self.evidence_digest.clone(),
+            issued_at: accepted.issued_at,
+            expires_at: accepted.expires_at,
+            clock_uncertainty_seconds: uncertainty,
         })
     }
 

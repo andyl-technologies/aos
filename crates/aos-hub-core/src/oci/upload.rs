@@ -1173,6 +1173,7 @@ impl RpcService {
                                         digest,
                                         claimed.uploaded_size,
                                         &chunks,
+                                        None,
                                     )
                                     .await
                                 {
@@ -1258,23 +1259,37 @@ impl RpcService {
         digest: Sha256Digest,
         byte_size: u64,
         chunks: &[OciUploadChunkRecord],
+        managed_effect: Option<&crate::hybrid_ingress::OciDocumentEffect>,
     ) -> Result<(crate::db::OciUploadedObjectEvidence, Option<String>), ()> {
         let path = oci_blob_object_key(digest);
         if self.hybrid_delivery {
-            let evidence = self
-                .surface_write
-                .compose_oci_blob(
-                    placement,
-                    revision,
-                    staging_placement,
-                    &path,
-                    chunks,
-                    digest,
-                    byte_size,
-                )
-                .await
-                .map_err(|_| ())?
-                .ok_or(())?;
+            let composed = if let Some(effect) = managed_effect {
+                self.surface_write
+                    .compose_oci_document(
+                        placement,
+                        revision,
+                        staging_placement,
+                        &path,
+                        chunks,
+                        digest,
+                        byte_size,
+                        effect,
+                    )
+                    .await
+            } else {
+                self.surface_write
+                    .compose_oci_blob(
+                        placement,
+                        revision,
+                        staging_placement,
+                        &path,
+                        chunks,
+                        digest,
+                        byte_size,
+                    )
+                    .await
+            };
+            let evidence = composed.map_err(|_| ())?.ok_or(())?;
             if evidence.size != i64::try_from(byte_size).map_err(|_| ())?
                 || evidence.sha256 != *digest.as_bytes()
             {

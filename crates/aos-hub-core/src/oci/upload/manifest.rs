@@ -152,9 +152,21 @@ impl RpcService {
         }
         // Exact terminal recovery reads the canonical stored original and must
         // not repeat materialization or transfer its quota a second time.
+        let managed_effect = proofs.iter().find_map(|proof| {
+            proof
+                .admission()
+                .and_then(|admission| admission.managed_effect.clone())
+        });
         if upload.state != "complete" {
             if let Err(response) = self
-                .complete_staged_manifest(&owner, &placement, digest, upload, &chunks)
+                .complete_staged_manifest(
+                    &owner,
+                    &placement,
+                    digest,
+                    upload,
+                    &chunks,
+                    managed_effect.as_ref(),
+                )
                 .await
             {
                 return response;
@@ -429,6 +441,7 @@ impl RpcService {
         digest: Sha256Digest,
         upload: OciUploadRecord,
         chunks: &[OciUploadChunkRecord],
+        managed_effect: Option<&crate::hybrid_ingress::OciDocumentEffect>,
     ) -> Result<(), Response> {
         let claim_now = now();
         let revision = self
@@ -556,6 +569,7 @@ impl RpcService {
                             digest,
                             claimed.uploaded_size,
                             chunks,
+                            managed_effect,
                         )
                         .await
                         .map_err(|_| {

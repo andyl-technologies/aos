@@ -290,6 +290,9 @@ pub enum StorageWorkOperation {
     },
     /// Assembles SQL-frozen OCI chunks into one content-addressed R2 blob.
     ComposeOciBlob {
+        /// Immutable Managed document scope; ordinary blob composition omits it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        managed_effect: Option<crate::hybrid_ingress::OciDocumentEffect>,
         /// Canonical destination OCI blob path within the selected placement.
         path: String,
         /// Prefix of the frozen staging placement in the same R2 binding.
@@ -1222,7 +1225,23 @@ impl StorageWorkPlan {
                 chunks,
                 expected_size,
                 expected_sha256,
+                managed_effect,
             } => {
+                if let Some(effect) = managed_effect {
+                    effect
+                        .check(
+                            u64::try_from(self.issued_at)
+                                .map_err(|_| StorageWorkError::InvalidPlan)?,
+                        )
+                        .map_err(|_| StorageWorkError::InvalidPlan)?;
+                    if chunks.len() != 1
+                        || *expected_size == 0
+                        || *expected_size
+                            > crate::hybrid_ingress::MAX_HYBRID_OCI_MANIFEST_BYTES as u64
+                    {
+                        return Err(StorageWorkError::InvalidPlan);
+                    }
+                }
                 let staged_size = chunks
                     .iter()
                     .try_fold(0_u64, |sum, chunk| sum.checked_add(chunk.size));
@@ -2032,6 +2051,7 @@ mod tests {
             sha256: "b".repeat(64),
         };
         work.operation = StorageWorkOperation::ComposeOciBlob {
+            managed_effect: None,
             path: format!("oci/blobs/sha256/{digest}"),
             staging_prefix: "staging/registry".into(),
             chunks: vec![chunk.clone()],

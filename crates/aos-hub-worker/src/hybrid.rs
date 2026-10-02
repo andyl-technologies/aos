@@ -76,7 +76,7 @@ async fn acquire_upload_permit() -> OwnedMutexGuard<()> {
 ///
 /// Returns an error for missing deployment bindings or a failed origin or
 /// object-store operation.
-pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
+pub async fn fetch(request: Request, env: &Env, context: &worker::Context) -> Result<Response> {
     let path = request.url()?.path().to_owned();
     if let Some(response) = serve_static_asset(&request, &path).await? {
         return Ok(response);
@@ -102,7 +102,7 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
         return crate::external_object::fetch_copy_metadata(request, env).await;
     }
     if path == STORAGE_WORK_PATH {
-        return execute_storage_work(request, env).await;
+        return execute_storage_work(request, env, context).await;
     }
     if path == aos_hub_core::oci_projection::guard::OCI_PROJECTION_PATH {
         return crate::oci_projection::fetch(request, env).await;
@@ -215,7 +215,7 @@ pub async fn fetch(request: Request, env: &Env) -> Result<Response> {
         return finalize_oci_upload(request, env).await;
     }
     if request.method() == worker::Method::Put && is_oci_manifest(&path) {
-        return put_oci_manifest(request, env).await;
+        return put_oci_manifest(request, env, context).await;
     }
     if is_unrouted_oci_upload(&request.method(), &path) {
         return Response::error("hybrid storage upload is unavailable", 503);
@@ -279,8 +279,19 @@ fn is_oci_manifest(path: &str) -> bool {
         })
 }
 
-async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
+async fn put_oci_manifest(
+    mut request: Request,
+    env: &Env,
+    context: &worker::Context,
+) -> Result<Response> {
     let _permit = acquire_upload_permit().await;
+    // This shared decoder/document admission survives a pending native SDK
+    // upload when its request closes. Bodies remain unread until current IAM.
+    let memory = std::rc::Rc::new(
+        crate::mirror_import::buffers::acquire(false, || Ok(()))
+            .await
+            .map_err(|error| worker::Error::RustError(error.to_string()))?,
+    );
     let mut completion_url = request.url()?;
     if completion_url
         .query_pairs()
@@ -329,11 +340,11 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
     {
         return Response::error("manifest semantic projection is invalid", 400);
     }
-    let qualified = match crate::direct_upload::config::QualifiedConfig::load(env).await {
+    let qualified = match crate::oci_sdk_emulation::OciProviderConfig::load(env).await {
         Ok(qualified) => qualified,
         Err(_) => return Response::error("manifest provider qualification is unavailable", 503),
     };
-    if qualified.managed(env).is_err() {
+    if qualified.verify_anchor(env, None).await.is_err() {
         return Response::error(
             "manifest managed provider qualification is unavailable",
             503,
@@ -347,6 +358,11 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
     let preflight = serde_json::to_vec(&HybridOciManifestPreflight {
         media_type,
         sha256_state,
+        managed_effect: Some(
+            qualified
+                .effect(env)
+                .map_err(|error| worker::Error::RustError(error.to_string()))?,
+        ),
     })
     .map_err(|error| worker::Error::RustError(format!("manifest preflight JSON: {error}")))?;
     let preflight_request = upload_phase_request(&request, &preflight)?;
@@ -395,16 +411,32 @@ async fn put_oci_manifest(mut request: Request, env: &Env) -> Result<Response> {
     if !valid_r2_key(&object_key) {
         return Response::error("manifest placement key is invalid", 502);
     }
-    if qualified.latest_now().is_err() || qualified.managed(env).is_err() {
+    let Some(effect) = admission.managed_effect.as_ref() else {
+        return Response::error("manifest effect original is absent", 502);
+    };
+    if qualified.check_effect(env, effect).is_err() {
         return Response::error(
             "manifest provider qualification expired before storage dispatch",
             503,
         );
     }
-    if let Err(error) = crate::hybrid_object::put(env, &object_key, &bytes).await {
+    if let Err(error) = crate::hybrid_object::put_oci_document(
+        env,
+        &object_key,
+        &bytes,
+        &qualified,
+        effect,
+        context,
+        memory,
+    )
+    .await
+    {
         worker::console_error!("hybrid_manifest_put_failed: {error:#}");
         return Response::error("manifest storage write failed", 503);
     }
+    // The SDK owner has settled. Release the original buffer before Native's
+    // canonical read/materialization competes for the same full-window budget.
+    drop(bytes);
 
     completion_url
         .query_pairs_mut()
@@ -1340,7 +1372,11 @@ async fn frozen_cleanup_head(mut request: Request, env: &Env) -> Result<Response
     Ok(Response::from_bytes(bytes)?.with_headers(headers))
 }
 
-async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Response> {
+async fn execute_storage_work(
+    mut request: Request,
+    env: &Env,
+    context: &worker::Context,
+) -> Result<Response> {
     if request.method() != worker::Method::Post {
         return Response::error("method not allowed", 405);
     }
@@ -1410,7 +1446,7 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
                 )
             })
     } else if plan.binding_kind == "deployment_r2" {
-        crate::surface::execute_r2_storage_work(env, &plan).await
+        crate::surface::execute_r2_storage_work(env, &plan, context).await
     } else {
         let publication = match crate::hybrid_binding::resolve_for_plan(env, &plan).await {
             Ok(publication) => publication,

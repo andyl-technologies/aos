@@ -141,6 +141,10 @@ impl QualifiedConfig {
         })
     }
 
+    pub(crate) fn acceptance_bounds(&self) -> (u64, u64) {
+        self.acceptance_window.bounds()
+    }
+
     pub(crate) fn latest_now(&self) -> Result<u64> {
         self.acceptance_window
             .latest_now(u64::try_from(aos_hub_core::clock::now_unix_secs())?)

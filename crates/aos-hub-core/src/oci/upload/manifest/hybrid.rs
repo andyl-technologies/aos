@@ -71,7 +71,14 @@ impl RpcService {
                     return manifest_invalid("manifest preflight identity is invalid");
                 };
                 match self
-                    .reserve_hybrid_manifest(registry, repository, &owner, &reference, request)
+                    .reserve_hybrid_manifest_authorized(
+                        registry,
+                        repository,
+                        &owner,
+                        &reference,
+                        request,
+                        authenticated.expires_at(),
+                    )
                     .await
                 {
                     Ok(admission) => {
@@ -115,6 +122,7 @@ impl RpcService {
         }
     }
 
+    #[cfg(test)]
     async fn reserve_hybrid_manifest(
         &self,
         registry: &RegistryRecord,
@@ -122,6 +130,26 @@ impl RpcService {
         owner: &str,
         reference: &ManifestReference,
         request: HybridOciManifestPreflight,
+    ) -> Result<HybridOciManifestAdmission, Response> {
+        self.reserve_hybrid_manifest_authorized(
+            registry,
+            repository,
+            owner,
+            reference,
+            request,
+            now() + UPLOAD_SESSION_SECONDS,
+        )
+        .await
+    }
+
+    async fn reserve_hybrid_manifest_authorized(
+        &self,
+        registry: &RegistryRecord,
+        repository: &OciRepositoryRecord,
+        owner: &str,
+        reference: &ManifestReference,
+        request: HybridOciManifestPreflight,
+        actor_expires_at: i64,
     ) -> Result<HybridOciManifestAdmission, Response> {
         if !request.media_type.is_image_manifest() && !request.media_type.is_image_index() {
             return Err(manifest_invalid(
@@ -168,6 +196,41 @@ impl RpcService {
             ));
         }
 
+        let current = now();
+        let mut managed_effect = self
+            .surface_write
+            .oci_document_effect(&placement, None)
+            .await
+            .map_err(|_| {
+                unavailable_response("manifest effect acceptance is unavailable", false)
+            })?;
+        if managed_effect.is_none() || managed_effect != request.managed_effect {
+            return Err(unavailable_response(
+                "manifest effect original is unavailable or changed",
+                false,
+            ));
+        }
+        if let Some(effect) = &mut managed_effect {
+            effect.expires_at =
+                effect
+                    .expires_at
+                    .min(u64::try_from(actor_expires_at).map_err(|_| {
+                        unavailable_response("manifest actor cutoff is invalid", false)
+                    })?)
+                    .min(
+                        u64::try_from(current + UPLOAD_SESSION_SECONDS).map_err(|_| {
+                            unavailable_response("manifest upload cutoff is invalid", false)
+                        })?,
+                    );
+            effect
+                .check(
+                    u64::try_from(current).map_err(|_| {
+                        unavailable_response("manifest current time is invalid", false)
+                    })?,
+                )
+                .map_err(|_| unavailable_response("manifest effect permission expired", false))?;
+        }
+
         let authority = self
             .db
             .surface_write_authority(SurfaceTarget::Registry(registry.id))
@@ -184,9 +247,9 @@ impl RpcService {
             &binding,
             revision.revision,
             &authority,
+            managed_effect.as_ref(),
         )
         .map_err(|_| unavailable_response("manifest original could not be retained", false))?;
-        let current = now();
         let upload = self
             .db
             .begin_oci_upload(&BeginOciUpload {
@@ -203,7 +266,11 @@ impl RpcService {
                 expected_size: Some(size),
                 maximum_size: MAX_MANIFEST_BYTES as u64,
                 now: current,
-                expires_at: current + UPLOAD_SESSION_SECONDS,
+                expires_at: managed_effect
+                    .as_ref()
+                    .map_or(current + UPLOAD_SESSION_SECONDS, |effect| {
+                        effect.expires_at as i64
+                    }),
             })
             .await
             .map_err(|_| unavailable_response("manifest quota could not be reserved", false))?;
@@ -252,6 +319,7 @@ impl RpcService {
             ));
         }
         Ok(HybridOciManifestAdmission {
+            managed_effect,
             original_digest,
             upload_id: upload.id,
             placement_prefix: placement.prefix,
@@ -400,6 +468,19 @@ impl RpcService {
             Ok(Some(authority)) => authority,
             _ => return unavailable_response("manifest write authority is unavailable", false),
         };
+        let managed_effect = match self
+            .surface_write
+            .oci_document_effect(&placement, u64::try_from(upload.expires_at).ok())
+            .await
+        {
+            Ok(Some(effect)) => Some(effect),
+            _ => {
+                return unavailable_response(
+                    "manifest original effect acceptance is unavailable",
+                    false,
+                )
+            }
+        };
         let original_digest = match manifest_original_digest(
             registry.id,
             repository.id,
@@ -410,6 +491,7 @@ impl RpcService {
             &binding,
             upload.staging_binding_write_revision.unwrap_or(0),
             &current_authority,
+            managed_effect.as_ref(),
         ) {
             Ok(digest) => digest,
             Err(_) => return unavailable_response("manifest original is invalid", false),
@@ -428,6 +510,7 @@ impl RpcService {
             );
         }
         let admission = HybridOciManifestAdmission {
+            managed_effect,
             original_digest,
             upload_id: upload.id.clone(),
             placement_prefix: placement.prefix.clone(),

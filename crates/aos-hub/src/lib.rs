@@ -116,6 +116,7 @@ pub mod seed;
 pub mod server;
 pub mod signing;
 
+pub mod oci_sdk_emulation;
 pub mod snapshot;
 pub mod storage_work;
 /// The cache-stack node model, re-exported from [`aos_hub_core::stack`]

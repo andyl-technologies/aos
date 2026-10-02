@@ -63,6 +63,7 @@ mod mirror_candidate;
 mod mirror_guard;
 mod mirror_inspection;
 mod mirror_membership;
+mod oci_document_effect;
 mod oci_projection;
 #[cfg(test)]
 mod result_acceptance_tests;
@@ -138,6 +139,7 @@ pub struct RemoteStorageWorkClient {
     key: StorageWorkKey,
     mirror_profiles: Option<crate::direct_upload::authority::NativeDirectUploadAcceptances>,
     mirror_guard_key: Option<StorageWorkKey>,
+    oci_sdk_emulation: Option<crate::oci_sdk_emulation::NativeOciSdkEmulation>,
     #[cfg(test)]
     controlled_mirror: Option<mirror_candidate::ControlledMirrorAuthority>,
     http: reqwest::Client,
@@ -200,6 +202,7 @@ impl RemoteStorageWorkClient {
             key: StorageWorkKey::new(key)?,
             mirror_profiles: None,
             mirror_guard_key: None,
+            oci_sdk_emulation: None,
             #[cfg(test)]
             controlled_mirror: None,
             http,
@@ -227,6 +230,32 @@ impl RemoteStorageWorkClient {
     ) -> Self {
         self.mirror_profiles = Some(profiles);
         self
+    }
+
+    /// Installs explicit independently reviewed emulator-only OCI SDK permission.
+    ///
+    /// This option creates no Direct profiles, mirror or presigning eligibility.
+    ///
+    /// # Errors
+    /// Rejects weak/reused guard material or a conflicting already installed role.
+    pub fn with_oci_sdk_emulation(
+        mut self,
+        acceptance: crate::oci_sdk_emulation::NativeOciSdkEmulation,
+        key: &[u8],
+    ) -> Result<Self> {
+        let guard = StorageWorkKey::new(key)?;
+        let challenge = b"aos.hub.oci-sdk-guard-role-consistency.v1";
+        if let Some(existing) = &self.mirror_guard_key {
+            anyhow::ensure!(
+                existing
+                    .verify_body(&guard.sign_body(challenge)?, challenge)
+                    .is_ok(),
+                "OCI SDK guard differs from already installed role"
+            );
+        }
+        self = self.with_mirror_guard_key(key)?;
+        self.oci_sdk_emulation = Some(acceptance);
+        Ok(self)
     }
 
     /// Installs the independent metadata readback role for mirror final guards.
@@ -2726,64 +2755,88 @@ impl SurfaceWriteProvider for HybridSurfaceWrites {
         expected_digest: aos_oci_types::Sha256Digest,
         expected_size: u64,
     ) -> Result<Option<SurfaceObjectEvidence>> {
-        anyhow::ensure!(
-            destination.binding_id == revision.binding_id,
-            "OCI destination differs from its frozen write revision"
-        );
-        let staging_prefix = match staging {
-            Some(staging) => {
-                anyhow::ensure!(
-                    staging.binding_id == destination.binding_id,
-                    "OCI staging and destination use different R2 bindings"
-                );
-                staging.prefix.clone()
-            }
-            None if chunks.is_empty() && expected_size == 0 => String::new(),
-            None => bail!("OCI staging placement is missing"),
-        };
+        self.compose_managed_oci(
+            destination,
+            revision,
+            staging,
+            path,
+            chunks,
+            expected_digest,
+            expected_size,
+            None,
+        )
+        .await
+    }
+
+    async fn oci_document_effect(
+        &self,
+        placement: &SurfacePlacementRecord,
+        expires_at: Option<u64>,
+    ) -> Result<Option<aos_hub_core::hybrid_ingress::OciDocumentEffect>> {
         let binding = self
             .db
-            .binding(destination.binding_id)
+            .binding(placement.binding_id)
             .await?
-            .context("OCI destination binding is missing")?;
-        let chunks = chunks
-            .iter()
-            .map(|chunk| StorageOciChunkSource {
-                path: chunk.staging_object_key.clone(),
-                size: chunk.byte_size,
-                sha256: chunk.digest.encoded(),
-            })
-            .collect();
-        let plan = self.work.plan_for_placement(
-            destination,
-            &binding,
-            StorageWorkOperation::ComposeOciBlob {
-                path: path.to_string(),
-                staging_prefix,
-                chunks,
-                expected_size,
-                expected_sha256: expected_digest.encoded(),
-            },
-            aos_hub_core::clock::now_unix_secs(),
-        )?;
-        let result = self.work.execute(&plan).await?;
-        let StorageWorkOutcome::OciBlobComposed { object, sha256 } = result.outcome else {
-            bail!("storage Worker returned no OCI composition evidence");
+            .context("OCI effect binding disappeared")?;
+        if !binding.is_instance_default || binding.kind != "deployment_r2" {
+            return Ok(None);
+        }
+        let origin = self.work.executor_origin()?;
+        let mut effect = if let Some(acceptance) = &self.work.oci_sdk_emulation {
+            acceptance.check(
+                &self.work.deployment_id,
+                &origin,
+                u64::try_from(aos_hub_core::clock::now_unix_secs())?,
+            )?;
+            acceptance.document_effect()?
+        } else {
+            let profile = self.work.mirror_managed_profile_digest()?;
+            self.work
+                .mirror_profiles
+                .as_ref()
+                .context("OCI document acceptance is not installed")?
+                .oci_document_effect(&self.work.deployment_id, &origin, &profile)?
         };
+        if let Some(expires_at) = expires_at {
+            anyhow::ensure!(
+                expires_at <= effect.expires_at,
+                "OCI original cutoff was extended"
+            );
+            effect.expires_at = expires_at;
+        }
+        effect.check(u64::try_from(aos_hub_core::clock::now_unix_secs())?)?;
+        Ok(Some(effect))
+    }
+
+    async fn compose_oci_document(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        expected_digest: aos_oci_types::Sha256Digest,
+        expected_size: u64,
+        effect: &aos_hub_core::hybrid_ingress::OciDocumentEffect,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
         anyhow::ensure!(
-            sha256 == expected_digest.encoded(),
-            "storage Worker composed a different OCI digest"
+            self.oci_document_effect(destination, Some(effect.expires_at))
+                .await?
+                .as_ref()
+                == Some(effect),
+            "OCI document original acceptance changed"
         );
-        let digest = hex::decode(sha256)?;
-        let digest: [u8; 32] = digest
-            .try_into()
-            .map_err(|_| anyhow::anyhow!("storage Worker returned an invalid OCI digest"))?;
-        Ok(Some(SurfaceObjectEvidence {
-            provider_version: object.provider_version,
-            sha256: digest,
-            size: i64::try_from(object.size)?,
-            strong_etag: Some(object.etag),
-        }))
+        self.compose_managed_oci(
+            destination,
+            revision,
+            staging,
+            path,
+            chunks,
+            expected_digest,
+            expected_size,
+            Some(effect),
+        )
+        .await
     }
 
     async fn placement_writer(
@@ -3482,6 +3535,7 @@ mod tests {
             credential_references: Vec::new(),
             placement_prefix: "registry".into(),
             operation: StorageWorkOperation::ComposeOciBlob {
+                managed_effect: None,
                 path: path.clone(),
                 staging_prefix: "staging".into(),
                 chunks: vec![StorageOciChunkSource {

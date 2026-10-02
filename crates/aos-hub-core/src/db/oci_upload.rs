@@ -792,7 +792,8 @@ impl Database {
                       COALESCE(materialization_binding_id, ?10),
                     materialization_binding_write_revision =
                       COALESCE(materialization_binding_write_revision, ?11),
-                    expires_at = ?9,
+                    expires_at = CASE WHEN idempotency_key LIKE 'manifest-hybrid-%'
+                      AND expires_at < ?9 THEN expires_at ELSE ?9 END,
                     resource_version = resource_version + 1
                  WHERE id = ?1 AND writer_id = ?2 AND token_id = ?3
                    AND resource_version = ?6

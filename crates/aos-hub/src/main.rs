@@ -122,6 +122,15 @@ enum Command {
         /// Read the independent physical guard challenge and reply key.
         #[arg(long, env = "HUB_DIRECT_UPLOAD_GUARD_KEY_FILE")]
         direct_upload_guard_key_file: Option<PathBuf>,
+        /// Opt in to independently reviewed emulator-only OCI document SDK use.
+        #[arg(long, env = "HUB_OCI_SDK_EMULATOR_ACCEPTANCE_FILE")]
+        oci_sdk_emulator_acceptance_file: Option<PathBuf>,
+        /// Read separately trusted OCI emulator reviewer public keys.
+        #[arg(long, env = "HUB_OCI_SDK_EMULATOR_REVIEW_KEYS_FILE")]
+        oci_sdk_emulator_review_keys_file: Option<PathBuf>,
+        /// Read the existing independent OCI physical guard role key.
+        #[arg(long, env = "HUB_OCI_SDK_EMULATOR_GUARD_KEY_FILE")]
+        oci_sdk_emulator_guard_key_file: Option<PathBuf>,
         /// PEM certificate chain for native TLS termination.
         #[arg(long, env = "HUB_TLS_CERTIFICATE_FILE")]
         tls_certificate_file: Option<PathBuf>,
@@ -963,6 +972,9 @@ async fn main() -> Result<()> {
             direct_upload_acceptance_file,
             direct_upload_review_keys_file,
             direct_upload_guard_key_file,
+            oci_sdk_emulator_acceptance_file,
+            oci_sdk_emulator_review_keys_file,
+            oci_sdk_emulator_guard_key_file,
             tls_certificate_file,
             tls_private_key_file,
             deployment_id,
@@ -998,8 +1010,9 @@ async fn main() -> Result<()> {
             let external_url = external_url.unwrap_or_else(|| format!("http://{listen_addr}"));
             let hybrid = topology == "hybrid";
             let hybrid_origin_host = if hybrid {
-                let origin_url =
-                    hybrid_origin_url.context("hybrid serving requires HUB_HYBRID_ORIGIN_URL")?;
+                let origin_url = hybrid_origin_url
+                    .as_ref()
+                    .context("hybrid serving requires HUB_HYBRID_ORIGIN_URL")?;
                 let origin =
                     url::Url::parse(&origin_url).context("parsing the hybrid Native origin URL")?;
                 anyhow::ensure!(
@@ -1099,6 +1112,25 @@ async fn main() -> Result<()> {
                     Some(key) => work.with_mirror_guard_key(&key)?,
                     None => work,
                 };
+                let work = match (
+                    oci_sdk_emulator_acceptance_file,
+                    oci_sdk_emulator_review_keys_file,
+                    oci_sdk_emulator_guard_key_file,
+                ) {
+                    (Some(acceptance), Some(reviewers), Some(guard_file)) => {
+                        let accepted = aos_hub::oci_sdk_emulation::NativeOciSdkEmulation::from_files(
+                            &acceptance,
+                            &reviewers,
+                            &deployment_id,
+                            &worker_url,
+                            hybrid_origin_url.as_deref().context("OCI SDK Native origin missing")?,
+                        )?;
+                        let guard = aos_hub::auth::seal::read_secret_file(&guard_file)?;
+                        work.with_oci_sdk_emulation(accepted, &guard)?
+                    }
+                    (None, None, None) => work,
+                    _ => anyhow::bail!("OCI emulator acceptance, reviewer and independent guard key files must be configured together"),
+                };
                 work.check_console_ready().await?;
                 Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
             } else {
@@ -1107,6 +1139,12 @@ async fn main() -> Result<()> {
                         && direct_upload_review_keys_file.is_none()
                         && direct_upload_guard_key_file.is_none(),
                     "direct runtime qualification requires hybrid topology"
+                );
+                anyhow::ensure!(
+                    oci_sdk_emulator_acceptance_file.is_none()
+                        && oci_sdk_emulator_review_keys_file.is_none()
+                        && oci_sdk_emulator_guard_key_file.is_none(),
+                    "OCI emulator SDK opt-in requires Hybrid topology"
                 );
                 None
             };

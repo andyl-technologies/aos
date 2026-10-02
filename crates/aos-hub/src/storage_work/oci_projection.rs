@@ -22,15 +22,8 @@ impl HybridSurfaceFetch {
             self.binding.is_instance_default && self.binding.kind == "deployment_r2",
             "OCI document projection requires an admitted managed binding"
         );
-        let profile_digest = self.work.mirror_managed_profile_digest()?;
         let origin = self.work.executor_origin()?;
-        let profiles = self
-            .work
-            .mirror_profiles
-            .as_ref()
-            .context("OCI guard issuer is not independently configured")?;
-        let (source_digest, script_version, uncertainty) =
-            profiles.retained_guard_issuer(&self.work.deployment_id, &origin, &profile_digest)?;
+        let (profile_digest, issuer, uncertainty) = self.work.oci_projection_identity(&origin)?;
         let key = self
             .work
             .mirror_guard_key
@@ -42,10 +35,7 @@ impl HybridSurfaceFetch {
             version: 1,
             protected_profile_digest: profile_digest.clone(),
             deployment_id: self.work.deployment_id.clone(),
-            issuer: MirrorGuardIssuer {
-                source_digest,
-                script_version,
-            },
+            issuer,
             clock_uncertainty_seconds: uncertainty,
             key: aos_hub_core::keymap::r2_key(&self.placement.prefix, path),
             descriptor: Descriptor {
@@ -92,9 +82,32 @@ impl HybridSurfaceFetch {
                 && binding.resource_version == self.binding.resource_version
                 && binding.stable_id == self.binding.stable_id
                 && binding.kind == self.binding.kind
-                && self.work.mirror_managed_profile_digest()? == profile_digest,
+                && self.work.oci_projection_identity(&origin)?.0 == profile_digest,
             "OCI writer or provider qualification changed during readback"
         );
         Ok(Some(proof))
+    }
+}
+
+impl super::RemoteStorageWorkClient {
+    fn oci_projection_identity(&self, origin: &str) -> Result<(String, MirrorGuardIssuer, u64)> {
+        if let Some(acceptance) = &self.oci_sdk_emulation {
+            return acceptance.projection_identity(&self.deployment_id, origin);
+        }
+        let digest = self.mirror_managed_profile_digest()?;
+        let profiles = self
+            .mirror_profiles
+            .as_ref()
+            .context("OCI guard issuer is not independently configured")?;
+        let (source_digest, script_version, uncertainty) =
+            profiles.retained_guard_issuer(&self.deployment_id, origin, &digest)?;
+        Ok((
+            digest,
+            MirrorGuardIssuer {
+                source_digest,
+                script_version,
+            },
+            uncertainty,
+        ))
     }
 }

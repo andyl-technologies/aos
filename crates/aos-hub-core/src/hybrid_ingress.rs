@@ -13,7 +13,7 @@ pub use projection::{HybridNarinfoProjection, HybridNarinfoSignature, HybridObje
 
 pub use oci_manifest::{
     HybridOciManifestAdmission, HybridOciManifestCompletion, HybridOciManifestPreflight,
-    HYBRID_OCI_MANIFEST_UPLOAD_QUERY, MAX_HYBRID_OCI_MANIFEST_BYTES,
+    OciDocumentEffect, HYBRID_OCI_MANIFEST_UPLOAD_QUERY, MAX_HYBRID_OCI_MANIFEST_BYTES,
 };
 
 use std::collections::BTreeMap;

@@ -126,8 +126,43 @@ impl SurfaceProvider for Storage {
     }
 }
 
+fn fixture_effect(expires_at: Option<u64>) -> crate::hybrid_ingress::OciDocumentEffect {
+    crate::hybrid_ingress::OciDocumentEffect {
+        protected_profile_digest: "b".repeat(64),
+        acceptance_digest: "c".repeat(64),
+        issued_at: 1,
+        expires_at: expires_at.unwrap_or(i64::MAX as u64),
+        clock_uncertainty_seconds: 1,
+    }
+}
+
 #[async_trait::async_trait]
 impl SurfaceWriteProvider for Storage {
+    async fn oci_document_effect(
+        &self,
+        _: &SurfacePlacementRecord,
+        expires_at: Option<u64>,
+    ) -> Result<Option<crate::hybrid_ingress::OciDocumentEffect>> {
+        Ok(Some(fixture_effect(expires_at)))
+    }
+
+    async fn compose_oci_document(
+        &self,
+        destination: &SurfacePlacementRecord,
+        revision: &BindingWriteRevisionRecord,
+        staging: Option<&SurfacePlacementRecord>,
+        path: &str,
+        chunks: &[OciUploadChunkRecord],
+        digest: Sha256Digest,
+        size: u64,
+        effect: &crate::hybrid_ingress::OciDocumentEffect,
+    ) -> Result<Option<SurfaceObjectEvidence>> {
+        assert_eq!(effect, &fixture_effect(Some(effect.expires_at)));
+        effect.check(now() as u64)?;
+        self.compose_oci_blob(destination, revision, staging, path, chunks, digest, size)
+            .await
+    }
+
     async fn compose_oci_blob(
         &self,
         _: &SurfacePlacementRecord,
@@ -318,6 +353,7 @@ fn preflight(bytes: &[u8]) -> HybridOciManifestPreflight {
     HybridOciManifestPreflight {
         media_type: MediaType::OciImageIndex,
         sha256_state,
+        managed_effect: Some(fixture_effect(None)),
     }
 }
 
@@ -1172,4 +1208,151 @@ async fn current_bodyless_authorization_precedes_real_incoming_body_poll_and_res
         .await
         .unwrap();
     assert_eq!(rows[0].get::<i64>(0).unwrap(), 0);
+}
+
+#[tokio::test]
+async fn original_actor_cutoff_survives_claim_without_renewing_document_effects() {
+    original_cutoff_contract(fixture().await).await;
+}
+
+async fn original_cutoff_contract(
+    (service, registry, repository, storage): (
+        RpcService,
+        RegistryRecord,
+        OciRepositoryRecord,
+        Storage,
+    ),
+) {
+    let bytes = b"one retained exact document";
+    let digest = Sha256Digest::digest(bytes);
+    let cutoff = now() + 10;
+    let admission = service
+        .reserve_hybrid_manifest_authorized(
+            &registry,
+            &repository,
+            &storage.owner,
+            &ManifestReference::Digest(digest),
+            preflight(bytes),
+            cutoff,
+        )
+        .await
+        .unwrap();
+    let effect = admission.managed_effect.as_ref().unwrap();
+    assert_eq!(effect.expires_at, cutoff as u64);
+    let (placement, upload, _) = service
+        .load_hybrid_manifest_staging(
+            &repository,
+            &storage.owner,
+            &admission.upload_id,
+            digest,
+            bytes.len(),
+        )
+        .await
+        .unwrap();
+    let revision = service
+        .db
+        .placement_publication_write_revision(placement.id)
+        .await
+        .unwrap()
+        .unwrap();
+    let claim = crate::db::ClaimOciUpload {
+        upload_id: upload.id.clone(),
+        writer_id: storage.owner.clone(),
+        token_id: storage.owner.clone(),
+        expected_resource_version: upload.resource_version,
+        materialization_placement_id: placement.id,
+        materialization_placement_resource_version: placement.resource_version,
+        materialization_binding_id: revision.binding_id,
+        materialization_binding_write_revision: revision.revision,
+        digest,
+        now: now(),
+        lease_expires_at: cutoff + 300,
+    };
+
+    assert_eq!(
+        service.db.claim_oci_upload(&claim).await.unwrap(),
+        crate::db::OciBlobClaimOutcome::Claimed
+    );
+    let claimed = service
+        .db
+        .hybrid_oci_manifest_upload(&upload.id, &storage.owner, now())
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(claimed.expires_at, cutoff);
+    assert_eq!(
+        service
+            .db
+            .hybrid_oci_manifest_original_digest(&upload.id, &storage.owner)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(admission.original_digest.as_str())
+    );
+    assert!(effect.check(cutoff as u64).is_err());
+    assert_eq!(
+        storage
+            .compositions
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert!(storage.objects.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn absent_or_changed_effect_is_refused_before_quota_or_provider_reservation() {
+    let (service, registry, repository, storage) = fixture().await;
+    let bytes = b"body whose effect is never admitted";
+    let initial = service
+        .db
+        .org_usage(registry.org_id.unwrap())
+        .await
+        .unwrap();
+    let mut missing = preflight(bytes);
+    missing.managed_effect = None;
+    let mut changed = preflight(bytes);
+    changed.managed_effect.as_mut().unwrap().acceptance_digest = "d".repeat(64);
+
+    for request in [missing, changed] {
+        assert!(service
+            .reserve_hybrid_manifest_authorized(
+                &registry,
+                &repository,
+                &storage.owner,
+                &ManifestReference::Digest(Sha256Digest::digest(bytes)),
+                request,
+                now() + 300
+            )
+            .await
+            .is_err());
+    }
+
+    assert_eq!(
+        service
+            .db
+            .org_usage(registry.org_id.unwrap())
+            .await
+            .unwrap(),
+        initial
+    );
+    assert_eq!(
+        storage
+            .compositions
+            .load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+    assert!(storage.objects.lock().unwrap().is_empty());
+}
+
+#[cfg(feature = "postgres")]
+#[tokio::test]
+#[ignore = "requires a disposable AOS_HUB_TEST_PG_URL database"]
+async fn original_cutoff_postgres_never_renews_during_actual_claim() {
+    let url = std::env::var("AOS_HUB_TEST_PG_URL").expect("disposable PostgreSQL DSN is required");
+    let backend = crate::backend::SqlxBackend::connect_postgres(&url)
+        .await
+        .unwrap();
+    let db = Arc::new(Database::with_backend(Box::new(backend)).await.unwrap());
+    original_cutoff_contract(fixture_with_database(db).await).await;
 }

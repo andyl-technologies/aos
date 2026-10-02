@@ -25,6 +25,10 @@ impl AcceptedProducerWindow {
         })
     }
 
+    pub(crate) fn bounds(&self) -> (u64, u64) {
+        (self.issued_at, self.valid_until)
+    }
+
     pub(crate) fn latest_now(&self, now: u64) -> Result<u64> {
         let latest = now
             .checked_add(self.uncertainty)

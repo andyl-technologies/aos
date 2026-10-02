@@ -44,6 +44,8 @@ struct CompleteRequest {
     operation_id: String,
     upload_id: String,
     parts: Vec<PartTag>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    managed_effect: Option<aos_hub_core::hybrid_ingress::OciDocumentEffect>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,6 +95,15 @@ impl DurableObject for HybridObjectGuard {
         }
 
         let path = request.url()?.path().to_owned();
+        if path == crate::oci_sdk_emulation::anchor::PHYSICAL_PATH {
+            return crate::oci_sdk_emulation::anchor::physical_fetch(
+                self,
+                &key,
+                &mut request,
+                Arc::clone(&self.gate),
+            )
+            .await;
+        }
         if path == crate::oci_projection::PHYSICAL_PATH {
             return crate::oci_projection::physical_fetch(
                 self,
@@ -224,25 +235,72 @@ impl DurableObject for HybridObjectGuard {
                 {
                     return Response::error("invalid multipart completion", 400);
                 }
-                let mutation = mutation(
-                    &key,
-                    &completion.operation_id,
-                    MutationKind::MultipartCompletion,
-                    &(&completion.upload_id, &completion.parts),
-                )?;
+                let mutation = if let Some(effect) = &completion.managed_effect {
+                    mutation(
+                        &key,
+                        &completion.operation_id,
+                        MutationKind::MultipartCompletion,
+                        &(&completion.upload_id, &completion.parts, effect),
+                    )?
+                } else {
+                    mutation(
+                        &key,
+                        &completion.operation_id,
+                        MutationKind::MultipartCompletion,
+                        &(&completion.upload_id, &completion.parts),
+                    )?
+                };
                 let outcome = match self.begin_mutation(&mutation).await? {
                     Some(outcome) => outcome,
                     None => {
-                        let etag = crate::surface::hybrid_r2_complete(
-                            bucket,
-                            &key,
-                            &completion.upload_id,
-                            &completion.parts,
-                        )
-                        .await
-                        .map_err(storage_error)?;
+                        let (etag, settled_owner) = if let Some(effect) = &completion.managed_effect
+                        {
+                            // The full-key turn and pending intent are already retained.
+                            // Failed permission leaves that unknown fence intact.
+                            crate::oci_document_effect::dispatch_after(
+                                crate::oci_sdk_emulation::OciProviderConfig::load(&self.env),
+                                |accepted| accepted.check_effect(&self.env, effect),
+                                |accepted| {
+                                    let key = &key;
+                                    let upload_id = &completion.upload_id;
+                                    let parts = &completion.parts;
+                                    async move {
+                                        accepted
+                                            .verify_anchor(&self.env, Some(effect.expires_at))
+                                            .await?;
+                                        complete_document_sdk(
+                                            &self.state,
+                                            _permit,
+                                            &self.env,
+                                            key,
+                                            upload_id,
+                                            parts,
+                                            effect,
+                                            &accepted,
+                                        )
+                                        .await
+                                    }
+                                },
+                            )
+                            .await
+                            .map(|(etag, owner)| (etag, Some(owner)))
+                            .map_err(storage_error)?
+                        } else {
+                            (
+                                crate::surface::hybrid_r2_complete(
+                                    bucket,
+                                    &key,
+                                    &completion.upload_id,
+                                    &completion.parts,
+                                )
+                                .await
+                                .map_err(storage_error)?,
+                                None,
+                            )
+                        };
                         let outcome = MutationOutcome::MultipartCompleted { etag };
                         self.finish_mutation(mutation, outcome.clone()).await?;
+                        drop(settled_owner);
                         outcome
                     }
                 };
@@ -581,6 +639,92 @@ pub(crate) async fn put(env: &Env, key: &str, bytes: &[u8]) -> Result<()> {
     result
 }
 
+/// Stages a document while retaining its original SDK permission through awaits.
+///
+/// Failed or expired effects retain their provider upload and guard journal.
+/// Cleanup needs independently current cleanup authority; this path never guesses
+/// that a failed SDK acknowledgement proves rollback.
+pub(crate) async fn put_oci_document(
+    env: &Env,
+    key: &str,
+    bytes: &[u8],
+    accepted: &crate::oci_sdk_emulation::OciProviderConfig,
+    effect: &aos_hub_core::hybrid_ingress::OciDocumentEffect,
+    context: &worker::Context,
+    memory: std::rc::Rc<crate::mirror_import::buffers::Permit>,
+) -> Result<()> {
+    anyhow::ensure!(
+        !bytes.is_empty()
+            && bytes.len() <= aos_hub_core::hybrid_ingress::MAX_HYBRID_OCI_MANIFEST_BYTES,
+        "OCI document size is invalid"
+    );
+    use crate::oci_document_effect::sdk::{self, Retainer};
+    let bucket = crate::direct_upload::managed::bucket(env)?;
+    let check = || accepted.check_effect(env, effect);
+    crate::oci_document_effect::stage(
+        &check,
+        || async {
+            let result = sdk::invoke(
+                Retainer::Request(context),
+                std::rc::Rc::clone(&memory),
+                &bucket,
+                "createMultipartUpload",
+                &[JsValue::from_str(key)],
+                effect,
+                &check,
+            )
+            .await?;
+            sdk::text(&result.value, "uploadId")
+        },
+        |upload| {
+            let bucket = &bucket;
+            let check = &check;
+            let memory = std::rc::Rc::clone(&memory);
+            async move {
+                let multipart = sdk::multipart(bucket, key, &upload)?;
+                let result = sdk::invoke(
+                    Retainer::Request(context),
+                    memory,
+                    &multipart,
+                    "uploadPart",
+                    &[JsValue::from(1), js_sys::Uint8Array::from(bytes).into()],
+                    effect,
+                    check,
+                )
+                .await?;
+                sdk::text(&result.value, "etag")
+            }
+        },
+        |upload, etag| async move {
+            complete_oci_document(
+                env,
+                key,
+                &upload,
+                &[PartTag {
+                    part_number: 1,
+                    etag,
+                }],
+                effect,
+            )
+            .await
+            .map(|_| ())
+        },
+    )
+    .await
+}
+
+/// Completes a Managed document with its immutable guarded effect original.
+pub(crate) async fn complete_oci_document(
+    env: &Env,
+    key: &str,
+    upload_id: &str,
+    parts: &[PartTag],
+    effect: &aos_hub_core::hybrid_ingress::OciDocumentEffect,
+) -> Result<String> {
+    let operation_id = format!("complete:{}", hex::encode(Sha256::digest(upload_id)));
+    complete_effect(env, key, &operation_id, upload_id, parts, Some(effect)).await
+}
+
 /// Commits an empty object with a caller-retained replay identity.
 ///
 /// # Errors
@@ -628,7 +772,19 @@ pub(crate) async fn complete_with_operation(
     upload_id: &str,
     parts: &[PartTag],
 ) -> Result<String> {
+    complete_effect(env, key, operation_id, upload_id, parts, None).await
+}
+
+async fn complete_effect(
+    env: &Env,
+    key: &str,
+    operation_id: &str,
+    upload_id: &str,
+    parts: &[PartTag],
+    managed_effect: Option<&aos_hub_core::hybrid_ingress::OciDocumentEffect>,
+) -> Result<String> {
     let body = serde_json::to_string(&CompleteRequest {
+        managed_effect: managed_effect.cloned(),
         operation_id: operation_id.into(),
         upload_id: upload_id.to_owned(),
         parts: parts.to_vec(),
@@ -696,4 +852,55 @@ pub(crate) async fn delete_if_matches(
         GuardReply::Delete { outcome } => Ok(outcome),
         _ => bail!("unexpected conditional deletion reply"),
     }
+}
+
+// The generic legacy completion remains unchanged. This SDK boundary retains
+// both its actual full-key turn and aggregate provider slot through settlement.
+async fn complete_document_sdk(
+    state: &State,
+    gate: OwnedMutexGuard<()>,
+    env: &Env,
+    key: &str,
+    upload_id: &str,
+    parts: &[PartTag],
+    effect: &aos_hub_core::hybrid_ingress::OciDocumentEffect,
+    accepted: &crate::oci_sdk_emulation::OciProviderConfig,
+) -> Result<(
+    String,
+    crate::oci_projection::lifetime::Scope<(
+        OwnedMutexGuard<()>,
+        crate::direct_upload::provider_capacity::Permit,
+    )>,
+)> {
+    use crate::oci_document_effect::sdk::{self, Retainer};
+    let bucket = crate::direct_upload::managed::bucket(env)?;
+    let multipart = sdk::multipart(&bucket, key, upload_id)?;
+    let array = js_sys::Array::new();
+    for part in parts {
+        let encoded = js_sys::Object::new();
+        js_sys::Reflect::set(
+            &encoded,
+            &JsValue::from_str("partNumber"),
+            &JsValue::from(part.part_number),
+        )
+        .map_err(|_| anyhow::anyhow!("OCI multipart part is unavailable"))?;
+        js_sys::Reflect::set(
+            &encoded,
+            &JsValue::from_str("etag"),
+            &JsValue::from_str(&part.etag),
+        )
+        .map_err(|_| anyhow::anyhow!("OCI multipart part is unavailable"))?;
+        array.push(&encoded);
+    }
+    let result = sdk::invoke(
+        Retainer::Guard(state),
+        gate,
+        &multipart,
+        "complete",
+        &[array.into()],
+        effect,
+        || accepted.check_effect(env, effect),
+    )
+    .await?;
+    Ok((sdk::text(&result.value, "etag")?, result.hold))
 }

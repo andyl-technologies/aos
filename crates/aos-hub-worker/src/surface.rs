@@ -482,6 +482,7 @@ pub(crate) async fn execute_external_storage_work(
 pub(crate) async fn execute_r2_storage_work(
     env: &Env,
     plan: &StorageWorkPlan,
+    context: &worker::Context,
 ) -> Result<StorageWorkResult> {
     anyhow::ensure!(
         plan.binding_kind == "deployment_r2"
@@ -737,6 +738,7 @@ pub(crate) async fn execute_r2_storage_work(
             chunks,
             expected_size,
             expected_sha256,
+            managed_effect,
         } => {
             let object_key = plan.object_key(path)?;
             let object = compose_oci_blob(
@@ -747,6 +749,8 @@ pub(crate) async fn execute_r2_storage_work(
                 chunks,
                 *expected_size,
                 expected_sha256,
+                managed_effect.as_ref(),
+                context,
             )
             .await?;
             (
@@ -879,10 +883,51 @@ async fn compose_oci_blob(
     chunks: &[aos_hub_core::storage_work::StorageOciChunkSource],
     expected_size: u64,
     expected_sha256: &str,
+    managed_effect: Option<&aos_hub_core::hybrid_ingress::OciDocumentEffect>,
+    context: &worker::Context,
 ) -> Result<StorageObjectIdentity> {
     const PART_BYTES: usize = 8 * 1024 * 1024;
 
-    if expected_size == 0 {
+    if let Some(effect) = managed_effect {
+        anyhow::ensure!(
+            chunks.len() == 1
+                && expected_size > 0
+                && expected_size
+                    <= aos_hub_core::hybrid_ingress::MAX_HYBRID_OCI_MANIFEST_BYTES as u64,
+            "Managed OCI document composition must retain its one bounded original"
+        );
+        let accepted = crate::oci_sdk_emulation::OciProviderConfig::load(env).await?;
+        accepted.check_effect(env, effect)?;
+        accepted.verify_anchor(env, Some(effect.expires_at)).await?;
+        let memory = std::rc::Rc::new(
+            crate::mirror_import::buffers::acquire(false, || accepted.check_effect(env, effect))
+                .await?,
+        );
+        let chunk = &chunks[0];
+        let staging_key = aos_hub_core::keymap::r2_key(staging_prefix, &chunk.path);
+        let bytes = crate::oci_document_effect::read::staged_document(
+            env,
+            context,
+            &staging_key,
+            effect,
+            &accepted,
+            std::rc::Rc::clone(&memory),
+        )
+        .await?;
+        anyhow::ensure!(
+            bytes.len() as u64 == expected_size
+                && chunk.size == expected_size
+                && chunk.sha256 == expected_sha256
+                && hex::encode(Sha256::digest(&bytes)) == expected_sha256,
+            "staged OCI document differs from its retained byte identity"
+        );
+        // The same tested stage sequence rechecks after Create and Part awaits;
+        // the guard separately rechecks after its turn and journal awaits.
+        crate::hybrid_object::put_oci_document(
+            env, object_key, &bytes, &accepted, effect, context, memory,
+        )
+        .await?;
+    } else if expected_size == 0 {
         anyhow::ensure!(
             expected_sha256 == hex::encode(Sha256::digest(b"")),
             "empty OCI blob digest differs from its signed plan"
@@ -1627,7 +1672,7 @@ impl R2BucketAdapter for WorkerR2BucketAdapter {
     }
 }
 
-fn resume_r2_multipart(
+pub(crate) fn resume_r2_multipart(
     bucket: &wasm_bindgen::JsValue,
     key: &str,
     upload_id: &str,

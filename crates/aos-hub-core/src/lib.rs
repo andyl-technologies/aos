@@ -115,6 +115,7 @@ pub mod oci_gc_controller;
 pub mod oci_http;
 pub mod oci_inventory_controller;
 pub mod oci_projection;
+pub mod oci_sdk_emulation;
 pub mod placement_read;
 pub mod placement_scan;
 pub mod ratelimit;
