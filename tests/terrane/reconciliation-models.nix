@@ -21,8 +21,8 @@ in
       exit 1
     fi
     python3 ../tests/terrane/reconciliation_vectors.py --self-check > "$out/reference-result"
-    python3 ../tests/terrane/reconciliation_vectors.py --emit > ../tests/terrane/reconciliation-reference.md
-    python3 ../tests/terrane/reconciliation_vectors.py --check ../tests/terrane/reconciliation-reference.md >> "$out/reference-result"
+    python3 ../tests/terrane/reconciliation_vectors.py --check ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md >> "$out/reference-result"
+    cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/reconciliation-reference.md
     cp ../tests/terrane/reconciliation-reference.md "$out/reference.md"
     cp ../tests/terrane/reconciliation-models.rs terrane-core/tests/reconciliation_vectors.rs
     cargo fmt --all -- --check

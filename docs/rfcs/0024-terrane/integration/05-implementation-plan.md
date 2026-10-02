@@ -634,6 +634,47 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   groups. The check fails explicitly while its codec/model inputs are pending.
   This scope contains ordinary record fields only; current-fence verification,
   physical reconciliation and native effects remain unqualified.
+  The D-94 consumer now passes all four exact published-input auxiliary groups,
+  strict Clippy and mandatory formatting. Its copied output matches the whole
+  normative reference. The combined candidate passes its full core build,
+  all 586 Nextest tests with zero skips (run
+  `2997fd36-5888-43ba-8967-29f62ca3d258`), strict all-target Clippy,
+  warnings/missing-docs rustdoc and both mandatory formatters. All 23 temporary
+  inputs remained frozen through every original consumer and were compared
+  before their removal or exact source restoration. Native aggregate and
+  complete golden coverage remain open; no task or milestone advances.
+  Full review of the local-v1 reconciliation candidate covers its exact
+  registered five-field codec, borrowed validation before fence-key retention,
+  12 complete models, 68 structural negatives and 11 decoder-bound/late-finish
+  probes. Its isolated build, all 490 core Nextest tests, strict Clippy/rustdoc,
+  three exact auxiliary groups and mandatory formatting pass. The isolated
+  aggregate still fails on the missing `format_properties` target. D-95 now
+  publishes all 91 reviewed wires while preserving every prior golden byte.
+  The shared harness checks and consumes the normative whole reference;
+  published-input qualification remains pending. The codec stays on its task
+  branch, and no current authority or native physical operation is qualified.
+  Full review of the publication/control alternative candidate covers all nine
+  input files and 125 witnesses: 88 complete positive records and 37 independent
+  malformed wires. Its build, all 493 core Nextest tests with zero skips,
+  strict Clippy/rustdoc, six exact auxiliary groups and mandatory formatting pass.
+  Every positive also rejects all truncated prefixes, trailing bytes and
+  nonminimal container heads. Local original registration remains version 1;
+  physical/import unions exercise the actual registered version-2 alternatives.
+  Opaque CAPABILITIES bytes establish presence only, without payload validation.
+  D-96 publishes the reviewed alternatives and raw embedded relationships while
+  preserving all previous golden bytes. The shared harness now checks and
+  supplies the entire normative reference; published-input qualification remains
+  pending. The isolated aggregate still fails on missing `format_properties`;
+  no native authority, task merge or milestone completion is claimed.
+  The rebased D-95 codec consumer now passes the actual published-input
+  auxiliary: all three exact groups, strict consumer Clippy and both mandatory
+  formatters. Its full copied reference equals the normative D-95 revision;
+  all three reviewed source blobs remain unchanged across the rebase.
+  The clean combined candidate's actual trunk aggregate now terminates on
+  `prov-disclosure-boundary`: twelve of the nineteen required native targets
+  remain absent or unqualified. The failing aggregate is retained separately
+  from the passing 586-test core qualification. No task branch merges or
+  milestone exit follows either narrower result.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
