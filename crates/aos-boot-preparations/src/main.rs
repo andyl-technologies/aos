@@ -63,8 +63,10 @@ fn run() -> Result<()> {
             state_directory,
             store_flag,
             nix_store,
-        ] if matches!(operation.as_str(), "apply-deployment" | "verify-deployment")
-            && input_flag == "--input"
+        ] if matches!(
+            operation.as_str(),
+            "apply-deployment" | "verify-deployment" | "handoff-initrd-store"
+        ) && input_flag == "--input"
             && state_flag == "--state-directory"
             && store_flag == "--nix-store" =>
         {
@@ -72,7 +74,7 @@ fn run() -> Result<()> {
         }
         _ => Err(PreparationError::message(
             "usage: aos-boot-preparations seed-configuration | \
-             <apply-deployment|verify-deployment> --input BUNDLE \
+             <apply-deployment|verify-deployment|handoff-initrd-store> --input BUNDLE \
              --state-directory STATE --nix-store EXECUTABLE",
         )),
     }
@@ -151,7 +153,14 @@ fn run_deployment(
         }
         arguments.extend(["--profile", "/var/lib/profiles/system"]);
     }
-    if bundle_text == "/usr/lib/aos/host/deployment" && operation == "apply-deployment" {
+    if operation == "handoff-initrd-store" {
+        if bundle_text != "/lib/aos/initrd/deployment" {
+            return Err(PreparationError::message(
+                "receipt handoff requires the source initrd bundle",
+            ));
+        }
+        run_exact(BOOT_CONFIGURATION, &arguments, &[])
+    } else if bundle_text == "/usr/lib/aos/host/deployment" && operation == "apply-deployment" {
         run_exact(BOOT_CONFIGURATION, &arguments[1..], &[])
     } else {
         run_exact(PACKAGE_RUNTIME, &arguments, &[])
