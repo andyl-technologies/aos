@@ -35,6 +35,9 @@ mod staged;
 mod tag;
 mod time;
 
+#[cfg(test)]
+mod principal_tests;
+
 use std::time::SystemTime;
 
 use terrane_core::auth::{self, IssuerKey, Request, RequestRoot, Verb, Verbs, VerifiedToken};
@@ -132,6 +135,17 @@ impl AuthorizedRef {
     /// Returns the authenticated subject of the authorizing capability.
     pub fn subject(&self) -> &str {
         &self.token.authority().subject
+    }
+
+    /// Compares the authenticated principal name and kind of two captured requests.
+    ///
+    /// DOM-24 pairs independently authorized source and destination requests.
+    /// Groups and issuer keys remain independently checked claims; equality
+    /// grants no current token, ACL, scope or publication authority.
+    pub(crate) fn same_principal(&self, other: &Self) -> bool {
+        let left = self.token.authority();
+        let right = other.token.authority();
+        left.subject == right.subject && left.kind == right.kind
     }
 
     /// Returns the canonical reference bound to this authorization.

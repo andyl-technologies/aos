@@ -368,7 +368,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   with an empty shebang argument, which the existing codec correctly rejects.
   Its original focused qualification now confirms four private cases pass and
   that same fixture fails with `InvalidValue`. The task stays unmerged;
-  the invalid positive fixture and full qualification remain to be resolved.
+  the minimal fixture correction now passes all 46 public cases and five exact
+  private selectors in the actual hermetic `core-fuzz` check, preserving an
+  explicit empty-argument rejection assertion. This is its pre-D-88 checkpoint;
+  rebase and final complete qualification remain required.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -923,6 +926,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Strict Clippy still fails on seven existing production and two test dead-code
   paths. These focused results do not qualify the failing full native suite;
   the remaining required disclosure cases and paired recovery stay incomplete.
+  The isolated cached paired-recovery draft now passes its genuine interrupted
+  import/retry regression and all three previous paired cases, with native
+  build and mandatory formatting green. Ordinary reopen still refuses the
+  selected-versus-installed mismatch. Fresh recovery, unrelated-carrier and
+  changed-record refusal, current-permission refusal and the complete required
+  disclosure suite remain incomplete. Review also found that paired principal
+  comparisons used only their displayed names. The shared `same_principal`
+  prerequisite now compares authenticated name and kind while keeping group,
+  token and issuer claims independently authorized. Its two exact hermetic
+  fixture cases and mandatory formatting pass. Wiring it into the producer and
+  genuine kind-mismatch refusals remain required; the native suite and strict
+  Clippy are still unqualified.
   The reopened pure PROV-13 correction now propagates content and attribute
   acceptance errors only for predicates requiring that ancestry.
   Introduction-only Any, issuer and eligible Strict selectors keep independent
