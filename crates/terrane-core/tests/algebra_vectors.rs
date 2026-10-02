@@ -1,4 +1,4 @@
-//! Compares independently generated recipe bytes with separately constructed models.
+//! Compares published recipe bytes with separately constructed public models.
 //!
 //! These tests exercise field encoding only. Inert trust and decoded domain
 //! records do not supply verified views or authorize tree materialization.
@@ -14,7 +14,7 @@ use terrane_core::tree_format::{Entry, EntryKind, encode_entry};
 
 const REFERENCE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
-    "/../../tests/terrane/algebra-reference.md"
+    "/../../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md"
 ));
 const ROOTS: [[u8; 32]; 3] = [[1; 32], [2; 32], [3; 32]];
 
@@ -66,7 +66,7 @@ fn compare(name: &str, model: &Recipe<'_>) -> terrane_core::algebra::OwnedRecipe
 }
 
 #[test]
-fn reference_overlay_models_preserve_order_and_optional_domain_presence() {
+fn published_overlay_models_preserve_order_and_optional_domain_presence() {
     let ordered = [ROOTS[2], ROOTS[0], ROOTS[1]];
     for (name, roots) in [
         ("recipe-overlay-empty", &[][..]),
@@ -90,7 +90,7 @@ fn reference_overlay_models_preserve_order_and_optional_domain_presence() {
 }
 
 #[test]
-fn reference_graft_models_preserve_complete_entry_replacement_and_arguments() {
+fn published_graft_models_preserve_complete_entry_replacement_and_arguments() {
     let entry = Entry {
         kind: EntryKind::Tree {
             root: ROOTS[1],
@@ -142,7 +142,7 @@ fn reference_graft_models_preserve_complete_entry_replacement_and_arguments() {
 }
 
 #[test]
-fn reference_merge_models_preserve_operand_policy_and_inert_trust_fields() {
+fn published_merge_models_preserve_operand_policy_and_inert_trust_fields() {
     let inert = TrustContext::any();
     let domains = OperationDomains::new();
     let all = [
@@ -190,7 +190,7 @@ fn reference_merge_models_preserve_operand_policy_and_inert_trust_fields() {
 }
 
 #[test]
-fn reference_negative_recipe_wires_require_structural_rejection() {
+fn published_negative_recipe_wires_require_structural_rejection() {
     for name in [
         "recipe-unknown-operation",
         "recipe-graft-target-mismatch",

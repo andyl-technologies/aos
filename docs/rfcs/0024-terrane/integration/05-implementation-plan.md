@@ -395,11 +395,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   structural rejections. Four exact public-model groups compare graft/overlay/
   merge bytes, recipe hashes, decoded fields, replacement and ordered policies;
   strict Clippy passes. The inert trust profile supplies no executable authority.
-  Normative publication remains required. A legacy owning-codec coverage audit
+  D-89 now publishes those seventeen additive witnesses, preserving every prior
+  byte and identity. The final `algebra-format-vectors` hermetic check reproduces
+  the complete section and passes all four exact groups and strict Clippy.
+  The original preparation check remains an alias to this stronger published
+  check. Full core build, all 487 Nextest tests with zero skips (run
+  `194809af-dba4-4274-9768-141cb4fb5883`), strict all-target Clippy and strict
+  warnings/missing-docs rustdoc pass on these published wire inputs. Mandatory
+  formatting passes. A legacy owning-codec coverage audit
   identifies existing published inputs without complete independent model
   consumers; `legacy-format-vectors` now requires twelve exact public groups
-  and one private unverified token-field group. That candidate remains pending;
-  registering the harness does not qualify the complete golden corpus.
+  and one private unverified token-field group. The actual task-branch check
+  now passes all thirteen groups and strict all-target Clippy; every D-80 input
+  has an independently constructed full model or primitive negative oracle.
+  Its full core suite passes all 547 tests with zero skips (run
+  `ddcbd96f-b1ff-4bae-ac87-976114964f1d`), build/strict Clippy/rustdoc/formatting
+  and `core-fuzz` also pass. Its actual aggregate still refuses the missing
+  bootstrap-fork selector; rebase onto D-89 and joint qualification remain
+  required. The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

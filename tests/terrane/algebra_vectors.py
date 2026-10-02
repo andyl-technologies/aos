@@ -102,10 +102,11 @@ def render(binary):
         "schemas, including operand order, replacement, policy order and optional "
         "empty domain records. Positive format inputs carry recipe hashes in the "
         "registered memo domain, without acquiring immutable-content descriptors. "
-        "The explicit terrane-preset-any/v1 trust profile is inert: its decoding "
+        "The explicit `terrane-preset-any/v1` trust profile is inert: its decoding "
         "cannot authorize trusted/newer policies. No tree operation, view "
         "verification or effective ownership resolution is performed. Five "
-        "negative wires require structural decoder rejection.", 78), ""]
+        "negative wires require structural decoder rejection.", 78,
+        break_on_hyphens=False), ""]
     for name, model in models().items():
         wire = encode(model)
         negative = name in NEGATIVE_REASONS

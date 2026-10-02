@@ -1583,6 +1583,25 @@ is added rather than editing history.
     T1's initial encoding freeze and does not qualify the complete golden
     corpus, deferred features or native publication authority.
 
+- **[D-89] Publish canonical composition recipe wire witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add seventeen recipe witnesses: twelve positive graft,
+    overlay and merge field models, and five explicit structural rejections.
+    Preserve operand and policy order, complete graft-entry bytes, replacement
+    and optional empty domain records. Record recipe hashes separately from
+    immutable-content descriptors. Include the existing inert trust profile
+    as wire data without asserting executable trusted/newer authority.
+  - **Rationale:** TEST-2 requires examples for implemented wire formats, but
+    the reference lacked these composition encodings. Independent CBOR
+    primitives and raw domain-separated hashes reproduce every field; public
+    model tests compare encoded bytes, decoded fields and recipe hashes.
+    Structural negative inputs bypass the rejecting recipe encoder.
+  - **Affects:** TEST-1 to TEST-3, ALG-28, ALG-36 to ALG-38, the golden-vector
+    reference. Requirement IDs, registered schemas, identity domains and all
+    existing bytes remain unchanged. This additive correction precedes T1's
+    initial encoding freeze and does not qualify complete golden coverage,
+    ownership resolution, verified merge evaluation or materialization.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

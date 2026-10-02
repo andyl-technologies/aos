@@ -52,6 +52,8 @@
       ];
     };
 
+  algebraFormatVectors = import ./algebra-models.nix {inherit sourceGate;};
+
   structureGate = name:
     sourceGate name ''
       cd crates
@@ -190,7 +192,8 @@ in {
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.authorized-principal = import ./authorized-principal.nix {inherit sourceGate;};
-  integration.algebra-reference-models = import ./algebra-models.nix {inherit sourceGate;};
+  integration.algebra-reference-models = algebraFormatVectors;
+  integration.algebra-format-vectors = algebraFormatVectors;
   integration.legacy-format-vectors = import ./legacy-vectors.nix {inherit sourceGate;};
   integration.local-factory-construction = import ./local-factory-construction.nix {inherit sourceGate;};
 }
