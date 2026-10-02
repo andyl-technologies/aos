@@ -118,7 +118,11 @@ impl StageContainerGraph {
             }
             previous = Some(descriptor.digest);
             descriptors.insert(descriptor.digest, descriptor);
-            let path = format!("oci/blobs/sha256/{}", descriptor.digest.encoded());
+            let path = format!(
+                "{}{}",
+                crate::keymap::OCI_BLOB_KEY_PREFIX,
+                descriptor.digest.encoded()
+            );
             let object = objects.get(path.as_str()).filter(|object| {
                 object.sha256 == descriptor.digest.to_string()
                     && object.byte_size == descriptor.size
@@ -154,7 +158,7 @@ impl StageContainerGraph {
         }
         for object in inventory
             .iter()
-            .filter(|object| object.path.starts_with("oci/blobs/sha256/"))
+            .filter(|object| object.path.starts_with(crate::keymap::OCI_BLOB_KEY_PREFIX))
         {
             let digest = aos_oci_types::Sha256Digest::parse(&object.sha256)?;
             if !descriptors.contains_key(&digest) {
@@ -353,12 +357,14 @@ pub fn is_immutable_stage_path(path: &str) -> bool {
     (crate::keymap::is_machine_path(path) && !crate::keymap::is_mutable_path(path))
         || crate::keymap::is_loose_git_object_path(path)
         || (path.ends_with(".narinfo") && !path.contains('/'))
-        || path.strip_prefix("oci/blobs/sha256/").is_some_and(|hash| {
-            hash.len() == 64
-                && hash
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        })
+        || path
+            .strip_prefix(crate::keymap::OCI_BLOB_KEY_PREFIX)
+            .is_some_and(|hash| {
+                hash.len() == 64
+                    && hash
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            })
 }
 
 mod pointer_bytes {

@@ -251,8 +251,8 @@ impl PlacementScanController {
             if pages > max_pages {
                 bail!("placement copy exceeded the page limit");
             }
-            let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
-            page.validate(page_limit, cursor.as_deref())?;
+            let page = fetch.list_page("", cursor.as_deref(), page_limit).await?;
+            page.validate(page_limit, "", cursor.as_deref())?;
             let source_evidence = page.evidence;
             for path in page.paths {
                 if prior_path.as_ref().is_some_and(|prior| prior >= &path) {
@@ -363,10 +363,10 @@ impl PlacementScanController {
                 bail!("placement scan exceeded the page limit");
             }
             let page = fetch
-                .list_page(cursor.as_deref(), page_limit)
+                .list_page("", cursor.as_deref(), page_limit)
                 .await
                 .with_context(|| format!("listing placement '{}'", placement.name))?;
-            page.validate(page_limit, cursor.as_deref())?;
+            page.validate(page_limit, "", cursor.as_deref())?;
             let listed_evidence = page.evidence;
             let mut page_presences = Vec::with_capacity(page.paths.len());
             for path in page.paths {
@@ -571,8 +571,8 @@ async fn collect_listing_evidence(
         if pages > max_pages {
             bail!("placement copy {role} exceeded the page limit");
         }
-        let page = fetch.list_page(cursor.as_deref(), page_limit).await?;
-        page.validate(page_limit, cursor.as_deref())?;
+        let page = fetch.list_page("", cursor.as_deref(), page_limit).await?;
+        page.validate(page_limit, "", cursor.as_deref())?;
         for path in &page.paths {
             if prior_path.as_ref().is_some_and(|prior| prior >= path) {
                 bail!("placement copy {role} returned keys out of global order");
@@ -850,7 +850,12 @@ mod tests {
             Ok(None)
         }
 
-        async fn list_page(&self, _cursor: Option<&str>, _limit: usize) -> Result<SurfaceListPage> {
+        async fn list_page(
+            &self,
+            _prefix: &str,
+            _cursor: Option<&str>,
+            _limit: usize,
+        ) -> Result<SurfaceListPage> {
             Ok(SurfaceListPage {
                 paths: Vec::new(),
                 evidence: Default::default(),
@@ -882,7 +887,12 @@ mod tests {
             anyhow::bail!("listed strong-version evidence should avoid a body read")
         }
 
-        async fn list_page(&self, _cursor: Option<&str>, _limit: usize) -> Result<SurfaceListPage> {
+        async fn list_page(
+            &self,
+            _prefix: &str,
+            _cursor: Option<&str>,
+            _limit: usize,
+        ) -> Result<SurfaceListPage> {
             Ok(SurfaceListPage {
                 paths: vec!["objects/aa/bb".into()],
                 evidence: [(
@@ -929,7 +939,12 @@ mod tests {
             Ok(Some(vec![b'x']))
         }
 
-        async fn list_page(&self, _cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        async fn list_page(
+            &self,
+            _prefix: &str,
+            _cursor: Option<&str>,
+            limit: usize,
+        ) -> Result<SurfaceListPage> {
             assert!(self.paths.len() <= limit);
             Ok(SurfaceListPage {
                 paths: self.paths.as_ref().clone(),
@@ -1009,7 +1024,12 @@ mod tests {
                 .cloned())
         }
 
-        async fn list_page(&self, _cursor: Option<&str>, limit: usize) -> Result<SurfaceListPage> {
+        async fn list_page(
+            &self,
+            _prefix: &str,
+            _cursor: Option<&str>,
+            limit: usize,
+        ) -> Result<SurfaceListPage> {
             let entries = self
                 .objects
                 .lock()
