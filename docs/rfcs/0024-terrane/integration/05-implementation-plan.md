@@ -792,6 +792,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   exits with failure at `prov-commit-verify` for those missing cases; neither
   this earlier discovery failure nor pure qualification resolves the known
   backend retirement failures. Mandatory Rust and repository formatting pass.
+  The isolated protected-import foundation also passes all 16 selected native
+  original-authority, consumed-control and retention regressions. It remains
+  on its task branch; existing regressions do not qualify the 19 required
+  disclosure boundary cases or the unfinished publication producer.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -846,7 +850,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   core runs and 73 portable cases; native execution passes 354 of 361 tests,
   with six known backend failures and the unchanged cancellation failure.
   The full aggregate remains red on the backend retirement assertion. Direct
-  complete qualification is still queued on the shared Cargo target, and the
+  complete native qualification builds successfully and passes 355 of 362
+  tests, with the same six backend failures and the unchanged cancellation
+  arrival failure; no test times out. Portable, rustdoc and Clippy stages remain
+  queued on the shared Cargo target, and the
   original-authority fallback still needs the same single-traversal treatment.
   This candidate is unmerged and does not qualify the task.
   Pure core view, endpoint, exposure
