@@ -725,7 +725,7 @@ pub(super) fn acknowledged_stop_command(command: &SessionCommand) -> bool {
     )
 }
 
-pub(super) fn complete_acknowledgement(
+pub(super) async fn complete_acknowledgement(
     acknowledgement: Option<CommandReply<()>>,
     result: &Result<(), SessionError>,
 ) {
@@ -736,6 +736,7 @@ pub(super) fn complete_acknowledgement(
         Ok(()) => reply.complete(Ok(())),
         Err(error) => reply.complete(Err(error.clone())),
     }
+    reply.wait_for_observation().await;
 }
 
 impl<L> SessionActor<L>
@@ -998,7 +999,7 @@ where
         let (command, acknowledgement) = split_acknowledged_command(command);
         if shutdown_requested && terminal_before_command {
             self.terminal_shutdown_requested = true;
-            complete_acknowledgement(acknowledgement, &Ok(()));
+            complete_acknowledgement(acknowledgement, &Ok(())).await;
             return Ok(());
         }
         if matches!(command, SessionCommand::Fork { .. }) && self.fork_loop_factory.is_some() {
@@ -1008,13 +1009,15 @@ where
                 terminal_before_command,
                 &result,
             );
-            complete_acknowledgement(acknowledgement, &result);
+            complete_acknowledgement(acknowledgement, &result).await;
             return result;
         }
 
         let result = self.apply_command_without_spawning_forks(command).await;
         self.record_terminal_shutdown_request(shutdown_requested, terminal_before_command, &result);
-        complete_acknowledgement(acknowledgement, &result);
+        // A yield alone cannot guarantee that the command client receives its
+        // reply before the actor enters another synchronous backend RUN.
+        complete_acknowledgement(acknowledgement, &result).await;
         result
     }
 
@@ -1116,7 +1119,7 @@ where
                 floor: self.debug_history_floor,
             };
             command.complete_error(error.clone());
-            complete_acknowledgement(acknowledgement, &Err(error.clone()));
+            complete_acknowledgement(acknowledgement, &Err(error.clone())).await;
             return Err(error);
         }
         if let Err(error) = self
@@ -1124,7 +1127,7 @@ where
             .apply_command_with_event_log(command.clone(), &condition_event_log)
         {
             command.complete_error(error.clone());
-            complete_acknowledgement(acknowledgement, &Err(error.clone()));
+            complete_acknowledgement(acknowledgement, &Err(error.clone())).await;
             return Err(error);
         }
         let preserve_debug_history = matches!(
@@ -1156,7 +1159,7 @@ where
                 .saturating_add(self.engine.quanta() - quanta_before);
         }
         self.commands_applied = self.commands_applied.saturating_add(1);
-        complete_acknowledgement(acknowledgement, &Ok(()));
+        complete_acknowledgement(acknowledgement, &Ok(())).await;
         tokio::task::yield_now().await;
         Ok(())
     }

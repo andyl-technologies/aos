@@ -335,7 +335,10 @@ pub struct SendResponse {
 }
 
 enum CommandReplyObserver {
-    Unit(oneshot::Receiver<Result<(), SessionError>>),
+    Unit {
+        receiver: oneshot::Receiver<Result<(), SessionError>>,
+        observed: Option<oneshot::Sender<()>>,
+    },
     BreakpointId(oneshot::Receiver<Result<BreakpointId, SessionError>>),
     BreakpointRemoval(oneshot::Receiver<Result<bool, SessionError>>),
     Savepoint(oneshot::Receiver<Result<SavepointInfo, SessionError>>),
@@ -362,7 +365,13 @@ impl CommandReplyObserver {
         StreamingApiError,
     > {
         let rejected = match self {
-            Self::Unit(receiver) => rejected_from_reply(receiver, command).await?,
+            Self::Unit { receiver, observed } => {
+                let result = rejected_from_reply(receiver, command).await;
+                if let Some(observed) = observed {
+                    let _ = observed.send(());
+                }
+                result?
+            }
             Self::BreakpointId(receiver) => match await_reply(receiver, command).await? {
                 Ok(id) => return Ok((CommandResultStatus::Accepted, None, Some(id), None)),
                 Err(error) => Some(session_error_rejection_kind(&error)),
@@ -935,9 +944,17 @@ fn command_with_reply_observer(
         ),
         None => {
             let (reply, receiver) = CommandReply::channel();
+            // Continue releases autonomous execution. Give its observer a
+            // scheduling opportunity without changing deferred step completion.
+            let (reply, observed) = if matches!(command, SessionCommand::Continue) {
+                let (observed, observation) = oneshot::channel();
+                (reply.with_observation(observation), Some(observed))
+            } else {
+                (reply, None)
+            };
             (
                 SessionCommand::acknowledged(command, reply),
-                Some(CommandReplyObserver::Unit(receiver)),
+                Some(CommandReplyObserver::Unit { receiver, observed }),
             )
         }
     }
