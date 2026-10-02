@@ -126,7 +126,7 @@ def check_minimal_base(root):
     """Reject workload payloads in the actual production root filesystem."""
     optional_payload = re.compile(
         r"^[0-9a-z]{32}-(?:tailscale|docker|docker-engine|docker-buildx|docker-compose|"
-        r"containerd|qemu|libvirt|aos-hub|bind|dnsmasq)-[0-9]"
+        r"containerd|qemu|qemu-img|libvirt|aos-hub|bind|dnsmasq)-[0-9]"
     )
     store = root / "usr/lib/aos/nix/store"
     unexpected = sorted(entry.name for entry in store.iterdir() if optional_payload.match(entry.name))

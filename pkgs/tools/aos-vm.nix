@@ -92,8 +92,9 @@ in
     };
 
     # This package copies the base CLI launcher so it can add the VM-specific
-    # environment without another shell process. Preserve the launcher's
-    # intentional references to the base CLI runtime closure.
+    # environment without another shell process. The selected QEMU suite owns
+    # both the emulator and its disk utility; the base launcher pins neither.
+    # Preserve intentional references to the base CLI runtime closure.
     dontNukeRefs = true;
 
     phases = [
