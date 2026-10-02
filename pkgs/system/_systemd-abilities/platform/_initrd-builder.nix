@@ -810,7 +810,15 @@
       description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";
     };
   };
-  retainedRoots = lib.unique (map builtins.toString (
+  storeRoot = value: let
+    path = builtins.toString value;
+    matched = builtins.match "(/nix/store/[0-9a-z]{32}-[^/]+)(/.*)?" path;
+  in
+    if matched == null
+    then throw "initrd retained dependency must be a path in the Nix store"
+    # Substring preserves the input's Nix dependency context.
+    else builtins.substring 0 (builtins.stringLength (builtins.head matched)) path;
+  retainedRoots = lib.unique (map storeRoot (
     [initrdArchive registration deploymentBundle kernelModuleTree]
     ++ map (entry: entry.store_path) dependencyRoots
   ));
