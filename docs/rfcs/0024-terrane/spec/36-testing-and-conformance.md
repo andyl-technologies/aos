@@ -156,7 +156,7 @@ here is a conformance error of this document.
 | `gate:formats-no-std` | 03 | ARCH-1 |
 | `gate:gc-grace` | 01 | INV-3 |
 | `gate:identity-idempotence` | 04 | PERF-11, TEST-15, OBJ-1, OBJ-5 |
-| `gate:index-tree-maintenance` | 10 | DRV-12, DRV-24 to DRV-28, PROP-29 |
+| `gate:index-tree-maintenance` | 10 | DRV-12, DRV-24 to DRV-29, PROP-29 |
 | `gate:no-duplicate-tiers` | 01 | INV-4 |
 | `gate:no-privileged-mounts` | 03 | ARCH-9 |
 | `gate:object-identity-from-manifest` | 04 | OBJ-13 |
@@ -484,7 +484,7 @@ reason.
 | ALG-2 to ALG-11, ALG-13, ALG-14, ALG-16, ALG-17, ALG-19 to ALG-29, ALG-31, ALG-33, ALG-34 | algebra semantics exercised by the `gate:algebra-*` suite and `gate:merge-native-parity` as scenarios |
 | PROP-2 to PROP-6, PROP-8, PROP-10, PROP-12, PROP-14 to PROP-20, PROP-22 to PROP-25, PROP-27, PROP-28 | property semantics exercised by `gate:property-resolution` and `gate:property-required-attrs` as scenarios |
 | REF-2, REF-3, REF-5, REF-7 to REF-9, REF-11, REF-13 to REF-15, REF-17 to REF-19, REF-21, REF-23 to REF-30 | ref and commit rules exercised by `gate:ref-cas`, `gate:ref-epoch-fencing`, and `gate:ref-advance-ordering` as scenarios |
-| DRV-2, DRV-4 to DRV-6, DRV-8 to DRV-10, DRV-14 to DRV-17, DRV-19, DRV-20 | derived-data rules exercised by `gate:derived-attr-record` and `gate:index-tree-maintenance` as scenarios; DRV-11, DRV-13 and DRV-18 are withdrawn |
+| DRV-2, DRV-4 to DRV-6, DRV-8 to DRV-10, DRV-15 to DRV-17, DRV-19, DRV-20 | derived-data rules exercised by `gate:derived-attr-record` and `gate:index-tree-maintenance` as scenarios; DRV-11, DRV-13, DRV-14 and DRV-18 are withdrawn |
 | STORE-6, STORE-15, STORE-16, STORE-19, STORE-20, STORE-25, STORE-26, STORE-29, STORE-31 | store semantics exercised by the `gate:store-*` conformance suite as scenarios |
 | PACK-11, PACK-16, PACK-19, PACK-23, PACK-25, PACK-27, PACK-28 | pack and index rules exercised by the `gate:pack-*` and `gate:index-*` checks as scenarios |
 | BKT-8, BKT-11, BKT-12, BKT-15, BKT-16 | bucket rules exercised by `gate:bucket-probe`, `gate:bucket-ref-cas`, and `gate:bucket-file-layout` as scenarios |

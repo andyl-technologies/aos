@@ -1943,6 +1943,51 @@ is added rather than editing history.
     and the recorded semantic fence in publication-authority evidence.
     Runtime index verification and occurrence loading remain incomplete.
 
+- **[D-103] Account for canonical index maintenance and expanded changes.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Withdraw DRV-14 without rewriting its hard-bound wording;
+    replace it with DRV-29's same-commit incremental maintenance and explicit
+    source discovery, indexed-data, structural-route and canonical-boundary
+    accounting.
+    Descend affected grafts or compare equivalent immutable indexed summaries,
+    skip equal subtrees, reuse compatible boundaries and batch overlapping
+    affected ranges. Preserve divergent-index refusal and verification/rebuild,
+    current occurrence/producer checks and independently established coverage.
+  - **Rationale:** TREE-22's stored-size-dependent cuts and TREE-23's recursive
+    application can propagate a small change through a suffix. TREE-24 requires
+    the canonical result, while ALG-12/15 already admit linear boundary work.
+    For an internal-level stream with 128-byte child references whose hash
+    scores miss probabilistic cuts, old exact-cap cuts occur every 512 items.
+    Making its first reference 129 bytes forces a split before item 512 and
+    shifts subsequent cuts by one until the tail. This is a conditional
+    boundary-state trace, not a generated BLAKE3 witness or an implementation
+    qualification. A real executable witness must independently construct and
+    check canonical items and their cut scores.
+    Separately, ALG-13's one modified graft descriptor can represent many
+    changed indexed files. Their value-plus-object rows may interleave a
+    parent's existing rows and cannot generally be adopted as one subtree.
+    Expanded logical changes and additional canonical work must be explicit,
+    rather than inflating delta with every unchanged item visited.
+    Changed nonparticipating entries also require discovery: replacing many
+    symlink targets can leave all indexed files and routes unchanged, yet a
+    namespace diff must examine those changes even without boundary divergence.
+    The independent input delta accounts for that baseline work; it is neither
+    indexed-data delta nor additional canonical-boundary work.
+  - **Alternatives considered:** Keep noncanonical cuts to satisfy the hard
+    bound (rejected: violates TREE-24); count the scanned suffix as logical
+    delta (rejected: hides the work); allow unconditional full rebuilds
+    (rejected: abandons incremental maintenance); keep the old literal bound
+    while calling it expected (rejected: silently changes a MUST).
+  - **Compatibility:** Advance the unreleased draft to 1.0-draft-5 before T1's
+    freeze. No bytes, identities, media types, profiles, properties, attributes
+    or store interfaces change. This decision supersedes only D-100/D-101's
+    retained hard maintenance bound, leaving their other decisions unchanged.
+    It registers no occurrence carrier and qualifies no implementation.
+  - **Affects:** DRV-14 (withdrawn), DRV-29, DRV-25/27's maintenance references,
+    and the stable `index-tree-maintenance` gate. Initial construction,
+    independent verification/rebuild and runtime checks remain mandatory and
+    separately measured; index work stays in the trunk before the freeze.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

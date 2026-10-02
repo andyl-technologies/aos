@@ -304,7 +304,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   — satisfies DRV-1 to DRV-10, DRV-28 (DRV-11 withdrawn);
   `checks.terrane.gates.derived-attr-record`.
 - [ ] **T-DRV-2** Derivations, the common memo form, index trees with
-  same-commit O(delta × log n) maintenance, `verify_index`, `rebuild_index`,
+  same-commit incremental maintenance with source discovery, expanded changes
+  and canonical resynchronization accounting, `verify_index`, `rebuild_index`,
   attribute-value lookup and SHA-256 index continuity. AD-11 moves this
   unchanged task ID from B-derive into T1 because native safe index
   materialization and the later mandatory cache/sandbox consumers need it.
@@ -319,8 +320,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Positive native safe-index materialization,
   independent current attribute-producer checks and genuine divergent-index
   refusal/rebuild remain required. Neither this ordering correction nor
-  passing opaque-index codecs completes the task. — satisfies DRV-12 to
-  DRV-17, DRV-19 to DRV-28 (DRV-13/18 withdrawn);
+  passing opaque-index codecs completes the task. D-103 withdraws DRV-14's
+  hard bound and replaces it explicitly with DRV-29. Source discovery,
+  canonical boundary work, changed-graft descent, batched reuse, full
+  verification/rebuild and the positive native case remain mandatory;
+  no implementation is qualified by this correction. — satisfies DRV-12,
+  DRV-15 to DRV-17, DRV-19 to DRV-29
+  (DRV-13/14/18 withdrawn);
   `checks.terrane.gates.derivation-memo`,
   `checks.terrane.gates.index-tree-maintenance`.
   D-100/AD-11's actual `registry-complete` derivation and both mandatory
@@ -328,6 +334,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   its index row now names DRV-24 explicitly. The index implementation checks
   remain pending and fail when requested. No task checkbox or milestone
   status is advanced by this correction.
+  D-103's actual `registry-complete` check and both mandatory formatters pass;
+  all 292 gate names remain stable. Requested `index-tree-maintenance` and
+  `derivation-memo` checks both exit 1 explicitly as pending, with the former
+  naming the new DRV-29 contract. Real canonical-boundary witnesses, independent
+  input/data/route counters and measured resynchronization work remain required.
+  This records a pre-freeze specification correction, not implementation
+  qualification or task completion.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
   codec and value-plus-object opaque keys. Preserve generic retained recipe
@@ -1710,7 +1723,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   CAS index at T4, while AD-5/SBX-12 require an index-tree descriptor lookup at
   T5. T-SBX-4's temporary per-object lookup contradicts SBX-12. Index-specific
   prerequisites therefore need a D-n-backed trunk ordering correction that
-  preserves DRV-14's incremental complexity and DRV-16/17 verification/rebuild.
+  preserves same-commit incremental maintenance and DRV-16/17
+  verification/rebuild. D-103 explicitly replaces DRV-14's hard bound with
+  DRV-29's expanded-change and canonical-resynchronization accounting.
   DRV-13's owner binding and detached recipe association also need an explicit
   acyclic registered format; an index containing its owner's hash would cycle
   with the owner's reference to that index. Finally, SBX-11's media-type and

@@ -189,9 +189,11 @@ recomputation.
   Its root hash is therefore verifiable by rebuilding from the root.
   Replaced by DRV-25 and DRV-26 under D-101: the association is detached
   so that index bytes do not depend on their own containing root's digest.
-- **[DRV-14]** A writer MUST update each index tree of a root in the same
-  commit that changes the root, applying only the changes in
+- **[DRV-14] (withdrawn)** A writer MUST update each index tree of a root in
+  the same commit that changes the root, applying only the changes in
   `diff(old root, new root)`. The cost MUST be O(delta × log n).
+  Replaced by DRV-29 under D-103: canonical boundary resynchronization and
+  expanded changed-graft data cannot be hidden in a descriptor-only delta.
 - **[DRV-15]** A `filter` or lookup by attribute value MUST use the index
   tree when one exists and MUST fall back to a full walk otherwise,
   reporting which it did.
@@ -215,7 +217,7 @@ recomputation.
   implementation MUST NOT substitute optional memos or `refs/derived/`
   for the owner binding.
   Rebuilding a divergent binding MUST produce a corrected owner in a new
-  commit; it MUST NOT mutate an immutable root. DRV-14's same-commit
+  commit; it MUST NOT mutate an immutable root. DRV-29's same-commit
   incremental maintenance remains required. *Gate:*
   `gate:index-tree-maintenance`.
 - **[DRV-26]** The registered `terrane-index/v1` evaluation profile MUST
@@ -249,7 +251,7 @@ recomputation.
   and incomplete response, rather than a definitive complete or empty set.
   Existing untouched entries MAY remain incomplete under PROP-22/25.
   Reporting incompleteness MUST NOT permit discarding an existing valid
-  required binding or replace DRV-14's same-commit maintenance. Missing
+  required binding or replace DRV-29's same-commit maintenance. Missing
   binding allowances apply to initial requirement installation, preserved
   pre-existing gaps or unavailable read evidence, not deliberate omission
   of an otherwise required maintained index.
@@ -324,6 +326,70 @@ policy may still need examination. An ancestor denial can prune some views;
 it does not establish a general filtered-output bound for all views. The
 index narrows candidate discovery; it does not eliminate current policy or
 producer verification.
+
+#### Incremental maintenance and work accounting
+
+The cost below applies separately to each maintained index and its registered
+occurrence and missing-value structures. Work over multiple owning roots or
+indexed attributes is summed. Here `n` is the largest entry cardinality among
+the relevant old/new namespace inputs, necessarily descended graft targets and
+auxiliary trees. Its independently defined logical changes and work are:
+
+- `delta_input`: changed logical namespace entries and root-property bindings
+  after necessary changed-graft descent, including changes to nonparticipating
+  entries, or the equivalent logical changes compared in immutable indexed
+  summaries when available. Unchanged scanned entries are not input delta.
+- `delta_data`: changed participating regular-file occurrence states after
+  necessary changed-graft descent, including object identity, canonical inline
+  attribute presence/value and occurrence membership. A newly enabled indexed
+  population and added or removed graft contents contribute their actual
+  indexed occurrences, rather than one opaque descriptor change.
+- `delta_route`: changed logical local-route, continuation, gap and structural
+  bindings representing those occurrences. Distinct graft occurrences remain
+  distinct even when they share a child tree. Node identity changes caused only
+  by canonical repartitioning are not logical route changes. Overlap among the
+  three logical counters is reported consistently, not inferred from visits.
+- `B`: additional physical work caused by canonical boundary divergence and
+  resynchronization, at every level of the compared namespace and updated
+  index/occurrence/gap trees. Its cost model assigns one unit per item read,
+  comparison or frontier check, and one unit per byte encoded or hashed. `B`
+  is the sum of these separately reported counters; item-size and key bounds
+  remain fixed. Each region is attributed to its invalidated boundary and
+  compatible resynchronization point or stream tail; repeated processing is
+  charged repeatedly. An unconditional scan is not boundary work merely because
+  it occurred.
+
+- **[DRV-29]** A writer MUST update each maintained required index and its
+  registered occurrence and missing-value structures in the same commit that
+  changes their owning root. Incremental maintenance MUST derive updates from
+  changed entries, root properties and graft occurrences in the old/new
+  immutable inputs. It MUST descend changed graft targets when required to
+  identify indexed-data changes, or compare equivalent immutable indexed
+  summaries; a single descriptor change MUST NOT stand for multiple changed
+  indexed occurrences in the reported delta.
+  Maintenance MUST start in affected ranges, skip equal immutable subtrees,
+  reuse unchanged subtrees whose boundaries remain canonical, and rechunk only
+  affected boundary regions until resynchronization or the affected stream's
+  end. Overlapping affected regions MUST be processed as a batch rather than
+  restarting their shared suffix for each point edit. It MUST NOT substitute an
+  unconditional full-root walk or full-index rebuild for incremental
+  maintenance of a valid existing index. Canonical output MUST continue to
+  satisfy TREE-22 to TREE-24.
+  Maintenance MUST report `delta_input`, `delta_data`, `delta_route` and `B`
+  as defined above. Local work MUST be
+  O((1 + delta_input + delta_data + delta_route) × log(max(2, n)) + B).
+  Expected work under the specified content-hash boundary distribution is
+  O((1 + delta_input + delta_data + delta_route) × log(max(2, n)));
+  adversarial canonical boundary shifts MAY require linear resynchronization
+  work. Additional boundary work MUST be measured and MUST NOT be hidden by
+  counting unchanged scanned entries as logical delta. Initial construction,
+  independent validation and explicit verification/rebuild costs MUST be
+  reported separately and MUST NOT establish an incremental-maintenance cost
+  claim.
+  DRV-16/17 verification, divergent-index refusal and rebuild, DRV-24 current
+  occurrence/producer/authority/trust checks, and DRV-27 completeness remain
+  required. Reporting gaps MUST NOT permit dropping an otherwise maintained
+  valid required index. *Gate:* `gate:index-tree-maintenance`.
 
 ### Memos
 
