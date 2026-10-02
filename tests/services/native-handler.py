@@ -289,6 +289,35 @@ class NativeHandlerTests(unittest.TestCase):
         self.assertIn("StateDirectoryMode=0750", directory)
         self.assertIn('StateDirectory="example/state"', directory)
 
+    def test_registry_state_directory_precedes_sandboxed_bootstrap_service(self):
+        value = dict(service(), service="aos-registry-sync", activation_owner="image", auto_start=False)
+        value["directories"] = {"managed": [{
+            "path": "apm", "purpose": "state", "mode": "0755",
+            "retention": "persistent", "owner": "root", "group": "root",
+        }]}
+        value["isolation"] = {
+            "privilege": "privileged", "filesystem": "read-only-system",
+            "home_access": "inaccessible", "network": "host", "process_visibility": "host",
+            "termination_scope": "all-processes", "temporary_directory": "private",
+            "devices": [], "host_paths": [{"source": "/var/lib/apm", "mode": "read-write"}],
+            "permit_core_dumps": False,
+        }
+
+        with patch.object(handler_module, "TRUE_EXECUTABLE", "/nix/store/coreutils/bin/true"):
+            rendered = handler_module.realize_service(value)
+        directory_name = next(name for name in rendered["units"] if name != "aos-registry-sync.service")
+        directory = rendered["units"][directory_name]
+        registry = rendered["units"]["aos-registry-sync.service"]
+
+        self.assertIn('StateDirectory="apm"', directory)
+        self.assertIn("StateDirectoryMode=0755", directory)
+        self.assertIn("User=root", directory)
+        self.assertIn("Group=root", directory)
+        self.assertIn("Before=aos-registry-sync.service", directory)
+        self.assertIn("Requires=" + directory_name, registry)
+        self.assertIn("After=" + directory_name, registry)
+        self.assertIn('BindPaths="/var/lib/apm"', registry)
+
     def test_unnamed_services_use_distinct_domain_instance_keys(self):
         first = dict(service(), service="", instance="first.main")
         second = dict(service(), service="", instance="second.main")

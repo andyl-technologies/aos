@@ -106,6 +106,17 @@
       variables = {};
       search_path = [];
     };
+    # Registry refresh runs before host filesystem effects can allocate its state.
+    directories.managed = [
+      {
+        path = "apm";
+        purpose = "state";
+        mode = "0755";
+        retention = "persistent";
+        owner = "root";
+        group = "root";
+      }
+    ];
     isolation = {
       privilege = "privileged";
       filesystem = "read-only-system";
