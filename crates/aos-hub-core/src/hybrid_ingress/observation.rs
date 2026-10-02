@@ -5,16 +5,21 @@
 //! point; independent transport, process, current-state and purpose evidence is
 //! still required. Calls outside the explicit Native request scope do nothing.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::cell::RefCell;
 use std::future::Future;
+#[cfg(not(target_arch = "wasm32"))]
 use std::io;
 use std::sync::OnceLock;
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_CHECKS: usize = 32;
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_CONTEXT_BYTES: usize = 128 * 1024;
 
 /// Returns the compiled observation module's source commitment.
@@ -27,6 +32,7 @@ pub fn observation_source_sha256() -> &'static str {
     SOURCE.get_or_init(|| hex::encode(Sha256::digest(include_bytes!("observation.rs"))))
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 tokio::task_local! {
     static REQUEST_CHECKS: RefCell<IngressCheckedContexts>;
 }
@@ -60,6 +66,7 @@ pub struct IngressCheckedContext {
 /// Cancellation drops this scope without manufacturing a completed context.
 /// Nested scopes are independent, and asynchronous work spawned into another
 /// task does not inherit the collector. This function changes no permissions.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn observe_handler<F: Future>(handler: F) -> (F::Output, IngressCheckedContexts) {
     REQUEST_CHECKS
         .scope(RefCell::new(IngressCheckedContexts::default()), async {
@@ -68,6 +75,22 @@ pub async fn observe_handler<F: Future>(handler: F) -> (F::Output, IngressChecke
             (output, contexts)
         })
         .await
+}
+
+/// Runs the existing handler without collecting Native observations on Wasm.
+///
+/// Worker business checks still run unchanged. The returned collection is
+/// explicitly incomplete because this target has no Native request collector.
+#[cfg(target_arch = "wasm32")]
+pub async fn observe_handler<F: Future>(handler: F) -> (F::Output, IngressCheckedContexts) {
+    let output = handler.await;
+    (
+        output,
+        IngressCheckedContexts {
+            checks: Vec::new(),
+            incomplete: true,
+        },
+    )
 }
 
 /// Records a hash only after the caller's existing check has succeeded.
@@ -84,6 +107,7 @@ pub fn record_existing_check(kind: &'static str, context: &impl Serialize) {
 ///
 /// A refused gate stays refused. This function performs no check itself and
 /// does not make an unavailable or unobserved gate successful.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn record_existing_outcome(kind: &'static str, accepted: bool, context: &impl Serialize) {
     let _ = REQUEST_CHECKS.try_with(|value| {
         if value.borrow().incomplete {
@@ -125,12 +149,21 @@ pub fn record_existing_outcome(kind: &'static str, accepted: bool, context: &imp
     });
 }
 
+/// Leaves already-performed Worker checks unchanged without collecting hashes.
+///
+/// Wasm does not have the Native Tokio request scope. This no-op neither
+/// serializes the supplied context nor creates an accepted observation.
+#[cfg(target_arch = "wasm32")]
+pub fn record_existing_outcome(_kind: &'static str, _accepted: bool, _context: &impl Serialize) {}
+
+#[cfg(not(target_arch = "wasm32"))]
 #[derive(Default)]
 struct BoundedContextHash {
     digest: Sha256,
     bytes: usize,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl io::Write for BoundedContextHash {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         let length = self
@@ -169,5 +202,5 @@ impl Serialize for GrantProjection<'_> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests;
