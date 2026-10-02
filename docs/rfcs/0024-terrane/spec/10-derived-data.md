@@ -225,8 +225,9 @@ recomputation.
   one completed owner-root operand and arguments `attribute` and `profile`.
   The attribute MUST be a registered indexable value attribute and the
   profile MUST be `terrane-index/v1`. Evaluation MUST derive DRV-12's
-  value-plus-object keys from canonical inline values in the owner's regular-file entries,
-  including entries reached through namespace grafts, without incorporating
+  value-plus-object keys from canonical inline values in the owner's
+  regular-file entries, including entries reached through namespace grafts,
+  without incorporating
   `index-roots` or other structural bindings into the indexed data. Each
   resulting row MUST carry exactly the object named in its key. The
   completed owner MUST bind that result before a verified index is served.
@@ -321,8 +322,8 @@ Every pointer route is nonempty. Omit empty continuations. One object can
 have both present and missing occurrences; its primary and gap rows have
 independent exact routes, without inferring one predicate from the other.
 Construct each route from the source namespace root's matching local regular
-files and actual Tree grafts with matching descendants, preserving sorted local keys
-and prefix compression. Terminal rows retain O. A continuation also retains
+files and actual Tree grafts with matching descendants, preserving sorted
+local keys and prefix compression. Terminal rows retain O. A continuation also retains
 O in key 14 and stores only the child route's Node identity in key 9. The
 expected source namespace root at every hop comes from the independently
 selected owner or actual graft target, not a back-reference in the carrier.
