@@ -1600,7 +1600,7 @@
       ],
       "models": [
         "24 seeded models of each version; independently encoded untrusted field models and public CBOR decoding after actual context validation",
-        "Selected evidence rows 1/2/7; file path lengths 1/4/4096 with valid components; distinct producer and carrying-witness commits preserve unsigned inline evidence semantics"
+        "Selected evidence rows 1/2/7; file path lengths 1/4/255/4096 with valid components; distinct producer and carrying-witness commits preserve unsigned inline evidence semantics"
       ],
       "closed_alternatives": [
         "Versions 1/2; all four selector presets; all four disclosure-domain forms"
@@ -1610,7 +1610,7 @@
       ],
       "limits_and_malformed_cases": [
         "Shared CBOR structural checks on the outer context",
-        "Canonical wrong row widths 4/6 and side widths 8/10; scalar/empty selection; digest widths 31/33; path 0/4097; duplicate/reordered keys; view/domain/name agreement; noncanonical nested value"
+        "Canonical wrong row widths 4/6 and side widths 8/10; scalar/empty selection; digest widths 31/33; path 0/4097 and component 256; duplicate/reordered keys; view/domain/name agreement; noncanonical nested value"
       ],
       "shared_evidence": "Validator-only wire models; does not qualify the verified-history-dependent production context/selected-evidence encoder",
       "qualification": "Defensive schema regression currently fails on d235065775; preserved for shared validator production fix"

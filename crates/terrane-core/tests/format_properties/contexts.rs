@@ -204,9 +204,10 @@ fn untrusted_context_models_cover_both_versions_and_selected_evidence_boundaries
         };
         for version in [1, 2] {
             if version == 2 {
-                let path = match case % 3 {
+                let path = match case % 4 {
                     0 => b"a".to_vec(),
                     1 => b"file".to_vec(),
+                    2 => vec![b'p'; 255],
                     _ => maximum_key().into_bytes(),
                 };
                 let rows = (0..[1, 2, 7][case % 3])
@@ -259,6 +260,9 @@ fn selected_context_schema_rejects_malformed_rows_and_nested_value_encodings() {
     let mut altered = first.clone();
     altered.path.clear();
     malformed.push(("empty file path", selected(&[altered])));
+    let mut altered = first.clone();
+    altered.path = vec![b'x'; 256];
+    malformed.push(("component limit", selected(&[altered])));
     let mut altered = first.clone();
     altered.path = vec![b'x'; 4097];
     malformed.push(("path limit", selected(&[altered])));
