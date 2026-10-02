@@ -272,14 +272,16 @@
       "codec": "AttributeValue / AttrRecord / Function",
       "public_api": [
         "derived::AttributeValue::{encode,decode}",
-        "derived::AttrRecord::{new,encode,decode}"
+        "derived::AttrRecord::{new,encode,decode}",
+        "derived::AttrRecord::signature_preimage"
       ],
       "tests": [
         "content::derived_attribute_values_and_records_cover_every_registered_variant",
         "content::derived_function_metadata_and_text_values_preserve_unknown_versions_and_limits"
       ],
       "models": [
-        "12 models per registered attribute; ELF32/64 optionalinterpreter and needed0..3; text65536; retained function version2/128chars"
+        "12 models per registered attribute; ELF32/64 optionalinterpreter and needed0..3; text65536; retained function version2/128chars",
+        "Each generated record preimage equals the registered domain prefix followed by actual unsigned record encoding"
       ],
       "closed_alternatives": [
         "Sha256",
@@ -395,7 +397,8 @@
       "public_api": [
         "refs::Commit::{encode,decode,identity}",
         "refs::CommitContext::from_request",
-        "provenance::disclosure_target_binding"
+        "provenance::disclosure_target_binding",
+        "refs::Commit::signature_preimage"
       ],
       "tests": [
         "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
@@ -403,7 +406,8 @@
         "content::disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata"
       ],
       "models": [
-        "24 base commits parents0..3; all 13 registered surfaces; source/target opaque path4096; normalized typed signatures and changed metadata"
+        "24 base commits parents0..3; all 13 registered surfaces; source/target opaque path4096; normalized typed signatures and changed metadata",
+        "24 signature preimages equal the actual unsigned Commit encoding; real unsigned Commit decoder used for canonical mutations"
       ],
       "closed_alternatives": [
         "all3 principal kinds",
@@ -427,14 +431,16 @@
     {
       "codec": "RefRecord / RefPolicy / SnapshotEnvelope",
       "public_api": [
-        "refs::RefRecord::{encode,decode}"
+        "refs::RefRecord::{encode,decode}",
+        "refs::SnapshotEnvelope::signature_preimage"
       ],
       "tests": [
         "records::commit_ref_reflog_and_annotation_models_preserve_optional_fields",
         "records::nested_receipt_origins_context_surfaces_and_ref_policy_presence_roundtrip"
       ],
       "models": [
-        "sequence1,23,24,u64::MAX; generated epochs/digests;32 optional policy-field combinations and8 locality presences"
+        "sequence1,23,24,u64::MAX; generated epochs/digests;32 optional policy-field combinations and8 locality presences",
+        "8 annotated-tag preimages compared to independent four-field model; empty/nonempty attestation and signature omission"
       ],
       "closed_alternatives": [
         "all 6 merge policies",
@@ -1570,14 +1576,44 @@
         "foreign::textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models"
       ],
       "models": [
-        "all 6 ref classes; Ref/Commit view targets; optionalpolicy; subtree0/1/31/4096 validcomponents"
+        "all 6 ref classes; Ref/Commit view targets; optionalpolicy; subtree0/1/31/4096 validcomponents",
+        "All currently implemented BucketKey parser shapes; canonical decimal 0/1/23/24/u64::MAX, shard 0/255, generated pack/candidate IDs, legacy/current refs and logs, all three note kinds"
       ],
-      "closed_alternatives": [],
+      "closed_alternatives": [
+        "All three Mutability alternatives: Immutable/CreateOnce/CompareAndSwap"
+      ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "unknown refclass; forbidden bytes/dotdot/empty segments; invalid digest; empty policy; key4097"
+        "unknown refclass; forbidden bytes/dotdot/empty segments; invalid digest; empty policy; key4097",
+        "Wrong fanout; noncanonical decimal; shard 256; zero sequence; forbidden tag legacy log; NUL/backslash/absolute/dot components; accepted prefix parses retain exact spelling"
       ],
       "shared_evidence": "parser model; no canonical format encoder exists"
+    },
+    {
+      "codec": "Untrusted serialized provenance context validator",
+      "public_api": [
+        "provenance::validate_canonical_context"
+      ],
+      "tests": [
+        "contexts::untrusted_context_models_cover_both_versions_and_selected_evidence_boundaries",
+        "contexts::selected_context_schema_rejects_malformed_rows_and_nested_value_encodings"
+      ],
+      "models": [
+        "24 seeded models of each version; independently encoded untrusted field models and public CBOR decoding after actual context validation",
+        "Selected evidence rows 1/2/7; file path lengths 1/4/4096 with valid components; distinct producer and carrying-witness commits preserve unsigned inline evidence semantics"
+      ],
+      "closed_alternatives": [
+        "Versions 1/2; all four selector presets; all four disclosure-domain forms"
+      ],
+      "optional_fields": [
+        "baseline absent/empty/present; selected evidence absent for v1/present for v2"
+      ],
+      "limits_and_malformed_cases": [
+        "Shared CBOR structural checks on the outer context",
+        "Canonical wrong row widths 4/6 and side widths 8/10; scalar/empty selection; digest widths 31/33; path 0/4097; duplicate/reordered keys; view/domain/name agreement; noncanonical nested value"
+      ],
+      "shared_evidence": "Validator-only wire models; does not qualify the verified-history-dependent production context/selected-evidence encoder",
+      "qualification": "Defensive schema regression currently fails on d235065775; preserved for shared validator production fix"
     }
   ],
   "test_catalog": [
@@ -1800,40 +1836,70 @@
       "id": "retirement::permanent_pass_count_handle_and_whole_record_limits_reject_before_claimed_allocation",
       "source": "crates/terrane-core/tests/format_properties/retirement.rs",
       "seed": "0x8a21_79c5_6134_bb92"
+    },
+    {
+      "id": "contexts::untrusted_context_models_cover_both_versions_and_selected_evidence_boundaries",
+      "source": "crates/terrane-core/tests/format_properties/contexts.rs",
+      "seed": "0x6f01_2748_b825_c6a9"
+    },
+    {
+      "id": "contexts::selected_context_schema_rejects_malformed_rows_and_nested_value_encodings",
+      "source": "crates/terrane-core/tests/format_properties/contexts.rs",
+      "seed": "0xda7b_0533_a428_19c1"
     }
   ],
   "gaps_and_deferred_formats": [
     {
       "format": "standalone shard filter",
       "status": "unimplemented public core byte codec",
-      "detail": "General filter wire encoder/decoder is absent. GcMark reconstructed filter and bundle metadata kind5 admission do not qualify a standalone filter codec."
+      "detail": "General filter wire encoder/decoder is absent. GcMark reconstructed filter and bundle metadata kind5 admission do not qualify a standalone filter codec.",
+      "milestone_owner": "B-bandwidth / T-PACK-3; explicitly deferred from T-PACK-2, not a currently supported T1 standalone codec"
     },
     {
       "format": "standalone memo and ruleset/policy object",
       "status": "unimplemented public core byte codec",
-      "detail": "Identity domains, generic metadata kinds8/9 and recipes exist; no public memo/ruleset object codec exists in terrane-core."
+      "detail": "Identity domains, generic metadata kinds8/9 and recipes exist; no public memo/ruleset object codec exists in terrane-core.",
+      "milestone_owner": "B-derive / T-DRV-2 and T-RULE-1; required future formats, currently unimplemented"
     },
     {
-      "format": "standalone disclosure statement and canonical verified trust context",
-      "status": "public API coverage gap",
-      "requirement": "TEST-3 / CRATE-33",
-      "api": "provenance::disclosure::statement::preimage is private and requires VerifiedHistory; public signing/context factories require verified provenance",
-      "detail": "Typed DisclosureProof in Commit, issuer/disclosure evidence rows, untrusted recipe trust fields and disclosure_target_binding are covered. A homemade statement encoder or fabricated verified context would not qualify real codec coverage."
+      "format": "Regenerated disclosure statement and verified provenance context encoders",
+      "status": "T1 private property-test seam required; no standalone decoder by design",
+      "requirement": "TEST-3 / CRATE-4; CRATE-33 is specific to untrusted mapped indexes",
+      "api": "provenance::disclosure::statement::preimage; TrustContext::from_shared serialization and VerifiedHistory::side_context require authenticated history",
+      "detail": "The statement is regenerated from verified history for signing/verification, rather than decoded as a stored record. Context validation has separate untrusted public API properties, including a preserved failing v2 schema regression. Existing private statement/context/selected-side encoders need pure unit property seams without widening verified-authority constructors.",
+      "milestone_owner": "T1 / T-TEST-1 with T-PROV-1; supported encoder coverage gap"
     },
     {
       "format": "compressed frame contents",
       "status": "implemented outside core",
-      "detail": "Core owns codec envelope structure only; actual zstd decompression and dictionary-backed frame verification belong to terrane."
+      "detail": "Core owns codec envelope structure only; actual zstd decompression and dictionary-backed frame verification belong to terrane.",
+      "milestone_owner": "T1 / chunk-codec and chunk-bomb-cap native checks; outside this core byte-envelope target"
     },
     {
       "format": "future TREE/recipe variants not implemented",
       "status": "deferred unimplemented",
-      "detail": "Index/filter/map/subtree/fold memo object schema beyond currently public Recipe alternatives is not claimed by generic bundle metadata."
+      "detail": "Index/filter/map/subtree/fold memo object schema beyond currently public Recipe alternatives is not claimed by generic bundle metadata.",
+      "milestone_owner": "B-derive / T-ALG-3 and T-DRV-2; explicitly deferred from T-ALG-2"
     },
     {
       "format": "exhaustive valid resource maxima and all unconstrained strings",
       "status": "bounded corpus limitation",
-      "detail": "Inventory lists actual numeric/string/count boundaries; it is generative coverage, not exhaustive enumeration or allocator instrumentation."
+      "detail": "Inventory lists actual numeric/string/count boundaries; it is generative coverage, not exhaustive enumeration or allocator instrumentation.",
+      "milestone_owner": "T1 / T-TEST-1 coverage review; no exhaustive or allocator-instrumentation qualification"
+    },
+    {
+      "format": "Token authority and attenuation signature-preimage encoders",
+      "status": "T1 private unit property-test seam required; no separate preimage decoder by design",
+      "requirement": "TEST-3 / CRATE-4",
+      "api": "auth::format::{authority_preimage,attenuation_preimage} are pub(super) and reached publicly only by issuing/attenuating/verifying signed authority",
+      "detail": "Full envelope field/alternative properties and existing fixed auth golden unit tests do not qualify generative key-12/key-6 omission preimage coverage. A private pure unit seam can compare unsigned field models without issuance or authority synthesis.",
+      "milestone_owner": "T1 / T-TEST-1 and T-AUTH-1"
     }
+  ],
+  "by_design_embedded_formats": [
+    "StoreProfile, RefPolicy, SnapshotEnvelope, profile/provenance/receipt fields, checkpoint row and fence nested types have actual encoding/decoding through their public owning records; an additional standalone decoder is not their contract.",
+    "Commit, SnapshotEnvelope and AttrRecord signature-preimage encoders are directly exercised; non-stored preimages intentionally omit signatures and have no separate wire decoder. Public owning codecs cover stored records.",
+    "Foreign ELF/shebang inputs are parser formats; the public APIs have no canonical foreign-file encoder. Independent parsed field models and bounds checks are distinct from Terrane attribute encodings.",
+    "Header and chunk envelope parsers intentionally accept prefixes/opaque bodies. Whole-pack/index decoders enforce complete container extents; the mutation oracle preserves that API distinction."
   ]
 }

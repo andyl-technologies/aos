@@ -308,7 +308,10 @@ fn textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models(
             };
             let parsed = RefName::parse(&reference).unwrap();
             assert_eq!(parsed.as_str(), reference);
-            BucketKey::parse(&format!("{reference}:record")).unwrap();
+            assert_eq!(
+                BucketKey::ref_record(&reference).unwrap(),
+                BucketKey::parse(&format!("{reference}:record")).unwrap()
+            );
             for subtree in [
                 "".to_string(),
                 "subtree/λ".into(),
@@ -347,6 +350,125 @@ fn textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models(
                 policy: None
             }
         );
+    }
+    for number in [0, 1, 23, 24, u64::MAX] {
+        use terrane_core::bucket::Mutability::{CompareAndSwap, CreateOnce, Immutable};
+        let pack = generator.bytes::<16>();
+        let pack: String = pack.iter().map(|byte| format!("{byte:02x}")).collect();
+        let candidate_bytes = generator.bytes::<32>();
+        let candidate: String = candidate_bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let mut keys = vec![
+            ("CAPABILITIES".into(), CompareAndSwap),
+            ("publication/SELECTED-HISTORY".into(), CompareAndSwap),
+            ("publication/PORTABLE".into(), CompareAndSwap),
+            (
+                format!("publication/snapshots/{number}:{candidate}"),
+                CreateOnce,
+            ),
+            (
+                format!("objects/pack/{}/{pack}.pack", &pack[..2]),
+                Immutable,
+            ),
+            (format!("objects/pack/{}/{pack}.idx", &pack[..2]), Immutable),
+            (format!("objects/index/{number}/MANIFEST"), Immutable),
+            (format!("objects/index/{number}/0.idx"), Immutable),
+            (format!("objects/index/{number}/255.flt"), Immutable),
+            ("gc/lease".into(), CompareAndSwap),
+            (format!("gc/cycle/{number}"), CreateOnce),
+            (format!("gc/{number}/roots"), CreateOnce),
+            (format!("gc/{number}/state"), CompareAndSwap),
+            (
+                format!("gc/{number}/delete/{pack}/{candidate}"),
+                CompareAndSwap,
+            ),
+            (format!("gc/{number}/mark/0"), CreateOnce),
+            (format!("gc/{number}/mark/255/{number}"), CreateOnce),
+            (format!("trash/{number}/{pack}"), CreateOnce),
+        ];
+        for kind in ["profiles", "completeness", "memos"] {
+            keys.push((format!("refs/notes/{kind}/_/note:record"), CompareAndSwap));
+        }
+        for (class, expected) in [
+            ("heads", CompareAndSwap),
+            ("tags", CreateOnce),
+            ("jobs", CompareAndSwap),
+            ("derived", CompareAndSwap),
+        ] {
+            keys.push((format!("refs/{class}/_/main"), expected));
+            keys.push((format!("refs/{class}/_/main:record"), expected));
+            if class != "tags" && number != 0 {
+                assert_eq!(
+                    BucketKey::reflog_candidate(
+                        &format!("refs/{class}/_/main"),
+                        number,
+                        &candidate_bytes
+                    )
+                    .unwrap()
+                    .as_str(),
+                    format!("logs/refs/{class}/_/main/{number:020}:{candidate}")
+                );
+                keys.push((
+                    format!("logs/refs/{class}/_/main/{number:020}:{candidate}"),
+                    CreateOnce,
+                ));
+            }
+        }
+        if number != 0 {
+            assert_eq!(
+                BucketKey::reflog("refs/heads/_/main", number)
+                    .unwrap()
+                    .as_str(),
+                format!("logs/refs/heads/_/main/{number:020}:legacy")
+            );
+            assert_eq!(
+                BucketKey::legacy_reflog("refs/heads/_/main", number)
+                    .unwrap()
+                    .as_str(),
+                format!("logs/refs/heads/_/main/{number:020}")
+            );
+            keys.push((
+                format!("logs/refs/heads/_/main/{number:020}:legacy"),
+                CreateOnce,
+            ));
+            keys.push((format!("logs/refs/heads/_/main/{number:020}"), CreateOnce));
+            keys.push((
+                format!("logs/refs/conflicts/_/main/00000000000000000001/{number:020}:{candidate}"),
+                CreateOnce,
+            ));
+        }
+        for (key, expected) in keys {
+            let parsed = BucketKey::parse(&key).unwrap();
+            assert_eq!(parsed.as_str(), key);
+            assert_eq!(parsed.mutability(), expected);
+            for end in 0..key.len() {
+                if let Ok(prefix) = BucketKey::parse(&key[..end]) {
+                    assert_eq!(prefix.as_str(), &key[..end]);
+                }
+            }
+            for prefix in ["/", "../", "./"] {
+                assert!(BucketKey::parse(&format!("{prefix}{key}")).is_err());
+            }
+            assert!(BucketKey::parse(&format!("{key}/")).is_err());
+        }
+    }
+    assert!(BucketKey::reflog("refs/heads/_/main", 0).is_err());
+    assert!(BucketKey::legacy_reflog("refs/heads/_/main", 0).is_err());
+    assert!(BucketKey::reflog_candidate("refs/heads/_/main", 0, &[0; 32]).is_err());
+    for malformed in [
+        "objects/index/01/MANIFEST",
+        "objects/pack/ff/00000000000000000000000000000000.pack",
+        "gc/0/mark/256",
+        "gc/0/mark/01",
+        "publication/snapshots/01:00",
+        "logs/refs/heads/_/main/00000000000000000000:legacy",
+        "logs/refs/tags/_/tag/00000000000000000001:legacy",
+        "CAPABILITIES\\",
+        "CAPABILITIES\0",
+    ] {
+        assert!(BucketKey::parse(malformed).is_err());
     }
     for malformed in [
         "refs/heads",
