@@ -17,6 +17,10 @@ use super::{CheckedEvidence, CheckedMutation};
 #[path = "selected/cold_fork.rs"]
 pub(crate) mod cold_fork;
 
+#[path = "selected/disclosure.rs"]
+#[cfg(all(feature = "std", unix))]
+mod disclosure;
+
 #[cfg(not(feature = "send"))]
 use std::rc::Rc as SharedCheck;
 #[cfg(feature = "send")]
@@ -384,10 +388,10 @@ fn invalid() -> StoreFailure {
 /// # Errors
 /// Rejects a stale selected Guard, a different physical original authority,
 /// unsupported foreign control owners, or changed protected canonical records.
-pub(crate) async fn hold_consumed_controls<'guard, F, B, V, C>(
+pub(crate) async fn hold_consumed_controls<'guard, F, B, V, C, const WRITABLE: bool>(
     guard: &'guard Guard<FileBucket<F, B, V>, C>,
     authority: &OriginalAuthority,
-    held: &HeldBucket<'_, F, B, V, true>,
+    held: &HeldBucket<'_, F, B, V, WRITABLE>,
     observed: &SelectedObservation<'_>,
     consumed: &ConsumedResolver,
 ) -> Result<LocalControlInputs<'guard, F>, StoreFailure>

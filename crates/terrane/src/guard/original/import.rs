@@ -358,7 +358,8 @@ fn original_authority(import: &ImportRecord) -> OriginalAuthority {
     }
 }
 
-pub(super) fn retention_failure(error: crate::repository::Error) -> StoreFailure {
+/// Preserves protected storage failures while rejecting invalid administrative data.
+pub(crate) fn retention_failure(error: crate::repository::Error) -> StoreFailure {
     match error {
         crate::repository::Error::Store(failure) => failure,
         crate::repository::Error::Io(error) => super::io_failure(error),
