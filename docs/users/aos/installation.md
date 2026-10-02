@@ -12,6 +12,8 @@ base. Install the packages needed for the machine with
 [APM](packages.md#manage-machine-wide-packages), then configure their native
 services through [host policy](host-nix.md#understand-the-runtime-boundary).
 The base does not require a workload service to boot; SSH access is also opt-in.
+QEMU's disk utilities are also excluded. Local VM execution uses the optional
+`aos-vm` package, which supplies the matching emulator, disk tools, and firmware.
 
 Before enrollment or first boot, read [Use Secure Boot and verify package
 trust](secure-boot.md) for the full chain, production-key requirements, and the
