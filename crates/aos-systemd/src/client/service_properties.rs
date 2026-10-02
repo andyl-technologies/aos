@@ -6,7 +6,7 @@
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
 
-use super::{Error, ManagerProxy, Result, ServiceProxy, SystemdClient, UnitProxy};
+use super::{Error, ManagerProxy, NixOfflineAbsenceObservationV5, Result, ServiceProxy, SystemdClient, UnitProxy};
 
 #[derive(Clone, Copy)]
 pub(super) enum ObservationPhase {
@@ -195,6 +195,99 @@ async fn read_properties(
         values.push(proxy.get(interface.clone(), name).await?);
     }
     Ok(values)
+}
+
+pub(super) async fn observe_offline_nix(
+    client: &SystemdClient,
+    observation: &mut NixOfflineAbsenceObservationV5,
+) -> Result<()> {
+    const SERVICE: &[&str] = &[
+        "ControlGroup", "ExecStart", "ExecStartPre", "ExecStartPost",
+    ];
+    const UNIT: &[&str] = &["FragmentPath", "DropInPaths", "Transient", "InvocationID"];
+    const OWNER: &str = "aos-sandbox-nixd.service";
+
+    if observation.absence.iter().any(Option::is_some) {
+        return Err(changed("offline Nix absence observation was already attempted"));
+    }
+    observation.controller = Some(observe(
+        client, "aos-sandboxd.service", 0, SERVICE, UNIT, ObservationPhase::StoppedNix,
+    ).await?);
+    let controller = observation.controller.as_ref()
+        .ok_or_else(|| changed("original stopped Controller properties are absent"))?;
+    require_signatures(
+        &controller.0,
+        &["s", "a(sasbttttuii)", "a(sasbttttuii)", "a(sasbttttuii)"],
+    )?;
+    require_signatures(&controller.1, &["s", "as", "b", "ay"])?;
+
+    let bus = zbus::fdo::DBusProxy::new(&client.conn).await?;
+    let manager_name = zbus::names::BusName::try_from("org.freedesktop.systemd1")
+        .map_err(|error| changed(&error.to_string()))?;
+    let owner = bus.get_name_owner(manager_name.clone()).await?;
+    let owner_name = owner.as_str().try_into()
+        .map_err(|error: zbus::names::Error| changed(&error.to_string()))?;
+    if bus.get_connection_unix_process_id(owner_name).await? != 1 {
+        return Err(changed("systemd bus owner is not PID 1"));
+    }
+    let manager = ManagerProxy::builder(&client.conn)
+        .destination(owner.clone())?.build().await?;
+
+    match manager.get_unit(OWNER).await {
+        Ok(path) => {
+            observation.owner_path = Some(path);
+            observation.nix_owner = Some(observe(
+                client, OWNER, 0, SERVICE, UNIT, ObservationPhase::StoppedNix,
+            ).await?);
+            let present = observation.nix_owner.as_ref()
+                .ok_or_else(|| changed("original stopped Nix owner properties are absent"))?;
+            require_signatures(
+                &present.0,
+                &["s", "a(sasbttttuii)", "a(sasbttttuii)", "a(sasbttttuii)"],
+            )?;
+            require_signatures(&present.1, &["s", "as", "b", "ay"])?;
+            if bus.get_name_owner(manager_name).await? != owner {
+                return Err(changed("PID 1 changed during offline Nix readback"));
+            }
+            Ok(())
+        }
+        Err(error) if exact_method_error(&error, "org.freedesktop.systemd1.NoSuchUnit") => {
+            observation.absence[0] = Some(Error::Zbus(error));
+            // Selected systemd propagates ENOENT as a method error, not a
+            // successful string named `not-found`. Do not normalize other errors.
+            let file_state = zbus::Proxy::builder(&client.conn)
+                .destination(owner.clone())?
+                .path("/org/freedesktop/systemd1")?
+                .interface("org.freedesktop.systemd1.Manager")?
+                .cache_properties(CacheProperties::No)
+                .build().await?
+                .call_method("GetUnitFileState", &(OWNER,)).await;
+            match file_state {
+                Err(error) if exact_method_error(&error, "org.freedesktop.DBus.Error.FileNotFound") => {
+                    observation.absence[1] = Some(Error::Zbus(error));
+                }
+                Err(error) => return Err(error.into()),
+                Ok(reply) => {
+                    observation.raw_reply = Some(reply);
+                    return Err(changed("unloaded Nix owner has an installed unit file"));
+                }
+            }
+            if bus.get_name_owner(manager_name.clone()).await? != owner {
+                return Err(changed("PID 1 changed during offline Nix absence readback"));
+            }
+            let owner_name = owner.as_str().try_into()
+                .map_err(|error: zbus::names::Error| changed(&error.to_string()))?;
+            if bus.get_connection_unix_process_id(owner_name).await? != 1 {
+                return Err(changed("original systemd bus owner is not PID 1"));
+            }
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn exact_method_error(error: &zbus::Error, expected: &'static str) -> bool {
+    matches!(error, zbus::Error::MethodError(name, _, _) if name.as_str() == expected)
 }
 
 fn changed(message: &str) -> Error {

@@ -125,31 +125,7 @@ impl MeasuredHelperImageV1 {
         if maps.len() as u64 > MAXIMUM_MAPS_BYTES {
             return Err(FloorErrorV1::Provisioning);
         }
-        let (device_id, expected_inode, _) = self.loader.observed_identity()?;
-        let device = format!(
-            "{:02x}:{:02x}",
-            rustix::fs::major(device_id),
-            rustix::fs::minor(device_id)
-        );
-        let expected_path = self
-            .loader
-            .path()
-            .to_str()
-            .ok_or(FloorErrorV1::Provisioning)?;
-        let mapped = maps.lines().any(|line| {
-            let mut fields = line.split_whitespace();
-            let _address = fields.next();
-            let executable = fields.next().is_some_and(|value| value.contains('x'));
-            let _offset = fields.next();
-            let observed_device = fields.next();
-            let inode = fields.next().and_then(|value| value.parse::<u64>().ok());
-            let path = fields.next();
-            executable
-                && observed_device == Some(device.as_str())
-                && inode == Some(expected_inode)
-                && path == Some(expected_path)
-                && fields.next().is_none()
-        });
+        let mapped = self.loader.mapped_in_helper_data_v5(&maps)?;
         if !mapped {
             return Err(FloorErrorV1::Provisioning);
         }

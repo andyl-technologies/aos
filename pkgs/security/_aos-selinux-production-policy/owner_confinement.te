@@ -114,6 +114,45 @@ allow aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:dir { add_name c
 allow aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:file { create getattr lock open read setattr write };
 type_transition aos_nix_offline_prepare_t aos_nix_offline_prepare_state_t:file aos_nix_offline_prepare_state_t;
 
+# Only the measured descriptor-launched offline entry may open the TPM. Parent
+# cap0x3 does not imply device access. The new type is present even while its
+# manual unit remains disabled; ordinary startup still has no hardware recipe.
+type aos_nix_offline_tpm_helper_t;
+typeattribute aos_nix_offline_tpm_helper_t domain;
+typeattribute aos_nix_offline_tpm_helper_t aos_private_root_custody_domain;
+role system_r types aos_nix_offline_tpm_helper_t;
+type aos_nix_offline_tpm_helper_exec_t;
+
+type_transition aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:process aos_nix_offline_tpm_helper_t;
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:file { execute getattr map open read };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process { transition getattr sigkill signal };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process2 nnp_transition;
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_tpm_helper_exec_t:file { entrypoint getattr map open read };
+allow aos_nix_offline_tpm_helper_t self:process { getattr getsched setrlimit sigchld signal };
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_t:fd use;
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_t:unix_stream_socket { getattr getopt read setopt shutdown write };
+allow aos_nix_offline_prepare_t self:unix_stream_socket { create getattr getopt read setopt shutdown write };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:dir { getattr open read search };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:file { getattr open read };
+allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:lnk_file { getattr read };
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_state_t:file { getattr lock };
+allow aos_nix_offline_tpm_helper_t null_device_t:chr_file { getattr open read write };
+allow aos_nix_offline_tpm_helper_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
+allow aos_nix_offline_tpm_helper_t { lib_t ld_so_t }:file { execute getattr map open read };
+allow aos_nix_offline_tpm_helper_t proc_t:dir { getattr open read search };
+allow aos_nix_offline_tpm_helper_t proc_t:filesystem getattr;
+allow aos_nix_offline_tpm_helper_t self:dir { getattr open read search };
+allow aos_nix_offline_tpm_helper_t self:file { getattr open read };
+allow aos_nix_offline_tpm_helper_t security_t:dir { getattr open read search };
+allow aos_nix_offline_tpm_helper_t security_t:filesystem getattr;
+allow aos_nix_offline_tpm_helper_t security_t:file { getattr open read };
+allow aos_nix_offline_tpm_helper_t aos_method46_tpm_device_t:chr_file { getattr open read write };
+
+# PID1's private population/metadata observation is not a helper entry route.
+allow init_t aos_nix_offline_tpm_helper_t:dir { getattr search open read lock ioctl };
+allow init_t aos_nix_offline_tpm_helper_t:file { getattr open read lock ioctl };
+allow init_t aos_nix_offline_tpm_helper_t:lnk_file { getattr read };
+
 # Dedicated transport-only Gateway. Its explicit unit context is the only
 # normal entry route; no writer, protected owner, helper or default transition
 # is inherited. Hard service limits and advisory node observations are separate.

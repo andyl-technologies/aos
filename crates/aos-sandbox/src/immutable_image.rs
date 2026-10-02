@@ -5,6 +5,7 @@
 //! original file and rechecks its read-only current name around every digest.
 
 use std::fs::{File, Metadata};
+use std::os::fd::OwnedFd;
 use std::os::unix::fs::{FileExt as _, MetadataExt as _};
 use std::path::{Path, PathBuf};
 
@@ -262,6 +263,19 @@ impl RetainedImmutableFileV1 {
         self.validate_names()
     }
 
+    // Only the genuine Core offline owner selects this original. Park the
+    // returned duplicate before its subsequent image/purpose bookends; this
+    // private seam adds no path, executable selection or authority factory.
+    pub(crate) fn duplicate_nix_offline_original_into(
+        &self, slot: &mut Option<OwnedFd>,
+    ) -> std::io::Result<()> {
+        if slot.is_some() {
+            return Err(std::io::Error::other("offline executable slot is occupied"));
+        }
+        *slot = Some(rustix::io::fcntl_dupfd_cloexec(&self.file, 3)?);
+        Ok(())
+    }
+
     /// Compares a process's actual executed inode with this retained file.
     ///
     /// # Errors
@@ -278,6 +292,25 @@ impl RetainedImmutableFileV1 {
             return Err(ImmutableImageErrorV1::Provisioning);
         }
         Ok(())
+    }
+
+    /// Compares fixed offline helper executable DATA from the same original pidfd.
+    ///
+    /// The lower reservoir owns the actual executed inode before HELLO. A
+    /// returned tuple alone is not an image proof; this method obtains it only
+    /// through that reservoir's original-process and liveness bookends. The
+    /// purpose caller still owns loader, startup, MAC and session comparisons.
+    ///
+    /// # Errors
+    /// Returns the actual lower descriptor/process error. `Ok(false)` reports
+    /// an original inode mismatch without inventing a native cause. Neither
+    /// this method nor the lower DATA holder establishes process retirement.
+    pub fn matches_nix_offline_executed_original_v5(
+        &self,
+        original: &aos_sandbox_linux::pidfd::PidFd,
+        observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
+    ) -> Result<bool, aos_sandbox_linux::Error> {
+        Ok(observations.observe_nix_offline_helper_executable_v1(original)? == self.identity)
     }
 
     /// Borrows the measured immutable pathname, not a launch authorization.
@@ -299,6 +332,42 @@ impl RetainedImmutableFileV1 {
             .metadata()
             .map(|metadata| identity(&metadata))
             .map_err(|_| ImmutableImageErrorV1::Unavailable)
+    }
+
+    /// Compares bounded maps DATA with this original loader's current identity.
+    ///
+    /// This is the canonical helper loader-mapping comparison, not a process
+    /// admission. A genuine caller must acquire the maps through its retained
+    /// original process and apply executable, liveness and purpose checks.
+    ///
+    /// # Errors
+    /// Rejects unavailable original metadata, a non-UTF8 selected path or an
+    /// oversized maps record. `Ok(false)` reports no matching executable map.
+    pub fn mapped_in_helper_data_v5(&self, maps: &str) -> Result<bool, ImmutableImageErrorV1> {
+        if maps.len() > 64 * 1024 {
+            return Err(ImmutableImageErrorV1::Provisioning);
+        }
+        let (device_id, expected_inode, _) = self.observed_identity()?;
+        let device = format!(
+            "{:02x}:{:02x}",
+            rustix::fs::major(device_id),
+            rustix::fs::minor(device_id)
+        );
+        let expected_path = self.path().to_str().ok_or(ImmutableImageErrorV1::Provisioning)?;
+        Ok(maps.lines().any(|line| {
+            let mut fields = line.split_whitespace();
+            let _address = fields.next();
+            let executable = fields.next().is_some_and(|value| value.contains('x'));
+            let _offset = fields.next();
+            let observed_device = fields.next();
+            let inode = fields.next().and_then(|value| value.parse::<u64>().ok());
+            let path = fields.next();
+            executable
+                && observed_device == Some(device.as_str())
+                && inode == Some(expected_inode)
+                && path == Some(expected_path)
+                && fields.next().is_none()
+        }))
     }
 
     /// Reads bounded bytes between rechecks without moving the shared offset.

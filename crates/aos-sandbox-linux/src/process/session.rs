@@ -58,6 +58,616 @@ pub struct FixedProcessSessionRequest<'a> {
     pub control: BorrowedFd<'a>,
 }
 
+impl<'request> FixedProcessSessionRequest<'request> {
+    /// Parks a selected Nix invocation and an original monotonic cut without I/O.
+    ///
+    /// This move-only DATA owner authenticates no startup, approval, TPM or
+    /// funding. Its caller must supply those genuine owners before driving it.
+    /// The capture is borrowed from an external owner, not another field here.
+    #[must_use]
+    pub fn retain_nix_offline_before_monotonic_cut_v1<'capture, O, E>(
+        self,
+        executable: OwnedFd,
+        cut: Duration,
+        capture: &'capture mut FixedProcessCaptureV1,
+    ) -> FixedNixOfflineSessionOwnerV1<'request, 'capture, O, E> {
+        let process = self.process;
+        let control = self.control;
+        FixedNixOfflineSessionOwnerV1 {
+            request: Some(self),
+            executable: Some(executable),
+            capture: Some(capture),
+            process,
+            control,
+            cut,
+            deadline: None,
+            run: None,
+            pending_spawn: None,
+            kernel: KernelState::pending(),
+            acknowledgment_exchange: None,
+            terminal_exchange: None,
+            outcome: None,
+            first_failure: None,
+            phase: NixRunPhase::Parked,
+            single_thread: std::marker::PhantomData,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum NixRunPhase {
+    Parked,
+    ExecReady,
+    ReplyReady,
+    Ended,
+    Retired,
+    Closed,
+}
+
+/// Retains one actual selected Nix child across returned errors and unwind.
+///
+/// It owns the same `SessionRun`, kernel state, exchange value and first typed
+/// cause used by the fixed supervisor. Reply readiness precedes child retirement;
+/// the genuine purpose owner must validate the still-live child and settle its
+/// native obligation before sending its fixed terminal acknowledgement.
+/// This !Send/!Sync owner supplies mechanics and bounded DATA, never authority,
+/// physical funding, TPM/RM retirement or whole-process-tree Drain. Final Drop
+/// retains the existing blocking cancellation/reap fallback.
+pub struct FixedNixOfflineSessionOwnerV1<'request, 'capture, O, E> {
+    request: Option<FixedProcessSessionRequest<'request>>,
+    executable: Option<OwnedFd>,
+    capture: Option<&'capture mut FixedProcessCaptureV1>,
+    process: FixedProcessRequest<'request>,
+    control: BorrowedFd<'request>,
+    cut: Duration,
+    deadline: Option<Duration>,
+    run: Option<SessionRun<'capture>>,
+    pending_spawn: Option<SpawnedProcess>,
+    kernel: KernelState<O>,
+    acknowledgment_exchange: Option<O>,
+    terminal_exchange: Option<O>,
+    outcome: Option<FixedProcessRetainedSessionOutcome<O>>,
+    first_failure: Option<FixedProcessRetainedSessionError<E>>,
+    phase: NixRunPhase,
+    single_thread: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+impl<O, E> FixedNixOfflineSessionOwnerV1<'_, '_, O, E>
+where
+    E: std::error::Error + Send + Sync + 'static,
+{
+    /// Drives the same child to exec EOF before the first exchange callback.
+    ///
+    /// The genuine purpose owner must use this live borrow for its full
+    /// executable, loader and startup observations before allowing HELLO.
+    /// No callback, HELLO acceptance or currentness is implied by this boundary.
+    ///
+    /// # Errors
+    /// Retains and fences the first preparation, exec, observation or cleanup
+    /// failure. An absent live child or expired original cut is refused.
+    pub fn prepare_live_child<X>(
+        &mut self,
+        exchange: &mut X,
+    ) -> std::result::Result<(), &FixedProcessRetainedSessionError<E>>
+    where
+        X: FixedProcessSessionExchange<Output = O, Error = E>,
+    {
+        if self.phase != NixRunPhase::Parked {
+            return Err(self.refuse());
+        }
+
+        {
+            let mut operation = NixRunOperation::arm(self);
+            if operation.owner.prepare_selected().is_ok()
+                && operation.owner.drive_selected(exchange, CompletionBoundary::BeforeExchange).is_ok()
+            {
+                operation.complete();
+            }
+        }
+
+        if self.phase == NixRunPhase::ExecReady {
+            Ok(())
+        } else {
+            Err(self.refuse())
+        }
+    }
+
+    /// Drives the sole supervisor to a real reply before another poll or reap.
+    ///
+    /// `Some` borrows the actual completed exchange value. `None` is a negative
+    /// mechanical outcome and must be read through [`Self::outcome`]. The helper
+    /// must remain alive awaiting the purpose-specific terminal acknowledgement.
+    ///
+    /// # Errors
+    /// Returns the resident first validation, allocation, spawn, process,
+    /// exchange or cleanup cause. Repeated, failed or interrupted driving is
+    /// fenced. No actual returned run is dropped on error.
+    ///
+    /// # Panics
+    /// Propagates callback panic after the borrowing operation fences and
+    /// signals the retained child. That same run remains resident.
+    pub fn run_to_reply<X>(
+        &mut self,
+        exchange: &mut X,
+    ) -> std::result::Result<Option<&O>, &FixedProcessRetainedSessionError<E>>
+    where
+        X: FixedProcessSessionExchange<Output = O, Error = E>,
+    {
+        if self.phase != NixRunPhase::ExecReady {
+            return Err(self.refuse());
+        }
+        {
+            let mut operation = NixRunOperation::arm(self);
+            if operation.owner.drive_selected(exchange, CompletionBoundary::Reply).is_ok() {
+                operation.complete();
+            }
+        }
+        if self.phase == NixRunPhase::ReplyReady {
+            return Ok(self.kernel.state.exchange.as_ref());
+        }
+        if self.first_failure.is_none() && self.outcome.is_some() {
+            return Ok(None);
+        }
+        Err(self.refuse())
+    }
+
+    /// Rearms the same selected run once after its first live exchange boundary.
+    ///
+    /// This move authenticates no acknowledgement. The genuine purpose owner
+    /// must first validate its actual same-socket ACK and post-nondumpable child
+    /// metadata. The next exchange uses the same run, kernel and original cut.
+    /// The original first value remains resident; no launch or time is renewed.
+    ///
+    /// # Errors
+    /// Fences reuse, missing exchange state, child exit, expired cut or an actual
+    /// original observation failure. No value is removed before the slot checks.
+    pub fn resume_after_acknowledgment(
+        &mut self,
+    ) -> std::result::Result<(), &FixedProcessRetainedSessionError<E>> {
+        if self.phase != NixRunPhase::ReplyReady
+            || self.acknowledgment_exchange.is_some()
+            || self.kernel.state.exchange.is_none()
+            || self.kernel.state.leader_exited
+        {
+            return Err(self.refuse());
+        }
+
+        // Fence before the actual observation. Err or caught unwind cannot
+        // reopen this run; only this successful single transition does so.
+        self.phase = NixRunPhase::Closed;
+        if let Err(source) = self.require_selected_child() {
+            self.park_process_failure(source);
+            return Err(self.refuse());
+        }
+        self.acknowledgment_exchange = self.kernel.state.exchange.take();
+        self.kernel.began = false;
+        self.kernel.state.interest = None;
+        self.phase = NixRunPhase::ExecReady;
+        Ok(())
+    }
+
+    /// Borrows the actual first exchange value without a liveness claim.
+    pub fn acknowledgment_exchange(&self) -> Option<&O> {
+        self.acknowledgment_exchange.as_ref()
+    }
+
+    /// Continues the same child after the purpose owner's terminal acknowledgement.
+    ///
+    /// This method does not send, authenticate or infer that acknowledgement.
+    /// It grants no approval; its caller owns all original live postchecks and
+    /// native settlement. The existing kernel state is never restarted.
+    ///
+    /// # Errors
+    /// Returns the first resident cause or rejects a missing reply boundary,
+    /// expired original cut, premature exit, output or cleanup failure.
+    ///
+    /// # Panics
+    /// Propagates callback panic while retaining and fencing the same run.
+    pub fn finish_same_child<X>(
+        &mut self,
+        exchange: &mut X,
+    ) -> std::result::Result<&FixedProcessRetainedSessionOutcome<O>, &FixedProcessRetainedSessionError<E>>
+    where
+        X: FixedProcessSessionExchange<Output = O, Error = E>,
+    {
+        if self.phase != NixRunPhase::ReplyReady {
+            return Err(self.refuse());
+        }
+        {
+            let mut operation = NixRunOperation::arm(self);
+            if operation.owner.drive_selected(exchange, CompletionBoundary::WholeChild).is_ok() {
+                operation.complete();
+            }
+        }
+        if self.first_failure.is_some() || self.outcome.is_none() {
+            return Err(self.refuse());
+        }
+        match self.outcome.as_ref() {
+            Some(outcome) => Ok(outcome),
+            None => Err(self.first_failure.get_or_insert_with(|| {
+                FixedProcessRetainedSessionError::Session(process_error(nix_run_closed()))
+            })),
+        }
+    }
+
+    /// Borrows the same checked child at a pre-HELLO or reply boundary.
+    ///
+    /// # Errors
+    /// Fences an absent boundary, expired cut, child exit or actual observation
+    /// failure. A successful short borrow is not a timeless liveness lease.
+    pub fn child(&mut self) -> std::result::Result<FixedLiveChild<'_>, &FixedProcessRetainedSessionError<E>> {
+        if !matches!(self.phase, NixRunPhase::ExecReady | NixRunPhase::ReplyReady) {
+            return Err(self.refuse());
+        }
+        let original_phase = self.phase;
+        self.phase = NixRunPhase::Closed;
+        let checked = self.require_selected_child();
+        if let Err(source) = checked {
+            self.park_process_failure(source);
+            self.phase = NixRunPhase::Closed;
+            return Err(self.refuse());
+        }
+        let identity = match (
+            self.run.as_ref().and_then(|run| run.guard.pidfd.as_ref()),
+            self.kernel.initial_info,
+            self.deadline,
+        ) {
+            (Some(pidfd), Some(initial_info), Some(deadline)) => (pidfd, initial_info, deadline),
+            _ => {
+                self.phase = NixRunPhase::Closed;
+                return Err(self.first_failure.get_or_insert_with(|| {
+                    FixedProcessRetainedSessionError::Session(process_error(nix_run_closed()))
+                }));
+            }
+        };
+        let (pidfd, initial_info, deadline) = identity;
+        self.phase = original_phase;
+        Ok(FixedLiveChild { pidfd, initial_info, deadline })
+    }
+
+    /// Borrows the resident reply together with the same still-live child.
+    ///
+    /// # Errors
+    /// Refuses a missing reply, expired cutoff or changed exact child. The
+    /// returned pair is mechanical DATA; the purpose owner still authenticates
+    /// the same socket, measured image, metadata and application frame.
+    pub fn reply_and_child(
+        &mut self,
+    ) -> std::result::Result<(FixedLiveChild<'_>, &O), &FixedProcessRetainedSessionError<E>> {
+        if self.phase != NixRunPhase::ReplyReady || self.kernel.state.exchange.is_none() {
+            return Err(self.refuse());
+        }
+        self.phase = NixRunPhase::Closed;
+        if let Err(source) = self.require_selected_child() {
+            self.park_process_failure(source);
+            self.phase = NixRunPhase::Closed;
+            return Err(self.refuse());
+        }
+        match (
+            self.run.as_ref().and_then(|run| run.guard.pidfd.as_ref()),
+            self.kernel.initial_info, self.deadline, self.kernel.state.exchange.as_ref(),
+        ) {
+            (Some(pidfd), Some(initial_info), Some(deadline), Some(reply)) => {
+                self.phase = NixRunPhase::ReplyReady;
+                Ok((FixedLiveChild { pidfd, initial_info, deadline }, reply))
+            }
+            _ => {
+                self.phase = NixRunPhase::Closed;
+                Err(self.first_failure.get_or_insert_with(|| {
+                    FixedProcessRetainedSessionError::Session(process_error(nix_run_closed()))
+                }))
+            }
+        }
+    }
+
+    /// Borrows the actual bounded outcome without releasing original resources.
+    pub fn outcome(&self) -> Option<&FixedProcessRetainedSessionOutcome<O>> {
+        self.outcome.as_ref()
+    }
+
+    /// Borrows the first resident typed cause, never a fabricated currentness proof.
+    pub fn failure(&self) -> Option<&FixedProcessRetainedSessionError<E>> {
+        self.first_failure.as_ref()
+    }
+
+    /// Borrows original output and cleanup diagnostics while the run is retained.
+    pub fn capture(&self) -> Option<&FixedProcessCaptureV1> {
+        self.run.as_ref().and_then(SessionRun::capture)
+            .or_else(|| self.capture.as_deref())
+    }
+
+    /// Borrows the original bounded stdout prefix, including an active run.
+    /// Retirement ends this view; the external capture retains the settled bytes.
+    pub fn stdout(&self) -> &[u8] {
+        match &self.run {
+            Some(run) if !run.stdout.bytes.is_empty() => &run.stdout.bytes,
+            Some(run) => run.capture().map_or(&[], FixedProcessCaptureV1::stdout),
+            None => self.capture.as_ref().map_or(&[], |capture| capture.stdout()),
+        }
+    }
+
+    /// Borrows the original bounded stderr prefix, including an active run.
+    /// Retirement ends this view; the external capture retains the settled bytes.
+    pub fn stderr(&self) -> &[u8] {
+        match &self.run {
+            Some(run) if !run.stderr.bytes.is_empty() => &run.stderr.bytes,
+            Some(run) => run.capture().map_or(&[], FixedProcessCaptureV1::stderr),
+            None => self.capture.as_ref().map_or(&[], |capture| capture.stderr()),
+        }
+    }
+
+    /// Retires only an actually completed, reaped and finitely settled run.
+    ///
+    /// # Errors
+    /// Refuses negative, failed, interrupted or already retired owners. This
+    /// mechanical retirement neither approves a native result nor proves Drain.
+    pub fn retire_completed(&mut self) -> std::result::Result<(), &FixedProcessRetainedSessionError<E>> {
+        if self.phase != NixRunPhase::Ended
+            || self.first_failure.is_some()
+            || !matches!(self.outcome, Some(FixedProcessRetainedSessionOutcome::Completed { .. }))
+        {
+            return Err(self.refuse());
+        }
+        if self.run.as_ref().is_none_or(|run| run.guard.armed) {
+            return Err(self.refuse());
+        }
+        self.phase = NixRunPhase::Closed;
+        if let Some(run) = &mut self.run {
+            while !run.settle_driven_capture_once() {}
+        }
+        self.phase = NixRunPhase::Retired;
+        self.run = None;
+        Ok(())
+    }
+
+    fn prepare_selected(&mut self) -> std::result::Result<(), ()> {
+        let result = (|| {
+            let started = monotonic_now();
+            let deadline = selected_nix_deadline(started, self.process.timeout, self.cut)?;
+            self.deadline = Some(deadline);
+            let request = self.request.as_ref().ok_or_else(nix_run_closed)?;
+            if request.inherited.len() > super::MAXIMUM_INHERITED_DESCRIPTORS {
+                return Err(Error::invalid("fixed process inherited descriptors", "exceeds the four-descriptor ceiling"));
+            }
+            validate_executable_descriptor(self.executable.as_ref().ok_or_else(nix_run_closed)?.as_fd())?;
+            validate_session_request(request)?;
+            validate_exclusive_reaping_owner()?;
+            let invocation = PreparedInvocation::new(self.process)?;
+            Ok(invocation)
+        })();
+        let invocation = match result {
+            Ok(invocation) => invocation,
+            Err(source) => {
+                self.park_process_failure(source);
+                return Err(());
+            }
+        };
+        if let Err(source) = self.capture.as_mut().ok_or_else(nix_run_closed)
+            .map_err(|source| FixedProcessRetainedSessionError::Session(process_error(source)))
+            .and_then(|capture| capture.prepare(self.process))
+        {
+            self.first_failure = Some(source);
+            return Err(());
+        }
+        let spawned = (|| {
+            if deadline_expired(self.deadline.ok_or_else(nix_run_closed)?) {
+                return Err(nix_run_expired());
+            }
+            let request = self.request.as_ref().ok_or_else(nix_run_closed)?;
+            let inherited = request.inherited.iter().map(|fd| fd.as_fd()).collect::<Vec<_>>();
+            invocation.begin_from_nix_offline_executable_descriptor(
+                self.executable.as_ref().ok_or_else(nix_run_closed)?.as_fd(),
+                request.stdin.as_ref().map(|fd| fd.as_fd()),
+                &inherited,
+            )
+        })();
+        self.pending_spawn = match spawned {
+            Ok(spawned) => Some(spawned),
+            Err(source) => {
+                self.park_process_failure(source);
+                return Err(());
+            }
+        };
+        // The returned child enters a resident slot before the infallible
+        // handoff. Even an internal missing-slot refusal keeps that original.
+        if self.capture.is_none() || self.pending_spawn.is_none() {
+            self.park_process_failure(nix_run_closed());
+            return Err(());
+        }
+        if let (Some(capture), Some(spawned)) = (self.capture.take(), self.pending_spawn.take()) {
+            self.run = Some(SessionRun::retained(spawned, self.process, capture));
+        }
+        drop(self.executable.take());
+        if let Some(request) = self.request.take() {
+            drop(request.inherited);
+            drop(request.stdin);
+        }
+        let result = self.run.as_mut().ok_or_else(nix_run_closed)
+            .and_then(SessionRun::initialize_retained);
+        if let Err(source) = result {
+            self.park_process_failure(source);
+            self.cleanup_selected();
+            return Err(());
+        }
+        if deadline_expired(self.deadline.unwrap_or(self.cut)) {
+            self.park_process_failure(nix_run_expired());
+            self.cleanup_selected();
+            return Err(());
+        }
+        Ok(())
+    }
+
+    fn drive_selected<X>(&mut self, exchange: &mut X, boundary: CompletionBoundary) -> std::result::Result<(), ()>
+    where X: FixedProcessSessionExchange<Output = O, Error = E>,
+    {
+        let Some(deadline) = self.deadline else {
+            self.park_process_failure(nix_run_closed());
+            return Err(());
+        };
+        let mut exchange = KernelExchange::Legacy { exchange, control: self.control, deadline };
+            let turn = match &mut self.run {
+                Some(run) => drive_session_kernel_until(
+                    run, &mut self.kernel, KernelDeadline::Monotonic(deadline), &mut exchange, boundary,
+                ),
+            None => Err(KernelFailure::Process(nix_run_closed())),
+        };
+        match turn {
+            Ok(SessionBoundaryOutcome::Boundary) => {
+                self.phase = match boundary {
+                    CompletionBoundary::BeforeExchange => NixRunPhase::ExecReady,
+                    CompletionBoundary::Reply => NixRunPhase::ReplyReady,
+                    CompletionBoundary::WholeChild => NixRunPhase::Closed,
+                };
+                return Ok(());
+            }
+            Ok(SessionBoundaryOutcome::Reaped(output)) => {
+                self.terminal_exchange = output;
+                let completed = self.terminal_exchange.is_some();
+                let status = self.run.as_mut().ok_or_else(nix_run_closed)
+                    .map_err(process_error)
+                    .and_then(|run| finish_reaped_status(run, completed));
+                match status {
+                    Ok(status) => {
+                        self.outcome = Some(match self.terminal_exchange.take() {
+                            Some(exchange) => FixedProcessRetainedSessionOutcome::Completed {
+                                exit_code: status.exit_code, signal: status.signal, exchange,
+                            },
+                            None => FixedProcessRetainedSessionOutcome::ChildExitedBeforeExchange {
+                                exit_code: status.exit_code, signal: status.signal,
+                            },
+                        });
+                        self.phase = if completed { NixRunPhase::Ended } else { NixRunPhase::Closed };
+                        return Ok(());
+                    }
+                    Err(source) => {
+                        self.first_failure = Some(FixedProcessRetainedSessionError::Session(source));
+                        return Err(());
+                    }
+                }
+            }
+            Ok(SessionBoundaryOutcome::Cancelled(outcome)) => {
+                self.outcome = Some(outcome);
+                let timeout = matches!(self.outcome, Some(FixedProcessRetainedSessionOutcome::TimedOut));
+                if let Some(run) = &mut self.run {
+                    if let Err(source) = finish_cancelled_status(run, timeout) {
+                        self.first_failure = Some(FixedProcessRetainedSessionError::Session(source));
+                        return Err(());
+                    }
+                }
+                self.phase = NixRunPhase::Closed;
+                return Ok(());
+            }
+            Err(KernelFailure::Process(source) | KernelFailure::Clock(source)) => {
+                self.park_process_failure(source);
+                self.cleanup_selected();
+                return Err(());
+            }
+            Err(KernelFailure::Exchange(source)) => {
+                self.first_failure = Some(FixedProcessRetainedSessionError::Session(
+                    FixedProcessSessionError::Exchange { source, cleanup: None },
+                ));
+                self.cleanup_selected();
+                return Err(());
+            }
+        }
+    }
+
+    fn require_selected_child(&self) -> Result<()> {
+        if deadline_expired(self.deadline.ok_or_else(nix_run_closed)?) {
+            return Err(nix_run_expired());
+        }
+        let run = self.run.as_ref().ok_or_else(nix_run_closed)?;
+        if !child_is_alive(&run.guard)? {
+            return Err(Error::invalid("fixed Nix child", "exited before original live postchecks"));
+        }
+        if Some(run.guard.pidfd()?.info()?) != self.kernel.initial_info {
+            return Err(Error::invalid(
+                "fixed Nix child identity",
+                "changed across the original live boundary",
+            ));
+        }
+        Ok(())
+    }
+
+    fn park_process_failure(&mut self, source: Error) {
+        self.first_failure.get_or_insert(FixedProcessRetainedSessionError::Session(process_error(source)));
+    }
+
+    fn cleanup_selected(&mut self) {
+        if let Some(run) = &mut self.run {
+            run.stop(FixedProcessStopV1::Error);
+            let cleanup = run.cancel_and_reap().err();
+            if cleanup.is_some() {
+                run.cleanup_error_returned();
+            }
+            if let Some(FixedProcessRetainedSessionError::Session(
+                FixedProcessSessionError::Process { cleanup: slot, .. }
+                | FixedProcessSessionError::Exchange { cleanup: slot, .. },
+            )) = &mut self.first_failure {
+                *slot = cleanup;
+            }
+        }
+    }
+
+    fn refuse(&mut self) -> &FixedProcessRetainedSessionError<E> {
+        self.phase = NixRunPhase::Closed;
+        self.first_failure.get_or_insert_with(|| {
+            FixedProcessRetainedSessionError::Session(process_error(nix_run_closed()))
+        })
+    }
+}
+
+struct NixRunOperation<'operation, 'request, 'capture, O, E> {
+    owner: &'operation mut FixedNixOfflineSessionOwnerV1<'request, 'capture, O, E>,
+    completed: bool,
+}
+
+impl<'operation, 'request, 'capture, O, E> NixRunOperation<'operation, 'request, 'capture, O, E> {
+    fn arm(owner: &'operation mut FixedNixOfflineSessionOwnerV1<'request, 'capture, O, E>) -> Self {
+        owner.phase = NixRunPhase::Closed;
+        Self { owner, completed: false }
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl<O, E> Drop for NixRunOperation<'_, '_, '_, O, E> {
+    fn drop(&mut self) {
+        if self.completed {
+            return;
+        }
+        self.owner.phase = NixRunPhase::Closed;
+        if let Some(run) = &mut self.owner.run {
+            if std::thread::panicking() {
+                run.stop(FixedProcessStopV1::Unwound);
+            }
+            if let Err(source) = run.signal_driven_cleanup() {
+                run.record_driven_error(source);
+            }
+        }
+    }
+}
+
+fn selected_nix_deadline(started: Duration, timeout: Duration, cut: Duration) -> Result<Duration> {
+    let relative = started.checked_add(timeout).ok_or_else(|| {
+        Error::invalid("fixed process timeout", "absolute deadline overflows CLOCK_MONOTONIC duration")
+    })?;
+    if cut.is_zero() || started >= cut {
+        return Err(nix_run_expired());
+    }
+    Ok(relative.min(cut))
+}
+
+fn nix_run_closed() -> Error {
+    Error::invalid("fixed Nix session", "original resident operation is fenced")
+}
+
+fn nix_run_expired() -> Error {
+    Error::invalid("fixed Nix session cut", "original CLOCK_MONOTONIC cut expired")
+}
+
 /// Exposes the retained identity of a child that was live before a callback.
 #[derive(Clone, Copy, Debug)]
 pub struct FixedLiveChild<'a> {
@@ -916,6 +1526,60 @@ enum KernelFailure<E> {
     Exchange(E),
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum CompletionBoundary {
+    WholeChild,
+    BeforeExchange,
+    Reply,
+}
+
+enum SessionBoundaryOutcome<T> {
+    Boundary,
+    Reaped(Option<T>),
+    Cancelled(FixedProcessRetainedSessionOutcome<T>),
+}
+
+/// Repeats the sole kernel turn; selected boundaries do not add a poll engine.
+fn drive_session_kernel_until<X>(
+    run: &mut SessionRun<'_>,
+    kernel: &mut KernelState<X::Output>,
+    deadline: KernelDeadline,
+    exchange: &mut KernelExchange<'_, X>,
+    boundary: CompletionBoundary,
+) -> std::result::Result<SessionBoundaryOutcome<X::Output>, KernelFailure<X::Error>>
+where
+    X: FixedProcessSessionExchange,
+{
+    loop {
+        match advance_session_kernel_until(run, kernel, deadline, exchange, boundary)? {
+            KernelTurn::Progressed | KernelTurn::Waiting => {
+                if selected_boundary_reached(boundary, kernel, run.exec_status.is_some()) {
+                    return Ok(SessionBoundaryOutcome::Boundary);
+                }
+            }
+            KernelTurn::Reaped(output) => return Ok(SessionBoundaryOutcome::Reaped(output)),
+            KernelTurn::Cancelled(outcome) => return Ok(SessionBoundaryOutcome::Cancelled(outcome)),
+        }
+    }
+}
+
+fn selected_boundary_reached<T>(
+    boundary: CompletionBoundary,
+    kernel: &KernelState<T>,
+    exec_status_pending: bool,
+) -> bool {
+    if kernel.state.leader_exited {
+        return false;
+    }
+    match boundary {
+        CompletionBoundary::WholeChild => false,
+        CompletionBoundary::BeforeExchange => {
+            !exec_status_pending && kernel.initial_info.is_some() && !kernel.began
+        }
+        CompletionBoundary::Reply => kernel.state.exchange.is_some(),
+    }
+}
+
 /// The selected captured profile has no control descriptor or callback.
 enum KernelExchange<'a, X: FixedProcessSessionExchange> {
     Legacy {
@@ -1002,18 +1666,17 @@ where
     let mut kernel = KernelState::pending();
     let mut exchange = KernelExchange::Legacy { exchange, control, deadline };
 
-    loop {
-        match advance_session_kernel(
-            run, &mut kernel, KernelDeadline::Monotonic(deadline), &mut exchange,
-        ) {
-            Ok(KernelTurn::Progressed | KernelTurn::Waiting) => {}
-            Ok(KernelTurn::Reaped(output)) => return finish_reaped(run, output),
-            Ok(KernelTurn::Cancelled(outcome)) => return finish_cancelled(run, outcome),
-            Err(KernelFailure::Process(source) | KernelFailure::Clock(source)) => {
-                return fail_process(run, source);
-            }
-            Err(KernelFailure::Exchange(source)) => return fail_exchange(run, source),
+    match drive_session_kernel_until(
+        run, &mut kernel, KernelDeadline::Monotonic(deadline), &mut exchange,
+        CompletionBoundary::WholeChild,
+    ) {
+        Ok(SessionBoundaryOutcome::Boundary) => {
+            fail_process(run, nix_run_closed())
         }
+        Ok(SessionBoundaryOutcome::Reaped(output)) => finish_reaped(run, output),
+        Ok(SessionBoundaryOutcome::Cancelled(outcome)) => finish_cancelled(run, outcome),
+        Err(KernelFailure::Process(source) | KernelFailure::Clock(source)) => fail_process(run, source),
+        Err(KernelFailure::Exchange(source)) => fail_exchange(run, source),
     }
 }
 
@@ -1024,6 +1687,19 @@ fn advance_session_kernel<X>(
     kernel: &mut KernelState<X::Output>,
     deadline: KernelDeadline,
     exchange: &mut KernelExchange<'_, X>,
+) -> std::result::Result<KernelTurn<X::Output>, KernelFailure<X::Error>>
+where
+    X: FixedProcessSessionExchange,
+{
+    advance_session_kernel_until(run, kernel, deadline, exchange, CompletionBoundary::WholeChild)
+}
+
+fn advance_session_kernel_until<X>(
+    run: &mut SessionRun<'_>,
+    kernel: &mut KernelState<X::Output>,
+    deadline: KernelDeadline,
+    exchange: &mut KernelExchange<'_, X>,
+    boundary: CompletionBoundary,
 ) -> std::result::Result<KernelTurn<X::Output>, KernelFailure<X::Error>>
 where
     X: FixedProcessSessionExchange,
@@ -1039,10 +1715,18 @@ where
 
     if !*began && run.exec_status.is_none() {
         if !(run.retains_output() && state.leader_exited) {
-            *initial_info = Some(match run.guard.pidfd().and_then(PidFd::info) {
+            let observed = match run.guard.pidfd().and_then(PidFd::info) {
                 Ok(info) => info,
                 Err(source) => return Err(KernelFailure::Process(source)),
-            });
+            };
+            if boundary != CompletionBoundary::WholeChild
+                && initial_info.is_some_and(|original| original != observed)
+            {
+                return Err(KernelFailure::Process(Error::invalid(
+                    "fixed Nix child identity", "changed across the original pre-HELLO boundary",
+                )));
+            }
+            *initial_info = Some(observed);
 
             if deadline.expired().map_err(KernelFailure::Clock)? {
                 return Ok(KernelTurn::Cancelled(FixedProcessRetainedSessionOutcome::TimedOut));
@@ -1051,6 +1735,9 @@ where
                 Ok(true) => {}
                 Ok(false) => state.mark_leader_exited(),
                 Err(source) => return Err(KernelFailure::Process(source)),
+            }
+            if boundary == CompletionBoundary::BeforeExchange && !state.leader_exited {
+                return Ok(KernelTurn::Progressed);
             }
             if !state.leader_exited {
                 let step = exchange.start(&run.guard, *initial_info)?;
@@ -1075,6 +1762,9 @@ where
         }
         *began = true;
         progressed = true;
+    }
+    if boundary == CompletionBoundary::Reply && state.exchange.is_some() && !state.leader_exited {
+        return Ok(KernelTurn::Progressed);
     }
     if state.leader_exited
         && run.stdout.closed
@@ -1250,17 +1940,7 @@ fn finish_reaped<T, E>(
     run: &mut SessionRun<'_>,
     exchange: Option<T>,
 ) -> std::result::Result<FixedProcessRetainedSessionOutcome<T>, FixedProcessSessionError<E>> {
-    run.stop(if exchange.is_some() {
-        FixedProcessStopV1::Completed
-    } else {
-        FixedProcessStopV1::ChildExitedBeforeExchange
-    });
-    let status = run
-        .cancel_and_reap()
-        .map_err(|source| {
-            run.cleanup_error_returned();
-            FixedProcessSessionError::Cleanup(source)
-        })?;
+    let status = finish_reaped_status(run, exchange.is_some())?;
     Ok(match exchange {
         Some(exchange) => FixedProcessRetainedSessionOutcome::Completed {
             exit_code: status.exit_code,
@@ -1274,11 +1954,36 @@ fn finish_reaped<T, E>(
     })
 }
 
+fn finish_reaped_status<E>(
+    run: &mut SessionRun<'_>,
+    completed: bool,
+) -> std::result::Result<ProcessStatus, FixedProcessSessionError<E>> {
+    run.stop(if completed {
+        FixedProcessStopV1::Completed
+    } else {
+        FixedProcessStopV1::ChildExitedBeforeExchange
+    });
+    run
+        .cancel_and_reap()
+        .map_err(|source| {
+            run.cleanup_error_returned();
+            FixedProcessSessionError::Cleanup(source)
+        })
+}
+
 fn finish_cancelled<T, E>(
     run: &mut SessionRun<'_>,
     outcome: FixedProcessRetainedSessionOutcome<T>,
 ) -> std::result::Result<FixedProcessRetainedSessionOutcome<T>, FixedProcessSessionError<E>> {
-    if matches!(outcome, FixedProcessRetainedSessionOutcome::TimedOut) {
+    finish_cancelled_status(run, matches!(outcome, FixedProcessRetainedSessionOutcome::TimedOut))?;
+    Ok(outcome)
+}
+
+fn finish_cancelled_status<E>(
+    run: &mut SessionRun<'_>,
+    timeout: bool,
+) -> std::result::Result<(), FixedProcessSessionError<E>> {
+    if timeout {
         run.stop(FixedProcessStopV1::TimedOut);
     }
     run.cancel_and_reap()
@@ -1286,7 +1991,7 @@ fn finish_cancelled<T, E>(
             run.cleanup_error_returned();
             FixedProcessSessionError::Cleanup(source)
         })?;
-    Ok(outcome)
+    Ok(())
 }
 
 fn fail_process<T, E>(
@@ -2479,5 +3184,42 @@ mod tests {
 
         assert!(state.leader_exited);
         assert_eq!(state.interest, None);
+    }
+
+    #[test]
+    fn selected_nix_deadline_never_renews_the_original_cut() {
+        let started = Duration::from_secs(10);
+        let original = Duration::from_secs(12);
+
+        assert_eq!(
+            selected_nix_deadline(started, Duration::from_secs(30), original).unwrap(),
+            original,
+        );
+        assert_eq!(
+            selected_nix_deadline(started, Duration::from_secs(1), original).unwrap(),
+            Duration::from_secs(11),
+        );
+        assert!(selected_nix_deadline(original, Duration::from_secs(30), original).is_err());
+        assert!(selected_nix_deadline(started, Duration::from_secs(1), Duration::ZERO).is_err());
+    }
+
+    #[test]
+    fn selected_nix_deadline_refuses_relative_overflow() {
+        assert!(selected_nix_deadline(
+            Duration::from_secs(1), Duration::MAX, Duration::MAX,
+        ).is_err());
+    }
+
+    #[test]
+    fn selected_reply_data_cannot_yield_a_legacy_or_exited_boundary() {
+        let mut kernel = KernelState::<()>::pending();
+        kernel.state.apply(ExchangeStep::Complete(()));
+
+        assert!(selected_boundary_reached(CompletionBoundary::Reply, &kernel, false));
+        assert!(!selected_boundary_reached(CompletionBoundary::WholeChild, &kernel, false));
+        assert!(!selected_boundary_reached(CompletionBoundary::BeforeExchange, &kernel, true));
+
+        kernel.state.mark_leader_exited();
+        assert!(!selected_boundary_reached(CompletionBoundary::Reply, &kernel, false));
     }
 }

@@ -36,6 +36,106 @@ use super::{FloorRecoveryV1, NvCustodyEndpointV1, framing};
 
 const EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The selected one-shot adapter shares the actual fixed supervisor and the
+/// same strict sequenced-packet receiver. It performs no image hashing,
+/// startup/RPC observation, disk persistence or application authorization in
+/// a callback. Every actual completed record moves directly into the run.
+pub(crate) struct NixOfflineExchangeV5<'resources> {
+    socket: &'resources mut SeqpacketSocket,
+    hello: &'resources [u8],
+    request: &'resources [u8],
+    locks: [std::os::fd::BorrowedFd<'resources>; 2],
+    result_phase: bool,
+    sent: bool,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum NixOfflineExchangeErrorV5 {
+    #[error("offline helper original send failed")]
+    Send(#[from] SeqpacketError),
+    #[error("offline helper original receive failed")]
+    Receive(#[from] aos_sandbox_linux::seqpacket::RetainedSeqpacketReceiveErrorV1),
+    #[error("offline helper transport phase is fenced")]
+    Fenced,
+}
+
+impl<'resources> NixOfflineExchangeV5<'resources> {
+    pub(crate) fn new(
+        socket: &'resources mut SeqpacketSocket,
+        hello: &'resources [u8], request: &'resources [u8],
+        locks: [std::os::fd::BorrowedFd<'resources>; 2],
+    ) -> Self {
+        Self { socket, hello, request, locks, result_phase: false, sent: false }
+    }
+
+    pub(crate) fn socket(&mut self) -> &mut SeqpacketSocket {
+        self.socket
+    }
+
+    pub(crate) fn select_result_phase(&mut self) -> Result<(), NixOfflineExchangeErrorV5> {
+        if self.result_phase || !self.sent {
+            return Err(NixOfflineExchangeErrorV5::Fenced);
+        }
+        self.result_phase = true;
+        self.sent = false;
+        Ok(())
+    }
+
+    fn send_or_wait(&mut self) -> Result<
+        aos_sandbox_linux::process::ExchangeStep<ReceivedRecord>, NixOfflineExchangeErrorV5,
+    > {
+        use aos_sandbox_linux::process::{ExchangeStep, FixedProcessControlInterest};
+        if !self.sent {
+            let sent = if self.result_phase {
+                self.socket.send(self.request)
+            } else {
+                self.socket.send_with_descriptors(self.hello, &self.locks)
+            };
+            match sent {
+                Ok(()) => self.sent = true,
+                Err(SeqpacketError::WouldBlock | SeqpacketError::Interrupted) => {
+                    return Ok(ExchangeStep::Pending(FixedProcessControlInterest::Writable));
+                }
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(ExchangeStep::Pending(FixedProcessControlInterest::Readable))
+    }
+}
+
+impl aos_sandbox_linux::process::FixedProcessSessionExchange for NixOfflineExchangeV5<'_> {
+    type Output = ReceivedRecord;
+    type Error = NixOfflineExchangeErrorV5;
+
+    fn start(
+        &mut self, _child: &aos_sandbox_linux::process::FixedLiveChild<'_>,
+        _control: std::os::fd::BorrowedFd<'_>,
+    ) -> Result<aos_sandbox_linux::process::ExchangeStep<ReceivedRecord>, Self::Error> {
+        self.send_or_wait()
+    }
+
+    fn advance(
+        &mut self, _child: &aos_sandbox_linux::process::FixedLiveChild<'_>,
+        _control: std::os::fd::BorrowedFd<'_>,
+        readiness: aos_sandbox_linux::process::FixedProcessControlReadiness,
+    ) -> Result<aos_sandbox_linux::process::ExchangeStep<ReceivedRecord>, Self::Error> {
+        use aos_sandbox_linux::process::{ExchangeStep, FixedProcessControlInterest};
+        if !self.sent {
+            return self.send_or_wait();
+        }
+        if !readiness.is_readable() {
+            return Ok(ExchangeStep::Pending(FixedProcessControlInterest::Readable));
+        }
+        match self.socket.receive_retaining(2360) {
+            Ok(record) => Ok(ExchangeStep::Complete(record)),
+            Err(error) if error.is_nonconsuming_would_block() || error.is_nonconsuming_interrupted() => {
+                Ok(ExchangeStep::Pending(FixedProcessControlInterest::Readable))
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 enum RetainedPhysicalBindingV1<'owner, 'origin, 'startup> {
     // Preserve the original image -> service -> profile owning/drop order.
     Broker {

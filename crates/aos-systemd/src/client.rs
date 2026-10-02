@@ -124,6 +124,74 @@ pub struct ServiceControlGroupObservation {
     pub invocation_id: [u8; 16],
 }
 
+/// Retains one fixed offline Nix absence observation and its partial DATA.
+///
+/// Empty construction performs no I/O and establishes no authority. The fixed
+/// reader parks returned property pairs, actual absence errors and unexpected
+/// raw replies here before later checks. Library pre-return intervals remain
+/// outside this holder; it proves neither population retirement nor currentness.
+pub struct NixOfflineAbsenceObservationV5 {
+    attempted: bool,
+    complete: bool,
+    controller: Option<(Vec<OwnedValue>, Vec<OwnedValue>)>,
+    nix_owner: Option<(Vec<OwnedValue>, Vec<OwnedValue>)>,
+    absence: [Option<Error>; 2],
+    owner_path: Option<OwnedObjectPath>,
+    raw_reply: Option<zbus::Message>,
+    first_failure: Option<Error>,
+}
+
+impl NixOfflineAbsenceObservationV5 {
+    /// Creates empty fixed DATA slots without admitting an observation.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            attempted: false,
+            complete: false,
+            controller: None,
+            nix_owner: None,
+            absence: [None, None],
+            owner_path: None,
+            raw_reply: None,
+            first_failure: None,
+        }
+    }
+
+    /// Borrows checked Controller and optional Nix-owner property DATA.
+    ///
+    /// # Errors
+    /// Refuses an unfinished, failed or interrupted observation. Absence is
+    /// represented only after both original named errors and PID1 bookends.
+    pub fn properties(&self) -> Result<(
+        &(Vec<OwnedValue>, Vec<OwnedValue>),
+        Option<&(Vec<OwnedValue>, Vec<OwnedValue>)>,
+    )> {
+        if !self.complete || self.first_failure.is_some() {
+            return Err(Error::InvalidSandboxUnit("offline Nix observation is fenced".to_owned()));
+        }
+        let controller = self.controller.as_ref().ok_or_else(|| {
+            Error::InvalidSandboxUnit("offline Controller observation is absent".to_owned())
+        })?;
+        Ok((controller, self.nix_owner.as_ref()))
+    }
+
+    /// Borrows the first actual failure without releasing returned originals.
+    pub fn failure(&self) -> Option<&Error> {
+        self.first_failure.as_ref()
+    }
+
+    /// Borrows the two original named absence errors as diagnostic DATA.
+    pub fn absence_errors(&self) -> &[Option<Error>; 2] {
+        &self.absence
+    }
+}
+
+impl Default for NixOfflineAbsenceObservationV5 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Result of a post-run failed-unit scan.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FailedUnitsReport {
@@ -649,6 +717,38 @@ impl SystemdClient {
         &self,
     ) -> Result<[(Vec<OwnedValue>, Vec<OwnedValue>); 2]> {
         service_properties::observe_stopped_nix(self).await
+    }
+
+    /// Observes the stopped Controller and stopped or uninstalled Nix owner.
+    ///
+    /// Only the fixed Nix owner may be absent. That alternative requires the
+    /// same unique PID1's exact `NoSuchUnit` and `FileNotFound` method errors.
+    /// Both errors enter the caller's resident DATA slots before subsequent
+    /// checks. Neither absence nor these properties prove population retirement.
+    ///
+    /// # Errors
+    /// Rejects reused slots, a missing Controller, any other method error,
+    /// changed PID1 ownership, a live unit or mismatched property signatures.
+    /// Earlier parked method errors remain borrowed caller-owned originals.
+    pub async fn observe_fixed_offline_nix_units_v5<'observation>(
+        &self,
+        observation: &'observation mut NixOfflineAbsenceObservationV5,
+    ) -> std::result::Result<(), &'observation Error> {
+        if observation.attempted {
+            observation.complete = false;
+            return Err(observation.first_failure.get_or_insert_with(|| {
+                Error::InvalidSandboxUnit("offline Nix observation is fenced".to_owned())
+            }));
+        }
+        observation.attempted = true;
+        let result = service_properties::observe_offline_nix(self, observation).await;
+        match result {
+            Ok(()) => {
+                observation.complete = true;
+                Ok(())
+            }
+            Err(error) => Err(observation.first_failure.get_or_insert(error)),
+        }
     }
 
     /// Observes an active service's exact unit, invocation, main PID, and cgroup.

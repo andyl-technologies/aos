@@ -262,6 +262,7 @@ class EffectivePolicyTest(unittest.TestCase):
         # reach their own checks rather than fail an inherited stale cohort.
         policy.attributes[effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE] = {
             "aos_sandbox_policy_authority_t", "aos_nix_offline_prepare_t",
+            "aos_nix_offline_tpm_helper_t",
         }
         return policy
 

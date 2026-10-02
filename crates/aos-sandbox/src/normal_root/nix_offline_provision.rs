@@ -8,7 +8,7 @@
 //! A genuine borrow exists only after selected image,
 //! PID1 delivery, confinement, stopped-runtime and credential comparisons.
 //! SecureBits=12 is a selected manager/unit configuration comparison, not a
-//! direct kernel securebits observation or the future child's exec precondition.
+//! direct kernel securebits observation or the child's exec precondition.
 //!
 //! ```text
 //! AOS_NIX_OFFLINE_PREPARE_STARTUP_3: immutable image and selected-unit comparisons
@@ -31,19 +31,43 @@ use rustix::fs::{Mode, OFlags};
 use serde::Deserialize;
 use sha2::{Digest as _, Sha256};
 
-use crate::immutable_image::RetainedImmutableFileV1;
+use crate::immutable_image::{PendingImmutableFileV1, RetainedImmutableFileV1};
 use crate::public_api_session::OfflinePrepareCredentialsV3;
 use crate::systemd_property_data;
 
 use super::{NormalRootStartupErrorV1, images, profile::ImagePinV1, service, startup};
 
+mod approved_data;
+pub use approved_data::{
+    NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalKindV4,
+    derive_nix_offline_public_candidates_v3, fill_nix_offline_static_preimage_v3,
+    require_nix_offline_effect_approval_v4, require_nix_offline_static_approval_v3,
+    require_nix_offline_static_header_v3,
+    NixOfflineJobIdentityDataV5, inspect_nix_offline_job_identity_v5,
+    nix_offline_job_has_original_label_v5,
+};
+
 const UNIT: &str = "aos-sandbox-nix-floor-provision.service";
 const CONTEXT: &str = "system_u:system_r:aos_nix_offline_prepare_t";
+const HELPER_CONTEXT: &str = "system_u:system_r:aos_nix_offline_tpm_helper_t";
 const CGROUP: &str = "system.slice/aos-sandbox-nix-floor-provision.service";
 const PROFILE_NAME: &str = "aos-nix-offline-prepare-profile";
 const PID1_NAME: &str = "aos-nix-offline-prepare-pid1-image";
 const PLACEHOLDER: &str = "@AOS_NIX_OFFLINE_PREPARE_PROFILE@";
 const MAXIMUM_OBSERVATIONS: usize = 16;
+const HARDWARE_INITIALIZE_OBSERVATIONS: usize = 79;
+const HARDWARE_RECOVERY_OBSERVATIONS: usize = 83;
+const HARDWARE_ADDRESS_SPACE: u64 = 1024 * 1024 * 1024;
+const HARDWARE_DESCRIPTOR_LIMIT: u64 = 4096;
+const HARDWARE_SERVICE_PROPERTIES: &[&str] = &[
+    "ControlGroup", "OpenFile", "ExtraFileDescriptorNames",
+    "FileDescriptorStoreMax", "NFileDescriptorStore", "SELinuxContext",
+    "CapabilityBoundingSet", "AmbientCapabilities", "NoNewPrivileges",
+    "SecureBits", "ExecStart", "ExecStartPre", "ExecStartPost", "LoadCredential",
+    "LoadCredentialEncrypted", "SetCredential", "SetCredentialEncrypted",
+    "ImportCredential", "ImportCredentialEx", "ExitType", "KillMode",
+    "TimeoutStopUSec", "LimitNOFILE", "LimitNOFILESoft", "LimitAS", "LimitASSoft",
+];
 const SERVICE_PROPERTIES: &[&str] = &[
     "ControlGroup",
     "OpenFile",
@@ -97,6 +121,9 @@ pub enum OfflineNixPrepareStartupErrorV3 {
     /// This instance already failed or an observation was interrupted.
     #[error("offline prepare original owner is fenced")]
     Fenced,
+    /// An actual manager cause remains in the selected absence observation.
+    #[error("offline hardware runtime observation failed")]
+    HardwareRuntime,
 }
 
 impl From<rustix::io::Errno> for OfflineNixPrepareStartupErrorV3 {
@@ -111,6 +138,8 @@ type Error = OfflineNixPrepareStartupErrorV3;
 enum OfflinePrepareModeV3 {
     PrepareKeys,
     InspectApprovedJob,
+    Initialize,
+    Recover,
 }
 
 impl OfflinePrepareModeV3 {
@@ -118,6 +147,20 @@ impl OfflinePrepareModeV3 {
         match self {
             Self::PrepareKeys => "prepare-keys",
             Self::InspectApprovedJob => "inspect-approved-job",
+            Self::Initialize => "initialize",
+            Self::Recover => "recover",
+        }
+    }
+
+    const fn hardware(self) -> bool {
+        matches!(self, Self::Initialize | Self::Recover)
+    }
+
+    const fn observations(self) -> usize {
+        match self {
+            Self::PrepareKeys | Self::InspectApprovedJob => MAXIMUM_OBSERVATIONS,
+            Self::Initialize => HARDWARE_INITIALIZE_OBSERVATIONS,
+            Self::Recover => HARDWARE_RECOVERY_OBSERVATIONS,
         }
     }
 }
@@ -136,6 +179,22 @@ struct Profile {
     source_policy: ImagePinV1,
     effective_matrix: ImagePinV1,
     unit_sha256: [u8; 32],
+    #[serde(default)]
+    hardware: Option<HardwareProfileV5>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HardwareProfileV5 {
+    format: String,
+    unit_mode_neutral_sha256: [u8; 32],
+    helper: ImagePinV1,
+    loader: ImagePinV1,
+    compiled_contract_sha256: [u8; 32],
+    descriptor_limit: u64,
+    address_space_limit: u64,
+    child_descriptor_limit: u64,
+    child_address_space_limit: u64,
 }
 
 impl Profile {
@@ -182,6 +241,71 @@ impl Profile {
         }
         Ok(())
     }
+
+    fn require_mode(&self, mode: OfflinePrepareModeV3) -> Result<(), Error> {
+        self.require()?;
+        match (&self.hardware, mode.hardware()) {
+            (None, false) => Ok(()),
+            (Some(hardware), true) => {
+                if hardware.format != "AOS_NIX_OFFLINE_HARDWARE_5"
+                    || hardware.unit_mode_neutral_sha256 == [0; 32]
+                    || hardware.compiled_contract_sha256 == [0; 32]
+                    || hardware.descriptor_limit != HARDWARE_DESCRIPTOR_LIMIT
+                    || hardware.address_space_limit != HARDWARE_ADDRESS_SPACE
+                    || hardware.child_descriptor_limit != 64
+                    || hardware.child_address_space_limit != HARDWARE_ADDRESS_SPACE
+                    || Path::new(&hardware.helper.path).file_name()
+                        .is_none_or(|name| name != "aos-nix-offline-tpm-helper")
+                {
+                    return Err(Error::Rejected);
+                }
+                for pin in [&hardware.helper, &hardware.loader] {
+                    if pin.sha256 == [0; 32]
+                        || !self.runtime_files.iter().any(|member| {
+                            member.path == pin.path && member.sha256 == pin.sha256
+                        })
+                    {
+                        return Err(Error::Rejected);
+                    }
+                    super::profile::require_store_path(&pin.path)?;
+                }
+                Ok(())
+            }
+            _ => Err(Error::Rejected),
+        }
+    }
+}
+
+struct HardwareStartupV5 {
+    helper: PendingImmutableFileV1,
+    loader: PendingImmutableFileV1,
+    boot: Option<File>,
+    boot_bytes: [u8; 37],
+    boot_original: Option<[u8; 16]>,
+    boot_identity: Option<(u64, u64, MountId)>,
+    first_cut: Option<(u64, u64)>,
+    stopped: Vec<aos_systemd::NixOfflineAbsenceObservationV5>,
+    cgroup_observations: Vec<[aos_sandbox_linux::cgroup::NixOfflineStoppedCgroupReadbackV5; 2]>,
+    thread_failure: Option<io::Error>,
+    unwind: Option<Box<dyn std::any::Any + Send>>,
+}
+
+impl HardwareStartupV5 {
+    fn new() -> Self {
+        Self {
+            helper: PendingImmutableFileV1::default(),
+            loader: PendingImmutableFileV1::default(),
+            boot: None,
+            boot_bytes: [0; 37],
+            boot_original: None,
+            boot_identity: None,
+            first_cut: None,
+            stopped: Vec::new(),
+            cgroup_observations: Vec::new(),
+            thread_failure: None,
+            unwind: None,
+        }
+    }
 }
 
 /// Holds original offline prepare startup and every partial retained observation.
@@ -216,6 +340,7 @@ pub struct OfflineNixPrepareStartupV3 {
     flights: Vec<(Vec<OwnedValue>, Vec<OwnedValue>)>,
     stopped: Vec<[(Vec<OwnedValue>, Vec<OwnedValue>); 2]>,
     credentials: OfflinePrepareCredentialsV3,
+    hardware: Option<HardwareStartupV5>,
 }
 
 impl OfflineNixPrepareStartupV3 {
@@ -249,6 +374,7 @@ impl OfflineNixPrepareStartupV3 {
             flights: Vec::new(),
             stopped: Vec::new(),
             credentials: OfflinePrepareCredentialsV3::new(),
+            hardware: None,
         }
     }
 
@@ -270,6 +396,24 @@ impl OfflineNixPrepareStartupV3 {
         self.capture_mode(OfflinePrepareModeV3::InspectApprovedJob)
     }
 
+    /// Captures the fixed original manual hardware initialization startup.
+    ///
+    /// # Errors
+    /// Retains the first actual startup failure and fences reentry or unwind.
+    /// Admission alone approves no job, TPM contact or provisioning result.
+    pub fn capture_and_admit_initialize(&mut self) -> Result<(), &Error> {
+        self.capture_mode(OfflinePrepareModeV3::Initialize)
+    }
+
+    /// Captures the fixed original one-recovery startup without renewing a job.
+    ///
+    /// # Errors
+    /// Retains original startup failures; rejects a different selected command
+    /// or profile. The signed prior job and original cutoff are checked later.
+    pub fn capture_and_admit_recovery(&mut self) -> Result<(), &Error> {
+        self.capture_mode(OfflinePrepareModeV3::Recover)
+    }
+
     fn capture_mode(&mut self, mode: OfflinePrepareModeV3) -> Result<(), &Error> {
         if self.attempted {
             return self.refuse();
@@ -277,6 +421,9 @@ impl OfflineNixPrepareStartupV3 {
         self.attempted = true;
         self.usable = false;
         self.mode = Some(mode);
+        if mode.hardware() {
+            self.hardware = Some(HardwareStartupV5::new());
+        }
         let result = self.admit_inner();
         self.complete(result)
     }
@@ -331,6 +478,34 @@ impl OfflineNixPrepareStartupV3 {
         Ok(OfflineNixPrepareOriginV3 { startup: self })
     }
 
+    /// Borrows the actual original selected for hardware initialization.
+    ///
+    /// # Errors
+    /// Retains and returns the first startup cause, including interrupted
+    /// observation. This does not approve a job or fund any TPM contact.
+    pub fn borrow_initialize(&mut self) -> Result<OfflineNixHardwareOriginV5<'_>, &Error> {
+        self.borrow_hardware(OfflinePrepareModeV3::Initialize)
+    }
+
+    /// Borrows the actual original selected for one independently approved recovery.
+    ///
+    /// # Errors
+    /// Refuses a wrong-mode, failed or interrupted owner. Original job time,
+    /// prior history and recovery approval remain mandatory native checks.
+    pub fn borrow_recovery(&mut self) -> Result<OfflineNixHardwareOriginV5<'_>, &Error> {
+        self.borrow_hardware(OfflinePrepareModeV3::Recover)
+    }
+
+    fn borrow_hardware(
+        &mut self,
+        mode: OfflinePrepareModeV3,
+    ) -> Result<OfflineNixHardwareOriginV5<'_>, &Error> {
+        if self.recheck_mode(mode).is_err() {
+            return Err(self.failure.get_or_insert(Error::Fenced));
+        }
+        Ok(OfflineNixHardwareOriginV5 { startup: self })
+    }
+
     /// Borrows the resident first returned failure without treating it as authority.
     pub fn failure(&self) -> Option<&Error> {
         self.failure.as_ref()
@@ -368,20 +543,28 @@ impl OfflineNixPrepareStartupV3 {
     }
 
     fn admit_inner(&mut self) -> Result<(), Error> {
-        self.raw.try_reserve_exact(600).map_err(io::Error::other)?;
+        let mode = self.mode.ok_or(Error::Rejected)?;
+        let observations = mode.observations();
+        self.raw
+            .try_reserve_exact(if mode.hardware() { 852 } else { 600 })
+            .map_err(io::Error::other)?;
         self.runtime.try_reserve_exact(512).map_err(io::Error::other)?;
         self.evidence
-            .try_reserve_exact(3 + MAXIMUM_OBSERVATIONS * 2)
+            .try_reserve_exact(3 + observations * 2)
             .map_err(io::Error::other)?;
         self.flights
-            .try_reserve_exact(MAXIMUM_OBSERVATIONS)
+            .try_reserve_exact(observations)
             .map_err(io::Error::other)?;
         self.stopped
-            .try_reserve_exact(MAXIMUM_OBSERVATIONS)
+            .try_reserve_exact(if mode.hardware() { 0 } else { MAXIMUM_OBSERVATIONS })
             .map_err(io::Error::other)?;
         self.runtime_anchors
-            .try_reserve_exact(MAXIMUM_OBSERVATIONS * 2)
+            .try_reserve_exact(observations * 2)
             .map_err(io::Error::other)?;
+        if let Some(hardware) = &mut self.hardware {
+            hardware.stopped.try_reserve_exact(observations).map_err(io::Error::other)?;
+            hardware.cgroup_observations.try_reserve_exact(observations).map_err(io::Error::other)?;
+        }
 
         self.initial.observe().map_err(|_| Error::InitialActivation)?;
         let names = startup::names(2)?;
@@ -440,7 +623,7 @@ impl OfflineNixPrepareStartupV3 {
 
         self.profile = Some(serde_json::from_slice(&self.profile_bytes).map_err(|_| Error::Rejected)?);
         let profile = self.profile.as_ref().ok_or(Error::Rejected)?;
-        profile.require()?;
+        profile.require_mode(mode)?;
         self.pid1 = Some(images::retain_pin(
             &profile.pid1,
             Some(self.raw.first().ok_or(Error::Rejected)?.try_clone()?),
@@ -480,6 +663,33 @@ impl OfflineNixPrepareStartupV3 {
                 false,
             )?);
         }
+        if let Some(hardware) = &mut self.hardware {
+            let selected = profile.hardware.as_ref().ok_or(Error::Rejected)?;
+            hardware.helper.open_and_measure(
+                selected.helper.path.clone().into(),
+                Some(selected.helper.sha256),
+                256 * 1024 * 1024,
+                true,
+            ).map_err(|_| NormalRootStartupErrorV1::Image)?;
+            hardware.loader.open_and_measure(
+                selected.loader.path.clone().into(),
+                Some(selected.loader.sha256),
+                256 * 1024 * 1024,
+                true,
+            ).map_err(|_| NormalRootStartupErrorV1::Image)?;
+            hardware.boot = Some(File::from(rustix::fs::open(
+                "/proc/sys/kernel/random/boot_id",
+                OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
+                Mode::empty(),
+            )?));
+            observe_hardware_boot(hardware)?;
+            if mode == OfflinePrepareModeV3::Initialize {
+                let initial = hardware_monotonic_nanoseconds()?;
+                let deadline = initial.checked_add(300_000_000_000).ok_or(Error::Rejected)?;
+                hardware.first_cut = Some((initial, deadline));
+                observe_hardware_boot(hardware)?;
+            }
+        }
         self.policy = Some(
             VerifiedLiveSelinuxPolicy::verify(&profile.canonical_policy.path)
                 .map_err(|_| NormalRootStartupErrorV1::Confinement)?,
@@ -518,7 +728,11 @@ impl OfflineNixPrepareStartupV3 {
         self.require_fragment()?;
         self.require_self()?;
         self.require_stopped()?;
-        self.credentials.admit()?;
+        if mode.hardware() {
+            self.credentials.admit_hardware()?;
+        } else {
+            self.credentials.admit()?;
+        }
         self.recheck_inner()
     }
 
@@ -531,6 +745,15 @@ impl OfflineNixPrepareStartupV3 {
             .chain(&self.evidence)
         {
             file.revalidate().map_err(|_| NormalRootStartupErrorV1::Image)?;
+        }
+        if let Some(hardware) = &mut self.hardware {
+            hardware.helper.measurement()
+                .and_then(RetainedImmutableFileV1::revalidate)
+                .map_err(|_| NormalRootStartupErrorV1::Image)?;
+            hardware.loader.measurement()
+                .and_then(RetainedImmutableFileV1::revalidate)
+                .map_err(|_| NormalRootStartupErrorV1::Image)?;
+            observe_hardware_boot(hardware)?;
         }
         let profile = self.profile.as_ref().ok_or(Error::Rejected)?;
         self.executable.as_ref().ok_or(Error::Rejected)?
@@ -559,6 +782,17 @@ impl OfflineNixPrepareStartupV3 {
             || rustix::process::getegid().as_raw() != 0
         {
             return Err(Error::Rejected);
+        }
+        if self.mode.is_some_and(OfflinePrepareModeV3::hardware) {
+            let descriptors = rustix::process::getrlimit(rustix::process::Resource::Nofile);
+            let address_space = rustix::process::getrlimit(rustix::process::Resource::As);
+            if descriptors.current != Some(HARDWARE_DESCRIPTOR_LIMIT)
+                || descriptors.maximum != Some(HARDWARE_DESCRIPTOR_LIMIT)
+                || address_space.current != Some(HARDWARE_ADDRESS_SPACE)
+                || address_space.maximum != Some(HARDWARE_ADDRESS_SPACE)
+            {
+                return Err(Error::Rejected);
+            }
         }
         let identity = self
             .process
@@ -598,14 +832,16 @@ impl OfflineNixPrepareStartupV3 {
     }
 
     fn observe_selected(&mut self) -> Result<(), Error> {
-        if self.flights.len() == MAXIMUM_OBSERVATIONS {
+        let mode = self.mode.ok_or(Error::Rejected)?;
+        if self.flights.len() == mode.observations() {
             return Err(Error::Rejected);
         }
-        self.flights.push(service::read_properties(
-            UNIT,
-            std::process::id(),
-            SERVICE_PROPERTIES,
-        )?);
+        let observed = if mode.hardware() {
+            service::read_nix_offline_hardware_properties(HARDWARE_SERVICE_PROPERTIES)?
+        } else {
+            service::read_properties(UNIT, std::process::id(), SERVICE_PROPERTIES)?
+        };
+        self.flights.push(observed);
         let (values, unit) = self.flights.last().ok_or(Error::Rejected)?;
         let profile_path = self.profile_file.as_ref().ok_or(Error::Rejected)?.path();
         let profile = self.profile.as_ref().ok_or(Error::Rejected)?;
@@ -624,6 +860,60 @@ impl OfflineNixPrepareStartupV3 {
         Ok(())
     }
 
+    fn require_helper_original(
+        &self,
+        original: &aos_sandbox_linux::pidfd::PidFd,
+        observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
+        before_hello: bool,
+    ) -> Result<(), Error> {
+        let identity = observations.observe_identity(original)?;
+        let context = observations.observe_context(original)?;
+        if context != HELPER_CONTEXT.as_bytes()
+            && context.strip_suffix(&[0]) != Some(HELPER_CONTEXT.as_bytes())
+            && context.strip_suffix(b"\n") != Some(HELPER_CONTEXT.as_bytes())
+        {
+            return Err(Error::Rejected);
+        }
+        let info = self.cgroup.as_ref().ok_or(Error::Rejected)?.verify_exact_membership(original)?;
+        let credentials = info.credentials().ok_or(Error::Rejected)?;
+        if info.parent_pid() != std::process::id()
+            || [
+                credentials.real_user_id(),
+                credentials.effective_user_id(),
+                credentials.saved_user_id(),
+                credentials.filesystem_user_id(),
+            ] != [0; 4]
+            || [
+                credentials.real_group_id(),
+                credentials.effective_group_id(),
+                credentials.saved_group_id(),
+                credentials.filesystem_group_id(),
+            ] != [0; 4]
+        {
+            return Err(Error::Rejected);
+        }
+        let hardware = self.hardware.as_ref().ok_or(Error::Rejected)?;
+        let helper = hardware.helper.measurement().map_err(|_| NormalRootStartupErrorV1::Image)?;
+        let loader = hardware.loader.measurement().map_err(|_| NormalRootStartupErrorV1::Image)?;
+        if !helper.matches_nix_offline_executed_original_v5(original, observations)? {
+            return Err(Error::Rejected);
+        }
+        if before_hello {
+            let maps = std::str::from_utf8(observations.nix_offline_helper_maps_v1()?)
+                .map_err(|_| Error::Rejected)?;
+            if !loader.mapped_in_helper_data_v5(maps).map_err(|_| NormalRootStartupErrorV1::Image)? {
+                return Err(Error::Rejected);
+            }
+        }
+        require_status_recipe(observations.observe_nix_offline_helper_status_v1(original)?, true)?;
+        helper.revalidate().map_err(|_| NormalRootStartupErrorV1::Image)?;
+        loader.revalidate().map_err(|_| NormalRootStartupErrorV1::Image)?;
+        if observations.observe_identity(original)? != identity || !original.is_alive()? {
+            return Err(Error::Rejected);
+        }
+        Ok(())
+    }
+
     fn require_fragment(&self) -> Result<(), Error> {
         let file = self.fragment.as_ref().ok_or(Error::Rejected)?;
         let bytes = file.read_bounded().map_err(|_| NormalRootStartupErrorV1::Service)?;
@@ -634,10 +924,21 @@ impl OfflineNixPrepareStartupV3 {
         {
             return Err(Error::Rejected);
         }
+        if let Some(hardware) = &self.profile.as_ref().ok_or(Error::Rejected)?.hardware {
+            let mode = self.mode.filter(|mode| mode.hardware()).ok_or(Error::Rejected)?;
+            let executable = &self.profile.as_ref().ok_or(Error::Rejected)?.executable.path;
+            let neutral = hardware_mode_neutral_unit(&normalized, executable, mode)?;
+            if <[u8; 32]>::from(Sha256::digest(&neutral)) != hardware.unit_mode_neutral_sha256 {
+                return Err(Error::Rejected);
+            }
+        }
         Ok(())
     }
 
     fn require_stopped(&mut self) -> Result<(), Error> {
+        if self.mode.is_some_and(OfflinePrepareModeV3::hardware) {
+            return self.require_hardware_stopped();
+        }
         if self.stopped.len() == MAXIMUM_OBSERVATIONS {
             return Err(Error::Rejected);
         }
@@ -736,6 +1037,118 @@ impl OfflineNixPrepareStartupV3 {
         }
         Ok(())
     }
+
+    fn require_hardware_stopped(&mut self) -> Result<(), Error> {
+        let maximum = self.mode.ok_or(Error::Rejected)?.observations();
+        let hardware = self.hardware.as_mut().ok_or(Error::Rejected)?;
+        if hardware.stopped.len() == maximum {
+            return Err(Error::Rejected);
+        }
+        hardware.stopped.push(aos_systemd::NixOfflineAbsenceObservationV5::new());
+        let observation = hardware.stopped.last_mut().ok_or(Error::Rejected)?;
+
+        // The thread borrows resident slots. Neither an actual reader error nor
+        // an unwind can destroy already-returned property or absence originals.
+        let observed = std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("nix-offline-hardware-stopped".to_owned())
+                .spawn_scoped(scope, || -> Result<bool, io::Error> {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()?;
+                    runtime.block_on(async {
+                        let client = SystemdClient::connect_nix_offline_hardware_observer()
+                            .await
+                            .map_err(io::Error::other)?;
+                        tokio::time::timeout(
+                            Duration::from_secs(5),
+                            client.observe_fixed_offline_nix_units_v5(observation),
+                        )
+                        .await
+                        .map(|result| result.is_ok())
+                        .map_err(io::Error::other)
+                    })
+                })
+                .map(|handle| handle.join())
+        });
+        match observed {
+            Ok(Ok(Ok(true))) => {}
+            Ok(Ok(Ok(false))) => return Err(Error::HardwareRuntime),
+            Ok(Ok(Err(error))) | Err(error) => {
+                hardware.thread_failure = Some(error);
+                return Err(Error::HardwareRuntime);
+            }
+            Ok(Err(payload)) => {
+                hardware.unwind = Some(payload);
+                return Err(Error::HardwareRuntime);
+            }
+        }
+        let observation = hardware.stopped.last().ok_or(Error::Rejected)?;
+        let (controller, owner) = observation.properties().map_err(|_| Error::HardwareRuntime)?;
+        for (observed, relative) in [(Some(controller), RUNTIME_CGROUPS[0]), (owner, RUNTIME_CGROUPS[1])] {
+            let Some((values, unit)) = observed else {
+                continue;
+            };
+            let [cgroup, _, pre, post] = values.as_slice() else {
+                return Err(Error::Rejected);
+            };
+            let actual = <&str>::try_from(cgroup).map_err(|_| Error::Rejected)?;
+            if !actual.is_empty() && actual != format!("/{relative}") {
+                return Err(Error::Rejected);
+            }
+            for empty in [pre, post] {
+                if !matches!(&**empty, Value::Array(commands) if commands.is_empty()) {
+                    return Err(Error::Rejected);
+                }
+            }
+            let [fragment, drop_ins, transient, _] = unit.as_slice() else {
+                return Err(Error::Rejected);
+            };
+            if !matches!(&**drop_ins, Value::Array(paths) if paths.is_empty())
+                || bool::try_from(transient).ok() != Some(false)
+            {
+                return Err(Error::Rejected);
+            }
+            let fragment = <&str>::try_from(fragment).map_err(|_| Error::Rejected)?;
+            let path = std::fs::canonicalize(fragment)?;
+            super::profile::require_store_path(path.to_str().ok_or(Error::Rejected)?)?;
+            self.raw.push(File::from(rustix::fs::open(
+                path.as_path(),
+                OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
+                Mode::empty(),
+            )?));
+            self.evidence.push(RetainedImmutableFileV1::retain_with_profile(
+                path,
+                self.raw.last().ok_or(Error::Rejected)?.try_clone()?,
+                None,
+                64 * 1024,
+                false,
+            ).map_err(|_| NormalRootStartupErrorV1::Image)?);
+        }
+
+        let root_index = self.cgroup_file_index.ok_or(Error::Rejected)?;
+        let root_file = self.raw.get(root_index).ok_or(Error::Rejected)?;
+        if Some(MountId::from_fd(root_file.as_fd())?) != self.cgroup_mount {
+            return Err(Error::Rejected);
+        }
+        hardware.cgroup_observations.push(std::array::from_fn(|_| Default::default()));
+        let pair = hardware.cgroup_observations.last_mut().ok_or(Error::Rejected)?;
+        let root = self.cgroup_root.as_ref().ok_or(Error::Rejected)?;
+        pair[0].capture_controller(root).map_err(|_| Error::HardwareRuntime)?;
+        pair[1].capture_nix_owner(root).map_err(|_| Error::HardwareRuntime)?;
+        for observed in pair {
+            if observed.population() != Some(CgroupPopulationState::Empty)
+                && observed.absence().is_none()
+            {
+                return Err(Error::Rejected);
+            }
+        }
+        let root_file = self.raw.get(root_index).ok_or(Error::Rejected)?;
+        if Some(MountId::from_fd(root_file.as_fd())?) != self.cgroup_mount {
+            return Err(Error::Rejected);
+        }
+        Ok(())
+    }
 }
 
 impl Default for OfflineNixPrepareStartupV3 {
@@ -786,12 +1199,256 @@ impl OfflineNixPrepareOriginV3<'_> {
     }
 }
 
+/// Lends the actual hardware-selected original startup without owning it twice.
+///
+/// The external resident startup owns all files, partial observations and
+/// failures. This loan cannot be constructed from fields or establish native
+/// job approval, TPM initialization, a session floor or process destruction.
+pub struct OfflineNixHardwareOriginV5<'startup> {
+    startup: &'startup mut OfflineNixPrepareStartupV3,
+}
+
+impl OfflineNixHardwareOriginV5<'_> {
+    /// Rechecks this same selected hardware startup without renewing its mode.
+    ///
+    /// # Errors
+    /// Returns the original resident cause; a failed or interrupted observation
+    /// fences this owner. No replacement credential or startup is admitted.
+    pub fn recheck(&mut self) -> Result<(), &Error> {
+        let Some(mode) = self.startup.mode.filter(|mode| mode.hardware()) else {
+            return self.startup.refuse();
+        };
+        self.startup.recheck_mode(mode)
+    }
+
+    /// Borrows the independently delivered original public node and approval key.
+    ///
+    /// # Errors
+    /// Refuses a closed owner or incomplete original delivery. Secret hierarchy
+    /// authorization bytes are not exposed by this public DATA readback.
+    pub fn public_originals(&self) -> Result<([u8; 16], [u8; 48]), Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        let (node, approval) = self.startup.credentials.public_originals()?;
+        Ok((
+            node.try_into().map_err(|_| Error::Rejected)?,
+            approval.try_into().map_err(|_| Error::Rejected)?,
+        ))
+    }
+
+    /// Borrows the canonical domain credential retained at original admission.
+    ///
+    /// # Errors
+    /// Refuses a closed owner or incomplete independently delivered domain.
+    /// The returned bytes remain DATA, not a current policy or provisioning pin.
+    pub fn domain_original(&self) -> Result<&[u8], Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        self.startup.credentials.hardware_domain_original().map_err(Error::Io)
+    }
+
+    /// Returns the original kernel boot identity from the same retained proc file.
+    ///
+    /// # Errors
+    /// Refuses a closed owner or incomplete boot observation. The native owner
+    /// must bind this DATA to its original admission and immutable cutoff.
+    pub fn original_boot(&self) -> Result<[u8; 16], Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        self.startup.hardware.as_ref()
+            .and_then(|hardware| hardware.boot_original)
+            .ok_or(Error::Rejected)
+    }
+
+    /// Borrows the actual measured helper and loader originals before HELLO.
+    ///
+    /// # Errors
+    /// Refuses a closed owner or incomplete measurements. These immutable files
+    /// do not by themselves admit the child's executed image or loader maps.
+    pub fn helper_originals(
+        &self,
+    ) -> Result<(&RetainedImmutableFileV1, &RetainedImmutableFileV1), Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        let hardware = self.startup.hardware.as_ref().ok_or(Error::Rejected)?;
+        Ok((
+            hardware.helper.measurement().map_err(|_| NormalRootStartupErrorV1::Image)?,
+            hardware.loader.measurement().map_err(|_| NormalRootStartupErrorV1::Image)?,
+        ))
+    }
+
+    pub(crate) fn hierarchy_original(&self) -> Result<&[u8; 32], Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        self.startup.credentials.hardware_auth_original().map_err(Error::Io)
+    }
+
+    pub(crate) fn recovery(&self) -> bool {
+        self.startup.mode == Some(OfflinePrepareModeV3::Recover)
+    }
+
+    pub(crate) fn initial_cut(&self) -> Result<Option<(u64, u64)>, Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        Ok(self.startup.hardware.as_ref().ok_or(Error::Rejected)?.first_cut)
+    }
+
+    pub(crate) fn profile_original(&self) -> Result<&RetainedImmutableFileV1, Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        self.startup.profile_file.as_ref().ok_or(Error::Rejected)
+    }
+
+    pub(crate) fn profile_original_bytes(&self) -> Result<&[u8], Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        Ok(&self.startup.profile_bytes)
+    }
+
+    pub(crate) fn first_failure(&self) -> Option<&Error> {
+        self.startup.failure()
+    }
+
+    pub(crate) fn observation_time(&self) -> Result<u64, Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        hardware_monotonic_nanoseconds()
+    }
+
+    pub(crate) fn require_initialize_profile(&self, original: &[u8]) -> Result<(), Error> {
+        if !self.startup.usable || !self.recovery() || original.len() > 1024 * 1024 {
+            return Err(Error::Fenced);
+        }
+        let admitted: Profile = serde_json::from_slice(original).map_err(|_| Error::Rejected)?;
+        admitted.require_mode(OfflinePrepareModeV3::Initialize)?;
+        let current = self.startup.profile.as_ref().ok_or(Error::Rejected)?;
+        let old_hardware = admitted.hardware.as_ref().ok_or(Error::Rejected)?;
+        let new_hardware = current.hardware.as_ref().ok_or(Error::Rejected)?;
+        if old_hardware.unit_mode_neutral_sha256 != new_hardware.unit_mode_neutral_sha256 {
+            return Err(Error::Rejected);
+        }
+
+        // Both full invocation hashes were admitted separately. No other field
+        // may change, including helper/loader, delivery, limits or policy pins.
+        let old: serde_json::Value = serde_json::from_slice(original).map_err(|_| Error::Rejected)?;
+        let mut selected: serde_json::Value = serde_json::from_slice(&self.startup.profile_bytes)
+            .map_err(|_| Error::Rejected)?;
+        *selected.get_mut("unit_sha256").ok_or(Error::Rejected)? =
+            old.get("unit_sha256").ok_or(Error::Rejected)?.clone();
+        if selected != old {
+            return Err(Error::Rejected);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn compiled_contract(&self) -> Result<[u8; 32], Error> {
+        if !self.startup.usable {
+            return Err(Error::Fenced);
+        }
+        self.startup.profile.as_ref()
+            .and_then(|profile| profile.hardware.as_ref())
+            .map(|hardware| hardware.compiled_contract_sha256)
+            .ok_or(Error::Rejected)
+    }
+
+    pub(crate) fn require_helper_before_hello(
+        &mut self,
+        original: &aos_sandbox_linux::pidfd::PidFd,
+        observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
+    ) -> Result<(), &Error> {
+        self.require_helper(original, observations, true)
+    }
+
+    pub(crate) fn require_helper_continued(
+        &mut self,
+        original: &aos_sandbox_linux::pidfd::PidFd,
+        observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
+    ) -> Result<(), &Error> {
+        self.require_helper(original, observations, false)
+    }
+
+    fn require_helper(
+        &mut self,
+        original: &aos_sandbox_linux::pidfd::PidFd,
+        observations: &mut aos_sandbox_linux::pidfd::PidFdProcObservationsV1,
+        before_hello: bool,
+    ) -> Result<(), &Error> {
+        if !self.startup.usable {
+            return self.startup.refuse();
+        }
+        self.startup.usable = false;
+        let result = self.startup.require_helper_original(original, observations, before_hello);
+        self.startup.complete(result)
+    }
+}
+
+fn observe_hardware_boot(hardware: &mut HardwareStartupV5) -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    let file = hardware.boot.as_ref().ok_or(Error::Rejected)?;
+    let metadata = file.metadata()?;
+    let filesystem = rustix::fs::fstatfs(file)?;
+    let flags = rustix::fs::fcntl_getfl(file)?;
+    let identity = (metadata.dev(), metadata.ino(), MountId::from_fd(file.as_fd())?);
+    if !metadata.is_file()
+        || filesystem.f_type as u64 != 0x9fa0
+        || flags & OFlags::ACCMODE != OFlags::RDONLY
+        || flags.contains(OFlags::PATH)
+        || hardware.boot_identity.is_some_and(|original| original != identity)
+    {
+        return Err(Error::Rejected);
+    }
+    hardware.boot_identity = Some(identity);
+    aos_sandbox_linux::protected_file::read_exact_positioned_retaining_cause(
+        file,
+        &mut hardware.boot_bytes,
+    ).map_err(|failure| match failure {
+        aos_sandbox_linux::protected_file::ExactReadFailure::Io(errno) => {
+            Error::Io(io::Error::from_raw_os_error(errno.raw_os_error()))
+        }
+        failure => Error::Read(failure.legacy_classification()),
+    })?;
+    let current = aos_sandbox_linux::boot::KernelBootId::parse(&hardware.boot_bytes)?.into_bytes();
+    if hardware.boot_original.is_some_and(|original| original != current) {
+        return Err(Error::Rejected);
+    }
+    hardware.boot_original = Some(current);
+    Ok(())
+}
+
+pub(crate) fn hardware_monotonic_nanoseconds() -> Result<u64, Error> {
+    let observed = rustix::time::clock_gettime_dynamic(
+        rustix::time::DynamicClockId::Known(rustix::time::ClockId::Monotonic),
+    )?;
+    let seconds = u64::try_from(observed.tv_sec).map_err(|_| Error::Rejected)?;
+    let nanos = u64::try_from(observed.tv_nsec).map_err(|_| Error::Rejected)?;
+    if nanos >= 1_000_000_000 {
+        return Err(Error::Rejected);
+    }
+    seconds.checked_mul(1_000_000_000)
+        .and_then(|seconds| seconds.checked_add(nanos))
+        .ok_or(Error::Rejected)
+}
+
 fn require_status(bytes: &[u8]) -> Result<(), Error> {
+    require_status_recipe(bytes, false)
+}
+
+fn require_status_recipe(bytes: &[u8], helper: bool) -> Result<(), Error> {
     let text = std::str::from_utf8(bytes).map_err(|_| Error::Rejected)?;
     for (name, expected) in [
         ("CapInh", 0),
-        ("CapPrm", 3),
-        ("CapEff", 3),
+        ("CapPrm", if helper { 0 } else { 3 }),
+        ("CapEff", if helper { 0 } else { 3 }),
         ("CapBnd", 3),
         ("CapAmb", 0),
         ("NoNewPrivs", 1),
@@ -819,6 +1476,23 @@ fn require_service(
     executable: &str,
     mode: OfflinePrepareModeV3,
 ) -> Result<(), Error> {
+    let values = if mode.hardware() {
+        let (original, limits) = values.split_at_checked(SERVICE_PROPERTIES.len())
+            .ok_or(Error::Rejected)?;
+        let [descriptors, descriptor_soft, address_space, address_space_soft] = limits else {
+            return Err(Error::Rejected);
+        };
+        if u64::try_from(descriptors).ok() != Some(HARDWARE_DESCRIPTOR_LIMIT)
+            || u64::try_from(descriptor_soft).ok() != Some(HARDWARE_DESCRIPTOR_LIMIT)
+            || u64::try_from(address_space).ok() != Some(HARDWARE_ADDRESS_SPACE)
+            || u64::try_from(address_space_soft).ok() != Some(HARDWARE_ADDRESS_SPACE)
+        {
+            return Err(Error::Rejected);
+        }
+        original
+    } else {
+        values
+    };
     let [
         cgroup, files, extras, maximum, stored, context, bounding, ambient, nnp,
         securebits, start, pre, post, credentials, encrypted, set, set_encrypted,
@@ -884,17 +1558,24 @@ fn require_service(
     let Value::Array(credentials) = &**credentials else {
         return Err(Error::Rejected);
     };
-    let expected = [
+    let ordinary = [
         ("node-id", "/etc/credstore/node-id"),
         (
             "nix-floor-provision-approval-public-key-v3",
             "/etc/credstore/nix-floor-provision-approval-public-key-v3",
         ),
     ];
+    let hardware = [
+        ordinary[0],
+        ordinary[1],
+        ("nix-fixed-domain-pins-v2", "/etc/credstore/nix-fixed-domain-pins-v2"),
+        ("nix-floor-owner-hierarchy-auth-v4", "/etc/credstore/nix-floor-owner-hierarchy-auth-v4"),
+    ];
+    let expected = if mode.hardware() { hardware.as_slice() } else { ordinary.as_slice() };
     if credentials.len() != expected.len() {
         return Err(Error::Rejected);
     }
-    for (entry, (name, source)) in credentials.inner().iter().zip(expected) {
+    for (entry, &(name, source)) in credentials.inner().iter().zip(expected) {
         let Value::Structure(entry) = entry else {
             return Err(Error::Rejected);
         };
@@ -923,6 +1604,36 @@ fn normalized_unit(bytes: &[u8], profile: &Path) -> Result<Vec<u8>, Error> {
         .map(|line| {
             if line == actual {
                 replacement.as_str()
+            } else {
+                line
+            }
+        })
+        .collect::<String>()
+        .into_bytes())
+}
+
+// Only the independently checked hardware command may differ across Recovery.
+// Full-unit comparison remains mandatory before this narrower comparison.
+fn hardware_mode_neutral_unit(
+    bytes: &[u8],
+    executable: &str,
+    mode: OfflinePrepareModeV3,
+) -> Result<Vec<u8>, Error> {
+    if !mode.hardware() {
+        return Err(Error::Rejected);
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| Error::Rejected)?;
+    let actual = format!("ExecStart={executable} {}\n", mode.command());
+    let mut commands = text.split_inclusive('\n')
+        .filter(|line| line.starts_with("ExecStart="));
+    if commands.next() != Some(actual.as_str()) || commands.next().is_some() {
+        return Err(Error::Rejected);
+    }
+
+    Ok(text.split_inclusive('\n')
+        .map(|line| {
+            if line == actual {
+                "ExecStart=@AOS_NIX_OFFLINE_HARDWARE_COMMAND@\n"
             } else {
                 line
             }
@@ -999,6 +1710,39 @@ mod tests {
         assert!(std::str::from_utf8(&normalized).unwrap().contains(PLACEHOLDER));
         assert!(normalized_unit(format!("{input}{line}").as_bytes(), path).is_err());
         assert!(normalized_unit(b"[Service]\n", path).is_err());
+    }
+
+    #[test]
+    fn hardware_neutral_comparison_changes_only_the_exact_command() {
+        let executable = "/nix/store/original/bin/aos-sandbox-nix-floor-provision";
+        let initialize = format!("[Service]\nExecStart={executable} initialize\nLimitNOFILE=4096\n");
+        let recover = initialize.replace(" initialize\n", " recover\n");
+        let original = hardware_mode_neutral_unit(
+            initialize.as_bytes(), executable, OfflinePrepareModeV3::Initialize,
+        ).unwrap();
+
+        assert_eq!(original, hardware_mode_neutral_unit(
+            recover.as_bytes(), executable, OfflinePrepareModeV3::Recover,
+        ).unwrap());
+        assert_ne!(original, hardware_mode_neutral_unit(
+            recover.replace("4096", "8192").as_bytes(),
+            executable, OfflinePrepareModeV3::Recover,
+        ).unwrap());
+        for invalid in [
+            initialize.replace(" initialize", " recover"),
+            initialize.replace(" initialize", "  initialize"),
+            initialize.replace(executable, "/different"),
+            format!("{initialize}ExecStart={executable} initialize\n"),
+            format!("[Service]\nExecStart={executable} initialize"),
+            "[Service]\n".to_owned(),
+        ] {
+            assert!(hardware_mode_neutral_unit(
+                invalid.as_bytes(), executable, OfflinePrepareModeV3::Initialize,
+            ).is_err());
+        }
+        assert!(hardware_mode_neutral_unit(
+            initialize.as_bytes(), executable, OfflinePrepareModeV3::PrepareKeys,
+        ).is_err());
     }
 
     #[test]

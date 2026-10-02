@@ -21,7 +21,7 @@ use std::os::fd::{AsFd as _, BorrowedFd, OwnedFd};
 use std::os::unix::fs::FileExt as _;
 use std::path::{Component, Path};
 
-use crate::path::{BeneathRoot, PendingRegularFileV1, ResolveOptions};
+use crate::path::{BeneathRoot, PendingRegularFileV1, PendingResolvedPathV5, ResolveOptions};
 use crate::pidfd::{PidFd, PidFdInfo};
 use crate::{Error, Result, uapi};
 
@@ -425,6 +425,118 @@ pub struct CgroupPopulationMonitor {
     events: File,
 }
 
+/// Retains one fixed Nix runtime cgroup absence or stopped-population observation.
+///
+/// This holder owns at most seven returned descriptors, including partial
+/// resolution and active-file checks. It grants no service, process, resource
+/// or destruction authority. Fixed names are DATA locators beneath the actual
+/// supplied cgroup-v2 root; the purpose owner must authenticate that root.
+#[derive(Debug, Default)]
+pub struct NixOfflineStoppedCgroupReadbackV5 {
+    attempted: bool,
+    complete: bool,
+    resolution: PendingResolvedPathV5,
+    anchor: Option<RetainedCgroupAnchor>,
+    probes: [PendingRegularFileV1; 5],
+    event_open: PendingRegularFileV1,
+    events: Option<File>,
+    absence: Option<Error>,
+    state: Option<CgroupPopulationState>,
+    failure: Option<Error>,
+}
+
+impl NixOfflineStoppedCgroupReadbackV5 {
+    /// Observes only the fixed Controller cgroup through this original root.
+    ///
+    /// # Errors
+    /// Retains the first actual acquisition, identity or population failure.
+    /// Reentry and interrupted capture remain fenced with all partials resident.
+    pub fn capture_controller(&mut self, root: &CgroupV2Root) -> Result<()> {
+        self.capture(root, Path::new("aos.slice/aos-control.slice/aos-sandboxd.service"))
+    }
+
+    /// Observes only the fixed Nix-owner cgroup through this original root.
+    ///
+    /// # Errors
+    /// Uses the same acquisition and failure semantics as Controller capture.
+    /// A missing directory is retained negative DATA, not a retirement proof.
+    pub fn capture_nix_owner(&mut self, root: &CgroupV2Root) -> Result<()> {
+        self.capture(root, Path::new("aos.slice/aos-control.slice/aos-sandbox-nixd.service"))
+    }
+
+    /// Borrows an actual complete population observation, if a cgroup existed.
+    #[must_use]
+    pub fn population(&self) -> Option<CgroupPopulationState> {
+        self.complete.then_some(self.state).flatten()
+    }
+
+    /// Borrows the actual original missing-directory cause as negative DATA.
+    #[must_use]
+    pub fn absence(&self) -> Option<&Error> {
+        self.complete.then_some(self.absence.as_ref()).flatten()
+    }
+
+    /// Borrows the first actual failure without moving any original descriptor.
+    #[must_use]
+    pub fn failure(&self) -> Option<&Error> {
+        self.failure.as_ref()
+    }
+
+    fn capture(&mut self, root: &CgroupV2Root, relative: &Path) -> Result<()> {
+        if self.attempted {
+            self.complete = false;
+            return Err(Error::invalid("offline Nix cgroup observation", "already attempted"));
+        }
+        self.attempted = true;
+        match self.capture_once(root, relative) {
+            Ok(()) => {
+                self.complete = true;
+                Ok(())
+            }
+            Err(error) => {
+                self.failure = Some(error);
+                Err(Error::invalid("offline Nix cgroup observation", "original failure retained"))
+            }
+        }
+    }
+
+    fn capture_once(&mut self, root: &CgroupV2Root, relative: &Path) -> Result<()> {
+        root.anchor.validate_active_retaining(&mut self.probes[0])?;
+        match root.anchor.root.resolve_directory_retaining(relative, &mut self.resolution) {
+            Err(error) if is_missing(&error) => {
+                self.absence = Some(error);
+                return root.anchor.validate_active_retaining(&mut self.probes[1]);
+            }
+            Err(error) => return Err(error),
+            Ok(()) => {}
+        }
+
+        let child = self.resolution.take_directory_root().ok_or_else(|| {
+            Error::invalid("offline Nix cgroup observation", "validated directory is absent")
+        })?;
+        self.anchor = Some(RetainedCgroupAnchor {
+            kernel_id: child.identity().inode,
+            root: child,
+        });
+        let anchor = self.anchor.as_ref().ok_or_else(|| {
+            Error::invalid("offline Nix cgroup observation", "original anchor is absent")
+        })?;
+        if !cfg!(target_pointer_width = "64") {
+            return Err(Error::invalid("cgroup identity profile", "requires a 64-bit kernel/process"));
+        }
+        anchor.validate_active_retaining(&mut self.probes[1])?;
+        root.anchor.validate_active_retaining(&mut self.probes[2])?;
+        anchor.validate_active_retaining(&mut self.probes[3])?;
+        anchor.root.open_regular_retaining(Path::new("cgroup.events"), &mut self.event_open)?;
+        self.events = self.event_open.take_readable_file();
+        let events = self.events.as_ref().ok_or_else(|| {
+            Error::invalid("offline Nix cgroup observation", "original events file is absent")
+        })?;
+        self.state = Some(read_population_state(events)?);
+        anchor.validate_active_retaining(&mut self.probes[4])
+    }
+}
+
 /// Reports whether an exact cgroup-v2 subtree is accepting scheduler time.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CgroupFreezerState {
@@ -462,8 +574,13 @@ impl CgroupPopulationMonitor {
     /// `ENODEV` retirement signal, or when the bounded `cgroup.events` record
     /// omits its mandatory `populated` field.
     pub fn state(&self) -> Result<CgroupPopulationState> {
+        read_population_state(&self.events)
+    }
+}
+
+fn read_population_state(events: &File) -> Result<CgroupPopulationState> {
         let mut bytes = [0_u8; 4097];
-        let length = match self.events.read_at(&mut bytes, 0) {
+        let length = match events.read_at(&mut bytes, 0) {
             Ok(length) => length,
             Err(source) if source.raw_os_error() == Some(libc::ENODEV) => {
                 return Ok(CgroupPopulationState::Retired);
@@ -497,7 +614,41 @@ impl CgroupPopulationMonitor {
                 message: "population field is absent or invalid".to_owned(),
             }),
         }
-    }
+}
+
+macro_rules! active_reference_step {
+    (Local, $anchor:ident, $pending:ident) => {
+        let _active = $anchor.root.open_regular(Path::new("cgroup.procs"))?;
+    };
+    (Retained, $anchor:ident, $pending:ident) => {
+        $anchor.root.open_regular_retaining(Path::new("cgroup.procs"), $pending)?;
+    };
+}
+
+macro_rules! validate_active_recipe {
+    ($anchor:ident, $disposition:ident, $pending:ident) => {{
+        if uapi::filesystem_type($anchor.root.as_fd())? != CGROUP2_SUPER_MAGIC {
+            return Err(Error::WrongDescriptorType {
+                expected: "kernel cgroup-v2 directory",
+            });
+        }
+        let stat = uapi::fstat($anchor.root.as_fd())?;
+        if stat.st_mode & libc::S_IFMT != libc::S_IFDIR
+            || $anchor.kernel_id == 0
+            || stat.st_ino != $anchor.kernel_id
+            || stat.st_dev != $anchor.root.identity().device
+        {
+            return Err(Error::invalid(
+                "cgroup anchor",
+                "kernel directory identity changed or is unspecified",
+            ));
+        }
+        // A retained removed directory may still report a positive nlink.
+        // Opening this fixed regular kernfs file checks an active reference;
+        // all lookup constraints remain enforced by BeneathRoot.
+        active_reference_step!($disposition, $anchor, $pending);
+        Ok(())
+    }};
 }
 
 impl RetainedCgroupAnchor {
@@ -821,27 +972,11 @@ impl RetainedCgroupAnchor {
     ///
     /// Rejects changed identity, a removed/inaccessible cgroup, or kernel error.
     pub fn validate_active(&self) -> Result<()> {
-        if uapi::filesystem_type(self.root.as_fd())? != CGROUP2_SUPER_MAGIC {
-            return Err(Error::WrongDescriptorType {
-                expected: "kernel cgroup-v2 directory",
-            });
-        }
-        let stat = uapi::fstat(self.root.as_fd())?;
-        if stat.st_mode & libc::S_IFMT != libc::S_IFDIR
-            || self.kernel_id == 0
-            || stat.st_ino != self.kernel_id
-            || stat.st_dev != self.root.identity().device
-        {
-            return Err(Error::invalid(
-                "cgroup anchor",
-                "kernel directory identity changed or is unspecified",
-            ));
-        }
-        // A retained removed directory may still report a positive nlink.
-        // Opening this fixed regular kernfs file checks an active reference;
-        // all lookup constraints remain enforced by BeneathRoot.
-        let _active = self.root.open_regular(Path::new("cgroup.procs"))?;
-        Ok(())
+        validate_active_recipe!(self, Local, unused)
+    }
+
+    fn validate_active_retaining(&self, pending: &mut PendingRegularFileV1) -> Result<()> {
+        validate_active_recipe!(self, Retained, pending)
     }
 }
 

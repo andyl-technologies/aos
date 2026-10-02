@@ -30,6 +30,7 @@ pub use session::{
     ExchangeStep, FixedLiveChild, FixedProcessControlInterest, FixedProcessControlReadiness,
     FixedProcessSessionError, FixedProcessSessionExchange, FixedProcessSessionOutcome,
     FixedProcessSessionRequest, run_fixed_process_session,
+    FixedNixOfflineSessionOwnerV1,
     run_fixed_process_session_retained_v1,
     run_fixed_process_session_from_executable_descriptor,
     run_fixed_process_session_from_executable_descriptor_retained_v1,
