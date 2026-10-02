@@ -489,6 +489,9 @@ in
       inherit pname;
       inherit version;
 
+      # The complete native build script exceeds Linux's 128 KiB argument cap.
+      passBuildScriptAsFile = true;
+
       src = fetchurl {
         urls = [
           "https://download.qemu.org/qemu-${version}.tar.xz"
