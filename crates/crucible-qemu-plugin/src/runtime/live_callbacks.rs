@@ -1912,35 +1912,6 @@ impl LiveVcpuTimeCallbackState {
         }
     }
 
-    /// Requests QEMU's native stopped runstate after publishing the boundary.
-    fn request_checkpoint_vmstop(
-        &self,
-        boundary: &'static str,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        self.request_checkpoint_vmstop_observed(boundary, None)
-    }
-
-    fn request_checkpoint_vmstop_observed(
-        &self,
-        boundary: &'static str,
-        original: Option<network_output_stop::RetainedNetworkOutputStop>,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        let status = (self.request_vmstop)();
-        if let Some(original) = original {
-            original.observe_admission(status);
-        }
-        // Multiple exact callbacks can observe the same level-triggered pause
-        // before QEMU's main loop consumes the first admitted stop request.
-        // QEMU reports that race as -EALREADY; the required stop is already
-        // fenced and queued, so this callback has satisfied its handoff too.
-        const NEGATIVE_EALREADY: i32 = -114;
-        if status == 0 || status == NEGATIVE_EALREADY {
-            Ok(())
-        } else {
-            Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { boundary, status })
-        }
-    }
-
     /// Publishes and admits a doorbell-deferred stop from this exact callback.
     fn request_selectable_vmstop_if_pending(
         &self,
@@ -2317,19 +2288,6 @@ impl LiveVcpuTimeCallbackState {
         )?;
         drop(output_stop);
         self.request_network_output_stop(original)
-    }
-
-    /// Fences the exact output coordinate before native dispatch can continue.
-    fn request_network_output_stop(
-        &self,
-        original: network_output_stop::RetainedNetworkOutputStop,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        let admission = self.request_checkpoint_vmstop_observed("network-output", Some(original));
-        if let Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { status, .. }) = &admission
-        {
-            self.retain_network_output_stop_refusal(*status);
-        }
-        admission
     }
 
     fn on_block_wait(&self, _request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {
