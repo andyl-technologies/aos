@@ -30,6 +30,8 @@
 //! [`RpcService`](crate::service::RpcService); these handlers are pure
 //! transport glue.
 
+mod instance_oci;
+
 use std::sync::Arc;
 
 use aos_proto_types::{CONNECT_PROTOCOL_VERSION, CONNECT_PROTOCOL_VERSION_HEADER};
@@ -1208,6 +1210,26 @@ pub async fn rewrite_for_route(
             Err(StatusCode::MISDIRECTED_REQUEST.into_response())
         };
     }
+    // An enabled instance OCI route owns the host's `/v2` namespace ahead of
+    // any registry-bound root route, so a registry can be converted or retired
+    // without a serving gap while both exist.
+    let root_path = request_path.trim_start_matches('/');
+    if root_path == "v2" || root_path.starts_with("v2/") {
+        let instance_route = match svc
+            .db
+            .inbound_instance_oci_route(&host, port, &scheme, &ingress_kind)
+            .await
+        {
+            Ok(route) => route,
+            Err(_) => return Err(StatusCode::SERVICE_UNAVAILABLE.into_response()),
+        };
+        if let Some(route) = instance_route {
+            return instance_oci::rewrite_for_instance_oci_route(
+                svc, request, route, &host, port, &scheme, root_path,
+            )
+            .await;
+        }
+    }
     let Some((route, surface_path)) = routes.iter().find_map(|route| {
         strip_route_base_path(&route.base_path, &request_path).map(|path| (route, path))
     }) else {
@@ -1341,10 +1363,11 @@ pub async fn rewrite_for_route(
         request
             .extensions_mut()
             .insert(crate::oci::ResolvedOciRoute {
-                registry_id,
+                registry_id: Some(registry_id),
                 authority,
                 scheme: scheme.clone(),
                 access_policy_kind: route.access_policy_kind.clone(),
+                repository_prefix: None,
                 request: parsed,
             });
         let mut rewritten = "/_aos-internal/delivery".to_owned();
@@ -2898,6 +2921,21 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
     );
     r = rpc_route!(
         r,
+        "/aos.hub.v1.ContainerService/GetContainerNamespace",
+        get_container_namespace
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/PlanSetContainerNamespace",
+        plan_set_container_namespace
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.ContainerService/SetContainerNamespace",
+        set_container_namespace
+    );
+    r = rpc_route!(
+        r,
         "/aos.hub.v1.ContainerService/PlanRunContainerGc",
         plan_run_container_gc
     );
@@ -3018,6 +3056,56 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         r,
         "/aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
         trigger_instance_maintenance
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/ListInstanceOciRoutes",
+        list_instance_oci_routes
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/GetInstanceOciRoute",
+        get_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanCreateInstanceOciRoute",
+        plan_create_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/CreateInstanceOciRoute",
+        create_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanUpdateInstanceOciRoute",
+        plan_update_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/UpdateInstanceOciRoute",
+        update_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanDeleteInstanceOciRoute",
+        plan_delete_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/DeleteInstanceOciRoute",
+        delete_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/PlanConvertRouteToInstanceOciRoute",
+        plan_convert_route_to_instance_oci_route
+    );
+    r = rpc_route!(
+        r,
+        "/aos.hub.v1.InstanceService/ConvertRouteToInstanceOciRoute",
+        convert_route_to_instance_oci_route
     );
     // RegistryConfigurationService
     r = rpc_route!(
