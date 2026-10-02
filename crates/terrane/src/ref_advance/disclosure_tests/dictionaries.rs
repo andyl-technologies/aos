@@ -150,7 +150,7 @@ pub(super) async fn publish_dictionary_codecs() {
                             if refusal == 2 {
                                 *declared_plaintext_len += 1;
                             } else {
-                                *profile = Box::new(ChunkProfile::cdc_1m([0x73; 32]));
+                                **profile = ChunkProfile::cdc_1m([0x73; 32]);
                             }
                         }
                         proposal.uploads.push(malformed);

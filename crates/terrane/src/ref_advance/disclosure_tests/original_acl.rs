@@ -176,7 +176,7 @@ pub(super) async fn retain_original_authorization() {
     tokio::fs::write(&retained_path, &changed_bytes)
         .await
         .unwrap();
-    let failure = reopened
+    let Err(failure) = reopened
         .guard()
         .read_snapshot(
             destination_reference,
@@ -185,8 +185,9 @@ pub(super) async fn retain_original_authorization() {
             "sdk",
         )
         .await
-        .err()
-        .expect("canonical changed original policy must fail its exact retained binding");
+    else {
+        panic!("canonical changed original policy must fail its exact retained binding");
+    };
     assert_eq!(
         failure.kind(),
         &StoreErrorKind::Invalid(InvalidReason::MalformedRequest)

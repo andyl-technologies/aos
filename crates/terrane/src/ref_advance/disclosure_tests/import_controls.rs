@@ -65,12 +65,13 @@ async fn reject_changed_control(
 ) {
     let reference = "refs/heads/_/main";
     tokio::fs::write(path, changed).await.unwrap();
-    let failure = destination
+    let Err(failure) = destination
         .guard()
         .read_snapshot(reference, authority.token(), b"/file", "sdk")
         .await
-        .err()
-        .expect("copied or conflicting retained controls must refuse original verification");
+    else {
+        panic!("copied or conflicting retained controls must refuse original verification");
+    };
     assert_eq!(
         failure.kind(),
         &StoreErrorKind::Invalid(InvalidReason::MalformedRequest)
