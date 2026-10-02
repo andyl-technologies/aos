@@ -81,6 +81,8 @@ pub(super) async fn reserve(
     let reservation = transfer::register(permit, message.capacity_digest()?)?;
     message.capacity_transfer = Some(reservation.ticket());
     message.validate()?;
+    #[cfg(feature = "do-e2e")]
+    window.lifetime.observe_transfer(&reservation.ticket());
     window
         .lifetime
         .retain_transfer(reservation.cancellation())?;
@@ -419,6 +421,17 @@ impl ExternalObjectGuard {
                 }
             };
             lifetime.retain_capacity(permit)?;
+            #[cfg(feature = "do-e2e")]
+            if let Operation::Range { original, .. } = &message.operation {
+                let trace = super::observation::Trace::from_env(
+                    &self.env, original, &body, super::observation::Role::SourceGuard,
+                );
+                if let Some(trace) = &trace {
+                    trace.admitted(1);
+                    if let Some(ticket) = &message.capacity_transfer { trace.transfer(ticket); }
+                }
+                lifetime.observe(trace);
+            }
             let credential = publication.credential_text(
                 &StorageCredentialSelector {
                     purpose: "read".into(),
@@ -531,6 +544,8 @@ impl ExternalObjectGuard {
                         ));
                     }
                     state.ended = done;
+                    #[cfg(feature = "do-e2e")]
+                    state.lifetime.observe_progress(state.counted, done);
                     if done && view.length() == 0 {
                         return Ok(None);
                     }

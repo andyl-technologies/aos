@@ -72,7 +72,19 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
             &deployment,
             object.clock().observed_at,
         )?;
-        let progress = execute(env, &object, &work, &signal).await?;
+        #[cfg(feature = "do-e2e")]
+        let trace = super::observation::Trace::from_env(
+            env, &work.original, &body, super::observation::Role::DestinationExecutor,
+        );
+        let execution = execute(env, &object, &work, &signal,
+            #[cfg(feature = "do-e2e")]
+            trace.as_ref(),
+        ).await;
+        #[cfg(feature = "do-e2e")]
+        if let Some(trace) = &trace {
+            trace.finish(if execution.is_ok() { "returned" } else { "refused" });
+        }
+        let progress = execution?;
         ExternalCopyReply::new(&work, progress)?.sign(&key, &work)
     }
     .await;
@@ -93,6 +105,8 @@ async fn execute(
     object: &ObjectConfig,
     work: &ExternalCopyRequest,
     signal: &worker::web_sys::AbortSignal,
+    #[cfg(feature = "do-e2e")]
+    trace: Option<&std::rc::Rc<super::observation::Trace>>,
 ) -> Result<CopyProgress> {
     let config = config::configured(env, object)?
         .ok_or_else(|| anyhow::anyhow!("copy consumer disabled"))?;
@@ -225,6 +239,8 @@ async fn execute(
         fresh: &fresh,
         lifetime: super::lifetime::Lifetime::new(signal.clone())?,
     };
+    #[cfg(feature = "do-e2e")]
+    window.lifetime.observe(trace.cloned());
     window.check()?;
     crate::direct_upload::provider_capacity::configure(u32::from(domain.provider_concurrency))?;
     let capacity = crate::direct_upload::provider_capacity::acquire_class_checked(
@@ -245,6 +261,8 @@ async fn execute(
         (capacity, None)
     };
     window.lifetime.retain_capacity(capacity)?;
+    #[cfg(feature = "do-e2e")]
+    if let Some(trace) = trace { trace.admitted(if part { 2 } else { 1 }); }
     let write_secret = publication.credential_text(
         &StorageCredentialSelector {
             purpose: "write".into(),

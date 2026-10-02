@@ -39,6 +39,8 @@ struct Resources {
     source_gate: RefCell<Option<futures_util::lock::OwnedMutexGuard<()>>>,
     transfers: RefCell<Vec<crate::direct_upload::provider_capacity::transfer::Cancellation>>,
     native: RefCell<Vec<(JsValue, &'static str)>>,
+    #[cfg(feature = "do-e2e")]
+    trace: RefCell<Option<Rc<super::observation::Trace>>>,
 }
 
 pub(super) struct Registration {
@@ -57,7 +59,7 @@ impl Lifetime {
         let callback = Closure::new(move |_| {
             #[cfg(feature = "do-e2e")]
             SIGNAL_CLOSES.with(|count| count.set(count.get().saturating_add(1)));
-            observed.close();
+            observed.close("native_signal");
         });
         event_listener(&signal, "addEventListener", &callback)?;
         let owner = Self {
@@ -66,7 +68,7 @@ impl Lifetime {
             resources,
         };
         if owner.signal.aborted() {
-            owner.resources.close();
+            owner.resources.close("native_signal");
         }
         owner.check()?;
         Ok(owner)
@@ -108,6 +110,22 @@ impl Lifetime {
         ensure!(transfers.len() < 2, "copy source transfer bound reached");
         transfers.push(cancellation);
         Ok(())
+    }
+
+    #[cfg(feature = "do-e2e")]
+    /// Attaches a private bracket without changing any resource ownership.
+    pub(super) fn observe(&self, trace: Option<Rc<super::observation::Trace>>) {
+        *self.resources.trace.borrow_mut() = trace;
+    }
+
+    #[cfg(feature = "do-e2e")]
+    pub(super) fn observe_transfer(&self, ticket: &crate::direct_upload::provider_capacity::transfer::Ticket) {
+        if let Some(trace) = self.resources.trace.borrow().as_ref() { trace.transfer(ticket); }
+    }
+
+    #[cfg(feature = "do-e2e")]
+    pub(super) fn observe_progress(&self, bytes: u64, eof: bool) {
+        if let Some(trace) = self.resources.trace.borrow().as_ref() { trace.progress(bytes, eof); }
     }
 
     /// Retains exact source-key ownership until EOF, error or native cancellation.
@@ -152,12 +170,12 @@ impl Lifetime {
 impl Drop for Lifetime {
     fn drop(&mut self) {
         let _ = event_listener(&self.signal, "removeEventListener", &self.callback);
-        self.resources.close();
+        self.resources.close("owner_drop");
     }
 }
 
 impl Resources {
-    fn close(&self) {
+    fn close(&self, _cause: &'static str) {
         if self.closed.replace(true) {
             return;
         }
@@ -166,8 +184,13 @@ impl Resources {
         }
         // Remove the collection before invoking native methods so callbacks
         // cannot borrow a live mutable list or retain another dispatch owner.
-        for (object, method) in self.native.take() {
+        let native = self.native.take();
+        #[cfg(feature = "do-e2e")]
+        let native_count = Cell::new(0_usize);
+        for (object, method) in native {
             if let Ok(cleanup) = function(&object, method) {
+                #[cfg(feature = "do-e2e")]
+                native_count.set(native_count.get().saturating_add(1));
                 if let Ok(result) = cleanup.call0(&object) {
                     if let Ok(catch) = function(&result, "catch") {
                         if let Ok(handler) = Reflect::get(&js_sys::global(), &"Boolean".into()) {
@@ -177,8 +200,16 @@ impl Resources {
                 }
             }
         }
-        self.capacity.borrow_mut().take();
-        self.source_gate.borrow_mut().take();
+        let capacity = self.capacity.borrow_mut().take();
+        let source_gate = self.source_gate.borrow_mut().take();
+        #[cfg(feature = "do-e2e")]
+        let released = (capacity.is_some(), source_gate.is_some());
+        drop(capacity);
+        drop(source_gate);
+        #[cfg(feature = "do-e2e")]
+        if let Some(trace) = self.trace.borrow().as_ref() {
+            trace.cleanup(_cause, released.0, released.1, native_count.get());
+        }
     }
 }
 

@@ -6,6 +6,7 @@
 
 mod classify;
 mod controls;
+mod copy_request;
 mod files;
 mod ingress;
 mod storage_work;
@@ -129,6 +130,12 @@ fn inspect(manifest: Manifest) -> Result<Vec<Observation>> {
 fn main() {
     let result = (|| -> Result<()> {
         let args: Vec<_> = std::env::args_os().collect();
+        if args.len() == 3 && args[1] == "copy-request" {
+            let selection = files::read_manifest(std::path::Path::new(&args[2]))?;
+            let observation = copy_request::inspect(serde_json::from_slice(&selection)?)?;
+            println!("{}", serde_json::to_string(&observation)?);
+            return Ok(());
+        }
         ensure!(args.len() == 2, "expected one private selection file");
         let manifest = files::read_manifest(std::path::Path::new(&args[1]))?;
         let observations = inspect(serde_json::from_slice(&manifest)?)?;

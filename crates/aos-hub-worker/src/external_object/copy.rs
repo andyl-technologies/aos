@@ -5,6 +5,9 @@
 
 mod bytes;
 
+#[cfg(any(test, feature = "do-e2e"))]
+mod observation;
+
 mod hash_range;
 
 mod config;
