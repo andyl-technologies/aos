@@ -212,3 +212,96 @@ fn nested_allocation_rejects_replaced_parent_inode() {
         .is_err());
     assert!(!path.join("child").exists());
 }
+
+#[test]
+fn production_policy_accepts_platform_entries_and_rejects_shared_or_immutable_paths() {
+    let handler = NativeFilesystem::production();
+
+    for path in [
+        "/var/etc/ssh",
+        "/var/empty",
+        "/var/db/sudo",
+        "/var/log/sudo-io",
+        "/run/apm",
+        "/etc/ssh/authorized_keys",
+        "/nix/var/nix/gcroots/aos-profiles",
+    ] {
+        handler.validate_path(Path::new(path), false).unwrap();
+    }
+
+    for root in &handler.roots {
+        assert!(handler.validate_path(root, false).is_err(), "{root:?}");
+    }
+    for path in [
+        "/",
+        "/nix",
+        "/nix/store/unowned",
+        "/usr/lib/unowned",
+        "/home/unowned",
+        "/var/../etc/unowned",
+        "/var/lib/aos/native-filesystem",
+        "/var/lib/aos/native-filesystem/claim.json",
+        "/var/lib/aos",
+    ] {
+        assert!(
+            handler.validate_path(Path::new(path), false).is_err(),
+            "{path}"
+        );
+    }
+}
+
+#[test]
+fn production_policy_realizes_var_and_gc_entries_without_adopting_existing_paths() {
+    let temporary = tempfile::tempdir().unwrap();
+    let production = NativeFilesystem::production();
+    let relocated = |path: &Path| temporary.path().join(path.strip_prefix("/").unwrap());
+    let handler = NativeFilesystem {
+        state_root: relocated(&production.state_root),
+        roots: production
+            .roots
+            .iter()
+            .map(|root| relocated(root))
+            .collect(),
+        immutable_roots: production
+            .immutable_roots
+            .iter()
+            .map(|root| relocated(root))
+            .collect(),
+    };
+    for root in &handler.roots {
+        fs::create_dir_all(root).unwrap();
+    }
+    fs::create_dir_all(relocated(Path::new("/var/db"))).unwrap();
+
+    for path in [
+        "/var/etc/ssh",
+        "/var/empty",
+        "/var/db/sudo",
+        "/nix/var/nix/gcroots/aos-profiles",
+    ] {
+        let path = relocated(Path::new(path));
+        let mut invocation = invocation(&path);
+
+        call(&handler, "apply", &invocation);
+        assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+        invocation.action = Action::Remove;
+        call(&handler, "remove", &invocation);
+        assert!(!path.exists());
+
+        fs::create_dir(&path).unwrap();
+        invocation.action = Action::Apply;
+        assert!(handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err());
+        assert!(path.exists());
+        fs::remove_dir(&path).unwrap();
+    }
+
+    let link = relocated(Path::new("/var/etc/redirect"));
+    std::os::unix::fs::symlink(temporary.path(), &link).unwrap();
+    let invocation = invocation(&link.join("unowned"));
+    assert!(handler
+        .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+        .is_err());
+    assert!(!temporary.path().join("unowned").exists());
+}

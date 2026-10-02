@@ -58,10 +58,27 @@ impl NativeFilesystem {
         Self {
             state_root: "/var/lib/aos/native-filesystem".into(),
             immutable_roots: vec!["/nix/store".into()],
-            roots: ["/run", "/var/lib", "/etc", "/var/log", "/opt"]
-                .into_iter()
-                .map(PathBuf::from)
-                .collect(),
+            // Platform directories remain shared roots even when their containing
+            // /var tree is mutable. Effects may own entries beneath them only.
+            roots: [
+                "/run",
+                "/var",
+                "/var/lib",
+                "/var/log",
+                "/var/etc",
+                "/var/cache",
+                "/var/spool",
+                "/var/tmp",
+                "/var/home",
+                "/var/srv",
+                "/var/roothome",
+                "/etc",
+                "/opt",
+                "/nix/var/nix/gcroots",
+            ]
+            .into_iter()
+            .map(PathBuf::from)
+            .collect(),
         }
     }
 

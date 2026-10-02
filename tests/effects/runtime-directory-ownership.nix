@@ -28,6 +28,10 @@ let
   evaluation = lib.evalPackageModules {
     scope = ["test" "runtime-directory-ownership"];
     packageModules = [
+      (record "runtime-checks" ../../pkgs/system/_aos-runtime-checks "module.nix")
+      (record "linux-pam" ../../pkgs/security/_linux-pam "module.nix")
+      (record "openssh" ../../pkgs/networking/_openssh "module.nix")
+      (record "nftables" ../../pkgs/networking/_nftables "module.nix")
       (record "filesystem" ../../pkgs/filesystem/_aos-filesystem-provider "module.nix")
       (record "services" ../../pkgs/system/_service-management "module.nix")
       (record "configuration" ../../pkgs/system/_aos-configuration-provider "module.nix")
@@ -37,6 +41,15 @@ let
     operatorModules = [
       {
         aos.abilities.serviceManagement.operations.realize.handler.program = artifactLib.value (artifact "service-handler");
+        aos.services.ssh = {
+          enable = true;
+          usePAM = false;
+          authorizedKeysFile = "/var/lib/operator-keys/%u";
+        };
+        aos.networkPolicy.enable = lib.mkForce false;
+        aos.abilities.network.operations.ready.handler.program = artifactLib.value (artifact "network-handler");
+        aos.abilities.identity.operations.group.handler.program = artifactLib.value (artifact "identity-handler");
+        aos.abilities.identity.operations.principal.handler.program = artifactLib.value (artifact "identity-handler");
         aos.abilities.mount.operations.ensure.handler.program = artifactLib.value (artifact "mount-handler");
         aos.packageRuntime.configurationEvaluation.enable = true;
         aos.packageRuntime.packageProfile.enable = true;
@@ -65,5 +78,12 @@ in {
     profiles = find "nix-profiles";
   in
     builtins.elem "view" profiles.identity && profiles.input.sourcePath == "/var/lib/profiles" && builtins.any (node: builtins.elem "mount" node.identity && builtins.elem profiles.id node.dependencies) nodes;
+  sshPublicKeysHaveOnePreservingOwner = let
+    ssh = evaluation.config.aos.services.ssh;
+  in
+    !(evaluation.config.aos.abilities.filesystem.operations.directory.effects ? ssh-authorized-keys)
+    && builtins.any (directory: directory.path == "ssh/authorized_keys" && directory.purpose == "configuration" && directory.mode == "0755" && directory.retention == "persistent") ssh.directories.managed
+    && builtins.any (view: view.source == "/etc/ssh/authorized_keys" && !view.optional) ssh.configuration.views
+    && lib.hasInfix "AuthorizedKeysFile /var/lib/operator-keys/%u" (builtins.concatStringsSep "" evaluation.config.aos.abilities.configuration.operations.file.effects.ssh.input.fragments);
   attestationUsesManagerRuntimeDirectory = builtins.any (directory: directory.path == "aos-attest" && directory.purpose == "runtime" && directory.mode == "0700") quote.directories.managed;
 }

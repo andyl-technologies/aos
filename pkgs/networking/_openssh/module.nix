@@ -8,6 +8,8 @@
   cfg = config.aos.services.ssh;
   types = lib.types;
   operations = config.aos.abilities;
+  authorizedKeysDirectory = "ssh/authorized_keys";
+  authorizedKeysPath = "/etc/${authorizedKeysDirectory}";
   boundedString = types.str;
   boundedStrings = types.listOf boundedString;
   authorizedKeysCommand = types.submodule {
@@ -216,7 +218,6 @@
         (operations.serviceManagement.operations.realize.effects."ssh.aos-ssh-ready".outputs.resource)
       ];
       prerequisites = [
-        (operations.filesystem.operations.directory.effects.ssh-authorized-keys.outputs.resource)
         (operations.filesystem.operations.directory.effects.ssh-privilege-separation.outputs.resource)
         (operations.configuration.operations.file.effects.ssh.outputs.resource)
       ];
@@ -241,12 +242,29 @@
       final_signal = "KILL";
       send_to_all_processes = false;
     };
+    # The manager preserves image/operator-authored public keys and also creates
+    # the default directory on hosts without a baked key. The daemon only reads it.
+    configuration.views = [
+      {
+        name = "authorized-keys";
+        source = authorizedKeysPath;
+        optional = false;
+      }
+    ];
     directories.managed = [
       {
         path = "sshd";
         purpose = "runtime";
         mode = "0755";
         retention = "restart";
+        owner = "root";
+        group = "root";
+      }
+      {
+        path = authorizedKeysDirectory;
+        purpose = "configuration";
+        mode = "0755";
+        retention = "persistent";
         owner = "root";
         group = "root";
       }
@@ -323,7 +341,7 @@ in {
         };
         authorizedKeysFile = lib.mkOption {
           type = boundedString;
-          default = "/etc/ssh/authorized_keys/%u";
+          default = "${authorizedKeysPath}/%u";
           description = "Path pattern used to find authorized keys.";
         };
         authorizedKeysCommand = lib.mkOption {
@@ -377,12 +395,6 @@ in {
               owner = "root";
               group = "root";
             };
-          };
-          ssh-authorized-keys.input = {
-            path = "/etc/ssh/authorized_keys";
-            mode = "0755";
-            owner = "root";
-            group = "root";
           };
           ssh-privilege-separation.input = {
             path = "/var/empty";
