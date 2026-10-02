@@ -1,20 +1,9 @@
-From 84e27103a08f6817074c12b6b5287434c2ab4461 Mon Sep 17 00:00:00 2001
+From 0597a1a38bbfc407d4a49df122146a05674e58b8 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 2 Oct 2026 05:55:11 -0700
-Subject: [PATCH] crucible: preserve deterministic stop and child continuation
- state
+Date: Fri, 2 Oct 2026 06:57:02 -0700
+Subject: [PATCH] sim: preserve exact native control and lifecycle boundaries
 
-Retain native runtime custody and descriptor-safe child snapshot state. Admit
-deterministic network output stops at their committed coordinate while fencing
-new clock advances until explicit resume and preserving admitted device work.
-
-Separate canonical lifecycle fault state from process custody with the current
-v3 fingerprint projection. Preserve full VMState bytes and generation admission.
-
-Keep deferred control intent across native stop and advance settlement, rearm
-at a valid paused or resumed boundary, and fulfill only the registered callback.
-Refuse outstanding intent at cold/fork preparation and retain focused production
-body regressions for the corrected native contracts.
+Retain the selected native control, device, process and fault-state implementation. Admit exact registered packet-output stops, separate canonical lifecycle state from process-local custody, retain deferred control intent across advance/stop settlement, and permit unlocked atomic intent observation while preserving BQL custody mutation gates. Include scoped standalone production-body regressions.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -61874,7 +61863,7 @@ index 8c1241a2c11c289bc3c69fff66ab67d06e9f257c..0c821e747558eabaeb83af16c23b3c0f
  
  #endif
 diff --git a/include/qemu/plugin.h b/include/qemu/plugin.h
-index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..631ffabadcb96474381c3c92cc30e28220e4f09c 100644
+index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..b543d76af5a56600318452a2d7d4358461f2b9d6 100644
 --- a/include/qemu/plugin.h
 +++ b/include/qemu/plugin.h
 @@ -9,6 +9,7 @@
@@ -61897,7 +61886,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..631ffabadcb96474381c3c92cc30e282
  /*
   * Construct a qemu_plugin_meminfo_t.
   */
-@@ -183,6 +189,88 @@ void qemu_plugin_flush_cb(void);
+@@ -183,6 +189,89 @@ void qemu_plugin_flush_cb(void);
  
  void qemu_plugin_atexit_cb(void);
  
@@ -61938,6 +61927,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..631ffabadcb96474381c3c92cc30e282
 +void qemu_plugin_crucible_rr_control_boundary_acknowledge(void);
 +void qemu_plugin_crucible_rr_control_boundary_cancel(void);
 +void qemu_plugin_crucible_rr_control_boundary_defer(void);
++/* Unlocked atomic advisory observation; custody mutation requires BQL. */
 +bool qemu_plugin_crucible_control_boundary_outstanding(void);
 +bool qemu_plugin_crucible_vmstop_pending(void);
 +bool qemu_plugin_crucible_vmstop_admission_pending(void);
@@ -61986,7 +61976,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..631ffabadcb96474381c3c92cc30e282
  void qemu_plugin_add_dyn_cb_arr(GArray *arr);
  
  static inline void qemu_plugin_disable_mem_helpers(CPUState *cpu)
-@@ -237,6 +325,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
+@@ -237,6 +326,11 @@ static inline enum qemu_plugin_cb_flags qemu_plugin_get_cb_flags(void)
  static inline void qemu_plugin_add_opts(void)
  { }
  
@@ -61998,7 +61988,7 @@ index 9c2ec8ceaeba3d061e5fbe717e1fded745b3c035..631ffabadcb96474381c3c92cc30e282
  static inline void qemu_plugin_opt_parse(const char *optstr,
                                           QemuPluginList *head)
  {
-@@ -306,6 +399,164 @@ static inline void qemu_plugin_flush_cb(void)
+@@ -306,6 +400,164 @@ static inline void qemu_plugin_flush_cb(void)
  static inline void qemu_plugin_atexit_cb(void)
  { }
  
@@ -74522,7 +74512,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..06926e83b4530fd8ca1136355e197f804f2b529f 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc3ed22d4e 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -75464,7 +75454,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..06926e83b4530fd8ca1136355e197f80
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1031,1679 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1031,1680 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -75858,7 +75848,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..06926e83b4530fd8ca1136355e197f80
 +
 +bool qemu_plugin_crucible_control_boundary_outstanding(void)
 +{
-+    g_assert(bql_locked());
++    /* OOB reports may observe intent without BQL; mutation requires BQL. */
 +    return qatomic_load_acquire(&qemu_plugin_control_boundary_deferred) ||
 +        qatomic_load_acquire(&qemu_plugin_control_boundary_scheduled) != 0 ||
 +        qatomic_load_acquire(&qemu_plugin_rr_control_request_generation) !=
@@ -76299,6 +76289,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..06926e83b4530fd8ca1136355e197f80
 +{
 +    int status;
 +
++    g_assert(bql_locked());
 +    if (qemu_plugin_crucible_control_boundary_outstanding()) {
 +        return -EBUSY;
 +    }
@@ -154568,6 +154559,354 @@ index 0000000000000000000000000000000000000000..f3e26425db598b16d7e9bd324ab6d2d5
 +        json.dumps(command, indent=2) + "\n")
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary), *([arguments.case] if arguments.case else [])],
++                   cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-control-observer.py b/tests/unit/test-crucible-control-observer.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..260d9de8c9372fbd817b7f2c2aed811495dda829
+--- /dev/null
++++ b/tests/unit/test-crucible-control-observer.py
+@@ -0,0 +1,342 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Execute the native OOB template report and guarded RR restart paths.
++
++QAPI types and production bodies come from the configured target source. Barrier
++inventories, resource-stage authority, CPU topology and replacement-thread/event
++providers are bounded fixtures. No physical fork or linked guest is executed.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <assert.h>
++#include <errno.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++#include "qapi/qapi-types-run-state.h"
++
++/* Error formatting does not grant admission or change the modeled runstate. */
++#undef RunState_str
++#define RunState_str(value) "paused"
++
++struct Error { int unused; };
++static bool locked, cold_admitted;
++static unsigned locks, unlocks, creates, event_changes, snapshot_checks;
++static RunState state = RUN_STATE_PAUSED;
++static int stop_state = 2, flush_status;
++static bool qemu_plugin_control_boundary_deferred;
++static uintptr_t qemu_plugin_control_boundary_scheduled;
++static uint64_t qemu_plugin_rr_control_request_generation;
++static uint64_t qemu_plugin_rr_control_complete_generation;
++static bool qemu_plugin_crucible_vmstop_cold_admitted;
++
++static bool bql_locked(void) { return locked; }
++static void bql_lock_impl(const char *file, int line)
++{ g_assert_false(locked); locked = true; locks++; }
++static void bql_unlock(void)
++{ g_assert_true(locked); locked = false; unlocks++; }
++typedef struct BQLLockAuto BQLLockAuto;
++static inline BQLLockAuto *bql_auto_lock(const char *file, int line);
++static inline void bql_auto_unlock(BQLLockAuto *lock);
++G_DEFINE_AUTOPTR_CLEANUP_FUNC(BQLLockAuto, bql_auto_unlock)
++#define ICOUNT_PRECISE 1
++static int icount_enabled(void) { return ICOUNT_PRECISE; }
++static bool runstate_check(RunState value) { return value == state; }
++static RunState runstate_get(void) { return state; }
++static bool qemu_plugin_crucible_single_threaded_rr(void) { return true; }
++static bool qemu_plugin_crucible_vmstop_pending(void) { return stop_state != 0; }
++static bool qemu_plugin_crucible_vmstop_admission_pending(void)
++{ return stop_state == 1; }
++static int qemu_plugin_crucible_vmstop_flush_status(void) { return flush_status; }
++static bool qemu_plugin_crucible_vmstop_cold_origin(void) { return false; }
++static bool qemu_crucible_cold_stop_receipt_valid(void) { return false; }
++static int qemu_plugin_crucible_vmstop_begin(void)
++{ g_assert_true(locked); cold_admitted = true; return 0; }
++
++static GMutex crucible_hot_fork_template_lock;
++static uint64_t crucible_hot_fork_template_generation = 7;
++static bool crucible_hot_fork_template_active;
++static bool crucible_hot_fork_operation_active, crucible_hot_fork_child_active;
++static bool crucible_hot_fork_template_abort_requested;
++static int crucible_hot_fork_template_phase;
++static CrucibleHotForkTemplateOutcome crucible_hot_fork_template_completion;
++static CrucibleHotForkTemplateFailureStage crucible_hot_fork_template_failure_stage;
++static char *crucible_hot_fork_template_failure_detail;
++static size_t crucible_hot_fork_template_snapshot_binding_count;
++static void *crucible_hot_fork_template_snapshot_bindings;
++static void *crucible_hot_fork_template_sources;
++static struct { bool staged; } crucible_hot_fork_private_ring_stage,
++    crucible_hot_fork_plugin_endpoint_stage;
++enum {
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_IDLE,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_COMPLETED,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HOLD_PENDING,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_SNAPSHOT_BIND_PENDING,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_HELD,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BLOCK_RELEASE_PENDING,
++    CRUCIBLE_HOT_FORK_TEMPLATE_PHASE_BARRIERS_HELD,
++    CRUCIBLE_HOT_FORK_PROOF_PRECISE_ICOUNT = 1 << 0,
++    CRUCIBLE_HOT_FORK_PROOF_SINGLE_THREADED_SIM_RR = 1 << 1,
++    CRUCIBLE_HOT_FORK_PROOF_EXACT_PAUSED_BOUNDARY = 1 << 2,
++};
++#define CRUCIBLE_HOT_FORK_TEMPLATE_REQUIRED_PROOFS 7
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_QUERY 0
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_HOLD 1
++#define QEMU_PLUGIN_CRUCIBLE_HOT_FORK_BARRIER_RELEASE 2
++#define QEMU_RCU_HOT_FORK_BARRIER_QUERY 0
++#define QEMU_RCU_HOT_FORK_BARRIER_HOLD 1
++#define QEMU_RCU_HOT_FORK_BARRIER_RELEASE 2
++#define QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_QUERY 0
++#define QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_HOLD 1
++#define QEMU_ASYNC_WORKER_HOT_FORK_BARRIER_RELEASE 2
++#define QEMU_BLOCK_BACKEND_HOT_FORK_BARRIER_QUERY 0
++
++/* Only query and failed PREPARE admission are exercised; no authority is granted. */
++static CrucibleHotForkPluginBarrierState *crucible_hot_fork_plugin_barrier(
++    int operation, Error **errp)
++{ g_assert_cmpint(operation, ==, 0); return g_new0(CrucibleHotForkPluginBarrierState, 1); }
++static CrucibleHotForkRcuBarrierState *crucible_hot_fork_rcu_barrier(int operation)
++{ g_assert_cmpint(operation, ==, 0); return g_new0(CrucibleHotForkRcuBarrierState, 1); }
++static CrucibleHotForkAsyncWorkerBarrierState *crucible_hot_fork_async_worker_barrier(
++    int operation)
++{ g_assert_cmpint(operation, ==, 0); return g_new0(CrucibleHotForkAsyncWorkerBarrierState, 1); }
++static CrucibleHotForkBlockBarrierState *crucible_hot_fork_block_barrier(
++    int operation, Error **errp)
++{ g_assert_cmpint(operation, ==, 0); return g_new0(CrucibleHotForkBlockBarrierState, 1); }
++static void qapi_free_CrucibleHotForkBlockBarrierState_fixture(
++    CrucibleHotForkBlockBarrierState *value) { g_free(value); }
++#define qapi_free_CrucibleHotForkBlockBarrierState qapi_free_CrucibleHotForkBlockBarrierState_fixture
++static void error_setg(Error **errp, const char *format, ...)
++{ if (errp) { *errp = g_new0(Error, 1); } }
++static void error_setg_errno(Error **errp, int error, const char *format, ...)
++{ if (errp) { *errp = g_new0(Error, 1); } }
++static bool qemu_crucible_block_seal_ready(void) { return false; }
++static bool crucible_hot_fork_template_copy_snapshot_bindings(
++    CrucibleHotForkBlockSnapshotBindingList *bindings, Error **errp)
++{ g_assert_true(locked); snapshot_checks++; return true; }
++static bool crucible_hot_fork_template_snapshot_bindings_match(
++    CrucibleHotForkBlockSnapshotBindingList *bindings) { g_assert_not_reached(); }
++static void crucible_hot_fork_template_schedule_block_transition(void)
++{ g_assert_not_reached(); }
++static int qemu_crucible_hot_fork_ram_set_forkable(bool forkable)
++{ g_assert_not_reached(); }
++static void crucible_hot_fork_template_record_failure(
++    CrucibleHotForkTemplateFailureStage stage, Error *error)
++{ g_assert_not_reached(); }
++static bool crucible_hot_fork_adopt_reconstructed_child(Error **errp)
++{ g_assert_not_reached(); }
++static uint64_t crucible_hot_fork_acknowledged_proofs(void);
++static uint64_t crucible_hot_fork_template_acknowledged_proofs(
++    const CrucibleHotForkPluginBarrierState *plugin,
++    const CrucibleHotForkRcuBarrierState *rcu,
++    const CrucibleHotForkAsyncWorkerBarrierState *async,
++    const CrucibleHotForkBlockBarrierState *block)
++{ return crucible_hot_fork_acknowledged_proofs(); }
++static CrucibleHotForkTemplateResourceStageState *
++crucible_hot_fork_template_resource_stage_report(
++    const CrucibleHotForkPluginBarrierState *plugin)
++{ return g_new0(CrucibleHotForkTemplateResourceStageState, 1); }
++
++struct CPUState {
++    struct CPUState *next;
++    bool created, thread_kicked;
++    void *thread, *halt_cond;
++};
++static CPUState cpu;
++static CPUState *first_cpu = &cpu;
++#define CPU_FOREACH(value) for ((value) = first_cpu; (value); (value) = (value)->next)
++static int thread_storage, condition_storage;
++static void *single_tcg_cpu_thread = &thread_storage;
++static void *single_tcg_halt_cond = &condition_storage;
++static bool rr_replay_mutex_owned, rr_deferred_reset_handoff_ready;
++static bool rr_main_loop_poll_priming, rr_main_loop_dispatch_active;
++static bool rr_initial_wait_complete = true;
++static uint64_t rr_main_loop_dispatch_requested, rr_main_loop_dispatch_completed;
++static uint64_t rr_main_loop_dispatch_acknowledged;
++static uint64_t rr_vcpu_main_loop_work_published, rr_vcpu_main_loop_work_completed;
++static uint64_t rr_chained_main_loop_work_published, rr_chained_main_loop_work_completed;
++static uint64_t rr_external_main_loop_work_published, rr_external_main_loop_work_completed;
++static uint64_t rr_deferred_reset_dispatch_generation;
++static int rr_dispatch_ceiling_event, rr_main_loop_resume_event;
++static void qemu_cond_init(void *condition)
++{ g_assert_true(locked); event_changes++; }
++static void qemu_event_destroy(void *event)
++{ g_assert_true(locked); event_changes++; }
++static void qemu_event_init(void *event, bool active)
++{ g_assert_true(locked); event_changes++; }
++static bool rr_crucible_sim_quantum_dispatch_fence(void) { return true; }
++static void *rr_hot_fork_child_cpu_thread_fn(void *opaque) { g_assert_not_reached(); }
++#define QEMU_THREAD_JOINABLE 1
++static void qemu_thread_create(void *thread, const char *name,
++    void *(*entry)(void *), void *opaque, int mode)
++{ g_assert_true(locked); g_assert_false(cpu.created); creates++; }
++static void cpu_thread_wait_created(CPUState *target)
++{ g_assert_true(locked); target->created = true; }
++static struct {
++    int (*hot_fork_restart_vcpu_threads)(void);
++} accel_ops;
++static typeof(accel_ops) *cpus_accel = &accel_ops;
++"""
++
++TESTS = r"""
++static void free_report(CrucibleHotForkTemplateState *report)
++{
++    g_free(report->failure_detail);
++    g_free(report->plugin_barrier);
++    g_free(report->rcu_barrier);
++    g_free(report->async_worker_barrier);
++    g_free(report->block_barrier);
++    g_free(report->resource_stage);
++    g_free(report);
++}
++
++int main(int argc, char **argv)
++{
++    CrucibleHotForkTemplateState *report;
++    Error *error = NULL;
++    BQLLockAuto *guard;
++
++    cpu.created = true;
++    cpu.thread = single_tcg_cpu_thread;
++    cpu.halt_cond = single_tcg_halt_cond;
++    accel_ops.hot_fork_restart_vcpu_threads = rr_hot_fork_restart_vcpu_thread;
++    if (argc > 1 && strcmp(argv[1], "cold-unlocked") == 0) {
++        qemu_plugin_crucible_vmstop_cold_begin();
++        g_assert_not_reached();
++    }
++
++    /* Genuine OOB QUERY reaches the report observer without acquiring BQL. */
++    report = qmp_crucible_hot_fork_template(
++        CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_QUERY, false, NULL, &error);
++    g_assert_null(error);
++    g_assert_nonnull(report);
++    g_assert_cmpuint(report->acknowledged_proofs, ==, 7);
++    g_assert_false(locked);
++    g_assert_cmpuint(locks, ==, 0);
++    free_report(report);
++
++    qatomic_store_release(&qemu_plugin_control_boundary_deferred, true);
++    report = qmp_crucible_hot_fork_template(
++        CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_QUERY, false, NULL, &error);
++    g_assert_cmpuint(report->acknowledged_proofs, ==, 3);
++    g_assert_false(locked);
++    free_report(report);
++
++    /* Every atomic intent source independently refuses a paused proof. */
++    qatomic_store_release(&qemu_plugin_control_boundary_deferred, false);
++    qatomic_store_release(&qemu_plugin_control_boundary_scheduled, 9);
++    report = qmp_crucible_hot_fork_template(
++        CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_QUERY, false, NULL, &error);
++    g_assert_cmpuint(report->acknowledged_proofs, ==, 3);
++    free_report(report);
++    qatomic_store_release(&qemu_plugin_control_boundary_scheduled, 0);
++    qatomic_store_release(&qemu_plugin_rr_control_request_generation, 4);
++    report = qmp_crucible_hot_fork_template(
++        CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_QUERY, false, NULL, &error);
++    g_assert_cmpuint(report->acknowledged_proofs, ==, 3);
++    free_report(report);
++    qatomic_store_release(&qemu_plugin_rr_control_request_generation, 0);
++    qatomic_store_release(&qemu_plugin_control_boundary_deferred, true);
++
++    /* Actual PREPARE takes BQL before checking the outstanding intent. */
++    report = qmp_crucible_hot_fork_template(
++        CRUCIBLE_HOT_FORK_TEMPLATE_ACTION_PREPARE, true, NULL, &error);
++    g_assert_null(report);
++    g_assert_nonnull(error);
++    g_free(error);
++    g_assert_cmpuint(snapshot_checks, ==, 1);
++    g_assert_cmpuint(locks, ==, 1);
++    g_assert_cmpuint(unlocks, ==, 1);
++    g_assert_false(locked);
++    g_assert_false(crucible_hot_fork_template_active);
++
++    /* Genuine dispatcher -> RR restart refuses unlocked custody mutation. */
++    g_assert_cmpint(cpus_hot_fork_restart_vcpu_threads(), ==, -EINVAL);
++    g_assert_cmpuint(creates, ==, 0);
++    guard = bql_auto_lock(__FILE__, __LINE__);
++    g_assert_cmpint(cpus_hot_fork_restart_vcpu_threads(), ==, -EBUSY);
++    g_assert_cmpuint(event_changes, ==, 0);
++    g_assert_cmpint(qemu_plugin_crucible_vmstop_cold_begin(), ==, -EBUSY);
++    g_assert_false(cold_admitted);
++    qatomic_store_release(&qemu_plugin_control_boundary_deferred, false);
++    g_assert_cmpint(cpus_hot_fork_restart_vcpu_threads(), ==, 0);
++    g_assert_cmpuint(creates, ==, 1);
++    g_assert_cmpuint(event_changes, ==, 5);
++    g_assert_true(rr_main_loop_poll_priming);
++    g_assert_true(cpu.created);
++    qemu_plugin_crucible_vmstop_cold_begin();
++    g_assert_true(cold_admitted);
++    bql_auto_unlock(guard);
++    g_assert_false(locked);
++    g_assert_cmpuint(locks, ==, unlocks);
++    puts("PASS native OOB template observer, guarded PREPARE/restart, cold mutation");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", action="store_true")
++    parser.add_argument("--cold-unlocked", action="store_true")
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    selections = {
++        "include/qemu/main-loop.h": [
++            "static inline BQLLockAuto *bql_auto_lock(",
++            "static inline void bql_auto_unlock("],
++        "plugins/api-system.c": [
++            "bool qemu_plugin_crucible_control_boundary_outstanding(void)",
++            "int qemu_plugin_crucible_vmstop_cold_begin(void)"],
++        "monitor/qmp-cmds.c": [
++            "static bool crucible_hot_fork_exact_paused_boundary(void)",
++            "static uint64_t crucible_hot_fork_acknowledged_proofs(void)",
++            "static CrucibleHotForkTemplateState *\ncrucible_hot_fork_template_report(",
++            "CrucibleHotForkTemplateState *\nqmp_crucible_hot_fork_template("],
++        "accel/tcg/tcg-accel-ops-rr.c": [
++            "int rr_hot_fork_restart_vcpu_thread(void)"],
++        "system/cpus.c": ["int cpus_hot_fork_restart_vcpu_threads(void)"],
++    }
++    bodies = [definition((ROOT / path).read_text(), signature)
++              for path, signatures in selections.items() for signature in signatures]
++    if arguments.negative_control:
++        observer = bodies[2]
++        assert "g_assert(bql_locked());" not in observer
++        bodies[2] = observer.replace("{\n", "{\n    g_assert(bql_locked());\n", 1)
++    generated = arguments.output_dir / "control-observer.c"
++    generated.write_text(PRELUDE + "\n\n".join(bodies) + TESTS)
++    binary = arguments.output_dir / "control-observer"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               "-Wno-missing-prototypes", "-Wno-unused-function",
++               "-Wno-unused-variable", str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary), *(["cold-unlocked"] if arguments.cold_unlocked else [])],
 +                   cwd=arguments.output_dir, check=True)
 +
 +
