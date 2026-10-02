@@ -48,7 +48,14 @@
   provisioning =
     (package "aos-storage-provisioning-provider" (root + /pkgs/system/_aos-storage-provisioning-provider))
     // {
-      runtimeDeps = [(manager // {pname = "systemd";}) utilLinux aos];
+      runtimeDeps = [
+        (manager // {pname = "systemd";})
+        utilLinux
+        aos
+        (artifact "mdadm")
+        (artifact "e2fsprogs")
+        (artifact "xfsprogs")
+      ];
       moduleDeps = [metadata store service storage];
     };
   evaluate = {

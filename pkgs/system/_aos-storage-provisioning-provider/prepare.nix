@@ -183,7 +183,9 @@ in {
       ];
       aos.storage.readinessByProvider.${packageName} = [abilities.storageProvisioning.operations.prepare.effects.system.outputs.resource];
       aos.abilities.storageProvisioning.operations.prepare.effects.system = {
-        lifetime = "persistent";
+        # Probes and bootstrap resources belong to this configured preparation;
+        # the authorization, plan receipt, and disk commit retain durable state.
+        lifetime = "instance";
         input = {
           request = cfg.request;
           evaluation_context = "${evaluationContext}";
