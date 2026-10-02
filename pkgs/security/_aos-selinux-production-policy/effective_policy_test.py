@@ -568,6 +568,77 @@ class EffectivePolicyTest(unittest.TestCase):
             with self.subTest(access=access):
                 self.assert_forbidden_allow_rejected(access)
 
+    def test_offline_helper_mapping_preserves_the_reexec_cut(self) -> None:
+        owner = effective_policy.owner_policy
+        for permission in ("entrypoint", "execute", "getattr", "map", "open", "read"):
+            with self.subTest(permission=permission):
+                access = effective_policy.Access(
+                    owner.OFFLINE_HELPER, owner.OFFLINE_HELPER_EXECUTABLE,
+                    "file", permission,
+                )
+                self.assertIn(access, effective_policy.POSITIVE_ACCESS)
+                self.assertNotIn(access, effective_policy.NEGATIVE_ACCESS)
+
+        self.assertIn(
+            effective_policy.Access(owner.OFFLINE_HELPER, "*", "file", "execute_no_trans"),
+            effective_policy.NEGATIVE_ACCESS,
+        )
+        evidence = effective_policy.check_policy(FAKE_SETOOLS, self._storage_policy())
+        self.assertTrue(evidence)
+
+    def test_offline_helper_missing_mapping_permission_refuses(self) -> None:
+        owner = effective_policy.owner_policy
+        for permission in ("entrypoint", "execute", "getattr", "map", "open", "read"):
+            with self.subTest(permission=permission):
+                policy = self._storage_policy()
+                access = effective_policy.Access(
+                    owner.OFFLINE_HELPER, owner.OFFLINE_HELPER_EXECUTABLE,
+                    "file", permission,
+                )
+                policy.allows[access] = []
+
+                with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_offline_helper_mapping_does_not_allow_same_sid_reexec(self) -> None:
+        owner = effective_policy.owner_policy
+        self.assertIn(
+            effective_policy.Access(owner.OFFLINE_HELPER, "*", "file", "execute_no_trans"),
+            effective_policy.NEGATIVE_ACCESS,
+        )
+        for access in (
+            effective_policy.Access(
+                owner.OFFLINE_HELPER, owner.OFFLINE_HELPER_EXECUTABLE,
+                "file", "execute_no_trans",
+            ),
+            effective_policy.Access(owner.OFFLINE_HELPER, "bin_t", "file", "execute_no_trans"),
+            effective_policy.Access(owner.OFFLINE_HELPER, owner.OFFLINE_HELPER, "process", "transition"),
+        ):
+            with self.subTest(access=access):
+                policy = self._storage_policy()
+                policy.allows[access] = [FakeRule("unexpected helper re-exec")]
+
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_offline_helper_foreign_execution_cuts_remain_closed(self) -> None:
+        owner = effective_policy.owner_policy
+        for source in (
+            "init_t", "aos_sandbox_controller_t", owner.GATEWAY,
+            "aos_method46_controller_helper_t",
+        ):
+            for permission in ("execute", "execute_no_trans"):
+                with self.subTest(source=source, permission=permission):
+                    policy = self._storage_policy()
+                    access = effective_policy.Access(
+                        source, owner.OFFLINE_HELPER_EXECUTABLE, "file", permission,
+                    )
+                    self.assertIn(access, effective_policy.NEGATIVE_ACCESS)
+                    policy.allows[access] = [FakeRule("unexpected foreign helper execution")]
+
+                    with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_helper_inherited_channels_remain_required(self) -> None:
         for role, helper in zip(
             effective_policy.owner_policy.HELPERS, effective_policy.owner_policy.HELPER_DOMAINS,

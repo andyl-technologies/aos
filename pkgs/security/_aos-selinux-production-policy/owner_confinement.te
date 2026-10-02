@@ -127,7 +127,7 @@ type_transition aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:proc
 allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_exec_t:file { execute getattr map open read };
 allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process { transition getattr sigkill signal };
 allow aos_nix_offline_prepare_t aos_nix_offline_tpm_helper_t:process2 nnp_transition;
-allow aos_nix_offline_tpm_helper_t aos_nix_offline_tpm_helper_exec_t:file { entrypoint getattr map open read };
+allow aos_nix_offline_tpm_helper_t aos_nix_offline_tpm_helper_exec_t:file { entrypoint execute getattr map open read };
 allow aos_nix_offline_tpm_helper_t self:process { getattr getsched setrlimit sigchld signal };
 allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_t:fd use;
 allow aos_nix_offline_tpm_helper_t aos_nix_offline_prepare_t:unix_stream_socket { getattr getopt read setopt shutdown write };

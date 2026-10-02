@@ -410,8 +410,13 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     positive.extend((
         Access(OFFLINE_PREPARE, OFFLINE_HELPER, "process", "transition"),
         Access(OFFLINE_PREPARE, OFFLINE_HELPER, "process2", "nnp_transition"),
-        Access(OFFLINE_HELPER, OFFLINE_HELPER_EXECUTABLE, "file", "entrypoint"),
         Access(OFFLINE_HELPER, OFFLINE_PREPARE, "fd", "use"),
+    ))
+    # ELF segments are mapped after the new helper credentials are installed.
+    # Mapping execute is not the distinct execute_no_trans re-exec permission.
+    positive.extend(accesses(
+        OFFLINE_HELPER, OFFLINE_HELPER_EXECUTABLE, "file",
+        ("entrypoint", "execute", "getattr", "map", "open", "read"),
     ))
     transitions.append(Transition(OFFLINE_PREPARE, OFFLINE_HELPER_EXECUTABLE,
                                   "process", OFFLINE_HELPER))
@@ -437,8 +442,11 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     for other in all_roles:
         if other != OFFLINE_PREPARE:
             negative.append(Access(other, OFFLINE_HELPER, "process", "transition"))
+            permissions = ("execute_no_trans",) if other == OFFLINE_HELPER else (
+                "execute", "execute_no_trans",
+            )
             negative.extend(accesses(other, OFFLINE_HELPER_EXECUTABLE, "file",
-                                     ("execute", "execute_no_trans")))
+                                     permissions))
 
     root = "aos_sandbox_policy_authority_t"
     root_credential = "aos_sandbox_policy_authority_credential_t"
