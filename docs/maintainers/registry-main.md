@@ -55,10 +55,14 @@ backup and recovery inventory.
 ## Bootstrap
 
 Create the main authoring base with a dedicated `andyl` registry anchor and
-role-separated release/TUF/image authorities. Bootstrap the exact empty base
-with threshold-approved intents first in staging and then production using
-`aos maintain release step bootstrap`. Never reuse a experimental key or import a experimental registry
-history. Both bootstrap destinations must be empty for `andyl/main`.
+role-separated release/TUF/image authorities. Plan the first main release with
+`aos maintain release new --first-release --source-registry <clone>`, which
+takes the clone's single root commit as the base, then bootstrap that exact
+empty base with threshold-approved intents first in staging and then
+production using `aos maintain release step bootstrap`, as described in
+[`canonical-releases.md`](canonical-releases.md#bootstrap-the-first-registry-base).
+Never reuse a experimental key or import a experimental registry history. Both
+bootstrap destinations must be empty for `andyl/main`.
 
 After the `andyl` organization exists in staging, create the Hub topology row
 there through a reviewed plan, using the separately backed-up main anchor:
