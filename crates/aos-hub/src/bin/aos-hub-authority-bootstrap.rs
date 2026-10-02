@@ -169,13 +169,23 @@ async fn run(args: Args) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("opening live operator database failed"))?;
     match args.operation {
         Operation::ExportDeleteCohort {
-            authority_id, issuer_configuration, association_id, admitted_prefix, output,
+            authority_id,
+            issuer_configuration,
+            association_id,
+            admitted_prefix,
+            output,
         } => {
             let authority = PhysicalStorageAuthorityId::parse(&authority_id)?;
             let configuration = AuthorityConfiguration::read(&issuer_configuration)?;
             bootstrap::export_delete_cohort(
-                &db, &authority, &configuration, &association_id, &admitted_prefix, &output,
-            ).await?;
+                &db,
+                &authority,
+                &configuration,
+                &association_id,
+                &admitted_prefix,
+                &output,
+            )
+            .await?;
             println!("Reviewed delete cohort selection exported; capability and custody remain separate.");
         }
         Operation::ExportPublication {
