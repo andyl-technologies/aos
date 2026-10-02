@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "81074f133e21ffb03f0e75adc5e663c48bf724744c8fdbc546fc5f5456b8367b";
-  subject = "crucible: retain native runtime and frozen graph admission";
-  body = "Preserve the native graph and descriptor implementation with the\ndeterministic runtime and schemas. Restore ordinary zero-budget execution\nand queue translation invalidation through exclusive CPU work. Retain\nmain-loop physical completion and drain RR queues before guest execution\nor stop acknowledgment while preserving idle timer ordering.\n\nConvert denied service instructions to exact sim ticks with signed-range\nchecks. Version service clock evidence and retain production-body unit\ncoverage for rate, phase, interruption, ordinary mode and refusal paths.\n\nAuthenticate retained native block seals under BQL during OOB template\npreparation. Acquire BQL before the template mutex, retain both through\nadmission and state publication, and preserve inherited BQL ownership.\nKeep all receipt and barrier checks and other template action scopes.\n\nAllow frozen source-graph capture out of band so retained async admission\ndoes not park QMP dispatch. Take BQL before the template mutex throughout\nnative graph authentication, stopped-epoch checks and receipt publication.";
-  commit = "75246478df138e9b4546450e64bd30750ec751e8";
-  tree = "8c33f4b77208078074ce737bd8e2042bd8e97683";
+  sha256 = "8f71eec21fef8e3ae4374f3ee85c13338355d63a90fa53bf2fe010bc4e5358ab";
+  subject = "crucible: retain native runtime and detailed child-file refusals";
+  body = "Retain deterministic runtime admission and authenticated native graph,\nblock, descriptor, and barrier handling. Carry child-private file plan\nerrors into the existing hot-fork QMP refusal while preserving generic\ncontext, EIO status, and successful preparation.\n\nKeep production-body diagnostic coverage and the existing runtime tests.\nNative Error ownership lasts through synchronous preparation and refusal\nformatting, then ends on every QMP return.";
+  commit = "012c327f906454d13514764f8d2f32c5fd45db79";
+  tree = "6f3182c9f0ac4f15ab5ef2108f4d1b99f940e21e";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/frozen-source-graph-capture-95";
+  branchRef = "dplecki/native-copy-error-canonical-105";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "85cfdc9731cf1cd01768b932e2cd7de14ddcc0b17304fdd81a1e605ee78b2401";
+  bundleSha256 = "890b440179b590ebcefc67d7178cca99c50c4bb7ab185eb095d555591b4662c5";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-01T17:32:22-07:00";
+  deterministicPatchDate = "2026-10-01T21:55:16-07:00";
 
   additionalCapabilities = [
     {

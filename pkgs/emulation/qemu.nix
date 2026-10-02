@@ -1551,6 +1551,50 @@ in
                 block-backend-tests.raw.tap > block-backend-tests.tap
               build/tests/unit/test-crucible-hot-fork-child --tap
               build/tests/unit/test-crucible-hot-fork-coordinator --tap
+              # Compile the actual monitor refusal bodies with their configured
+              # headers and real Error implementation; lower-layer plans are modeled.
+              ${python3}/bin/python3 - <<'PYTHON' > child-file-refusal.result
+              import json
+              import os
+              from pathlib import Path
+              import shlex
+              import subprocess
+              import sys
+
+              source_root = Path.cwd()
+              commands = json.loads((source_root / "build/compile_commands.json").read_text())
+              monitor_commands = [
+                  entry for entry in commands
+                  if entry["file"].endswith("/monitor/qmp-cmds.c")
+              ]
+              if len(monitor_commands) != 1:
+                  raise SystemExit("expected exactly one configured monitor compile command")
+
+              entry = monitor_commands[0]
+              command = shlex.split(entry["command"])
+              flags = []
+              arguments = iter(command[1:])
+              for argument in arguments:
+                  if argument in ("-MQ", "-MF", "-o", "-c"):
+                      next(arguments)
+                  elif argument not in ("-MD", "-MMD", "-MP"):
+                      flags.append(argument)
+
+              environment = os.environ.copy()
+              environment["CC"] = shlex.join(command[:1])
+              environment["CFLAGS"] = shlex.join(flags)
+              environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
+              subprocess.run([
+                  sys.executable,
+                  str(source_root / "tests/unit/test-crucible-child-file-refusal.py"),
+                  "--output-dir", str(source_root / "child-file-refusal-proof"),
+              ], cwd=entry["directory"], env=environment, check=True)
+              PYTHON
+              cat child-file-refusal.result
+              grep -Fxq 'CHILD_FILE_REFUSAL_PASS: actual monitor bodies and Error ownership; native plan/coordinator modeled, no live fork' \
+                child-file-refusal.result
+              grep -Fxq '258 detail/fallback refusals, 130 native Error releases, success, descriptor and receipt refusals PASS' \
+                child-file-refusal.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -3903,6 +3947,10 @@ in
                 "$out/share/aos/crucible/block-backend-tests.tap"
               install -m 644 aio-hot-fork-tests.tap \
                 "$out/share/aos/crucible/aio-hot-fork-tests.tap"
+              install -m 644 child-file-refusal.result \
+                "$out/share/aos/crucible/child-file-refusal.result"
+              install -m 644 child-file-refusal-proof/compile-command.json \
+                "$out/share/aos/crucible/child-file-refusal.compile-command.json"
               install -m 644 acpi-fingerprint-tests.tap \
                 "$out/share/aos/crucible/acpi-fingerprint-tests.tap"
               install -m 644 vga-fingerprint-tests.tap \

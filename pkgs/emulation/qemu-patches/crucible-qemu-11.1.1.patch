@@ -1,26 +1,17 @@
-From 75246478df138e9b4546450e64bd30750ec751e8 Mon Sep 17 00:00:00 2001
+From 012c327f906454d13514764f8d2f32c5fd45db79 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Thu, 1 Oct 2026 17:32:22 -0700
-Subject: [PATCH] crucible: retain native runtime and frozen graph admission
+Date: Thu, 1 Oct 2026 21:55:16 -0700
+Subject: [PATCH] crucible: retain native runtime and detailed child-file
+ refusals
 
-Preserve the native graph and descriptor implementation with the
-deterministic runtime and schemas. Restore ordinary zero-budget execution
-and queue translation invalidation through exclusive CPU work. Retain
-main-loop physical completion and drain RR queues before guest execution
-or stop acknowledgment while preserving idle timer ordering.
+Retain deterministic runtime admission and authenticated native graph,
+block, descriptor, and barrier handling. Carry child-private file plan
+errors into the existing hot-fork QMP refusal while preserving generic
+context, EIO status, and successful preparation.
 
-Convert denied service instructions to exact sim ticks with signed-range
-checks. Version service clock evidence and retain production-body unit
-coverage for rate, phase, interruption, ordinary mode and refusal paths.
-
-Authenticate retained native block seals under BQL during OOB template
-preparation. Acquire BQL before the template mutex, retain both through
-admission and state publication, and preserve inherited BQL ownership.
-Keep all receipt and barrier checks and other template action scopes.
-
-Allow frozen source-graph capture out of band so retained async admission
-does not park QMP dispatch. Take BQL before the template mutex throughout
-native graph authentication, stopped-epoch checks and receipt publication.
+Keep production-body diagnostic coverage and the existing runtime tests.
+Native Error ownership lasts through synchronous preparation and refusal
+formatting, then ends on every QMP return.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -67462,10 +67453,10 @@ index 8fe0876a3dab43aa3dc7376ada20b149b7c9d032..5434d4501636c9aad39475c8f6920e48
      if (mon->commands == &qmp_commands) {
          error_set(errp, ERROR_CLASS_COMMAND_NOT_FOUND,
 diff --git a/monitor/qmp-cmds.c b/monitor/qmp-cmds.c
-index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12949305e9 100644
+index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..543a179c37139f526360f2a3a3b2c45973954e01 100644
 --- a/monitor/qmp-cmds.c
 +++ b/monitor/qmp-cmds.c
-@@ -14,53 +14,6288 @@
+@@ -14,53 +14,6298 @@
   */
  
  #include "qemu/osdep.h"
@@ -68194,6 +68185,8 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12
 +    bool prepared;
 +    /* Static description of the first basis that blocked preparation. */
 +    const char *blocker;
++    /* Owned until the dispatching QMP caller formats the refusal. */
++    Error *child_files_error;
 +    /*
 +     * The dispatching monitor thread verified the child monitor basis before
 +     * submitting this operation.  It holds its recursive parser lock while
@@ -72360,7 +72353,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12
 +    }
 +    plan = qemu_block_hot_fork_child_files_prepare(
 +        crucible_hot_fork_template_sources, files, stage->files->len,
-+        stage->maximum_bytes, NULL);
++        stage->maximum_bytes, &operation->child_files_error);
 +    if (!plan) {
 +        operation->blocker = "child-private file copies could not be prepared";
 +        return -EIO;
@@ -73054,6 +73047,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12
 +        .child_cgroup_procs_fd = -1,
 +    };
 +    CrucibleHotForkState *report;
++    Error *child_files_error;
 +    pid_t child_pid = -1;
 +    int result;
 +
@@ -73096,6 +73090,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12
 +
 +    result = qemu_crucible_hot_fork_main_loop_fork(
 +        &request, child_process_contract_generation, &child_pid);
++    child_files_error = g_steal_pointer(&operation.child_files_error);
 +
 +    g_mutex_lock(&crucible_hot_fork_template_lock);
 +    if (child_pid > 0) {
@@ -73108,11 +73103,17 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12
 +    g_mutex_unlock(&crucible_hot_fork_template_lock);
 +    if (child_pid <= 0) {
 +        error_setg_errno(errp, result < 0 ? -result : EPROTO,
-+                         "Could not complete Crucible hot-fork preparation: %s",
++                         "Could not complete Crucible hot-fork preparation: "
++                         "%s%s%s",
 +                         operation.blocker ? operation.blocker :
-+                             "runtime transaction or process creation failed");
++                             "runtime transaction or process creation failed",
++                         child_files_error ? ": " : "",
++                         child_files_error ?
++                             error_get_pretty(child_files_error) : "");
++        error_free(child_files_error);
 +        return NULL;
 +    }
++    error_free(child_files_error);
 +
 +    report = g_new0(CrucibleHotForkState, 1);
 +    report->schema_version = 3;
@@ -73770,7 +73771,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12
  }
  
  void qmp_cont(Error **errp)
-@@ -68,7 +6303,23 @@ void qmp_cont(Error **errp)
+@@ -68,7 +6313,23 @@ void qmp_cont(Error **errp)
      BlockBackend *blk;
      BlockJob *job;
      Error *local_err = NULL;
@@ -73794,7 +73795,7 @@ index 6cb0b587fbd4ae8b3b811a6e3911f8f2e4d5e07f..e23f10cb371ce37dd7503619e7013c12
      /* if there is a dump in background, we should wait until the dump
       * finished */
      if (qemu_system_dump_in_progress()) {
-@@ -116,6 +6367,155 @@ void qmp_cont(Error **errp)
+@@ -116,6 +6377,155 @@ void qmp_cont(Error **errp)
      }
  }
  
@@ -153525,6 +153526,419 @@ index 0000000000000000000000000000000000000000..f36e51da6056a7fa343f3c951b2472df
 +    g_test_add_func("/arm/ordinary", test_ordinary);
 +    return g_test_run();
 +}
+diff --git a/tests/unit/test-crucible-child-file-refusal.py b/tests/unit/test-crucible-child-file-refusal.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8ea745b511
+--- /dev/null
++++ b/tests/unit/test-crucible-child-file-refusal.py
+@@ -0,0 +1,407 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Exercise actual monitor preparation and QMP refusal with modeled native plans.
++
++The plan, graph receipt, monitor basis, and coordinator are lower-layer fixtures.
++This diagnostic regression does not prove a complete live fork. Error allocation,
++formatting, and release use QEMU's real util/error.c implementation.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import shlex
++import subprocess
++
++
++ROOT = Path(__file__).resolve().parents[2]
++
++
++def production_definition(source: str, signature: str, is_type=False) -> str:
++    """Extract one complete production function or typedef for compilation."""
++    start = source.index(signature)
++    opening = source.index("{", start)
++    depth = 0
++
++    for index in range(opening, len(source)):
++        if source[index] == "{":
++            depth += 1
++        elif source[index] == "}":
++            depth -= 1
++            if depth == 0:
++                end = source.index(";", index) if is_type else index
++                return source[start : end + 1]
++
++    raise AssertionError(f"unterminated production definition: {signature}")
++
++
++PRELUDE = r"""
++#include "qemu/osdep.h"
++#include "qapi/error.h"
++#include "qapi/qapi-commands-run-state.h"
++#include "qemu/error-report.h"
++#include "system/block-backend-global-state.h"
++#include "system/crucible-hot-fork-coordinator.h"
++#include "system/crucible-hot-fork-plugin-child.h"
++#include "monitor/monitor-internal.h"
++#include "block/block-global-state.h"
++"""
++
++
++FIXTURES = r"""
++/* Lower-layer fixture facts; production monitor bodies are inserted below. */
++static CrucibleHotForkChildFilesStage crucible_hot_fork_child_files_stage;
++static CrucibleHotForkChildProcessContractStage
++    crucible_hot_fork_child_process_contract_stage;
++static QemuBlockHotForkChildFiles *crucible_hot_fork_child_files_plan;
++static MonitorHotForkChildBasis crucible_hot_fork_qmp_child_basis;
++static GMutex crucible_hot_fork_template_lock;
++static uint64_t crucible_hot_fork_template_generation = 1;
++static bool crucible_hot_fork_operation_active;
++static char source_storage, root_storage, plan_storage;
++static QemuBlockHotForkSourceSet *crucible_hot_fork_template_sources =
++    (void *)&source_storage;
++static const char *native_detail;
++static bool native_success;
++static bool receipt_current = true;
++static bool descriptor_failure;
++static Error *native_error;
++static unsigned native_errors_created, native_errors_freed;
++static unsigned plans_created, plans_freed;
++static int prepare_status;
++
++void __real_error_free(Error *err);
++void __wrap_error_free(Error *err);
++
++/* Count the actual native Error lifetime through QMP's explicit cleanup. */
++void __wrap_error_free(Error *err)
++{
++    if (err && err == native_error) {
++        native_error = NULL;
++        native_errors_freed++;
++    }
++    __real_error_free(err);
++}
++
++/* These reporting sinks are unreachable for ordinary caller-owned errors. */
++void error_report(const char *fmt, ...)
++{
++    g_assert_not_reached();
++}
++
++void warn_report(const char *fmt, ...)
++{
++    g_assert_not_reached();
++}
++
++int error_printf(const char *fmt, ...)
++{
++    g_assert_not_reached();
++}
++
++static bool crucible_hot_fork_graph_receipt_current(void)
++{
++    return receipt_current;
++}
++
++static bool crucible_hot_fork_child_process_contract_bound(void)
++{
++    return true;
++}
++
++bool monitor_hot_fork_child_basis_matches_current(
++    const MonitorHotForkChildBasis *basis, uint64_t generation)
++{
++    g_assert_true(basis == &crucible_hot_fork_qmp_child_basis);
++    return generation == 1;
++}
++
++BlockDriverState *bdrv_lookup_bs(const char *device, const char *node_name,
++                                Error **errp)
++{
++    return (void *)&root_storage;
++}
++
++bool qemu_block_hot_fork_source_set_writable_leaf(
++    const QemuBlockHotForkSourceSet *set, BlockDriverState *root,
++    BlockDriverState **leaf, Error **errp)
++{
++    g_assert_true(set == crucible_hot_fork_template_sources);
++    g_assert_true(root == (void *)&root_storage);
++    *leaf = root;
++    return true;
++}
++
++QemuBlockHotForkChildFiles *qemu_block_hot_fork_child_files_prepare(
++    QemuBlockHotForkSourceSet *set, const QemuBlockHotForkChildFile *files,
++    size_t count, uint64_t maximum_bytes, Error **errp)
++{
++    g_assert_true(set == crucible_hot_fork_template_sources);
++    g_assert_cmpuint(count, ==, 1);
++    g_assert_cmpuint(maximum_bytes, ==, 4096);
++    g_assert_true(files[0].node == (void *)&root_storage);
++    g_assert_cmpint(fcntl(files[0].descriptor, F_GETFD), >=, 0);
++    g_assert_null(native_error);
++
++    if (native_success) {
++        plans_created++;
++        return (void *)&plan_storage;
++    }
++    if (native_detail) {
++        error_setg(errp, "%s", native_detail);
++        if (errp) {
++            native_error = *errp;
++            native_errors_created++;
++        }
++    }
++    return NULL;
++}
++
++ssize_t qemu_block_hot_fork_child_files_descriptors(
++    const QemuBlockHotForkChildFiles *plan, int *descriptors, size_t maximum)
++{
++    g_assert_true(plan == (void *)&plan_storage);
++    g_assert_cmpuint(maximum, >, 0);
++    if (descriptor_failure) {
++        return -1;
++    }
++    descriptors[0] = g_array_index(crucible_hot_fork_child_files_stage.files,
++                                   CrucibleHotForkChildFileStage, 0).fd;
++    return 1;
++}
++
++bool qemu_block_hot_fork_child_files_free(QemuBlockHotForkChildFiles *plan,
++                                         Error **errp)
++{
++    g_assert_true(plan == (void *)&plan_storage);
++    plans_freed++;
++    return true;
++}
++"""
++
++
++COORDINATOR = r"""
++static int crucible_hot_fork_prepare_operation(void *opaque)
++{
++    return crucible_hot_fork_prepare_child_files(opaque);
++}
++
++static int crucible_hot_fork_finish_parent_operation(pid_t pid, void *opaque)
++{
++    crucible_hot_fork_discard_child_files(opaque);
++    return 0;
++}
++
++static int crucible_hot_fork_finish_child_operation(void *opaque)
++{
++    g_assert_not_reached();
++}
++
++/* Model synchronous submission and parent cleanup, without creating a child. */
++int qemu_crucible_hot_fork_main_loop_fork(
++    const QemuCrucibleHotForkMainLoopOperation *request,
++    uint64_t generation, pid_t *child_pid)
++{
++    CrucibleHotForkOperation *operation = request->opaque;
++
++    g_assert_cmpuint(generation, ==, 1);
++    prepare_status = request->prepare(operation);
++    if (prepare_status == 0) {
++        g_assert_null(operation->child_files_error);
++        g_assert_nonnull(operation->child_files);
++        *child_pid = 123;
++        request->parent(*child_pid, operation);
++    }
++    g_assert_null(operation->child_files);
++    g_assert_null(crucible_hot_fork_child_files_plan);
++    return prepare_status;
++}
++"""
++
++
++TESTS = r"""
++static CrucibleHotForkState *invoke(Error **errp)
++{
++    return qmp_crucible_hot_fork(1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
++                                1, 1, 1, 1, 1, errp);
++}
++
++static void check_refusal(const char *detail)
++{
++    Error *err = NULL;
++    const char *message;
++    CrucibleHotForkChildFileStage *file = &g_array_index(
++        crucible_hot_fork_child_files_stage.files,
++        CrucibleHotForkChildFileStage, 0);
++
++    native_success = false;
++    native_detail = detail;
++    g_assert_null(invoke(&err));
++
++    g_assert_cmpint(prepare_status, ==, -EIO);
++    g_assert_nonnull(err);
++    g_assert_cmpint(error_get_class(err), ==, ERROR_CLASS_GENERIC_ERROR);
++    message = error_get_pretty(err);
++    g_assert_nonnull(strstr(message,
++        "Could not complete Crucible hot-fork preparation: "
++        "child-private file copies could not be prepared"));
++    g_assert_nonnull(strstr(message, strerror(EIO)));
++    if (detail) {
++        g_assert_nonnull(strstr(message, detail));
++    } else {
++        g_assert_cmpstr(message, ==,
++            "Could not complete Crucible hot-fork preparation: "
++            "child-private file copies could not be prepared: Input/output error");
++    }
++    /* The refusal owns its text even after the original Error is released. */
++    g_assert_null(native_error);
++    g_assert_cmpuint(native_errors_created, ==, native_errors_freed);
++    g_assert_false(crucible_hot_fork_operation_active);
++    g_assert_false(crucible_hot_fork_child_files_stage.consumed);
++    g_assert_cmpint(fcntl(file->fd, F_GETFD), >=, 0);
++    error_free(err);
++}
++
++int main(void)
++{
++    FILE *destination = tmpfile();
++    struct stat status;
++    CrucibleHotForkChildFileStage file = { 0 };
++    Error *err = NULL;
++    CrucibleHotForkState *report;
++
++    g_assert_nonnull(destination);
++    file.fd = dup(fileno(destination));
++    g_assert_cmpint(file.fd, >=, 0);
++    g_assert_cmpint(fstat(file.fd, &status), ==, 0);
++    file.expected_device = status.st_dev;
++    file.expected_inode = status.st_ino;
++    crucible_hot_fork_child_files_stage = (CrucibleHotForkChildFilesStage) {
++        .staged = true,
++        .maximum_bytes = 4096,
++        .template_generation = 1,
++        .generation = 1,
++        .files = g_array_new(false, false, sizeof(file)),
++    };
++    g_array_append_val(crucible_hot_fork_child_files_stage.files, file);
++    crucible_hot_fork_child_process_contract_stage.generation = 1;
++
++    check_refusal("authenticated source digest changed before private copy");
++    check_refusal(NULL);
++    for (unsigned index = 0; index < 128; index++) {
++        g_autofree char *detail = g_strdup_printf(
++            "destination admission refusal for attempt %u", index);
++
++        check_refusal(detail);
++        check_refusal(NULL);
++    }
++
++    native_detail = "native refusal with no QMP error receiver";
++    g_assert_null(invoke(NULL));
++    g_assert_null(native_error);
++    g_assert_cmpuint(native_errors_created, ==, native_errors_freed);
++
++    native_success = true;
++    native_detail = NULL;
++    report = invoke(&err);
++    g_assert_nonnull(report);
++    g_assert_null(err);
++    g_assert_cmpint(prepare_status, ==, 0);
++    g_assert_cmpint(report->outcome, ==, CRUCIBLE_HOT_FORK_OUTCOME_FORKED);
++    g_assert_cmpint(report->parent_status, ==, 0);
++    g_assert_cmpint(report->child_pid, ==, 123);
++    g_assert_cmpuint(report->schema_version, ==, 3);
++    g_assert_true(crucible_hot_fork_child_files_stage.consumed);
++    g_assert_null(native_error);
++    g_free(report);
++    crucible_hot_fork_child_files_stage.consumed = false;
++
++    descriptor_failure = true;
++    g_assert_null(invoke(&err));
++    g_assert_cmpint(prepare_status, ==, -E2BIG);
++    g_assert_nonnull(strstr(error_get_pretty(err),
++                            "child file descriptors exceed the retained"));
++    error_free(err);
++    err = NULL;
++    descriptor_failure = false;
++    g_assert_cmpuint(plans_created, ==, plans_freed);
++
++    receipt_current = false;
++    g_assert_null(invoke(&err));
++    g_assert_cmpint(prepare_status, ==, -ENOTSUP);
++    g_assert_nonnull(strstr(error_get_pretty(err),
++                            "current authenticated graph receipt"));
++    error_free(err);
++    g_assert_cmpuint(native_errors_created, ==, native_errors_freed);
++    g_assert_cmpuint(native_errors_created, ==, 130);
++
++    crucible_hot_fork_child_files_stage_clear(true);
++    g_assert_null(crucible_hot_fork_child_files_stage.files);
++    g_assert_cmpint(fcntl(file.fd, F_GETFD), ==, -1);
++    g_assert_cmpint(errno, ==, EBADF);
++    fclose(destination);
++    puts("CHILD_FILE_REFUSAL_PASS: actual monitor bodies and Error ownership; "
++         "native plan/coordinator modeled, no live fork");
++    puts("258 detail/fallback refusals, 130 native Error releases, "
++         "success, descriptor and receipt refusals PASS");
++    return 0;
++}
++"""
++
++
++def main() -> None:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--source", type=Path, default=ROOT / "monitor/qmp-cmds.c")
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", action="store_true")
++    arguments = parser.parse_args()
++    source = arguments.source.read_text()
++    definitions = [
++        production_definition(source, f"typedef struct {name} {{", True)
++        for name in (
++            "CrucibleHotForkChildFileStage",
++            "CrucibleHotForkChildFilesStage",
++            "CrucibleHotForkChildProcessContractStage",
++            "CrucibleHotForkOperation",
++        )
++    ]
++    functions = [
++        production_definition(source, signature)
++        for signature in (
++            "static bool crucible_hot_fork_operation_excludes_fd(",
++            "static bool crucible_hot_fork_child_files_bound(void)",
++            "static void crucible_hot_fork_child_files_stage_clear(",
++            "static void crucible_hot_fork_discard_child_files(",
++            "static int crucible_hot_fork_prepare_child_files(",
++        )
++    ]
++    if arguments.negative_control:
++        needle = "stage->maximum_bytes, &operation->child_files_error)"
++        assert functions[-1].count(needle) == 1
++        functions[-1] = functions[-1].replace(needle, "stage->maximum_bytes, NULL)")
++
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++    fixture = arguments.output_dir / "child-file-refusal.c"
++    binary = arguments.output_dir / "child-file-refusal"
++    fixture.write_text("\n\n".join([
++        PRELUDE, *definitions, FIXTURES, *functions, COORDINATOR,
++        production_definition(source, "CrucibleHotForkState *qmp_crucible_hot_fork("),
++        TESTS,
++    ]))
++    command = [
++        *shlex.split(os.environ["CC"]),
++        *shlex.split(os.environ.get("CFLAGS", "")),
++        "-std=gnu11", "-Wall", "-Werror",
++        str(fixture), str(ROOT / "util/error.c"), "-o", str(binary),
++        *shlex.split(os.environ.get("LDFLAGS", "")),
++        "-Wl,--wrap=error_free",
++    ]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n"
++    )
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], check=True, timeout=10)
++
++
++if __name__ == "__main__":
++    main()
 diff --git a/tests/unit/test-crucible-cxl-timestamp.c b/tests/unit/test-crucible-cxl-timestamp.c
 new file mode 100644
 index 0000000000000000000000000000000000000000..1b39a207022bf789fe4f6d0f4f22b5e8452e7374
