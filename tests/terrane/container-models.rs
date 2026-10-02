@@ -30,6 +30,7 @@ const REFERENCE: &str = include_str!(concat!(
 const PLAINTEXT: &[u8] = b"inert\n";
 const DICTIONARY: &[u8] = b"terrane inert dictionary\n";
 const PREFIX: u8 = 0xab;
+const PROFILE_MAXIMUM: usize = 4_194_304;
 
 fn hexadecimal(name: &str, block: usize) -> Vec<u8> {
     let marker = format!("### container-{name}\n");
@@ -82,6 +83,7 @@ struct EnvelopeModel {
     plaintext: Vec<u8>,
     codec: Codec,
     body: Vec<u8>,
+    maximum: usize,
 }
 
 fn envelopes() -> Vec<EnvelopeModel> {
@@ -102,6 +104,7 @@ fn envelopes() -> Vec<EnvelopeModel> {
                 } else {
                     frame(plaintext, 0)
                 },
+                maximum: PROFILE_MAXIMUM,
             });
         }
     }
@@ -115,6 +118,9 @@ fn envelopes() -> Vec<EnvelopeModel> {
             body: frame(&plaintext, empty_blocks),
             plaintext,
             codec,
+            // A local structural oracle exercises the exact overhead bound;
+            // this 100-byte maximum does not denote a registered profile.
+            maximum: 100,
         });
     }
     assert_eq!(models.len(), 8);
@@ -134,7 +140,7 @@ fn reference_chunk_envelope_models_preserve_codec_body_and_dictionary_fields() {
         assert_eq!(decoded, chunk, "{}", model.label);
         assert_eq!(encode_envelope(decoded), expected, "{}", model.label);
         assert_eq!(
-            validate_envelope_size(decoded, model.plaintext.len(), model.plaintext.len()),
+            validate_envelope_size(decoded, model.plaintext.len(), model.maximum),
             Ok(()),
             "{}",
             model.label
@@ -146,6 +152,7 @@ fn reference_chunk_envelope_models_preserve_codec_body_and_dictionary_fields() {
         assert_eq!(identity.digest(), hexadecimal(&model.label, 1));
         assert_eq!(identity.digest(), raw_chunk_digest(&model.plaintext));
         if let Codec::ZstdDictionary(dictionary) = decoded.codec {
+            assert!(DICTIONARY.len() <= model.maximum);
             let expected_dictionary = TERRANE_V1
                 .calculate(IdentityKind::Chunk, DICTIONARY)
                 .unwrap();

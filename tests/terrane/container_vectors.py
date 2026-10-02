@@ -18,6 +18,7 @@ HEADING = "## Chunk-envelope and merged-shard field witnesses"
 PLAINTEXT = b"inert\n"
 DICTIONARY = b"terrane inert dictionary\n"
 PREFIX = 0xAB
+PROFILE_MAXIMUM = 4_194_304
 
 
 def frame(plaintext, empty_blocks=0):
@@ -67,7 +68,7 @@ def envelopes(binary):
                 "dictionary_plaintext": DICTIONARY if codec == 2 else None,
                 "dictionary": dictionary_id if codec == 2 else None,
                 "body": plaintext if codec == 0 else frame(plaintext),
-                "declared": len(plaintext), "maximum": len(plaintext),
+                "declared": len(plaintext), "maximum": PROFILE_MAXIMUM,
             }
     for codec, label, empty_blocks in [(1, "zstd", 40), (2, "dictionary", 29)]:
         plaintext = b"q" * 100
@@ -219,6 +220,9 @@ def self_check(binary):
     assert len(frame(b"q" * 100, 40)) == 229
     assert 32 + len(frame(b"q" * 100, 29)) == 228
     for fields in envelopes(binary).values():
+        assert len(fields["plaintext"]) <= fields["maximum"]
+        if fields["dictionary_plaintext"] is not None:
+            assert len(fields["dictionary_plaintext"]) <= fields["maximum"]
         if fields["codec"] != 0:
             check_raw_frame(fields["body"], fields["plaintext"])
 
@@ -232,7 +236,11 @@ def render(binary):
         "RFC 8878 single-segment frames include their content size and only raw "
         "blocks; they use no dictionary references. Core envelope parsing and "
         "size checks do not establish native decompression, dictionary provenance "
-        "or admission. Complete merged shards have terrane-index-v1 identities. "
+        "or admission. Ordinary positive envelopes use cdc-1m's registered "
+        "4,194,304-byte maximum, which also accommodates the dictionary plaintext. "
+        "Overhead controls instead use a local structural size oracle with a "
+        "100-byte maximum; that context is not a registered profile. Complete "
+        "merged shards have terrane-index-v1 identities. "
         "Their embedded content hashes and pack IDs are opaque fixture fields, "
         "without corresponding bodies, entropy, placements, generations or "
         "authority. State bytes represent live, tombstone and quarantine fields "
@@ -245,7 +253,11 @@ def render(binary):
 
     for label, fields in envelopes(binary).items():
         wire = envelope(fields["codec"], fields["body"], fields["dictionary"])
-        append(label, fields, wire, "Positive complete chunk envelope.")
+        description = (
+            "Positive complete chunk envelope with a local structural size oracle."
+            if label.endswith("overhead-control") else
+            "Positive complete chunk envelope under the registered cdc-1m size maximum.")
+        append(label, fields, wire, description)
         parts.extend(["Plaintext chunk identity digest:", "", "```hex",
                       digest(binary, "terrane-chunk-v1", fields["plaintext"]).hex(), "```", ""])
     for label, rows in shards().items():
