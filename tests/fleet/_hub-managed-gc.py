@@ -303,9 +303,10 @@ def run_managed_gc(controls, registry, planned, actions, observer, read_evidence
             "actual SQL GC completion or captured action set differs")
     joins = [join_managed_deletion(row["action"], row["plan"], row["result"], window, before, after)
              for row in evidence]
-    retain(label + "-positive", {"plan": planned, "applied": applied, "completed": completed,
-                                  "before": before, "after": after, "sdkWindow": window,
-                                  "evidence": evidence, "joins": joins})
+    positive_evidence = {"plan": planned, "applied": applied, "completed": completed,
+                         "before": before, "after": after, "sdkWindow": window,
+                         "evidence": evidence, "joins": joins}
+    positive_receipt = retain(label + "-positive", positive_evidence)
     replay = inventory_gc.apply_reviewed_gc(controls, planned, apply_key)
     # API idempotency may return without reaching any physical guard. A distinct
     # private same-guard replay must use the exact actually retained positive
@@ -322,7 +323,10 @@ def run_managed_gc(controls, registry, planned, actions, observer, read_evidence
     require_no_redispatch(replay_window, after, replay_snapshot, keys)
     retain(label + "-replay", {"applied": replay, "physicalGuardReplies": replay_replies,
                                 "sdkWindow": replay_window, "snapshot": replay_snapshot})
-    return completed
+    return {**completed, "actualPositiveEvidence": {"retainedReference": {"file": "external-direct-flow/" + label + "-positive",
+            "sha256": positive_receipt, "byteSize": len(json.dumps(positive_evidence,
+                sort_keys=True, separators=(",", ":")).encode()) + 1},
+        "observations": positive_evidence}}
 
 
 def join_managed_deletion(action, plan, result, window, before, after):

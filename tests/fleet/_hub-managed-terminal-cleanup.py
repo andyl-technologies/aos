@@ -232,7 +232,7 @@ def account_managed_cleanup_windows(native, tools, prepared, boundaries, result)
         codec_input = prepare_storage_codec_segment_bundle(transport, originals, received,
             source_digest, tools['deploymentId'])
         report.update(helperInventory=helpers, numericObservations=numeric,
-            transport=transport, finalSql=final_sql,
+            transport=transport, finalSql=final_sql, nativeFinalContextRows=contexts,
             completeOriginalInventory=codec_input['completeOriginalInventory'],
             unresolvedNativeRequestIds=codec_input['unresolvedNativeRequestIds'],
             unassignedAuthenticatedCallIdSha256=[hashlib.sha256(row['transportCallId'].encode()).hexdigest()
@@ -274,8 +274,67 @@ def account_managed_cleanup_windows(native, tools, prepared, boundaries, result)
     return report
 
 
+
+def inventory_managed_cleanup_upstream_helpers(native, tools, prepared, result):
+    """Reopen both actual read-only child lifetimes; neither consumed Native traffic."""
+    selected_original = result['original']['value']
+    inputs = [('lost', result['completedResponseLoss']['value']['authentication'], 0),
+        ('replay', result['replayAuthentication']['authentication'], 1)]
+    inventory = []
+    owners = {(item['process']['pid'], item['process']['startTicks'])
+        for item in result['nativeApplicationAccounting'].get('helperInventory', [])}
+    for phase, authentication, window_index in inputs:
+        value = json.loads(direct_guest_python(native, tools['python'], """
+            import hashlib, importlib.util, json
+            from pathlib import Path
+
+            def digest(path):
+                with Path(path).open('rb') as source:
+                    return hashlib.file_digest(source,'sha256').hexdigest()
+            specification=importlib.util.spec_from_file_location('cleanup_inventory',selected['module'])
+            module=importlib.util.module_from_spec(specification)
+            specification.loader.exec_module(module)
+            with Path(selected['provenance']).open('rb') as source:
+                proof_body=source.read(65537)
+            if len(proof_body)>65536:
+                raise ValueError('upstream child provenance exceeds its bound')
+            proof=module.cleanup_accounting_json(proof_body)
+            if (set(proof)!={'version','commonSourceStorePath','workerFilteredSourceStorePath',
+                        'testExecutableSha256','testExecutableBytes'}
+                    or type(proof['version']) is not int or proof['version']!=1
+                    or not isinstance(proof['testExecutableBytes'],str)
+                    or not proof['testExecutableBytes'].isdigit()
+                    or not 0<int(proof['testExecutableBytes'])<=512*1024*1024
+                    or proof['commonSourceStorePath']!=selected['commonSource']
+                    or proof['workerFilteredSourceStorePath']!=selected['workerSource']
+                    or proof['testExecutableSha256']!=digest(selected['executable'])
+                    or proof['testExecutableBytes']!=str(Path(selected['executable']).stat().st_size)):
+                raise ValueError('upstream child current source/executable differs')
+            expected={'root':selected['root'],'servicePid':selected['servicePid'],
+                'testExecutable':selected['executable'],'testExecutableSha256':proof['testExecutableSha256'],
+                'originalSha256':selected['originalSha256'],'protectedProfileDigest':selected['profileDigest'],
+                'listenerSourceSha256':digest(selected['listener']),
+                'runtimeSourceSha256':digest(selected['runtime'])}
+            result=module.read_managed_cleanup_upstream_invocation(selected['authentication'],expected)
+            result['commonSourceStorePath']=proof['commonSourceStorePath']
+            result['workerFilteredSourceStorePath']=proof['workerFilteredSourceStorePath']
+            result['provenanceSha256']=hashlib.sha256(proof_body).hexdigest()
+            print(json.dumps(result))
+        """, {'module': tools['managedCleanupAccounting'], 'provenance': tools['managedCleanupNativeHelperProvenance'],
+            'commonSource': tools['commonSourceStorePath'], 'workerSource': tools['workerSourcePath'],
+            'executable': tools['managedCleanupNativeHelper'], 'listener': tools['managedCleanupLossListener'],
+            'runtime': tools['managedCleanupRuntime'], 'root': prepared['coordinates']['nativeRoot'],
+            'servicePid': result['windows'][window_index]['processObservations']['native']['pid'],
+            'originalSha256': selected_original['originalSha256'],
+            'profileDigest': selected_original['protectedProfileDigest'], 'authentication': authentication}, timeout=30))
+        owner = value['process']['pid'], value['process']['startTicks']
+        cleanup_require(owner not in owners, 'upstream child borrowed another actual process lifetime')
+        owners.add(owner)
+        inventory.append({'phase': phase, **value})
+    return inventory
+
 def run_managed_terminal_cleanup_window(native,worker,client,tools,prepared,processes,
-        boundaries,controls,setup,container_source,publication,installation,refresh_token):
+        boundaries,controls,setup,container_source,publication,installation,refresh_token, *, workflow=None):
     """Run the required confined terminal-cleanup path on the real fresh pair."""
     coordinates=prepared['coordinates']
     cleanup_require(coordinates['cleanupPrefix']==coordinates['gcPrefix']
@@ -324,6 +383,21 @@ def run_managed_terminal_cleanup_window(native,worker,client,tools,prepared,proc
         'normal workflow has no current independently admissible terminal chunk')
     parameters={**parameters,'phase':'observe','uploadId':original['original']['upload_id'],
         'ordinal':original['original']['ordinal'],'expectedOriginalSha256':original['originalSha256']}
+    sql_module = managed_fixture_module(tools['managedCleanupSql'], 'terminal_current_sql')
+    gc_sql = managed_fixture_module(tools['managedGcSql'], 'terminal_sql_transaction')
+    canonical_source = tools['commonSourceStorePath'] + '/crates/aos-hub/src/storage_work/oci_cleanup.rs'
+    canonical_source_body = read_direct_guest_file(native, tools['python'], canonical_source, 128 * 1024)
+    sql_snapshots = {}
+    def current_sql(label):
+        observed = sql_module.capture_managed_cleanup_sql(native, tools, prepared, processes,
+            original['original'], 'managed-cleanup-' + coordinates['runId'] + '-' + label,
+            transaction=gc_sql.transaction, observe_process=observe_managed_process,
+            capture_rows=capture_managed_gc_sql, retain=retain_direct_flow)
+        observed['canonicalSourceSha256'] = hashlib.sha256(canonical_source_body).hexdigest()
+        observed['commonSourceStorePath'] = tools['commonSourceStorePath']
+        sql_snapshots[label] = observed
+        return observed
+
     runner={'workerRoot':coordinates['workerRoot'],'namespaceObserver':tools['ociNamespaceObserver'],
         'workerProcess':processes['worker']}
     issued=int(time.time())
@@ -348,20 +422,28 @@ def run_managed_terminal_cleanup_window(native,worker,client,tools,prepared,proc
         'arm':{'version':1,'originalSha256':original['originalSha256'],
             'protectedProfileDigest':original['protectedProfileDigest'],'helperInput':parameters,
             'expiresAt':min(int(time.time())+60,selection['expiresAt'])}})
+    current_sql('lost-before')
     before=begin_managed_storage_window(native,worker,tools,prepared,processes,boundaries,'managed-terminal-lost')
     unknown=cleanup_guest(native,tools,'helper',{**common,'input':{**parameters,'phase':'dispatch_unknown'},'label':'lost-response'})
     lost=cleanup_guest(native,tools,'lost_receipt',{'nativeRoot':coordinates['nativeRoot'],
         'originalSha256':original['originalSha256']})
     lost_window=finish_managed_storage_window(native,worker,tools,prepared,processes,boundaries,before,'managed-terminal-lost')
+    current_sql('lost-after')
     cleanup_require(unknown['value']['outcome']=='exchange_unknown', 'selected completed response was not lost to Native')
+    if workflow is not None:
+        workflow.close(processes)
     cold=cleanup_guest(worker,tools,'cold_restart',{**runner,'configuration':prepared['configurationFile'],
         'configurationSha256':prepared['configurationSha256'],'workerd':tools['workerd']})
     processes['worker']=cold['new']
     await_managed_tls(native,tools,coordinates['workerOrigin'])
+    if workflow is not None:
+        workflow.resume(processes)
     # The installed bytes/window remain immutable across this restart.
+    current_sql('replay-before')
     before=begin_managed_storage_window(native,worker,tools,prepared,processes,boundaries,'managed-terminal-replay')
     replay=cleanup_guest(native,tools,'helper',{**common,'input':{**parameters,'phase':'replay_positive'},'label':'cold-positive'})
     replay_window=finish_managed_storage_window(native,worker,tools,prepared,processes,boundaries,before,'managed-terminal-replay')
+    current_sql('replay-after')
     cleanup_require(replay['value']['outcome']=='authenticated_positive_reply'
         and replay['value']['originalSha256']==original['originalSha256']
         and replay['value']['sqlClaimUnchangedAfterAttempt'], 'cold replay changed its SQL original')
@@ -391,17 +473,90 @@ def run_managed_terminal_cleanup_window(native,worker,client,tools,prepared,proc
     cleanup_require([call['method'] for call in sdk[0]['calls']]==['head','get','delete']
         and not sdk[1]['calls'] and len(sdk[1]['brackets'])==1
         and sdk[1]['brackets'][0]['invoked']==0, 'actual cleanup/replay SDK brackets differ or remain unknown')
+    current_sql('settle-before')
     settle_begin=begin_managed_storage_window(native,worker,tools,prepared,processes,boundaries,'managed-terminal-settle')
     settlement=cleanup_guest(native,tools,'helper',{**common,'input':{**parameters,'phase':'settle'},'label':'normal-recovery'})
     settle_window=finish_managed_storage_window(native,worker,tools,prepared,processes,boundaries,settle_begin,'managed-terminal-settle')
+    current_sql('settle-after')
     cleanup_require(settlement['value']['outcome']=='normal_recovery_completed'
         and settlement['value']['sqlCleanupSettled'], 'normal recovery did not settle actual SQL')
     result={'version':1,'original':selected,'recordBytes':len(record),'installation':installed,
         'arm':armed,'unknown':unknown,'completedResponseLoss':lost,'cold':cold,
         'replay':replay,'replayAuthentication':replay_exchange,'sdk':sdk,'settlement':settlement,
-        'windows':[lost_window,replay_window,settle_window],'nativeBulkBytes':None,
+        'windows':[lost_window,replay_window,settle_window], 'currentSqlSnapshots': sql_snapshots,
+        'nativeBulkBytes':None,
         'scope':'actual confined Managed emulator window; independent whole-window accounting remains required'}
     result['nativeApplicationAccounting'] = account_managed_cleanup_windows(
         native, tools, prepared, boundaries, result)
+    # Physical completion proves provider EOF only. It never replaces the
+    # Native-side consumed body/numeric/authenticated transport observations.
+    workflow_module = managed_fixture_module(tools['managedWorkflowAccounting'], 'terminal_read_accounting')
+    result['conditionalRead'] = workflow_module.join_terminal_provider_read(sdk[0], original['original'],
+        first_proof['physicalReply'], original['originalFingerprint'] + first_proof['authenticatedRequestSha256'],
+        coordinates['runId'], backing)
+    report = result['nativeApplicationAccounting']
+    try:
+        report['auxiliaryHelperInventory'] = inventory_managed_cleanup_upstream_helpers(
+            native, tools, prepared, result)
+    except Exception as error:
+        report['auxiliaryInventoryFailureClass'] = type(error).__name__
+    report['independentCurrentSql'] = []
+    for phase in ('replay', 'settlement'):
+        helper_phase = 'replay_positive' if phase == 'replay' else 'settle'
+        helper = [item for item in report.get('helperInventory', []) if item['phase'] == helper_phase]
+        if len(helper) != 1:
+            continue
+        rows = [row for row in report.get('nativeFinalContextRows', [])
+            if int(helper[0]['process']['started']['unixNs']) <= int(row['completedAtUnixMicros']) * 1000
+            <= int(helper[0]['process']['finished']['unixNs'])]
+        if len(rows) != 1:
+            continue
+        label = 'replay' if phase == 'replay' else 'settle'
+        report['independentCurrentSql'].append(sql_module.join_managed_cleanup_sql(
+            sql_snapshots[label + '-before'], sql_snapshots[label + '-after'], rows[0],
+            prepared['captureSelection']['sourceDigest'], helper[0]['process'], settled=phase == 'settlement'))
+    def consumed_reply(identifier, digest, count):
+        bodies = [body for window in result['windows']
+            for body in window['storageBoundary']['nativeOriginalBodies']['bodies']
+            if body['requestId'] == identifier]
+        cleanup_require(len(bodies) == 1, 'cleanup consumed reply has ambiguous original ownership')
+        reference = bodies[0]['bodies']['response']
+        cleanup_require(reference is not None and reference['sha256'] == digest
+            and int(reference['byteSize']) == count, 'cleanup actual Native reply commitment differs')
+        body = direct_selected_bytes({'path': reference['file'], 'sha256': digest}, 16384)
+        cleanup_require(len(body) == count, 'cleanup actual Native reply changed after decoding')
+        return body
+    report['actualCheckedProfile'] = {'artifactSha256': profile_result['artifactSha256'],
+        'profileDigest': original['protectedProfileDigest'],
+        'sourceDigest': profile['workerSourceDigest'],
+        'namespaceBackingIdentity': backing, 'installedRecordSha256': installed['recordSha256'],
+        'scope': 'actual shared verified profile and record; Delete permission is the distinct existing check'}
+    try:
+        settle_helpers = [item for item in report.get('helperInventory', []) if item['phase'] == 'settle']
+        cleanup_require(len(settle_helpers) == 1, 'settlement has no independently inventoried helper')
+        settle_process = settle_helpers[0]['process']
+        settle_contexts = [row for row in report.get('nativeFinalContextRows', [])
+            if int(settle_process['started']['unixNs']) <= int(row['completedAtUnixMicros']) * 1000
+                <= int(settle_process['finished']['unixNs'])]
+        cleanup_require(len(settle_contexts) == 1, 'settlement has no unique actual final check')
+        settle_call_id = settle_contexts[0]['exchange']['transportCallId']
+        settle_calls = [call for call in report.get('transport', {}).get('joined', [])
+            if call['transportCallIdSha256'] == hashlib.sha256(settle_call_id.encode()).hexdigest()]
+        cleanup_require(len(settle_calls) == 1, 'settlement has no unique actual post-auth SDK selector')
+        settle_sdk = collector.collect([row for row in managed_gc_sdk_records(settle_window['workerLogText'])
+            if row['scope'] == 'managed_terminal_cleanup'], coordinates['runId'], backing, [{
+                'scope': 'managed_terminal_cleanup', 'key': key,
+                'subject_id': original['originalFingerprint'] + settle_calls[0]['requestSha256']}])
+        cleanup_require(not settle_sdk['calls'] and len(settle_sdk['brackets']) == 1
+            and settle_sdk['brackets'][0]['invoked'] == 0,
+            'actual normal settlement did not reuse its retained physical positive')
+        result['sdk'].append(settle_sdk)
+        report['actualSdkWindows'] = result['sdk']
+        report['actualOriginalFingerprint'] = original['originalFingerprint']
+        report['checkedBodyPartitions'] = workflow_module.join_checked_cleanup_body_partitions(
+            report, result['conditionalRead'], original['original'], first_proof['physicalReply'], consumed_reply)
+    except Exception as error:
+        report['providerPartitionFailureClass'] = type(error).__name__
+        report['checkedBodyPartitions'] = []
     retain_direct_flow('managed-terminal-'+coordinates['runId']+'.json',result)
     return result

@@ -121,6 +121,14 @@ enum Event {
         method: Method,
         outcome: Outcome,
     },
+    ReadComplete {
+        ordinal: usize,
+        consumed_bytes: u64,
+        eof: bool,
+        sha256: String,
+        etag: String,
+        version: String,
+    },
     RequestTerminal {
         healthy: bool,
         invoked: usize,
@@ -153,6 +161,7 @@ struct Inner {
     bytes: Cell<usize>,
     healthy: Cell<bool>,
     finished: Cell<bool>,
+    read_complete: Cell<bool>,
 }
 
 impl Inner {
@@ -248,6 +257,7 @@ impl RequestTrace {
             bytes: Cell::new(0),
             healthy: Cell::new(true),
             finished: Cell::new(false),
+            read_complete: Cell::new(false),
         });
         inner.emit(Event::RequestEntry, false);
         Some(Self(inner))
@@ -301,6 +311,41 @@ impl RequestTrace {
             method,
             finished: false,
         })
+    }
+
+    /// Records the actual verified EOF of the terminal conditional GET.
+    ///
+    /// This is emitted after the existing reader counted bytes, checked SHA-256
+    /// and rechecked its original cutoff. It never grants Delete permission.
+    pub(crate) fn read_complete(&self, bytes: u64, sha256: &str, etag: &str, version: &str) {
+        let valid = matches!(self.0.scope, Scope::ManagedTerminalCleanup)
+            && self.0.healthy.get()
+            && !self.0.finished.get()
+            && self.0.invoked.get() == 2
+            && self.0.completed.get() == 2
+            && self.0.pending.get() == 0
+            && !self.0.read_complete.replace(true)
+            && sha256.len() == 64
+            && sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            && (2..=512).contains(&etag.len())
+            && (1..=512).contains(&version.len());
+        if !valid {
+            self.invalidate();
+            return;
+        }
+        self.0.emit(
+            Event::ReadComplete {
+                ordinal: 2,
+                consumed_bytes: bytes,
+                eof: true,
+                sha256: sha256.to_owned(),
+                etag: etag.to_owned(),
+                version: version.to_owned(),
+            },
+            false,
+        );
     }
 
     /// Marks coverage incomplete when an actual call cannot be classified.

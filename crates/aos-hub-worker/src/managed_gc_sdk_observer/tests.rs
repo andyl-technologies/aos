@@ -200,6 +200,70 @@ fn oversized_result_with_successful_sink_remains_incomplete() {
 }
 
 #[test]
+fn verified_terminal_read_preserves_count_hash_and_incarnation() {
+    let (selected, records) = trace_selected(Scope::ManagedTerminalCleanup, "a".repeat(128));
+    for method in [Method::Head, Method::Get] {
+        selected.call(method).unwrap().finish(Outcome::Object {
+            size: 42,
+            etag: "\"actual-tag\"".into(),
+            version: "actual-upload".into(),
+        });
+    }
+    selected.read_complete(42, &"c".repeat(64), "\"actual-tag\"", "actual-upload");
+    selected
+        .call(Method::Delete)
+        .unwrap()
+        .finish(Outcome::Resolved);
+    selected.finish();
+
+    let records = records.borrow();
+    assert_eq!(
+        records[5]["event"],
+        serde_json::json!({
+            "kind": "read_complete", "ordinal": 2, "consumed_bytes": 42, "eof": true,
+            "sha256": "c".repeat(64), "etag": "\"actual-tag\"", "version": "actual-upload",
+        })
+    );
+    assert_eq!(records.last().unwrap()["event"]["healthy"], true);
+}
+
+#[test]
+fn premature_repeated_foreign_and_unknown_reads_keep_coverage_incomplete() {
+    for mode in 0..4 {
+        let scope = if mode == 2 {
+            Scope::ManagedGcGuard
+        } else {
+            Scope::ManagedTerminalCleanup
+        };
+        let subject = if mode == 2 {
+            "claim".into()
+        } else {
+            "a".repeat(128)
+        };
+        let (selected, records) = trace_selected(scope, subject);
+        if mode != 0 {
+            for method in [Method::Head, Method::Get] {
+                selected.call(method).unwrap().finish(if mode == 3 {
+                    Outcome::Unknown
+                } else {
+                    Outcome::Object {
+                        size: 42,
+                        etag: "\"tag\"".into(),
+                        version: "version".into(),
+                    }
+                });
+            }
+        }
+        selected.read_complete(42, &"c".repeat(64), "\"tag\"", "version");
+        if mode == 1 {
+            selected.read_complete(42, &"c".repeat(64), "\"tag\"", "version");
+        }
+        selected.finish();
+        assert_eq!(records.borrow().last().unwrap()["event"]["healthy"], false);
+    }
+}
+
+#[test]
 fn call_after_terminal_leaves_visible_invalid_continuation() {
     let (selected, records) = trace();
     selected.finish();

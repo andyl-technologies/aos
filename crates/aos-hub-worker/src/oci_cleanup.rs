@@ -289,11 +289,13 @@ async fn physical_reply(
             break;
         }
     }
+    let actual_sha256 = hex::encode(hash.finalize());
     ensure!(
-        bytes == work.original.size && hex::encode(hash.finalize()) == work.original.sha256,
+        bytes == work.original.size && actual_sha256 == work.original.sha256,
         "Managed cleanup source does not match immutable SQL chunk bytes"
     );
     check()?;
+    trace.read_complete(bytes, &actual_sha256, &object);
     storage.put(&record_key, &record).await?;
     check()?;
     ensure!(

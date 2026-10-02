@@ -490,9 +490,12 @@ def direct_log_position(machine, python, path):
     """, {"path": path}))
 
 
-def retain_direct_log_window(machine, python, before, name):
+def retain_direct_log_window(machine, python, before, name, after=None):
     """Capture a fixed observed log prefix in bounded transport chunks."""
-    after = direct_log_position(machine, python, before["path"])
+    if after is None:
+        after = direct_log_position(machine, python, before["path"])
+    elif after["path"] != before["path"]:
+        raise ValueError("measurement endpoint names another log")
     if any(before[key] != after[key] for key in ("device", "inode")) or after["byteSize"] < before["byteSize"]:
         raise ValueError("measurement log rotated or shrank")
     size = after["byteSize"] - before["byteSize"]

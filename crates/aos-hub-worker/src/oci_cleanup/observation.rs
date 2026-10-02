@@ -66,6 +66,24 @@ impl Trace {
         }
     }
 
+    pub(super) fn read_complete(
+        &self,
+        bytes: u64,
+        sha256: &str,
+        object: &aos_hub_core::storage_work::StorageObjectIdentity,
+    ) {
+        #[cfg(feature = "do-e2e")]
+        if let Some(trace) = &self.inner {
+            if let Some(version) = object.provider_version.as_deref() {
+                trace.read_complete(bytes, sha256, &object.etag, version);
+            } else {
+                trace.invalidate();
+            }
+        }
+        #[cfg(not(feature = "do-e2e"))]
+        let _ = (bytes, sha256, object);
+    }
+
     pub(super) fn finish(&self) {
         #[cfg(feature = "do-e2e")]
         if let Some(trace) = &self.inner {

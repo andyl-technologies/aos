@@ -272,3 +272,110 @@ def cleanup_invocation_events(projected, validate_authenticated, validate_final_
     return {"numeric": list(numeric.values()),
         "authenticated": [{**row, "nativeCompletedAtUnixMicros": None} for row in authenticated.values()],
         "contexts": list(contexts.values()), "nativeBulkBytes": None}
+
+
+def read_managed_cleanup_upstream_invocation(authentication, selected):
+    """Inventory a distinct read-only authenticator with startup/output custody.
+
+    This reopens the actual child references. It returns no Native transport
+    observations: a completed signed upstream reply is not a consumed reply of
+    the original dispatch that intentionally lost its downstream response.
+    """
+    reference = authentication['invocation']
+    root = Path(reference['path']).parent
+    selected_root = Path(selected['root']) / 'cleanup-loss'
+    cleanup_accounting_require(root.is_relative_to(selected_root)
+        and Path(reference['path']).name == 'authentication-invocation.private.json',
+        'upstream helper invocation escaped the actual confined listener')
+    invocation = cleanup_accounting_json(cleanup_private_reference(reference,
+        root / 'authentication-invocation.private.json', 65536))
+    fields = {'version', 'scope', 'phase', 'transportScope', 'nativeTransportObservation',
+        'helperProcess', 'arguments', 'input', 'output', 'outputErrorKind', 'started', 'finished',
+        'stdout', 'stderr', 'exitCode', 'failureKind', 'completeProcessCustody',
+        'startupReady', 'startupRelease', 'outputBound', 'outputOverflow',
+        'completeOutputCollection', 'listenerSourceSha256', 'runtimeSourceSha256'}
+    cleanup_accounting_require(isinstance(invocation, dict) and set(invocation) == fields
+        and invocation == authentication['helperProcess'] and type(invocation['version']) is int
+        and invocation['version'] == 1 and invocation['scope'] == 'managed_cleanup_upstream_authentication_helper'
+        and invocation['phase'] == 'authenticate_lost_reply'
+        and invocation['transportScope'] == 'read_only_upstream_validation'
+        and invocation['nativeTransportObservation'] is None
+        and invocation['completeProcessCustody'] is True and invocation['failureKind'] is None
+        and type(invocation['exitCode']) is int and invocation['exitCode'] == 0
+        and invocation['completeOutputCollection'] is True
+        and type(invocation['outputBound']) is int and invocation['outputBound'] == 65536
+        and invocation['outputOverflow'] == {'stdout': False, 'stderr': False}
+        and invocation['outputErrorKind'] is None
+        and invocation['listenerSourceSha256'] == selected['listenerSourceSha256']
+        and invocation['runtimeSourceSha256'] == selected['runtimeSourceSha256'],
+        'upstream helper source, mode, custody or bounded collection differs')
+    pin = invocation['helperProcess']
+    cleanup_accounting_require(isinstance(pin, dict) and set(pin) == {'pid', 'startTicks', 'ownerUid',
+        'executableSha256', 'commandLineSha256', 'environmentSha256', 'commandLine', 'environment'}
+        and type(pin['pid']) is int and pin['pid'] > 0 and pin['pid'] != selected['servicePid']
+        and type(pin['ownerUid']) is int and pin['ownerUid'] == os.getuid()
+        and re.fullmatch(r'[1-9][0-9]{0,19}', pin['startTicks'])
+        and pin['executableSha256'] == selected['testExecutableSha256'],
+        'upstream helper is not its distinct selected real process')
+    command = cleanup_private_reference(pin['commandLine'], root / 'command-line.private', 65536)
+    environment = cleanup_private_reference(pin['environment'], root / 'environment.private', 65536)
+    cleanup_accounting_require(invocation['arguments'] == [selected['testExecutable'], HELPER_TEST,
+        '--exact', '--ignored', '--nocapture']
+        and command == b''.join(argument.encode() + b'\0' for argument in invocation['arguments'])
+        and hashlib.sha256(command).hexdigest() == pin['commandLineSha256']
+        and hashlib.sha256(environment).hexdigest() == pin['environmentSha256'],
+        'upstream helper actual invocation substituted')
+    variables = {}
+    cleanup_accounting_require(environment.endswith(b'\0'), 'upstream process environment is truncated')
+    for item in environment[:-1].split(b'\0'):
+        name, separator, value = item.partition(b'=')
+        cleanup_accounting_require(separator and name and name not in variables,
+                                    'upstream process environment is malformed or ambiguous')
+        variables[name] = value
+    ready = cleanup_accounting_json(cleanup_private_reference(invocation['startupReady'],
+        root / 'authentication-ready.private.json', 1024))
+    release = cleanup_accounting_json(cleanup_private_reference(invocation['startupRelease'],
+        root / 'authentication-release.private.json', 1024))
+    cleanup_accounting_require(set(ready) == {'version', 'nonce', 'pid', 'scope'}
+        and type(ready['version']) is int and ready['version'] == 1 and ready['pid'] == pin['pid']
+        and ready['scope'] == 'managed_cleanup_before_input' and re.fullmatch(r'[0-9a-f]{32}', ready['nonce'])
+        and set(release) == {'version', 'nonce'} and type(release['version']) is int
+        and release == {'version': 1, 'nonce': ready['nonce']}
+        and variables.get(b'AOS_MANAGED_CLEANUP_STARTUP_NONCE') == ready['nonce'].encode()
+        and variables.get(b'AOS_MANAGED_CLEANUP_STARTUP_ROOT') == str(root).encode(),
+        'upstream child startup nonce/PID/live pin/release differs')
+    parameters = cleanup_accounting_json(cleanup_private_reference(invocation['input'],
+        root / 'authentication-input.json', 16384))
+    output = cleanup_accounting_json(cleanup_private_reference(invocation['output'],
+        root / 'authenticated.json', 65536))
+    cleanup_accounting_require(parameters['phase'] == 'authenticate_lost_reply'
+        and parameters['outputFile'] == str(root / 'authenticated.json')
+        and parameters['expectedOriginalSha256'] == selected['originalSha256']
+        and variables.get(b'AOS_MANAGED_CLEANUP_CONTROLLED_INPUT')
+            == str(root / 'authentication-input.json').encode()
+        and output == authentication['proof'] and output['outcome'] == 'authenticated_completed_response'
+        and output['inputSha256'] == invocation['input']['sha256']
+        and output['originalSha256'] == selected['originalSha256']
+        and output['protectedProfileDigest'] == selected['protectedProfileDigest']
+        and output['nativeExchangeObservations'] is None,
+        'upstream-only typed authentication input/output/source original differs')
+    for field, parameter in [('request', 'lostRequestFile'), ('request-signature', 'lostRequestSignatureFile'),
+            ('reply', 'lostReplyFile'), ('reply-signature', 'lostReplySignatureFile')]:
+        ref = authentication['files'][field]
+        cleanup_accounting_require(parameters[parameter] == ref['path'],
+                                    'upstream authenticator substituted a signed body file')
+        cleanup_private_reference(ref, root / (field + '.private'), 16384)
+    cleanup_accounting_require(output['authenticatedRequestSha256'] == authentication['files']['request']['sha256'],
+                                'upstream authenticator verified another exact request')
+    for field in ('stdout', 'stderr'):
+        cleanup_private_reference(invocation[field], root / ('authentication.' + field), 65536)
+    for clock in ('unixNs', 'monotonicNs'):
+        cleanup_accounting_require(all(isinstance(invocation[point][clock], str)
+            and re.fullmatch(r'[1-9][0-9]{0,19}', invocation[point][clock]) for point in ('started', 'finished'))
+            and int(invocation['started'][clock]) <= int(invocation['finished'][clock]),
+            'upstream helper lifetime clock differs')
+    return {'invocation': reference, 'process': pin,
+        'started': invocation['started'], 'finished': invocation['finished'],
+        'startupReady': invocation['startupReady'], 'startupRelease': invocation['startupRelease'],
+        'input': invocation['input'], 'output': invocation['output'],
+        'nativeTransportObservation': None, 'scope': 'independently inventoried read-only upstream child'}

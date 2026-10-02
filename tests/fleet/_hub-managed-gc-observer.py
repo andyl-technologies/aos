@@ -151,6 +151,25 @@ def collect(records, capture_id, backing_identity, expected_requests):
             call["result"] = ({key: value for key, value in outcome.items() if key != "kind"}
                               if outcome["kind"] == "object" else outcome)
             calls.append(call)
+        elif kind == "read_complete":
+            require(set(event) == {"kind", "ordinal", "consumed_bytes", "eof",
+                                  "sha256", "etag", "version"}
+                    and record["scope"] == "managed_terminal_cleanup"
+                    and event["ordinal"] == 2 and type(event["ordinal"]) is int
+                    and event["ordinal"] in request["calls"]
+                    and integer(event["consumed_bytes"]) and event["eof"] is True
+                    and isinstance(event["sha256"], str)
+                    and re.fullmatch(r"[0-9a-f]{64}", event["sha256"]),
+                    "terminal conditional read lacks actual bounded EOF evidence")
+            call = request["calls"][event["ordinal"]]
+            require(call["method"] == "get" and "result" in call and "read" not in call
+                    and set(call["result"]) == {"size", "etag", "version"}
+                    and call["result"] == {"size": event["consumed_bytes"],
+                                           "etag": event["etag"], "version": event["version"]}
+                    and len(request["calls"]) == 2,
+                    "conditional read is repeated, foreign or follows another SDK call")
+            call["read"] = {key: value for key, value in event.items()
+                            if key not in {"kind", "ordinal"}}
         elif kind == "request_terminal":
             require(set(event) == {"kind", "healthy", "invoked", "completed", "pending"}
                     and event["healthy"] is True

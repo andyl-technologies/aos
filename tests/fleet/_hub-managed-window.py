@@ -184,7 +184,10 @@ def run_managed_pair_window(client, native, worker, database, tools, database_ho
         and private_source["document"]["byteSize"] == source["document"]["byteSize"],
         "Public and independently signed private registries must retain the same canonical document")
     tools = {**tools, "publicDocumentCacheCase": managed_document_cache_selection(
-        client, tools, coordinates, source)}
+        client, tools, coordinates, source), "ociProfileLoadObserverSelection": {
+            "version": 1, "capture_id": run_id, "placement_prefix": coordinates["gcPrefix"],
+            "document_digest": source["finalized"]["index_digest"],
+        }}
     native_address = private_guest_command(worker, tools["python"] + " -c " + shlex.quote(
         "import socket; print(socket.gethostbyname('native'))")).strip()
     worker_address = private_guest_command(native, tools["python"] + " -c " + shlex.quote(
@@ -195,6 +198,14 @@ def run_managed_pair_window(client, native, worker, database, tools, database_ho
         "run": run_id, "sourceDigest": source_digest, "nativeAddress": native_address,
     }}
     tools = {**tools, "deploymentId": prepared["coordinates"]["deploymentId"]}
+    profile_fixture = managed_fixture_module(tools["ociProfileController"], "managed_profile_" + run_id)
+    profile_listener = profile_fixture.prepare_profile_listener(worker, tools, prepared)
+    profile_process = launch_managed_process(worker, tools, profile_listener["root"],
+        "profile-listener", profile_listener["arguments"], {})
+    profile_readiness = profile_fixture.await_profile_listener(worker, tools,
+        profile_listener, profile_process)
+    prepared = {**prepared, "profileHold": {"listener": profile_listener,
+        "process": profile_process, "readiness": profile_readiness}}
     cleanup_loss = prepare_managed_cleanup_loss(native, tools, prepared, worker_address)
     prepared = {**prepared, "cleanupLoss": cleanup_loss}
     boundaries = install_managed_storage_boundaries(native, worker, tools, run_id, worker_address, native_address)
@@ -254,24 +265,103 @@ def run_managed_pair_window(client, native, worker, database, tools, database_ho
     private_setup = gc.prepare_managed_registry(controls, organization, "private-docs", [private_source["trustKey"]],
         "qualification/parity-private/" + run_id, "managed-private-" + run_id)
     route = configure_managed_distribution(client, worker, tools, prepared, processes, controls, setup)
-    publication = producer.publish_managed_container(client, tools, controls,
-        producer_coordinates, setup["registry"], source, refresh_token)
-    private_publication = publish_managed_private_documents(client, tools, coordinates,
-        controls, private_setup, private_source, refresh_token)
-    retain_direct_flow("managed-" + run_id + "-container-publication.json", {
-        "source": source, "setup": setup, "route": route, "publication": publication,
-        "privateDocuments": {"source": private_source, "setup": private_setup,
-            "publication": private_publication},
-        "controlObservations": controls.observations,
-    })
-    reads = run_managed_read_window(client, native, worker, tools, prepared, processes,
-        setup, source, publication, refresh_token)
-    gc_result = run_managed_gc_window(native, worker, client, database, tools, prepared,
-        processes, boundaries, controls, setup, source, publication, producer_coordinates, refresh_token)
-    cleanup_result = run_managed_terminal_cleanup_window(native, worker, client, tools,
-        prepared, processes, boundaries, controls, setup, source, publication,
-        installation, refresh_token)
+    accounting = managed_fixture_module(tools["managedWorkflowAccounting"], "managed_workflow_" + run_id)
+    def parse_workflow_completion(text, role):
+        if role in {"workerOriginal", "nativeReceived"}:
+            values, completed, _ = managed_ingress_completion_receipts(text, role == "nativeReceived")
+            return values, completed
+        return direct_storage_completion_receipts(text, role == "workerReceived")
+
+    workflow = accounting.ManagedWorkflowCapture(native, worker, tools, prepared, processes,
+        boundaries, begin_managed_storage_window, finish_managed_storage_window,
+        managed_private_log_position, retain_direct_log_window, parse_workflow_completion,
+        capture_protected_headers, retain_direct_flow)
+
+    def transition(event, facts):
+        if event == "before-A-stop":
+            require_managed_pair(facts["process"] == processes["worker"],
+                "Profile stop names another actual Worker lifetime")
+            workflow.close(processes)
+        elif event in {"B-started", "before-B-stop"}:
+            workflow.auxiliary_transition(event, facts)
+        elif event == "A-restored":
+            processes["worker"] = facts["process"]
+            workflow.resume(processes)
+        else:
+            raise ValueError("Unknown actual Worker epoch transition")
+
+    gc_result, cleanup_result = None, None
+    producer_failure = None
+    producer_error = None
+    try:
+        publication = producer.publish_managed_container(client, tools, controls,
+            producer_coordinates, setup["registry"], source, refresh_token)
+        private_publication = publish_managed_private_documents(client, tools, coordinates,
+            controls, private_setup, private_source, refresh_token)
+        retain_direct_flow("managed-" + run_id + "-container-publication.json", {
+            "source": source, "setup": setup, "route": route, "publication": publication,
+            "privateDocuments": {"source": private_source, "setup": private_setup,
+                "publication": private_publication},
+            "controlObservations": controls.observations,
+        })
+        reads = run_managed_read_window(client, native, worker, tools, prepared, processes,
+            setup, source, publication, refresh_token)
+        profile_context = profile_fixture.select_profile_context(worker, tools=tools,
+            prepared=prepared, processes=processes,
+            namespace_file=observed["namespaceObservation"]["path"],
+            artifact_sha256=installation["artifactSha256"],
+            source_identity_file=coordinates["workerRoot"] + "/clock-0/source-identity.json",
+            listener=profile_listener)
+        mismatch = profile_fixture.run_profile_origin_mismatch(worker, tools=tools,
+            context=profile_context, listener=profile_listener, listener_process=profile_process,
+            root_mutation=lambda: producer.root_mutation(client, tools, producer_coordinates,
+                setup["registry"], source, refresh_token),
+            check_original=lambda original, held: capture_managed_profile_original(
+                native, tools, prepared, original, held),
+            observe_worker=lambda pin, origin, configuration: observe_managed_profile_worker(
+                worker, tools, prepared, pin, origin, configuration),
+            transition=transition,
+            retain=lambda name, value: retain_direct_flow("managed-" + run_id + "-" + name, value))
+        # The owner has restored A only after B and the genuine producer terminate.
+        # Later windows must bind this new lifetime rather than the startup PID.
+        processes["worker"] = mismatch["restoredWorker"]
+        retain_direct_flow("managed-" + run_id + "-profile-origin-mismatch.json", mismatch)
+        require_managed_pair(mismatch["outcome"] == "same_source_origin_refused_before_sdk_in_loader_bracket",
+            "Required actual profile-origin refusal remains unknown or failed")
+        gc_result = run_managed_gc_window(native, worker, client, database, tools, prepared,
+            processes, boundaries, controls, setup, source, publication, producer_coordinates, refresh_token)
+        cleanup_result = run_managed_terminal_cleanup_window(native, worker, client, tools,
+            prepared, processes, boundaries, controls, setup, source, publication,
+            installation, refresh_token, workflow=workflow)
+    except BaseException as error:
+        producer_error = error
+        producer_failure = type(error).__name__
+        workflow.failure = producer_failure
+        raise
+    finally:
+        try:
+            whole_workflow = workflow.complete(processes)
+            whole_workflow["assessment"] = accounting.assess_managed_workflow(
+                whole_workflow, (cleanup_result or {}).get("nativeApplicationAccounting", {}),
+                source_digest=prepared["captureSelection"]["sourceDigest"],
+                gc_windows=(gc_result or {}).get("transportWindows", []),
+                gc_positive=(gc_result or {}).get("completed", {}).get("actualPositiveEvidence"),
+                read_retained=lambda reference: direct_selected_bytes(
+                    {"path": reference["file"], "sha256": reference["sha256"]}, 16 * 1024 * 1024),
+                join_gc_positive=gc.join_managed_deletion)
+        except Exception as error:
+            # Preserve the business exception while retaining a separate failed
+            # capture gate. Neither failure may disappear into a positive subset.
+            whole_workflow = {"version": 1, "producerFailureClass": producer_failure,
+                "captureFailureClass": type(error).__name__, "assessment": {"complete": False,
+                    "nativeBulkBytes": None, "unresolved": [{"scope": "global_capture",
+                        "reason": "capture_or_join_failed"}]}}
+        accounting.retain_managed_workflow_conclusion(whole_workflow, retain_direct_flow,
+            "managed-" + run_id + "-whole-assessment.json", producer_error)
+    require_managed_pair(whole_workflow["assessment"]["complete"] is True,
+        "Required whole Managed application-body assessment is incomplete; actual evidence retained")
     return {"runId": run_id, "coordinates": coordinates, "processes": processes,
         "installation": installation, "registry": setup, "container": publication, "gc": gc_result,
-        "terminalCleanup": cleanup_result, "readParity": reads,
+        "terminalCleanup": cleanup_result, "readParity": reads, "wholeWorkflow": whole_workflow,
+        "profileOriginMismatch": mismatch,
         "scope": "actual Managed R2 emulator workflow; Hosted qualification remains separate"}
