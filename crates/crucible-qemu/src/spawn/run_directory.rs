@@ -1296,7 +1296,7 @@ fn open_prepared_vmstate(directory: &OwnedFd, path: &Path) -> Result<OwnedFd, Qe
     })
 }
 
-fn valid_rr_control_boundary_row(row: &str) -> bool {
+pub(crate) fn valid_rr_control_boundary_row(row: &str) -> bool {
     let mut fields = row.split_ascii_whitespace();
     if fields.next() != Some("crucible_sim_rr_control_boundary") {
         return false;

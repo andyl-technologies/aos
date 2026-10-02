@@ -342,6 +342,74 @@ fn one_step_releases_at_most_one_backend_owned_child_resource() {
 }
 
 #[test]
+fn adopted_child_diagnostics_are_reported_after_resources_and_before_target_release() {
+    let (mut reconciliation, calls) =
+        scripted_with_resource_substeps([QemuHotForkChildDisposition::Exited(0)], false, 2);
+    service_and_observe(&mut reconciliation);
+    let mut reported = false;
+    for _ in 0..8 {
+        let reconciliation_result = reconciliation.reconcile_step();
+        linux::report_reconciled_child_diagnostics_once(
+            &reconciliation,
+            &reconciliation_result,
+            &mut reported,
+            |backend, complete| {
+                assert!(complete);
+                backend.calls.lock().expect("calls").push("report");
+            },
+        );
+        if reconciliation_result.expect("operational cleanup")
+            == QemuHotForkReconciliationStep::AwaitingPublication
+        {
+            break;
+        }
+    }
+    assert!(reported);
+    let calls = calls.lock().expect("calls");
+    let report = calls
+        .iter()
+        .position(|call| *call == "report")
+        .expect("report");
+    let target = calls
+        .iter()
+        .position(|call| *call == "target")
+        .expect("target release");
+    assert_eq!(report + 1, target);
+    assert_eq!(calls.iter().filter(|call| **call == "report").count(), 1);
+    assert!(!calls[report + 1..].contains(&"resources"));
+}
+
+#[test]
+fn adopted_child_error_reports_retained_bytes_once_without_another_cleanup_step() {
+    let (mut reconciliation, calls) =
+        scripted_with_resource_substeps([QemuHotForkChildDisposition::Exited(0)], true, 0);
+    service_and_observe(&mut reconciliation);
+    let reconciliation_result = reconciliation.reconcile_step();
+    assert!(reconciliation_result.is_err());
+    let before = calls.lock().expect("calls").clone();
+    let mut reported = false;
+    for _ in 0..2 {
+        linux::report_reconciled_child_diagnostics_once(
+            &reconciliation,
+            &reconciliation_result,
+            &mut reported,
+            |backend, complete| {
+                assert!(!complete);
+                backend.calls.lock().expect("calls").push("report-partial");
+            },
+        );
+    }
+    let mut expected = before;
+    expected.push("report-partial");
+    assert_eq!(*calls.lock().expect("calls"), expected);
+    assert!(reconciliation_result.is_err());
+    assert_eq!(
+        reconciliation.phase(),
+        QemuHotForkReconciliationPhase::ParentReaped
+    );
+}
+
+#[test]
 fn dropping_incomplete_owner_transfers_cleanup_to_quarantine() {
     let (owner, calls) = scripted([QemuHotForkChildDisposition::Running], false);
     drop(owner);
