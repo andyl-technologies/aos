@@ -26,8 +26,11 @@ The installed directory must also contain these unchanged selected siblings:
 `tools.workerSourcePath` and `tools.storageCodecSourceSha256` must identify the
 actual common source and selected decoder. The decoder source commitment is the
 existing ordered concatenation of `main.rs`, `files.rs`, `classify.rs`,
-`storage_work.rs`, `ingress.rs` and `controls.rs`. No historical executable is
-relabelled by this consumer.
+`storage_work.rs`, `ingress.rs`, `controls.rs` and `copy_request.rs`. The normal
+exchange and intrinsic request-only Copy modes share this seven-file commitment.
+A legacy six-file digest must not match the selected current decoder. No
+historical executable is relabelled, and request-only observation supplies no
+reply, transport EOF, MAC or permission evidence.
 
 `workflow` is the called External epoch collector's complete result: eight fixed
 proxy/header windows, exclusive original/received membership, separate actual
