@@ -181,12 +181,14 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
         "window": {"file": str(paths["nativeLog"]), **receipts["nativeLog"]}}
     native_headers = capture_protected_headers(paths["nativeHeaders"], "native-outbound", prefix)
     worker_headers = capture_protected_headers(paths["workerHeaders"], "worker-received", prefix)
+    authenticated_rows = authenticated_storage_transport_receipts(
+        paths["nativeLog"], processes["native"], file_provenance)
+    context_rows = storage_final_sql_receipts(paths["nativeLog"], processes["native"], file_provenance)
     transport = join_authenticated_storage_transports(
         boundary["nativeOriginalBodies"]["bodies"], boundary["workerReceivedBodies"]["bodies"],
         native_headers, worker_headers,
-        authenticated_storage_transport_receipts(paths["nativeLog"], processes["native"], file_provenance))
-    final_sql = join_storage_final_sql(transport,
-        storage_final_sql_receipts(paths["nativeLog"], processes["native"], file_provenance))
+        authenticated_rows)
+    final_sql = join_storage_final_sql(transport, context_rows)
     final_sql["externalAdmissionActorObservations"] = join_external_admission_actor(final_sql,
         external_admission_actor_receipts(paths["nativeLog"], processes["native"], file_provenance))
     ingress = capture_managed_native_ingress(native, worker, tools, boundaries,
@@ -206,6 +208,7 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
         "rawWindowReceipts": {name: {"file": str(paths[name]), **receipt}
             for name, receipt in receipts.items()}, "processObservations": observations,
         "nativeAuthenticatedTransports": transport, "nativeFinalContextObservations": final_sql,
+        "nativeServiceAuthenticatedRows": authenticated_rows, "nativeServiceFinalSqlRows": context_rows,
         "nativeIngressBoundary": ingress,
         "nativeBulkBytes": None,
         "scope": "actual separate Managed transport/log window; no actor, purpose, provider or zero conclusion"}

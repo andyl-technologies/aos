@@ -43,9 +43,13 @@ EXTERNAL_OCI_CAPTURE_ROUTES = {
     "/_internal/storage/external-oci-source/v1": "external_oci_source",
     "/_internal/storage/external-oci-cleanup/v1": "external_oci_cleanup",
 }
+MANAGED_CLEANUP_CAPTURE_ROUTE = "/_internal/storage/managed-oci-cleanup/v1"
 STORAGE_CAPTURE_ROUTES = {**COPY_CAPTURE_ROUTES, **EXTERNAL_OCI_CAPTURE_ROUTES,
-    OCI_CAPTURE_ROUTE: "OciDocumentProjection"}
+    OCI_CAPTURE_ROUTE: "OciDocumentProjection",
+    MANAGED_CLEANUP_CAPTURE_ROUTE: "managed_oci_cleanup"}
 STORAGE_SIGNATURE_FIELDS = {
+    MANAGED_CLEANUP_CAPTURE_ROUTE: ("managed_oci_cleanup_request_signature",
+        "managed_oci_cleanup_reply_signature"),
     **{route: ("request_signature", "reply_signature") for route in COPY_CAPTURE_ROUTES},
     OCI_CAPTURE_ROUTE: ("oci_request_signature", "oci_reply_signature"),
     "/_internal/storage/external-oci/v1": ("external_oci_request_signature", "external_oci_reply_signature"),
@@ -61,11 +65,12 @@ def storage_transport_body_limit(route, side):
         return 16 * 1024
     if route == "/_internal/storage/external-oci-source/v1":
         return 32 * 1024
-    if route == "/_internal/storage/external-oci-cleanup/v1":
+    if route in {"/_internal/storage/external-oci-cleanup/v1", MANAGED_CLEANUP_CAPTURE_ROUTE}:
         return 16 * 1024
     return 64 * 1024
 
 AUTHENTICATED_EVENT_ROUTES = {
+    "managed_oci_cleanup_authenticated": {MANAGED_CLEANUP_CAPTURE_ROUTE: "managed_oci_cleanup"},
     "external_copy_authenticated": COPY_CAPTURE_ROUTES,
     "oci_projection_authenticated": {OCI_CAPTURE_ROUTE: "OciDocumentProjection"},
     "external_oci_authenticated": EXTERNAL_OCI_CAPTURE_ROUTES,
@@ -308,6 +313,26 @@ def observed_native_messages(source, native_process, file_provenance=None):
         raise ValueError("Native retained plain log changed")
 
 
+def validate_storage_authenticated_value(value, routes):
+    """Check one closed observation value without authenticating its caller."""
+    if (not isinstance(value, dict) or set(value) != STORAGE_AUTHENTICATED_FIELDS
+            or type(value["version"]) is not int or value["version"] != 2
+            or value["route"] not in routes
+            or value["operation"] != routes[value["route"]]
+            or not re.fullmatch(r"[0-9a-f]{32}", value["transportCallId"])
+            or not re.fullmatch(r"[0-9a-f]{32}" if value["route"] in COPY_CAPTURE_ROUTES
+                else r"[0-9a-f]{64}", value["planId"])):
+        raise ValueError("authenticated storage receipt shape differs")
+    for field in ("requestSha256", "replySha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", value[field]):
+            raise ValueError("authenticated storage body commitment differs")
+    for field in ("requestBytes", "replyBytes"):
+        maximum = storage_transport_body_limit(value["route"], field)
+        if type(value[field]) is not int or not 0 <= value[field] <= maximum:
+            raise ValueError("authenticated storage byte count differs")
+    return value
+
+
 def authenticated_storage_transport_receipts(text, native_process, file_provenance=None):
     """Read post-authentication events from the selected actual Native journal.
 
@@ -328,21 +353,7 @@ def authenticated_storage_transport_receipts(text, native_process, file_provenan
         if suffix and not suffix.startswith(" span="):
             raise ValueError("authenticated transport event suffix differs")
         value = _closed_review_json(encoded[:end])
-        if (not isinstance(value, dict) or set(value) != STORAGE_AUTHENTICATED_FIELDS
-                or type(value["version"]) is not int or value["version"] != 2
-                or value["route"] not in routes
-                or value["operation"] != routes[value["route"]]
-                or not re.fullmatch(r"[0-9a-f]{32}", value["transportCallId"])
-                or not re.fullmatch(r"[0-9a-f]{32}" if value["route"] in COPY_CAPTURE_ROUTES
-                    else r"[0-9a-f]{64}", value["planId"])):
-            raise ValueError("authenticated storage receipt shape differs")
-        for field in ("requestSha256", "replySha256"):
-            if not re.fullmatch(r"[0-9a-f]{64}", value[field]):
-                raise ValueError("authenticated storage body commitment differs")
-        for field in ("requestBytes", "replyBytes"):
-            maximum = storage_transport_body_limit(value["route"], field)
-            if type(value[field]) is not int or not 0 <= value[field] <= maximum:
-                raise ValueError("authenticated storage byte count differs")
+        validate_storage_authenticated_value(value, routes)
         receipts.append({**value, "nativeCompletedAtUnixMicros": observed_at})
         if len(receipts) > PROTECTED_HEADER_RECORD_LIMIT:
             raise ValueError("authenticated storage receipt corpus exceeds its bound")

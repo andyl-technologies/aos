@@ -11,6 +11,10 @@ import re
 
 
 STORAGE_FINAL_SQL_COMMITMENTS = {
+    "managed_oci_cleanup_delete_checked": frozenset((
+        "requestSha256", "replySha256", "uploadStateSha256", "chunkStateSha256",
+        "placementStateSha256", "bindingStateSha256", "deleteCapabilitySha256",
+    )),
     "external_copy_current_sql": frozenset((
         "topologySha256", "sourcePlacementSha256", "destinationPlacementSha256",
         "bindingStateSha256", "writeRevisionStateSha256", "consumerGrantStateSha256",
@@ -49,6 +53,8 @@ STORAGE_FINAL_SQL_COMMITMENTS = {
 }
 
 STORAGE_FINAL_SQL_ROUTES = {
+    "managed_oci_cleanup_delete_checked": {
+        MANAGED_CLEANUP_CAPTURE_ROUTE: "managed_oci_cleanup"},
     "external_copy_current_sql": COPY_CAPTURE_ROUTES,
     "managed_oci_current_sql": {OCI_CAPTURE_ROUTE: "OciDocumentProjection"},
     "external_oci_projection_writer_checked": {OCI_CAPTURE_ROUTE: "OciDocumentProjection"},
@@ -67,6 +73,45 @@ STORAGE_FINAL_SQL_ROUTES = {
 }
 
 
+def validate_storage_final_sql_value(value):
+    """Check the shared closed final-context shape without granting SQL authority."""
+    if (not isinstance(value, dict) or set(value) != {
+            "version", "exchange", "contextKind", "commitments", "completedAtUnixMicros"}
+            or type(value["version"]) is not int or value["version"] != 1
+            or not isinstance(value["contextKind"], str)
+            or value["contextKind"] not in STORAGE_FINAL_SQL_COMMITMENTS
+            or not isinstance(value["commitments"], dict)
+            or not re.fullmatch(r"[1-9][0-9]{0,19}", value["completedAtUnixMicros"])):
+        raise ValueError("final SQL event shape differs")
+    kind = value["contextKind"]
+    fields = set(value["commitments"])
+    expected = STORAGE_FINAL_SQL_COMMITMENTS[kind]
+    if (fields != expected and not (kind == "managed_oci_current_sql"
+            and fields == expected | {"purposeEvidenceSha256", "documentEffectSha256"})):
+        raise ValueError("final SQL commitment projection differs")
+    if any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for digest in value["commitments"].values()):
+        raise ValueError("final SQL commitment differs")
+    exchange = value["exchange"]
+    routes = STORAGE_FINAL_SQL_ROUTES[kind]
+    if (not isinstance(exchange, dict) or set(exchange) != STORAGE_AUTHENTICATED_FIELDS
+            or type(exchange["version"]) is not int or exchange["version"] != 2
+            or exchange["route"] not in routes
+            or exchange["operation"] != routes[exchange["route"]]
+            or not re.fullmatch(r"[0-9a-f]{32}", exchange["transportCallId"])
+            or not re.fullmatch(r"[0-9a-f]{32}" if kind == "external_copy_current_sql"
+                else r"[0-9a-f]{64}", exchange["planId"])):
+        raise ValueError("final SQL exchange differs")
+    for field in ("requestSha256", "replySha256"):
+        if not re.fullmatch(r"[0-9a-f]{64}", exchange[field]):
+            raise ValueError("final SQL body commitment differs")
+    for field in ("requestBytes", "replyBytes"):
+        maximum = storage_transport_body_limit(exchange["route"], field)
+        if type(exchange[field]) is not int or not 0 <= exchange[field] <= maximum:
+            raise ValueError("final SQL consumed body bound differs")
+    return value
+
+
 def storage_final_sql_receipts(text, native_process, file_provenance=None):
     """Parse only bounded source-bound events from the actual pinned process."""
     receipts = []
@@ -81,40 +126,7 @@ def storage_final_sql_receipts(text, native_process, file_provenance=None):
         if encoded[end:] and not encoded[end:].startswith(" span="):
             raise ValueError("final SQL event suffix differs")
         value = _closed_review_json(encoded[:end])
-        if (not isinstance(value, dict) or set(value) != {
-                "version", "exchange", "contextKind", "commitments", "completedAtUnixMicros"}
-                or type(value["version"]) is not int or value["version"] != 1
-                or not isinstance(value["contextKind"], str)
-                or value["contextKind"] not in STORAGE_FINAL_SQL_COMMITMENTS
-                or not isinstance(value["commitments"], dict)
-                or not re.fullmatch(r"[1-9][0-9]{0,19}", value["completedAtUnixMicros"])):
-            raise ValueError("final SQL event shape differs")
-        kind = value["contextKind"]
-        fields = set(value["commitments"])
-        expected = STORAGE_FINAL_SQL_COMMITMENTS[kind]
-        if (fields != expected and not (kind == "managed_oci_current_sql"
-                and fields == expected | {"purposeEvidenceSha256", "documentEffectSha256"})):
-            raise ValueError("final SQL commitment projection differs")
-        if any(not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest)
-                for digest in value["commitments"].values()):
-            raise ValueError("final SQL commitment differs")
-        exchange = value["exchange"]
-        routes = STORAGE_FINAL_SQL_ROUTES[kind]
-        if (not isinstance(exchange, dict) or set(exchange) != STORAGE_AUTHENTICATED_FIELDS
-                or type(exchange["version"]) is not int or exchange["version"] != 2
-                or exchange["route"] not in routes
-                or exchange["operation"] != routes[exchange["route"]]
-                or not re.fullmatch(r"[0-9a-f]{32}", exchange["transportCallId"])
-                or not re.fullmatch(r"[0-9a-f]{32}" if kind == "external_copy_current_sql"
-                    else r"[0-9a-f]{64}", exchange["planId"])):
-            raise ValueError("final SQL exchange differs")
-        for field in ("requestSha256", "replySha256"):
-            if not re.fullmatch(r"[0-9a-f]{64}", exchange[field]):
-                raise ValueError("final SQL body commitment differs")
-        for field in ("requestBytes", "replyBytes"):
-            maximum = storage_transport_body_limit(exchange["route"], field)
-            if type(exchange[field]) is not int or not 0 <= exchange[field] <= maximum:
-                raise ValueError("final SQL consumed body bound differs")
+        validate_storage_final_sql_value(value)
         receipts.append({**value, "journalAtUnixMicros": observed_at,
             "receiptSha256": hashlib.sha256(encoded[:end].encode()).hexdigest()})
         if len(receipts) > PROTECTED_HEADER_RECORD_LIMIT:
