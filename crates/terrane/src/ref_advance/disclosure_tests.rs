@@ -30,6 +30,14 @@ mod materialization;
 mod multiple;
 #[cfg(unix)]
 mod occurrences;
+#[cfg(unix)]
+mod parents;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_first_and_second_parent_cuts_require_complete_origins() {
+    parents::certify_complete_parent_cuts().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
