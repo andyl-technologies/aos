@@ -1,10 +1,11 @@
-//! Live process, ring, and writable root-overlay evidence for one real fork.
+//! Live QEMU process, guest workload, and private resource evidence for VM flights.
 
 use super::*;
 
 #[derive(Default)]
 pub(super) struct ProcessAudit {
     observed: BTreeSet<u32>,
+    guest_arguments: BTreeMap<u32, BTreeSet<String>>,
     private_fork: bool,
 }
 
@@ -26,6 +27,16 @@ impl ProcessAudit {
                 continue;
             }
             self.observed.insert(pid);
+            if let Some(command_line) = arguments
+                .windows(2)
+                .find(|pair| pair[0] == "-append")
+                .map(|pair| &pair[1])
+            {
+                self.guest_arguments.insert(
+                    pid,
+                    command_line.split_whitespace().map(str::to_owned).collect(),
+                );
+            }
             if fork && let Some(resource) = qemu_resources(pid)? {
                 resources.insert(pid, resource);
             }
@@ -68,9 +79,35 @@ impl ProcessAudit {
         Ok(())
     }
 
+    pub(super) fn require_guest_workloads(&self, workloads: &[&str]) -> Result<(), Box<dyn Error>> {
+        let mut guests = BTreeSet::new();
+        for workload in workloads {
+            let argument = format!("crucible.workload={workload}");
+            let guest = self
+                .guest_arguments
+                .iter()
+                .find_map(|(pid, arguments)| arguments.contains(&argument).then_some(*pid));
+            let Some(pid) = guest else {
+                return Err(format!(
+                    "packaged flight observed no owned QEMU guest for workload {workload}; guest arguments={:?}",
+                    self.guest_arguments
+                )
+                .into());
+            };
+            if !guests.insert(pid) {
+                return Err(format!(
+                    "packaged flight cannot prove distinct guests: QEMU process {pid} carries multiple required workloads"
+                )
+                .into());
+            }
+        }
+        eprintln!("packaged_guest_workloads_observed workloads={workloads:?} qemu_pids={guests:?}");
+        Ok(())
+    }
+
     pub(super) fn verify_cleanup(&mut self) -> Result<(), Box<dyn Error>> {
         if self.observed.is_empty() {
-            return Err("single-guest flight observed no physical QEMU process".into());
+            return Err("packaged flight observed no physical QEMU process".into());
         }
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
@@ -82,12 +119,11 @@ impl ProcessAudit {
                 .collect::<Vec<_>>();
             if remaining.is_empty() {
                 self.observed.clear();
+                self.guest_arguments.clear();
                 return Ok(());
             }
             if Instant::now() >= deadline {
-                return Err(
-                    format!("single-guest service left QEMU processes {remaining:?}").into(),
-                );
+                return Err(format!("packaged service left QEMU processes {remaining:?}").into());
             }
             std::thread::sleep(PROCESS_OBSERVATION_INTERVAL);
         }
@@ -154,4 +190,42 @@ fn qemu_resources(pid: u32) -> Result<Option<QemuResources>, Box<dyn Error>> {
         rings,
         overlays,
     }))
+}
+
+#[test]
+fn workload_evidence_requires_both_http_guests() {
+    let mut processes = ProcessAudit::default();
+    assert!(
+        processes
+            .require_guest_workloads(&["httpget", "httpd"])
+            .is_err()
+    );
+
+    processes
+        .guest_arguments
+        .insert(101, BTreeSet::from(["crucible.workload=httpget".into()]));
+    assert!(
+        processes
+            .require_guest_workloads(&["httpget", "httpd"])
+            .is_err()
+    );
+
+    processes
+        .guest_arguments
+        .insert(102, BTreeSet::from(["crucible.workload=httpd".into()]));
+    processes
+        .require_guest_workloads(&["httpget", "httpd"])
+        .unwrap();
+
+    processes.guest_arguments.remove(&102);
+    processes
+        .guest_arguments
+        .get_mut(&101)
+        .unwrap()
+        .insert("crucible.workload=httpd".into());
+    assert!(
+        processes
+            .require_guest_workloads(&["httpget", "httpd"])
+            .is_err()
+    );
 }

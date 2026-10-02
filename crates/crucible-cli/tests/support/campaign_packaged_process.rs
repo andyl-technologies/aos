@@ -23,6 +23,8 @@ mod envoy_network;
 pub(super) mod guest_choice;
 #[path = "campaign_packaged_process/policy_timeout.rs"]
 mod policy_timeout;
+#[path = "campaign_packaged_process/process_audit.rs"]
+mod process_audit;
 #[path = "campaign_packaged_process/single_guest.rs"]
 mod single_guest;
 #[path = "campaign_packaged_process/two_node_http.rs"]
