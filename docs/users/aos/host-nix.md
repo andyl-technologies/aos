@@ -9,8 +9,8 @@ from the system variant used to build the image:
 
 AOS applies the `aos.provisioning.storage` projection during first boot, then
 evaluates and activates the complete module during stage 2. Storage intent is
-committed once; the stage-2 result is a replaceable, numbered configuration
-generation.
+committed once; stage 2 commits packages and configured effects in one numbered
+native system-profile generation.
 
 ## Start with the supported form
 
@@ -22,9 +22,13 @@ Use a self-contained literal Nix module:
 }
 ```
 
-The file is not JSON, YAML, TOML, or cloud-config. AOS imports the exact bytes
-as a Nix module. Keep it self-contained: a relative import from a deployment
-checkout will not exist in the initrd or on the target host.
+The literal file is Nix, not JSON, YAML, TOML, or cloud-config. AOS imports its
+exact authorized bytes as a module. Keep a standalone file self-contained:
+files from a deployment checkout are not implicitly available on the host.
+Images supporting `aos.config-bundle/v1` also accept an authorized source bundle
+whose Nix entrypoint can import included relative source and data files. The
+complete bundle is authorized and retained together; imports cannot reach
+unrelated workstation files.
 
 The function form is also a valid module, but the argument set is image-owned
 and should not be used as an escape hatch to the build package graph. For
@@ -39,36 +43,35 @@ metadata transport
   -> detect platform or config drive
   -> fetch exact user-data and facts
   -> authorize host.nix
-  -> complete initrd evaluation and storage-plan projection
+  -> image-frozen initrd sources and closed storage-data projection
   -> validate and commit the first-boot storage plan
   -> switch_root
-  -> pure stage-2 evaluation and provider fixpoint
-  -> authenticated package closure fetch and config render
-  -> resolve opaque secretRef handles
-  -> build a durable EROFS /etc lower
-  -> atomically activate the configuration generation
+  -> typed desired-package selection
+  -> authenticated acquisition through configured package registries
+  -> complete native graph evaluation
+  -> journaled effects, including the EROFS /etc lower and service resources
+  -> commit one native system-profile generation
 ```
 
-The initrd evaluation uses the complete image-frozen module and selected
-package/provider fixed point. It cannot fetch registry modules or select
-arbitrary build packages. This is the path that runs before disk mutation.
+The initrd uses image-frozen package module sources and projects only the closed
+`aos.provisioning.storage` data. Its provisioning namespace remains strict:
+unknown fields and mistyped arrays or partitions fail before disk mutation.
+Definitions owned by unavailable host packages are deferred until host
+admission; this projection cannot execute their effects or fetch new modules.
 
-The stage-2 evaluator is a pure function of the image's ABI-pinned module
-library, authenticated package `config` outputs, the exact accepted `host.nix`,
-and normalized instance facts. It runs with a cleared environment, restricted
-filesystem access, no import-from-derivation, and bounded systemd resources.
-The resolver fetches only signed providers compatible with the running module
-ABI. It records its provider trace and emits `/run/aos/manifest.json` only after
-the fixpoint converges.
+Stage 2 reads declared package roots from `aos.apm.desiredPackages`, acquires
+missing packages and native companions through the normal signed-registry
+path, then evaluates the complete graph with accepted host sources and facts.
+Package acquisition follows explicit typed selection, not searches triggered
+by undefined-option errors. Complete evaluation checks package-owned options,
+release requirements, handlers, and dependencies before effects run.
 
-The systemd graph then fetches pinned package closures, validates and stages
-each package's signed configuration projection, and drops a failed soft package
-from the projected manifest. Activation resolves credential handles before
-consumers restart, materializes `gen-N/config-lower/etc.erofs`, atomically
-switches the configuration pointer and `/etc`, and publishes an activation
-record. A failed evaluation or pre-swap activation retains the previous live
-generation; a post-swap service failure is recorded as degraded and remains
-retriable.
+The native coordinator stages one system-profile generation and executes its
+checked effects in dependency order. The configuration-lower effect retains
+and mounts the EROFS `/etc` lower before its dependent consumers. Generation
+and effect journals track completion and recovery; the profile's `current`
+pointer is published after effects commit. Failed activation does not publish
+a new current generation, and pending work is recovered before another change.
 
 ## Choose a delivery channel
 
@@ -580,23 +583,22 @@ cat /var/lib/aos-provisioning/audit.json
 cat /var/lib/aos-provisioning/initial-plan.json
 ```
 
-The stage-2 source result and activation evidence are:
+Inspect the host controller and committed native inputs with:
 
 ```sh
-test -s /run/aos/manifest.json
-cat /run/aos/activation.json
+apm config status
 readlink /var/lib/profiles/system/current
-cat /var/lib/profiles/system/state.json
-systemctl status aos-eval.service
-journalctl -b \
-  -u aos-eval.service \
-  -u aos-graph-compile.service \
-  -u aos-activate.service
+cat /var/lib/profiles/system/current/evaluation.json
+cat /var/lib/profiles/system/current/native-deployment.json
+systemctl status aos-ability-host-controller.service
+journalctl -b -u aos-ability-host-controller.service
 ```
 
-Treat the files in `/run` as diagnostics for the current transaction. The
-accepted input under `/var/lib/aos-provisioning` and each numbered generation's
-manifest, EROFS lower, input GC roots, and activation record survive reboot.
+The system profile retains each generation's evaluation inputs and publication
+marker. Its authoritative generation and effect journals are under
+`/var/lib/profiles/system/deployment`; configuration lowers are retained under
+`/var/lib/aos/configuration-lowers`. Inspect controller failures and workload
+health as well as the current pointer.
 
 ## Diagnose the boot stages
 
@@ -618,13 +620,13 @@ requirements, and outputs come from the selected packages' ability contracts.
 Stage 2 then runs:
 
 ```text
-aos-provisioning-persist
-aos-host-config-restore
-aos-eval
-  -> aos-host-config-cache
-  -> aos-graph-compile (checked-plan preflight)
-     -> aos-activate
-     -> aos-config.target
+aos-ability-host-receiver
+  -> verify the committed initrd handoff
+aos-ability-host-controller
+  -> adopt authorized sources on first activation
+  -> select and authenticate desired packages
+  -> evaluate and execute the complete native graph
+  -> commit the system profile before multi-user readiness
 ```
 
 Inspect the current boot with:
@@ -632,9 +634,8 @@ Inspect the current boot with:
 ```sh
 journalctl -b \
   -u aos-ability-initrd-controller.service \
-  -u aos-eval.service \
-  -u aos-graph-compile.service \
-  -u aos-activate.service
+  -u aos-ability-host-receiver.service \
+  -u aos-ability-host-controller.service
 ```
 
 First-boot authorization, evaluation, or storage validation failures stop disk
@@ -663,18 +664,21 @@ configuration and package selection commit together in the same generation.
 Dependency modules supply configuration interfaces; they do not globally
 install every available payload or sibling output.
 
-The change becomes live only after `aos-config.target` completes. The evaluator
-manifest alone is intermediate evidence; confirm the active generation and
-activation record as shown above.
+Evaluation alone does not activate the change. Confirm the committed native
+generation and controller result as shown above, then inspect service health.
 
 For an interactive change, add the module to the operator worktree, preview
-the complete transaction, then apply it:
+the required acquisitions or effect changes, then apply it:
 
 ```sh
 apm config add ./tailscale.nix --name tailscale
 apm config apply --dry-run
 apm config apply
 ```
+
+If the package is missing, dry-run reports its acquisition requirement without
+fetching it or evaluating the complete graph. Apply acquires it and performs
+full evaluation before effects execute.
 
 Use `apm config replace tailscale ./tailscale.nix` for subsequent changes.
 `apm switch` also applies the complete operator worktree. These commands retain
