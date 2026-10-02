@@ -17,6 +17,9 @@ mod cbor;
 pub mod evidence;
 mod validation;
 
+#[cfg(test)]
+mod published_vectors;
+
 pub use super::retirement::{PermanentBurnOwner, PermanentOwnerSelection};
 
 use crate::refs::RefRecord;

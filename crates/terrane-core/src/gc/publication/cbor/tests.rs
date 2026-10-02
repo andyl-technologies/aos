@@ -5,6 +5,7 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 
+mod published;
 mod retirement;
 
 use super::*;

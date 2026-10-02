@@ -257,8 +257,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   tests for every format. D-80 adds independently reproduced D-77/D-78 byte
   witnesses and distinguishes decoder rejection from authority claims.
   Remaining format publication and joint native qualification are incomplete.
-  D-79's newly registered publication/control schemas also need independent
-  byte vectors and decoder tests before T1's encoding freeze.
+  D-84 now publishes 21 independently encoded D-79 witnesses for original
+  controls, local/remote imports, trust rows, seeded configuration, policy,
+  backend registration and empty retained history. The hermetic
+  `checks.terrane.integration.publication-format-vectors` check reproduces
+  their complete reference section and runs four exact tests that encode
+  separately constructed models and decode the published bytes. It passes,
+  as do all 443 core tests, strict core Clippy and rustdoc. Every prior
+  golden byte remains unchanged. Import binding/trust, consumed pins/lineage,
+  other selected publication formats and complete corpus/fuzz qualification
+  remain required before T1's encoding freeze; `golden-vectors` stays pending.
+  Mandatory repository formatting passes. The actual trunk aggregate remains
+  red on the existing retirement-compatibility assertion in
+  `index-generation-manifest`; no task checkbox or milestone is advanced.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

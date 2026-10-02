@@ -1473,6 +1473,28 @@ is added rather than editing history.
     unchanged. This correction precedes T1's initial format freeze. Native
     inventory, marking and current-fence regressions remain required.
 
+- **[D-84] Publish independent D-79 format witnesses before conformance.**
+  - **Status:** Decided
+  - **Decision:** Add complete diagnostic inputs and independently encoded
+    canonical byte vectors for original registration/bootstrap/association,
+    local and remote imports, issuer/disclosure rows, seeded profiles,
+    trusted configuration/registries/Guard snapshots, root/view policy,
+    backend bindings/activation and empty retained history. Treat them as
+    positive format examples with no immutable descriptor or content identity.
+    Keep all existing reference bytes unchanged. Remaining D-79 formats
+    require their own witnesses before complete format conformance is claimed.
+  - **Rationale:** D-79 registered new control and publication encodings,
+    but the normative golden reference did not yet contain their inputs
+    and exact bytes. Hand-transcribed implementation tests alone leave
+    TEST-2's publication requirement unmet. An independent primitive CBOR
+    encoder and explicit models make these witnesses reproducible without
+    relying on the codecs they test. Represented record fields cannot
+    establish native authority or replace current preservation checks.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, gate names, schemas, encodings and identity domains remain unchanged.
+    This additive reference correction precedes T1's initial encoding freeze
+    and establishes no native publication, collection or cold-fork claim.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

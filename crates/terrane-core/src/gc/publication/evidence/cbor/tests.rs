@@ -13,6 +13,7 @@ use alloc::vec;
 mod guard;
 mod lineage;
 mod original;
+mod published;
 
 const BEHAVIOR_NAMES: &[&str] = &[
     "acl",

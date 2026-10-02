@@ -182,4 +182,5 @@ in {
   gates = aggregate // registeredGates;
   activeGates = implementedGates;
   integration.local-workflow-ext4 = import ./local-workflow-ext4.nix {inherit pkgs lib;};
+  integration.publication-format-vectors = import ./publication-vectors.nix {inherit sourceGate;};
 }
