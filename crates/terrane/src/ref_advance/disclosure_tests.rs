@@ -26,6 +26,8 @@ mod dictionaries;
 #[cfg(unix)]
 mod fresh_recovery;
 #[cfg(unix)]
+mod import_controls;
+#[cfg(unix)]
 mod limited;
 #[cfg(unix)]
 mod materialization;
@@ -33,9 +35,23 @@ mod multiple;
 #[cfg(unix)]
 mod occurrences;
 #[cfg(unix)]
+mod original_acl;
+#[cfg(unix)]
 mod parents;
 #[cfg(unix)]
 mod producers;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_original_binding_rejects_copied_or_conflicting_import_controls() {
+    import_controls::reject_copied_controls().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_boundary_original_acl_verification_survives_destination_only_reopen() {
+    original_acl::retain_original_authorization().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
