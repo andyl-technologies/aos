@@ -5,6 +5,12 @@
   ...
 }: let
   image = mkSystem ./_nix-daemon-image.nix;
+  hostActivator = image.config.aos.services.${image.config.aos.boot.hostActivatorService};
+  hostActivatorName =
+    if hostActivator.manager_identity != null
+    then hostActivator.manager_identity.name
+    else hostActivator.service;
+  hostActivatorUnit = "${hostActivatorName}.service";
 in {
   name = "nix-daemon-lifecycle";
   timeout = 1800;
@@ -50,6 +56,7 @@ in {
     SETPRIV = "${pkgs.util-linux}/bin/setpriv"
     SOCKET = "/nix/var/nix/daemon-socket/socket"
     SLICE = "aos-pkg-nix-daemon-builds.slice"
+    HOST_ACTIVATOR = "${hostActivatorUnit}"
     sequence = 0
     added = False
     diagnostics_reported = False
@@ -64,7 +71,7 @@ in {
             "cat /tmp/retained-build.log /tmp/retained-build.out 2>/dev/null || true",
             "systemctl status nix-daemon.service nix-daemon.socket nix-daemon-policy.service --no-pager || true",
             "journalctl -u nix-daemon.service -u nix-daemon-policy.service -n 80 --no-pager || true",
-            f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery; systemctl show aos-config.target --property=ActiveState",
+            f"{RUNTIME} deployment-current --profile {PROFILE} --committed-during-recovery; systemctl show {HOST_ACTIVATOR} --property=ActiveState",
             "for p in /proc/[0-9]*/status; do "
             "awk '$1 == \"Name:\" { name = $2 } $1 == \"State:\" { state = $2 } "
             "$1 == \"Uid:\" { uid = $2 } END { if (uid >= 30001 && uid <= 30064) "
@@ -135,7 +142,7 @@ in {
             since = builder.succeed("date +%s").strip()
             result = builder.fail(command, timeout=600)
             journal = builder.succeed(
-                f"journalctl -u aos-activate.service --since=@{since} --no-pager"
+                f"journalctl -u {HOST_ACTIVATOR} --since=@{since} --no-pager"
             )
             assert "identity is still running" in journal or "workers remain" in journal, (result, journal)
             assert generation() == previous
@@ -173,7 +180,7 @@ in {
 
 
     try:
-        builder.wait_until_succeeds("systemctl is-active --quiet aos-config.target", timeout=300)
+        builder.wait_until_succeeds(f"systemctl is-active --quiet {HOST_ACTIVATOR}", timeout=300)
         first_generation = generation()
         assert isinstance(first_generation, int) and first_generation > 0, first_generation
         builder.succeed(f"test -s {PROFILE}/gen-{first_generation}/native-deployment.json")
