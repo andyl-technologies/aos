@@ -83,7 +83,7 @@ class DirectBootstrapControls:
         if service not in {
             "BindingService", "StorageAuthorityService", "IdentityService",
             "OrganizationService", "OperationService", "RegistryService",
-            "TopologyService",
+            "TopologyService", "ContainerService",
         }:
             raise ValueError("bootstrap control service is not allowed")
         if not re.fullmatch(r"[A-Z][A-Za-z]{0,63}", method):
