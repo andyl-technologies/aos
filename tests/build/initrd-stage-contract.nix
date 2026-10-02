@@ -35,7 +35,7 @@ in
       pname = "aos-initrd-native-contract-check";
       version = "1";
       src = null;
-      buildDeps = [assembly pkgs.aos.testSupport pkgs.coreutils pkgs.cpio pkgs.erofs-utils pkgs.python3 pkgs.zstd];
+      buildDeps = [assembly pkgs.aos.testSupport pkgs.coreutils pkgs.libarchive pkgs.erofs-utils pkgs.python3 pkgs.zstd];
       phases = [
         {
           name = "check";
@@ -45,7 +45,10 @@ in
               image-assembly-contract ${assembly} initrd-native-contract-check
             mkdir initrd-tree root-tree
             ${pkgs.zstd}/bin/zstd -dc ${initrd}/initrd.img > initrd.cpio
-            (cd initrd-tree && ${pkgs.cpio}/bin/cpio -idm --quiet < ../initrd.cpio)
+            # Resolve cpio's deferred hardlinks before extraction so directory
+            # permissions are restored after every child, even across directories.
+            ${pkgs.libarchive}/bin/bsdtar --format=pax -cf initrd.tar @initrd.cpio
+            ${pkgs.libarchive}/bin/bsdtar -xpf initrd.tar -C initrd-tree
             ${pkgs.erofs-utils}/bin/fsck.erofs --extract=root-tree ${assembly}/inputs/root.img
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-attachments ${assembly} initrd-native-contract-check \
