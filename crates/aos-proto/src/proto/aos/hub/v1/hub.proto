@@ -4754,6 +4754,10 @@ message RegistryDeletionBlockers {
   uint64 abandonable_gc_runs = 14;
   // Placements that cannot be inventoried, for example offline placements.
   uint64 unavailable_placements = 15;
+  // 1 while the registry's OCI namespace is enabled on instance OCI routes.
+  uint64 enabled_oci_namespaces = 16;
+  // Instance OCI routes that name the registry as their default registry.
+  uint64 instance_oci_route_defaults = 17;
 }
 
 // Deletion readiness of one registry placement.
