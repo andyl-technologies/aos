@@ -61,15 +61,17 @@
       # Keep the new output writable for its own metadata finalization.
       cp -a --no-preserve=mode ${baseUnits}/. "$out/"
     '';
-  networkInputs =
-    lib.mapAttrsToList (name: effect: {
-      inherit name;
-      file = buildContext.writeTextFile {
-        name = "initrd-network-${builtins.hashString "sha256" name}";
-        text = builtins.toJSON effect.input;
-      };
-    }) (lib.filterAttrs (_: effect: effect.enable)
-      (stageConfig.aos.abilities.network.operations.configure.effects or {}));
+  enabledNetworkEffects =
+    lib.filterAttrs (_: effect: effect.enable)
+    (stageConfig.aos.abilities.network.operations.configure.effects or {});
+  networkInputs = lib.mapAttrsToList (name: effect: {
+    inherit name;
+    file = buildContext.writeTextFile {
+      name = "initrd-network-${builtins.hashString "sha256" name}";
+      text = builtins.toJSON effect.input;
+    };
+  })
+  enabledNetworkEffects;
   initrdNetworkDir =
     if networkInputs == []
     then null
@@ -116,7 +118,17 @@
     if config.aos.kernel.selected == null
     then throw "systemd initrd requires the exact selected kernel projection"
     else config.aos.kernel.selected;
+  accountSeed = import ./_identity-bootstrap.nix {
+    inherit lib;
+    identities = stageConfig.aos.abilities.identity.operations;
+    principalReferences =
+      lib.unique (builtins.concatLists
+        (map (effect: effect.input.accounts) (builtins.attrValues enabledNetworkEffects)));
+    accounts = stageConfig.aos.users;
+    shells = import ../identity-shells.nix {inherit (runtimePackages) bash util-linux;};
+  };
   artifact = import ./_initrd-builder.nix {
+    inherit accountSeed;
     inherit lib runtimePackages handoff initrdNetworkDir initrdUnits;
     inherit (buildContext) mkDerivation;
     kernel = selectedKernel;

@@ -13,22 +13,6 @@
       description = "systemd Journal";
       extraGroups = [];
     };
-    systemd-network = {
-      uid = 192;
-      group = "systemd-network";
-      home = "/";
-      shell = "/sbin/nologin";
-      description = "systemd Network Management";
-      extraGroups = [];
-    };
-    systemd-resolve = {
-      uid = 193;
-      group = "systemd-resolve";
-      home = "/";
-      shell = "/sbin/nologin";
-      description = "systemd Resolver";
-      extraGroups = [];
-    };
     systemd-timesync = {
       uid = 194;
       group = "systemd-timesync";
