@@ -248,7 +248,7 @@ pub(super) fn verify_witness_from_run_report(
     ergonomics_plan: Option<&DeterminismErgonomicsPlan>,
     store_root: &Path,
 ) -> Result<VerifyRunWitness, CliError> {
-    let canonical_log = canonical_run_log_entries(run_plan, report);
+    let canonical_log = canonical_verify_run_log_entries(run_plan, report);
     let canonical_log_bytes =
         canonical_verify_log_stream_bytes(&canonical_log, &report.streamed_event_frames);
     let fingerprint_samples = verify_fingerprint_samples(report)?;

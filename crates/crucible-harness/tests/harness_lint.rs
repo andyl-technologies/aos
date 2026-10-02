@@ -97,9 +97,18 @@ fn user_reference_names_every_executable_effect_kind() -> Result<(), Box<dyn Err
 #[test]
 fn session_terminal_outcomes_have_one_engine_owned_construction_path() -> Result<(), Box<dyn Error>>
 {
-    let source =
-        fs::read_to_string(workspace_root().join("crucible-session/src/session/engine.rs"))?;
-    let findings = terminal_outcome_construction_failures(&source);
+    let engine = workspace_root().join("crucible-session/src/session/engine.rs");
+    let mut sources = rust_sources(&engine.with_extension(""))?;
+    sources.push(engine);
+    let mut findings = Vec::new();
+    for source in sources {
+        let content = fs::read_to_string(&source)?;
+        findings.extend(
+            terminal_outcome_construction_failures(&content)
+                .into_iter()
+                .map(|finding| format!("{}: {finding}", source.display())),
+        );
+    }
     assert!(
         findings.is_empty(),
         "session terminal-outcome construction findings:\n{}",
@@ -111,6 +120,36 @@ fn session_terminal_outcomes_have_one_engine_owned_construction_path() -> Result
     );
     assert_contains(&negative_control, "outside enter_stopped");
     Ok(())
+}
+
+#[test]
+fn terminal_outcome_rules_distinguish_patterns_from_construction() {
+    assert!(terminal_outcome_construction_failures(
+        "fn validate(state: State) { matches!(state, State::Stopped { outcome: Outcome::Stopped }); }"
+    ).is_empty());
+    for source in [
+        "fn validate(states: States) { matches![states, [Outcome::Stopped, _]]; }",
+        "fn validate(state: State) { matches!{state, Outcome::Stopped}; }",
+    ] {
+        assert!(terminal_outcome_construction_failures(source).is_empty());
+    }
+    assert!(terminal_outcome_construction_failures(
+        "fn enter_stopped() { let outcome = Outcome::Passed; }\nfn stop_after_actor_crash() { let outcome = Outcome::Crashed { detail }; }"
+    ).is_empty());
+
+    for source in [
+        "fn validate() { matches!(Outcome::Stopped, _); }",
+        "fn validate(value: Outcome) { matches!([value, Outcome::Stopped], _); }",
+        "fn validate(state: State) { matches!(state, _ if same(Outcome::Stopped)); }",
+        "fn compensate() { let outcome = Outcome::Passed; }",
+        "fn stop_after_actor_crash() { let outcome = Outcome::Passed; }",
+        "fn enter_stopped() { fn compensate() { let outcome = Outcome::Passed; } }",
+    ] {
+        assert_contains(
+            &terminal_outcome_construction_failures(source),
+            "outside enter_stopped",
+        );
+    }
 }
 
 #[test]

@@ -27,6 +27,43 @@ pub(crate) fn canonical_run_log_entries(
     outcome.canonical_log
 }
 
+/// Projects verification evidence without coalesced client state subscriptions.
+///
+/// The final Engine boundary replaces intermediate state receipts. Events and
+/// accepted controls remain unchanged. The versioned terminal entry uses the
+/// existing open entry format; older artifacts retain their original entries
+/// and are compared strictly, without rewriting their observation history.
+pub(crate) fn canonical_verify_run_log_entries(
+    run_plan: &RunInvocationPlan,
+    report: &RunWorkflowReport,
+) -> Vec<CanonicalLogEntry> {
+    let mut entries = canonical_run_log_entries(run_plan, report);
+    entries.retain(|entry| entry.kind != "run_state_update");
+    for (index, entry) in entries.iter_mut().enumerate() {
+        entry.sequence = index as u64;
+        entry.virtual_time_ticks = index as u64;
+    }
+
+    entries.push(CanonicalLogEntry {
+        sequence: entries.len() as u64,
+        virtual_time_ticks: report.final_frontier_ticks,
+        node: String::from("session"),
+        kind: String::from("verify_terminal_boundary_v1"),
+        summary: format!(
+            "state={} outcome={} frontier_ticks={} quanta={} savepoint={}",
+            report.final_state,
+            terminal_outcome_label(report.outcome),
+            report.final_frontier_ticks,
+            report.final_quanta,
+            report
+                .terminal_savepoint
+                .map(format_content_hash_ref)
+                .unwrap_or_else(|| String::from("none"))
+        ),
+    });
+    entries
+}
+
 pub(crate) fn canonical_log_entry_bytes(entries: &[CanonicalLogEntry]) -> Vec<u8> {
     jsonl_for_canonical_log_entries(entries).into_bytes()
 }
