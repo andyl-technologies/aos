@@ -31,6 +31,8 @@
       (evaluate {acl = [value];}).config.aos.krb5Kdc.acl
       true)).success;
 in {
+  syscallRefusalPreservesExposedPolicy = assert services."krb5.kdc".input.policy.hardening.denied_operation_action == "return-permission-denied";
+  assert administration.aos.abilities.serviceManagement.operations.realize.effects."krb5.administration".input.policy.hardening.denied_operation_action == "return-permission-denied"; true;
   aclRecordValidation = assert aclAccepted "admin/admin@EXAMPLE.TEST\t*";
   assert !(aclAccepted "");
   assert !(aclAccepted "admin\n*");

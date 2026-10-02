@@ -166,6 +166,7 @@
   in
     input.name == name && input.source == "${pkgs.inetutils}/bin/${name}" && input.mode == "4755" && input.owner == "root" && input.group == "root";
 in {
+  polkitPreservesFatalSyscallFilter = polkit.input.policy.hardening.operation_profile == "system-service" && polkit.input.policy.hardening.denied_operation_action == "kill-process";
   verifierRetainsIsolation = verifier.input.isolation.network == "none" && verifier.input.identity.ephemeral;
   verifierRetainsOutputPath = builtins.elem "/var/lib/aos-attestation-verifier/result.json" (builtins.head verifier.input.lifecycle.start).executable.arguments;
   quoteWaitsForCommittedActivation = quote.input.dependencies.requires == ["aos-activate.service" "package-profile-convergence.service" "aos-image-boot-commit.service"] && quote.input.auto_start == false && quote.input.activation_owner == "manager" && quote.input.dependencies.wanted_by == ["multi-user.target"];

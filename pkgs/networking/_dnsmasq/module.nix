@@ -111,7 +111,8 @@
       operation_architectures = [];
       operation_allow = [];
       operation_deny = [];
-      operation_profile = "system-service";
+      denied_operation_action = "kill-process";
+      operation_profile = "privileged";
       isolated_identity_mapping = "none";
     };
     lifecycle = {

@@ -58,6 +58,7 @@
       operation_architectures = ["native"];
       operation_allow = [];
       operation_deny = [];
+      denied_operation_action = "kill-process";
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };

@@ -36,6 +36,9 @@ in {
     }
   ]; true;
   settings = assert builtins.all (value: value.assertion) evaluated.assertions;
+  assert config.aos.services.dnsmasq.policy.hardening.operation_profile == "privileged";
+  assert config.aos.services.dnsmasq.policy.hardening.operation_allow == [];
+  assert config.aos.services.dnsmasq.policy.hardening.operation_deny == [];
   assert config.aos.services.dnsmasq.lifecycle.configuration_change_action == "restart";
   assert config.aos.abilities.configuration.operations.file.effects.dnsmasq.input.fragments != []; true;
 }

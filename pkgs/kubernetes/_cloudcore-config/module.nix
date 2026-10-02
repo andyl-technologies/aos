@@ -155,6 +155,7 @@
       operation_architectures = ["native"];
       operation_allow = [];
       operation_deny = [];
+      denied_operation_action = "return-permission-denied";
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
