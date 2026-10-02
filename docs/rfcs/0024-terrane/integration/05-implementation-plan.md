@@ -1538,9 +1538,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The rotation fixture is stopped on an actual prerequisite: configured local
   disclosure roles are selected Guard snapshot inputs, so changing a role's
   interval or replacing its key cannot pass ordinary reopen's exact snapshot
-  check. PROV-26/DOM-24 require genuine bounded setup and authorized selection
-  transition; a changed role file, relabeled key or weakened reopen check
-  cannot qualify ordinary rotation. No such bypass or task advancement occurs.
+  check. Qualifying the PROV-26/DOM-24 rotation fixture requires genuine bounded
+  setup and an authorized selection transition; a changed role file, relabeled
+  key or weakened reopen check cannot qualify ordinary rotation. No such bypass
+  or task advancement occurs.
+  A shared test-only prerequisite now observes an actual retained Candidate
+  slot for one physical publication control and ref before native dispatch's
+  final checks. It delays the unchanged effect without retaining a mutex or
+  adding a production callback. Three exact tests pass (run
+  `3f58c8c6-2f7b-4bb9-8745-235b2ccc1bf1`), including genuine slot publication
+  and independently retained wall-clock state; the native build and both
+  mandatory formatters pass. The initial fixture confused authoring control
+  with publication control and failed; its corrected path comes from the
+  held backend's checked physical registration. All original commands finish
+  before that correction, and all corrected inputs stay frozen through the
+  final commands. Strict native Clippy retains the same 21 production and
+  two test unused-path diagnostics. The actual trunk aggregate still fails
+  missing public core-fuzz inputs. This prerequisite does not qualify the
+  complete current-authority contract or advance the task.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,

@@ -16,6 +16,10 @@ use std::sync::{
 };
 use terrane_core::bucket::BucketKey;
 
+mod candidate_slot;
+
+use candidate_slot::{CandidateSlotBarrier, CandidateSlotPause};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Failure {
     Pack,
@@ -37,6 +41,7 @@ pub(super) struct FaultFs {
     retained_effect_calls: Arc<AtomicUsize>,
     ref_install_profile: Arc<Mutex<Option<std::time::Instant>>>,
     ref_install_barrier: Arc<Mutex<Option<Arc<RefInstallBarrier>>>>,
+    candidate_slot_pause: Arc<Mutex<Option<CandidateSlotPause>>>,
     #[cfg(unix)]
     control_change: Arc<Mutex<Option<PathBuf>>>,
     #[cfg(unix)]
@@ -70,6 +75,32 @@ struct RefInstallBarrier {
 }
 
 impl FaultFs {
+    /// Pauses one exact genuine candidate slot before its retained native checks.
+    ///
+    /// The selector confers no authority and never changes the submitted effect.
+    /// Unrelated roots, references and non-candidate slots leave it armed.
+    ///
+    /// # Errors
+    /// Rejects malformed reference keys, poisoned synchronization or an already
+    /// armed selector. The control path must be the actual destination factory's.
+    pub(super) fn pause_candidate_slot(
+        &self,
+        control: PathBuf,
+        reference: &str,
+    ) -> std::io::Result<Arc<CandidateSlotBarrier>> {
+        let reference = BucketKey::ref_record(reference).map_err(std::io::Error::other)?;
+        let mut pending = self
+            .candidate_slot_pause
+            .lock()
+            .map_err(|_| std::io::Error::other("candidate slot synchronization poisoned"))?;
+        if pending.is_some() {
+            return Err(std::io::Error::other("candidate slot pause already armed"));
+        }
+        let (selector, barrier) = CandidateSlotPause::new(control, reference);
+        *pending = Some(selector);
+        Ok(barrier)
+    }
+
     #[cfg(unix)]
     pub(super) fn change_registration_during_slot_staging(&self, registration: PathBuf) {
         *self.registration_change_at_slot.lock().unwrap() = Some(registration);
@@ -593,6 +624,29 @@ impl LocalFs for FaultFs {
                     .await
                     .map_err(crate::store::NativeEffectFailure::Io)?;
             }
+        }
+        let candidate_barrier = {
+            let mut pending = self.candidate_slot_pause.lock().map_err(|_| {
+                crate::store::NativeEffectFailure::Io(std::io::Error::other(
+                    "candidate slot synchronization poisoned",
+                ))
+            })?;
+            let matched = match effect.fault_probe() {
+                crate::store::EffectFaultProbe::RenameNoReplace(target) => pending
+                    .as_ref()
+                    .is_some_and(|pause| pause.matches(target, staged_transaction.as_ref())),
+                _ => false,
+            };
+            if matched {
+                pending.take().map(CandidateSlotPause::into_barrier)
+            } else {
+                None
+            }
+        };
+        if let Some(barrier) = candidate_barrier {
+            // The worker's actual final check runs after this pause. No mutex
+            // guard survives the wait and the genuine effect remains intact.
+            barrier.pause().await;
         }
         TokioLocalFs.execute_retained_effect(effect).await
     }
