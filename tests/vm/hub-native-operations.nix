@@ -2013,24 +2013,17 @@ in
       hub_pid=
 
       echo '==> Re-run native maintenance after a clean shutdown'
+      # The legacy `validate run` and `validate repair` operator commands
+      # were removed with legacy Hub validation; offline re-indexing is the
+      # remaining native maintenance command.
       $hub_exec --root "$hub_root" index operations/maintenance
-      $hub_exec --root "$hub_root" validate run operations/maintenance
-      $hub_exec --root "$hub_root" validate run operations/maintenance --depth integrity
-      $hub_exec --root "$hub_root" validate run operations/maintenance --depth deep
-      $hub_exec --root "$hub_root" validate repair operations/maintenance \
-        --external-url "$hub_url"
-      if $hub_exec --root "$hub_root" validate run missing/registry \
-        >/tmp/validate-missing.out 2>&1; then
-        echo 'validation unexpectedly accepted a missing registry' >&2
+      if $hub_exec --root "$hub_root" index missing/registry \
+        >/tmp/index-missing.out 2>&1; then
+        echo 'indexing unexpectedly accepted a missing registry' >&2
         exit 1
       fi
-      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/validate-missing.out
-      if $hub_exec --root "$hub_root" validate repair missing/registry \
-        >/tmp/repair-missing.out 2>&1; then
-        echo 'repair unexpectedly accepted a missing registry' >&2
-        exit 1
-      fi
-      ${pkgs.grep}/bin/grep -Eiq 'not found|unknown|missing' /tmp/repair-missing.out
+      ${pkgs.grep}/bin/grep -Fq "no registry 'missing/registry'" \
+        /tmp/index-missing.out
 
       echo 'native Hub operator lifecycle: PASS'
     '';
