@@ -10,7 +10,7 @@ fn direct_tx_failure_context_retains_arm_admission_without_changing_refusal()
     for status in [0, -libc::EALREADY] {
         let mut fixture = OutputFixture::new()?;
         let mut state = fixture.state()?;
-        state.control_callback_witness = ControlCallbackWitness::new(true);
+        state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::new(true));
         TEST_REQUEST_VMSTOP_STATUS.set(status);
         let (armed, arm_records) = capture::during(|| state.on_network_tx(20, b"original"));
         armed?;
@@ -51,7 +51,7 @@ fn completed_timer_tx_failure_identifies_pending_origin_and_preserve_phase()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = OutputFixture::new()?;
     let mut state = fixture.state()?;
-    state.control_callback_witness = ControlCallbackWitness::new(true);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::new(true));
     state.on_vcpu_init(0)?;
     state.publish_current_icount(20)?;
     TEST_ICOUNT_RAW.set(20);
@@ -91,7 +91,7 @@ fn disabled_context_keeps_identical_retained_guard_result_without_a_record()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = OutputFixture::new()?;
     let mut state = fixture.state()?;
-    state.control_callback_witness = ControlCallbackWitness::new(false);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::new(false));
     state.on_network_tx(20, b"original")?;
     let original = fixture.slot.snapshot();
 
@@ -117,7 +117,7 @@ fn nested_admission_observation_does_not_borrow_or_change_original_guard()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = OutputFixture::new()?;
     let mut state = fixture.state()?;
-    state.control_callback_witness = ControlCallbackWitness::new(true);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::new(true));
     state.on_network_tx(20, b"original")?;
     let original_slot = fixture.slot.snapshot();
     let network = state.network.as_ref().ok_or("network fixture")?;
@@ -157,7 +157,7 @@ fn delayed_original_admission_cannot_overwrite_a_genuine_new_output_arm()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = OutputFixture::new()?;
     let mut state = fixture.state()?;
-    state.control_callback_witness = ControlCallbackWitness::new(true);
+    state.control_callback_witness = std::sync::Arc::new(ControlCallbackWitness::new(true));
     state.on_network_tx(20, b"original")?;
     let network = state.network.as_ref().ok_or("network fixture")?;
     let original = network

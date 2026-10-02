@@ -55,6 +55,7 @@ use super::{
 };
 
 mod control_callback_witness;
+pub(super) use control_callback_witness::ControlCallbackWitness;
 mod devices;
 mod error;
 mod fingerprint_worker;
@@ -832,7 +833,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     fault_command_pump_active: AtomicBool,
     control_boundary_dispatch_generation: AtomicU32,
     control_boundary_defer_diagnostic_generation: AtomicU64,
-    control_callback_witness: control_callback_witness::ControlCallbackWitness,
+    pub(super) control_callback_witness: Arc<ControlCallbackWitness>,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     logical_restore_continuation_generation: AtomicU32,
@@ -1240,7 +1241,7 @@ impl LiveVcpuTimeCallbackState {
             fault_command_pump_active: AtomicBool::new(false),
             control_boundary_dispatch_generation: AtomicU32::new(u32::MAX),
             control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
-            control_callback_witness: control_callback_witness::ControlCallbackWitness::from_env(),
+            control_callback_witness: Arc::new(ControlCallbackWitness::from_env()),
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             logical_restore_continuation_generation: AtomicU32::new(0),
