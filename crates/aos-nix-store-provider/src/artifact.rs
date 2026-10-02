@@ -422,7 +422,26 @@ fn validate_media_type(value: &str) -> Result<()> {
         !value.is_empty() && value.len() <= 255,
         "content object media type is empty or oversized"
     );
-    let mut parts = value.split('/');
+    // Keep the exact version in resource identity while admitting only the
+    // single canonical parameter emitted by native metadata producers.
+    let (essence, version) = match value.split_once(';') {
+        Some((essence, parameter)) => {
+            let version = parameter
+                .strip_prefix("version=")
+                .context("content object media type has an unsupported parameter")?;
+            (essence, Some(version))
+        }
+        None => (value, None),
+    };
+    if let Some(version) = version {
+        ensure!(
+            version.starts_with(|character: char| character.is_ascii_digit() && character != '0')
+                && version.bytes().all(|byte| byte.is_ascii_digit()),
+            "content object media type version is not a canonical positive integer"
+        );
+    }
+
+    let mut parts = essence.split('/');
     let type_name = parts.next().unwrap_or_default();
     let subtype = parts.next().unwrap_or_default();
     ensure!(
