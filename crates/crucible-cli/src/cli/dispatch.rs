@@ -125,7 +125,11 @@ pub(super) fn dispatch(cli: &Cli) -> Result<(), CliError> {
         _ => None,
     };
     let resume_plan = match &cli.command {
-        Commands::Resume(args) => Some(plan_resume_invocation(args, &run_store_root)?),
+        Commands::Resume(args) => {
+            let mut plan = plan_resume_invocation(args, &run_store_root)?;
+            plan.campaign_deployment = cli.campaign_deployment.clone();
+            Some(plan)
+        }
         _ => None,
     };
     let search_plan = match &cli.command {

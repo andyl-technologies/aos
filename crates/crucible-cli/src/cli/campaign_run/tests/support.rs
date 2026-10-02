@@ -144,6 +144,7 @@ pub(super) fn default_resume_plan(
     store: &Path,
 ) -> ResumeInvocationPlan {
     ResumeInvocationPlan {
+        campaign_deployment: None,
         savepoint: ResumeSavepointRef::CheckpointHash(evidence.checkpoint.id),
         store_root: store.to_path_buf(),
         terminal_condition: RunTerminalCondition::Stopped,

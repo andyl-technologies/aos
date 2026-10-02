@@ -165,6 +165,7 @@ impl SaveOutputTarget {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ResumeInvocationPlan {
+    pub(crate) campaign_deployment: Option<PathBuf>,
     pub(crate) savepoint: ResumeSavepointRef,
     pub(crate) store_root: PathBuf,
     pub(crate) terminal_condition: RunTerminalCondition,
@@ -1238,6 +1239,7 @@ pub(crate) fn plan_resume_invocation(
     };
 
     Ok(ResumeInvocationPlan {
+        campaign_deployment: None,
         savepoint,
         store_root: store_root.to_path_buf(),
         terminal_condition,
