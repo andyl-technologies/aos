@@ -78,6 +78,18 @@ in {
     profiles = find "nix-profiles";
   in
     builtins.elem "view" profiles.identity && profiles.input.sourcePath == "/var/lib/profiles" && builtins.any (node: builtins.elem "mount" node.identity && builtins.elem profiles.id node.dependencies) nodes;
+  sshPrivateDirectoriesPrecedeTheirConsumers = let
+    keys = find "ssh-host-keys";
+    privilegeSeparation = find "ssh-privilege-separation";
+    keygen = find "ssh.sshd-keygen";
+  in
+    keys.input.path
+    == "/var/etc/ssh"
+    && keys.input.mode == "0755"
+    && privilegeSeparation.input.path == "/var/empty"
+    && privilegeSeparation.input.mode == "0755"
+    && builtins.elem keys.id keygen.dependencies
+    && precedes keys.id keygen.id;
   sshPublicKeysHaveOnePreservingOwner = let
     ssh = evaluation.config.aos.services.ssh;
   in

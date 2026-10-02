@@ -65,6 +65,7 @@ in {
   swapMatchesBakedDisk = baked.swap.sizeMin == "${toString layout.swapSizeMiB}M" && baked.swap.sizeMax == baked.swap.sizeMin && !baked.swap.grow;
   varMatchesBakedDisk = baked.var.sizeMin == "${toString layout.varSizeMiB}M" && baked.var.sizeMax == baked.var.sizeMin && !baked.var.grow;
   assemblyUsesSharedSizes = contains script "VAR_SIZE_MIB=${toString layout.varSizeMiB}" && contains script "SWAP_SECTORS=$(( ${toString layout.swapSizeMiB} * 1024 * 1024 / 512 ))";
+  sshHostKeysUseNativeFirstBoot = !(contains script "mkdir -p var/etc/ssh") && !(contains script "ssh_host_ed25519_key") && !(contains script "/bin/ssh-keygen");
   retainedPolicyIsShared = builtins.elem layout.configurationSource (sources "kernel" "baked");
   imageBootDoesNotRetainPolicy = sources "image" "baked" == [];
   repartDoesNotRetainPolicy = !(builtins.elem layout.configurationSource (sources "kernel" "repart")) && (layoutFor {varProvisioning = "repart";}).configurationSource == null;

@@ -47,7 +47,7 @@
   #   5  provenance — 1 MiB reserved AOS marker on baked-var disks. It
   #              identifies this out-of-band layout as already committed.
   #   6  var   — 256 MiB ext4. Carries the /var/etc allowlist plus
-  #              test-specific overrides (host SSH key, SELinux off,
+  #              test-specific overrides (SELinux off,
   #              test units) and package state used by fleet tests.
   #              Label `var` via GPT partlabel so mount-var.service
   #              finds it.
@@ -255,14 +255,12 @@
     # overlay (spec v12 §5.4: /var/etc is the persistent lower).
     #
     # The test-only entries (selinux off, baked hostname, fstab,
-    # pre-generated SSH host key, passwd/group fallbacks,
-    # nsswitch.conf, aos-test units) all live on the var partition
+    # passwd/group fallbacks, nsswitch.conf, aos-test units) live on the var partition
     # rather than going through `environment.etc` — they're test
     # infrastructure, not production state.
     varSeed = ''
       mkdir -p var/etc/systemd/system/multi-user.target.wants
       mkdir -p var/etc/systemd/system/aos-test.target.wants
-      mkdir -p var/etc/ssh
       ${lib.optionalString seedSELinuxDisabledConfig ''
         mkdir -p var/etc/selinux
 
@@ -281,11 +279,8 @@
       # handles /var.
       : > var/etc/fstab
 
-      # Pre-generate SSH host key so sshd starts without waiting on
-      # sshd-keygen.service (the production path writes the same
-      # /var/etc/ssh/ssh_host_ed25519_key on first boot).
-      ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" \
-        -f var/etc/ssh/ssh_host_ed25519_key </dev/null
+      # Leave SSH host keys unseeded: the native first-boot directory allocation
+      # and sshd-keygen service own their creation and persistent identity claim.
 
       # NOTE: we deliberately do NOT seed /var/etc/os-release here.
       # /var/etc is the highest-precedence persistent /etc-overlay lower,
