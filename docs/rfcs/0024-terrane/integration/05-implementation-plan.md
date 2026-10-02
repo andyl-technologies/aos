@@ -599,6 +599,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   comparison and its missing, duplicate, split and whitespace controls.
   Encoder-only projections are compared field by field without claiming an
   owning typed decoder. Neither input candidate qualifies the full aggregate.
+  D-93 now publishes all 86 reviewed selector/private-evidence witnesses with
+  every prior golden byte preserved. The corrected comparator passes its real
+  CLI refusal controls and the five-group auxiliary; all emitted models remain
+  byte-identical. The shared auxiliary now verifies the normative whole file
+  and supplies that published input to every consumer. Qualification against
+  that published source remains pending; complete corpus and native gates stay
+  open, with no task tick or formal merge.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

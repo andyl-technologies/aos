@@ -1669,6 +1669,28 @@ is added rather than editing history.
     unchanged. This additive correction precedes T1's initial encoding freeze
     and does not qualify complete golden coverage or native operations.
 
+- **[D-93] Publish selector and private-evidence field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 86 independent witnesses, including 32 structural
+    negatives, for selector ASTs, both trust-context versions, selected
+    side-evidence tuples, disclosure statement preimages and complete target
+    normalization. Preserve every previous reference byte. Encoder-only
+    projections have no owning typed decoder; raw target-binding digests
+    describe field relationships without immutable descriptors or identities.
+  - **Rationale:** TEST-2 requires published vectors for implemented formats.
+    Primitive CBOR construction reproduces every field and byte independently
+    of the owning encoding seams. Separately constructed AST arenas and
+    complete ordinary models compare decoded fields where a typed decoder
+    exists; other projections receive complete primitive-field inspection.
+    Exact bounded reference comparison rejects missing, duplicate, split,
+    tampered and whitespace-altered sections. Signature and token fields are
+    opaque data; syntax and hash relationships establish no trust, provenance
+    evaluation, verified history or disclosure authority.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, registered schemas, identity domains and existing bytes remain
+    unchanged. This additive correction precedes T1's initial encoding freeze
+    and does not qualify complete golden coverage or native publication.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
