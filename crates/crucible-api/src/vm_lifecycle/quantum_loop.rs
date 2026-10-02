@@ -11,6 +11,7 @@ use super::*;
 mod attempt_boundary;
 mod checkpoint_capture;
 mod debug_policy;
+mod diagnostics;
 mod host_concurrent;
 mod lifecycle;
 mod live_network_preselection;
@@ -146,10 +147,9 @@ impl ProductionVmLifecycleLoop {
                     self.finish_quantum_after_backend(outcome, prefix)
                 }
             })();
-            let result = combine_attempt_quantum_boundary(
-                operation,
-                self.node_launcher.check_operational_boundary(),
-            );
+            let boundary = self.node_launcher.check_operational_boundary();
+            diagnostics::observe_owned_node_diagnostics(&mut self.node_leases);
+            let result = combine_attempt_quantum_boundary(operation, boundary);
             if result.is_ok() {
                 self.pending_held_host_outcomes.take();
             }
@@ -554,6 +554,7 @@ impl ProductionVmLifecycleLoop {
             )
         })();
         let boundary = self.node_launcher.check_operational_boundary();
+        diagnostics::observe_owned_node_diagnostics(&mut self.node_leases);
         if (operation.is_err() || boundary.is_err())
             && self.inner.live_network_preselection().is_some()
         {

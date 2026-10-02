@@ -13,6 +13,9 @@ use super::*;
 #[path = "hot_fork_diagnostics/summary.rs"]
 mod summary;
 
+#[path = "hot_fork_diagnostics/live_drain.rs"]
+mod live_drain;
+
 /// Maximum branch-private child diagnostic bytes retained for one template.
 ///
 /// The host drains the nonblocking stream while the child is live, but retains
@@ -115,6 +118,7 @@ pub struct QemuHotForkChildDiagnosticConsumer {
     eof: bool,
     writer_detached: bool,
     captured: bool,
+    live_drain_error: Option<String>,
 }
 
 impl std::fmt::Debug for QemuHotForkChildDiagnosticConsumer {
@@ -186,6 +190,13 @@ impl QemuHotForkChildDiagnosticConsumer {
             return Err(QemuNodeChannelError::new(
                 "drain hot-fork child diagnostics",
                 "diagnostic capture was already consumed",
+            ));
+        }
+
+        if let Some(error) = &self.live_drain_error {
+            return Err(QemuNodeChannelError::new(
+                "drain hot-fork child diagnostics",
+                error.clone(),
             ));
         }
 
@@ -551,6 +562,7 @@ fn create_diagnostic_pair(
             eof: false,
             writer_detached: false,
             captured: false,
+            live_drain_error: None,
         }),
     })
 }
