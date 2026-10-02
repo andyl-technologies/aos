@@ -9,6 +9,14 @@ testing.mkVMTest {
   rootfsDeps = [pkgs.aos-configuration-lower pkgs.python3 pkgs.erofs-utils pkgs.util-linux pkgs.coreutils];
   testScript = ''
     set -eu
+    # Match host propagation without changing the whole test root. Execute
+    # the actual bootstrap, then reproduce PID 1's switch-root re-sharing.
+    mkdir -p /run
+    ${pkgs.util-linux}/bin/mount --bind /run /run
+    ${pkgs.util-linux}/bin/mount --make-shared /run
+    PATH=${pkgs.util-linux}/bin:${pkgs.util-linux}/sbin:${pkgs.coreutils}/bin \
+      ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/run-etc-setup.sh}
+    ${pkgs.util-linux}/bin/mount --make-rshared /run
     mkdir -p /tmp/image-etc /run/etc/system/metadata /run/etc/system/content \
       /run/etc/upper-initial/dir /run/etc/upper-initial/work /var/etc
     cp -a /etc/. /tmp/image-etc/
@@ -28,6 +36,17 @@ testing.mkVMTest {
 
     assembly = '${pkgs.aos-configuration-lower}/bin/aos-configuration-lower'
     mounting = '${pkgs.aos-configuration-lower}/bin/aos-configuration-mount'
+    findmnt = '${pkgs.util-linux}/bin/findmnt'
+
+    def propagation(path):
+        return subprocess.check_output(
+            [findmnt, '--noheadings', '--output', 'PROPAGATION', '--target', path],
+            text=True,
+        ).strip()
+
+    assert propagation('/run') == 'shared'
+    assert propagation('/run/etc') == 'shared'
+
     def call(program, action, value, revision):
         invocation = {
             'id': 'native-lower-fixture', 'revision': revision,
@@ -52,6 +71,8 @@ testing.mkVMTest {
                  'storePaths': [], 'retainedRoot': '/var/lib/aos/configuration-lowers'}
         lower = call(assembly, 'apply', value, revision)
         assert call(mounting, 'apply', lower, revision) == {'path': '/etc'}
+        assert propagation('/run') == 'shared', 'publication changed the parent propagation'
+        assert propagation('/run/etc') == 'private', 'publication left its staging parent shared'
         assert call(mounting, 'observe', lower, revision)['status'] == 'current'
         assert pathlib.Path('/etc/user-edit').read_text() == 'operator change\n'
         return lower
