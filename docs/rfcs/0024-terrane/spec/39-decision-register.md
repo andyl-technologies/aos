@@ -1649,6 +1649,26 @@ is added rather than editing history.
     correction precedes T1's initial format freeze and does not qualify the
     complete corpus, codec runtime, index publication or native operations.
 
+- **[D-92] Publish complete retirement record field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 27 positive and seven negative witnesses for the existing
+    D-82 retirement record formats. Include disjoint authorization alternatives,
+    preparation and operation phases, pass observations and coverage, owner
+    selections, fences and their complete nested records. Preserve every prior
+    reference byte. These non-content-addressed records receive no immutable
+    descriptor or content identity.
+  - **Rationale:** TEST-2 requires published vectors for implemented mutable
+    and non-content-addressed formats. Independent CBOR primitives and raw
+    registered hashes reproduce these bytes and embedded record relationships;
+    independently constructed public models compare all decoded fields.
+    Malformed wire inputs bypass the rejecting encoders. Represented nonce,
+    placement, ownership and elapsed fields are untrusted data and establish
+    no current authority, completed wait or physical permission.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, registered schemas, identity domains and existing bytes remain
+    unchanged. This additive correction precedes T1's initial encoding freeze
+    and does not qualify complete golden coverage or native operations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

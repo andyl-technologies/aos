@@ -166,6 +166,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   actual protected initialization, publication and live ACL changes. The
   existing immutable-read/live-policy test and mandatory formatting pass;
   strict native Clippy still reports unused incomplete T1 implementations.
+  The dictionary-reader candidate now passes the actual `chunk-codec` check,
+  including both exact guarded cases: every registered stored dictionary codec,
+  nested dependencies, malformed/cyclic/unavailable evidence, top-envelope
+  limits before dependency reads and actual current ACL revocation. The
+  `chunk-bomb-cap` check also passes. The reviewed helper returns genuine
+  dependency-first envelopes with verified plaintext lengths as ordinary data.
+  Native preload consumption and complete joint qualification remain required;
+  the reader stays on its task branch and T-CDC-1 remains open.
   — satisfies
   OBJ-11 to OBJ-18, CDC-1 to CDC-20;
   `checks.terrane.gates.object-identity-from-manifest`,
@@ -509,9 +517,41 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   wire byte/digest remain unchanged. The prepared three-group hermetic check,
   strict template Clippy and mandatory formatting pass. The shared auxiliary
   harness now requires independent reproduction of the normative whole file;
-  its reviewed input branch remains separate, and published-input qualification
-  is pending. This establishes no native codec, index or complete golden
-  conformance; no task or milestone advances.
+  its reviewed input branch remains separate. Its actual published-input check
+  now passes all three exact owning-codec groups and strict template Clippy.
+  The actual input-branch aggregate still rejects the absent `format_properties`
+  target. This establishes no native codec, index or complete golden conformance;
+  no task or milestone advances.
+  The isolated joint candidate now includes these published container inputs.
+  Its full core build, all 568 Nextest tests across ten binaries with zero skips
+  (run `b792ffd6-0906-46e3-b246-ad4c21b10edf`), strict all-target Clippy,
+  warnings/missing-docs rustdoc and final mandatory formatting pass. Temporary
+  consumers remain present through qualification and final formatting, then are
+  removed. Complete golden coverage and native milestone qualification remain
+  open; this combined core checkpoint advances no task or milestone.
+  A separate `retirement-reference-models` auxiliary harness now reserves seven
+  exact owning-codec groups for the existing 34 inert record models: complete
+  authorization, preparation, operation, pass, fence and owner fields plus
+  independently assembled structural rejections. Its input templates remain
+  pending; the check fails explicitly until they exist. Format comparison
+  establishes no current authority, completed wait or physical permission;
+  normative publication and complete golden qualification remain required.
+  D-92 now publishes all 34 inert retirement record witnesses. Full consumer
+  review covers independent wire assembly, complete public and nested models,
+  structural rejection, truncation, nonminimal headers and eleven decoder size
+  limits. The input candidate passes its seven exact auxiliary groups, all 494
+  core Nextest tests with zero skips, strict Clippy, warnings/missing-docs rustdoc
+  and mandatory formatting. The shared harness now checks the normative whole
+  reference and copies that published file into the consumer. Published-input
+  qualification remains pending. Its actual candidate aggregate still rejects
+  the absent `format_properties` target; no task or milestone advances.
+  The separate `refs-reference-models` auxiliary reserves four exact groups
+  for complete modern commit optional fields/preimages, ref policy and snapshot
+  envelope fields/preimages, reflog reason/CAS/predecessor alternatives and
+  independently malformed wire inputs. It fails explicitly while its primitive
+  generator and model templates are absent. These untrusted format inputs
+  establish no signed authority, live ref state or successful publication;
+  complete reference publication remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
