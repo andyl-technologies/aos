@@ -81,12 +81,40 @@
   primaryBundleInventory = inventory primaryBundle;
   alternateBundleInventory = inventory alternateBundle;
   consumedBundleInventory = inventory consumedBundle;
+  artifactText = import ../../pkgs/build-support/_artifact-text.nix {
+    inherit (pkgs.buildPackages or pkgs) bash coreutils;
+    system = pkgs.stdenv.buildPlatform.system;
+  };
+  # Real toolchain siblings reproduce the scanner leak from a compiler-backed
+  # text builder. Catalog locators remain inert; selected paths retain custody.
+  companion = retainStatic:
+    artifactText {
+      name = "native-projection-toolchain-catalog-${
+        if retainStatic
+        then "selected"
+        else "metadata"
+      }";
+      destination = "/catalog.json";
+      text = builtins.toJSON {
+        available = builtins.unsafeDiscardStringContext (toString pkgs.glibc.dev);
+        selected =
+          if retainStatic
+          then toString pkgs.glibc.static
+          else builtins.unsafeDiscardStringContext (toString pkgs.glibc.static);
+        source = toString custodySource;
+      };
+    };
+  metadataCompanion = companion false;
+  selectedCompanion = companion true;
+  metadataCompanionInventory = inventory metadataCompanion;
+  selectedCompanionInventory = inventory selectedCompanion;
+  glibcToolsEnvelopeInventory = inventory pkgs.glibc-tools.deploymentArtifact;
 in
   pkgs.mkDerivation {
     pname = "native-projection-input-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.jq fullInventory projectionInventory primaryBundleInventory alternateBundleInventory consumedBundleInventory];
+    buildDeps = [pkgs.jq fullInventory projectionInventory primaryBundleInventory alternateBundleInventory consumedBundleInventory metadataCompanionInventory selectedCompanionInventory glibcToolsEnvelopeInventory];
     phases = [
       {
         name = "check";
@@ -138,6 +166,27 @@ in
             '.artifacts[0].outputs.unused == $alternate
               and any(.packages[]; .artifacts.dependencies."native-projection-available-dependency".path == $dependency)' \
             ${primaryBundle}/transaction.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg dev ${lib.escapeShellArg (toString pkgs.glibc.dev)} \
+            --arg static ${lib.escapeShellArg (toString pkgs.glibc.static)} \
+            --arg source ${lib.escapeShellArg (toString custodySource)} \
+            'all(.paths[]; .path != $dev and .path != $static)
+              and any(.paths[]; .path == $source)' \
+            ${metadataCompanionInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg dev ${lib.escapeShellArg (toString pkgs.glibc.dev)} \
+            --arg static ${lib.escapeShellArg (toString pkgs.glibc.static)} \
+            --arg source ${lib.escapeShellArg (toString custodySource)} \
+            'all(.paths[]; .path != $dev)
+              and any(.paths[]; .path == $static)
+              and any(.paths[]; .path == $source)' \
+            ${selectedCompanionInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg dev ${lib.escapeShellArg (toString pkgs.glibc.dev)} \
+            --arg static ${lib.escapeShellArg (toString pkgs.glibc.static)} \
+            'all(.paths[]; .path != $dev and .path != $static)' \
+            ${glibcToolsEnvelopeInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg dev ${lib.escapeShellArg (toString pkgs.glibc.dev)} \
+            --arg static ${lib.escapeShellArg (toString pkgs.glibc.static)} \
+            '.available == $dev and .selected == $static' \
+            ${metadataCompanion}/catalog.json >/dev/null
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';
