@@ -11,6 +11,15 @@
     (config.aos.boot.stage or "host")
     == "host"
     && lib.take 1 config.aos.activation.scope != ["container"];
+  apmStateRoot = "apm";
+  apmStateDirectory = path: {
+    inherit path;
+    purpose = "state";
+    mode = "0755";
+    retention = "persistent";
+    owner = "root";
+    group = "root";
+  };
   registrySynchronization = {
     policy.hardening = {
       allow_privilege_escalation = false;
@@ -106,16 +115,12 @@
       variables = {};
       search_path = [];
     };
-    # Registry refresh runs before host filesystem effects can allocate its state.
-    directories.managed = [
-      {
-        path = "apm";
-        purpose = "state";
-        mode = "0755";
-        retention = "persistent";
-        owner = "root";
-        group = "root";
-      }
+    # Registry refresh can create configuration before native host effects run.
+    # Its bootstrap manager owns the complete persistent configuration subtree.
+    directories.managed = map apmStateDirectory [
+      apmStateRoot
+      "${apmStateRoot}/config"
+      "${apmStateRoot}/config/registries.d"
     ];
     isolation = {
       privilege = "privileged";
@@ -126,12 +131,7 @@
       termination_scope = "all-processes";
       temporary_directory = "private";
       devices = [];
-      host_paths = [
-        {
-          source = "/var/lib/apm";
-          mode = "read-write";
-        }
-      ];
+      host_paths = [];
       permit_core_dumps = false;
     };
     resources = {

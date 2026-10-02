@@ -53,6 +53,7 @@
     storageProfile = import ./storage-profile.nix;
     provisioningProjection = import ./provisioning-projection.nix {inherit lib pkgs;};
     buildInvariants = import ./build-invariants.nix {inherit lib pkgs;};
+    runtimeDirectoryOwnership = import ./runtime-directory-ownership.nix;
     runtimeRoles = import ./runtime-roles.nix {inherit lib pkgs;};
     measuredVar = import ./measured-var.nix;
     imageRetirement = import ./image-retirement.nix;

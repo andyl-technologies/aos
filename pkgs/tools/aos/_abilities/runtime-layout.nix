@@ -5,6 +5,8 @@
   ...
 }: let
   host = (config.aos.boot.stage or "host") == "host";
+  privateRoot = "/var/lib/aos/ability-runtime";
+  privateParent = config.aos.abilities.filesystem.operations.persistentAllocate.effects."aos-runtime-var-lib-aos-ability-runtime".outputs.resource;
   directory = path: mode: {
     enable = host;
     inherit path mode;
@@ -12,19 +14,19 @@
     group = "root";
     persistent = lib.hasPrefix "/var/" path;
   };
+  privateChild = name: mode:
+    directory "${privateRoot}/${name}" mode // {parentResource = privateParent;};
 in {
+  # Bootstrap service directories own APM and attestation state. The image or
+  # operator configuration owns /etc/aos/packages.d; these effects own only
+  # private runtime allocations and must not adopt those existing directories.
   aos.directories = {
-    "aos-runtime-var-lib-aos-ability-runtime" = directory "/var/lib/aos/ability-runtime" "0711";
-    "aos-runtime-var-lib-aos-ability-runtime-credential-sources" = directory "/var/lib/aos/ability-runtime/credential-sources" "0700";
-    "aos-runtime-var-lib-aos-ability-runtime-credentials" = directory "/var/lib/aos/ability-runtime/credentials" "0700";
-    "aos-runtime-var-lib-aos-ability-runtime-endpoints" = directory "/var/lib/aos/ability-runtime/endpoints" "0700";
-    "aos-runtime-var-lib-aos-ability-runtime-network-policy" = directory "/var/lib/aos/ability-runtime/network-policy" "0700";
-    "aos-runtime-var-lib-aos-ability-runtime-storage" = directory "/var/lib/aos/ability-runtime/storage" "0711";
-    "aos-runtime-etc-aos-packages.d" = directory "/etc/aos/packages.d" "0755";
+    "aos-runtime-var-lib-aos-ability-runtime" = directory privateRoot "0711";
+    "aos-runtime-var-lib-aos-ability-runtime-credential-sources" = privateChild "credential-sources" "0700";
+    "aos-runtime-var-lib-aos-ability-runtime-credentials" = privateChild "credentials" "0700";
+    "aos-runtime-var-lib-aos-ability-runtime-endpoints" = privateChild "endpoints" "0700";
+    "aos-runtime-var-lib-aos-ability-runtime-network-policy" = privateChild "network-policy" "0700";
+    "aos-runtime-var-lib-aos-ability-runtime-storage" = privateChild "storage" "0711";
     "aos-runtime-run-apm" = directory "/run/apm" "0700";
-    "aos-runtime-run-aos-attest" = directory "/run/aos-attest" "0700";
-    "aos-runtime-var-lib-apm" = directory "/var/lib/apm" "0755";
-    "aos-runtime-var-lib-apm-config" = directory "/var/lib/apm/config" "0755";
-    "aos-runtime-var-lib-apm-config-registries.d" = directory "/var/lib/apm/config/registries.d" "0755";
   };
 }

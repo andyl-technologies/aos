@@ -56,7 +56,6 @@
   command = (builtins.head commit.lifecycle.start).executable;
   registry = enabled.aos.services."configuration-evaluation.registry-synchronization";
   registryDirectory = builtins.head registry.directories.managed;
-  runtimeDirectory = enabled.aos.directories.aos-runtime-var-lib-apm;
 in {
   nativeServicesEnabled = registry.enable && commit.enable;
   disabledServicesAbsent = !disabled.aos.services."configuration-evaluation.registry-synchronization".enable && !disabled.aos.services."configuration-evaluation.image-boot-commit".enable;
@@ -78,13 +77,17 @@ in {
     && registryDirectory.path == "apm"
     && registryDirectory.purpose == "state"
     && registryDirectory.retention == "persistent";
-  registryStateMatchesHostAllocation =
-    runtimeDirectory.path
-    == "/var/lib/${registryDirectory.path}"
-    && registryDirectory.mode == "0755"
-    && runtimeDirectory.mode == registryDirectory.mode
-    && registryDirectory.owner == "root"
-    && runtimeDirectory.owner == registryDirectory.owner
-    && registryDirectory.group == "root"
-    && runtimeDirectory.group == registryDirectory.group;
+  registryStateHasOneBootstrapOwner =
+    map (directory: directory.path) registry.directories.managed
+    == ["apm" "apm/config" "apm/config/registries.d"]
+    && builtins.all (directory:
+      directory.mode
+      == "0755"
+      && directory.purpose == "state"
+      && directory.retention == "persistent"
+      && directory.owner == "root"
+      && directory.group == "root")
+    registry.directories.managed
+    && builtins.all (directory: !lib.hasPrefix "/var/lib/apm" directory.path) (builtins.attrValues enabled.aos.directories)
+    && registry.isolation.host_paths == [];
 }
