@@ -332,6 +332,27 @@
          "service" : "ContainerService"
       },
       {
+         "method" : "GetContainerNamespace",
+         "path" : "aos.hub.v1.ContainerService/GetContainerNamespace",
+         "request" : "GetContainerNamespaceRequest",
+         "response" : "ContainerNamespaceResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "PlanSetContainerNamespace",
+         "path" : "aos.hub.v1.ContainerService/PlanSetContainerNamespace",
+         "request" : "PlanSetContainerNamespaceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "ContainerService"
+      },
+      {
+         "method" : "SetContainerNamespace",
+         "path" : "aos.hub.v1.ContainerService/SetContainerNamespace",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "ContainerNamespaceResponse",
+         "service" : "ContainerService"
+      },
+      {
          "method" : "PlanRunContainerGc",
          "path" : "aos.hub.v1.ContainerService/PlanRunContainerGc",
          "request" : "PlanRunContainerGcRequest",
@@ -1841,6 +1862,76 @@
          "path" : "aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
          "request" : "TriggerInstanceMaintenanceRequest",
          "response" : "InstanceMaintenanceTriggerResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "ListInstanceOciRoutes",
+         "path" : "aos.hub.v1.InstanceService/ListInstanceOciRoutes",
+         "request" : "ListInstanceOciRoutesRequest",
+         "response" : "ListInstanceOciRoutesResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "GetInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/GetInstanceOciRoute",
+         "request" : "GetTopologyResourceRequest",
+         "response" : "InstanceOciRouteResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanCreateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanCreateInstanceOciRoute",
+         "request" : "PlanInstanceOciRouteMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "CreateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/CreateInstanceOciRoute",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InstanceOciRouteResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanUpdateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanUpdateInstanceOciRoute",
+         "request" : "PlanInstanceOciRouteMutationRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "UpdateInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/UpdateInstanceOciRoute",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InstanceOciRouteResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanDeleteInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanDeleteInstanceOciRoute",
+         "request" : "PlanDeleteTopologyResourceRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "DeleteInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/DeleteInstanceOciRoute",
+         "request" : "ApplyDeleteTopologyResourceRequest",
+         "response" : "DeleteTopologyResourceResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "PlanConvertRouteToInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/PlanConvertRouteToInstanceOciRoute",
+         "request" : "PlanConvertRouteToInstanceOciRouteRequest",
+         "response" : "TopologyPlanResponse",
+         "service" : "InstanceService"
+      },
+      {
+         "method" : "ConvertRouteToInstanceOciRoute",
+         "path" : "aos.hub.v1.InstanceService/ConvertRouteToInstanceOciRoute",
+         "request" : "ApplyTopologyPlanRequest",
+         "response" : "InstanceOciRouteResponse",
          "service" : "InstanceService"
       },
       {
