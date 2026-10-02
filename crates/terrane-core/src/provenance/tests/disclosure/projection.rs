@@ -21,7 +21,9 @@ fn prov_disclosure_whole_projection_rejects_resigned_destination_mutations() {
     let mut recipe = Vec::new();
     cbor::write_map(&mut recipe, 3);
     cbor::write_uint(&mut recipe, 1);
-    cbor::write_text(&mut recipe, "overlay");
+    // Generic map arguments retain opaque signature-shaped data; overlay's
+    // closed argument schema rejects that metadata before normalization.
+    cbor::write_text(&mut recipe, "map");
     cbor::write_uint(&mut recipe, 2);
     cbor::write_array(&mut recipe, 0);
     cbor::write_uint(&mut recipe, 3);

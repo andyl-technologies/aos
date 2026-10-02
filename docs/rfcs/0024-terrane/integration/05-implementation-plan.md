@@ -1262,6 +1262,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   passes run `a57c9686-ffa9-4330-a460-be68a97d18c8`. Five of nineteen required
   contracts have isolated passing evidence. The combined qualification source
   remains unpublished; full native gates and the aggregate remain required.
+  The combined candidate now passes all five selected native fixtures serially
+  (run `bed3d1ff-b2bc-41ff-b05e-6132df0d88b5`), both actual `chunk-codec` and
+  `chunk-bomb-cap` gates and mandatory formatting. The original concurrent
+  four-case run passed two cases, expired during materialization and timed out
+  in one case. Serial qualification preserves all existing lease and test
+  deadlines; it does not establish concurrent reliability or qualify the
+  fourteen remaining required boundary contracts.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
