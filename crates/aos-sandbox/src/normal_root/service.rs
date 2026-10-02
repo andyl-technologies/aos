@@ -366,37 +366,11 @@ pub(super) fn decode_unit(
 }
 
 fn exact_open_files(open_files: &OwnedValue, extras: &OwnedValue, profile_path: &str) -> bool {
-    let Value::Array(open_files) = &**open_files else {
-        return false;
-    };
-    let Value::Array(extras) = &**extras else {
-        return false;
-    };
-    if open_files.len() != 2
-        || !extras.is_empty()
-        || extras.element_signature() != Value::from("").value_signature()
-    {
-        return false;
-    }
-    let mut found = [false; 2];
-    for entry in open_files.inner() {
-        let Value::Structure(entry) = entry else {
-            return false;
-        };
-        let [Value::Str(path), Value::Str(name), Value::U64(1)] = entry.fields() else {
-            return false;
-        };
-        let slot = match (path.as_str(), name.as_str()) {
-            ("/proc/1/exe", PID1_FD_NAME) => 0,
-            (path, PROFILE_FD_NAME) if path == profile_path => 1,
-            _ => return false,
-        };
-        if found[slot] {
-            return false;
-        }
-        found[slot] = true;
-    }
-    found == [true; 2]
+    systemd_property_data::exact_readonly_open_file_pair(
+        open_files,
+        extras,
+        [("/proc/1/exe", PID1_FD_NAME), (profile_path, PROFILE_FD_NAME)],
+    )
 }
 
 pub(super) fn require_same(

@@ -13,7 +13,7 @@ use aos_systemd::{OwnedValue, SystemdClient, Value};
 use rustix::fs::{Mode, OFlags, open};
 use sha2::{Digest as _, Sha256};
 
-use crate::immutable_image::RetainedImmutableFileV1;
+use crate::{immutable_image::RetainedImmutableFileV1, systemd_property_data};
 
 use super::{
     CAPABILITIES, CONTEXT, CONTROL_GROUP, InstalledCollectorStartupErrorV1 as Error,
@@ -247,33 +247,11 @@ fn decode(
 }
 
 fn exact_open_files(open_files: &OwnedValue, extra: &OwnedValue, profile: &str) -> bool {
-    let Value::Array(entries) = &**open_files else {
-        return false;
-    };
-    if entries.len() != 2 || !exact_strings(extra, &[]) {
-        return false;
-    }
-
-    let mut found = [false; 2];
-    for entry in entries.inner() {
-        let Value::Structure(entry) = entry else {
-            return false;
-        };
-        let [Value::Str(path), Value::Str(name), Value::U64(1)] = entry.fields() else {
-            return false;
-        };
-        let slot = match (path.as_str(), name.as_str()) {
-            ("/proc/1/exe", PID1_FD_NAME) => 0,
-            (path, PROFILE_FD_NAME) if path == profile => 1,
-            _ => return false,
-        };
-        if found[slot] {
-            return false;
-        }
-        found[slot] = true;
-    }
-
-    found == [true; 2]
+    systemd_property_data::exact_readonly_open_file_pair(
+        open_files,
+        extra,
+        [("/proc/1/exe", PID1_FD_NAME), (profile, PROFILE_FD_NAME)],
+    )
 }
 
 fn exact_exec(value: &OwnedValue, executable: &str) -> bool {
