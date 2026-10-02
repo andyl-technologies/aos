@@ -12,7 +12,8 @@ use crucible_session::engine::{LinkDef, LinkLossProbability, MarkerId};
 const HTTP_VIRTUAL_BUDGET_TICKS: u64 = 2_000_000_000_000;
 // This watchdog bounds a broken host/runtime operation; it is not simulation
 // time and does not determine the canonical outcome.
-const HTTP_HOST_WATCHDOG: Duration = Duration::from_secs(180);
+const HTTP_STARTUP_WATCHDOG: Duration = Duration::from_secs(1800);
+const HTTP_APPLICATION_WATCHDOG: Duration = Duration::from_secs(180);
 const HTTP_RESPONSE: &[u8] = b"Crucible reached nginx\n";
 const HTTP_MARKER: &str = "http.request-response";
 
@@ -36,7 +37,8 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
     let mut processes = process_audit::ProcessAudit::default();
 
     println!("two_node_http_virtual_budget_ticks={HTTP_VIRTUAL_BUDGET_TICKS}");
-    println!("two_node_http_host_watchdog_seconds=180");
+    println!("two_node_http_startup_host_watchdog_seconds=1800");
+    println!("two_node_http_application_host_watchdog_seconds=180");
     let exchange = (|| {
         guest_choice::grant_and_start_guest_choice_campaign(&fixture)?;
         println!("two_node_http_campaign_started=true");
@@ -103,7 +105,7 @@ fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error
         id: NodeId { name: "curl".into() },
         arch: VmArchitecture::X86_64,
         memory_mib: 256,
-        cmdline: "console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init quiet nokaslr norandmaps random.trust_cpu=off crucible.workload=httpget".into(),
+        cmdline: "console=ttyS0 net.ifnames=0 root=/dev/vda rw init=/init nokaslr norandmaps random.trust_cpu=off crucible.workload=httpget".into(),
         ready_point: ReadyPoint::FixedIcount { icount: Icount { retired: 0 } },
         white_box: WhiteBoxPolicy::Enabled,
         smp_vcpus: 1,
@@ -116,7 +118,6 @@ fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error
             name: "nginx".into(),
         },
         cmdline: client.cmdline.replace("httpget", "httpd"),
-        white_box: WhiteBoxPolicy::Disabled,
         ..client.clone()
     };
     let link_id = LinkId::for_endpoints(&client.id, &server.id);
@@ -162,13 +163,84 @@ fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error
     )
 }
 
+/// Tracks operational phases using only host-reported authenticated setup events.
+struct HttpHostWatchdog {
+    began: Instant,
+    application_started: Option<Instant>,
+    setup_nodes: BTreeSet<&'static str>,
+}
+
+impl HttpHostWatchdog {
+    fn new(began: Instant) -> Self {
+        Self {
+            began,
+            application_started: None,
+            setup_nodes: BTreeSet::new(),
+        }
+    }
+
+    fn observe(&mut self, stderr: &str, now: Instant) {
+        self.setup_nodes
+            .extend(stderr.lines().filter_map(setup_receipt_node));
+        if self.application_started.is_none()
+            && self.setup_nodes.len() == 2
+            && now.duration_since(self.began) < HTTP_STARTUP_WATCHDOG
+        {
+            self.application_started = Some(now);
+        }
+    }
+
+    fn phase(&self) -> &'static str {
+        if self.application_started.is_some() {
+            "application"
+        } else {
+            "startup"
+        }
+    }
+
+    fn expired(&self, now: Instant) -> bool {
+        match self.application_started {
+            Some(started) => now.duration_since(started) >= HTTP_APPLICATION_WATCHDOG,
+            None => now.duration_since(self.began) >= HTTP_STARTUP_WATCHDOG,
+        }
+    }
+}
+
+fn setup_receipt_node(line: &str) -> Option<&'static str> {
+    let mut fields = line
+        .strip_prefix("CRUCIBLE-RUNTIME-BOOT-V1 ")?
+        .split_whitespace();
+    match fields.next()? {
+        "stage=before-quantum" | "stage=after-quantum" => {}
+        _ => return None,
+    }
+    let node = match fields.next()? {
+        "node=\"curl\"" => "curl",
+        "node=\"nginx\"" => "nginx",
+        _ => return None,
+    };
+    fields.next()?.strip_prefix("guest_stage=")?;
+    fields
+        .next()?
+        .strip_prefix("stage_icount=")?
+        .parse::<u64>()
+        .ok()?;
+    let receipts = fields
+        .next()?
+        .strip_prefix("setup_receipts=")?
+        .parse::<u64>()
+        .ok()?;
+    (receipts > 0).then_some(node)
+}
+
 fn wait_for_http_completion(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     processes: &mut process_audit::ProcessAudit,
 ) -> Result<Value, Box<dyn Error>> {
     let began = Instant::now();
-    let deadline = began + HTTP_HOST_WATCHDOG;
+    let deadline = began + HTTP_STARTUP_WATCHDOG + HTTP_APPLICATION_WATCHDOG;
+    let mut watchdog = HttpHostWatchdog::new(began);
     let mut last_report = began;
     let mut last_states = String::new();
     let completed = wait_for_process_observation(deadline, || {
@@ -183,19 +255,29 @@ fn wait_for_http_completion(
             .into());
         }
         processes.observe(service.child.id(), false)?;
+        watchdog.observe(&stderr, Instant::now());
         let states = guest_choice::attempt_states(fixture)?;
         last_states = format!("{states:?}");
         if last_report.elapsed() >= Duration::from_secs(5) {
             println!(
-                "two_node_http_wait elapsed_host_seconds={} states={last_states}",
-                began.elapsed().as_secs()
+                "two_node_http_wait elapsed_host_seconds={} operational_phase={} authenticated_setup_nodes={:?} states={last_states}",
+                began.elapsed().as_secs(),
+                watchdog.phase(),
+                watchdog.setup_nodes,
             );
             processes.report_observed_processes("http-wait");
-            for diagnostic in stderr.lines().filter(|line| {
-                line.starts_with("CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ")
-                    || line.starts_with("CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ")
-                    || line.starts_with("CRUCIBLE-RUNTIME-PROGRESS-V1 ")
-            }) {
+            let diagnostics = stderr
+                .lines()
+                .filter(|line| {
+                    line.starts_with("CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ")
+                        || line.starts_with("CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ")
+                        || line.starts_with("CRUCIBLE-RUNTIME-PROGRESS-V1 ")
+                        || line.starts_with("CRUCIBLE-RUNTIME-BOOT-V1 ")
+                })
+                .rev()
+                .take(10)
+                .collect::<Vec<_>>();
+            for diagnostic in diagnostics.into_iter().rev() {
                 println!("two_node_http_runtime_diagnostic={diagnostic}");
             }
             last_report = Instant::now();
@@ -206,6 +288,12 @@ fn wait_for_http_completion(
             }
             match state {
                 AttemptRuntimeState::Completed { .. } => {
+                    if watchdog.setup_nodes.len() != 2 {
+                        return Err(format!(
+                            "HTTP completed without both authenticated guest setup receipts; nodes={:?}; stderr={stderr}",
+                            watchdog.setup_nodes
+                        ).into());
+                    }
                     return guest_choice::wait_for_attempt_observation(fixture, key).map(Some);
                 }
                 AttemptRuntimeState::TerminalFailure { .. } => {
@@ -218,12 +306,18 @@ fn wait_for_http_completion(
                 _ => {}
             }
         }
+        if watchdog.expired(Instant::now()) {
+            return Err(format!(
+                "HTTP {} host panic fallback expired; authenticated_setup_nodes={:?}; states={last_states}; stderr={stderr}",
+                watchdog.phase(), watchdog.setup_nodes,
+            ).into());
+        }
         Ok(None)
     })?;
     completed.ok_or_else(|| {
         format!(
-            "HTTP host watchdog expired; states={last_states}; stderr={}",
-            service.stderr_tail()
+            "HTTP overall host panic fallback expired; operational_phase={}; authenticated_setup_nodes={:?}; states={last_states}; stderr={}",
+            watchdog.phase(), watchdog.setup_nodes, service.stderr_tail()
         )
         .into()
     })
@@ -235,6 +329,48 @@ fn first_execution_error(stderr: &str) -> Option<&str> {
     stderr
         .lines()
         .find(|line| line.starts_with("packaged campaign execution ") && line.contains(" failed:"))
+}
+
+#[test]
+fn setup_receipts_require_host_prefix_declared_node_and_positive_count() {
+    let valid = "CRUCIBLE-RUNTIME-BOOT-V1 stage=after-quantum node=\"curl\" guest_stage=setup-complete stage_icount=42 setup_receipts=1 console_bytes=12 console_tail_partial=true console_tail=\"boot\"";
+    assert_eq!(setup_receipt_node(valid), Some("curl"));
+    for invalid in [
+        valid.replace("CRUCIBLE-RUNTIME-BOOT-V1", "guest-console"),
+        valid.replace("node=\"curl\"", "node=\"other\""),
+        valid.replace("setup_receipts=1", "setup_receipts=0"),
+        valid.replace("setup_receipts=1", "setup_receipts=one"),
+        valid.replace("stage_icount=42", "stage_icount=broken"),
+        valid.replace("stage=after-quantum", "stage=guest-claimed"),
+        format!("console_tail={valid:?}"),
+    ] {
+        assert_eq!(setup_receipt_node(&invalid), None, "{invalid}");
+    }
+}
+
+#[test]
+fn host_fallback_transitions_only_after_both_guest_setup_receipts() {
+    let began = Instant::now();
+    let curl = "CRUCIBLE-RUNTIME-BOOT-V1 stage=after-quantum node=\"curl\" guest_stage=setup-complete stage_icount=42 setup_receipts=1";
+    let nginx = curl.replace("node=\"curl\"", "node=\"nginx\"");
+    let mut watchdog = HttpHostWatchdog::new(began);
+
+    watchdog.observe(curl, began + Duration::from_secs(10));
+    watchdog.observe(curl, began + Duration::from_secs(20));
+    assert_eq!(watchdog.phase(), "startup");
+    assert!(!watchdog.expired(began + Duration::from_secs(1799)));
+
+    watchdog.observe(&nginx, began + Duration::from_secs(30));
+    assert_eq!(watchdog.phase(), "application");
+    assert!(!watchdog.expired(began + Duration::from_secs(209)));
+    assert!(watchdog.expired(began + Duration::from_secs(210)));
+
+    let mut late = HttpHostWatchdog::new(began);
+    late.observe(curl, began);
+    assert!(late.expired(began + HTTP_STARTUP_WATCHDOG));
+    late.observe(&nginx, began + HTTP_STARTUP_WATCHDOG);
+    assert_eq!(late.phase(), "startup");
+    assert!(late.expired(began + HTTP_STARTUP_WATCHDOG));
 }
 
 #[test]

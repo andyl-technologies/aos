@@ -707,7 +707,7 @@ fn start_packaged_service_with_artifacts(
     let executor_socket = fixture._temporary.path().join("guest-choice-executor.sock");
     let mut invocation = fixture.service_command(None);
     if materialization_diagnostics {
-        invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
+        invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "1024");
     }
     invocation
         .arg("--qemu")
