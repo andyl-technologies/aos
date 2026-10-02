@@ -28,7 +28,7 @@
     rolePackageSelection = import ./role-package-selection.nix;
     hostPolicyDefaults = import ./host-policy-defaults.nix;
     journalPolicy = import ./journal-policy.nix;
-    securityServices = import ./security-services.nix;
+    securityServices = import ./security-services.nix {inherit pkgs;};
     systemdResources = import ./systemd-resources.nix;
     platformReplay = import ./platform-replay.nix;
     observerBootstrap = import ./observer-bootstrap.nix;
