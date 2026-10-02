@@ -16,7 +16,7 @@ aos_dev_list() {
   local cross_system=${3:-}
   category=$(aos_dev_category "$category") || aos_dev_error "unknown target category '$1'"
 
-  aos_dev_require_command nix-instantiate
+  aos_dev_require_command nix
   local -a eval_args=()
   if [[ -n $cross_system ]]; then
     eval_args=(--argstr crossSystem "$cross_system")
@@ -28,9 +28,9 @@ aos_dev_list() {
   if [[ $category == checks && $filter == *.* ]]; then
     local scope=$filter
     while :; do
-      entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
+      entries=$(cd "$aos_dev_root" && nix --extra-experimental-features nix-command eval --raw \
         --argstr category "$category" --argstr scope "$scope" \
-        "${eval_args[@]}" dev/targets.nix)
+        "${eval_args[@]}" --file tools/dev/targets.nix text)
       if [[ -n $entries || $scope != *.* ]]; then
         printf '%s\n' "$entries" | grep -F -- "$filter" || true
         return
@@ -39,8 +39,8 @@ aos_dev_list() {
     done
   fi
 
-  entries=$(cd "$aos_dev_root" && nix-instantiate --eval --raw \
-    --argstr category "$category" "${eval_args[@]}" dev/targets.nix)
+  entries=$(cd "$aos_dev_root" && nix --extra-experimental-features nix-command eval --raw \
+    --argstr category "$category" "${eval_args[@]}" --file tools/dev/targets.nix text)
 
   if [[ -n $filter ]]; then
     printf '%s\n' "$entries" | grep -F -- "$filter" || true
