@@ -23,6 +23,10 @@ mod envoy_network;
 pub(super) mod guest_choice;
 #[path = "campaign_packaged_process/policy_timeout.rs"]
 mod policy_timeout;
+#[path = "campaign_packaged_process/single_guest.rs"]
+mod single_guest;
+#[path = "campaign_packaged_process/two_node_http.rs"]
+mod two_node_http;
 
 #[test]
 #[ignore = "requires dedicated cgroup-v2 and ext4 project-quota roots inside the VM check"]

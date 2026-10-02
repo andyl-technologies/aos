@@ -854,6 +854,9 @@ in rec {
     projectQuotaVm = import ./phase4-project-quota-vm.nix {inherit pkgs lib;};
     qemuHostOwnerVm = import ./phase4-qemu-host-owner-vm.nix {inherit pkgs lib;};
     packagedCampaignVm = import ./phase4-packaged-campaign-vm.nix {inherit pkgs lib;};
+    singleGuestBootVm = import ./phase4-single-guest-boot-vm.nix {inherit pkgs lib;};
+    singleGuestMaterializationVm = import ./phase4-single-guest-materialization-vm.nix {inherit pkgs lib;};
+    twoNodeHttpVm = import ./phase4-two-node-http-vm.nix {inherit pkgs lib;};
     packagedCampaignChoiceVm = import ./phase4-packaged-campaign-choice-vm.nix {inherit pkgs lib;};
     packagedCampaignLifecycleVm = import ./phase4-packaged-campaign-lifecycle-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyNetworkVm = import ./phase4-packaged-campaign-envoy-network-vm.nix {inherit pkgs lib;};
