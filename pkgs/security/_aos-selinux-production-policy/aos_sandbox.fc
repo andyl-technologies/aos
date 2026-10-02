@@ -16,6 +16,7 @@
 /(nix|nix\.lower)/store/@AOS_TPM_HELPER_BASENAME_REGEX@/libexec/aos-method46-tpm-helper -- system_u:object_r:aos_method46_helper_exec_t
 /dev/tpmrm0 -c system_u:object_r:aos_method46_tpm_device_t
 # These public immutable inputs are not signer secrets or runtime authority.
+/(nix|nix\.lower)/store/@AOS_SYSTEMD_BASENAME_REGEX@/share/aos/backend-policy-artifact-v2 -- system_u:object_r:etc_t
 /(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-normal-root-startup-profile-1/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_sandbox_policy_authority_profile_t
 /(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-startup-profile-3/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_nix_offline_prepare_profile_t
 /(nix|nix\.lower)/store/[a-z0-9]{32}-aos-selinux-runtime-roots-[^/]+/bin/aos-selinux-runtime-roots -- system_u:object_r:aos_sandbox_runtime_roots_exec_t

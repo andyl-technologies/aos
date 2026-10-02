@@ -14,6 +14,7 @@
   aos-sandbox-zfs-worker,
   aos-sandboxd,
   aos-storaged,
+  systemd,
   aos-method46-tpm-helper,
   aos-sandbox-view-preparer-tools,
   viewPreparers ? [],
@@ -37,6 +38,32 @@
     if builtins.match "[a-z0-9]{32}-${name}-[0-9]+\\.[0-9]+\\.[0-9]+" basename != null
     then builtins.replaceStrings ["."] ["\\."] basename
     else throw "${name} SELinux label requires its exact evaluated package root";
+  # PID1's public comparison pin uses this same evaluated package as Storage.
+  # Its two-component version must not widen the existing owner-label helper.
+  systemdBasename = builtins.unsafeDiscardStringContext (builtins.baseNameOf (toString systemd));
+  systemdBasenameRegex = builtins.replaceStrings ["."] ["\\."] systemdBasename;
+  systemdPinPathRegex = "/(nix|nix\\.lower)/store/${systemdBasenameRegex}/share/aos/backend-policy-artifact-v2";
+  systemdPinPath = root: basename: "/${root}/store/${basename}/share/aos/backend-policy-artifact-v2";
+  systemdSiblingBasename =
+    (
+      if builtins.substring 0 1 systemdBasename == "0"
+      then "1"
+      else "0"
+    )
+    + builtins.substring 1 (builtins.stringLength systemdBasename - 1) systemdBasename;
+  systemdVersionSibling = builtins.replaceStrings ["-systemd-261.2"] ["-systemd-261.3"] systemdBasename;
+  exactSystemdPinLabel =
+    systemd.name == "systemd-261.2"
+    && systemd.version == "261.2"
+    && builtins.match "[a-z0-9]{32}-systemd-261\\.2" systemdBasename != null
+    && builtins.match systemdPinPathRegex (systemdPinPath "nix" systemdBasename) != null
+    && builtins.match systemdPinPathRegex (systemdPinPath "nix.lower" systemdBasename) != null
+    && builtins.match systemdPinPathRegex (systemdPinPath "nix" systemdSiblingBasename) == null
+    && systemdVersionSibling != systemdBasename
+    && builtins.match systemdPinPathRegex (systemdPinPath "nix" systemdVersionSibling) == null
+    && builtins.match systemdPinPathRegex (systemdPinPath "nix" (systemdBasename + "-alias")) == null
+    && builtins.match systemdPinPathRegex ((systemdPinPath "nix" systemdBasename) + "0") == null
+    && builtins.match systemdPinPathRegex ((systemdPinPath "nix" systemdBasename) + "/extra") == null;
   ownerModule = builtins.toFile "aos_sandbox.te" (
     builtins.readFile (policySupport + "/aos_sandbox.te")
     + "\n"
@@ -97,12 +124,12 @@
     && builtins.match workerPathRegex (workerPath workerSibling) == null
     && builtins.match workerPathRegex (workerPath (workerBasename + "-alias")) == null;
   fileContexts =
-    if exactNetdLabel && exactWorkerLabel && exactPublisherLabel
+    if exactNetdLabel && exactWorkerLabel && exactPublisherLabel && exactSystemdPinLabel
     then
       builtins.toFile "aos_sandbox.fc" (
         builtins.replaceStrings
-        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@" "@AOS_VIEW_TOOLS_BASENAME_REGEX@"]
-        [netdBasenameRegex workerBasenameRegex publisherBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools)]
+        ["@AOS_NETD_BASENAME_REGEX@" "@AOS_FUSE_WORKER_BASENAME_REGEX@" "@AOS_ZFS_WORKER_BASENAME_REGEX@" "@AOS_CONTROLLER_BASENAME_REGEX@" "@AOS_STORAGE_BASENAME_REGEX@" "@AOS_TPM_HELPER_BASENAME_REGEX@" "@AOS_VIEW_TOOLS_BASENAME_REGEX@" "@AOS_SYSTEMD_BASENAME_REGEX@"]
+        [netdBasenameRegex workerBasenameRegex publisherBasenameRegex (exactPackageBasename "aos-sandboxd" aos-sandboxd) (exactPackageBasename "aos-storaged" aos-storaged) (exactPackageBasename "aos-method46-tpm-helper" aos-method46-tpm-helper) (exactPackageBasename "aos-sandbox-view-preparer-tools" aos-sandbox-view-preparer-tools) systemdBasenameRegex]
         (builtins.readFile (policySupport + "/aos_sandbox.fc"))
         + builtins.concatStringsSep "" (map viewEntrypointContext viewPreparers)
       )

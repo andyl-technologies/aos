@@ -266,6 +266,13 @@ allow aos_sandbox_storage_t proc_t:dir { getattr open read search };
 allow aos_sandbox_storage_t proc_t:filesystem getattr;
 allow aos_sandbox_storage_t self:file { getattr open read };
 allow aos_sandbox_storage_t self:dir { getattr open read search };
+# Genuine startup rechecks the retained manager and its /proc/1/exe inode.
+# The task-file read is PTRACE_MODE_READ, not process:ptrace or execution.
+allow aos_sandbox_storage_t init_exec_t:file { getattr open read };
+allow aos_sandbox_storage_t init_t:dir search;
+allow aos_sandbox_storage_t init_t:lnk_file read;
+allow aos_sandbox_storage_t init_t:file read;
+allow aos_sandbox_storage_t systemd_unit_t:file { getattr open read };
 allow aos_sandbox_storage_t security_t:dir { getattr open read search };
 allow aos_sandbox_storage_t security_t:filesystem getattr;
 allow aos_sandbox_storage_t security_t:file { getattr open read };
