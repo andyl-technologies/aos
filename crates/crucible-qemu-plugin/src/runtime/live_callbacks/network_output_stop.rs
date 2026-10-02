@@ -8,12 +8,26 @@
 
 use super::*;
 
+pub(super) mod context;
+
+pub(super) use context::ArmOrigin;
+
 /// Original device coordinate and exact registered producer frontier.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct RetainedNetworkOutputStop {
     logical_icount: u64,
     raw_icount: u64,
     write_index: u64,
+    context: Option<Arc<context::ArmContext>>,
+}
+
+impl RetainedNetworkOutputStop {
+    /// Records the SDK return on this arm's independent diagnostic object.
+    pub(super) fn observe_admission(&self, status: i32) {
+        if let Some(context) = self.context.as_ref() {
+            context.observe_admission(status);
+        }
+    }
 }
 
 impl LiveNetworkCallbackState {
@@ -45,7 +59,7 @@ impl LiveNetworkCallbackState {
         &self,
         stop: &mut Option<RetainedNetworkOutputStop>,
     ) -> Result<Option<RetainedNetworkOutputStop>, LiveVcpuTimeCallbackError> {
-        let Some(retained) = *stop else {
+        let Some(retained) = stop.as_ref() else {
             return Ok(None);
         };
         let write_index = PluginShmemOrdering::producer_write_index(self.outbound.header());
@@ -63,7 +77,7 @@ impl LiveNetworkCallbackState {
             // new ceiling, callback, or diagnostic notice cannot retire it.
             *stop = None;
         }
-        Ok(*stop)
+        Ok(stop.clone())
     }
 }
 
@@ -71,6 +85,7 @@ impl LiveVcpuTimeCallbackState {
     pub(super) fn preserve_network_output_stop(
         &self,
         raw_icount: u64,
+        phase: &'static str,
     ) -> Result<bool, LiveVcpuTimeCallbackError> {
         let Some(network) = self.network.as_ref() else {
             return Ok(false);
@@ -89,7 +104,7 @@ impl LiveVcpuTimeCallbackState {
         } else {
             self.logical_icount_for_raw(raw_icount)?
         };
-        validate_original_coordinate(stop, logical_icount, raw_icount)?;
+        validate_original_coordinate(&stop, logical_icount, raw_icount, phase)?;
         PluginShmemOrdering::publish_pause_quiesced(
             self.slot.get(),
             stop.logical_icount,
@@ -103,6 +118,7 @@ impl LiveVcpuTimeCallbackState {
         &self,
         logical_icount: u64,
         raw_icount: u64,
+        phase: &'static str,
     ) -> Result<
         std::sync::MutexGuard<'_, Option<RetainedNetworkOutputStop>>,
         LiveVcpuTimeCallbackError,
@@ -113,7 +129,7 @@ impl LiveVcpuTimeCallbackState {
             .ok_or(LiveVcpuTimeCallbackError::NetworkStateUnavailable)?;
         let mut owner = network.try_output_stop()?;
         if let Some(stop) = network.unconsumed_output_stop(&mut owner)? {
-            validate_original_coordinate(stop, logical_icount, raw_icount)?;
+            validate_original_coordinate(&stop, logical_icount, raw_icount, phase)?;
         }
         Ok(owner)
     }
@@ -123,7 +139,8 @@ impl LiveVcpuTimeCallbackState {
         owner: &mut Option<RetainedNetworkOutputStop>,
         logical_icount: u64,
         raw_icount: u64,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        origin: ArmOrigin,
+    ) -> Result<RetainedNetworkOutputStop, LiveVcpuTimeCallbackError> {
         let network = self
             .network
             .as_ref()
@@ -131,12 +148,14 @@ impl LiveVcpuTimeCallbackState {
         let write_index = PluginShmemOrdering::producer_write_index(network.outbound.header());
         PluginShmemOrdering::publish_pause_quiesced(self.slot.get(), logical_icount, raw_icount)
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
-        *owner = Some(RetainedNetworkOutputStop {
+        let stop = RetainedNetworkOutputStop {
             logical_icount,
             raw_icount,
             write_index,
-        });
-        Ok(())
+            context: context::ArmContext::new(self.control_callback_witness.is_enabled(), origin),
+        };
+        *owner = Some(stop.clone());
+        Ok(stop)
     }
 
     pub(super) fn retain_network_output_stop_refusal(&self, status: i32) {
@@ -170,11 +189,13 @@ impl LiveVcpuTimeCallbackState {
 }
 
 fn validate_original_coordinate(
-    stop: RetainedNetworkOutputStop,
+    stop: &RetainedNetworkOutputStop,
     logical_icount: u64,
     raw_icount: u64,
+    phase: &'static str,
 ) -> Result<(), LiveVcpuTimeCallbackError> {
     if raw_icount != stop.raw_icount || logical_icount != stop.logical_icount {
+        context::report_failure(stop, logical_icount, raw_icount, phase);
         return Err(LiveVcpuTimeCallbackError::NetworkOutputStopProgressed {
             logical_icount: stop.logical_icount,
             raw_icount: stop.raw_icount,

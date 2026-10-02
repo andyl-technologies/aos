@@ -5,6 +5,9 @@ use super::*;
 #[path = "network_output/retained_stop.rs"]
 mod retained_stop;
 
+#[path = "network_output/failure_context.rs"]
+mod failure_context;
+
 struct OutputFixture {
     slot: NodeSlot,
     outbound: RingHeader,

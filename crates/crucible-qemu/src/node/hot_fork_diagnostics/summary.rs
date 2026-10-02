@@ -5,6 +5,9 @@
 
 use std::collections::VecDeque;
 
+#[path = "network_output_context.rs"]
+mod network_output_context;
+
 const MAXIMUM_ROWS: usize = 32;
 const MAXIMUM_ROW_BYTES: usize = 512;
 
@@ -18,7 +21,8 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
         let Some(line) = line.strip_suffix(b"\n") else {
             continue;
         };
-        if !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
+        if !line.starts_with(b"CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ")
+            && !line.starts_with(b"CRUCIBLE-CONTROL-CALLBACK-V1 ")
             && !line.starts_with(b"CRUCIBLE-RR-CONTROL-DEFER-V1 ")
             && !line.starts_with(b"crucible_sim_rr_control_")
         {
@@ -29,7 +33,8 @@ pub(super) fn control_diagnostics_summary(bytes: &[u8], child_process_id: u32) -
                 && row
                     .bytes()
                     .all(|byte| byte == b' ' || byte.is_ascii_graphic())
-                && (valid_callback_row(row, child_process_id)
+                && (network_output_context::valid_row(row, child_process_id)
+                    || valid_callback_row(row, child_process_id)
                     || valid_defer_row(row)
                     || crate::spawn::valid_rr_control_boundary_row(row)
                     || (crate::spawn::valid_control_delivery_row(row)

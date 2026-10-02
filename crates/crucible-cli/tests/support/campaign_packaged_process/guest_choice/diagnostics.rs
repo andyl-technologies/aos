@@ -20,6 +20,29 @@ pub(super) fn report_recent_host_wait_observations(service: &CampaignServiceChil
     }
 }
 
+pub(super) fn report_recent_callback_context(service: &CampaignServiceChild) {
+    // Each exact prefix retains <=32 rows of <=512 bytes. Context and final
+    // callback summaries survive unrelated rows outside the ordinary tail.
+    for prefix in [
+        "CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ",
+        "CRUCIBLE-CONTROL-LAST-V1 ",
+    ] {
+        match service.stderr_recent_lines_with_prefix(prefix, 32, 512) {
+            Ok(records) => {
+                for record in records {
+                    let _write_result = writeln!(std::io::stderr().lock(), "{record}");
+                }
+            }
+            Err(error) => {
+                let _write_result = writeln!(
+                    std::io::stderr().lock(),
+                    "callback context unavailable for {prefix}: {error}"
+                );
+            }
+        }
+    }
+}
+
 pub(super) fn configure_flight_diagnostics(
     invocation: &mut Command,
     diagnostics: FlightDiagnostics,
@@ -88,6 +111,11 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
     let attempt = "synthetic-capture-regression-attempt";
     let attestation = format!("{MATERIALIZATION_DIAGNOSTIC_PREFIX}attempt={attempt} tier=HotFork");
     writeln!(service.stderr, "{attestation}")?;
+    let output_context = "CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 phase=vcpu-resume pid=42 arm_pid=42 origin=direct-tx original_ps=100 original_raw=2 observed_ps=150 observed_raw=3 write_frontier=1 admission=0";
+    let callback_context = "CRUCIBLE-CONTROL-LAST-V1 kind=last-admitted phase=after-drain teardown=host-quit pid=42 device=1 inode=2 length=4096 slot=0 generation=2 final_token=3 callback=1 raw_icount=7 callback_phase=exit reason=acknowledged rejection_mask=0 token_kind=observed token_before=2 token_after=3";
+    writeln!(service.stderr, "{output_context}")?;
+    writeln!(service.stderr, "{callback_context}")?;
+
     for record in 0..70 {
         writeln!(
             service.stderr,
@@ -127,5 +155,20 @@ fn materialization_capture_preserves_one_shot_record_outside_the_recent_tail()
             .is_some_and(|record| record.ends_with("record=69"))
     );
     assert!(!service.stderr_tail().contains("CRUCIBLE-HOST-WAIT-V1 "));
+    assert_eq!(
+        service.stderr_recent_lines_with_prefix("CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ", 32, 512)?,
+        [output_context]
+    );
+    assert_eq!(
+        service.stderr_recent_lines_with_prefix("CRUCIBLE-CONTROL-LAST-V1 ", 32, 512)?,
+        [callback_context]
+    );
+    assert!(
+        !service
+            .stderr_tail()
+            .contains("CRUCIBLE-NETWORK-OUTPUT-CONTEXT-V1 ")
+    );
+    assert!(!service.stderr_tail().contains("CRUCIBLE-CONTROL-LAST-V1 "));
+
     Ok(())
 }
