@@ -1756,6 +1756,10 @@ in {
         ${pkgs.git}/bin/git -C "$REG_DIR" add -A
         ${pkgs.git}/bin/git -C "$REG_DIR" commit \
           -m 'release: hub-oci-container-tool 1.0.0'
+        # Consumers resolve packages through the released default channel,
+        # not through unreleased commits on its branch.
+        "$APR" release 1.0.0 --registry hub-oci-runtime --key-id initial \
+          --channel stable --init-channel
         cp -a "$REG_DIR" /var/lib/hub-oci-container-fixtures/registry
         PYTHONUNBUFFERED=1 ${pkgs.coreutils}/bin/nohup \
           ${pkgs.python3}/bin/python3 -m http.server 18120 \
