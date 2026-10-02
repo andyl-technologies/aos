@@ -1,0 +1,494 @@
+//! Generates commit, ref, bucket, collector, and creation-journal record models.
+
+use super::support::{Generator, cbor_properties, check_record, token_bytes};
+use terrane_core::{bucket, gc, refs};
+
+pub(super) fn head(seq: u64) -> refs::RefRecord {
+    refs::RefRecord {
+        commit: [8; 32],
+        seq,
+        writer_epoch: 1,
+        home: refs::Locality::default(),
+        policy: None,
+        candidate_id: Some([9; 32]),
+    }
+}
+
+pub(super) fn commit(generator: &mut Generator, case: usize) -> refs::Commit {
+    let mut model = refs::Commit {
+        tree: generator.bytes(),
+        parents: (0..case % 4).map(|_| generator.bytes()).collect(),
+        provenance: refs::Provenance {
+            issuer: "issuer".into(),
+            token_id: generator.bytes(),
+            subject: format!("principal-{case}"),
+            kind: [
+                refs::PrincipalKind::Human,
+                refs::PrincipalKind::Workload,
+                refs::PrincipalKind::Service,
+            ][case % 3],
+            workload_identity: (case % 2 == 0).then(|| "workload".into()),
+            process: "property-test".into(),
+            observed_at: generator.next(),
+            writer_epoch: generator.next(),
+            source: [
+                refs::CommitSource::Built,
+                refs::CommitSource::Uploaded,
+                refs::CommitSource::Imported,
+                refs::CommitSource::Merged,
+                refs::CommitSource::Derived,
+                refs::CommitSource::Migrated,
+            ][case % 6],
+            embedded_token: None,
+        },
+        timestamp: generator.next(),
+        message: if case % 2 == 0 {
+            String::new()
+        } else {
+            format!("message {case}\0λ")
+        },
+        profile_pair: refs::ProfilePair {
+            tree_format: 1,
+            chunk_profile: "cdc-1m".into(),
+            recipe: None,
+            conflicted: (case % 2 == 0).then_some(false),
+            lease: (case % 3 == 0).then(|| refs::Lease {
+                owner: "owner".into(),
+                expiry: u64::MAX,
+            }),
+            required_properties: (case % 4 == 0).then(|| vec![0xa0]),
+            entry_receipts: (case % 2 == 0).then(Vec::new),
+            commit_context: None,
+        },
+        packs: (case % 3 == 0).then(|| {
+            vec![refs::PackLocation {
+                pack_id: generator.bytes(),
+                locality: refs::Locality {
+                    region: Some("region".into()),
+                    zone: Some("zone".into()),
+                    host: Some("host".into()),
+                },
+            }]
+        }),
+        signature: (case % 2 == 0).then(|| generator.bytes()),
+    };
+    if case % 3 == 0 {
+        model.provenance.embedded_token = Some(token_bytes(1, 2, generator));
+        model.profile_pair.commit_context = Some(
+            refs::CommitContext::from_request(&terrane_core::auth::Request {
+                reference: b"refs/heads/_/main",
+                verb: terrane_core::auth::Verb::Commit,
+                roots: &[
+                    terrane_core::auth::RequestRoot {
+                        path: b"/",
+                        domain: "public",
+                    },
+                    terrane_core::auth::RequestRoot {
+                        path: b"/graft",
+                        domain: "tenant:generated",
+                    },
+                ],
+                now: 0,
+                surface: "sdk",
+                locality: &refs::Locality::default(),
+                epochs: &[],
+            })
+            .unwrap(),
+        );
+        model.profile_pair.recipe = Some(
+            terrane_core::algebra::Recipe::Overlay(&[generator.bytes(), generator.bytes()])
+                .encode(),
+        );
+    }
+    model
+}
+
+#[test]
+fn commit_ref_reflog_and_annotation_models_preserve_optional_fields() {
+    let mut generator = Generator::new(0xb881_35e2_39a7_f021);
+    for case in 0..24 {
+        let mut model = commit(&mut generator, case);
+        if case % 3 == 0 {
+            model.profile_pair.entry_receipts = Some(vec![refs::EntryReceipt {
+                root: generator.bytes(),
+                path: b"file".to_vec(),
+                origin: refs::EntryOrigin::Current,
+                attributes: Some(vec![("sha256".into(), refs::EntryOrigin::Current)]),
+                reintroduced_from: Some(refs::EntrySource {
+                    commit: generator.bytes(),
+                    root: generator.bytes(),
+                    path: b"source".to_vec(),
+                }),
+                disclosure_proof: Some(refs::DisclosureProof {
+                    authority_key: "01".repeat(32),
+                    source_domain: "public".into(),
+                    observed_at: generator.next(),
+                    signature: generator.bytes(),
+                }),
+            }]);
+        }
+        check_record!("commit and provenance/profile/receipt", model, refs::Commit);
+        let mut record = head([1, 23, 24, u64::MAX][case % 4]);
+        record.commit = generator.bytes();
+        record.writer_epoch = generator.next();
+        record.candidate_id = (case % 2 == 0).then(|| generator.bytes());
+        record.policy = (case % 3 != 0).then(|| refs::RefPolicy {
+            multi_writer: Some(case % 2 == 0),
+            merge_policies: Some(vec![
+                refs::MergePolicy::PreferOurs,
+                refs::MergePolicy::PreferTheirs,
+                refs::MergePolicy::PreferTrusted,
+                refs::MergePolicy::PreferNewer,
+                refs::MergePolicy::KeepConflict,
+                refs::MergePolicy::Error,
+            ]),
+            retention: Some(
+                [
+                    refs::Retention::Gc,
+                    refs::Retention::Lease,
+                    refs::Retention::Forever,
+                    refs::Retention::Ttl(u64::MAX),
+                ][case % 4],
+            ),
+            conflicted: Some(false),
+            snapshot: (case % 2 == 0).then(|| refs::SnapshotEnvelope {
+                tag: refs::RefName::parse("refs/tags/_/snapshot").unwrap(),
+                commit: record.commit,
+                attestation: vec![0xa1, 0x61, b'a', 0xf4],
+                signer_key: "key".into(),
+                signature: generator.bytes(),
+            }),
+        });
+        check_record!("ref and annotation", record.clone(), refs::RefRecord);
+        record.candidate_id = None;
+        check_record!(
+            "reflog",
+            refs::RefLogRecord {
+                record,
+                previous_commit: (case % 2 == 0).then(|| generator.bytes()),
+                principal: format!("principal-{case}"),
+                reason: [
+                    refs::RefLogReason::Commit,
+                    refs::RefLogReason::Merge,
+                    refs::RefLogReason::Fold,
+                    refs::RefLogReason::Rollback,
+                    refs::RefLogReason::JobCheckpoint,
+                    refs::RefLogReason::Migrate
+                ][case % 6],
+                timestamp: generator.next(),
+                expected_previous: None,
+                committed_previous: None
+            },
+            refs::RefLogRecord
+        );
+    }
+}
+
+#[test]
+fn bucket_capabilities_generations_and_tombstones_preserve_known_empty_inventory() {
+    let mut generator = Generator::new(0xcd31_2b37_f099_c401);
+    for case in 0..24 {
+        check_record!(
+            "capabilities and store profile",
+            bucket::BucketCapabilities {
+                layout_version: if case % 2 == 0 { 1 } else { 2 },
+                create_if_absent: case % 2 == 0,
+                compare_and_swap: true,
+                ranges: true,
+                presign: case % 3 == 0,
+                multi_writer: false,
+                probed_at: generator.next(),
+                profile: bucket::StoreProfile {
+                    identity: "terrane-v1".into(),
+                    algorithm: "blake3".into(),
+                    chunk: "cdc-1m".into(),
+                    seed: generator.bytes()
+                },
+                generation: (case % 2 == 0).then(|| generator.next()),
+                ref_names: match case % 3 {
+                    0 => None,
+                    1 => Some(vec![]),
+                    _ => Some(vec!["refs/heads/_/a".into(), "refs/tags/_/b".into()]),
+                },
+                publication_protocol: (case % 2 == 0).then_some(1)
+            },
+            bucket::BucketCapabilities
+        );
+        let inventory = bucket::PackInventoryEntry {
+            pack_id: [1; 16],
+            pack_hash: generator.bytes(),
+            pack_size: 52,
+            index_hash: generator.bytes(),
+            index_size: 36,
+        };
+        check_record!(
+            "generation manifest",
+            bucket::GenerationManifest {
+                generation: generator.next(),
+                shards: (0..case % 4)
+                    .map(|shard| bucket::GenerationShard {
+                        shard: shard as u64,
+                        index_hash: generator.bytes(),
+                        index_size: generator.next(),
+                        filter: (case % 2 == 0).then(|| (generator.bytes(), generator.next()))
+                    })
+                    .collect(),
+                written_at: generator.next(),
+                cycle: generator.next(),
+                inventory: match case % 3 {
+                    0 => None,
+                    1 => Some(vec![]),
+                    _ => Some(vec![inventory]),
+                },
+                exclusions: (case % 2 == 0).then(|| vec![bucket::PackExclusion {
+                    pack_id: [2; 16],
+                    cycle: 3,
+                    epoch: 4
+                }]),
+                burns: (case % 2 == 0).then(|| vec![[3; 16]])
+            },
+            bucket::GenerationManifest
+        );
+        let model = bucket::Tombstone {
+            pack_id: generator.bytes(),
+            cycle: generator.next(),
+            tombstoned_at: generator.next(),
+            removed_entries: generator.next(),
+            epoch: generator.next(),
+        };
+        let bytes = model.encode();
+        assert_eq!(bucket::Tombstone::decode(&bytes).unwrap(), model);
+        cbor_properties("bucket tombstone", &bytes, |input| {
+            Ok::<_, bucket::RecordError>(bucket::Tombstone::decode(input)?.encode())
+        });
+    }
+}
+
+#[test]
+fn collector_lease_roots_marks_and_checkpoint_models_cover_empty_and_context_variants() {
+    let mut generator = Generator::new(0xc995_8a60_fd39_45eb);
+    let reasons = [
+        gc::RootReason::Current,
+        gc::RootReason::ReflogGc,
+        gc::RootReason::ReflogCount,
+        gc::RootReason::ReflogTtl,
+        gc::RootReason::Lease,
+        gc::RootReason::Forever,
+        gc::RootReason::Tag,
+        gc::RootReason::Job,
+        gc::RootReason::RetentionWitness,
+    ];
+    for case in 0..12 {
+        check_record!(
+            "collector lease",
+            gc::GcLease {
+                holder: format!("collector-{case}"),
+                epoch: generator.next(),
+                expiry: generator.next()
+            },
+            gc::GcLease
+        );
+        let roots = gc::GcRoots {
+            cycle: generator.next(),
+            epoch: generator.next(),
+            timestamp: generator.next(),
+            roots: reasons[..case.min(reasons.len())]
+                .iter()
+                .map(|reason| gc::GcRoot {
+                    reference: refs::RefName::parse("refs/heads/_/main").unwrap(),
+                    commit: generator.bytes(),
+                    parent_cutoff: match case % 3 {
+                        0 => gc::ParentCutoff::Unbounded,
+                        1 => gc::ParentCutoff::RootsOnly,
+                        _ => gc::ParentCutoff::Since(u64::MAX),
+                    },
+                    reason: *reason,
+                })
+                .collect(),
+        };
+        let bytes = roots.encode();
+        assert_eq!(gc::GcRoots::decode(&bytes).unwrap(), roots);
+        cbor_properties("GC roots", &bytes, |input| {
+            Ok::<_, gc::GcError>(gc::GcRoots::decode(input)?.encode())
+        });
+        let mut hashes: Vec<_> = (0..case)
+            .map(|_| {
+                let mut hash = generator.bytes::<32>();
+                hash[0] = 7;
+                hash
+            })
+            .collect();
+        hashes.sort();
+        let mark = gc::GcMark::new(generator.next(), generator.next(), 7, hashes).unwrap();
+        let bytes = mark.encode();
+        assert_eq!(gc::GcMark::decode(&bytes).unwrap(), mark);
+        cbor_properties("GC mark and filter", &bytes, |input| {
+            Ok::<_, gc::GcError>(gc::GcMark::decode(input)?.encode())
+        });
+        check_record!(
+            "GC checkpoint",
+            gc::GcState {
+                cycle: generator.next(),
+                epoch: generator.next(),
+                phase: [
+                    gc::Phase::Mark,
+                    gc::Phase::Sweep,
+                    gc::Phase::Delete,
+                    gc::Phase::Done
+                ][case % 4],
+                snapshot_at: generator.next(),
+                checkpoints: (0..case % 4)
+                    .map(|shard| gc::CheckpointPointer {
+                        shard: shard as u8,
+                        revision: generator.next(),
+                        hash: generator.bytes()
+                    })
+                    .collect(),
+                pending: vec![
+                    gc::Pending {
+                        kind: 3,
+                        hash: generator.bytes(),
+                        parent_cutoff: gc::ParentCutoff::RootsOnly,
+                        flags: 1,
+                        proof_context: None
+                    },
+                    gc::Pending {
+                        kind: 2,
+                        hash: generator.bytes(),
+                        parent_cutoff: gc::ParentCutoff::Unbounded,
+                        flags: 14,
+                        proof_context: None
+                    }
+                ],
+                expanded: vec![],
+                progress: vec![],
+                objects: vec![]
+            },
+            gc::GcState
+        );
+    }
+}
+
+#[test]
+fn creation_journal_models_cover_all_states_and_opaque_identity_boundaries() {
+    let mut generator = Generator::new(0x770d_8841_f256_037b);
+    for length in [1, 31, 32, 128] {
+        let identity: Vec<_> = (0..length).map(|_| generator.next() as u8).collect();
+        for state in [
+            gc::JournalState::Pending,
+            gc::JournalState::Invalidated,
+            gc::JournalState::Committed {
+                binding: gc::ArtifactBinding::Pack {
+                    digest: generator.bytes(),
+                    size: 52,
+                },
+                file_identity: identity.clone(),
+            },
+            gc::JournalState::DeleteOwned {
+                binding: gc::ArtifactBinding::Pack {
+                    digest: generator.bytes(),
+                    size: 52,
+                },
+                file_identity: identity.clone(),
+                operation_key: format!("gc/3/delete/{}/{}", "01".repeat(16), "02".repeat(32)),
+                authorization: generator.bytes(),
+            },
+        ] {
+            let model = gc::CreationJournal {
+                key: format!("objects/pack/01/{}.pack", "01".repeat(16)),
+                nonce: generator.bytes(),
+                state,
+            };
+            check_record!("creation journal", model, gc::CreationJournal);
+        }
+    }
+    // Both public tombstone APIs encode the same registered wire format.
+    let model = gc::Tombstone {
+        pack: [1; 16],
+        cycle: u64::MAX,
+        timestamp: 0,
+        removed: 1,
+        epoch: 2,
+    };
+    let bytes = model.encode();
+    assert_eq!(gc::Tombstone::decode(&bytes).unwrap(), model);
+    cbor_properties("GC tombstone", &bytes, |input| {
+        Ok::<_, gc::GcError>(gc::Tombstone::decode(input)?.encode())
+    });
+}
+
+#[test]
+fn selected_reflogs_and_proof_sensitive_checkpoints_preserve_all_predecessor_forms() {
+    let mut generator = Generator::new(0x091f_221b_c790_537d);
+    for predecessor_kind in 0..3 {
+        let previous = head(23);
+        let record = if predecessor_kind == 0 {
+            head(1)
+        } else {
+            head(24)
+        };
+        check_record!(
+            "selected reflog predecessor",
+            refs::RefLogRecord {
+                record,
+                previous_commit: (predecessor_kind != 0).then_some(previous.commit),
+                principal: "principal".into(),
+                reason: refs::RefLogReason::Commit,
+                timestamp: generator.next(),
+                expected_previous: Some(if predecessor_kind == 1 {
+                    Some(previous.clone())
+                } else {
+                    None
+                }),
+                committed_previous: (predecessor_kind == 2).then_some(previous),
+            },
+            refs::RefLogRecord
+        );
+    }
+    for phase in [
+        gc::Phase::Snapshot,
+        gc::Phase::Mark,
+        gc::Phase::Sweep,
+        gc::Phase::Delete,
+        gc::Phase::Done,
+    ] {
+        let mut model = gc::GcState {
+            cycle: generator.next(),
+            epoch: generator.next(),
+            phase,
+            snapshot_at: generator.next(),
+            checkpoints: vec![],
+            pending: vec![],
+            expanded: vec![],
+            progress: vec![],
+            objects: vec![],
+        };
+        for context in [
+            None,
+            Some(gc::ProofContext::new([3; 32], [4; 32], b"/aa".to_vec()).unwrap()),
+            Some(gc::ProofContext::new([3; 32], [4; 32], b"/z".to_vec()).unwrap()),
+        ] {
+            model.pending.push(gc::Pending {
+                kind: 2,
+                hash: [5; 32],
+                parent_cutoff: gc::ParentCutoff::Unbounded,
+                flags: 14,
+                proof_context: context.clone(),
+            });
+            model.expanded.push(gc::ExpandedContext {
+                commit: [6; 32],
+                parent_cutoff: gc::ParentCutoff::Since(generator.next()),
+                proof_context: context.clone(),
+            });
+            model.objects.push(gc::ExpandedObject {
+                kind: 2,
+                hash: [5; 32],
+                flags: 14,
+                proof_context: context,
+            });
+        }
+        check_record!("proof-sensitive GC state", model.clone(), gc::GcState);
+        model.pending[0].flags = 16;
+        assert!(model.encode().is_err());
+    }
+}
