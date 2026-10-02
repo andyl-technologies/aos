@@ -1228,7 +1228,7 @@ impl CampaignServiceChild {
     }
 
     fn stop(&mut self) -> Result<(), Box<dyn Error>> {
-        let signal = send_sigterm(&self.child);
+        let signal = send_sigterm(&mut self.child);
         // The packaged pool has a thirty-second bounded cleanup window.
         let status = wait_for_exit(&mut self.child, Duration::from_secs(45));
         let stderr = self.stderr_tail();
@@ -1284,7 +1284,7 @@ impl CampaignServiceChild {
 impl Drop for CampaignServiceChild {
     fn drop(&mut self) {
         if self.kill_on_drop {
-            let signal = send_sigterm(&self.child);
+            let signal = send_sigterm(&mut self.child);
             let graceful = wait_for_exit(&mut self.child, Duration::from_secs(45));
             let forced = if graceful.is_err() {
                 let _ = self.child.kill();
@@ -1616,7 +1616,13 @@ fn read_first_line(
     }
 }
 
-fn send_sigterm(child: &Child) -> Result<(), Box<dyn Error>> {
+fn send_sigterm(child: &mut Child) -> Result<(), Box<dyn Error>> {
+    // A waiter may already have reaped this child. Its cached exit status means
+    // the PID is no longer ours and must never be passed to the signal syscall.
+    if child.try_wait()?.is_some() {
+        return Ok(());
+    }
+
     let pid = i32::try_from(child.id())?;
     // SAFETY: `pid` is the live child process ID returned by `Child`. Sending
     // SIGTERM does not dereference memory and reports failure through errno.
@@ -1626,6 +1632,30 @@ fn send_sigterm(child: &Child) -> Result<(), Box<dyn Error>> {
     } else {
         Err(Box::new(std::io::Error::last_os_error()))
     }
+}
+
+#[test]
+fn campaign_service_stop_accepts_an_already_reaped_child() -> Result<(), Box<dyn Error>> {
+    let mut child = Command::new(std::env::current_exe()?)
+        .arg("--help")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()?;
+    let exited = wait_for_exit(&mut child, Duration::from_secs(5))?;
+    assert!(exited.success());
+
+    let mut service = CampaignServiceChild {
+        child,
+        #[cfg(feature = "packaged-midpoint-flight")]
+        daemon_url: String::new(),
+        stderr: NamedTempFile::new()?,
+        kill_on_drop: true,
+    };
+    service.stop()?;
+
+    assert!(!service.kill_on_drop);
+    assert_eq!(service.child.try_wait()?, Some(exited));
+    Ok(())
 }
 
 fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<ExitStatus, Box<dyn Error>> {
