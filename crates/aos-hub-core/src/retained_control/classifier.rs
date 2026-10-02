@@ -329,10 +329,11 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     "OperationService/CancelOperation"
                         | "OperationService/RetryOperation"
                         | "DeliveryService/ResumeDeliveryDestination"
+                        | "ContainerService/CancelContainerGcRun"
                 ) {
                     violations.push(violation(
                         method,
-                        "operation-lifecycle exception is limited to cancel, retry, and reviewed delivery resume",
+                        "operation-lifecycle exception is limited to cancel, retry, reviewed delivery resume, and unapplied GC plan cancellation",
                     ));
                 }
             }
@@ -494,10 +495,17 @@ pub fn validate_complete_method_manifest(
         let Some(descriptor) = generated.get(&method.path()) else {
             continue;
         };
+        // A plan may extend the shared plan envelope only where the review
+        // must also carry typed readiness evidence: GC candidates and
+        // blockers, or the registry-deletion blocker breakdown.
+        let extended_plan_response = matches!(
+            (method.path().as_str(), descriptor.response.as_str()),
+            ("ContainerService/PlanRunContainerGc", "ContainerGcPlanResponse")
+                | ("RegistryService/PlanDeleteRegistry", "RegistryDeletePlanResponse")
+        );
         if matches!(method.class, MethodClass::Plan { .. })
             && descriptor.response != "TopologyPlanResponse"
-            && !(method.path() == "ContainerService/PlanRunContainerGc"
-                && descriptor.response == "ContainerGcPlanResponse")
+            && !extended_plan_response
         {
             violations.push(violation(
                 method,
@@ -540,6 +548,23 @@ pub fn validate_complete_method_manifest(
                 violations.push(violation(
                     method,
                     "delivery resume must bind a reviewed workflow, CAS, and idempotency key",
+                ));
+            }
+        }
+        // GC plan cancellation discards one exact reviewed run. It must not
+        // accept new intent, so the request binds only that run's identity.
+        if method.path() == "ContainerService/CancelContainerGcRun" {
+            let mut fields = descriptor.request_fields.clone();
+            fields.sort();
+            if !fields.iter().map(String::as_str).eq([
+                "expected_resource_version",
+                "idempotency_key",
+                "registry",
+                "run_id",
+            ]) {
+                violations.push(violation(
+                    method,
+                    "GC run cancellation must bind the exact registry, run, CAS, and idempotency key",
                 ));
             }
         }
@@ -1857,6 +1882,52 @@ mod tests {
 
         let mut unrelated = method;
         unrelated.method = "ResumeUnreviewedDestination".into();
+        assert!(validate_method_manifest(&[unrelated])
+            .iter()
+            .any(|violation| violation.reason.contains("operation-lifecycle exception")));
+    }
+
+    #[test]
+    fn gc_run_cancellation_binds_only_the_exact_reviewed_run() {
+        let method = MethodDescriptor {
+            service: "ContainerService".into(),
+            method: "CancelContainerGcRun".into(),
+            exposure: MethodExposure::Public,
+            durability: MethodDurability::Durable,
+            class: MethodClass::OperationLifecycle,
+            external_effects: false,
+        };
+        let descriptor = ApiMethodDescriptor {
+            service: method.service.clone(),
+            method: method.method.clone(),
+            request: "CancelContainerGcRunRequest".into(),
+            response: "ContainerGcRunResponse".into(),
+            request_fields: [
+                "registry",
+                "run_id",
+                "expected_resource_version",
+                "idempotency_key",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        };
+        assert!(validate_complete_method_manifest(
+            std::slice::from_ref(&method),
+            std::slice::from_ref(&descriptor),
+        )
+        .is_empty());
+
+        let mut widened = descriptor;
+        widened.request_fields.push("retire_registry".into());
+        assert!(
+            validate_complete_method_manifest(std::slice::from_ref(&method), &[widened])
+                .iter()
+                .any(|violation| violation.reason.contains("GC run cancellation must bind"))
+        );
+
+        let mut unrelated = method;
+        unrelated.method = "CancelContainerGcAction".into();
         assert!(validate_method_manifest(&[unrelated])
             .iter()
             .any(|violation| violation.reason.contains("operation-lifecycle exception")));

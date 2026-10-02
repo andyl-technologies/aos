@@ -532,10 +532,17 @@ mod oci_admin;
 pub use oci_admin::*;
 mod oci_gc;
 pub use oci_gc::*;
+mod oci_namespaces;
+pub use oci_namespaces::*;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
+pub use registry_delete::*;
+mod registry_delete_operation;
+pub use registry_delete_operation::*;
+mod registry_delete_readiness;
+pub use registry_delete_readiness::*;
 mod registry_index_build;
 mod release_browse;
 mod release_publication;
@@ -598,11 +605,13 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
 /// | 3 | `staged_releases.sql` | Private release drafts, retention roots, and public catalog selections. |
 /// | 4 | `oci_registry_retirement.sql` | Reviewed OCI catalog retirement flag on GC runs. |
+/// | 5 | `oci_namespace_routes.sql` | Instance-owned OCI root routes and per-registry OCI namespaces. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
     include_str!("staged_releases.sql"),
     include_str!("oci_registry_retirement.sql"),
+    include_str!("oci_namespace_routes.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -27281,8 +27290,9 @@ source_nar_hash = ""
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            4,
-            "production baseline, channel ledger, private release drafts, and catalog retirement"
+            5,
+            "production baseline, channel ledger, private release drafts, catalog retirement, \
+             and OCI namespace routes"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

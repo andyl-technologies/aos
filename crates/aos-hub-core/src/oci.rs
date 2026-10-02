@@ -6,6 +6,7 @@
 //! repository before any tag, manifest, or blob lookup, preventing digest
 //! probing across repositories that share registry-wide CAS bytes.
 
+pub mod namespace;
 mod upload;
 
 pub use upload::{recover_expired_oci_work, OciRecoverySummary};
@@ -76,6 +77,23 @@ pub(crate) async fn refresh_oci_route_projection(
     kv.put_str(&key, registry_stable_id, None).await
 }
 
+/// Removes a single-registry affinity hint from an authority that an instance
+/// OCI route now shares between registries.
+///
+/// # Errors
+///
+/// Returns an error when reading or deleting the KV projection fails.
+pub(crate) async fn clear_oci_route_projection(
+    kv: &dyn crate::kv::KvStore,
+    authority: &str,
+) -> Result<()> {
+    let key = oci_route_projection_key(authority);
+    if kv.get(&key).await?.is_none() {
+        return Ok(());
+    }
+    kv.delete(&key).await
+}
+
 /// Returns the fixed-width execution affinity for one registry-owned OCI
 /// repository.
 #[must_use]
@@ -136,6 +154,29 @@ pub enum OciRequest {
 }
 
 impl OciRequest {
+    /// Replaces the repository of a repository-scoped operation.
+    ///
+    /// Instance OCI routes resolve the wire name to a registry-local name and
+    /// rebind the parsed operation; `Ping` and `Token` are returned unchanged.
+    #[must_use]
+    pub fn with_repository(self, repository: RepositoryName) -> Self {
+        match self {
+            Self::Blob { digest, .. } => Self::Blob { repository, digest },
+            Self::BlobUploadCollection { .. } => Self::BlobUploadCollection { repository },
+            Self::BlobUpload { upload_id, .. } => Self::BlobUpload {
+                repository,
+                upload_id,
+            },
+            Self::Manifest { reference, .. } => Self::Manifest {
+                repository,
+                reference,
+            },
+            Self::Tags { .. } => Self::Tags { repository },
+            Self::Referrers { digest, .. } => Self::Referrers { repository, digest },
+            Self::Ping | Self::Token => self,
+        }
+    }
+
     /// Returns the repository named by a repository-scoped operation.
     #[must_use]
     pub const fn repository(&self) -> Option<&RepositoryName> {
@@ -376,15 +417,91 @@ pub struct OciTokenResponse {
 #[derive(Debug, Clone)]
 pub struct ResolvedOciRoute {
     /// Exact registry database id selected by the delivery route.
-    pub registry_id: i64,
+    ///
+    /// `None` only for version discovery on an instance OCI route that binds
+    /// no default registry; every repository request names its registry.
+    pub registry_id: Option<i64>,
     /// Exact canonical service authority.
     pub authority: String,
     /// Trusted listener scheme used by the same-authority token realm.
     pub scheme: String,
     /// Exact route-level access policy selected by topology resolution.
     pub access_policy_kind: String,
-    /// Exact parsed Distribution operation.
+    /// Registry slug that prefixes repository names on the wire.
+    ///
+    /// Set when an instance OCI route resolved the request through a registry
+    /// namespace. [`Self::request`] already carries the registry-local name;
+    /// challenges, `Location` and `Link` headers, and tag listings render the
+    /// prefixed wire name again.
+    pub repository_prefix: Option<String>,
+    /// Exact parsed Distribution operation, local to the registry.
     pub request: OciRequest,
+}
+
+impl ResolvedOciRoute {
+    /// Returns the wire name clients use for a registry-local repository.
+    #[must_use]
+    pub fn wire_repository(&self, repository: &RepositoryName) -> RepositoryName {
+        namespace::wire_repository(self.repository_prefix.as_deref(), repository)
+            .unwrap_or_else(|_| repository.clone())
+    }
+}
+
+/// Rewrites registry-local `Location` and `Link` paths to their wire form.
+///
+/// The read and write handlers render `/v2/<local>/...` because they only know
+/// the registry-local repository; a namespace prefix is a route-level concern,
+/// so it is applied once here instead of in every handler.
+fn namespace_response(
+    mut response: Response,
+    prefix: Option<&str>,
+    repository: &RepositoryName,
+) -> Response {
+    let Some(prefix) = prefix else {
+        return response;
+    };
+    let local = format!("/v2/{}/", repository.as_str());
+    let wire = format!("/v2/{prefix}/{}/", repository.as_str());
+    for name in [header::LOCATION, header::LINK] {
+        let Some(rewritten) = response
+            .headers()
+            .get(&name)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| value.contains(&local))
+            .map(|value| value.replacen(&local, &wire, 1))
+        else {
+            continue;
+        };
+        if let Ok(value) = HeaderValue::from_str(&rewritten) {
+            response.headers_mut().insert(name, value);
+        }
+    }
+    response
+}
+
+/// Strips the route's namespace prefix from every requested token scope.
+///
+/// Token claims hold registry-local names so [`RpcService::authorize_oci_action`]
+/// compares them with the already-localized request. A scope outside the
+/// prefix cannot belong to the resolved registry and is rejected.
+fn localize_token_grants(
+    prefix: Option<&str>,
+    grants: &[OciRepositoryGrant],
+) -> Option<Vec<OciRepositoryGrant>> {
+    let Some(prefix) = prefix else {
+        return Some(grants.to_vec());
+    };
+    grants
+        .iter()
+        .map(|grant| {
+            namespace::local_repository(prefix, &grant.repository).map(|repository| {
+                OciRepositoryGrant {
+                    repository,
+                    actions: grant.actions.clone(),
+                }
+            })
+        })
+        .collect()
 }
 
 impl RpcService {
@@ -564,9 +681,24 @@ impl RpcService {
                 return unavailable_response("OCI Distribution action is disabled", head);
             }
         }
-        let registry = match self.db.registry_by_id(resolved.registry_id).await {
-            Ok(Some(registry)) => registry,
-            Ok(None) => {
+        let registry = match resolved.registry_id {
+            Some(registry_id) => match self.db.registry_by_id(registry_id).await {
+                Ok(Some(registry)) => Some(registry),
+                Ok(None) => {
+                    return distribution_error_response(
+                        StatusCode::NOT_FOUND,
+                        DistributionErrorCode::NameUnknown,
+                        "repository unknown",
+                        None,
+                        head,
+                    );
+                }
+                Err(_) => return unavailable_response("registry catalog is unavailable", head),
+            },
+            // An instance route without a default registry still answers
+            // version discovery for every namespace it serves.
+            None if resolved.request == OciRequest::Ping => None,
+            None => {
                 return distribution_error_response(
                     StatusCode::NOT_FOUND,
                     DistributionErrorCode::NameUnknown,
@@ -575,9 +707,8 @@ impl RpcService {
                     head,
                 );
             }
-            Err(_) => return unavailable_response("registry catalog is unavailable", head),
         };
-        if let Some(org_id) = registry.org_id {
+        if let Some(org_id) = registry.as_ref().and_then(|registry| registry.org_id) {
             match self.db.org_is_active(org_id).await {
                 Ok(true) => {}
                 Ok(false) => {
@@ -607,6 +738,15 @@ impl RpcService {
             add_distribution_version(&mut response);
             return response;
         }
+        let Some(registry) = registry else {
+            return distribution_error_response(
+                StatusCode::NOT_FOUND,
+                DistributionErrorCode::NameUnknown,
+                "repository unknown",
+                None,
+                head,
+            );
+        };
         let route_requires_hub_auth = resolved.access_policy_kind == "hub_auth";
         if resolved.request == OciRequest::Token {
             if head {
@@ -640,6 +780,17 @@ impl RpcService {
             {
                 return unavailable_response("OCI Distribution action is disabled", false);
             }
+            let Some(grants) =
+                localize_token_grants(resolved.repository_prefix.as_deref(), &token_request.grants)
+            else {
+                return distribution_error_response(
+                    StatusCode::BAD_REQUEST,
+                    DistributionErrorCode::Unauthorized,
+                    "invalid OCI token service or scope",
+                    None,
+                    false,
+                );
+            };
             let authorization = headers
                 .get(header::AUTHORIZATION)
                 .and_then(|value| value.to_str().ok());
@@ -647,7 +798,7 @@ impl RpcService {
                 .mint_oci_token(
                     &registry,
                     &resolved.authority,
-                    &token_request.grants,
+                    &grants,
                     authorization,
                     route_requires_hub_auth,
                 )
@@ -711,6 +862,7 @@ impl RpcService {
                 head,
             );
         };
+        let wire_name = resolved.wire_repository(repository_name);
         let authorization = headers
             .get(header::AUTHORIZATION)
             .and_then(|value| value.to_str().ok());
@@ -742,7 +894,7 @@ impl RpcService {
             let challenge = repository_challenge(
                 &resolved.scheme,
                 &resolved.authority,
-                repository_name,
+                &wire_name,
                 required_action,
             );
             return distribution_error_response(
@@ -804,8 +956,9 @@ impl RpcService {
         // A push-only rollout authorizes immutable blob/manifest HEAD probes
         // with the push grant, but those probes still use the read-side object
         // responder. Only protocol write operations enter the write handler.
+        let prefix = resolved.repository_prefix;
         if oci_request_action(&resolved.request, &method) == Some("push") {
-            return self
+            let response = self
                 .serve_oci_write(
                     &registry,
                     &repository,
@@ -816,8 +969,9 @@ impl RpcService {
                     body,
                 )
                 .await;
+            return namespace_response(response, prefix.as_deref(), &repository.name);
         }
-        match resolved.request {
+        let response = match resolved.request {
             OciRequest::Blob { digest, .. } => {
                 let blob = match self.db.oci_blob_for_repository(repository.id, digest).await {
                     Ok(Some(blob)) => blob,
@@ -888,7 +1042,7 @@ impl RpcService {
                 .await
             }
             OciRequest::Tags { .. } => {
-                serve_tags(&self, &method, &repository, query, private).await
+                serve_tags(&self, &method, &repository, &wire_name, query, private).await
             }
             OciRequest::Referrers { digest, .. } => {
                 serve_referrers(&self, &method, &repository, digest, query, private).await
@@ -903,7 +1057,8 @@ impl RpcService {
                 None,
                 head,
             ),
-        }
+        };
+        namespace_response(response, prefix.as_deref(), &repository.name)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1157,6 +1312,7 @@ async fn serve_tags(
     service: &RpcService,
     method: &Method,
     repository: &crate::db::OciRepositoryRecord,
+    wire_name: &RepositoryName,
     query: Option<&str>,
     private: bool,
 ) -> Response {
@@ -1202,7 +1358,7 @@ async fn serve_tags(
         tags: Vec<&'a Tag>,
     }
     let body = match serde_json::to_vec(&TagsResponse {
-        name: &repository.name,
+        name: wire_name,
         tags: tags.iter().map(|tag| &tag.name).collect(),
     }) {
         Ok(body) => body,

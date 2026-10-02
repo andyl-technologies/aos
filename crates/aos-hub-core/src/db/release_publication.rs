@@ -1988,7 +1988,9 @@ mod tests {
         let connection = rusqlite::Connection::open(&path).unwrap();
         connection
             .execute_batch(
-                "DROP TABLE release_channel_advances;
+                "DROP TABLE registry_oci_namespaces;
+                 DROP TABLE instance_oci_routes;
+                 DROP TABLE release_channel_advances;
                  DROP TABLE staged_release_store_roots;
                  DROP TABLE staged_release_objects;
                  DROP TABLE staged_release_revision_chunks;
