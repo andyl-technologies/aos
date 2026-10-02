@@ -137,6 +137,7 @@ let
   services = builtins.filter (node: builtins.elem "serviceManagement" node.identity) nodes;
   files = eval.config.aos.abilities.configuration.operations.file.effects;
 in {
+  exposeProfilesReturnPermissionDenied = assert builtins.all (node: node.input.policy.hardening.denied_operation_action == "return-permission-denied") (builtins.filter (node: node.input.policy != null && node.input.policy.hardening != null && node.input.policy.hardening.operation_profile == "system-service") services); true;
   sharedManager = assert builtins.length services == 8; assert builtins.all (node: node.owner == "service-management") services; true;
   protectedBootstrap = assert files.mariadb-bootstrap.input.mode == "0600"; assert builtins.length (builtins.filter builtins.isAttrs files.mariadb-bootstrap.input.fragments) == 2; true;
   deferredToml = assert files.garage.input.format == "toml"; assert (files.garage.input.value.metadata_dir._type or null) != null; true;

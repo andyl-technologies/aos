@@ -141,6 +141,11 @@ let
   opksshLogId = builtins.head (builtins.attrNames (lib.filterAttrs (_: node: builtins.elem "opkssh-log" node.identity) opkssh.deployment.graph.nodes));
   opksshSshNode = builtins.head (builtins.filter (node: builtins.elem "serviceManagement" node.identity && builtins.elem "ssh" node.identity) (builtins.attrValues opkssh.deployment.graph.nodes));
 in {
+  exposeProfilesReturnPermissionDenied = assert builtins.all (name: evaluated.config.aos.services.${name}.policy.hardening.denied_operation_action == "return-permission-denied") ["nginx" "openldap.main" "envoy.main" "etcd.main"]; true;
+  chronyPreservesBlacklistWithoutBaseAllowlist = assert evaluated.config.aos.services.chrony.policy.hardening.operation_profile == "privileged";
+  assert evaluated.config.aos.services.chrony.policy.hardening.denied_operation_action == "kill-process";
+  assert evaluated.config.aos.services.chrony.policy.hardening.operation_deny != [];
+  assert evaluated.config.aos.services.chrony.policy.hardening.operation_allow != []; true;
   opksshPreservesMutableLog = assert opksshLog.input.kind == "empty-file";
   assert opksshLog.input.path == "/var/log/opkssh.log";
   assert opksshLog.input.mode == "0660";

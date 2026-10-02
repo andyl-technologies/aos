@@ -50,6 +50,9 @@ in {
     }
   ]; true;
   settings = assert builtins.all (value: value.assertion) evaluated.assertions;
+  assert config.aos.services.bind.policy.hardening.operation_profile == "privileged";
+  assert config.aos.services.bind.policy.hardening.operation_allow == [];
+  assert config.aos.services.bind.policy.hardening.operation_deny == [];
   assert config.aos.services.bind.isolation.home_access == "inaccessible";
   assert config.aos.services.bind.reload.strategy == "command";
   assert config.aos.abilities.configuration.operations.file.effects.bind.input.fragments != []; true;

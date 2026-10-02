@@ -140,7 +140,8 @@
       operation_architectures = ["native"];
       operation_allow = ["change-file-ownership" "clock" "change-process-identity" "set-process-privileges"];
       operation_deny = ["cpu-emulation" "debug" "keyring" "mount" "obsolete" "privileged" "resource-control"];
-      operation_profile = "system-service";
+      denied_operation_action = "kill-process";
+      operation_profile = "privileged";
       isolated_identity_mapping = "none";
     };
     service = "chronyd";
