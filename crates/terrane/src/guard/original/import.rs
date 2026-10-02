@@ -218,7 +218,15 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
         controls.revalidate().await?;
         Ok(())
     }
+}
 
+impl<
+    F: LocalFs + BucketBinding + Sync,
+    B: Clock + BucketBinding,
+    V: ContentValidator + BucketBinding,
+    C,
+> Guard<FileBucket<F, B, V>, C>
+{
     /// Rechecks a retained original association against its actual destination.
     ///
     /// A copied source registration is not checked as this backend's physical

@@ -151,6 +151,7 @@ impl<
         authority: &OriginalAuthority,
     ) -> Result<(), StoreFailure>
     where
+        F: Sync,
         C: Clock,
     {
         self.configure_original_verifier(authority, true).await
@@ -170,6 +171,7 @@ impl<
         authority: &OriginalAuthority,
     ) -> Result<(), StoreFailure>
     where
+        F: Sync,
         C: Clock,
     {
         self.configure_original_verifier(authority, false).await
@@ -181,6 +183,7 @@ impl<
         select_initial: bool,
     ) -> Result<(), StoreFailure>
     where
+        F: Sync,
         C: Clock,
     {
         // Setup retains its genuine clock without inventing a writer deadline.

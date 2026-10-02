@@ -30,6 +30,7 @@ where
     B: Clock + BucketBinding + Sync,
     V: ContentValidator + BucketBinding + Sync,
     C: Clock + Sync,
+    FileBucket<F, B, V>: Sync,
 {
     /// Publishes selected source entries through independently checked native factories.
     ///
