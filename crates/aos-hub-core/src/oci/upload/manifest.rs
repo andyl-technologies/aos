@@ -296,6 +296,15 @@ impl RpcService {
                 false,
             );
         }
+        if let Some(authority) = &authority {
+            if let Ok(actor) = authority.external_original() {
+                crate::hybrid_ingress::observation::record_existing_check(
+                    "oci_manifest_catalog_current", &(
+                        &actor, registry.id, repository.id, digest.encoded(),
+                        &catalog.root_digest, &catalog.tag,
+                    ));
+            }
+        }
         manifest_created_response(repository, &reference, digest)
     }
 

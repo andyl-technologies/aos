@@ -233,6 +233,7 @@ dependencies = [
  "flate2",
  "futures-util",
  "hex",
+ "http-body 1.0.1",
  "hmac 0.12.1",
  "lzma-rs",
  "md-5",
@@ -502,9 +503,11 @@ name = "aos-storage-body-codec"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "aos-doc-model",
  "aos-hub",
  "aos-hub-core",
  "aos-oci-types",
+ "aos-proto-types",
  "hex",
  "rustix",
  "serde",

@@ -887,13 +887,22 @@ impl RpcService {
             .append_oci_upload_chunk_checked(&append, current_authority)
             .await
         {
-            Ok(upload) => upload_progress_response(
-                StatusCode::ACCEPTED,
-                repository,
-                upload_id,
-                upload.uploaded_size,
-                false,
-            ),
+            Ok(upload) => {
+                crate::hybrid_ingress::observation::record_existing_check(
+                    "oci_chunk_catalog_current", &(
+                        &upload.id, upload.resource_version, upload.uploaded_size,
+                        admission.placement_id, admission.placement_resource_version,
+                        admission.binding_id, admission.binding_write_revision,
+                        &admission.staging_object_key, &request.chunk_sha256,
+                    ));
+                upload_progress_response(
+                    StatusCode::ACCEPTED,
+                    repository,
+                    upload_id,
+                    upload.uploaded_size,
+                    false,
+                )
+            },
             Err(_) => upload_error(
                 StatusCode::CONFLICT,
                 DistributionErrorCode::BlobUploadInvalid,

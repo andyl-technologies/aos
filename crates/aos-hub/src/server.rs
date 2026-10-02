@@ -19,6 +19,7 @@ use base64::Engine as _;
 use tower_http::catch_panic::CatchPanicLayer;
 
 mod hybrid_body;
+mod hybrid_observation;
 
 /// Maximum inbound request-body size for the shared RPC surface (8 MiB).
 ///
@@ -236,6 +237,10 @@ async fn verify_hybrid_ingress(
     use aos_hub_core::hybrid_ingress::HYBRID_INGRESS_HEADER;
 
     let started_at = Instant::now();
+    let observation = hybrid_observation::IngressObservation::new(
+        request.headers(), request.method().as_str(),
+        request.uri().path_and_query().map(|value| value.as_str()).unwrap_or(request.uri().path()),
+    );
 
     let values = request
         .headers()
@@ -243,10 +248,10 @@ async fn verify_hybrid_ingress(
         .iter()
         .collect::<Vec<_>>();
     if values.len() != 1 {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "envelope_refused");
     }
     let Ok(compact) = values[0].to_str() else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "envelope_refused");
     };
     let compact = compact.to_owned();
     let method = request.method().as_str().to_owned();
@@ -266,8 +271,9 @@ async fn verify_hybrid_ingress(
         aos_hub_core::clock::now_unix_secs(),
     ) {
         Ok(assertion) => assertion,
-        Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => return observation.response(StatusCode::UNAUTHORIZED.into_response(), "envelope_refused"),
     };
+    observation.authenticated_envelope(&assertion);
     let limit = match hybrid_body::body_limit(
         ingress_db.as_deref(),
         &control_url,
@@ -279,11 +285,11 @@ async fn verify_hybrid_ingress(
     .await
     {
         Ok(limit) => limit,
-        Err(status) => return status.into_response(),
+        Err(status) => return observation.response(status.into_response(), "body_limit_refused"),
     };
     let (mut parts, body) = request.into_parts();
-    let Ok(body) = axum::body::to_bytes(body, limit).await else {
-        return StatusCode::PAYLOAD_TOO_LARGE.into_response();
+    let Ok(body) = axum::body::to_bytes(observation.request_body(body), limit).await else {
+        return observation.response(StatusCode::PAYLOAD_TOO_LARGE.into_response(), "request_body_failed");
     };
     let assertion = match key.verify(
         &compact,
@@ -296,9 +302,10 @@ async fn verify_hybrid_ingress(
         Ok(assertion) => assertion,
         Err(error) => {
             tracing::warn!(error = %error, "rejecting hybrid ingress assertion");
-            return StatusCode::UNAUTHORIZED.into_response();
+            return observation.response(StatusCode::UNAUTHORIZED.into_response(), "body_mac_refused");
         }
     };
+    observation.authenticated_body();
 
     // Browser-supplied forwarding and transport evidence are never proof.
     // Application headers such as x-aos-csrf must reach the shared router.
@@ -312,10 +319,10 @@ async fn verify_hybrid_ingress(
         parts.headers.remove(name);
     }
     let Ok(authority) = HeaderValue::from_str(&assertion.authority) else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "transport_context_refused");
     };
     let Ok(client_ip) = HeaderValue::from_str(&assertion.client_ip) else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "transport_context_refused");
     };
     parts.headers.insert(header::HOST, authority);
     parts.headers.insert("x-forwarded-for", client_ip);
@@ -323,7 +330,7 @@ async fn verify_hybrid_ingress(
         .headers
         .insert("x-forwarded-proto", HeaderValue::from_static("https"));
     let Ok(client_ip) = assertion.client_ip.parse() else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "transport_context_refused");
     };
     parts
         .extensions
@@ -334,7 +341,7 @@ async fn verify_hybrid_ingress(
     parts.extensions.insert(assertion.clone());
     let Ok(public_host) = aos_hub_core::connect::attested_authority_host(&assertion.authority)
     else {
-        return StatusCode::UNAUTHORIZED.into_response();
+        return observation.response(StatusCode::UNAUTHORIZED.into_response(), "transport_context_refused");
     };
     // The public Worker terminates the layer-7 endpoint; Native is its origin.
     parts
@@ -345,9 +352,11 @@ async fn verify_hybrid_ingress(
             tls_identity: Some(public_host),
         });
 
-    let mut response = next
-        .run(axum::http::Request::from_parts(parts, body.into()))
-        .await;
+    let (mut response, checked_contexts) =
+        aos_hub_core::hybrid_ingress::observation::observe_handler(next
+            .run(axum::http::Request::from_parts(parts, body.into())))
+            .await;
+    observation.handler_complete(response.status(), checked_contexts);
     if let Some(target) = response
         .headers_mut()
         .remove(aos_hub_core::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER)
@@ -358,7 +367,7 @@ async fn verify_hybrid_ingress(
                 .headers()
                 .contains_key(aos_hub_core::hybrid_ingress::HYBRID_DELIVERY_HEADER)
         {
-            return StatusCode::BAD_GATEWAY.into_response();
+            return observation.response(StatusCode::BAD_GATEWAY.into_response(), "delivery_signing_refused");
         }
         let signed = target
             .to_str()
@@ -373,7 +382,7 @@ async fn verify_hybrid_ingress(
             .and_then(|target| key.sign_live_delivery(&assertion, target).ok())
             .and_then(|value| HeaderValue::from_str(&value).ok());
         let Some(signed) = signed else {
-            return StatusCode::BAD_GATEWAY.into_response();
+            return observation.response(StatusCode::BAD_GATEWAY.into_response(), "delivery_signing_refused");
         };
         response.headers_mut().insert(
             aos_hub_core::hybrid_ingress::live::HYBRID_LIVE_DELIVERY_HEADER,
@@ -385,7 +394,7 @@ async fn verify_hybrid_ingress(
         .remove(aos_hub_core::hybrid_ingress::HYBRID_DELIVERY_HEADER)
     {
         if response.status() != StatusCode::OK || !matches!(method.as_str(), "GET" | "HEAD") {
-            return StatusCode::BAD_GATEWAY.into_response();
+            return observation.response(StatusCode::BAD_GATEWAY.into_response(), "delivery_signing_refused");
         }
         let signed = target
             .to_str()
@@ -399,7 +408,7 @@ async fn verify_hybrid_ingress(
             .and_then(|value| serde_json::from_slice(&value).ok())
             .and_then(|target| key.sign_delivery(&assertion, target).ok());
         let Some(signed) = signed.and_then(|value| HeaderValue::from_str(&value).ok()) else {
-            return StatusCode::BAD_GATEWAY.into_response();
+            return observation.response(StatusCode::BAD_GATEWAY.into_response(), "delivery_signing_refused");
         };
         response
             .headers_mut()
@@ -416,7 +425,7 @@ async fn verify_hybrid_ingress(
             duration,
         );
     }
-    response
+    observation.response(response, "handler_completed")
 }
 
 /// Builds the native router with optional listener-authenticated transport evidence.

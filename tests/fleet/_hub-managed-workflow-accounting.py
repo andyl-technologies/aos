@@ -375,7 +375,9 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
     """
     report = {'version': 1, 'complete': False, 'nativeBulkBytes': None,
         'applicationPayloadBytes': None, 'unresolved': [],
-        'scope': 'complete application-body inventory; no wire billing or Hosted qualification'}
+        'nativeConsumedApplicationBytes': None,
+        'accountingBasis': 'complete independently captured full-body object partition upper bound; unknown Native consumption is not zero',
+        'scope': 'complete application-body inventory; independent authority/provider gates remain separate; no wire billing or Hosted qualification'}
     coverage = workflow.get('coverage', {})
     if coverage.get('complete') is not True or workflow.get('failureClass') is not None:
         report['unresolved'].append({'scope': 'global_capture', 'reason': 'incomplete_actual_partition'})
@@ -383,9 +385,20 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
     if gc_positive is not None:
         report['gcPositiveEvidence'] = join_managed_gc_positive_evidence(
             gc_positive, gc_windows, source_digest, read_retained, join_gc_positive)
-    decoded, current_sql, auth = {}, {}, {}
+    decoded, current_sql, auth, ingress_context, execute = {}, {}, {}, {}, {}
+    captured_controls, captured_bodies = [], {}
     for epoch in workflow['epochs']:
         window = epoch['window']
+        for role, bundle in (
+                ('nativeOutbound', window.get('storageBoundary', {}).get('nativeOriginalBodies')),
+                ('workerOriginal', window.get('nativeIngressBoundary', {}).get('workerOriginalBodies'))):
+            if not isinstance(bundle, dict):
+                continue
+            for original in bundle.get('bodies', []):
+                identity = (role, original['requestId'])
+                managed_workflow_require(identity not in captured_bodies,
+                    'captured original body counts reused across epochs')
+                captured_bodies[identity] = original['bodies']
         for call in window.get('nativeAuthenticatedTransports', {}).get('joined', []):
             identity = ('nativeOutbound', call['nativeRequestId'])
             managed_workflow_require(identity not in auth, 'authenticated call is reused across epochs')
@@ -394,7 +407,27 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
             identity = ('nativeOutbound', call['nativeRequestId'])
             managed_workflow_require(identity not in current_sql, 'final context is reused across epochs')
             current_sql[identity] = call
+        outbound = window.get('nativeOutboundDecoded')
+        if isinstance(outbound, dict) and outbound.get('complete') is True:
+            for row in outbound['observations']:
+                register_managed_decoded_row(decoded, ('nativeOutbound', row['requestId']), row)
+        executions = window.get('nativeExecuteObservations')
+        if isinstance(executions, dict):
+            if executions.get('unassignedAttemptCallIds') or executions.get('unassignedFinalContextCallIds'):
+                report['unresolved'].append({'scope': 'execute_events', 'reason': 'unassigned_actual_attempt'})
+            for call in executions.get('joined', []):
+                identity = ('nativeOutbound', call['nativeRequestId'])
+                managed_workflow_require(identity not in execute, 'execute attempt reused across epochs')
+                execute[identity] = call
         ingress = window.get('nativeIngressBoundary', {})
+        observed = ingress.get('applicationObservations')
+        if isinstance(observed, dict):
+            if observed.get('unassignedEventCount'):
+                report['unresolved'].append({'scope': 'ingress_events', 'reason': 'unassigned_actual_event'})
+            for call in observed.get('joined', []):
+                identity = ('workerOriginal', call['nativeRequestId'])
+                managed_workflow_require(identity not in ingress_context, 'ingress event reused across epochs')
+                ingress_context[identity] = call
         if isinstance(ingress.get('decoded'), dict) and ingress['decoded'].get('complete') is True:
             for row in ingress['decoded']['observations']:
                 identity = ('workerOriginal', row['requestId'])
@@ -403,8 +436,7 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
     if isinstance(cleanup_accounting.get('decoded'), dict) and cleanup_accounting['decoded'].get('complete') is True:
         for row in cleanup_accounting['decoded']['observations']:
             identity = ('nativeOutbound', row['requestId'])
-            managed_workflow_require(identity not in decoded, 'cleanup decoder ownership is repeated')
-            decoded[identity] = row
+            register_managed_decoded_row(decoded, identity, row)
     for window in gc_windows:
         for exchange in window.get('validatedExchanges', []):
             row = exchange['validationReceipt']['observation']
@@ -412,8 +444,7 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
             # GC shared decoding uses Worker request IDs; the original Native
             # ID comes from its independently correlated completion receipt.
             identity = ('nativeOutbound', completion['nativeRequestId'])
-            managed_workflow_require(identity not in decoded, 'GC decoder ownership is repeated')
-            decoded[identity] = row
+            register_managed_decoded_row(decoded, identity, row)
     cleanup_evidence = {}
     for item in cleanup_accounting.get('checkedBodyPartitions', []):
         identity = 'nativeOutbound', item['nativeRequestId']
@@ -436,11 +467,23 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
                 reasons.append('missing_current_closed_body_decoder')
             elif row['sourceDigest'] != source_digest:
                 reasons.append('decoder_source_substitution')
+            bodies = captured_bodies.get(identity)
+            if bodies is None or row is None:
+                reasons.append('missing_actual_captured_body_counts')
+            else:
+                for side, field in (('request', 'requestSha256'), ('response', 'replySha256')):
+                    reference = bodies.get(side)
+                    if (not isinstance(reference, dict) or reference.get('sha256') != row[field]
+                            or type(reference.get('byteSize')) not in (str, int)
+                            or not re.fullmatch(r'0|[1-9][0-9]{0,19}', str(reference['byteSize']))
+                            or int(reference['byteSize']) > 8 * 1024 * 1024):
+                        reasons.append('captured_body_count_or_hash_substitution')
             if role == 'workerOriginal':
-                # Compact assertion shape, proxy 2xx and supplied hashes are not
-                # the post-existing-auth/current-handler producer approved for
-                # the separate ingress source increment.
-                reasons.append('missing_production_ingress_accepted_context')
+                call = ingress_context.get(identity)
+                if call is None:
+                    reasons.append('missing_actual_ingress_handler_observation')
+                elif row is not None:
+                    reasons.extend(assess_ingress_body_partition(row, call))
             else:
                 evidence = cleanup_evidence.get(identity)
                 if evidence is not None:
@@ -450,6 +493,26 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
                             or evidence['transportCallIdSha256'] != hashlib.sha256(
                                 original['transportCallId'].encode()).hexdigest()):
                         reasons.append('cleanup_body_sql_provider_correlation_substituted')
+                elif row is not None and row['class'] == 'storage_control_metadata':
+                    # This is an exact fully captured small-control body/schema
+                    # partition, not a Native-consumption or authorization proof.
+                    captured_controls.append({'nativeRequestId': request_id,
+                        'requestSha256': row['requestSha256'], 'replySha256': row['replySha256'],
+                        'capturedRequestBytes': int(bodies['request']['byteSize']) if bodies and not reasons else None,
+                        'capturedReplyBytes': int(bodies['response']['byteSize']) if bodies and not reasons else None,
+                        'nativeConsumedBytes': None, 'permission': None,
+                        'scope': 'independently captured bounded control bodies only'})
+                elif identity in execute:
+                    call = execute[identity]
+                    if row is None or call['payload'] != row['payload']:
+                        reasons.append('execute_consumed_partition_substitution')
+                    if call['attempt']['endpointScheme'] != 'https':
+                        reasons.append('execute_upstream_tls_not_selected')
+                    if row is None or call['attempt']['offeredRequestSha256'] != row['requestSha256']:
+                        reasons.append('execute_offered_request_substitution')
+                    # Any final existing SQL check is preserved by the actual
+                    # attempt collector. Calls with no such production fence
+                    # cannot be relabelled as having one by this body consumer.
                 else:
                     if identity not in auth:
                         reasons.append('missing_native_post_auth_consumption_receipt')
@@ -466,6 +529,8 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
     report['originalCount'] = sum(len(coverage['assigned'][role])
         for role in ('nativeOutbound', 'workerOriginal'))
     report['decodedOriginalCount'] = len(decoded)
+    report['capturedControlPartitions'] = captured_controls
+    report['executeBodyPartitions'] = list(execute.values())
     report['cleanupCurrentSqlJoins'] = cleanup_accounting.get('independentCurrentSql', [])
     # This gate is deliberately data-dependent. No missing producer or failed
     # row is removed so that a positive subset can yield a global zero.
@@ -486,7 +551,10 @@ def assess_managed_workflow(workflow, cleanup_accounting, *, source_digest, gc_w
             raw += values['requestRawObjectBytes'] + values['replyRawObjectBytes']
             selected += values['selectedDataBytes']
             semantic += values['semanticOciProjectionBytes']
-        report['nativeBulkBytes'] = raw
+        report['capturedApplicationBodyBytes'] = {
+            'originalRequests': sum(int(captured_bodies[identity]['request']['byteSize']) for identity in expected_originals),
+            'fullReplies': sum(int(captured_bodies[identity]['response']['byteSize']) for identity in expected_originals)}
+        report['capturedApplicationObjectByteUpperBound'] = raw
         report['applicationPayloadBytes'] = {'fullObjectBytes': raw,
             'selectedDataBytes': selected, 'semanticProjectionBytes': semantic}
     return report
@@ -612,3 +680,73 @@ def join_checked_cleanup_body_partitions(accounting, read_evidence, original, ph
             'permissionScope': 'existing authenticated physical cleanup and actual final Delete check',
             'scope': 'accepted metadata subset; every lost or unsupported call remains unclassified'})
     return conclusions
+
+
+def assess_ingress_body_partition(decoded, call):
+    """Keep existing acceptance, real refusal and exposed body partition separate.
+
+    Actual production checks are bound to the pinned log/process and dual byte
+    captures by the collector. Successful contexts are required for accepted
+    control use. Deliberately refused metadata needs its own exact closed body
+    decoder and actual source-owned refusal observation, not a success receipt.
+    """
+    reasons = []
+    event = call['observation']
+    if decoded['requestSha256'] != call['requestSha256'] or decoded['replySha256'] != call['replySha256']:
+        return ['ingress_decoded_body_substitution']
+    metadata_only = all(decoded['payload'][field] == '0' for field in (
+        'requestRawObjectBytes', 'replyRawObjectBytes', 'selectedDataBytes', 'semanticOciProjectionBytes'))
+    for name in ('requestConsumed', 'replyOffered'):
+        frames = call['partitions'][name]
+        # A partial metadata-only body is still metadata after exact full-body
+        # source decoding and observed-prefix equality. Content-bearing prefixes
+        # need their own field/byte mapping; full decoded counts cannot be borrowed.
+        if frames['overflow'] or (not metadata_only and (not frames['eof'] or frames['failed'])):
+            reasons.append('unmapped_partial_content_partition')
+    checked = event['checkedContexts']
+    if checked is not None and checked['incomplete']:
+        reasons.append('ingress_checked_context_overflow')
+    if call['handlerOutcome'] == 'refused':
+        if decoded['class'] != 'ingress_refused_metadata' or event['stage'] not in {
+                'envelope_refused', 'body_limit_refused', 'request_body_failed', 'body_mac_refused',
+                'transport_context_refused', 'delivery_signing_refused', 'handler_completed'}:
+            reasons.append('refused_ingress_body_not_source_classified')
+        return reasons
+    if (call['handlerOutcome'] != 'completed' or not event['envelopeAuthenticated']
+            or not event['bodyAuthenticated'] or checked is None):
+        reasons.append('incomplete_ingress_acceptance')
+        return reasons
+    accepted = {item['kind'] for item in checked['checks'] if item['accepted']}
+    operation = decoded['operation']
+    if operation.startswith('oci_') and operation not in {'oci_blob_download', 'oci_document_download'}:
+        required = {'oci_actor_current'}
+        if operation == 'oci_manifest_complete':
+            required.add('oci_manifest_catalog_current')
+        if operation == 'oci_chunk_complete':
+            required.add('oci_chunk_catalog_current')
+        if not required <= accepted:
+            reasons.append('missing_actual_oci_actor_or_catalog_check')
+    elif operation in {'oci_blob_download', 'oci_document_download', 'ingress_storage_read',
+                       'ingress_browse_query', 'ingress_document_read'}:
+        if not accepted & {'permission_read', 'oci_public_pull_policy', 'oci_repository_grant',
+                'registry_public_read_policy', 'cache_public_read_policy', 'registry_session_read',
+                'cache_session_read', 'browse_registry_read_policy', 'browse_session_read'}:
+            reasons.append('missing_actual_read_policy_or_session_check')
+    else:
+        reasons.append('unsupported_accepted_ingress_context')
+    return reasons
+
+
+def register_managed_decoded_row(decoded, identity, row):
+    """Share an exact corpus decoder row with a scoped GC/cleanup join once.
+
+    A scoped controller may name the independently received proxy request ID;
+    body/source/codec/original/payload commitments must otherwise be identical.
+    These aliases do not create a second transport or a second byte count.
+    """
+    if identity in decoded:
+        managed_workflow_require({key: value for key, value in decoded[identity].items() if key != 'requestId'}
+            == {key: value for key, value in row.items() if key != 'requestId'},
+            'scoped and complete-corpus decoder row commitments differ')
+    else:
+        decoded[identity] = row

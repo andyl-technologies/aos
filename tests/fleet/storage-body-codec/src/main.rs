@@ -5,7 +5,9 @@
 //! purpose, SQL and provider observations must be joined independently.
 
 mod classify;
+mod controls;
 mod files;
+mod ingress;
 mod storage_work;
 
 #[cfg(test)]

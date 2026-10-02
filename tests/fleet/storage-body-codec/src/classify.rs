@@ -146,6 +146,18 @@ pub(super) fn classify(
                 request.nonce,
             )
         }
+        path if crate::controls::supports(path) => {
+            crate::controls::decode(case, request, reply, deployment)?
+        }
+        _ if case.status >= 400
+            || !case.path_and_query.starts_with("/v2/")
+            || case.method == "HEAD" =>
+        {
+            let (operation, class, exchange_id, observed) =
+                crate::ingress::decode(case, request, reply, deployment, consumed)?;
+            payload = observed;
+            (operation, class, exchange_id)
+        }
         _ => {
             let (operation, class, exchange_id, observed) =
                 distribution(case, request, reply, deployment, consumed)?;
@@ -159,6 +171,8 @@ pub(super) fn classify(
         include_bytes!("files.rs").as_slice(),
         include_bytes!("classify.rs").as_slice(),
         include_bytes!("storage_work.rs").as_slice(),
+        include_bytes!("ingress.rs").as_slice(),
+        include_bytes!("controls.rs").as_slice(),
     ] {
         source.extend_from_slice(file);
     }

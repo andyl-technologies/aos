@@ -6,6 +6,7 @@
 //! any route, authentication, or rate-limit middleware can use those facts.
 
 pub mod live;
+pub mod observation;
 mod oci_manifest;
 pub mod projection;
 

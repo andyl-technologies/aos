@@ -10665,8 +10665,30 @@ impl RpcService {
             // IAM awaits may observe a replacement in a recyclable numeric
             // slot. Recheck the exact signed owner and credential before success.
             self.current_principal(claims).await?;
+            let observed_kind = match perm {
+                Permission::Read => Some("permission_read"),
+                Permission::Publish => Some("permission_publish"),
+                _ => None,
+            };
+            if let Some(kind) = observed_kind {
+                crate::hybrid_ingress::observation::record_existing_check(kind, &(
+                    claims, principal, scope.as_str(),
+                    crate::hybrid_ingress::observation::grant_projection(&grants),
+                ));
+            }
             Ok(())
         } else {
+            let observed_kind = match perm {
+                Permission::Read => Some("permission_read"),
+                Permission::Publish => Some("permission_publish"),
+                _ => None,
+            };
+            if let Some(kind) = observed_kind {
+                crate::hybrid_ingress::observation::record_existing_outcome(kind, false, &(
+                    claims, principal, scope.as_str(),
+                    crate::hybrid_ingress::observation::grant_projection(&grants),
+                ));
+            }
             Err(denied())
         }
     }
@@ -10755,6 +10777,11 @@ impl RpcService {
             }
         }
         if registry.visibility == "public" || registry.org_id.is_none() {
+            crate::hybrid_ingress::observation::record_existing_check(
+                "registry_public_read_policy", &(
+                    registry.id, &registry.stable_id, &registry.scope_key,
+                    registry.org_id, &registry.visibility,
+                ));
             return Ok(());
         }
         let claims = self.require_claims(auth)?;
@@ -10846,6 +10873,11 @@ impl RpcService {
                     }
                 }
                 if registry.visibility == "public" || registry.org_id.is_none() {
+                    crate::hybrid_ingress::observation::record_existing_check(
+                        "registry_public_read_policy", &(
+                            registry.id, &registry.stable_id, &registry.scope_key,
+                            registry.org_id, &registry.visibility,
+                        ));
                     return Ok(());
                 }
                 let session = self
@@ -10866,6 +10898,12 @@ impl RpcService {
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("registry scope"))?;
                 if iam::allow(&grants, Permission::Read, &context) {
+                    crate::hybrid_ingress::observation::record_existing_check(
+                        "registry_session_read", &(
+                            session.auth.user_id, &session.auth.owner_incarnation,
+                            &session.auth.session_id_hash, scope.as_str(),
+                            crate::hybrid_ingress::observation::grant_projection(&grants),
+                        ));
                     Ok(())
                 } else {
                     Err(RpcError::PermissionDenied(
@@ -23053,6 +23091,10 @@ impl RpcService {
             }
         }
         if cache.visibility == "public" {
+            crate::hybrid_ingress::observation::record_existing_check(
+                "cache_public_read_policy", &(
+                    cache.id, cache.org_id, &cache.scope_key, &cache.visibility,
+                ));
             return Ok(());
         }
         let claims = self.require_claims(auth)?;
@@ -23085,6 +23127,10 @@ impl RpcService {
                     }
                 }
                 if cache.visibility == "public" {
+                    crate::hybrid_ingress::observation::record_existing_check(
+                        "cache_public_read_policy", &(
+                            cache.id, cache.org_id, &cache.scope_key, &cache.visibility,
+                        ));
                     return Ok(());
                 }
                 let session = self
@@ -23104,6 +23150,12 @@ impl RpcService {
                     .map_err(RpcError::internal)?
                     .ok_or_else(|| RpcError::not_found("cache scope"))?;
                 if iam::allow(&grants, Permission::Read, &context) {
+                    crate::hybrid_ingress::observation::record_existing_check(
+                        "cache_session_read", &(
+                            session.auth.user_id, &session.auth.owner_incarnation,
+                            &session.auth.session_id_hash, &cache.scope_key,
+                            crate::hybrid_ingress::observation::grant_projection(&grants),
+                        ));
                     Ok(())
                 } else {
                     Err(RpcError::PermissionDenied(

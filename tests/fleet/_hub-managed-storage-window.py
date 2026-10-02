@@ -189,10 +189,43 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
         native_headers, worker_headers,
         authenticated_rows)
     final_sql = join_storage_final_sql(transport, context_rows)
+    outbound_codec = prepare_managed_outbound_codec_segments(
+        boundary["nativeOriginalBodies"]["bodies"], boundary["workerReceivedBodies"]["bodies"],
+        native_headers, worker_headers, selected["sourceDigest"], tools["deploymentId"])
+    outbound_decoded, execute_observed = None, None
+    if outbound_codec["selectedCodecSegments"] is not None:
+        if boundaries.get("codecSelection") is not None and boundaries.get("codecProvenance") is not None:
+            provenance = validate_managed_codec_selection(boundaries["codecSelection"],
+                boundaries["codecProvenance"], selected["sourceDigest"],
+                observations["native"]["executableSha256"])
+            outbound_decoded = run_storage_workflow_codec_segments(boundaries["codecSelection"],
+                outbound_codec["selectedCodecSegments"], provenance["codecSourceSha256"],
+                selected["sourceDigest"], artifact_namespace="managed-outbound-" + label + "-" + selected["run"])
+            records = storage_work_execute_receipts(paths["nativeLog"], processes["native"], file_provenance)
+            execute_observed = join_storage_work_execute(
+                boundary["nativeOriginalBodies"]["bodies"], boundary["workerReceivedBodies"]["bodies"],
+                native_headers, worker_headers, records,
+                outbound_decoded["observations"] if outbound_decoded.get("complete") is True else [],
+                selected["sourceDigest"], provenance["codecSourceSha256"])
     final_sql["externalAdmissionActorObservations"] = join_external_admission_actor(final_sql,
         external_admission_actor_receipts(paths["nativeLog"], processes["native"], file_provenance))
     ingress = capture_managed_native_ingress(native, worker, tools, boundaries,
         paths, selected, label, prefix)
+    sources = boundaries.get("ingressObservationSources")
+    ingress["applicationObservations"] = None
+    if sources is not None:
+        rows = ingress_application_observations(paths["nativeLog"], processes["native"],
+            file_provenance, sources)
+        def read_actual_body(reference):
+            raw = direct_selected_bytes({"path": reference["file"], "sha256": reference["sha256"]},
+                max(WORKER_CONTROL_REPLY_LIMIT, 4 * 1024 * 1024))
+            if len(raw) != int(reference["byteSize"]):
+                raise ValueError("Managed ingress captured body size changed")
+            return raw
+        ingress["applicationObservations"] = join_ingress_application_observations(
+            ingress["workerOriginalBodies"]["bodies"], ingress["nativeReceivedBodies"]["bodies"],
+            ingress["originalHeaders"], ingress["receivedHeaders"], rows, read_actual_body)
+        ingress["applicationObservationProvenance"] = file_provenance
     ingress["decoded"] = None
     if ingress["codecInput"]["selectedCodecSegments"] is not None:
         if boundaries.get("codecSelection") is None or boundaries.get("codecProvenance") is None:
@@ -210,6 +243,8 @@ def finish_managed_storage_window(native, worker, tools, prepared, processes, bo
         "nativeAuthenticatedTransports": transport, "nativeFinalContextObservations": final_sql,
         "nativeServiceAuthenticatedRows": authenticated_rows, "nativeServiceFinalSqlRows": context_rows,
         "nativeIngressBoundary": ingress,
+        "nativeOutboundCodecInput": outbound_codec, "nativeOutboundDecoded": outbound_decoded,
+        "nativeExecuteObservations": execute_observed,
         "nativeBulkBytes": None,
         "scope": "actual separate Managed transport/log window; no actor, purpose, provider or zero conclusion"}
     retain_direct_flow(prefix + "-window-finish.json", {
@@ -294,6 +329,7 @@ def capture_managed_native_ingress(native, worker, tools, boundaries, paths, sel
         selected["sourceDigest"], tools["deploymentId"])
     return {"version": 1, "workerOriginalBodies": original_bodies,
         "nativeReceivedBodies": received_bodies, "codecInput": projection,
+        "originalHeaders": original_headers, "receivedHeaders": received_headers,
         "workerProxyCompletionObservations": original_completed,
         "nativeProxyCompletionObservations": received_completed,
         "nativeBulkBytes": None,
@@ -342,7 +378,7 @@ def prepare_managed_ingress_codec_segments(originals, received, correlations,
             continue
         target = direct_selected_bytes({"path": before["files"]["path_and_query"]["file"],
             "sha256": before["files"]["path_and_query"]["sha256"]}, 4096).decode()
-        if target.split("?", 1)[0] != original["procedure"] or not target.startswith("/v2/"):
+        if target.split("?", 1)[0] != original["procedure"]:
             unresolved.append(identifier)
             continue
         used.add(actual["requestId"])
@@ -462,3 +498,243 @@ def classify_managed_storage_capture(capture, storage_boundary, label, codec_sel
         "result": _closed_review_json(reply_bytes), "validationReceipt": receipt,
         "originalPlan": reference(original), "request": reference(request), "reply": reference(reply),
         "handlerCompletion": completion, "nativeBulkBytes": None}
+
+
+INGRESS_EVENT_PREFIX = "[INFO] message=native_ingress_application_body_observation "
+INGRESS_EVENT_FIELDS = frozenset((
+    "version", "requestId", "method", "pathSha256", "compactSha256", "originalSha256", "phase",
+    "nativeHandlerSourceSha256", "checkedContextSourceSha256", "envelopeAuthenticated",
+    "bodyAuthenticated", "stage", "status", "checkedContexts", "requestConsumed", "replyOffered",
+    "completedAtUnixMicros",
+))
+INGRESS_CHECK_KINDS = frozenset((
+    "permission_read", "permission_publish", "oci_actor_current", "oci_manifest_catalog_current",
+    "oci_chunk_catalog_current", "oci_public_pull_policy", "oci_repository_grant",
+    "registry_public_read_policy", "cache_public_read_policy", "registry_session_read",
+    "cache_session_read", "browse_registry_read_policy", "browse_session_read",
+))
+INGRESS_EVENT_STAGES = frozenset((
+    "cancelled", "envelope_refused", "body_limit_refused", "request_body_failed", "body_mac_refused",
+    "transport_context_refused", "delivery_signing_refused", "handler_completed",
+))
+
+
+def validate_ingress_application_observation(value, expected_sources):
+    """Validate a closed observation, never an authorization request or proof."""
+    def require(condition):
+        if not condition:
+            raise ValueError("Native ingress application observation differs")
+
+    def digest(value):
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+    def decimal(value):
+        return isinstance(value, str) and re.fullmatch(r"0|[1-9][0-9]{0,19}", value) is not None
+
+    require(isinstance(expected_sources, dict) and set(expected_sources) == {
+        "nativeHandlerSourceSha256", "checkedContextSourceSha256"}
+        and all(digest(item) for item in expected_sources.values()))
+    require(isinstance(value, dict) and set(value) == INGRESS_EVENT_FIELDS
+        and type(value["version"]) is int and value["version"] == 1
+        and (value["requestId"] is None or isinstance(value["requestId"], str)
+             and re.fullmatch(r"[0-9a-f]{32}", value["requestId"]))
+        and value["method"] in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}
+        and digest(value["pathSha256"])
+        and all(value[field] == selected for field, selected in expected_sources.items())
+        and all(value[field] is None or digest(value[field])
+                for field in ("compactSha256", "originalSha256"))
+        and (value["phase"] is None or value["phase"] in {
+            "authorize", "authorize-final", "preflight", "complete"})
+        and value["stage"] in INGRESS_EVENT_STAGES
+        and (value["status"] is None or type(value["status"]) is int and 100 <= value["status"] <= 599)
+        and decimal(value["completedAtUnixMicros"]))
+    require(all(type(value[field]) is bool for field in ("envelopeAuthenticated", "bodyAuthenticated")))
+    require(not value["bodyAuthenticated"] or value["envelopeAuthenticated"])
+    for name in ("requestConsumed", "replyOffered"):
+        frames = value[name]
+        require(isinstance(frames, dict) and set(frames) == {
+            "exposedBytes", "exposedSha256", "eof", "failed", "overflow"}
+            and decimal(frames["exposedBytes"]) and digest(frames["exposedSha256"])
+            and all(type(frames[field]) is bool for field in ("eof", "failed", "overflow")))
+    checked = value["checkedContexts"]
+    require(checked is None or isinstance(checked, dict) and set(checked) == {"checks", "incomplete"}
+        and type(checked["incomplete"]) is bool and isinstance(checked["checks"], list)
+        and len(checked["checks"]) <= 32)
+    if checked is not None:
+        for item in checked["checks"]:
+            require(isinstance(item, dict) and set(item) == {
+                "kind", "accepted", "checkedContextSha256", "observedAtUnixMicros"}
+                and item["kind"] in INGRESS_CHECK_KINDS and type(item["accepted"]) is bool
+                and digest(item["checkedContextSha256"]) and decimal(item["observedAtUnixMicros"])
+                and int(item["observedAtUnixMicros"]) <= int(value["completedAtUnixMicros"]))
+    if value["stage"] == "handler_completed":
+        require(value["envelopeAuthenticated"] and value["bodyAuthenticated"]
+            and checked is not None and value["status"] is not None)
+    return value
+
+
+def ingress_application_observations(path, process, provenance, expected_sources):
+    """Read all actual events from the independently pinned process/log window.
+
+    The existing reader verifies file custody and the unchanged process at both
+    collection boundaries. The source selection must come from the reviewed
+    common artifact tuple; it is not an actor or provider authorization flag.
+    """
+    rows, retained_bytes = [], 2
+    for message, _ in observed_native_messages(path, process, provenance):
+        if not message.startswith(INGRESS_EVENT_PREFIX):
+            continue
+        encoded = message[len(INGRESS_EVENT_PREFIX):]
+        _, end = json.JSONDecoder().raw_decode(encoded)
+        if encoded[end:] and not encoded[end:].startswith(" span="):
+            raise ValueError("Native ingress event has an unsupported suffix")
+        value = validate_ingress_application_observation(_closed_review_json(encoded[:end]), expected_sources)
+        retained_bytes += len(native_corpus_json(value)) + 1
+        if len(rows) >= 204704 or retained_bytes > 256 * 1024 * 1024:
+            raise ValueError("Native ingress event summaries exceed their observation bound")
+        rows.append(value)
+    return rows
+
+
+def join_ingress_application_observations(originals, received, original_headers, received_headers,
+                                           observations, read_body):
+    """Join exclusive actual frames to two independent application transports.
+
+    Native offered reply frames never stand for Worker-received bytes. Refused,
+    unread and partial observations remain distinct; an event cannot authorize
+    another identical call or be reused for a second original.
+    """
+    by_id, by_original, by_event = {}, {}, {}
+    for row in received:
+        if row["requestId"] in by_id:
+            raise ValueError("Native received ingress identity is repeated")
+        by_id[row["requestId"]] = row
+    for header in received_headers.values():
+        by_original.setdefault(header["originalRequestId"], []).append(header)
+    for row in observations:
+        by_event.setdefault(row["requestId"], []).append(row)
+    if len({row["requestId"] for row in originals}) != len(originals):
+        raise ValueError("Worker original ingress identity is repeated")
+    joined, unresolved, used = [], [], set()
+    for original in originals:
+        identity = original["requestId"]
+        candidates, events = by_original.get(identity, []), by_event.get(identity, [])
+        first = original_headers.get(identity)
+        if first is None or len(candidates) != 1 or len(events) != 1:
+            unresolved.append({"requestId": identity, "reason": "missing_or_ambiguous_ingress_event"})
+            continue
+        second, event = candidates[0], events[0]
+        actual = by_id.get(second["requestId"])
+        if actual is None or actual["requestId"] in used:
+            unresolved.append({"requestId": identity, "reason": "missing_or_reused_received_ingress"})
+            continue
+        equal = all(original[field] == actual[field] == event[field] for field in ("method", "status"))
+        equal &= (original["phase"] or None) == (actual["phase"] or None)
+        # An envelope refusal has not decoded an authenticated phase. The
+        # independently retained offered phase still binds the exact codec case.
+        equal &= event["phase"] == ((original["phase"] or None)
+            if event["envelopeAuthenticated"] else None)
+        path_reference = first["files"].get("path_and_query")
+        equal &= path_reference is not None and event["pathSha256"] == path_reference["sha256"]
+        for field in ("path_and_query", "ingress"):
+            before, after = first["files"].get(field), second["files"].get(field)
+            equal &= before is not None and after is not None and all(
+                before[key] == after[key] for key in ("sha256", "byteSize"))
+        if first["files"].get("ingress") is not None:
+            equal &= event["compactSha256"] == first["files"]["ingress"]["sha256"]
+        partitions = {}
+        for side, name in (("request", "requestConsumed"), ("response", "replyOffered")):
+            left, right = original["bodies"].get(side), actual["bodies"].get(side)
+            if left is None or right is None or any(left[field] != right[field]
+                    for field in ("sha256", "byteSize")):
+                equal = False
+                continue
+            body = read_body(right)
+            count, frames = int(event[name]["exposedBytes"]), event[name]
+            equal &= len(body) == int(right["byteSize"]) and hashlib.sha256(body).hexdigest() == right["sha256"]
+            equal &= count <= len(body) and hashlib.sha256(body[:count]).hexdigest() == frames["exposedSha256"]
+            equal &= not frames["overflow"] and (not frames["eof"] or count == len(body))
+            partitions[name] = {**frames, "capturedBytes": str(len(body)), "capturedSha256": right["sha256"]}
+        if not equal:
+            unresolved.append({"requestId": identity, "reason": "ingress_event_transport_substitution"})
+            continue
+        used.add(actual["requestId"])
+        checked = event["checkedContexts"]
+        joined.append({"nativeRequestId": identity, "nativeReceivedRequestId": actual["requestId"],
+            "requestSha256": actual["bodies"]["request"]["sha256"],
+            "replySha256": actual["bodies"]["response"]["sha256"], "observation": event,
+            "partitions": partitions, "checkedContexts": checked,
+            "handlerOutcome": "refused" if event["status"] is not None and event["status"] >= 400
+                else "completed" if event["stage"] == "handler_completed" else "incomplete",
+            "scope": "actual existing handler/check and application-frame observations; no new authorization or provider proof"})
+    assigned_events = {row["nativeRequestId"] for row in joined}
+    return {"version": 1, "joined": joined, "unresolved": unresolved,
+        "unassignedEventCount": sum(len(rows) for key, rows in by_event.items()
+            if key not in assigned_events), "nativeBulkBytes": None}
+
+
+def prepare_managed_outbound_codec_segments(originals, received, original_headers, received_headers,
+                                             source_digest, deployment_id):
+    """Execute closed codecs over all actual outbound originals, without filtering failures.
+
+    Every captured original remains in the inventory. Missing, partial or
+    unsupported bodies remain unresolved or produce a failed terminal segment;
+    neither preparation nor successful structural decoding authenticates a reply.
+    """
+    by_id, owners = {}, {}
+    for row in received:
+        if row['requestId'] in by_id:
+            raise ValueError('Managed received outbound identity repeated')
+        by_id[row['requestId']] = row
+    for header in received_headers.values():
+        owners.setdefault(header['originalRequestId'], []).append(header)
+    if len({row['requestId'] for row in originals}) != len(originals):
+        raise ValueError('Managed outbound original identity repeated')
+    inventory = native_corpus_inventory([('outbound', row) for row in originals]) if originals else None
+    cases, ownership, selected, unresolved, used = [], [], [], [], set()
+    for original in originals:
+        identity = original['requestId']
+        first = original_headers.get(identity)
+        matches = owners.get(identity, [])
+        second = matches[0] if len(matches) == 1 else None
+        actual = by_id.get(second['requestId']) if second else None
+        equal = first is not None and actual is not None and actual['requestId'] not in used
+        equal &= actual is not None and all(original[field] == actual[field] for field in (
+            'procedure', 'method', 'phase', 'status', 'responseContentType', 'responseContentEncoding'))
+        for side in ('request', 'response'):
+            left = original['bodies'].get(side)
+            right = actual['bodies'].get(side) if actual else None
+            equal &= left is not None and right is not None and all(left[field] == right[field]
+                for field in ('sha256', 'byteSize'))
+        left = first['files'].get('path_and_query') if first else None
+        right = second['files'].get('path_and_query') if second else None
+        equal &= left is not None and right is not None and all(left[field] == right[field]
+            for field in ('sha256', 'byteSize'))
+        if not equal:
+            unresolved.append(identity)
+            continue
+        target = direct_selected_bytes({'path': left['file'], 'sha256': left['sha256']}, 4096).decode()
+        if target.split('?', 1)[0] != original['procedure']:
+            unresolved.append(identity)
+            continue
+        def reference(value):
+            return {**value, 'byteSize': str(value['byteSize'])}
+        used.add(actual['requestId'])
+        cases.append({'requestId': identity, 'method': original['method'], 'pathAndQuery': target,
+            'phase': original['phase'] or None, 'status': original['status'],
+            'responseContentType': original['responseContentType'] or None,
+            'responseContentEncoding': original['responseContentEncoding'] or None,
+            'originalRequest': reference(original['bodies']['request']),
+            'receivedRequest': reference(actual['bodies']['request']),
+            'receivedReply': reference(actual['bodies']['response']),
+            'originalIngress': None, 'receivedIngress': None})
+        selected.append(('outbound', original))
+        ownership.append({'originalId': 'outbound:' + identity, 'receivedId': actual['requestId'],
+            'receiptIdSha256': None, 'transportCallIdSha256': hashlib.sha256(
+                first['transportCallId'].encode()).hexdigest() if first['transportCallId'] else None})
+    bundle = partition_native_codec_corpus(native_corpus_inventory(selected),
+        {'version': 1, 'sourceDigest': source_digest, 'deploymentId': deployment_id},
+        'cases', cases, ownership) if cases else None
+    return {'version': 1, 'completeOriginalInventory': inventory, 'selectedCodecSegments': bundle,
+        'unresolvedOriginalRequestIds': unresolved,
+        'unselectedReceivedRequestIds': sorted(set(by_id) - used), 'nativeBulkBytes': None}
