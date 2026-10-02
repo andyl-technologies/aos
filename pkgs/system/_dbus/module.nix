@@ -8,7 +8,7 @@
   ...
 }: let
   cfg = config.aos.services.dbus;
-  registrationConfigurationPath = config.aos.abilities.configuration.operations.file.effects.dbus.outputs.path;
+  registrationConfigurationPath = config.aos.abilities.configuration.operations.file.effects.dbus.input.path;
   registrationConfigurationResource = config.aos.abilities.configuration.operations.file.effects.dbus.outputs.resource;
   command = entryPoint: arguments: {
     executable = {
@@ -19,6 +19,9 @@
   };
   serviceDefinition = {
     enable = true;
+    bootstrap = true;
+    bootstrapPrincipals = [config.aos.abilities.identity.operations.principal.effects.dbus.outputs.name];
+    activationInputs = [registrationConfigurationResource];
     directories.managed = [
       {
         path = "dbus";
@@ -33,7 +36,6 @@
         retention = "persistent";
       }
     ];
-    activationAfter = [config.aos.abilities.identity.operations.principal.effects.dbus.outputs.name];
     policy.hardening = {
       allow_privilege_escalation = true;
       ambient_privileges = [];
@@ -93,7 +95,6 @@
       prerequisites = [
         "/run/dbus"
         "/var/lib/dbus"
-        registrationConfigurationResource
       ];
       after = [];
       before = [];
@@ -221,22 +222,27 @@ in {
   config = {
     aos.services.dbus = lib.mkDefault serviceDefinition;
     aos.abilities.identity.operations = lib.mkIf cfg.enable {
-      group.effects.dbus.input.name = "messagebus";
+      group.effects.dbus.input = {
+        name = "messagebus";
+        requested_id = 81;
+      };
       principal.effects.dbus.input = {
         name = "messagebus";
+        requested_id = 81;
         primary_group = config.aos.abilities.identity.operations.group.effects.dbus.outputs.name;
-        description = "D-Bus system message bus";
-        home_directory = "/var/lib/dbus";
+        description = "D-Bus Message Bus";
+        home_directory = "/var/run/dbus";
       };
     };
     aos.abilities.configuration.operations.file.effects.dbus = lib.mkIf cfg.enable {
       input = {
         path = "/etc/dbus-1/aos-system.conf";
-        fragments =
+        content = lib.concatStringsSep "" (
           ["<busconfig>\n<include>${package}/share/dbus-1/aos-system-base.conf</include>\n"]
           ++ builtins.map (path: "<servicedir>${xmlPath path}</servicedir>\n") config.aos.dbus.activationDirectories
           ++ builtins.map (path: "<includedir>${xmlPath path}</includedir>\n") config.aos.dbus.policyDirectories
-          ++ ["<includedir>/etc/dbus-1/system.d</includedir>\n<include ignore_missing=\"yes\">/etc/dbus-1/system-local.conf</include>\n</busconfig>\n"];
+          ++ ["<includedir>/etc/dbus-1/system.d</includedir>\n<include ignore_missing=\"yes\">/etc/dbus-1/system-local.conf</include>\n</busconfig>\n"]
+        );
         mode = "0444";
       };
     };

@@ -86,6 +86,20 @@ let
         {
           aos.services =
             {
+              "early.daemon" =
+                (service "early")
+                // {
+                  bootstrap = true;
+                  activationOwner = "ability";
+                };
+              "early.disabled" =
+                (service "disabled")
+                // {
+                  bootstrap = true;
+                  enable = false;
+                  activationOwner = "ability";
+                };
+              daemon = (service "example") // {activationOwner = "ability";};
               "ability-crucible.adapter" = {
                 enable = false;
                 activationOwner = "manager";
@@ -113,7 +127,7 @@ let
   canonical = evaluate "control-plane.aos-activate";
   custom = evaluate "custom.activator";
   absent = evaluate null;
-  projected = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
+  projected = import ../../pkgs/system/_systemd-abilities/bootstrap-services.nix {
     config = evaluated.config;
     inherit lib;
     pkgs = {};
@@ -132,4 +146,6 @@ in
   assert !(evaluated.config.aos.services ? "control-plane.aos-activate");
   assert !(absent.config.aos.services ? "control-plane.aos-activate");
   assert !(absent.config.aos.services ? "boot-preparations.aos-ability-host-controller");
+  assert projected."early.daemon".activationOwner == "ability";
+  assert !(projected ? "early.disabled");
   assert !(projected ? daemon); true

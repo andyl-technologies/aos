@@ -24,7 +24,7 @@
   host = operator:
     (lib.evalPackageModules {
       scope = ["system"];
-      packages = [pkgs.systemd];
+      packages = [pkgs.systemd pkgs.dbus];
       operatorModules = [operator];
     }).config;
   hostSeed = config:
@@ -63,11 +63,17 @@
     aos.abilities.identity.operations.principal.effects.systemd-network.enable = false;
   };
   hostIdentityDisabled = hostSeed hostIdentityDisabledConfig;
+  hostDbusDisabledConfig = host {aos.services.dbus.enable = false;};
+  hostDbusRuntimeOnlyConfig = host {aos.services.dbus.bootstrap = false;};
+  hostDbusDisabled = hostSeed hostDbusDisabledConfig;
+  hostDbusRuntimeOnly = hostSeed hostDbusRuntimeOnlyConfig;
   hostCases = {
     baseline = hostBaseline;
     disabled = hostDisabledConfig;
     overridden = hostOverriddenConfig;
     principal-disabled = hostIdentityDisabledConfig;
+    dbus-disabled = hostDbusDisabledConfig;
+    dbus-runtime-only = hostDbusRuntimeOnlyConfig;
   };
   row = name: text:
     builtins.filter (line: lib.hasPrefix "${name}:" line) (lib.splitString "\n" text);
@@ -185,6 +191,10 @@ in {
       && row name hostAccounts.shadow.text == row name baselineSeed.shadow)
     ["systemd-network" "systemd-resolve"];
     hostSeedUsesExactPolicy = row "systemd-resolve" hostAccounts.passwd.text == [(expected "systemd-resolve")];
+    earlyServiceUsesDeclaredPrincipal = row "messagebus" hostAccounts.passwd.text == ["messagebus:x:81:81:D-Bus Message Bus:/var/run/dbus:${shells.nologin}"] && row "messagebus" hostAccounts.group.text == ["messagebus:x:81:"];
+    disabledEarlyServiceHasNoSeed = row "messagebus" hostDbusDisabled.passwd.text == [] && row "messagebus" hostDbusDisabled.group.text == [];
+    runtimeOnlyServiceHasNoSeed = row "messagebus" hostDbusRuntimeOnly.passwd.text == [] && row "messagebus" hostDbusRuntimeOnly.group.text == [];
+    networkRequestDoesNotControlEarlyServices = row "messagebus" hostDisabled.passwd.text == row "messagebus" hostAccounts.passwd.text;
     hostRequestOverridePreservesManagerIdentities = row "systemd-network" hostOverridden.passwd.text == [(expected "systemd-network")] && row "systemd-resolve" hostOverridden.passwd.text == [(expected "systemd-resolve")];
     hostDisabledConfigurePreservesManagerIdentities = !hostDisabledConfig.aos.abilities.network.operations.configure.effects.host.enable && row "systemd-network" hostDisabled.passwd.text == [(expected "systemd-network")] && row "systemd-resolve" hostDisabled.passwd.text == [(expected "systemd-resolve")];
     hostDisabledIdentityIsNotSeeded = row "systemd-network" hostIdentityDisabled.passwd.text == [] && row "systemd-resolve" hostIdentityDisabled.passwd.text == [(expected "systemd-resolve")];

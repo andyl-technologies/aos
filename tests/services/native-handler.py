@@ -47,7 +47,131 @@ def invocation(ability, operation, value, revision="first", previous=None):
     return {"id": "example-effect", "effect": {"identity": ["test", ability, operation, "main"]}, "input": value, "revision": revision, "previous": previous}
 
 
+def bootstrap_bus():
+    value = dict(service(), service="dbus", bootstrap=True)
+    value["manager_identity"] = {"name": "dbus", "aliases": ["messagebus"]}
+    value["socket_activation"] = {"sockets": [{
+        "name": "system-bus", "manager_name": "dbus", "enabled": True,
+        "endpoints": [{"kind": "unix", "path": "/run/dbus/system_bus_socket"}],
+        "mode": "0666", "remove_on_stop": False,
+    }]}
+    return value
+
+
+def active_bus_manager(calls):
+    def manager(*args, **kwargs):
+        calls.append(args)
+        output = "active\n" if "--value" in args else (
+            "ActiveState=active\nResult=success\n"
+            "ExecMainStartTimestampMonotonic=100\nExecMainExitTimestampMonotonic=0\n"
+        )
+        return subprocess.CompletedProcess(args, 0, output, "")
+    return manager
+
+
 class NativeHandlerTests(unittest.TestCase):
+    def test_bootstrap_bus_adopts_exact_units_and_links_without_restart(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = bootstrap_bus()
+            handler_module.render_services({"dbus": value}, units)
+            rendered = handler_module.realize_service(value)
+            before = {name: (units / name).read_bytes() for name in rendered["units"]}
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            calls = []
+            instance.manager = active_bus_manager(calls)
+
+            result = instance.service("apply")
+
+            self.assertEqual(result["resource"], "dbus.service")
+            self.assertEqual(instance.receipt["owner"], "ability")
+            self.assertFalse(instance.receipt["pending"])
+            self.assertEqual(before, {name: (units / name).read_bytes() for name in rendered["units"]})
+            self.assertTrue(instance.links_match(rendered["links"]))
+            self.assertFalse(any(call[0] in {"restart", "reload-or-restart", "stop"} for call in calls))
+            self.assertEqual(instance.service("observe")["status"], "current")
+
+    def test_adopted_bus_configuration_revision_reloads_without_changing_unit_bytes(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = dict(bootstrap_bus(), dependencyValues=["configuration:dbus:first"])
+            handler_module.render_services({"dbus": value}, units)
+            initial = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, state,
+            )
+            calls = []
+            initial.manager = active_bus_manager(calls)
+            previous = initial.service("apply")
+            original_bytes = (units / "dbus.service").read_bytes()
+            updated_value = dict(value, dependencyValues=["configuration:dbus:changed"])
+            updated = handler_module.Handler(
+                invocation("serviceManagement", "realize", updated_value, "changed", previous),
+                "unused", units, state,
+            )
+            calls.clear()
+            updated.manager = active_bus_manager(calls)
+
+            updated.service("apply")
+
+            self.assertEqual(calls.count(("reload-or-restart", "dbus.service")), 1)
+            self.assertEqual((units / "dbus.service").read_bytes(), original_bytes)
+            self.assertEqual(updated.service("observe")["status"], "current")
+
+    def test_bootstrap_bus_rejects_external_unit_drift_before_adoption(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            value = bootstrap_bus()
+            handler_module.render_services({"dbus": value}, units)
+            (units / "dbus.service").write_text("[Service]\nExecStart=/external\n")
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", value), "unused", units, Path(root) / "state",
+            )
+            calls = []
+            instance.manager = active_bus_manager(calls)
+
+            with self.assertRaisesRegex(ValueError, "conflicts with external configuration"):
+                instance.service("apply")
+
+            self.assertEqual(calls, [])
+            self.assertIsNone(instance.receipt)
+            self.assertEqual(instance.service("observe")["status"], "indeterminate")
+
+    def test_bootstrap_bus_interrupted_dispatch_retains_uncertainty(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            value = bootstrap_bus()
+            document = invocation("serviceManagement", "realize", value)
+            handler_module.render_services({"dbus": value}, units)
+            instance = handler_module.Handler(document, "unused", units, state)
+            calls = []
+            delegate = active_bus_manager(calls)
+
+            def interrupted_manager(*args, **kwargs):
+                result = delegate(*args, **kwargs)
+                if args == ("start", "dbus.service"):
+                    raise RuntimeError("manager response interrupted after dispatch")
+                return result
+
+            instance.manager = interrupted_manager
+
+            with self.assertRaisesRegex(RuntimeError, "response interrupted"):
+                instance.service("apply")
+
+            recovered = handler_module.Handler(document, "unused", units, state)
+            self.assertTrue(recovered.receipt["pending"])
+            self.assertTrue(recovered.receipt["dispatching"])
+            calls.clear()
+            recovered.manager = active_bus_manager(calls)
+
+            self.assertEqual(recovered.service("observe")["status"], "indeterminate")
+            self.assertTrue(all(call[0] == "show" for call in calls))
+            self.assertTrue(recovered.receipt["pending"])
+
     def test_required_character_device_is_present(self):
         with tempfile.TemporaryDirectory() as root:
             instance = handler_module.Handler(

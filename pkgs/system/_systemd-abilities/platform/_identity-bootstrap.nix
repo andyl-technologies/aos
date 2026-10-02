@@ -10,7 +10,9 @@
   resolve = operation: reference: let
     effect = identities.${operation}.effects.${lib.last reference.identity};
   in
-    if reference != effect.outputs.name
+    if !effect.enable
+    then throw "bootstrap account references a disabled native identity declaration"
+    else if reference != effect.outputs.name
     then throw "bootstrap account reference does not match its native identity declaration"
     else effect.input;
   principals = map (resolve "principal") principalReferences;
