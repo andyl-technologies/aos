@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{Generation, Profile, atomic_write};
 use crate::deployment::model::Deployment;
-use crate::deployment::transaction::{DeploymentStore, Transactions};
+use crate::deployment::transaction::{DeploymentStore, Transactions, journal_limits};
 
 /// Reads one explicitly selected checked result from a committed profile generation.
 ///
@@ -86,8 +86,7 @@ pub fn current_committed_generation(profile: &std::path::Path) -> Result<Option<
         directory.join("effects.journal").is_file(),
         "profile effect journal is absent"
     );
-    let transactions =
-        crate::deployment::transaction::inspect(&directory, JournalLimits::default())?;
+    let transactions = crate::deployment::transaction::inspect(&directory, journal_limits())?;
     let Some(committed) = transactions.current() else {
         return Ok(None);
     };
@@ -112,7 +111,7 @@ pub fn has_pending_deployment(profile: &std::path::Path) -> Result<bool> {
         directory.join("effects.journal").is_file(),
         "profile effect journal is absent"
     );
-    let snapshot = crate::deployment::transaction::inspect(&directory, JournalLimits::default())?;
+    let snapshot = crate::deployment::transaction::inspect(&directory, journal_limits())?;
     Ok(requires_recovery(&snapshot))
 }
 
@@ -127,8 +126,7 @@ fn read_committed_generation(
             && directory.join("effects.journal").is_file(),
         "committed profile deployment journals are absent or incomplete"
     );
-    let transactions =
-        crate::deployment::transaction::inspect(&directory, JournalLimits::default())?;
+    let transactions = crate::deployment::transaction::inspect(&directory, journal_limits())?;
     ensure!(
         allow_later_pending || !requires_recovery(&transactions),
         "profile activation is still pending"

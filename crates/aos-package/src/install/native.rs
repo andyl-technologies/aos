@@ -10,13 +10,13 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, ensure};
-use aos_ability_runtime::journal::JournalLimits;
 
 use crate::config::ApmConfig;
 use crate::deployment::evaluation::Evaluation;
 use crate::deployment::model::Deployment;
 use crate::deployment::retention::ArtifactAdmission;
 use crate::deployment::retention::NixStore;
+use crate::deployment::transaction::journal_limits;
 use crate::native_deployment::{EvaluationInput, EvaluationInputs};
 use crate::native_registry::{NativeRegistry, RegistryAdmission};
 use crate::profile::deployment::ProfileDeployment;
@@ -563,7 +563,7 @@ pub(crate) fn recover(profile: &Profile) -> Result<()> {
         profile.path.join("deployment/roots"),
         admission,
     )?;
-    let mut consumer = ProfileDeployment::open(profile, store, JournalLimits::default())?;
+    let mut consumer = ProfileDeployment::open(profile, store, journal_limits())?;
     let cancellation = crate::cancellation::AbilityCancellationGuard::install()?;
     if let Some((descriptor_path, pending)) = consumer.recovery_evaluation()? {
         // Recovery can execute a different desired generation than the committed
@@ -954,7 +954,7 @@ impl Prepared {
             profile.path.join("deployment/roots"),
             self.admission,
         )?;
-        let mut consumer = ProfileDeployment::open(profile, store, JournalLimits::default())?;
+        let mut consumer = ProfileDeployment::open(profile, store, journal_limits())?;
         crate::native_deployment::configure_profile_observer(
             &mut consumer,
             profile,
@@ -1207,7 +1207,7 @@ pub(crate) fn rollback_locked(
     crate::profile::merge::build_generation_fhs_tree(&generation, printer)?;
     EvaluationInputs::retain_descriptor(&target.path.join("evaluation.json"), &generation)?;
     let store = NixStore::open(executable, profile.path.join("deployment/roots"), admission)?;
-    let mut consumer = ProfileDeployment::open(profile, store, JournalLimits::default())?;
+    let mut consumer = ProfileDeployment::open(profile, store, journal_limits())?;
     let cancellation = crate::cancellation::AbilityCancellationGuard::install()?;
     crate::native_deployment::configure_profile_observer(
         &mut consumer,
@@ -1227,7 +1227,7 @@ pub(crate) fn prune(profile: &Profile, generation: &Generation) -> Result<()> {
         &profile.path.join("deployment/registry-admissions"),
     )?;
     let store = NixStore::open(executable, profile.path.join("deployment/roots"), admission)?;
-    let mut consumer = ProfileDeployment::open(profile, store, JournalLimits::default())?;
+    let mut consumer = ProfileDeployment::open(profile, store, journal_limits())?;
     consumer.prune(generation)
 }
 

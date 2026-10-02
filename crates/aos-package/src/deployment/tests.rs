@@ -25,6 +25,7 @@ impl PackageResolver for NoDependencies {
 #[derive(Default)]
 struct StoreState {
     retained: BTreeSet<String>,
+    admit_handlers: bool,
     retains: usize,
     fail_retain_at: Option<usize>,
     fail_release: bool,
@@ -35,7 +36,11 @@ struct Store(Arc<Mutex<StoreState>>);
 
 impl HandlerArtifacts for Store {
     fn retain(&mut self, _: &Effect) -> Result<()> {
-        bail!("empty deployment should not dispatch effects")
+        if self.0.lock().unwrap().admit_handlers {
+            Ok(())
+        } else {
+            bail!("empty deployment should not dispatch effects")
+        }
     }
 
     fn release(&mut self, _: &Effect) -> Result<()> {
@@ -81,6 +86,144 @@ fn empty_deployment(scope: &str) -> Deployment {
         &resolved,
     )
     .unwrap()
+}
+
+/// Models repeated service schemas and descriptions in a multi-package graph.
+fn service_sized_deployment() -> Deployment {
+    let root = "/nix/store/00000000000000000000000000000000-handler";
+    let envelope = Envelope::decode(
+        &serde_json::to_vec(&json!({
+            "schema":"aos.package.deployment", "system":"x86_64-linux",
+            "package":{"name":"handler","version":"1","path":root,
+                "outputs":{"out":root},"mainProgram":"run"},
+            "module":null, "runtimeDependencies":{}, "moduleDependencies":[]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let resolved = resolve_packages("x86_64-linux", vec![envelope], &mut NoDependencies).unwrap();
+    let fields: serde_json::Map<String, serde_json::Value> = (0..128)
+        .map(|index| (format!("setting{index}"), json!({"kind":"string"})))
+        .collect();
+    let descriptions: serde_json::Map<String, serde_json::Value> = fields
+        .iter()
+        .map(|(name, schema)| {
+            (
+                name.clone(),
+                json!({
+                    "description":"Service configuration and lifecycle policy. ".repeat(8),
+                    "type":schema
+                }),
+            )
+        })
+        .collect();
+    let values: serde_json::Map<String, serde_json::Value> = fields
+        .keys()
+        .map(|name| (name.clone(), json!("configured")))
+        .collect();
+    let mut nodes = serde_json::Map::new();
+    let mut order = Vec::new();
+
+    for index in 0..32 {
+        let identity = vec!["profile".into(), "main".into(), format!("service{index}")];
+        let key = aos_ability_plan::module_graph::identity_key(&identity).unwrap();
+        let mut node = json!({
+            "identity":identity,"owner":"@environment","input":values,
+            "input_type":{"kind":"submodule","fields":fields},
+            "after":[],"results":{},"lifetime":"instance","timeout_ms":1000,
+            "handler":{"kind":"process","artifact":root,
+                "executable":format!("{root}/bin/run")}
+        });
+        node["revision"] =
+            json!(aos_contract::Sha256Digest::of_bytes(serde_json::to_vec(&node).unwrap()).hex());
+        node["dependencies"] = json!([]);
+        node["inputs"] = json!(descriptions);
+        order.push(key.clone());
+        nodes.insert(key, node);
+    }
+
+    Deployment::decode(
+        &serde_json::to_vec(&json!({
+            "schema":"aos.package.transaction","retire":[],"scope":["profile","main"],
+            "system":resolved.system,"artifacts":resolved.artifacts,"packages":resolved.modules,
+            "inputs":[],"graph":{"schema":"aos.activation.graph","nodes":nodes,"order":order}
+        }))
+        .unwrap(),
+        &resolved,
+    )
+    .unwrap()
+}
+
+#[test]
+fn native_journals_reopen_service_sized_generation_and_activation_records() {
+    use super::transaction::{inspect, journal_limits};
+
+    let deployment = service_sized_deployment();
+    let bytes = deployment.canonical_bytes().unwrap();
+    assert!(bytes.len() > JournalLimits::default().max_body_bytes);
+    let directory = tempfile::tempdir().unwrap();
+    let store = Store::default();
+    store.0.lock().unwrap().admit_handlers = true;
+    let cancellation = CancellationToken::default();
+    cancellation.cancel();
+
+    // Generic event limits cannot retain this valid deployment. The native
+    // policy must admit both Prepared and Begin, without executing a handler.
+    let mut writer =
+        Transactions::open(directory.path(), store.clone(), JournalLimits::default()).unwrap();
+    let error = writer.apply(&deployment, &cancellation).unwrap_err();
+    assert!(error.to_string().contains("journal limit exceeded"));
+    assert!(writer.pending().is_none());
+    drop(writer);
+
+    let mut writer = Transactions::open(directory.path(), store.clone(), journal_limits()).unwrap();
+    let error = writer.apply(&deployment, &cancellation).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("activation cancelled before dispatch"),
+        "{error:#}"
+    );
+    assert_eq!(
+        writer.pending().unwrap().id().unwrap(),
+        deployment.id().unwrap()
+    );
+    drop(writer);
+
+    let writer = Transactions::open(directory.path(), store, journal_limits()).unwrap();
+    assert_eq!(writer.pending().unwrap().canonical_bytes().unwrap(), bytes);
+    drop(writer);
+
+    assert!(inspect(directory.path(), JournalLimits::default()).is_err());
+    let snapshot = inspect(directory.path(), journal_limits()).unwrap();
+    assert!(snapshot.has_pending_work());
+    assert!(snapshot.activation().transaction.is_some());
+    assert_eq!(
+        snapshot.pending().unwrap().canonical_bytes().unwrap(),
+        bytes
+    );
+}
+
+#[test]
+fn native_journal_policy_keeps_capacity_limits_enforced() {
+    let mut record_limits = super::transaction::journal_limits();
+    record_limits.max_records = 1;
+    let mut byte_limits = super::transaction::journal_limits();
+    byte_limits.max_file_bytes = byte_limits.max_body_bytes as u64;
+
+    for (limits, message) in [
+        (record_limits, "record journal limit"),
+        (byte_limits, "byte journal limit"),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let mut writer = Transactions::open(directory.path(), Store::default(), limits).unwrap();
+
+        let error = writer
+            .apply(&empty_deployment("main"), &CancellationToken::default())
+            .unwrap_err();
+        assert!(error.to_string().contains(message));
+        assert!(writer.pending().is_none());
+    }
 }
 
 #[test]

@@ -10,7 +10,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, ensure};
 use aos_ability_plan::module_graph::GRAPH_LIMITS;
-use aos_ability_runtime::journal::JournalLimits;
 use aos_contract::Sha256Digest;
 use aos_storage_provisioning::AuthorizedProvisioningInput;
 
@@ -80,7 +79,7 @@ pub(super) fn read_initial_in(
         GRAPH_LIMITS.decode(&read_bounded(binding_path, 4096)?, "image metadata binding")?;
     binding.validate(&expected)?;
 
-    let snapshot = transaction::inspect(&initrd.state_directory, JournalLimits::default())?;
+    let snapshot = transaction::inspect(&initrd.state_directory, transaction::journal_limits())?;
     ensure!(
         !snapshot.has_pending_work()
             && snapshot.incomplete_tail_bytes() == 0
