@@ -27,6 +27,7 @@ use alloc::{
 use core::cell::RefCell;
 
 mod context;
+mod encoding;
 
 /// Evaluates a view's trust using authenticated commits and canonical witnesses.
 ///
@@ -99,23 +100,15 @@ impl TrustContext {
     ) -> Result<Self, Rejected> {
         history.require_verified_context(view)?;
         let root = history.commit(&view).ok_or(Rejected)?.commit().tree;
-        let mut canonical = Vec::new();
         let side_context = history.side_context(view, domain);
-        let has_side_evidence = !side_context.is_empty();
-        cbor::write_array(&mut canonical, if has_side_evidence { 7 } else { 6 });
-        cbor::write_uint(&mut canonical, if has_side_evidence { 2 } else { 1 });
-        cbor::write_bytes(&mut canonical, &view);
-        cbor::write_text(&mut canonical, domain);
-        cbor::write_bytes(&mut canonical, selector.encode());
-        if let Some(baseline) = baseline {
-            cbor::write_text(&mut canonical, baseline);
-        } else {
-            canonical.push(0xf6);
-        }
-        cbor::write_uint(&mut canonical, history.min_chunk_size());
-        if has_side_evidence {
-            cbor::write_bytes(&mut canonical, &side_context);
-        }
+        let canonical = encoding::encode(encoding::ContextFields {
+            view: &view,
+            domain,
+            selector: selector.encode(),
+            baseline,
+            minimum: history.min_chunk_size(),
+            selected: &side_context,
+        });
 
         Ok(Self {
             history,

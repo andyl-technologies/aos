@@ -11,7 +11,6 @@
 
 use super::{EntryLocation, Rejected, VerifiedHistory};
 use crate::{
-    cbor,
     derived::VerifiedAttributeEvidence,
     identity::Digest,
     properties::{self, Defaults, RootLayer, Value},
@@ -21,6 +20,8 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+
+mod serialization;
 
 pub(super) type SideAttributeKey = (EntryLocation, String, String);
 
@@ -211,50 +212,32 @@ impl VerifiedHistory {
     }
 
     pub(super) fn side_context(&self, view: Digest, domain: &str) -> Vec<u8> {
-        let selected: Vec<_> = self
-            .side_attributes
-            .iter()
-            .filter(|((location, _, selected_domain), _)| {
-                location.commit == view && selected_domain == domain
-            })
-            .collect();
-        if selected.is_empty() {
-            return Vec::new();
-        }
-        let mut bytes = Vec::new();
-        cbor::write_array(&mut bytes, selected.len());
-        for ((location, name, domain), bound) in selected {
-            cbor::write_array(&mut bytes, 5);
-            encode_location(&mut bytes, location);
-            cbor::write_text(&mut bytes, name);
-            cbor::write_text(&mut bytes, domain);
-            cbor::write_bytes(&mut bytes, &bound.view_path);
-            bound.encode_context(&mut bytes);
-        }
-        bytes
+        serialization::selected(
+            self.side_attributes.iter(),
+            view,
+            domain,
+            |bound| &bound.view_path,
+            |output, bound| bound.encode_context(output),
+        )
     }
-}
-
-fn encode_location(output: &mut Vec<u8>, location: &EntryLocation) {
-    cbor::write_array(output, 3);
-    cbor::write_bytes(output, &location.commit);
-    cbor::write_bytes(output, &location.root);
-    cbor::write_bytes(output, &location.path);
 }
 
 impl BoundSideAttribute {
     pub(super) fn encode_context(&self, output: &mut Vec<u8>) {
-        cbor::write_array(output, 9);
-        cbor::write_bytes(output, self.evidence.record().digest());
-        cbor::write_bytes(output, self.evidence.object());
-        cbor::write_text(output, self.evidence.name().as_str());
-        cbor::write_text(output, &self.evidence.function().name);
-        cbor::write_text(output, &self.evidence.function().version);
-        cbor::write_bytes(output, self.evidence.value());
-        cbor::write_bytes(output, self.evidence.producer());
-        encode_location(output, self.evidence.location());
-        cbor::write_array(output, 2);
-        cbor::write_text(output, &self.producer_domain);
-        cbor::write_bytes(output, &self.producer_path);
+        serialization::encode_evidence(
+            output,
+            serialization::EvidenceFields {
+                record: self.evidence.record().digest(),
+                object: self.evidence.object(),
+                name: self.evidence.name().as_str(),
+                function: &self.evidence.function().name,
+                version: &self.evidence.function().version,
+                value: self.evidence.value(),
+                producer: self.evidence.producer(),
+                location: self.evidence.location(),
+                producer_domain: &self.producer_domain,
+                producer_path: &self.producer_path,
+            },
+        );
     }
 }
