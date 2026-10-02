@@ -132,12 +132,15 @@ fn validate_aos_root(root: &Path, live_only: bool) -> Result<()> {
     if values.get("ID").map(String::as_str) != Some("aos") {
         bail!("{} does not identify ID=aos", identity.display());
     }
-    let module_abi = values
-        .get("AOS_MODULE_ABI")
-        .with_context(|| format!("{} has no AOS_MODULE_ABI", identity.display()))?;
-    module_abi.parse::<u32>().with_context(|| {
+    let library = values
+        .get("AOS_PACKAGE_MODULE_LIBRARY")
+        .with_context(|| format!("{} has no AOS_PACKAGE_MODULE_LIBRARY", identity.display()))?;
+    // Native modules bind compatibility to the retained source library rather
+    // than the retired shared-option-schema ABI integer. Source admission owns
+    // artifact availability and custody; this gate checks the declared identity.
+    crate::deployment::nix::store_root_and_suffix(Path::new(library)).with_context(|| {
         format!(
-            "{} has invalid AOS_MODULE_ABI={module_abi}",
+            "{} has invalid AOS_PACKAGE_MODULE_LIBRARY={library}",
             identity.display()
         )
     })?;
@@ -246,7 +249,7 @@ mod tests {
         fs::create_dir_all(root.path().join("etc")).unwrap();
         fs::write(
             root.path().join("etc/os-release"),
-            "NAME=AOS\nID=aos\nAOS_MODULE_ABI=7\n",
+            "NAME=AOS\nID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
 
@@ -262,7 +265,7 @@ mod tests {
         fs::create_dir_all(root.path().join(&identity[1..]).parent().unwrap()).unwrap();
         fs::write(
             root.path().join(&identity[1..]),
-            "NAME=AOS\nID=aos\nAOS_MODULE_ABI=7\n",
+            "NAME=AOS\nID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
         symlink(
@@ -298,12 +301,38 @@ mod tests {
     }
 
     #[test]
+    fn rejects_retired_or_invalid_module_library_identities() {
+        let root = tempdir().unwrap();
+        fs::create_dir_all(root.path().join("etc")).unwrap();
+        let identity = root.path().join("etc/os-release");
+        fs::write(&identity, "ID=aos\nAOS_MODULE_ABI=7\n").unwrap();
+
+        let error = validate_aos_root(root.path(), false).unwrap_err();
+        assert!(format!("{error:#}").contains("has no AOS_PACKAGE_MODULE_LIBRARY"));
+
+        for library in [
+            "/tmp/aos-module-library",
+            "/nix/store/not-a-store-object",
+            "/nix/store/00000000000000000000000000000000-aos-module-library/../foreign",
+        ] {
+            fs::write(
+                &identity,
+                format!("ID=aos\nAOS_PACKAGE_MODULE_LIBRARY={library}\n"),
+            )
+            .unwrap();
+
+            let error = validate_aos_root(root.path(), false).unwrap_err();
+            assert!(format!("{error:#}").contains("has invalid AOS_PACKAGE_MODULE_LIBRARY"));
+        }
+    }
+
+    #[test]
     fn live_runtime_requires_the_immutable_identity() {
         let root = tempdir().unwrap();
         fs::create_dir_all(root.path().join("etc")).unwrap();
         fs::write(
             root.path().join("etc/os-release"),
-            "ID=aos\nAOS_MODULE_ABI=1\n",
+            "ID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
 
@@ -316,7 +345,7 @@ mod tests {
         fs::create_dir_all(root.path().join("nix/store/aos-system")).unwrap();
         fs::write(
             root.path().join("nix/store/os-release"),
-            "ID=aos\nAOS_MODULE_ABI=7\n",
+            "ID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
         )
         .unwrap();
         fs::create_dir_all(root.path().join("usr/lib/aos")).unwrap();
@@ -333,6 +362,7 @@ mod tests {
 
         validate_aos_root(root.path(), false).unwrap();
     }
+
     #[test]
     fn current_release_prefers_immutable_target_identity() {
         let root = tempdir().unwrap();

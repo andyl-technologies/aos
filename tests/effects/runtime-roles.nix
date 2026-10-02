@@ -26,6 +26,29 @@
   edge = evaluate "edge" {aos.roles.edge.enable = true;};
   server = evaluate "server" {aos.roles.server.enable = true;};
   baseline = evaluate "edge" {};
+  identityEvaluation = lib.evalModules {
+    inherit lib pkgs;
+    specialArgs = {
+      inherit pkgs;
+      packageModulesAvailable = true;
+    };
+    modules = [
+      ../../modules/base/system.nix
+      {
+        config._module.strict = false;
+        options.environment.etc = lib.mkOption {
+          type = lib.types.attrs;
+          default = {};
+        };
+        options.aos.release.enabled = lib.mkOption {
+          type = lib.types.bool;
+          default = false;
+        };
+        config.aos.release.enabled = false;
+      }
+    ];
+  };
+  generatedIdentity = identityEvaluation.config.environment.etc."os-release".text;
   override = evaluate "edge" {
     aos.roles.edge.enable = true;
     aos.services.ssh.enable = false;
@@ -42,6 +65,7 @@
       )
       == name) (effects evaluation "serviceManagement" "realize");
 in {
+  generatedIdentityUsesRetainedNativeLibrary = builtins.elem "AOS_PACKAGE_MODULE_LIBRARY=${lib.packageModuleLibrary}" (lib.splitString "\n" generatedIdentity) && !lib.hasInfix "AOS_MODULE_ABI=" generatedIdentity;
   baselineServicesRemainOptional = !baseline.config.aos.services.chrony.enable && !baseline.config.aos.services.ssh.enable;
   edgeRoleEnablesOriginalServices = edge.config.aos.services.chrony.enable && edge.config.aos.services.ssh.enable && hasManager edge "chronyd" && hasManager edge "sshd";
   edgeRoleConvergesConservativeTunables = edge.config.aos.kernel.sysctl."vm.swappiness" == "10" && edge.config.aos.kernel.sysctl."vm.vfs_cache_pressure" == "200" && builtins.length (effects edge "kernelTunables" "ensure") == 1;
