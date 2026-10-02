@@ -59,7 +59,7 @@
     inherit src;
     name = "aos-vendor-${version}";
     sourceRoot = "source/crates";
-    hash = "sha256-bFrGLJz08aNxlYogCpbDOy9Oh7uFIcLXm4lMe5Ce9no=";
+    hash = "sha256-WGkOGTHCcEgqZb0Igesu7xXTnhmEifgKt1IS0ARGuCI=";
   };
   cargoEnv = {
     OPENSSL_DIR = "${openssl}";
