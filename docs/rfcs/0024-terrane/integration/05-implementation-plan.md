@@ -585,6 +585,20 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   production interface. It fails explicitly while those input templates,
   generator or pure prerequisites are absent. This registration establishes
   no verification, trust evaluation or native disclosure authority.
+  Complete review of the isolated modern-ref inputs covers 147 independent
+  models: 33 commits, eight ref records, ten reflogs and 96 malformed wires.
+  A corrected graft witness contains the actual canonical Tree target; its
+  complete decoded recipe is compared independently. All four auxiliary groups,
+  491 core Nextest tests, strict Clippy/rustdoc and mandatory formatting pass.
+  Normative publication remains pending the REF-9 reference-text correction.
+  Complete review of the isolated private-evidence inputs covers 86 witnesses,
+  including 32 negatives: selector arenas, both context versions, nine-field
+  side evidence, statement preimages and whole-target normalization. Its five
+  exact auxiliary groups, 564 core Nextest tests, strict Clippy/rustdoc and
+  mandatory formatting pass. Publication remains pending exact-byte reference
+  comparison and its missing, duplicate, split and whitespace controls.
+  Encoder-only projections are compared field by field without claiming an
+  owning typed decoder. Neither input candidate qualifies the full aggregate.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1238,6 +1252,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   ordinary reopening still refuses pending selected configuration mismatches.
   This scoped evidence precedes public entrypoint and strict native qualification.
   These additional regressions do not qualify the absent contracts.
+  Complete review of the subsequent native candidate covers dependency-first
+  dictionary staging, independently retained graft producers and genuine
+  canonical conflict resolution. The dictionary fixture verifies Raw, Zstd
+  and nested ZstdDict envelopes, exact encoded transfer and typed current-scope,
+  profile and plaintext-length refusals. The replacement-graft correction finds
+  the retained matching root before a displaced same-path occurrence. Its four
+  focused cases pass together; the genuine conflict-resolution case separately
+  passes run `a57c9686-ffa9-4330-a460-be68a97d18c8`. Five of nineteen required
+  contracts have isolated passing evidence. The combined qualification source
+  remains unpublished; full native gates and the aggregate remain required.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -1257,6 +1281,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   full Nextest passes 352 of 359 tests and the aggregate fails the backend
   retirement compatibility assertion in `index-generation-manifest`. Actual
   current-authority disclosure, deletion and domain gates remain incomplete.
+  Index disclosure is stopped on a pre-freeze prerequisite gap: DRV-13 requires
+  an owner-root property binding from attribute name to index root, but the
+  registered `index` property contains only required attribute names. Existing
+  opaque-index codecs and explicit `TreeUse::Index` interpretation supply no
+  registered binding carrier or native read dispatch. PROP-3/CONV-3 forbid an
+  invented property, and optional derived refs cannot replace DRV-23 correctness.
+  The DOM-7/PROV-30 native index-rebuild case remains mandatory and unqualified;
+  its operational dependency belongs to T-DRV-2. No branch workline is started,
+  encoding is not frozen, and no pure-codec result substitutes for that case.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
