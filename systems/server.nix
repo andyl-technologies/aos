@@ -27,6 +27,9 @@
       then 768
       else 640;
     maxUkiMiB = lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") 224;
+    # The ESP retains the normal UKI and both recovery UKIs, each embedding
+    # the uncompressed AArch64 kernel, plus bootloader and FAT headroom.
+    maxEspMiB = lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") 768;
     maxVerityMiB = 16;
     # The recovery-capable runtime initrd measures 140 MiB on x86_64 with the
     # complete aos, apm, and package-runtime CLIs; keep headroom for growth.
