@@ -1,12 +1,13 @@
 set -eu
-state=/build/aos-boot-bootstrap-state
-invocation="$state/invocation.json"
+invocation=$(cat)
+state=$(printf '%s' "$invocation" | jq -r .input.stateDir)
 mkdir -p "$state"
-cat > "$invocation"
+printf '%s' "$invocation" > "$state/invocation.json"
+invocation="$state/invocation.json"
 if jq -e '.input | has("authorized_input")' "$invocation" >/dev/null; then
   receipt=$(jq -r .input.authorized_input "$invocation")
   digest=$(sha256sum "$receipt")
-  jq --arg digest "sha256:${digest%% *}" '.input + {
+  jq --arg digest "sha256:${digest%% *}" '.input | del(.stateDir) + {
     resource:"fixture-committed-disk",source:"operator",authorized_input_sha256:$digest
   }' "$invocation"
   exit 0

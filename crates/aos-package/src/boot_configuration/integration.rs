@@ -25,6 +25,16 @@ struct Fixture {
     initrd: PathBuf,
     binding: PathBuf,
     library: PathBuf,
+    #[serde(rename = "acquiredPackage")]
+    acquired_package: PathBuf,
+    #[serde(rename = "acquiredEnvelope")]
+    acquired_envelope: PathBuf,
+    #[serde(rename = "acquiredRuntimePayloads")]
+    acquired_runtime_payloads: Vec<PathBuf>,
+    #[serde(rename = "stateDirectory")]
+    state_directory: PathBuf,
+    #[serde(rename = "acquiredStateDirectory")]
+    acquired_state_directory: PathBuf,
 }
 
 fn command(
@@ -51,15 +61,17 @@ fn source(
     name: &str,
     value: &str,
     fail: bool,
+    state_directory: &Path,
 ) -> Result<crate::runtime_modules::RuntimeModuleSnapshot> {
     let worktree = scratch.join(name);
     fs::create_dir(&worktree)?;
     fs::write(
         worktree.join("host.nix"),
         format!(
-            "{{ aos.bootstrapFixture = {{ value = {}; failAfterWrite = {}; }}; }}\n",
+            "{{ aos.bootstrapFixture = {{ value = {}; failAfterWrite = {}; stateDir = {}; }}; }}\n",
             crate::deployment::nix::nix_string(value),
-            if fail { "true" } else { "false" }
+            if fail { "true" } else { "false" },
+            crate::deployment::nix::nix_string(&state_directory.display().to_string())
         ),
     )?;
     crate::runtime_modules::snapshot(&worktree, scratch, false)
@@ -81,6 +93,16 @@ fn current(profile: &Profile, executable: &Path) -> Result<(u32, EvaluationInput
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "requires the retained source-built boot-metadata fixture and isolated Nix store"]
 async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> Result<()> {
+    exercise_adoption(false).await
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires actual source-built fixtures and an authenticated acquisition release"]
+async fn host_selected_absent_package_acquires_module_and_commits_one_generation() -> Result<()> {
+    exercise_adoption(true).await
+}
+
+async fn exercise_adoption(acquire_absent_package: bool) -> Result<()> {
     let fixture_path = std::env::var_os("AOS_BOOT_CONFIGURATION_FIXTURE")
         .context("source-built boot fixture is required")?;
     let fixture: Fixture = serde_json::from_slice(&fs::read(fixture_path)?)?;
@@ -122,7 +144,7 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
     ensure!(
         reader::read_initial_in(&host, &initrd, &invalid_binding).is_err()
             && crate::profile::deployment::current_committed_generation(&profile.path)?.is_none()
-            && !Path::new("/build/aos-boot-bootstrap-state/value").exists(),
+            && !fixture.state_directory.join("value").exists(),
         "an unrelated result binding dispatched a host effect"
     );
     let verified = reader::read_initial_in(&host, &initrd, &fixture.binding)?;
@@ -130,12 +152,11 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
     let (first, initial) = current(&profile, &executable)?;
     retained::verify(&host, first)?;
     ensure!(
-        fs::read_to_string("/build/aos-boot-bootstrap-state/value")?
-            == "authorized-observed-fixture",
+        fs::read_to_string(fixture.state_directory.join("value"))? == "authorized-observed-fixture",
         "first live host effect did not use the authorized metadata source"
     );
     ensure!(
-        fs::read_to_string("/build/aos-boot-bootstrap-state/count")?.trim() == "1",
+        fs::read_to_string(fixture.state_directory.join("count"))?.trim() == "1",
         "initial host effect was dispatched more than once"
     );
     let adopted = initial.runtime_configuration.clone();
@@ -148,7 +169,7 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
     // without repeating the already completed host dispatch.
     capture::apply(&host, original, &cancellation)?;
     ensure!(
-        fs::read_to_string("/build/aos-boot-bootstrap-state/count")?.trim() == "1",
+        fs::read_to_string(fixture.state_directory.join("count"))?.trim() == "1",
         "repeat bootstrap duplicated a one-shot host dispatch"
     );
 
@@ -166,7 +187,7 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
     )?;
     let unavailable =
         crate::runtime_modules::snapshot(&unavailable_worktree, scratch.path(), false)?;
-    let count_before = fs::read_to_string("/build/aos-boot-bootstrap-state/count")?;
+    let count_before = fs::read_to_string(fixture.state_directory.join("count"))?;
     let generation_before = current(&profile, &executable)?.0;
     ensure!(
         crate::install::native::reconfigure_at(&config, &profile, &unavailable, false, &printer)
@@ -175,11 +196,17 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
     );
     ensure!(
         current(&profile, &executable)?.0 == generation_before
-            && fs::read_to_string("/build/aos-boot-bootstrap-state/count")? == count_before
+            && fs::read_to_string(fixture.state_directory.join("count"))? == count_before
             && !crate::profile::deployment::has_pending_deployment(&profile.path)?,
         "failed package acquisition changed the generation or dispatched effects"
     );
-    let operator = source(scratch.path(), "operator", "operator", false)?;
+    let operator = source(
+        scratch.path(),
+        "operator",
+        "operator",
+        false,
+        &fixture.state_directory,
+    )?;
     crate::install::native::reconfigure_at(&config, &profile, &operator, false, &printer)
         .context("normal operator switch after verified metadata adoption")?;
     let (changed, changed_input) = current(&profile, &executable)?;
@@ -197,11 +224,17 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
     let (_, rebooted) = current(&profile, &executable)?;
     ensure!(
         rebooted.runtime_configuration == operator.entrypoints
-            && fs::read_to_string("/build/aos-boot-bootstrap-state/value")? == "operator",
+            && fs::read_to_string(fixture.state_directory.join("value"))? == "operator",
         "boot replaced the operator role with image or platform metadata"
     );
 
-    let interrupted = source(scratch.path(), "interrupted", "interrupted", true)?;
+    let interrupted = source(
+        scratch.path(),
+        "interrupted",
+        "interrupted",
+        true,
+        &fixture.state_directory,
+    )?;
     ensure!(
         crate::install::native::reconfigure_at(&config, &profile, &interrupted, false, &printer)
             .is_err(),
@@ -211,12 +244,12 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
         crate::profile::deployment::has_pending_deployment(&profile.path)?,
         "interrupted side effect has no native recovery intent"
     );
-    let count = fs::read_to_string("/build/aos-boot-bootstrap-state/count")?;
+    let count = fs::read_to_string(fixture.state_directory.join("count"))?;
     let recovered = crate::native_deployment::resume_profile(&host, &cancellation)?
         .context("interrupted operator generation did not commit during recovery")?;
     ensure!(
         !crate::profile::deployment::has_pending_deployment(&profile.path)?
-            && fs::read_to_string("/build/aos-boot-bootstrap-state/count")? == count,
+            && fs::read_to_string(fixture.state_directory.join("count"))? == count,
         "recovery repeated the observed completed side effect"
     );
     retained::verify(&host, recovered)?;
@@ -228,8 +261,183 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
     );
     crate::native_deployment::apply(&host, &cancellation)?;
     ensure!(
-        fs::read_to_string("/build/aos-boot-bootstrap-state/count")? == count,
+        fs::read_to_string(fixture.state_directory.join("count"))? == count,
         "post-recovery boot repeated a one-shot operation"
     );
+
+    if !acquire_absent_package {
+        return Ok(());
+    }
+
+    // A new authored option is unavailable in the retained baseline. Package
+    // discovery must acquire its signed payload and module before full checking,
+    // without publishing an intermediate package-only generation.
+    for path in &fixture.acquired_runtime_payloads {
+        let mut check = std::process::Command::new(&executable);
+        aos_core::nix::configure_aos_nix_store(&mut check)?;
+        ensure!(
+            check
+                .args(["--check-validity"])
+                .arg(path)
+                .output()?
+                .status
+                .success(),
+            "runtime dependency payload was not carried by the baseline: {}",
+            path.display()
+        );
+    }
+    for path in [&fixture.acquired_package, &fixture.acquired_envelope] {
+        let mut check = std::process::Command::new(&executable);
+        aos_core::nix::configure_aos_nix_store(&mut check)?;
+        ensure!(
+            !check
+                .args(["--check-validity"])
+                .arg(path)
+                .output()?
+                .status
+                .success(),
+            "unbundled acquisition input was already present: {}",
+            path.display()
+        );
+    }
+    ensure!(
+        !recovered_input
+            .packages
+            .modules
+            .iter()
+            .any(|module| module.name == "boot-acquired-fixture"),
+        "acquired package module leaked into the image baseline"
+    );
+    let acquisition_registry = std::env::var_os("AOS_BOOT_ACQUISITION_REGISTRY")
+        .context("actual signed acquisition registry is required")?;
+    let registry: crate::types::RegistryConfig =
+        serde_json::from_slice(&fs::read(acquisition_registry)?)?;
+    ensure!(
+        registry
+            .signing
+            .as_ref()
+            .is_some_and(|signing| signing.required),
+        "acquisition registry must enforce signature verification"
+    );
+    let acquisition_config = crate::config::ApmConfig {
+        registries: vec![(registry, None)],
+        ..config
+    };
+    let acquisition_worktree = scratch.path().join("acquired-role");
+    fs::create_dir(&acquisition_worktree)?;
+    fs::write(
+        acquisition_worktree.join("host.nix"),
+        format!(
+            "{{ aos.apm.desiredPackages = [\"boot-acquired-fixture\"]; aos.bootstrapFixture = {{ value = \"interrupted\"; failAfterWrite = true; stateDir = {}; }}; aos.acquiredFixture = {{ value = \"acquired-through-typed-option\"; stateDir = {}; }}; }}\n",
+            crate::deployment::nix::nix_string(&fixture.state_directory.display().to_string()),
+            crate::deployment::nix::nix_string(
+                &fixture.acquired_state_directory.display().to_string()
+            ),
+        ),
+    )?;
+    let acquisition_source =
+        crate::runtime_modules::snapshot(&acquisition_worktree, scratch.path(), false)?;
+    let committed_history = || -> Result<std::collections::BTreeMap<_, _>> {
+        crate::deployment::transaction::inspect(
+            &profile.path.join("deployment"),
+            crate::deployment::transaction::journal_limits(),
+        )?
+        .generations()
+        .iter()
+        .map(|(sequence, generation)| {
+            Ok((
+                *sequence,
+                (
+                    generation.content.clone(),
+                    generation.outputs.clone(),
+                    generation.deployment.canonical_bytes()?,
+                ),
+            ))
+        })
+        .collect()
+    };
+    let generation_before_acquisition = current(&profile, &executable)?.0;
+    let history_before = committed_history()?;
+    let original_dispatch_count = fs::read_to_string(fixture.state_directory.join("count"))?;
+    crate::install::native::reconfigure_at(
+        &acquisition_config,
+        &profile,
+        &acquisition_source,
+        false,
+        &printer,
+    )
+    .context("host-selected absent package acquisition")?;
+    let (acquired_generation, acquired_input) = current(&profile, &executable)?;
+    let history_after = committed_history()?;
+    let acquired_commit =
+        crate::profile::deployment::committed_generation(&profile.path, acquired_generation)?;
+    let new_commits = history_after
+        .keys()
+        .filter(|sequence| !history_before.contains_key(sequence))
+        .copied()
+        .collect::<Vec<_>>();
+    let previous_commits_unchanged = history_before
+        .iter()
+        .all(|(sequence, generation)| history_after.get(sequence) == Some(generation));
+    let sequences_before = history_before.keys().copied().collect::<Vec<_>>();
+    let sequences_after = history_after.keys().copied().collect::<Vec<_>>();
+    ensure!(
+        acquired_generation > generation_before_acquisition
+            && previous_commits_unchanged
+            && new_commits == [acquired_commit.sequence]
+            && !crate::profile::deployment::has_pending_deployment(&profile.path)?,
+        "package acquisition did not publish exactly one committed generation: profile {generation_before_acquisition} -> {acquired_generation}, history {sequences_before:?} -> {sequences_after:?}"
+    );
+    eprintln!(
+        "acquisition profile {generation_before_acquisition} -> {acquired_generation} (earlier recovered {recovered}); committed sequences {sequences_before:?} -> {sequences_after:?}"
+    );
+    ensure!(
+        acquired_input
+            .packages
+            .artifacts
+            .iter()
+            .any(|artifact| Path::new(&artifact.path) == fixture.acquired_package)
+            && acquired_input
+                .packages
+                .modules
+                .iter()
+                .any(|module| module.name == "boot-acquired-fixture")
+            && acquired_input.runtime_configuration == acquisition_source.entrypoints
+            && initial
+                .supplemental_inputs
+                .iter()
+                .all(|proof| acquired_input.supplemental_inputs.contains(proof)),
+        "acquired generation lost its selected root, module, authored source or original proof"
+    );
+    ensure!(
+        fs::read_to_string(fixture.acquired_state_directory.join("value"))?
+            == "acquired-through-typed-option"
+            && fs::read_to_string(fixture.acquired_state_directory.join("count"))?.trim() == "1"
+            && fs::read_to_string(fixture.state_directory.join("count"))?
+                == original_dispatch_count,
+        "new typed package configuration did not dispatch exactly once"
+    );
+    let jq = acquired_input
+        .packages
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.name == "jq")
+        .context("acquired fixture lost its jq runtime package")?;
+    let development_output = jq
+        .outputs
+        .get("dev")
+        .context("actual jq fixture lacks its named development output")?;
+    let mut check = std::process::Command::new(&executable);
+    aos_core::nix::configure_aos_nix_store(&mut check)?;
+    ensure!(
+        !check
+            .args(["--check-validity"])
+            .arg(development_output)
+            .output()?
+            .status
+            .success(),
+        "unused jq development output was realized during acquisition"
+    );
+    retained::verify(&host, acquired_generation)?;
     Ok(())
 }

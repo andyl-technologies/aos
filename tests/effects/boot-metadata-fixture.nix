@@ -2,6 +2,8 @@
 {
   pkgs,
   lib,
+  stateDirectory ? "/build/aos-boot-bootstrap-state",
+  acquiredStateDirectory ? "/build/aos-boot-acquired-state",
 }: let
   provisioningTypes = import ../../pkgs/system/_aos-storage-provisioning-provider/types.nix {inherit lib;};
   provisioningWire = lib.evalModules {
@@ -42,7 +44,6 @@
       pname = name;
       version = "1";
       inherit module;
-      moduleDeps = [];
       src = null;
       phases = [
         {
@@ -64,6 +65,51 @@
       moduleDeps = [factsSchema proofSchema];
     });
   packages = [payload];
+  acquiredPackage = pkgs.mkDerivation {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+    pname = "boot-acquired-fixture";
+    version = "1.0.0";
+    module = ./boot-metadata-acquired;
+    meta = {
+      mainProgram = "acquired-handler";
+      description = "Unbundled native configuration fixture";
+      license = "MIT";
+      maintainers = ["publisher@example.test"];
+    };
+    src = null;
+    runtimeDeps = [pkgs.bash pkgs.coreutils pkgs.jq];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          cat > "$out/bin/acquired-handler" <<'HANDLER'
+          #!${pkgs.bash}/bin/bash
+          export PATH=${lib.makeBinPath [pkgs.coreutils pkgs.jq]}
+          ${builtins.readFile ./boot-metadata-package/handler.sh}
+          HANDLER
+          chmod +x "$out/bin/acquired-handler"
+        '';
+      }
+    ];
+  };
   scope = ["profile" "system"];
   host = lib.evalPackageModules {inherit scope packages;};
   bundle = import ../../pkgs/containers/_aos-oci-backend/deployment-bundle.nix;
@@ -76,6 +122,7 @@
   hostText = ''
     { config, ... }: {
       aos.apm.desiredPackages = ["boot-bootstrap-fixture"];
+      aos.bootstrapFixture.stateDir = ${builtins.toJSON stateDirectory};
       aos.bootstrapFixture.value = "authorized-" + config.host.facts.hostname;
     }
   '';
@@ -122,6 +169,7 @@
   };
   initrdPolicy = {
     aos.abilities.storageProvisioning.operations.prepare.effects.system.input = {
+      stateDir = stateDirectory;
       authorized_input = toString receipt;
       committed_plan = toString plan;
     };
@@ -162,7 +210,14 @@ in
     destination = "/fixture.json";
     text = builtins.toJSON {
       inherit hostBundle initrdBundle binding;
+      inherit stateDirectory acquiredStateDirectory;
       library = lib.packageModuleLibrary;
+      # Publication roots are deliberately outside the baseline input closure.
+      acquiredRuntimePayloads = map (dependency:
+        builtins.unsafeDiscardStringContext (toString dependency))
+      acquiredPackage.runtimeDeps;
+      acquiredPackage = builtins.unsafeDiscardStringContext (toString acquiredPackage);
+      acquiredEnvelope = builtins.unsafeDiscardStringContext (toString acquiredPackage.deploymentArtifact);
     };
   }).overrideAttrs (previous: {
     phases =
@@ -178,3 +233,4 @@ in
         }
       ];
   })
+  // {inherit acquiredPackage;}

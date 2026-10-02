@@ -14,6 +14,10 @@ in {
     extensible = true;
   };
   options.aos.bootstrapFixture = {
+    stateDir = lib.mkOption {
+      type = lib.types.strMatching "/.*";
+      default = "/build/aos-boot-bootstrap-state";
+    };
     value = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
@@ -27,6 +31,7 @@ in {
     {
       aos.abilities.storageProvisioning.operations.prepare = {
         input.options = {
+          stateDir = field (lib.types.strMatching "/.*");
           authorized_input = field lib.types.str;
           committed_plan = field lib.types.str;
         };
@@ -41,6 +46,7 @@ in {
       };
       aos.abilities.bootstrapFixture.operations.ensure = {
         input.options = {
+          stateDir = field (lib.types.strMatching "/.*");
           value = field lib.types.str;
           failAfterWrite = field lib.types.bool;
         };
@@ -54,7 +60,7 @@ in {
     (lib.mkIf (cfg.value != null) {
       aos.abilities.bootstrapFixture.operations.ensure.effects.host = {
         lifetime = "persistent";
-        input = {inherit (cfg) value failAfterWrite;};
+        input = {inherit (cfg) value failAfterWrite stateDir;};
       };
     })
   ];
