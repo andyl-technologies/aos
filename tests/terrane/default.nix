@@ -186,4 +186,5 @@ in {
   integration.pack-format-vectors = import ./pack-vectors.nix {inherit sourceGate;};
   integration.collection-reference-generator = import ./collection-reference.nix {inherit pkgs;};
   integration.collection-format-vectors = import ./collection-vectors.nix {inherit sourceGate;};
+  integration.foundation-reference-generator = import ./foundation-reference.nix {inherit sourceGate;};
 }

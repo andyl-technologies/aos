@@ -334,6 +334,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   rustdoc pass; full core qualification including these new groups is queued.
   The actual current aggregate still rejects the absent `format_properties`
   target. The complete corpus stays unqualified; no task or milestone advances.
+  A further reference review found the unpublished internal-node model and
+  complete eleven-domain descriptor coverage required by TEST-2. The independent
+  `foundation-reference-generator` check now emits eleven descriptors with
+  complete payload bytes and three node models, reproducing five preserved
+  identities. Its actual hermetic run and read-only reproduction, section-bound,
+  tamper and duplicate-heading checks pass. Child counts and weights match the
+  independently encoded leaf models. Publication and Rust codec comparisons
+  remain required. Deferred filter and memo payloads are CDDL descriptor inputs,
+  not implementations of those branch features; no branch workline starts.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
