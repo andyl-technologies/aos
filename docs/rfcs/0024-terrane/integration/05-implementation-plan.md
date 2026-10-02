@@ -227,6 +227,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   pass; they add no cold-fork behavior or authority. Read-only review confirms
   both preparation and final publication must qualify retained lineage without
   TreeNode I/O; optimizing preparation alone cannot satisfy ALG-32.
+  The modern commit format audit confirms an ALG-36 codec gap: generic recipe
+  validation accepts graft and merge values that omit required operation-specific
+  fields. Independently assembled complete Commit inputs demonstrate acceptance
+  of `{1: "graft", 2: []}` and `{1: "merge", 2: [], 3: {}}`. The registered
+  schemas already require two graft inputs and complete arguments, and three
+  merge inputs plus policy arguments. This is an implementation correction,
+  with no specification or wire change. The shared `algebra-merge` gate now also
+  requires two exact commit-level cases for valid registered/other encodings and
+  malformed operation-specific argument refusal. They remain pending on a
+  separate task branch; prior standalone recipe results do not qualify this path.
+  The actual augmented gate fails on the absent first new exact target (zero
+  tests); mandatory formatting passes. The requirement remains open.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [x] **T-PROP-1** Property resolution, types, boundary properties,
