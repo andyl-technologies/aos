@@ -23,6 +23,8 @@
       modules = [
         ../../lib/effects/module.nix
         ../../pkgs/system/_service-management/module.nix
+        ../../pkgs/filesystem/_aos-filesystem-provider/module.nix
+        ../../pkgs/tools/aos/_abilities/runtime-layout.nix
         ../../pkgs/tools/aos/_abilities/configuration-evaluation.nix
         {
           options.aos.boot = {
@@ -53,6 +55,8 @@
   commit = enabled.aos.services."configuration-evaluation.image-boot-commit";
   command = (builtins.head commit.lifecycle.start).executable;
   registry = enabled.aos.services."configuration-evaluation.registry-synchronization";
+  registryDirectory = builtins.head registry.directories.managed;
+  runtimeDirectory = enabled.aos.directories.aos-runtime-var-lib-apm;
 in {
   nativeServicesEnabled = registry.enable && commit.enable;
   disabledServicesAbsent = !disabled.aos.services."configuration-evaluation.registry-synchronization".enable && !disabled.aos.services."configuration-evaluation.image-boot-commit".enable;
@@ -67,4 +71,20 @@ in {
       path = "${package.outputs.apm}/bin/apm";
       arguments = ["update" "--system"];
     };
+  registryBootstrapOwnsStateDirectory =
+    registry.activationOwner
+    == "image"
+    && !registry.autoStart
+    && registryDirectory.path == "apm"
+    && registryDirectory.purpose == "state"
+    && registryDirectory.retention == "persistent";
+  registryStateMatchesHostAllocation =
+    runtimeDirectory.path
+    == "/var/lib/${registryDirectory.path}"
+    && registryDirectory.mode == "0755"
+    && runtimeDirectory.mode == registryDirectory.mode
+    && registryDirectory.owner == "root"
+    && runtimeDirectory.owner == registryDirectory.owner
+    && registryDirectory.group == "root"
+    && runtimeDirectory.group == registryDirectory.group;
 }
