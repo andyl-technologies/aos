@@ -4507,6 +4507,63 @@ async fn registry_deletion_abandons_plans_and_ignores_their_frozen_actions() {
 }
 
 #[tokio::test]
+async fn registry_deletion_retires_delivery_setup_workflows() {
+    use crate::db::{
+        PrepareRegistryDeletion, RegistryDeletionCommit, RegistryDeletionOutcome, SurfaceTarget,
+    };
+
+    let database = Database::open_in_memory().await.unwrap();
+    seed_registry(&database).await;
+    let now = crate::db::unix_now();
+    let registry = database.registry_by_id(1).await.unwrap().unwrap();
+
+    // A delivery setup workflow only records progress toward instance
+    // endpoints and gateways. It does not cascade from the registry row, so
+    // deletion must retire it explicitly instead of failing on the reference.
+    database
+        .create_delivery_workflow(
+            "workflow:testing-cdn",
+            &registry.scope_key,
+            SurfaceTarget::Registry(1),
+            "{}",
+            "{}",
+        )
+        .await
+        .unwrap();
+
+    database
+        .prepare_registry_deletion(&PrepareRegistryDeletion {
+            registry_id: 1,
+            expected_version: registry.resource_version,
+            operation_id: "registry-deletion-operation",
+            actor_id: "operator",
+            now,
+        })
+        .await
+        .unwrap();
+    let outcome = database
+        .commit_registry_deletion(&RegistryDeletionCommit {
+            registry_id: 1,
+            expected_version: registry.resource_version,
+            change_id: "registry-deletion-change",
+            actor_kind: "user",
+            actor_id: None,
+            actor_label: "operator",
+            operation: None,
+        })
+        .await
+        .unwrap();
+
+    assert_eq!(outcome, RegistryDeletionOutcome::Deleted);
+    assert!(database.registry_by_id(1).await.unwrap().is_none());
+    assert!(database
+        .delivery_workflow("workflow:testing-cdn")
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn registry_deletion_is_blocked_by_applying_runs_and_their_actions() {
     use crate::db::RegistryDeletionVerdict;
 
