@@ -357,9 +357,17 @@ impl<
             })
         });
         let commit_guard = concrete;
+        let commit_authority = authority.clone();
         let commit: Arc<CommitCheck> = Arc::new(move |baseline, view, held| {
             let guard = Arc::clone(&commit_guard);
-            Box::pin(async move { guard.bind_original_commit_at(baseline, view, held).await })
+            let owner = commit_authority.clone();
+            Box::pin(async move {
+                if baseline.authority() == &owner {
+                    guard.bind_original_commit_at(baseline, view, held).await
+                } else {
+                    guard.bind_imported_commit_at(&owner, baseline, view, held).await
+                }
+            })
         });
         let mut installed = self.original_verifier.write().map_err(|_| unavailable())?;
         if installed
@@ -610,9 +618,6 @@ impl<S, C> Guard<S, C> {
         held: Option<&'a HeldIdentity<'a>>,
     ) -> Result<OriginalCommitContext, StoreFailure> {
         let verifier = self.original_verifier()?;
-        if baseline.authority != verifier.authority {
-            return Err(invalid());
-        }
         let checked = (verifier.commit)(baseline, view, held).await?;
         let mut installed = self.original_commits.write().map_err(|_| unavailable())?;
         if installed
