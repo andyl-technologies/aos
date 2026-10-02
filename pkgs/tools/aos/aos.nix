@@ -122,43 +122,22 @@
     export AOS_PRLIMIT="${util-linux}/bin/prlimit"
     export AOS_SYSTEMD_PCREXTEND="${systemd}/lib/systemd/systemd-pcrextend"
   '';
-  applicationTestPackages = [
-    "aos"
-    "aos-ability-model"
-    "aos-ability-plan"
-    "aos-ability-runtime"
-    "aos-boot-identity"
-    "aos-cache"
-    "aos-contract"
-    "aos-core"
-    "aos-doc"
-    "aos-doc-model"
-    "aos-hub"
-    "aos-hub-console"
-    "aos-hub-console-contract"
-    "aos-hub-core"
-    "aos-hub-worker"
-    "aos-image-finalizer"
-    "aos-maintain"
-    "aos-net"
-    "aos-oci"
-    "aos-oci-types"
-    "aos-package"
-    "aos-profile"
-    "aos-proto"
-    "aos-proto-types"
-    "aos-recovery"
-    "aos-registry-spa"
-    "aos-registry-surface"
-    "aos-release"
-    "aos-release-signer"
-    "aos-remote"
-    "aos-server"
-    "aos-systemd"
-  ];
-  applicationTestFlags = builtins.concatStringsSep " " (
-    map (package: "-p ${package}") applicationTestPackages
-  );
+  # Cargo's workspace owns membership; new native handlers must enter this
+  # compile gate without maintaining a second list of application crates.
+  workspaceManifest = builtins.fromTOML (builtins.readFile ../../../crates/Cargo.toml);
+  workspacePackageNames =
+    map (
+      member: (builtins.fromTOML (builtins.readFile (../../../crates + "/${member}/Cargo.toml"))).package.name
+    )
+    workspaceManifest.workspace.members;
+  applicationTestPackages = builtins.sort builtins.lessThan (lib.unique (
+    builtins.filter (name: name == "aos" || lib.hasPrefix "aos-" name) workspacePackageNames
+  ));
+  applicationTestFlags =
+    "--features aos/release-fleet-fixture "
+    + builtins.concatStringsSep " " (
+      map (package: "-p ${package}") applicationTestPackages
+    );
   # Build both command surfaces in one feature-unified Cargo invocation so
   # their shared dependencies are compiled only once.
   releaseBuildCommands = [
@@ -198,7 +177,7 @@
     cargoBuildCommands =
       releaseBuildCommands
       ++ lib.optionals withTests [
-        "test --no-run --frozen --offline -j$NIX_BUILD_CORES --features release-fleet-fixture ${applicationTestFlags}"
+        "test --no-run --frozen --offline -j$NIX_BUILD_CORES ${applicationTestFlags}"
       ];
     inherit cargoEnv;
     buildDeps = [buildPerl buildPkgConfig buildProtobuf buildCmake];
