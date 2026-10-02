@@ -20,7 +20,6 @@ in {
     metadata."host.nix" = ''
       { config, lib, ... }: {
         aos.getty.autologin.enable = lib.mkForce false;
-        "aos-test-agent".enable = true;
         aos.abilities.identity.operations.group.effects.build-clients.input = {
           name = "build-clients";
           requested_id = 1000;
