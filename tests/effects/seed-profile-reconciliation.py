@@ -1,0 +1,228 @@
+"""Executes the production seed script's durable reconciliation helpers."""
+
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+import tempfile
+import unittest
+
+
+BASH, SOURCE, COREUTILS, JQ = sys.argv[1:5]
+del sys.argv[1:5]
+source = Path(SOURCE).read_text()
+
+
+def shell_function(name):
+    start = source.index(f"\n{name}() {{") + 1
+    end = source.index("\n}\n", start) + 3
+    return source[start:end]
+
+
+FUNCTIONS = "\n".join(
+    shell_function(name)
+    for name in (
+        "fail_image_identity",
+        "publish_image_state",
+        "update_running_image_state",
+        "repair_image_retention",
+    )
+)
+
+
+def identity(path):
+    stat = path.lstat()
+    return stat.st_ino, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+class SeedReconciliation(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.image = self.root / "image"
+        self.image.mkdir()
+        self.state = self.image / "state.json"
+        self.retention = self.image / "image-gen-2"
+        self.retention.mkdir()
+        self.spy = self.root / "sync-calls"
+        self.spy.touch()
+        self.targets = {
+            "toplevel": "/nix/store/selected-toplevel",
+            "native-executor": "/nix/store/selected-executor",
+            "boot-artifact-contract": "/nix/store/selected-contract",
+            "module-library": "/nix/store/selected-library",
+            "evaluation-descriptor": "/nix/store/selected-deployment/evaluation-input.json",
+        }
+        for name, target in self.targets.items():
+            (self.retention / name).symlink_to(target)
+
+        self.document = {
+            "schema": "aos.image-generation-state/v1",
+            "running": 2,
+            "pending": None,
+            "generations": [
+                {"number": 1, "toplevel": "/nix/store/previous-toplevel"},
+                {"number": 2, "toplevel": self.targets["toplevel"]},
+            ],
+            "active_rollout": None,
+        }
+        self.write_state()
+
+    def write_state(self):
+        # Deliberately differs from jq's formatting: semantic steady state is
+        # read-only even when an earlier publisher used another whitespace style.
+        self.state.write_text(json.dumps(self.document, separators=(",", ":")))
+
+    def run_helpers(self, commands):
+        variables = {
+            "image_dir": str(self.image),
+            "retention": str(self.retention),
+            "spy": str(self.spy),
+            "toplevel": self.targets["toplevel"],
+            "native_executor": self.targets["native-executor"],
+            "boot_contract": self.targets["boot-artifact-contract"],
+            "module_library_root": self.targets["module-library"],
+            "evaluation_descriptor": self.targets["evaluation-descriptor"],
+        }
+        assignments = "\n".join(
+            f"{name}={shlex.quote(value)}" for name, value in variables.items()
+        )
+        script = (
+            "set -euo pipefail\n"
+            + assignments
+            + "\n"
+            + FUNCTIONS
+            + '\nsync() { printf "%s\\n" "$1" >> "$spy"; }\n'
+            + commands
+            + "\n"
+        )
+        return subprocess.run(
+            [BASH, "-c", script],
+            env={"PATH": f"{COREUTILS}:{JQ}", "LC_ALL": "C"},
+            text=True,
+            capture_output=True,
+            timeout=10,
+        )
+
+    def assert_success(self, result):
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def retained_identities(self):
+        return {
+            name: identity(self.retention / name) for name in self.targets
+        }
+
+    def test_steady_boot_preserves_state_directory_and_link_metadata(self):
+        before = {
+            "state": identity(self.state),
+            "image": identity(self.image),
+            "retention": identity(self.retention),
+            "links": self.retained_identities(),
+        }
+
+        result = self.run_helpers("update_running_image_state\nrepair_image_retention")
+
+        self.assert_success(result)
+        self.assertEqual(identity(self.state), before["state"])
+        self.assertEqual(identity(self.image), before["image"])
+        self.assertEqual(identity(self.retention), before["retention"])
+        self.assertEqual(self.retained_identities(), before["links"])
+        self.assertEqual(self.spy.read_text(), "")
+        self.assertFalse((self.image / ".state.json.new").exists())
+
+    def test_running_image_change_publishes_and_syncs_state(self):
+        self.document["running"] = 1
+        self.write_state()
+        old_inode = self.state.stat().st_ino
+
+        result = self.run_helpers("update_running_image_state")
+
+        self.assert_success(result)
+        self.assertEqual(json.loads(self.state.read_text())["running"], 2)
+        self.assertNotEqual(self.state.stat().st_ino, old_inode)
+        self.assertEqual(
+            self.spy.read_text().splitlines(),
+            [str(self.image / ".state.json.new"), str(self.image)],
+        )
+
+    def test_staged_running_candidate_advances_once(self):
+        self.document["active_rollout"] = {
+            "candidate": 2,
+            "status": "staged",
+            "unchanged_field": "preserved",
+        }
+        self.write_state()
+
+        self.assert_success(self.run_helpers("update_running_image_state"))
+
+        rollout = json.loads(self.state.read_text())["active_rollout"]
+        self.assertEqual(rollout["status"], "candidate_booted")
+        self.assertEqual(rollout["unchanged_field"], "preserved")
+        before = identity(self.state)
+        self.spy.write_text("")
+
+        self.assert_success(self.run_helpers("update_running_image_state"))
+        self.assertEqual(identity(self.state), before)
+        self.assertEqual(self.spy.read_text(), "")
+
+    def test_other_staged_candidate_is_not_changed(self):
+        self.document["active_rollout"] = {"candidate": 1, "status": "staged"}
+        self.write_state()
+        before = identity(self.state)
+
+        result = self.run_helpers("update_running_image_state")
+
+        self.assert_success(result)
+        self.assertEqual(identity(self.state), before)
+        self.assertEqual(self.spy.read_text(), "")
+
+    def test_missing_root_repairs_only_missing_link_and_syncs(self):
+        missing = "native-executor"
+        (self.retention / missing).unlink()
+        before = {
+            name: identity(self.retention / name)
+            for name in self.targets
+            if name != missing
+        }
+
+        result = self.run_helpers("repair_image_retention")
+
+        self.assert_success(result)
+        self.assertEqual(os.readlink(self.retention / missing), self.targets[missing])
+        for name, metadata in before.items():
+            self.assertEqual(identity(self.retention / name), metadata)
+        self.assertEqual(self.spy.read_text().splitlines(), [str(self.retention)])
+
+    def test_wrong_root_target_is_repaired(self):
+        path = self.retention / "module-library"
+        path.unlink()
+        path.symlink_to("/nix/store/wrong-library")
+
+        result = self.run_helpers("repair_image_retention")
+
+        self.assert_success(result)
+        self.assertEqual(os.readlink(path), self.targets["module-library"])
+        self.assertEqual(self.spy.read_text().splitlines(), [str(self.retention)])
+
+    def test_conflicting_nonlink_rejects_before_repair(self):
+        (self.retention / "toplevel").unlink()
+        path = self.retention / "evaluation-descriptor"
+        path.unlink()
+        path.write_text("external contents")
+        before = identity(path)
+
+        result = self.run_helpers("repair_image_retention")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("not a symbolic link", result.stderr)
+        self.assertEqual(identity(path), before)
+        self.assertEqual(path.read_text(), "external contents")
+        self.assertFalse((self.retention / "toplevel").is_symlink())
+        self.assertEqual(self.spy.read_text(), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

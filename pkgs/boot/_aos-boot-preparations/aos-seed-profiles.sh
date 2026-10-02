@@ -313,6 +313,61 @@ publish_image_state() {
   sync "$image_dir"
 }
 
+update_running_image_state() {
+  local needs_update
+  needs_update=$(jq -r --arg top "$toplevel" '
+    (.generations[] | select(.toplevel == $top) | .number) as $running
+    | .running != $running or
+      (.active_rollout != null and .active_rollout.candidate == $running
+       and .active_rollout.status == "staged")
+  ' "$image_dir/state.json")
+
+  # Recurrent boots authenticate the record without rewriting durable state.
+  if [ "$needs_update" = true ]; then
+    jq --arg top "$toplevel" '
+      (.generations[] | select(.toplevel == $top) | .number) as $running
+      | .running = $running
+      | if .active_rollout != null and .active_rollout.candidate == $running
+           and .active_rollout.status == "staged" then
+          .active_rollout.status = "candidate_booted"
+        else . end
+    ' "$image_dir/state.json" > "$image_dir/.state.json.new"
+    publish_image_state
+  fi
+}
+
+repair_image_retention() {
+  local names=(toplevel native-executor boot-artifact-contract module-library evaluation-descriptor)
+  # The descriptor member link also retains its containing immutable object.
+  local targets=("$toplevel" "$native_executor" "$boot_contract" "$module_library_root" "$evaluation_descriptor")
+  local index path changed=false
+
+  if [ -L "$retention" ] || { [ -e "$retention" ] && [ ! -d "$retention" ]; }; then
+    fail_image_identity "image retention directory is not an owned directory"
+  fi
+  for index in "${!names[@]}"; do
+    path="$retention/${names[$index]}"
+    if [ -e "$path" ] && [ ! -L "$path" ]; then
+      fail_image_identity "image retention root ${names[$index]} is not a symbolic link"
+    fi
+  done
+
+  if [ ! -d "$retention" ]; then
+    mkdir -p "$retention"
+    changed=true
+  fi
+  for index in "${!names[@]}"; do
+    path="$retention/${names[$index]}"
+    if [ "$(readlink "$path" 2>/dev/null || true)" != "${targets[$index]}" ]; then
+      ln -sfn "${targets[$index]}" "$path"
+      changed=true
+    fi
+  done
+  if [ "$changed" = true ]; then
+    sync "$retention"
+  fi
+}
+
 if [ ! -e "$image_dir/state.json" ]; then
   jq -n --argjson generation "$generation" --argjson provider "$provider_generation" \
     '{schema:"aos.image-generation-state/v1",running:1,pending:1,
@@ -343,20 +398,7 @@ else
               == ($expected | del(.number,.created_at,.registry,.boot_provider_state)))' \
       "$image_dir/state.json" >/dev/null \
       || fail_image_identity "native image index disagrees with the verified immutable image"
-    jq --arg top "$toplevel" \
-      '(.generations[] | select(.toplevel == $top) | .number) as $running
-       | .running = $running
-       | if .active_rollout != null then
-           if .active_rollout.candidate == $running
-              and .active_rollout.status == "staged" then
-             .active_rollout.status = "candidate_booted"
-           else . end
-         else . end' "$image_dir/state.json" > "$image_dir/.state.json.new"
-    if cmp -s "$image_dir/state.json" "$image_dir/.state.json.new"; then
-      rm "$image_dir/.state.json.new"
-    else
-      publish_image_state
-    fi
+    update_running_image_state
   fi
 fi
 
@@ -367,14 +409,7 @@ fi
 
 existing=$(jq -er '.running' "$image_dir/state.json")
 retention="$image_dir/image-gen-$existing"
-mkdir -p "$retention"
-ln -sfn "$toplevel" "$retention/toplevel"
-ln -sfn "$native_executor" "$retention/native-executor"
-ln -sfn "$boot_contract" "$retention/boot-artifact-contract"
-ln -sfn "$module_library_root" "$retention/module-library"
-# A member link also retains the descriptor's containing immutable Nix object.
-ln -sfn "$evaluation_descriptor" "$retention/evaluation-descriptor"
-sync "$retention"
+repair_image_retention
 
 mkdir -p "$profile_dir"
 current=$(@package_runtime@/bin/aos-package-runtime deployment-current --profile "$profile_dir" \
