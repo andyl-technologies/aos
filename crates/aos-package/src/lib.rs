@@ -1094,6 +1094,9 @@ pub enum ImageCommand {
         output: Option<String>,
         #[arg(long)]
         registry: Option<String>,
+        /// Read machine-wide registries instead of personal registries
+        #[arg(long)]
+        system: bool,
     },
 }
 
@@ -1365,16 +1368,16 @@ impl PackageCommand {
         }
     }
 
-    /// Returns `true` when the user passed `--system` on a subcommand that
-    /// supports it.
+    /// Returns whether the command uses machine-wide registry and profile state.
     ///
-    /// Mutating and sysroot commands (`install`, `upgrade`, `rollback`,
-    /// `update`, `registry`) select the system scope to act on it; the
-    /// read-only query commands (`search`, `show`, `list`, `depends`,
-    /// `rdepends`, `policy`, `files`, `held`, `orphans`, `info`) select it to
-    /// read the system registry cache and profile instead of the per-user ones.
+    /// Package commands select it with `--system`. Image staging, upgrades,
+    /// rollback, and generation listing implicitly select machine-wide state;
+    /// image downloads select personal registries unless passed `--system`.
     pub fn is_system(&self) -> bool {
         match self {
+            PackageCommand::Image {
+                command: ImageCommand::Download { system, .. },
+            } => *system,
             PackageCommand::Image { .. } => true,
             PackageCommand::Reconcile { system, .. }
             | PackageCommand::Remove { system, .. }
@@ -4006,6 +4009,7 @@ pub async fn run(
                 registry,
                 format,
                 output,
+                ..
             } => {
                 sysroot::install_system(
                     &config,

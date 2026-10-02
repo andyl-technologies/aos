@@ -508,7 +508,7 @@ pub async fn install_system(
     printer: &Printer,
 ) -> Result<()> {
     if packages.len() != 1 {
-        bail!("--system install requires exactly one package name");
+        bail!("image installation requires exactly one package name");
     }
     let pkg_name = &packages[0];
 

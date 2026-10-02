@@ -57,12 +57,18 @@ fn image_and_configuration_operations_have_separate_commands() {
         &["image", "upgrade"][..],
         &["image", "rollback", "--generation", "2"][..],
         &["image", "list"][..],
-        &["image", "download", "aos", "--format", "qcow2"][..],
+        &["image", "download", "aos", "--format", "qcow2", "--system"][..],
     ] {
         let command = parse(arguments);
         assert!(command.is_system());
         assert_eq!(command.runtime_requirement(), RuntimeRequirement::AosRoot);
     }
+    let portable_download = parse(&["image", "download", "aos", "--format", "qcow2"]);
+    assert!(!portable_download.is_system());
+    assert_eq!(
+        portable_download.runtime_requirement(),
+        RuntimeRequirement::Portable
+    );
     let config = parse(&["config", "rollback", "--generation", "2"]);
     assert!(matches!(
         config,
