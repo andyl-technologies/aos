@@ -126,7 +126,7 @@ fn container_release_attachment_rejects_unsigned_mismatch_and_release_identity()
     let input_path = tmp.path().join("signature-input.json");
     let version = semver::Version::parse("1.0.0").unwrap();
     let (mut release, mut input) = container_release_inputs("1.0.0");
-    release.nix.definition.attribute = "systems.aos-testing.build.containers.aos".to_string();
+    release.nix.definition.attribute = "systems.aos-experimental.build.containers.aos".to_string();
     input.nix.definition.attribute = release.nix.definition.attribute.clone();
     fs::write(&release_path, to_canonical_json(&release).unwrap()).unwrap();
     fs::write(&input_path, to_canonical_json(&input).unwrap()).unwrap();

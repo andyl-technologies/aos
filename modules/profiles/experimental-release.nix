@@ -1,15 +1,15 @@
-##! modules/profiles/testing-release.nix — Experimental public release profile
+##! modules/profiles/experimental-release.nix — Experimental public release profile
 {
   config,
   lib,
   ...
 }: let
-  cfg = config.aos.profiles.testingRelease;
+  cfg = config.aos.profiles.experimentalRelease;
 in {
-  options.aos.profiles.testingRelease.enable = lib.mkOption {
+  options.aos.profiles.experimentalRelease.enable = lib.mkOption {
     type = lib.types.bool;
     default = false;
-    description = "Build a public experimental image tied only to andyl/testing.";
+    description = "Build a public experimental image tied only to andyl/experimental.";
   };
 
   config = lib.mkIf cfg.enable {
@@ -18,20 +18,20 @@ in {
     aos.release = {
       enabled = true;
       tier = "testing";
-      registry = "andyl/testing";
+      registry = "andyl/experimental";
       rootEpoch = 1;
-      clientName = "andyl-testing";
+      clientName = "andyl-experimental";
       # Shared-root ownership requires operator authorization in addition to
       # authenticated membership in the registry provenance signer roster.
-      rootOwnerSigners = ["andyl-testing-provenance-v1"];
+      rootOwnerSigners = ["andyl-experimental-provenance-v1"];
       channel = lib.mkDefault "edge";
       warning = ''
-        ANDYL OS TESTING
+        ANDYL OS EXPERIMENTAL
 
-        This is an experimental AOS testing image. It is not supported for
+        This is an experimental AOS image. It is not supported for
         production workloads or important data. This system follows the
         ${config.aos.release.registry} ${config.aos.release.channel} channel. Updates may contain breaking changes,
-        require reinstallation, or replace the testing trust root. Keep
+        require reinstallation, or replace the experimental trust root. Keep
         important data and recovery material backed up elsewhere.
 
       '';

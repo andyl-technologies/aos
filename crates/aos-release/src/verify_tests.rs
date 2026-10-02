@@ -4,7 +4,7 @@
 //! the shipped contract fixture, with every production-tier destination and
 //! passing build evidence. [`qualification_fixture`] decodes its plan and
 //! manifest, and [`testing_fixture`] turns it into an edge release on
-//! `andyl/testing` whose `production/edge` destination uses the change-scoped
+//! `andyl/experimental` whose `production/edge` destination uses the change-scoped
 //! smoke profile.
 
 use base64::Engine as _;
@@ -29,7 +29,7 @@ use crate::plan::{
 use crate::platform::{MatrixCell, Platform};
 use crate::qualification::change_scope::{CHANGE_SCOPE, ChangedPackageCell};
 use crate::qualification::{ChangeScope, QualificationContract, QualificationPhase};
-use crate::registry::{MAIN_REGISTRY, TESTING_REGISTRY, registry_policy};
+use crate::registry::{MAIN_REGISTRY, EXPERIMENTAL_REGISTRY, registry_policy};
 use crate::signing::{
     SignatureAlgorithm, SignatureResponse, SignerRequirement, SignerRole, SigningOperation,
     SigningRequest, TrustedEd25519Key,
@@ -533,13 +533,13 @@ pub(crate) fn qualification_fixture() -> anyhow::Result<(ReleasePlan, ReleaseMan
     Ok((plan, envelope.payload))
 }
 
-/// Converts the stable fixture into an edge release on `andyl/testing`.
+/// Converts the stable fixture into an edge release on `andyl/experimental`.
 ///
 /// The recorded change scope marks OCI artifacts and one package cell as
 /// changed, and images as unchanged.
 pub(crate) fn testing_fixture() -> anyhow::Result<(ReleasePlan, ReleaseManifestV1)> {
     let (mut plan, mut manifest) = qualification_fixture()?;
-    plan.registry = TESTING_REGISTRY.into();
+    plan.registry = EXPERIMENTAL_REGISTRY.into();
     plan.version = "2026.9.0-dev.20260901.1".into();
     plan.release_class = ReleaseClass::Edge;
     plan.source.source_tag = format!("release/{}", plan.version);

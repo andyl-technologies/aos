@@ -10,7 +10,7 @@ use base64::Engine as _;
 
 const STAGING: &str = "staging-deployment";
 const PRODUCTION: &str = "production-deployment";
-const REGISTRY: &str = "andyl/testing";
+const REGISTRY: &str = "andyl/experimental";
 const BASE_COMMIT: &str = "base-commit";
 
 struct Fixture {
