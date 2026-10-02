@@ -28,6 +28,15 @@ use crate::store::verification::{
 };
 use crate::types::{InstalledMeta, PackageMeta};
 
+// Signed catalog NAR hashes use Nix encodings; private admission evidence uses
+// canonical hex. Normalize the representation before comparing the exact bytes.
+fn catalog_nar_hash(hash: &str, artifact: &str) -> Result<Sha256Digest> {
+    let encoded = crate::verify::sha256_digest_hex(hash)
+        .with_context(|| format!("invalid {artifact} catalog NAR hash"))?;
+    Sha256Digest::parse(&format!("sha256:{encoded}"))
+        .with_context(|| format!("invalid {artifact} catalog NAR digest"))
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct Evidence {
@@ -351,7 +360,7 @@ impl<'a> NativeRegistry<'a> {
         );
         verify_store_object_in(
             &deployment.store_path,
-            Sha256Digest::parse(&deployment.nar_hash)?,
+            catalog_nar_hash(&deployment.nar_hash, "deployment envelope")?,
             deployment.nar_size,
             &deployment.references,
             Some(&self.admission.executable),
@@ -361,7 +370,7 @@ impl<'a> NativeRegistry<'a> {
         for documentation in [&meta.module_documentation].into_iter().flatten() {
             verify_store_object_in(
                 &documentation.store_path,
-                Sha256Digest::parse(&documentation.nar_hash)?,
+                catalog_nar_hash(&documentation.nar_hash, "module documentation")?,
                 documentation.nar_size,
                 &documentation.references,
                 Some(&self.admission.executable),
@@ -996,6 +1005,36 @@ impl PackageResolver for NativeRegistry<'_> {
 #[cfg(test)]
 mod authority_tests {
     use super::*;
+
+    #[test]
+    fn catalog_admission_normalizes_nix_hashes_without_changing_identity() {
+        // Captured from the source-built acquired fixture's deployment NAR.
+        let nix_hash = "sha256:0sl85qninq6dgnc7g3yba4i56hxwis72c1k96c4gmc47dimnwxx9";
+        let expected = Sha256Digest::parse(
+            "sha256:a9776e6b6c87b0fa08336906268e8ebc43532251cb8f77987dcd601b2d2e886a",
+        )
+        .unwrap();
+
+        for artifact in ["deployment envelope", "module documentation"] {
+            assert_eq!(catalog_nar_hash(nix_hash, artifact).unwrap(), expected);
+            assert_eq!(
+                catalog_nar_hash(&expected.to_string(), artifact).unwrap(),
+                expected
+            );
+            assert_ne!(
+                catalog_nar_hash(nix_hash, artifact).unwrap(),
+                Sha256Digest::of_bytes(b"tampered NAR")
+            );
+            for invalid in [
+                "sha512:deadbeef",
+                "sha256:invalid",
+                "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            ] {
+                let error = catalog_nar_hash(invalid, artifact).unwrap_err();
+                assert!(error.to_string().contains(artifact));
+            }
+        }
+    }
 
     fn empty_admission() -> RegistryAdmission {
         let executable = PathBuf::from("/nix/store/pinned/bin/nix-store");
