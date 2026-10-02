@@ -78,6 +78,52 @@ impl ImportedEvidence {
 }
 
 impl OriginalCommitContext {
+    /// Serializes checked original context as untrusted data for a paired import.
+    ///
+    /// The native producer freshly rechecks this context under its actual source
+    /// retention owner before copying it. An already imported context preserves
+    /// its original registration instead of substituting the current discloser.
+    ///
+    /// # Errors
+    /// Rejects malformed retained import bytes or inconsistent original fields.
+    pub(crate) fn retained_import_record(&self) -> Result<ImportRecord, StoreFailure> {
+        if let Some(evidence) = &self.imported {
+            return ImportRecord::decode(&evidence.import).map_err(|_| invalid());
+        }
+        use crate::repository::local_authority::retention::{
+            BootstrapRecord, CommitAssociation, RegistrationRecord,
+        };
+        let baseline = self.baseline();
+        let authority = baseline.authority();
+        let (root, coordination) = authority.physical_identity();
+        let import = ImportRecord {
+            registration: RegistrationRecord {
+                id: *authority.id(),
+                root: authority.root().to_owned(),
+                domain: authority.domain().to_owned(),
+                root_device: root.0,
+                root_inode: root.1,
+                coordination_device: coordination.0,
+                coordination_inode: coordination.1,
+                control: authority.control().to_owned(),
+            },
+            baseline: BootstrapRecord {
+                id: *authority.id(),
+                reference: baseline.reference().to_owned(),
+                epoch: baseline.epoch(),
+                acl: baseline.acl().to_vec(),
+            },
+            association: CommitAssociation {
+                commit: *self.commit(),
+                id: *authority.id(),
+                reference: baseline.reference().to_owned(),
+                epoch: baseline.epoch(),
+            },
+        };
+        import.validate().map_err(|_| invalid())?;
+        Ok(import)
+    }
+
     /// Returns exact independently retained verification keys for an import.
     ///
     /// Current operation authorization still uses the local configured keys.
