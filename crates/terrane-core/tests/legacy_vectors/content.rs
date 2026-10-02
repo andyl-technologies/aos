@@ -1,6 +1,6 @@
 //! Builds complete legacy immutable and ref models from their described fields.
 
-use super::support::{digest, fixed, hexadecimal, wire};
+use super::support::{assert_published_digest, digest, domain_digest, fixed, hexadecimal, wire};
 use super::token_model;
 use std::collections::BTreeMap;
 use terrane_core::{
@@ -40,6 +40,11 @@ fn assert_identity(kind: IdentityKind, bytes: &[u8], expected: Digest) {
     );
 }
 
+/// Compares the complete manifest model, wire and published identity.
+///
+/// # Panics
+///
+/// Panics if any encoding, decoding, identity or publication control differs.
 pub(super) fn manifest() {
     let model = Manifest {
         size: 300_000,
@@ -79,8 +84,19 @@ pub(super) fn manifest() {
         manifest_identity()
     );
     assert_identity(IdentityKind::Manifest, &published, manifest_identity());
+    assert_published_digest(
+        "## Manifest (encoding vector)",
+        "Object identity (domain `terrane-manifest-v1`): `",
+        "`.\n",
+        domain_digest(b"terrane-manifest-v1", &published),
+    );
 }
 
+/// Compares the complete commit model, unsigned preimage and published hashes.
+///
+/// # Panics
+///
+/// Panics if any encoding, decoding, identity or publication control differs.
 pub(super) fn commit() {
     let model = Commit {
         tree: node_identity(),
@@ -127,8 +143,25 @@ pub(super) fn commit() {
     );
     assert_eq!(model.identity().unwrap(), commit_identity());
     assert_identity(IdentityKind::Commit, &published, commit_identity());
+    assert_published_digest(
+        "## Commit",
+        "| BLAKE3 of the preimage | `",
+        "` |\n",
+        *blake3::hash(&preimage).as_bytes(),
+    );
+    assert_published_digest(
+        "## Commit",
+        "Commit identity (domain `terrane-commit-v1`): `",
+        "`.\n",
+        domain_digest(b"terrane-commit-v1", &published),
+    );
 }
 
+/// Compares the independent token projection and ordinary decoded fields.
+///
+/// # Panics
+///
+/// Panics if the published token differs from its described model or identity.
 pub(super) fn token() {
     let independently_encoded = token_model::wire_projection();
     let published = wire("## Capability token", 2);
@@ -160,6 +193,11 @@ fn reference_model() -> RefRecord {
     }
 }
 
+/// Compares the complete ref model with its published wire.
+///
+/// # Panics
+///
+/// Panics if encoding or decoding differs from the described model.
 pub(super) fn reference() {
     let model = reference_model();
     let published = wire("## Ref record and reflog record", 0);
@@ -168,6 +206,11 @@ pub(super) fn reference() {
     assert_eq!(RefRecord::decode(&published).unwrap(), model);
 }
 
+/// Compares the complete reflog model with its published wire.
+///
+/// # Panics
+///
+/// Panics if encoding or decoding differs from the described model.
 pub(super) fn reflog() {
     let model = RefLogRecord {
         record: reference_model(),
@@ -184,6 +227,11 @@ pub(super) fn reflog() {
     assert_eq!(RefLogRecord::decode(&published).unwrap(), model);
 }
 
+/// Compares the complete attribute model, wire and published identity.
+///
+/// # Panics
+///
+/// Panics if any encoding, decoding, identity or publication control differs.
 pub(super) fn attribute() {
     let model = AttrRecord::new(
         manifest_identity(),
@@ -202,8 +250,19 @@ pub(super) fn attribute() {
         expected
     );
     assert_identity(IdentityKind::Attribute, &published, expected);
+    assert_published_digest(
+        "## Attribute record",
+        "Record identity (domain `terrane-attr-v1`): `",
+        "`.\n",
+        domain_digest(b"terrane-attr-v1", &published),
+    );
 }
 
+/// Compares the complete bundle and its independently constructed nested node.
+///
+/// # Panics
+///
+/// Panics if the published bytes, decoded fields or identities differ.
 pub(super) fn bundle() {
     let node = Node {
         level: 0,
