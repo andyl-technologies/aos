@@ -8,7 +8,7 @@
   ],
   "scope": "Reviewed inventory of currently implemented public terrane-core pure format APIs. These tests perform no I/O, workflow, signing, issuance, verification or private-authority construction.",
   "shared_properties": {
-    "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header; indefinite string/container rejection; duplicate/reordered map keys; u64::MAX nested length/count claims; sampled bit flips and32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
+    "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header; indefinite string/container rejection; duplicate/reordered map keys; u64::MAX nested length/count claims; sampled bit flips and 32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
     "binary": "Model roundtrip, every truncated prefix and canonical reencoding after bit/range mutations; explicit count/extent/reserved/tag failures.",
     "prefix": "Header and chunk envelope APIs deliberately accept prefix/body fragments. Accepted truncations/mutations retain the exact validated header and opaque suffix/body rather than incorrectly requiring all mutations to fail.",
     "limits": "Tiny hostile claimed-length headers exercise typed decoder rejection without constructing the claimed allocation. Allocator calls are not instrumented. Maximum resource values are tested where listed, not asserted universally.",
@@ -176,7 +176,7 @@
       ],
       "closed_alternatives": [
         "issuer,subject,kind,group,source,signed-by-key,preset,accepted-by,attr-by,all,any,not",
-        "all3 principal kinds; all6 sources; all4 presets"
+        "all3 principal kinds; all 6 sources; all 4 presets"
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
@@ -197,14 +197,14 @@
         "policy::merge_recipe_untrusted_receipt_and_timestamp_fields_reencode_canonically"
       ],
       "models": [
-        "overlay roots0,1,3,16; graft replacefalse/true; merge policy prefixes and all6 choices; domain rows0,1,4; decoded receipt counts0,1,7 and optional timestamps"
+        "overlay roots0,1,3,16; graft replacefalse/true; merge policy prefixes and all 6 choices; domain rows0,1,4; decoded receipt counts0,1,7 and optional timestamps"
       ],
       "closed_alternatives": [
         "Overlay",
         "OverlayWithDomains",
         "Graft",
         "Merge",
-        "all6 MergePolicy alternatives",
+        "all 6 MergePolicy alternatives",
         "public/tenant/group/private labels"
       ],
       "optional_fields": [
@@ -234,10 +234,10 @@
       "closed_alternatives": [
         "all3 principal kinds",
         "all5 verb bits plus31",
-        "all9 caveats before/after/ref/root/verb/domain/surface/locality/epoch"
+        "all 9 caveats before/after/ref/root/verb/domain/surface/locality/epoch"
       ],
       "optional_fields": [
-        "authority not_before/workload all4 presence combinations",
+        "authority not_before/workload all 4 presence combinations",
         "attenuation optional fields all absent and all present",
         "locality empty/full"
       ],
@@ -287,7 +287,7 @@
         "GitBlobSha1",
         "GitBlobSha256",
         "ZstdDictionary",
-        "all8 Magic",
+        "all 8 Magic",
         "Elf",
         "Shebang"
       ],
@@ -313,7 +313,7 @@
         "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip"
       ],
       "models": [
-        "counts0,1,2,17,64; all4 header flag combinations; generated write-order bodies and hash-order records"
+        "counts0,1,2,17,64; all 4 header flag combinations; generated write-order bodies and hash-order records"
       ],
       "closed_alternatives": [
         "data kind0; metadata kinds1..9",
@@ -378,7 +378,7 @@
         "containers::pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip"
       ],
       "models": [
-        "counts0,1,2,9; all10 kinds with real domain-separated hashes; index kind6 detached/shard alternatives"
+        "counts0,1,2,9; all 10 kinds with real domain-separated hashes; index kind6 detached/shard alternatives"
       ],
       "closed_alternatives": [
         "kind0..9",
@@ -403,11 +403,11 @@
         "content::disclosure_target_bindings_normalize_only_typed_signatures_and_retain_metadata"
       ],
       "models": [
-        "24 base commits parents0..3; all13 registered surfaces; source/target opaque path4096; normalized typed signatures and changed metadata"
+        "24 base commits parents0..3; all 13 registered surfaces; source/target opaque path4096; normalized typed signatures and changed metadata"
       ],
       "closed_alternatives": [
         "all3 principal kinds",
-        "all6 commit sources",
+        "all 6 commit sources",
         "EntryOrigin Current/Source"
       ],
       "optional_fields": [
@@ -437,7 +437,7 @@
         "sequence1,23,24,u64::MAX; generated epochs/digests;32 optional policy-field combinations and8 locality presences"
       ],
       "closed_alternatives": [
-        "all6 merge policies",
+        "all 6 merge policies",
         "retention GC/Lease/Forever/TTL"
       ],
       "optional_fields": [
@@ -467,7 +467,7 @@
         "legacy predecessor absent/present; selected genesis null, exact predecessor, committed predecessor after recreation;23->24"
       ],
       "closed_alternatives": [
-        "all6 RefLogReason"
+        "all 6 RefLogReason"
       ],
       "optional_fields": [
         "previous_commit",
@@ -540,7 +540,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "nested hostile headers; known flags16 and invalid kind/flag combinations where relevant"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -558,7 +558,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "nested hostile headers; known flags16 and invalid kind/flag combinations where relevant"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -576,7 +576,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "nested hostile headers; known flags16 and invalid kind/flag combinations where relevant"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -592,11 +592,11 @@
         "empty and12 models with all reasons"
       ],
       "closed_alternatives": [
-        "all9 RootReason; ParentCutoff Unbounded/RootsOnly/Since"
+        "all 9 RootReason; ParentCutoff Unbounded/RootsOnly/Since"
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "nested hostile headers; known flags16 and invalid kind/flag combinations where relevant"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -614,7 +614,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "nested hostile headers; known flags16 and invalid kind/flag combinations where relevant"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -638,7 +638,8 @@
         "proof_context absent/present"
       ],
       "limits_and_malformed_cases": [
-        "nested hostile headers; known flags16 and invalid kind/flag combinations where relevant"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Pending flags 16 reject; invalid pending/object kind and parent/root/index flag combinations reject"
       ],
       "shared_evidence": "cbor"
     },
@@ -708,7 +709,7 @@
         "remote prefix empty/nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -730,7 +731,7 @@
         "genesis absent/present; active requires present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -750,7 +751,7 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -766,13 +767,13 @@
         "12 seeded cases with generated digests/scalars; represented consistency checks only"
       ],
       "closed_alternatives": [
-        "all4 branch ref classes"
+        "all 4 branch ref classes"
       ],
       "optional_fields": [
         "branches empty/nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -790,7 +791,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -813,7 +814,8 @@
         "predecessor absent/present; projected values absent/present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Full checkpoint without its required CAPABILITIES projection entry rejects at encode"
       ],
       "shared_evidence": "cbor"
     },
@@ -830,13 +832,13 @@
         "12 seeded cases with generated digests/scalars; represented consistency checks only"
       ],
       "closed_alternatives": [
-        "all4 branch classes"
+        "all 4 branch classes"
       ],
       "optional_fields": [
         "sources empty/nonempty; guard absent/present; burn_owners absent/empty/nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -854,7 +856,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -874,7 +876,7 @@
         "predecessor absent/present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -898,7 +900,7 @@
         "collection removed empty/nonempty and carried empty/nonempty; permanent carried empty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -921,7 +923,7 @@
         "old/predecessor absent/present; changes empty/nonempty; expected/new absent/present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; missing required checkpoint entry"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -934,12 +936,12 @@
         "publication::retained_evidence_models_preserve_ordered_claims_seed_and_null_fields"
       ],
       "models": [
-        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+        "6 distinct local registrations from the 12-case local/remote evidence corpus; opaque original IDs and represented device/inode fields"
       ],
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -959,7 +961,7 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -979,7 +981,7 @@
         "ACL empty/nonempty and order/repetition"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -997,7 +999,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1018,7 +1020,7 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1036,7 +1038,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1054,7 +1056,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1074,7 +1076,7 @@
         "retired_at absent/present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1094,7 +1096,7 @@
         "not_after absent/present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1112,7 +1114,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1133,7 +1135,7 @@
         "policy_authority absent/present; home empty/full"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1147,14 +1149,14 @@
         "publication::evidence_control_selectors_and_optional_configuration_fields_preserve_models"
       ],
       "models": [
-        "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
+        "Complete fixed registered-name model repeated in 12 evidence cases; additional model with a later.generated property that has no active behavior"
       ],
       "closed_alternatives": [],
       "optional_fields": [
         "later_properties empty/nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1174,7 +1176,7 @@
         "issuer/disclosure rows nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1191,11 +1193,12 @@
         "12 seeded evidence models with opaque unverified signature/key references; IDs and cross-record hashes computed through public APIs"
       ],
       "closed_alternatives": [
-        "all6 ControlKind and exact key selectors"
+        "all 6 ControlKind and exact key selectors"
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Every control-kind selector rejects an appended slash at encode"
       ],
       "shared_evidence": "cbor"
     },
@@ -1216,7 +1219,8 @@
         "layers1/65; path1/4097"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "65 layers and 4097-byte absolute path roundtrip; adding layer 66 rejects at encode"
       ],
       "shared_evidence": "cbor"
     },
@@ -1237,7 +1241,8 @@
         "roots empty/nonempty/repeated equal"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Nested 65-layer maximum root models roundtrip; no direct view-root count maximum assertion"
       ],
       "shared_evidence": "cbor"
     },
@@ -1257,7 +1262,7 @@
         "issuer/disclosure/control/view rows nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1275,7 +1280,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; layer66; invalid control selectors"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1296,7 +1301,7 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1316,7 +1321,9 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Deletion elapsed bound minus one rejects at encode",
+        "Grace seconds u64::MAX rejects overflow at encode"
       ],
       "shared_evidence": "cbor"
     },
@@ -1338,7 +1345,8 @@
         "lineage_fence absent/present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Genesis revision 1 rejects at encode; local barrier file identity lengths 1, 31 and 128 roundtrip"
       ],
       "shared_evidence": "cbor"
     },
@@ -1356,7 +1364,7 @@
       "closed_alternatives": [],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1376,7 +1384,7 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1398,7 +1406,7 @@
         "owner/pass absent/present"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1415,13 +1423,16 @@
         "12 seeded represented-data models; no workflow or authority construction"
       ],
       "closed_alternatives": [
-        "Open/PassCompleted; all4 ObservationState; all3 ObservedInstance; all3 PassCoverage; Pack/Index/Trash"
+        "Open/PassCompleted; all 4 ObservationState; all3 ObservedInstance; all3 PassCoverage; Pack/Index/Trash"
       ],
       "optional_fields": [
         "placement_fence absent/present; observation count0/1/4096"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Observation counts 0, 1 and 4096 roundtrip; count 4097 rejects at encode",
+        "Version handle lengths 1 and 4096 roundtrip; 0 and 4097 reject at encode",
+        "Borrowed input of MAX_RECORD_BYTES + 1 (16 MiB + 1) yields decoder Limit before parse"
       ],
       "shared_evidence": "cbor"
     },
@@ -1441,7 +1452,7 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1461,7 +1472,7 @@
       ],
       "optional_fields": [],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1478,13 +1489,13 @@
         "12 seeded represented-data models; no workflow or authority construction"
       ],
       "closed_alternatives": [
-        "all6 ref classes; Never/Unknown/Selected"
+        "all 6 ref classes; Never/Unknown/Selected"
       ],
       "optional_fields": [
         "refs empty/nonempty; controls empty/nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding"
       ],
       "shared_evidence": "cbor"
     },
@@ -1501,13 +1512,14 @@
         "12 seeded represented-data models; no workflow or authority construction"
       ],
       "closed_alternatives": [
-        "all6 ref classes; Never/Unknown/Selected"
+        "all 6 ref classes; Never/Unknown/Selected"
       ],
       "optional_fields": [
         "manifest absent/present; ref current/log absent/present; refs empty/nonempty"
       ],
       "limits_and_malformed_cases": [
-        "all nested noncanonical/hostile length headers; elapsed-bound underflow/overflow; genesis revision1; handles0/4096/4097; record16MiB+1"
+        "Direct typed decoder checks of each encoded model: nonminimal headers, hostile string/collection claims and duplicate/reordered map keys where present, indefinite strings/containers, truncation and canonical accepted-mutation reencoding",
+        "Represented manifest ref inventory missing a ref row rejects at encode"
       ],
       "shared_evidence": "cbor"
     },
@@ -1538,7 +1550,7 @@
         "foreign::classifier_and_shebang_models_cover_registry_precedence_and_prefix_limits"
       ],
       "models": [
-        "all8 classifiers and precedence; UTF8 absolute interpreters; CRLF/LF/EOF; unsplit optionalargument"
+        "all 8 classifiers and precedence; UTF8 absolute interpreters; CRLF/LF/EOF; unsplit optionalargument"
       ],
       "closed_alternatives": [],
       "optional_fields": [],
@@ -1558,7 +1570,7 @@
         "foreign::textual_ref_key_and_view_parsers_preserve_independent_target_and_path_models"
       ],
       "models": [
-        "all6 ref classes; Ref/Commit view targets; optionalpolicy; subtree0/1/31/4096 validcomponents"
+        "all 6 ref classes; Ref/Commit view targets; optionalpolicy; subtree0/1/31/4096 validcomponents"
       ],
       "closed_alternatives": [],
       "optional_fields": [],
