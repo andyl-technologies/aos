@@ -17,6 +17,22 @@
     };
   };
   worker = evaluate [pkgs.k3s-worker] workerConfiguration;
+  controlPlane = evaluate [pkgs.k3s-control-plane] {
+    k3s = {
+      enable = true;
+      token.name = "control-plane-token";
+      node.name = "operator-control-plane";
+    };
+  };
+  roles = import ../../pkgs/kubernetes/_k3s-config/roles.nix;
+  launcherFactory = import ../../pkgs/kubernetes/_k3s-common.nix {
+    inherit lib;
+    pkgs = {
+      inherit (pkgs) k3s;
+      writeShellScriptBin = name: script: {inherit name script;};
+    };
+  };
+  controlPlaneLauncher = launcherFactory.launcher "k3s-control-plane" roles.k3s-control-plane.command;
   combined = evaluate [pkgs.k3s-combined pkgs.cilium pkgs.longhorn-manager] {
     k3s = {
       enable = true;
@@ -62,6 +78,18 @@
       true)).success;
 in
   assert worker.deployment.graph.order != [];
+  assert controlPlane.deployment.graph.order != [];
+  assert controlPlane.config.k3s.role == "control-plane";
+  assert roles.k3s-control-plane.command == "server --disable-agent --egress-selector-mode=cluster";
+  assert roles.k3s-worker.command == "agent";
+  assert roles.k3s-combined.command == "server";
+  assert lib.hasInfix ''exec ${pkgs.k3s}/bin/k3s server --disable-agent --egress-selector-mode=cluster --config "$configuration" "$@"'' controlPlaneLauncher.script;
+  assert (builtins.head controlPlane.config.aos.services.k3s.lifecycle.start).executable.arguments
+  == [
+    controlPlane.config.aos.abilities.k3sConfiguration.operations.ensure.effects.base.outputs.path
+    controlPlane.config.aos.abilities.credential.operations.deliver.effects.k3s.outputs.path
+  ];
+  assert controlPlane.config.aos.services.k3s.environment.variables.K3S_NODE_NAME == "operator-control-plane";
   assert combined.deployment.graph.order != [];
   assert roleNodes disabled == [];
   assert roleNodes forceDisabled == [];
