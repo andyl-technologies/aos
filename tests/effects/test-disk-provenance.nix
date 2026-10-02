@@ -22,6 +22,13 @@ let
     varProvisioning = "repart";
     provisioningSource = "operator";
   };
+  partitionType = script: name: let
+    matches =
+      builtins.filter (match: match != null)
+      (map (line: builtins.match ".*type=([^,]+), name=${name}.*" line) (lib.splitString "\n" script));
+  in
+    assert builtins.length matches == 1;
+      builtins.head (builtins.head matches);
   fleet = import ../../lib/testing/fleet.nix {
     pkgs = packages;
     inherit lib;
@@ -53,6 +60,10 @@ let
   in
     builtins.head (builtins.fromJSON (builtins.unsafeDiscardStringContext test.manifest.text)).machines;
 in {
+  bootTypeCannotMatchVar =
+    builtins.all (script: partitionType script "boot" == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B") [operator fallback uninitialized]
+    && partitionType operator "var" == "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+    && partitionType fallback "var" == partitionType operator "var";
   bakedOperatorMarker = contains operator "name=aos-provenance-operator-v1" && !(contains operator "name=aos-provenance-fallback-v1");
   defaultFallbackMarker = contains fallback "name=aos-provenance-fallback-v1" && !(contains fallback "name=aos-provenance-operator-v1");
   repartRemainsUncommitted = !(contains uninitialized "name=aos-provenance-") && !(contains uninitialized "name=var");
