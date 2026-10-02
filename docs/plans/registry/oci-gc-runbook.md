@@ -133,8 +133,13 @@ inventory, capability, conditional-delete, and finalization fences.
 
 Retirement fails closed while any enabled route serves the registry's OCI
 surface, both at planning and again inside the apply transaction, so nothing a
-client can still resolve is deleted. Disable or remove every OCI-capable route
-first, then run rounds of retiring plans:
+client can still resolve is deleted. That includes the registry's OCI namespace
+on instance-owned OCI routes and any enabled instance route that names the
+registry as its default; the plan reports them as the `oci_route_enabled`
+blocker. Disable or remove every OCI-capable route, disable the namespace with
+`aos hub registry container namespace disable REGISTRY`, clear or change the
+default with `aos hub instance oci-route update ROUTE --clear-default-registry`,
+and then run rounds of retiring plans:
 
 ```sh
 aos hub registry container gc plan REGISTRY \
