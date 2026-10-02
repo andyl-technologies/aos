@@ -3,11 +3,14 @@
 `apm` is the AOS package manager. Use it to find software, install and remove
 packages, and update the packages you use.
 
-On a stock AOS host, an administrator manages packages for the whole machine
-using a package list. Start with [Find a package](#find-a-package), then
-[Manage machine-wide packages](#manage-machine-wide-packages). If your
-administrator has enabled personal package installs, see
-[Manage user packages](#manage-user-packages).
+The usual command sequence is to fetch the package lists, install a package
+by name, and update it when a new version becomes available:
+
+```sh
+apm update
+apm install curl
+apm upgrade
+```
 
 ## Find a package
 
@@ -17,7 +20,7 @@ APM gets its list of available packages from registries. AOS comes with the
 First, fetch the latest package lists:
 
 ```sh
-apm update --system
+apm update
 ```
 
 `update` tells APM which packages and versions are available. It does not
@@ -26,8 +29,8 @@ install or upgrade anything.
 Search by name or description, then inspect a result:
 
 ```sh
-apm search nginx --system
-apm show nginx --system
+apm search curl
+apm show curl
 ```
 
 `search` lists matching package names, versions, and descriptions. `show`
@@ -38,21 +41,137 @@ If a package is available from more than one registry, check its versions and
 sources:
 
 ```sh
-apm policy nginx --system
+apm policy curl
 ```
 
 To search a particular registry, add `--registry`:
 
 ```sh
-apm search nginx --system --registry andyl
+apm search curl --registry andyl
 ```
 
 See [Configure package registries](registries.md) to add or change sources.
 
+## Install packages
+
+Install one or more packages by name. You do not need to write a package-list
+file:
+
+```sh
+apm install curl jq
+```
+
+The current CLI installs these packages for your account. On stock images,
+an administrator must first enable personal package installs by providing
+writable APM directories and access to the package store.
+
+Preview the install, then apply it:
+
+```sh
+apm install curl --dry-run
+apm install curl
+```
+
+APM also installs dependencies: other packages the program needs to work.
+It asks for confirmation before making changes; add `--yes` to accept the
+prompt automatically. If you need a package from a particular configured
+registry, add `--registry NAME` to the install command.
+
+New AOS login sessions include your package directory on `PATH`. If an
+existing shell cannot find an installed command, start a new login session or
+add the directory to that shell:
+
+```sh
+export PATH="/var/lib/profiles/per-user/$USER/current/bin:$PATH"
+```
+
+Inspect what you have installed:
+
+```sh
+apm list --installed
+apm files curl
+apm depends curl
+```
+
+`list --installed` shows your packages. `files` lists the files a package
+provides. `depends` shows the store references making up the package and its
+dependencies.
+
+## Upgrade packages
+
+Fetch the latest package lists and check which installed packages have updates:
+
+```sh
+apm update
+apm list --upgradable
+```
+
+Preview and apply the upgrades:
+
+```sh
+apm upgrade --dry-run
+apm upgrade
+```
+
+`upgrade` uses the lists fetched by `update`; it does not fetch new lists itself.
+To upgrade just one package, supply its name:
+
+```sh
+apm upgrade curl
+```
+
+To keep a package at its current version during ordinary upgrades, put it on
+hold. Remove the hold when you are ready to upgrade it again:
+
+```sh
+apm hold curl
+apm unhold curl
+```
+
+## Remove packages
+
+```sh
+apm remove curl --dry-run
+apm remove curl
+```
+
+Removal keeps dependencies by default. To also remove dependencies that are
+no longer needed, preview and apply with `--autoremove`:
+
+```sh
+apm remove curl --autoremove --dry-run
+apm remove curl --autoremove
+```
+
+## Undo a package change
+
+APM saves a numbered version of your installed package set each time you
+install, remove, or upgrade packages. These saved sets are called generations.
+You can return to a previous generation if a change causes problems.
+
+List the saved generations and preview the one you want:
+
+```sh
+apm rollback --list
+apm rollback --generation N --dry-run
+```
+
+Replace `N` with a generation number from the list, then apply it:
+
+```sh
+apm rollback --generation N
+```
+
+This changes your account's installed package set. For host configuration and
+OS rollback, use [Upgrade and roll back a host](upgrades.md).
+
 ## Manage machine-wide packages
 
-Run the commands in this section as an administrator. Keep a TOML file listing
-the packages you want installed. For example, save this as `desired.toml`:
+Administrators can also manage a complete machine-wide package set from a
+file. This workflow is available on stock hosts without setting up personal
+installs. Run these commands as an administrator.
+
+For example, save this as `desired.toml`:
 
 ```toml
 packages = ["nginx", "curl"]
@@ -88,11 +207,10 @@ new login sessions through the machine-wide package directory on `PATH`.
 To add another package later, add its name to the same file, preview, and
 apply it again.
 
-A dry run uses the package lists already fetched. When applying a list with
-additions, APM also attempts to refresh those lists; if that refresh fails, it
-warns and uses the cached lists. A change with no additions does not refresh
-lists. Run `apm update --system` yourself before previewing to catch update
-failures and review a plan based on current information.
+A dry run uses the package lists already fetched. Applying a list with
+additions also attempts an update, falling back to cached lists with a warning
+if that update fails. Run `apm update --system` before previewing so you can
+catch update failures and review a plan based on current information.
 
 ### Remove packages
 
@@ -143,121 +261,6 @@ and [Supplement host.nix at runtime](configuration.md#supplement-hostnix-at-runt
 The desired file can carry configuration and credential inputs as well as the
 package list. Prefer systemd credential references; protect any file containing
 secret values as secret state.
-
-## Manage user packages
-
-Personal installs affect only your account. They are the default when you omit
-`--system`; there is no `--user` flag.
-
-Stock images do not yet set up personal installs. Your administrator must
-provide writable APM configuration and data directories, a writable profile
-under `/var/lib/profiles/per-user/$USER`, and permission to add packages to the
-Nix store. If these are unavailable, use the machine-wide workflow above.
-
-### Install a package
-
-Fetch the package lists for your account, then find a package:
-
-```sh
-apm update
-apm search curl
-apm show curl
-```
-
-Preview the install, then apply it:
-
-```sh
-apm install curl --dry-run
-apm install curl
-```
-
-APM installs any needed dependencies and asks for confirmation before making
-changes. If you need a package from a particular configured registry, add
-`--registry NAME` to the install command.
-
-New AOS login sessions include your package directory on `PATH`. If an
-existing shell cannot find an installed command, start a new login session or
-add the directory to that shell:
-
-```sh
-export PATH="/var/lib/profiles/per-user/$USER/current/bin:$PATH"
-```
-
-Inspect what you have installed:
-
-```sh
-apm list --installed
-apm files curl
-apm depends curl
-```
-
-### Upgrade packages
-
-Fetch the latest package lists and check which installed packages have updates:
-
-```sh
-apm update
-apm list --upgradable
-```
-
-Preview and apply the upgrades:
-
-```sh
-apm upgrade --dry-run
-apm upgrade
-```
-
-`upgrade` uses the lists fetched by `update`; it does not fetch new lists itself.
-To upgrade just one package, supply its name:
-
-```sh
-apm upgrade curl
-```
-
-To keep a package at its current version during ordinary upgrades, put it on
-hold. Remove the hold when you are ready to upgrade it again:
-
-```sh
-apm hold curl
-apm unhold curl
-```
-
-### Remove a package
-
-```sh
-apm remove curl --dry-run
-apm remove curl
-```
-
-Removal keeps dependencies by default. To also remove dependencies that are
-no longer needed, preview and apply with `--autoremove`:
-
-```sh
-apm remove curl --autoremove --dry-run
-apm remove curl --autoremove
-```
-
-### Undo a package change
-
-APM saves a numbered version of your installed package set each time you
-install, remove, or upgrade packages. These saved sets are called generations.
-You can return to a previous generation if a change causes problems.
-
-List the saved generations and preview the one you want:
-
-```sh
-apm rollback --list
-apm rollback --generation N --dry-run
-```
-
-Replace `N` with a generation number from the list, then apply it:
-
-```sh
-apm rollback --generation N
-```
-
-This changes your account's installed package set. For host configuration and
-OS rollback, use [Upgrade and roll back a host](upgrades.md).
 
 ## Free disk space
 
