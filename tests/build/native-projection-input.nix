@@ -15,12 +15,24 @@
       }
     ];
   };
+  dependency = pkgs.mkDerivation {
+    pname = "native-projection-available-dependency";
+    version = "1";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''mkdir -p "$out"'';
+      }
+    ];
+  };
   package = pkgs.mkDerivation {
     pname = "native-projection-payload";
     version = "1";
     src = null;
     module = ../effects/package-interface;
     moduleDeps = [schema];
+    runtimeDeps = [dependency];
     outputs = ["out" "unused"];
     phases = [
       {
@@ -45,12 +57,36 @@
   inventory = root: (lib.build.closureInfo {inherit pkgs;}) {rootPaths = [root];};
   fullInventory = inventory full;
   projectionInventory = inventory projection;
+  bundle = selected: consumeAvailable: let
+    evaluated = lib.evalPackageModules {
+      packages = [selected];
+      scope = ["projection-bundle"];
+      modules = lib.optional consumeAvailable {
+        aos.abilities.echo.operations.run = {
+          handler.program = selected;
+          effects.retained.input.message = "${package.unused}/marker:${dependency}/marker";
+        };
+      };
+    };
+  in
+    import ../../pkgs/containers/_aos-oci-backend/deployment-bundle.nix {
+      inherit lib pkgs;
+      packages = [selected];
+      inherit (evaluated.deployment) graph scope;
+      system = pkgs.stdenv.hostPlatform.system;
+    };
+  primaryBundle = bundle package false;
+  alternateBundle = bundle package.unused false;
+  consumedBundle = bundle package true;
+  primaryBundleInventory = inventory primaryBundle;
+  alternateBundleInventory = inventory alternateBundle;
+  consumedBundleInventory = inventory consumedBundle;
 in
   pkgs.mkDerivation {
     pname = "native-projection-input-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.jq fullInventory projectionInventory];
+    buildDeps = [pkgs.jq fullInventory projectionInventory primaryBundleInventory alternateBundleInventory consumedBundleInventory];
     phases = [
       {
         name = "check";
@@ -76,6 +112,32 @@ in
               and any(.paths[]; .path == $schemaEnvelope)
               and any(.paths[]; .path == $custody)' \
             ${projectionInventory}/inventory.json >/dev/null
+          # The complete catalogs remain readable while only chosen outputs
+          # and dependencies used by the graph enter each actual store closure.
+          ${pkgs.jq}/bin/jq -e --arg primary ${lib.escapeShellArg (toString package)} \
+            --arg alternate ${lib.escapeShellArg (toString package.unused)} \
+            --arg dependency ${lib.escapeShellArg (toString dependency)} \
+            'any(.paths[]; .path == $primary)
+              and all(.paths[]; .path != $alternate and .path != $dependency)' \
+            ${primaryBundleInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg primary ${lib.escapeShellArg (toString package)} \
+            --arg alternate ${lib.escapeShellArg (toString package.unused)} \
+            --arg dependency ${lib.escapeShellArg (toString dependency)} \
+            'any(.paths[]; .path == $alternate)
+              and all(.paths[]; .path != $primary and .path != $dependency)' \
+            ${alternateBundleInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg primary ${lib.escapeShellArg (toString package)} \
+            --arg alternate ${lib.escapeShellArg (toString package.unused)} \
+            --arg dependency ${lib.escapeShellArg (toString dependency)} \
+            'any(.paths[]; .path == $primary)
+              and any(.paths[]; .path == $alternate)
+              and any(.paths[]; .path == $dependency)' \
+            ${consumedBundleInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e --arg alternate ${lib.escapeShellArg (toString package.unused)} \
+            --arg dependency ${lib.escapeShellArg (toString dependency)} \
+            '.artifacts[0].outputs.unused == $alternate
+              and any(.packages[]; .artifacts.dependencies."native-projection-available-dependency".path == $dependency)' \
+            ${primaryBundle}/transaction.json >/dev/null
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';
