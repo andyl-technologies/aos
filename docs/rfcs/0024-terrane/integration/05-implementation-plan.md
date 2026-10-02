@@ -273,8 +273,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and mandatory formatting pass. Full core/strict qualification remains live;
   the actual aggregate still rejects the absent `format_properties` target.
   The shared `core-fuzz` gate also requires two exact private signature-omission
-  property cases; their implementation and final public corpus qualification
-  remain on the task branch. These results do not complete TEST-3.
+  properties and three private disclosure/context/side-evidence encoder
+  properties. Their implementation and final public corpus qualification remain
+  on the task branch. These results do not complete TEST-3.
   D-80 adds independently reproduced D-77/D-78 byte
   witnesses and distinguishes decoder rejection from authority claims.
   Remaining format publication and joint native qualification are incomplete.

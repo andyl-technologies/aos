@@ -25,6 +25,9 @@ in {
     # Their private unit properties must execute alongside the public corpus.
     ${runUnit "auth::tests::format_properties::authority_preimages_match_unsigned_models_and_omit_only_signature"}
     ${runUnit "auth::tests::format_properties::attenuation_preimages_match_unsigned_models_for_every_caveat_and_presence"}
+    ${runUnit "provenance::disclosure::statement::tests::disclosure_statement_models_retain_every_registered_field"}
+    ${runUnit "provenance::trust::encoding::tests::context_models_preserve_versions_presence_and_selected_bytes"}
+    ${runUnit "provenance::side_attributes::serialization::tests::selected_evidence_models_preserve_tuple_fields_and_filtered_row_order"}
     printf 'PASS: pure format fuzz and property corpus\n' > "$out/result"
   '';
 }
