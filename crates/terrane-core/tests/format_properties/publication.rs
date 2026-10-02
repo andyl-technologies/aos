@@ -4,6 +4,7 @@ use super::{
     records,
     support::{Generator, check_record},
 };
+use terrane_core::cbor;
 use terrane_core::gc::publication::evidence::*;
 use terrane_core::gc::publication::*;
 use terrane_core::properties::PropertyName;
@@ -193,12 +194,48 @@ fn registration(case: usize, original_id: [u8; 32]) -> PhysicalRegistration {
     }
 }
 
+// PROP-30 fixes this historical vocabulary independently of compiled registrations.
+const REVISION_ONE_NAMES: [&str; 33] = [
+    "acl",
+    "baseline",
+    "chunk",
+    "classify",
+    "compaction_threshold",
+    "compression",
+    "dedup",
+    "degraded",
+    "domain",
+    "durability",
+    "encryption",
+    "gap_merge_bytes",
+    "hashes",
+    "home",
+    "index",
+    "merge",
+    "on-release",
+    "passthrough",
+    "prefetch",
+    "quota",
+    "reassembly",
+    "redundancy",
+    "reflog_retain",
+    "replicate",
+    "retain",
+    "span_max_bytes",
+    "store",
+    "strict-attrs",
+    "trust",
+    "warm",
+    "whole_pack_threshold",
+    "wipe",
+    "writers",
+];
+
 fn registries() -> ConfiguredRegistryInputs {
-    let mut names: Vec<_> = PropertyName::ALL
+    let names = REVISION_ONE_NAMES
         .iter()
-        .map(|name| name.as_str().to_string())
+        .map(|name| (*name).into())
         .collect();
-    names.sort();
     ConfiguredRegistryInputs {
         property_revision: 1,
         behavioral_properties: names,
@@ -209,6 +246,111 @@ fn registries() -> ConfiguredRegistryInputs {
         identity_profile: "terrane-v1".into(),
         later_properties: vec![],
     }
+}
+
+// Assemble the schema from ordinary data rather than a revision-selection helper.
+fn registry_wire(model: &ConfiguredRegistryInputs) -> Vec<u8> {
+    let mut bytes = vec![];
+    cbor::write_map(&mut bytes, 9);
+    for (key, revision) in [(0, 1), (1, model.property_revision)] {
+        cbor::write_uint(&mut bytes, key);
+        cbor::write_uint(&mut bytes, revision);
+    }
+    cbor::write_uint(&mut bytes, 2);
+    cbor::write_array(&mut bytes, model.behavioral_properties.len());
+    for name in &model.behavioral_properties {
+        cbor::write_text(&mut bytes, name);
+    }
+    for (key, revision) in [
+        (3, model.attribute_revision),
+        (4, model.selector_revision),
+        (5, model.tree_revision),
+        (6, model.chunk_revision),
+    ] {
+        cbor::write_uint(&mut bytes, key);
+        cbor::write_uint(&mut bytes, revision);
+    }
+    cbor::write_uint(&mut bytes, 7);
+    cbor::write_text(&mut bytes, &model.identity_profile);
+    cbor::write_uint(&mut bytes, 8);
+    cbor::write_array(&mut bytes, model.later_properties.len());
+    for name in &model.later_properties {
+        cbor::write_text(&mut bytes, name);
+    }
+    bytes
+}
+
+fn assert_registry_refuses(model: &ConfiguredRegistryInputs) {
+    assert!(model.encode().is_err());
+    assert!(ConfiguredRegistryInputs::decode(&registry_wire(model)).is_err());
+}
+
+#[test]
+fn configured_registry_models_bind_exact_historical_and_current_vocabularies() {
+    let legacy = registries();
+    assert_eq!(legacy.behavioral_properties.len(), 33);
+    check_record!(
+        "historical property revision",
+        legacy.clone(),
+        ConfiguredRegistryInputs
+    );
+
+    let mut current = legacy.clone();
+    current.property_revision = 2;
+    current.behavioral_properties.push("index-roots".into());
+    current.behavioral_properties.sort();
+    assert_eq!(current.behavioral_properties.len(), 34);
+    let mut compiled: Vec<_> = PropertyName::ALL.iter().map(|name| name.as_str()).collect();
+    compiled.sort();
+    assert_eq!(current.behavioral_properties, compiled);
+    check_record!(
+        "current property revision",
+        current.clone(),
+        ConfiguredRegistryInputs
+    );
+
+    for model in [legacy.clone(), current.clone()] {
+        let wire = registry_wire(&model);
+        assert_eq!(model.encode().unwrap(), wire);
+        assert_eq!(ConfiguredRegistryInputs::decode(&wire).unwrap(), model);
+        let mut later = model;
+        later.later_properties = vec!["later.generated".into()];
+        check_record!(
+            "revision-specific later property",
+            later,
+            ConfiguredRegistryInputs
+        );
+    }
+    let mut historical_later = legacy.clone();
+    historical_later.later_properties = vec!["index-roots".into()];
+    check_record!(
+        "historical inert recognized name",
+        historical_later,
+        ConfiguredRegistryInputs
+    );
+
+    for mut mismatch in [legacy.clone(), current.clone()] {
+        mismatch.property_revision = if mismatch.property_revision == 1 {
+            2
+        } else {
+            1
+        };
+        assert_registry_refuses(&mismatch);
+    }
+    for revision in [0, 3, u64::MAX] {
+        let mut unknown = current.clone();
+        unknown.property_revision = revision;
+        assert_registry_refuses(&unknown);
+    }
+    let mut missing = current.clone();
+    missing.behavioral_properties.pop();
+    assert_registry_refuses(&missing);
+    let mut extra = legacy;
+    extra.behavioral_properties.push("later.generated".into());
+    extra.behavioral_properties.sort();
+    assert_registry_refuses(&extra);
+    current.later_properties = vec!["index-roots".into()];
+    assert_registry_refuses(&current);
 }
 
 fn configuration(seed: [u8; 32]) -> TrustedGuardConfig {

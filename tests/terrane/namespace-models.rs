@@ -16,7 +16,9 @@
 
 use terrane_core::cbor::{self, Decoder};
 use terrane_core::identity::{IdentityKind, TERRANE_V1};
-use terrane_core::properties::{PropertyName, validate_preserved_map, validate_property};
+use terrane_core::properties::{
+    PropertyName, validate_graft_overrides, validate_preserved_map, validate_property,
+};
 use terrane_core::tree_format::{
     Attribute, ContentRef, Entry, EntryKind, ExtendedAttribute, LeafItem, Node, NodeItems,
     Property, TreeUse, decode_entry_bytes, decode_node_for, encode_entry, encode_node_for,
@@ -577,6 +579,43 @@ fn reference_entry_models_preserve_optional_metadata_and_kind_fields() {
     );
 }
 
+// PROP-30 fixes this historical vocabulary independently of compiled registrations.
+const REVISION_ONE_NAMES: [&str; 33] = [
+    "acl",
+    "baseline",
+    "chunk",
+    "classify",
+    "compaction_threshold",
+    "compression",
+    "dedup",
+    "degraded",
+    "domain",
+    "durability",
+    "encryption",
+    "gap_merge_bytes",
+    "hashes",
+    "home",
+    "index",
+    "merge",
+    "on-release",
+    "passthrough",
+    "prefetch",
+    "quota",
+    "reassembly",
+    "redundancy",
+    "reflog_retain",
+    "replicate",
+    "retain",
+    "span_max_bytes",
+    "store",
+    "strict-attrs",
+    "trust",
+    "warm",
+    "whole_pack_threshold",
+    "wipe",
+    "writers",
+];
+
 fn registered_values() -> NamedBytes {
     property_bytes(vec![
         ("store", text("local")),
@@ -624,7 +663,54 @@ fn registered_values() -> NamedBytes {
 #[test]
 fn reference_root_property_models_preserve_nested_values_and_identity() {
     let registered = registered_values();
-    assert_eq!(registered.len(), PropertyName::ALL.len());
+    let mut published_names: Vec<_> = registered.iter().map(|(name, _)| *name).collect();
+    published_names.sort();
+    assert_eq!(published_names, REVISION_ONE_NAMES);
+
+    // The published original root is immutable; its new sibling has a separate model.
+    let mut complete_names = published_names;
+    complete_names.push("index-roots");
+    complete_names.sort();
+    let mut compiled_names: Vec<_> = PropertyName::ALL.iter().map(|name| name.as_str()).collect();
+    compiled_names.sort();
+    assert_eq!(complete_names, compiled_names);
+    for value in [
+        named(vec![]),
+        named(vec![(
+            "uid",
+            text("2222222222222222222222222222222222222222222222222222222222222222"),
+        )]),
+    ] {
+        let owner = property_bytes(vec![("index-roots", binding(value.clone(), false))]);
+        let node = leaf(directory(0o755), Some(properties(&owner)));
+        let encoded = encode_node_for(&node, true, MIN_CHUNK, TreeUse::Ordinary).unwrap();
+        assert_eq!(
+            decode_node_for(&encoded, true, MIN_CHUNK, TreeUse::Ordinary).unwrap(),
+            node
+        );
+        for invalid in [value.clone(), binding(value, true)] {
+            assert!(
+                validate_property(&Property {
+                    name: "index-roots",
+                    value: &invalid.encode()
+                })
+                .is_err()
+            );
+        }
+        let graft = empty_entry(EntryKind::Tree {
+            root: ROOT,
+            props: Some(properties(&owner)),
+        });
+        // Entry encoding preserves canonical data; owner placement is policy validation.
+        let EntryKind::Tree {
+            props: Some(overrides),
+            ..
+        } = &graft.kind
+        else {
+            panic!("graft model must retain its override map");
+        };
+        assert!(validate_graft_overrides(overrides, &[]).is_err());
+    }
     let bindings = property_bytes(vec![
         ("store", binding(text("local"), false)),
         ("domain", binding(text("public"), true)),
