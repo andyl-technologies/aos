@@ -1,9 +1,9 @@
 # Canonical release coordinator
 
 Each registry carries its own channels. `andyl/main` carries `edge`,
-`candidate`, and `stable`. `andyl/testing`, and each `andyl/testing-vN` epoch,
+`candidate`, and `stable`. `andyl/experimental`, and each `andyl/experimental-vN` epoch,
 carries `edge` only. Main requires strict build and publication provenance for
-every channel; testing isolates the experimental pipeline and its keys. Testing
+every channel; the experimental registry isolates the experimental pipeline and its keys. The experimental registry
 releases never become main releases by changing a channel or copying signed
 artifacts.
 
@@ -11,21 +11,21 @@ Disk images and OCI containers must configure APM for their exact publishing
 registry. The shared `aos.release` profile supplies the registry URL
 (`<registryOrigin>/<registry>/`, by default
 `https://cdn.aos.andyl.org/<registry>/`), the default Hub (`hubUrl`), trust
-alias, root epoch, channel, and testing notice. Planning, building, and image
+alias, root epoch, channel, and experimental notice. Planning, building, and image
 finalization check this profile from the clean source commit frozen in the
-plan, on every selected platform. A testing profile fails a main plan and vice
+plan, on every selected platform. A experimental profile fails a main plan and vice
 versa. Every image's baked `hubUrl` must equal the origin of the Hub surface
 consumers will install from: the production surface when the plan has any
 production destination (the same signed bytes reach production, and staging
 exercises them with an explicit cache override), or the staging surface for a
-staging-only plan. Build the `aos-testing-staging` variant for staging-only
+staging-only plan. Build the `aos-experimental-staging` variant for staging-only
 plans on the canonical staging Hub, as described in
 [the Hub deployment guide](aos-hub-deployment.md#build-artifacts-for-the-staging-destination).
 A static surface has no Hub origin to bind. Package
 transactions, manifests, evidence, and channel receipts bind the same registry;
 packages inherit their client's configured registry when installed. Inspect the
 destinations and their obligations with
-`aos maintain release step contract --registry andyl/testing` or
+`aos maintain release step contract --registry andyl/experimental` or
 `--registry andyl/main` before starting a release.
 
 Start with the [release checklist](release-checklist.md) for the order of
@@ -59,9 +59,9 @@ Every operation is fail-closed. A surface may be an AOS Hub deployment or a
 names one.
 
 Supported publication to `andyl/main` remains forbidden until the remaining
-RFC-0017 launch gates are complete. The experimental `andyl/testing` registry
+RFC-0017 launch gates are complete. The experimental `andyl/experimental` registry
 may be published to its production surface only under
-[`registry-testing.md`](registry-testing.md); that does not satisfy or bypass
+[`registry-experimental.md`](registry-experimental.md); that does not satisfy or bypass
 any main-registry launch gate.
 
 The canonical release image profile enables external Secure Boot, distinct
@@ -198,14 +198,14 @@ the operator's release.
 The porcelain reads one `aos.release.maintainer-config/v1` TOML file: the path
 in `$AOS_RELEASE_CONFIG`, else `/etc/aos-release/maintainer.toml`, else
 `~/.config/aos/release.toml`. `--config` overrides the search. One
-configuration serves one registry, so testing and main keep separate files,
+configuration serves one registry, so experimental and main keep separate files,
 state directories, and credentials. Unknown keys are rejected.
 
 ```toml
 schema_version = "aos.release.maintainer-config/v1"
 work_root = "/var/lib/aos-release-coordinator/releases"
 fitness_root = "/var/lib/aos-release-coordinator/fitness"
-registry = "andyl/testing"
+registry = "andyl/experimental"
 protected_branch = "master"
 contributor_authorization = "/etc/aos-release/release-contributor-authorization.json"
 retention_policy = "/etc/aos-release/release-retention-policy.md"
@@ -226,8 +226,8 @@ token_credential = "staging-token"
 
 [surfaces.production]
 kind = "static"
-origin = "s3://aos-registry/andyl-testing"
-readback_origin = "https://cdn.example.org/andyl-testing"
+origin = "s3://aos-registry/andyl-experimental"
+readback_origin = "https://cdn.example.org/andyl-experimental"
 identity = "cdn-2026-09"
 s3_region = "auto"
 s3_endpoint = "https://s3.example.org"
@@ -718,7 +718,7 @@ and reachable from its protected local or remote reference. A plan that
 references an accepted [profile override](qualification.md#profile-overrides)
 may instead build a reviewed `dplecki/hotfix-*` branch whose head remains
 reachable from the protected branch. The requested source tag must not exist,
-unless it already names the planned commit: a main edge release and a testing
+unless it already names the planned commit: a main edge release and an experimental
 edge release of the same version share one `release/<version>` tag on one
 protected commit. A tag naming any other commit fails planning.
 
@@ -834,7 +834,7 @@ passes a private-key path to the provider.
 
 `aos-release-signer` (`nix build .#pkg-aos-release-signer`) implements the
 exchange above for deployments whose private keys are operator-owned files,
-which is the approved custody model for `andyl/testing`. It reads a JSON
+which is the approved custody model for `andyl/experimental`. It reads a JSON
 configuration named by `AOS_RELEASE_SIGNER_CONFIG` or `--config` that maps
 each public key id to a private-key file, the roles it may serve, and the
 verification identity the coordinator pins. The configuration, private keys,
@@ -991,7 +991,7 @@ variant, or the preferred
 
 The two public key files contain exact
 `<local-alias>:Ed25519:<base64>` trust lines: `andyl` for `andyl/main`, or the
-epoch-matched `andyl-testing` alias for `andyl/testing`. Their key ids and
+epoch-matched `andyl-experimental` alias for `andyl/experimental`. Their key ids and
 provider revisions must be the single-key,
 threshold-one Provenance and Registry requirements frozen in the plan. The
 single-signature DSSE and Git formats cannot honestly represent a larger
@@ -1841,7 +1841,7 @@ role-separated signing, exact-byte publication receipts, public read-back, or
 compare-and-swap channel updates with ad hoc publishes or manual object copies,
 on a Hub or a static origin. `andyl/main` remains fail-closed until its
 remaining launch gates are complete and its fitness attestations are current. A
-testing publication on a production surface remains explicitly experimental
+experimental publication on a production surface remains explicitly experimental
 and cannot be moved across registries.
 
 The normative design and rollout requirements are in

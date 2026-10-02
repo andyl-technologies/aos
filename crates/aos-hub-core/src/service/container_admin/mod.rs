@@ -388,9 +388,11 @@ mod tests {
             finished_at: None,
             last_error: None,
             resource_version: 9,
+            retire_registry: true,
         };
 
         let message = gc_run_message("andyl/main", &record, &[]);
+        assert!(message.retire_registry);
         assert_eq!(message.inventory_object_count, 23);
         assert_eq!(message.inventory_byte_size, 2_300);
         assert_eq!(message.reachable_object_count, 17);
@@ -970,6 +972,7 @@ fn gc_run_message(
         applied_at: record.applied_at.unwrap_or_default(),
         policy_digest: record.policy_digest.to_string(),
         inventory_byte_size: record.inventory_byte_size,
+        retire_registry: record.retire_registry,
     }
 }
 

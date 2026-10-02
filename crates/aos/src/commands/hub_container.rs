@@ -811,6 +811,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
             registry,
             if_version,
             idempotency_key,
+            retire_registry,
         } => {
             let client = client(access).await?;
             let response: hub_types::ContainerGcPlanResponse = client
@@ -822,6 +823,7 @@ async fn gc(printer: &Printer, command: &HubContainerGcCmd) -> Result<()> {
                         idempotency_key: idempotency_key
                             .clone()
                             .unwrap_or_else(new_idempotency_key),
+                        retire_registry: *retire_registry,
                     },
                 )
                 .await?;

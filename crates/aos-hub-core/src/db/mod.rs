@@ -517,15 +517,24 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// The first entry is the immutable first stable production baseline. Databases
 /// from development histories must be reset before deploying this checkpoint;
 /// subsequent production changes require new forward migrations.
-/// Released migrations keep their positions; native reference projections
-/// follow staged-release version 3 so existing production databases upgrade safely.
+///
+/// | Version | Script | Change |
+/// | --- | --- | --- |
+/// | 1 | `schema.sql` | Production baseline. |
+/// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
+/// | 3 | `staged_releases.sql` | Private release drafts, retention roots, and public catalog selections. |
+/// | 4 | `oci_registry_retirement.sql` | Reviewed OCI catalog retirement flag on GC runs. |
+/// | 5 | `migration-0005-release-ability-graphs.sql` | Native release ability references. |
+/// | 6 | `migration-0006-native-documentation.sql` | Native documentation and search projections. |
+/// | 7 | `migration-0007-native-deployment-report.sql` | Native deployment reports and replay fences. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
     include_str!("staged_releases.sql"),
-    include_str!("migration-0004-release-ability-graphs.sql"),
-    include_str!("migration-0005-native-documentation.sql"),
-    include_str!("migration-0006-native-deployment-report.sql"),
+    include_str!("oci_registry_retirement.sql"),
+    include_str!("migration-0005-release-ability-graphs.sql"),
+    include_str!("migration-0006-native-documentation.sql"),
+    include_str!("migration-0007-native-deployment-report.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -4822,6 +4831,9 @@ impl Database {
                 )
                 .expecting(1),
             ]);
+        }
+        if has_container_admin_projections && self.oci_catalog_retired(registry_id).await? {
+            bail!("registry OCI catalog is retired; container releases cannot be re-projected");
         }
         for release in &snapshot.release_artifact_snapshots {
             if let Some(root) = &release.container_release {
@@ -13764,6 +13776,28 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT 1 FROM oci_release_roots WHERE registry_id = ?1 LIMIT 1",
+                &vals![registry_id],
+            )
+            .await?
+            .is_some())
+    }
+
+    /// Reports whether a reviewed catalog retirement has started for the registry.
+    ///
+    /// Once a retiring GC run is applying or complete, signed-release roots
+    /// must not be re-projected by indexing: the roots were deliberately
+    /// retired and the collector relies on them staying absent.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure.
+    pub async fn oci_catalog_retired(&self, registry_id: i64) -> Result<bool> {
+        Ok(self
+            .backend
+            .query_opt(
+                "SELECT 1 FROM oci_gc_runs
+                 WHERE registry_id = ?1 AND retire_registry = 1
+                   AND state IN('applying', 'complete') LIMIT 1",
                 &vals![registry_id],
             )
             .await?
@@ -26414,9 +26448,10 @@ requires-features = ["image-artifact-contract-v1"]
 
     #[test]
     fn fresh_schema_is_final_and_foreign_key_clean() {
-        assert!(
-            !MIGRATIONS.is_empty(),
-            "production schema has no migrations"
+        assert_eq!(
+            MIGRATIONS.len(),
+            7,
+            "released migrations followed by native reference and report projections"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection

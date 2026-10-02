@@ -1,6 +1,6 @@
 # Release qualification
 
-AOS uses one versioned system contract for testing and production. The
+AOS uses one versioned system contract for experimental and production. The
 authoritative inputs are [`qualification/`](../../qualification/default.nix).
 A release is published to one or more **destinations**. Each destination
 selects a named **profile**, and the profile states everything the release
@@ -35,7 +35,7 @@ A **surface** is one publication endpoint with the role `staging` or
 [static origin](#static-surfaces). A **destination** is one surface role and
 one channel of the plan's registry, written `<role>/<channel>`. The registry
 comes from the plan, so `production/edge` in an `andyl/main` plan and
-`production/edge` in an `andyl/testing` plan are distinct destinations on
+`production/edge` in an `andyl/experimental` plan are distinct destinations on
 different registries.
 
 The contract exports exactly these destinations. Anything else is not a
@@ -43,14 +43,14 @@ destination, and plan validation rejects it.
 
 | Destination | Registry tier | Profile | Published after |
 | --- | --- | --- | --- |
-| `staging/edge` | production (`andyl/main`) and testing (`andyl/testing`, `andyl/testing-vN`) | `build` | nothing |
-| `production/edge` | production and testing | `smoke` | a staging publication |
+| `staging/edge` | production (`andyl/main`) and experimental (`andyl/experimental`, `andyl/experimental-vN`) | `build` | nothing |
+| `production/edge` | production and experimental | `smoke` | a staging publication |
 | `staging/candidate` | production | `build` | nothing |
 | `production/candidate` | production | `functional` | a staging publication |
 | `staging/stable` | production | `build` | nothing |
 | `production/stable` | production | `soak` | a staging publication |
 
-`andyl/main` carries `edge`, `candidate`, and `stable`. Testing registries
+`andyl/main` carries `edge`, `candidate`, and `stable`. Experimental registries
 carry the `edge` channel only. A channel kind selects the same profile on every
 tier that carries it: the tier describes the key custody and pipeline behind a
 registry, not what a release must prove. A per-train channel such as
@@ -479,7 +479,7 @@ exact published artifacts are required before a public release can pass this gat
 | Lifecycle and state | Complete 10 stop/start/recreate cycles using a named volume; each graceful stop respects the documented timeout and exit behavior; numbered committed records and hashes survive removal/recreation; an abrupt kill preserves records already acknowledged as durable |
 | Limits and signals | Runtime CPU/memory limits are applied and observed; the workload handles its documented termination signal; memory exhaustion has the documented failure/restart behavior without corrupting committed volume data |
 | Image replacement | Recreate with the candidate digest using the existing volume, then exercise the documented recovery/rollback path; verify data compatibility rather than assuming image rollback reverses data migrations |
-| Profile and observation | Verify the testing/production registry and trust identities, run the persistent network workload for the profile's soak window, and retain operation counts and failures with no unresolved required-function or integrity failure |
+| Profile and observation | Verify the experimental/production registry and trust identities, run the persistent network workload for the profile's soak window, and retain operation counts and failures with no unresolved required-function or integrity failure |
 
 ### Physical-hardware acceptance
 
@@ -562,7 +562,7 @@ path.
 ## Inspect and freeze the contract
 
 ```sh
-aos maintain release step contract --registry andyl/testing
+aos maintain release step contract --registry andyl/experimental
 aos maintain release step contract --registry andyl/main --to production/stable
 aos --json release step contract --registry andyl/main --to production/candidate \
   --output qualification-contract.json
@@ -589,7 +589,7 @@ public releases use the restricted, non-public
 [qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
 as their predecessor. A descriptor alone is insufficient: retain the signed
 bundle and verification keys for the image update executor and for change
-scoping. A testing-to-main transition is a new main release and installation
+scoping. A experimental-to-main transition is a new main release and installation
 unless a separate authenticated migration contract has been implemented and
 qualified.
 
@@ -1054,7 +1054,7 @@ A1 reports omit `environment`.
 ```json
 {
   "schema_version": "aos.release.qualification-scenario-report/v1",
-  "registry": "andyl/testing",
+  "registry": "andyl/experimental",
   "release_id": "release-2026.9.0",
   "staging_receipt_digest": "sha256:<staging-receipt-hash>",
   "manifest_digest": "sha256:<manifest-hash>",
@@ -1136,7 +1136,7 @@ being listed as a general catalog package. `qualification cases` reports the
 strongest effective role inherited through the signed package-NAR relationship
 graph for each package cell.
 
-Public status is separate: qualified for testing, preview, blocked, or not
+Public status is separate: qualified for the experimental registry, preview, blocked, or not
 applicable. A reference target in the contract is a requirement, not a passing
 hardware claim. Publication integrity applies equally to preview packages.
 Known failure of an advertised basic function blocks that artifact. Successful
@@ -1155,7 +1155,7 @@ narrows the population, and only to cells whose artifact set changed; see
 
 Recovery and K3s package cases also bind their published execution image. The
 shared policy's `qualification.packageExecutionImageVariant` defaults to
-`aos-testing`, whose canonical image contains the public release profile and
+`aos-experimental`, whose canonical image contains the public release profile and
 trust inputs. Recovery and fleet executors derive their image variant from the
 same package rule. Alternate reviewed contracts can select another canonical
 published variant; a fixture image name is not an implicit substitute. Plan

@@ -112,12 +112,12 @@ class BindingsTest(unittest.TestCase):
             "package_names": ["k3s-worker"],
             "store_paths": [path],
             "origins": ["registry"],
-            "registry": "andyl-testing",
+            "registry": "andyl-experimental",
             "release_tag": "1.0.0",
         }}}
         self.assertEqual(
             verify_role_configuration_binding(
-                manifest, bindings, "k3s-worker", "andyl-testing", "1.0.0"
+                manifest, bindings, "k3s-worker", "andyl-experimental", "1.0.0"
             ),
             path,
         )
@@ -135,7 +135,7 @@ class BindingsTest(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(ValueError, "configuration"):
                     verify_role_configuration_binding(
-                        changed, bindings, "k3s-worker", "andyl-testing", "1.0.0"
+                        changed, bindings, "k3s-worker", "andyl-experimental", "1.0.0"
                     )
 
     def test_topologies_select_native_contracts_and_current_platform(self):

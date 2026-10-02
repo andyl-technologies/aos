@@ -679,7 +679,7 @@ mod tests {
     fn index(created_at: &str) -> ReleaseIndex {
         ReleaseIndex {
             schema_version: WORK_INDEX.to_owned(),
-            registry: "andyl/testing".to_owned(),
+            registry: "andyl/experimental".to_owned(),
             version: "2026.9.0-dev.20260929.1".to_owned(),
             release_id: "release-2026.9.0-dev.20260929.1".to_owned(),
             config_digest: digest_string(b"config"),

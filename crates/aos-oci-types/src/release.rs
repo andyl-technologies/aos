@@ -1940,7 +1940,7 @@ mod tests {
             "aos"
         ));
         assert!(definition_attribute_matches_image(
-            "systems.aos-testing.build.containers.aos",
+            "systems.aos-experimental.build.containers.aos",
             "aos"
         ));
         assert!(!definition_attribute_matches_image(

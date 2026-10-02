@@ -3,7 +3,7 @@
 Start every release with the [release checklist](release-checklist.md). It gives
 the order of operations, manual checks, and conditions for proceeding. The
 [command reference](canonical-releases.md) and [qualification specification](qualification.md)
-provide supporting detail for testing and production.
+provide supporting detail for experimental and production.
 
 This section is for people changing the AOS source tree, package graph, system
 modules, release images, or Rust tools. Installing and operating a published
@@ -59,12 +59,12 @@ release policy, output formats, and image validation.
 the packaged Wrangler and Cloudflare OAuth, isolated staging and production
 configuration, validation, promotion, and rollback.
 
-[Operate hosted registries](registries.md) defines the main/testing trust and
+[Operate hosted registries](registries.md) defines the main/experimental trust and
 lifecycle split and links the per-registry runbooks. [Back up and recover the
 hosted Hub](aos-hub-backup-recovery.md) covers HubDb PITR, R2, disposable shard
-state, release evidence, restore, and approved testing rebuilds.
+state, release evidence, restore, and approved experimental-registry rebuilds.
 
-[Registry key management](registry-key-management.md) distinguishes testing's
+[Registry key management](registry-key-management.md) distinguishes experimental's
 HSM status from main's intended signing custody, provider integration, rotation,
 and recovery policy.
 

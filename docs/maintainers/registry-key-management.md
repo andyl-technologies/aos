@@ -1,6 +1,6 @@
 # Registry key management
 
-`andyl/testing` does not use an HSM. Its trust root and signing keys are
+`andyl/experimental` does not use an HSM. Its trust root and signing keys are
 independent of `andyl/main`.
 
 ## Intended management for andyl/main
@@ -38,11 +38,11 @@ release content.
 
 `andyl/main` publishes edge, candidate, and stable releases, and handles an
 emergency as a signed profile override of `production/stable` rather than a
-separate class. `andyl/testing` publishes edge releases only. Main requires
+separate class. `andyl/experimental` publishes edge releases only. Main requires
 strict pipeline provenance and the custody above for every release, including
-`edge`; testing exercises new build and release mechanisms with lighter
+`edge`; the experimental registry exercises new build and release mechanisms with lighter
 assurance and file-backed keys.
-Do not import testing keys into main's trust policy. A threshold is
+Do not import experimental keys into main's trust policy. A threshold is
 meaningful only when its custodians and administrative access are independent;
 several keys accessible through one online credential do not provide that
 separation.
