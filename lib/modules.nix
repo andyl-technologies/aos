@@ -2048,6 +2048,7 @@
               operatorModules
               runtimeModules
               packageModules
+              packageImportRoots
               enforcePackageAuthorship
               enforceRuntimeDeclarations
               checkDefinitionPaths

@@ -33,6 +33,32 @@
     aos.futurePackage.settings = throw "early storage projection forced a later package option";
   };
   selected = project [valid laterPackage];
+  packageModules = (import ../../lib/build/package-modules.nix {}).closure [pkgs.aos-storage-provisioning-provider];
+  # Only physical import locations change; resolver-supplied source and payload
+  # identities remain the canonical package records.
+  packageImportRoots = builtins.listToAttrs (map (record: {
+      name = builtins.unsafeDiscardStringContext record.configRoot;
+      value = builtins.path {
+        path = record.configRoot;
+        name = "${record.name}-provisioning-source-view";
+      };
+    })
+    packageModules);
+  copiedSources = lib.evalPackageModules {
+    inherit packageModules packageImportRoots;
+    packages = [pkgs.aos-storage-provisioning-provider];
+    checkDefinitions = false;
+    operatorModules = [valid laterPackage];
+    scope = ["test" "provisioning-copied-source-view"];
+  };
+  copiedProjection = copiedSources.extendModules {
+    checkDefinitionPaths = [["aos" "provisioning"]];
+  };
+  storageJson = storage:
+    builtins.toJSON {
+      partitions = lib.mapAttrs (_: value: builtins.removeAttrs value ["_module"]) storage.partitions;
+      arrays = lib.mapAttrs (_: value: builtins.removeAttrs value ["_module"]) storage.arrays;
+    };
   conditional = project [
     valid
     {
@@ -56,6 +82,17 @@ in {
   assert selected.partitions.swap.format == "swap";
   assert selected.arrays.data.members == ["member-a" "member-b"];
   assert selected.arrays.data.encryption == "tpm2"; true;
+  copiedSourceViewsRetainTypedStorage = assert builtins.all (record:
+    builtins.toString packageImportRoots.${builtins.unsafeDiscardStringContext record.configRoot} != record.configRoot)
+  packageModules;
+  assert copiedSources.documentation.packages == (evaluate false [valid laterPackage]).documentation.packages;
+  assert storageJson copiedProjection.config.aos.provisioning.storage == storageJson selected; true;
+  copiedSourceViewsRequireAdmission = assert rejects
+  (copiedSources.extendModules {
+    # Models the old extension bug, which silently dropped the source-view map.
+    packageImportRoots = {};
+    checkDefinitionPaths = [["aos" "provisioning"]];
+  }).config.aos.provisioning.storage; true;
   provisioningTypoRejected = assert rejects (project [valid {aos.provisioning.stroage = {};}]); true;
   storageTypoRejected = assert rejects (project [valid {aos.provisioning.storage.partitons = {};}]); true;
   malformedAncestorRejected = assert rejects (project [{aos.provisioning = 42;}]); true;
