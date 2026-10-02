@@ -415,9 +415,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   addition finds complete positive model comparisons and independent negative
   wires. The updated isolated joint candidate includes both the property and
   bootstrap branches; its actual `prov-commit-signature` passes all twenty
-  required exact cases. Joint aggregate and native qualification remain
-  required. A new `namespace-reference-models` auxiliary harness reserves three
-  exact owning-codec groups for independent entry metadata and root properties;
+  required exact cases. The combined core build and all 559 Nextest tests pass
+  with zero skips (run `20edeff7-dc54-4971-a85c-33caf27556e7`), together with
+  strict all-target Clippy and warnings/missing-docs rustdoc. The actual joint
+  aggregate fails `prov-commit-verify`, which requires the nineteen native
+  disclosure selectors still absent from trunk. Complete native qualification
+  remains required. A new `namespace-reference-models` auxiliary harness reserves
+  three exact owning-codec groups for independent entry metadata and root
+  properties;
   it fails explicitly until the independent generator and model inputs exist.
   The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
@@ -1060,7 +1065,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   scope denials and equal-subject/different-principal-kind refusal. The exact
   run `013dc7c0-97d8-4fab-bf92-bcb0be766673` has six passes and 367 filtered
   cases. Only two of the nineteen required contracts are implemented; the
-  remaining seventeen and fresh deferred-destination recovery stay open.
+  remaining seventeen stay open. An additional genuine fresh-factory recovery
+  case now passes after dropping the original destination instance: valid
+  attenuated source Read and destination Commit denials, changed canonical
+  retained-trust refusal, exact paired recovery, source/seed erasure and ordinary
+  destination-only reopening/content read. Its run
+  `ddb9ddcf-a1b2-4734-80ab-751edcbe560c` passes one case with 373 filtered.
+  Independent local initialization exposed source-profile parameters incorrectly
+  reused for destination staging. The reviewed correction supplies the actual
+  destination profile while preserving its encoded-payload and referenced-chunk
+  validation before dedup. The reviewed deferred coordinator remains private;
+  ordinary reopening still refuses pending selected configuration mismatches.
+  This scoped evidence precedes public entrypoint and strict native qualification.
   These additional regressions do not qualify the absent contracts.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
