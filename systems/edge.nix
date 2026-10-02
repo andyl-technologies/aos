@@ -33,8 +33,6 @@
   aos.image.budgets = {
     maxVerityMiB = 16;
     maxInitrdMiB = 132;
-    maxBootExecutableMiB = 160;
-    maxFirmwarePartitionMiB = 384;
   };
 
   # The service modules predate host-time evaluation and default to enabled.
