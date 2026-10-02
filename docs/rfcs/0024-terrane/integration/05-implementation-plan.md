@@ -382,6 +382,37 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   selector executes zero tests because the original-bootstrap task remains
   separate. No gate selector is weakened; the candidate stays unmerged, and
   complete golden/fuzz and native qualification remain required.
+  The independently reviewed original-bootstrap candidate passes all 491 core
+  tests with zero skips, strict Clippy/rustdoc and all 20 exact signature-gate
+  cases, including its eight copied-root checks. An isolated joint checkout
+  combines that candidate with the property candidate. Its actual aggregate
+  advances past both core prerequisites and fails `prov-disclosure-boundary`:
+  the nineteen required native selectors remain absent from trunk. The native
+  task's additional paired/recovery regressions do not substitute for those
+  exact contracts. Neither task is merged or advanced.
+  A separate `algebra-reference-models` hermetic check prepares seventeen
+  independently encoded recipe witnesses: twelve positive models and five
+  structural rejections. Four exact public-model groups compare graft/overlay/
+  merge bytes, recipe hashes, decoded fields, replacement and ordered policies;
+  strict Clippy passes. The inert trust profile supplies no executable authority.
+  D-89 now publishes those seventeen additive witnesses, preserving every prior
+  byte and identity. The final `algebra-format-vectors` hermetic check reproduces
+  the complete section and passes all four exact groups and strict Clippy.
+  The original preparation check remains an alias to this stronger published
+  check. Full core build, all 487 Nextest tests with zero skips (run
+  `194809af-dba4-4274-9768-141cb4fb5883`), strict all-target Clippy and strict
+  warnings/missing-docs rustdoc pass on these published wire inputs. Mandatory
+  formatting passes. A legacy owning-codec coverage audit
+  identifies existing published inputs without complete independent model
+  consumers; `legacy-format-vectors` now requires twelve exact public groups
+  and one private unverified token-field group. The actual task-branch check
+  now passes all thirteen groups and strict all-target Clippy; every D-80 input
+  has an independently constructed full model or primitive negative oracle.
+  Its full core suite passes all 547 tests with zero skips (run
+  `ddcbd96f-b1ff-4bae-ac87-976114964f1d`), build/strict Clippy/rustdoc/formatting
+  and `core-fuzz` also pass. Its actual aggregate still refuses the missing
+  bootstrap-fork selector; rebase onto D-89 and joint qualification remain
+  required. The task stays unmerged, and complete golden coverage remains open.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1016,6 +1047,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   native build, 16 focused regressions and mandatory formatting pass. This is
   preparatory evidence; genuine independent-factory paired publication and the
   19 required boundary cases remain unqualified.
+  The current isolated paired-publication candidate now passes six genuine
+  native regressions, including interrupted cached-import recovery, unrelated
+  pending-carrier and altered retained-trust refusal, valid attenuated current
+  scope denials and equal-subject/different-principal-kind refusal. The exact
+  run `013dc7c0-97d8-4fab-bf92-bcb0be766673` has six passes and 367 filtered
+  cases. Only two of the nineteen required contracts are implemented; the
+  remaining seventeen and fresh deferred-destination recovery stay open.
+  These additional regressions do not qualify the absent contracts.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -1145,6 +1184,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Both mandatory formatting commands pass. Complete workflow and package
   qualification remain pending; native I/O
   batching preserves every required observation and fence.
+  Local bucket/namespace/Guard/coordinator construction is now factored into a
+  private helper for the paired-recovery implementation. Ordinary initialization
+  and reopen still call their original strict retention factories; no pending
+  repository is returned to ordinary callers. The actual hermetic
+  `local-factory-construction` check passes both existing protected bootstrap
+  and directory-edit/reopen regressions, with exact nonempty selections.
+  Mandatory formatting passes. Its two inherited native dead-code warnings
+  remain visible; this targeted check does not establish strict native Clippy
+  or complete paired recovery, which remains on its task branch.
   — satisfies CRATE-22 to CRATE-27;
   `checks.terrane.gates.feature-matrix`.
 
