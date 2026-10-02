@@ -4,7 +4,16 @@
   lib,
 }: let
   policy = pkgs.aos-host-policy;
-  packages = [policy pkgs.systemd pkgs.chrony pkgs.openssh pkgs.audit pkgs.nftables pkgs.aos-network-ruleset-provider];
+  packages = [
+    policy
+    pkgs.systemd
+    pkgs.chrony
+    pkgs.openssh
+    pkgs.audit
+    pkgs.nftables
+    pkgs.aos-network-ruleset-provider
+    pkgs.aos-ebpf-lsm-policy
+  ];
   evaluate = role: operator:
     lib.evalPackageModules {
       inherit packages;
