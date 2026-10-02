@@ -267,7 +267,7 @@ async fn realize(
         fallback_mirrors: chain[1..].to_vec(),
     };
     let printer = aos_core::output::Printer::new(0, true, false);
-    let resolved = crate::download::fetch_narinfo_closure(
+    let resolved = crate::download::fetch_complete_narinfo_closure(
         std::sync::Arc::new(crate::download::default_engine()),
         &[request],
         config.settings.parallel_downloads,
@@ -288,7 +288,8 @@ async fn realize(
         trust.insert(hash.to_owned(), graph);
     }
     trust.enforce_totality()?;
-    validate_realisations(graph, &resolved)?;
+    validate_realisations(graph, &resolved)
+        .with_context(|| format!("validating available output {root} realization dependencies"))?;
     let results = crate::download::download_nars(
         &resolved,
         &config.nar_cache_path(),
