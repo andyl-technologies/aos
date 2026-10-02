@@ -460,16 +460,26 @@ pub enum CatalogError {
     Backpressure,
 }
 
+// Domains and authority validation stay with callers; only these existing
+// u16-prefixed descriptor fields share one byte sequence.
+pub(super) fn hash_descriptor_fields_u16_v1(
+    hasher: &mut sha2::Sha256,
+    descriptor: &ObjectDescriptor,
+) {
+    use sha2::Digest as _;
+    let media = descriptor.media_type().as_str().as_bytes();
+    hasher.update((media.len() as u16).to_be_bytes());
+    hasher.update(media);
+    hasher.update(descriptor.digest().as_bytes());
+    hasher.update(descriptor.encoded_size().to_be_bytes());
+}
+
 pub(crate) fn catalog_digest(entry: &CatalogEntryV1) -> ObjectDigest {
     let mut hasher = sha2::Sha256::new();
     use sha2::Digest as _;
     hasher.update(b"aos.sandbox.cache.catalog-entry.v1\0");
     hasher.update(entry.partition.digest().as_bytes());
-    let media = entry.descriptor.media_type().as_str().as_bytes();
-    hasher.update((media.len() as u16).to_be_bytes());
-    hasher.update(media);
-    hasher.update(entry.descriptor.digest().as_bytes());
-    hasher.update(entry.descriptor.encoded_size().to_be_bytes());
+    hash_descriptor_fields_u16_v1(&mut hasher, &entry.descriptor);
     hasher.update([entry.seal.profile as u8]);
     hasher.update(entry.seal.measurement.as_bytes());
     hasher.update(entry.backing.as_bytes());
@@ -499,10 +509,6 @@ pub fn canonical_name_digest(
     use sha2::Digest as _;
     hasher.update(b"aos.sandbox.cache.canonical-name.v1\0");
     hasher.update(partition.digest().as_bytes());
-    let media = descriptor.media_type().as_str().as_bytes();
-    hasher.update((media.len() as u16).to_be_bytes());
-    hasher.update(media);
-    hasher.update(descriptor.digest().as_bytes());
-    hasher.update(descriptor.encoded_size().to_be_bytes());
+    hash_descriptor_fields_u16_v1(&mut hasher, descriptor);
     ObjectDigest::from_bytes(hasher.finalize().into())
 }

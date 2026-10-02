@@ -1200,11 +1200,7 @@ fn eviction_plan_digest(plan: &FrozenEvictionPlanV1) -> ObjectDigest {
     hasher.update(plan.target_reclaim_bytes.to_be_bytes());
     hasher.update((plan.candidates.len() as u32).to_be_bytes());
     for candidate in &plan.candidates {
-        let media = candidate.descriptor.media_type().as_str().as_bytes();
-        hasher.update((media.len() as u16).to_be_bytes());
-        hasher.update(media);
-        hasher.update(candidate.descriptor.digest().as_bytes());
-        hasher.update(candidate.descriptor.encoded_size().to_be_bytes());
+        super::catalog::hash_descriptor_fields_u16_v1(&mut hasher, &candidate.descriptor);
         hasher.update(candidate.catalog_digest.as_bytes());
         hasher.update(candidate.backing.as_bytes());
         hasher.update(candidate.root_custody.as_bytes());
