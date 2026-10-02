@@ -35,6 +35,9 @@ use crate::protected_files::{
 };
 use crate::{SourceProviderSecurityError, VerifiedCatalogPublicationV1};
 
+mod selected_input;
+pub use selected_input::ProtectedOriginalSelectedInputV1;
+
 const DEPLOYMENT_MAGIC: &[u8; 8] = b"AOSSPD05";
 const ORIGIN_MAGIC: &[u8; 8] = b"AOSSPO05";
 const CUT_MAGIC: &[u8; 8] = b"AOSSPC05";

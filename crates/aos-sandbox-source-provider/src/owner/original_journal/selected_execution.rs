@@ -3,15 +3,17 @@
 //! The original pair, full Applying transaction, selected publication/catalog
 //! and both protected enrollment owners remain resident. This child retains
 //! Source-local comparison DATA only; it supplies no Root observation, live
-//! effect grant or cold archive. Every repeat compares against the first frame.
+//! effect grant. Immutable archive installation follows the resident frame;
+//! every repeat compares against the first frame and same original file.
 
 use aos_sandbox_core::ObjectDigest;
 use aos_sandbox_source_provider_ledger::ledger::native_completion::OriginalSourceOwnerDataV5;
 use aos_sandbox_source_provider_protocol::{
-    ProviderHeldSnapshotCatalogV1, VerifiedProviderRequestV1,
+    ProviderHeldSnapshotCatalogV1, SignedStorageNativeAcquireRequestV2, VerifiedProviderRequestV1,
     native_held_completion::{
         SOURCE_SELECTED_NATIVE_EXECUTION_INPUT_BYTES_V1, SourceSelectedNativeExecutionInputDataV1,
-        SourceSelectedNativeExecutionInputFieldsV1,
+        SourceSelectedNativeExecutionInputFieldsV1, NativeHeldScopeV1, NativeHeldCompletionErrorV1,
+        frame::SignedNativeHeldControlV1,
     },
 };
 use sha2::{Digest, Sha256};
@@ -47,6 +49,8 @@ impl FixedProviderOwnerV1 {
             .ok_or(ProviderLedgerError::Unavailable)?;
         self.original_ingress.borrowed_clock_v5()?.require_request(signed)?;
 
+        self.retain_selected_input_archive_v1()?;
+
         let retained = self.original_source_producer_v5()?
             .selected_execution
             .as_ref()
@@ -80,7 +84,7 @@ impl FixedProviderOwnerV1 {
         Ok(())
     }
 
-    fn require_selected_enrollments_v1(&self) -> Result<(), OriginalProducerErrorV5> {
+    pub(super) fn require_selected_enrollments_v1(&self) -> Result<(), OriginalProducerErrorV5> {
         let producer = self.original_source_producer_v5()?;
         let backend = producer.selected_backend_enrollment.as_ref()
             .ok_or(ProviderLedgerError::Unavailable)?;
@@ -201,36 +205,63 @@ impl FixedProviderOwnerV1 {
             return Err(ProviderLedgerError::Equivocation.into());
         }
 
-        let mut scope = *root.control().scope();
-        scope.provider_attempt = plan.attempt_digest();
-        scope.original_native_request = signed.digest();
-        scope.require_root_prefix(root.control().scope())?;
+        let scope = selected_execution_scope_v1(original, root.control(), signed)?;
         let backend_enrollment = producer.selected_backend_enrollment.as_ref()
             .ok_or(ProviderLedgerError::Unavailable)?;
         let dedicated_enrollment = producer.selected_dedicated_enrollment.as_ref()
             .ok_or(ProviderLedgerError::Unavailable)?;
 
-        Ok(SourceSelectedNativeExecutionInputDataV1::new(
-            SourceSelectedNativeExecutionInputFieldsV1 {
-                scope,
-                provider_id: plan.provider_id(),
-                holder_id: plan.holder_id(),
-                session_binding: plan.session_binding(),
-                attempt_digest: plan.attempt_digest(),
-                acquisition_id: plan.acquisition_id(),
-                effect_id: plan.effect_id(),
-                normalized_intent_digest: plan.normalized_intent_digest(),
-                kernel_coupled: plan.kernel_coupled(),
-                backend_id: plan.backend_id(),
-                root_prepared: root.control().digest(),
-                publication: publication_digest,
-                catalog: catalog.digest(),
-                binding: request.binding_digest(),
-                backend_enrollment: raw_digest(backend_enrollment),
-                dedicated_enrollment: raw_digest(dedicated_enrollment),
-            },
+        Ok(assemble_selected_execution_input_v1(
+            original, scope, root.control(), &catalog, publication_digest,
+            request.binding_digest(), backend_enrollment, dedicated_enrollment,
         )?)
     }
+}
+
+// Both adapters use the same assembly. Their distinct live/historical checks
+// stay outside: this helper constructs comparison DATA, never verified owners.
+pub(super) fn selected_execution_scope_v1(
+    original: &OriginalSourceOwnerDataV5,
+    root: &SignedNativeHeldControlV1,
+    signed: &SignedStorageNativeAcquireRequestV2,
+) -> Result<NativeHeldScopeV1, NativeHeldCompletionErrorV1> {
+    let mut scope = *root.scope();
+    scope.provider_attempt = original.attempt_digest;
+    scope.original_native_request = signed.digest();
+    scope.require_root_prefix(root.scope())?;
+    Ok(scope)
+}
+
+pub(super) fn assemble_selected_execution_input_v1(
+    original: &OriginalSourceOwnerDataV5,
+    scope: NativeHeldScopeV1,
+    root: &SignedNativeHeldControlV1,
+    catalog: &ProviderHeldSnapshotCatalogV1,
+    publication: ObjectDigest,
+    binding: ObjectDigest,
+    backend_enrollment: &[u8],
+    dedicated_enrollment: &[u8],
+) -> Result<SourceSelectedNativeExecutionInputDataV1, NativeHeldCompletionErrorV1> {
+    Ok(SourceSelectedNativeExecutionInputDataV1::new(
+        SourceSelectedNativeExecutionInputFieldsV1 {
+            scope,
+            provider_id: original.provider.authority_id(),
+            holder_id: original.holder.authority_id(),
+            session_binding: original.session_binding,
+            attempt_digest: original.attempt_digest,
+            acquisition_id: original.acquisition_id,
+            effect_id: original.operation_id,
+            normalized_intent_digest: original.normalized_intent_digest,
+            kernel_coupled: false,
+            backend_id: original.backend_id,
+            root_prepared: root.digest(),
+            publication,
+            catalog: catalog.digest(),
+            binding,
+            backend_enrollment: raw_digest(backend_enrollment),
+            dedicated_enrollment: raw_digest(dedicated_enrollment),
+        },
+    )?)
 }
 
 fn require_plan_origin(

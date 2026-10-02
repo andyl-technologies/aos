@@ -80,6 +80,11 @@ pub(in crate::owner) enum OriginalProducerErrorV5 {
     Receipt(#[from] aos_sandbox_source_provider_protocol::StorageZfsHoldReceiptErrorV1),
     #[error("original Source bounded retention failed")]
     Retention(#[from] std::collections::TryReserveError),
+    // The actual typed cause remains in the same producer's whole Result slot.
+    #[error("original Source selected archive installation failed")]
+    SelectedArchive,
+    #[error("original Source selected archive postcheck failed")]
+    SelectedArchivePostcheck,
 }
 
 impl core::fmt::Debug for OriginalProducerErrorV5 {
@@ -136,6 +141,12 @@ pub(super) struct OriginalSourceProducerV5 {
     pub(super) selected_execution: Option<SourceSelectedNativeExecutionInputDataV1>,
     pub(super) selected_backend_enrollment: Option<[u8; 928]>,
     pub(super) selected_dedicated_enrollment: Option<[u8; 160]>,
+    pub(super) selected_archive_attempted: bool,
+    pub(super) selected_archive: Option<Result<
+        aos_sandbox_source_provider_security::ProtectedOriginalSelectedInputV1,
+        OriginalProducerErrorV5,
+    >>,
+    pub(super) selected_archive_postcheck: Option<OriginalProducerErrorV5>,
     pub(super) storage_offer: Option<super::storage_offer::OriginalStorageOfferV5>,
     pub(super) original_completion: Option<super::completion::OriginalSourceCompletionV5>,
 }
@@ -241,7 +252,7 @@ impl FixedProviderOwnerV1 {
             }
         }
 
-        if let Some(cause) = self.original_ingress.producer_failure_v5() {
+        if let Some(cause) = self.retained_original_producer_failure_v5() {
             return OriginalProducerObservationV5::Failed(cause);
         }
         if self.original_ingress.producer_closed_v5() {
@@ -312,6 +323,7 @@ impl FixedProviderOwnerV1 {
             return Err(ProviderLedgerError::Equivocation.into());
         }
         self.observe_original_journal_v5()?;
+        self.require_retained_selected_archive_v1()?;
         Ok(())
     }
 

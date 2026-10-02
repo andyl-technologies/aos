@@ -55,7 +55,7 @@ pub use configuration::ProviderConfigurationDataV5;
 #[doc(hidden)]
 pub use configuration::original_archive::{
     ProtectedOriginalConfigurationArchiveV5, ProtectedOriginalCutReferenceV5,
-    ProtectedOriginalDeploymentV5, ProtectedOriginalOriginV5,
+    ProtectedOriginalDeploymentV5, ProtectedOriginalOriginV5, ProtectedOriginalSelectedInputV1,
 };
 pub use custody::{
     ProtectedProviderCustodyV1, ProtectedRootMountCustodyV1, validate_fixed_provider_authority_v1,
