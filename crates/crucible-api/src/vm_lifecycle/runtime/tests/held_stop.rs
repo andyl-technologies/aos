@@ -384,7 +384,7 @@ impl ProductionVmNodeLauncher for PublicationBoundaryLauncher {
 }
 
 #[test]
-fn production_peer_publication_failure_retains_evidence_and_refuses_retry() -> TestResult {
+fn production_peer_publication_failure_retains_evidence_and_refuses_republication() -> TestResult {
     let mut lifecycle = stopped_lifecycle(1)?;
     let pending = lifecycle.drain_pending_selectable_requests()?.remove(0);
     let (parent, decision, selected, reply) = reply_for(&lifecycle, &pending)?;
