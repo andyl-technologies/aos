@@ -98,15 +98,17 @@ recovery. Read it before deploying a storage policy.
 Use `apm` instead of baking ordinary tools into a private image:
 
 ```sh
-apm search curl
-apm install curl jq
-apm list --installed
+apm update --system
+apm search curl --system
+apm install --system curl jq
+apm list --system --installed
 ```
 
-Machine-wide package sets can be reconciled from a reviewed desired-state
-file with `apm install --system --from`. See [Manage packages](packages.md) for
-user and system scopes, upgrades, and rollback, and [Configure package
-registries](registries.md) for origin and trust policy.
+Use package names for everyday installation. For repeatable provisioning,
+`apm reconcile --system --from desired.toml` applies a complete package set
+from a file. See [Manage packages](packages.md) for upgrades, removal, and
+rollback, and [Configure package registries](registries.md) for sources and
+trust policy.
 
 ## Discover package configuration
 
