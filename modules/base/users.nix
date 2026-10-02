@@ -17,10 +17,10 @@ in {
   # These files seed the immutable image only. They are not native file effects
   # and never replace the mutable identity databases during reconfiguration.
   config.environment.etc = {
-    passwd.text = lines builtinUsers passwdLine;
-    group.text = lines cfg.groups groupLine;
+    passwd.text = lib.mkDefault (lines builtinUsers passwdLine);
+    group.text = lib.mkDefault (lines cfg.groups groupLine);
     shadow = {
-      text = lines builtinUsers (name: _: "${name}:!*::0:99999:7:::");
+      text = lib.mkDefault (lines builtinUsers (name: _: "${name}:!*::0:99999:7:::"));
       mode = "0600";
     };
   };

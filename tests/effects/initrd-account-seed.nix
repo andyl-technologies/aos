@@ -21,6 +21,54 @@
     };
   baseline = evaluate {};
   baselineSeed = seed baseline;
+  host = operator:
+    (lib.evalPackageModules {
+      scope = ["system"];
+      packages = [pkgs.systemd];
+      operatorModules = [operator];
+    }).config;
+  hostSeed = config:
+    (import ../../pkgs/system/_systemd-abilities/platform/account-seed.nix {
+      inherit config lib pkgs;
+    }).environment.etc;
+  hostBaseline = host {};
+  hostAccounts = hostSeed hostBaseline;
+  nativeHostRows = config:
+    import ../../pkgs/system/_systemd-abilities/platform/_identity-bootstrap.nix {
+      inherit lib shells;
+      identities = config.aos.abilities.identity.operations;
+      accounts = config.aos.users;
+      groupReferences =
+        map (effect: effect.outputs.name)
+        (builtins.attrValues (lib.filterAttrs (_: effect:
+          effect.enable && effect.input.requested_id != null)
+        config.aos.abilities.identity.operations.group.effects));
+      principalReferences =
+        map (effect: effect.outputs.name)
+        (builtins.attrValues (lib.filterAttrs (_: effect:
+          effect.enable && effect.input.requested_id != null && !(builtins.elem effect.input.name ["root" "nobody"]))
+        config.aos.abilities.identity.operations.principal.effects));
+    };
+  hostDisabledConfig = host {
+    aos.abilities.network.operations.configure.effects.host.enable = false;
+  };
+  hostOverriddenConfig = host ({config, ...}: {
+    aos.abilities.network.operations.configure.effects.host.input.accounts = lib.mkForce [
+      config.aos.abilities.identity.operations.principal.effects.systemd-resolve.outputs.name
+    ];
+  });
+  hostDisabled = hostSeed hostDisabledConfig;
+  hostOverridden = hostSeed hostOverriddenConfig;
+  hostIdentityDisabledConfig = host {
+    aos.abilities.identity.operations.principal.effects.systemd-network.enable = false;
+  };
+  hostIdentityDisabled = hostSeed hostIdentityDisabledConfig;
+  hostCases = {
+    baseline = hostBaseline;
+    disabled = hostDisabledConfig;
+    overridden = hostOverriddenConfig;
+    principal-disabled = hostIdentityDisabledConfig;
+  };
   row = name: text:
     builtins.filter (line: lib.hasPrefix "${name}:" line) (lib.splitString "\n" text);
   expected = name: let
@@ -68,7 +116,7 @@ in {
     pname = "aos-initrd-account-serialization-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.coreutils pkgs.gawk];
+    buildDeps = [pkgs.coreutils pkgs.gawk pkgs.systemd];
     phases = [
       {
         name = "check";
@@ -80,6 +128,46 @@ in {
             awk 'NF == 0 { exit 1 }' root/etc/${name}
           '') ["passwd" "group" "shadow"]}
           test "$(stat -c %a root/etc/shadow)" = 600
+
+          ${lib.concatStringsSep "\n" (lib.mapAttrsToList (caseName: config: let
+              accounts = hostSeed config;
+              root = "host-${caseName}";
+            in ''
+              mkdir -p ${root}/etc ${root}/usr/lib/sysusers.d
+              ${lib.concatMapStringsSep "\n" (name: ''
+                cp ${pkgs.writeTextFile {
+                  name = "expected-${caseName}-${name}";
+                  text = accounts.${name}.text;
+                }} ${root}/etc/${name}
+                cp ${root}/etc/${name} "$TMPDIR/before-${caseName}-${name}"
+              '') ["passwd" "group" "shadow"]}
+              chmod 600 ${root}/etc/shadow
+              cp ${pkgs.systemd}/lib/sysusers.d/systemd*.conf ${root}/usr/lib/sysusers.d/
+              ${pkgs.systemd}/bin/systemd-sysusers --root="$PWD/${root}" \
+                systemd-network.conf systemd-resolve.conf
+                ${lib.optionalString (caseName != "principal-disabled") (lib.concatMapStringsSep "\n" (name: ''
+                cmp ${root}/etc/${name} "$TMPDIR/before-${caseName}-${name}"
+              '') ["passwd" "group" "shadow"])}
+
+              # Check every vendor-created fixed principal against native policy;
+              # absent vendor accounts remain native-created during activation.
+              ${pkgs.systemd}/bin/systemd-sysusers --root="$PWD/${root}"
+              awk -F: 'FNR == NR { expected[$1] = $0; next }
+                $1 in expected && $0 != expected[$1] { exit 1 }' \
+                ${pkgs.writeTextFile {
+                name = "expected-native-${caseName}-accounts";
+                text = (nativeHostRows config).passwd;
+              }} \
+                  ${root}/etc/passwd
+                awk -F: 'FNR == NR { expected[$1] = $3; next }
+                  $1 in expected && $3 != expected[$1] { exit 1 }' \
+                  ${pkgs.writeTextFile {
+                name = "expected-native-${caseName}-groups";
+                text = (nativeHostRows config).group;
+              }} \
+                  ${root}/etc/group
+            '')
+            hostCases)}
           mkdir -p "$out"
           echo PASS > "$out/result"
         '';
@@ -89,6 +177,18 @@ in {
   checks = {
     completeNetworkRow = row "systemd-network" baselineSeed.passwd == [(expected "systemd-network")];
     completeResolverRow = row "systemd-resolve" baselineSeed.passwd == [(expected "systemd-resolve")];
+    masterAccountDescriptionsPreserved = baseline.aos.abilities.identity.operations.principal.effects.systemd-network.input.description == "systemd Network Management" && baseline.aos.abilities.identity.operations.principal.effects.systemd-resolve.input.description == "systemd Resolver";
+    hostAndInitrdEarlyIdentitiesMatch = builtins.all (name:
+      row name hostAccounts.passwd.text
+      == row name baselineSeed.passwd
+      && row name hostAccounts.group.text == row name baselineSeed.group
+      && row name hostAccounts.shadow.text == row name baselineSeed.shadow)
+    ["systemd-network" "systemd-resolve"];
+    hostSeedUsesExactPolicy = row "systemd-resolve" hostAccounts.passwd.text == [(expected "systemd-resolve")];
+    hostRequestOverridePreservesManagerIdentities = row "systemd-network" hostOverridden.passwd.text == [(expected "systemd-network")] && row "systemd-resolve" hostOverridden.passwd.text == [(expected "systemd-resolve")];
+    hostDisabledConfigurePreservesManagerIdentities = !hostDisabledConfig.aos.abilities.network.operations.configure.effects.host.enable && row "systemd-network" hostDisabled.passwd.text == [(expected "systemd-network")] && row "systemd-resolve" hostDisabled.passwd.text == [(expected "systemd-resolve")];
+    hostDisabledIdentityIsNotSeeded = row "systemd-network" hostIdentityDisabled.passwd.text == [] && row "systemd-resolve" hostIdentityDisabled.passwd.text == [(expected "systemd-resolve")];
+    hostEnabledGroupSurvivesDisabledPrincipal = hostIdentityDisabledConfig.aos.abilities.identity.operations.group.effects.systemd-network.enable && row "systemd-network" hostIdentityDisabled.group.text == row "systemd-network" hostAccounts.group.text;
     configuredAccountsOverride =
       row "systemd-network" (seed overridden).passwd
       == []

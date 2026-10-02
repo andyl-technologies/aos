@@ -89,5 +89,7 @@
     };
   };
 in {
+  imports = [./platform/account-seed.nix];
+
   config.aos.manager.selected = authoredManager;
 }

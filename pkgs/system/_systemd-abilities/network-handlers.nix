@@ -12,17 +12,13 @@
       meta.mainProgram = "aos-network-handler";
     };
   identity = config.aos.abilities.identity.operations;
-  accounts = {
-    systemd-network = 192;
-    systemd-resolve = 193;
-  };
-  prerequisites = lib.mapAttrsToList (name: _: identity.principal.effects.${name}.outputs.name) accounts;
+  accountPolicy = import ./network-account-policy.nix {inherit lib identity;};
 in {
   aos.abilities.network.operations = {
     configure = {
       input.options.accounts = lib.mkOption {
         type = lib.types.listOf (lib.types.deferred lib.types.str);
-        default = prerequisites;
+        default = accountPolicy.references;
         description = "Native account identities required by upstream network manager units.";
       };
       handler = {inherit program;};
@@ -40,24 +36,7 @@ in {
     bootstrap.handler = {inherit program;};
   };
   aos.abilities.identity.operations = {
-    group.effects =
-      lib.mapAttrs (name: id: {
-        input = {
-          inherit name;
-          requested_id = id;
-        };
-      })
-      accounts;
-    principal.effects =
-      lib.mapAttrs (name: id: {
-        input = {
-          inherit name;
-          requested_id = id;
-          primary_group = identity.group.effects.${name}.outputs.name;
-          home_directory = "/";
-          description = "Systemd network manager";
-        };
-      })
-      accounts;
+    group.effects = accountPolicy.groups;
+    principal.effects = accountPolicy.principals;
   };
 }
