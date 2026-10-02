@@ -19,6 +19,11 @@ pub(crate) mod protected_read;
 
 #[cfg(feature = "std")]
 pub use native_clock::NativeEffectClock;
+
+/// Shares genuine injected clock state with retained-effect qualification tests.
+#[cfg(all(feature = "std", test))]
+pub(crate) use native_clock::gc_test_clock::TestClock;
+
 #[cfg(feature = "std")]
 pub(crate) use native_effect::publication as native_publication_effects;
 #[cfg(feature = "std")]

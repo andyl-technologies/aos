@@ -22,6 +22,7 @@ pub mod codec;
 pub mod derived;
 pub mod gc;
 pub mod identity;
+pub mod indexing;
 pub mod manifest;
 pub mod model;
 pub mod pack_format;

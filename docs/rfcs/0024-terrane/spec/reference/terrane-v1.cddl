@@ -1,4 +1,4 @@
-; Terrane Specification 1.0-draft-2 — canonical object schemas (RFC 8610 CDDL)
+; Terrane Specification 1.0-draft-3 — canonical object schemas (RFC 8610 CDDL)
 ;
 ; This file is normative for every CBOR-encoded immutable and record in a
 ; terrane-v1 store (00-conventions.md CONV-3, 04-content-model.md OBJ-4,
@@ -57,6 +57,15 @@ locality = {
 property-map   = { * name => property-value }
 property-value = tstr / uint / bool / [ * property-value ]
                / { * name => property-value }
+
+; Owner-root-only property (PROP-29). Hex MUST be lowercase [0-9a-f].
+; This is a specialization of property-value, not a new generic wire type.
+index-node-hex = tstr .size 64
+index-roots-value = { * name => index-node-hex }
+index-roots-binding = {
+  "inherit" => false,
+  "value" => index-roots-value,
+}
 
 ; ---------------------------------------------------------------------------
 ; Manifest — domain terrane-manifest-v1 (04-content-model.md OBJ-13..OBJ-18)
@@ -302,6 +311,18 @@ other-recipe = {
 }
 other-recipe-op = "split" / "flatten" / "filter" / "map" / "union"
                 / "difference" / "intersection" / "index" / "realize"
+
+; Closed executable specialization of other-recipe (DRV-26).
+; Generic retained index recipes, including legacy operands/arguments,
+; keep their existing validity and identities; this parser does not replace them.
+index-evaluation-recipe = {
+  1 => "index",
+  2 => [ owner: digest32 ],
+  3 => {
+    "attribute" => name,               ; registered attribute
+    "profile" => "terrane-index/v1",
+  },
+}
 
 ; Effective ownership supplied by trusted view resolution (ALG-37).
 ; Pairs sort uniquely by root digest; labels use the domain property grammar.

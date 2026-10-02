@@ -133,7 +133,9 @@ Freezes: every identity domain, encoding, bucket key, and the store traits.
 Exit gates: `checks.terrane.gates.golden-vectors`,
 `checks.terrane.gates.core-fuzz`, `checks.terrane.gates.bucket-file-cas`,
 `checks.terrane.gates.gc-grace-window`,
-`checks.terrane.gates.algebra-merge`, store conformance on `file://`.
+`checks.terrane.gates.algebra-merge`,
+`checks.terrane.gates.derivation-memo`,
+`checks.terrane.gates.index-tree-maintenance`, store conformance on `file://`.
 
 - [x] **T-OBJ-1** Identity domains, descriptors, and the `terrane-v1`
   identity profile; second-identity-profile registration hook. — satisfies
@@ -241,7 +243,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   tests); mandatory formatting passes. The requirement remains open.
   — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
-- [x] **T-PROP-1** Property resolution, types, boundary properties,
+- [ ] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name
   validation. Boundary validation compares AUTH-22's implied verbs and
   preserves inherited administrator rights under AUTH-25 before applying
@@ -254,8 +256,11 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   retention, and durability with the corresponding store, domain, GC,
   redundancy, and topology tasks; attribute production with T-DRV-1 and
   T-DRV-2. Host realizers enforce hints and wipe policy. Backfill execution
-  belongs to T-JOB-1; this task reports gaps without starting jobs. —
-  satisfies TREE-14, PROP-1 to PROP-28;
+  belongs to T-JOB-1; this task reports gaps without starting jobs.
+  D-101 reopens completion for the new owner-local `index-roots` binding.
+  Its pure validation is joint with T-DRV-3; actual verified index admission
+  remains joint with T-DRV-2. Previous property behavior stays qualified,
+  but does not qualify PROP-29. — satisfies TREE-14, PROP-1 to PROP-29;
   `checks.terrane.gates.property-resolution`,
   `checks.terrane.gates.property-required-attrs`,
   `checks.terrane.gates.property-domain-reference`.
@@ -271,8 +276,8 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   satisfies OBJ-21, OBJ-22, REF-1 to REF-11, REF-24 to REF-26;
   `checks.terrane.gates.ref-names`.
 - [ ] **T-DRV-1** Derived attribute records and classification (`hash.*`,
-  `class.magic`), stored per object. Narrowed to trunk scope: index trees,
-  derivations, and memos are T-DRV-2 on B-derive. The nine reviewed pure paths
+  `class.magic`), stored per object. Index trees, derivations, and memos
+  belong to T-DRV-2 in this milestone under AD-11. The nine reviewed pure paths
   now implement stream hashes, bounded classification, canonical records and
   producer evidence requiring complete carrying-view and producer contexts.
   They match the task candidate without dependency or vendor changes. All
@@ -293,7 +298,54 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   `index-generation-manifest`. Object-reachability collection under DRV-3 and
   joint T-JOB-1 backfill under DRV-11 remain incomplete; a passing attribute
   gate does not qualify those operations.
-  — satisfies DRV-1 to DRV-11; `checks.terrane.gates.derived-attr-record`.
+  — satisfies DRV-1 to DRV-10, DRV-28 (DRV-11 withdrawn);
+  `checks.terrane.gates.derived-attr-record`.
+- [ ] **T-DRV-2** Derivations, the common memo form, index trees with
+  same-commit O(delta × log n) maintenance, `verify_index`, `rebuild_index`,
+  attribute-value lookup and SHA-256 index continuity. AD-11 moves this
+  unchanged task ID from B-derive into T1 because native safe index
+  materialization and the later mandatory cache/sandbox consumers need it.
+  Implement memoization and verification for the recipe kinds available in
+  T1; T-ALG-3 and T-RULE-1 extend the same mechanism for their later kinds.
+  D-100 replaces the withdrawn DRV-18 filtered-output bound with DRV-24's
+  explicit candidate, occurrence and current-check accounting. D-101 now
+  registers the acyclic owner/index binding and executable recipe profile;
+  their pure codecs belong to T-DRV-3. The occurrence carrier and typed
+  non-graft reachability remain pre-freeze prerequisites. An invented
+  property or optional derived ref cannot substitute for the owner binding.
+  Positive native safe-index materialization,
+  independent current attribute-producer checks and genuine divergent-index
+  refusal/rebuild remain required. Neither this ordering correction nor
+  passing opaque-index codecs completes the task. — satisfies DRV-12 to
+  DRV-17, DRV-19 to DRV-28 (DRV-13/18 withdrawn);
+  `checks.terrane.gates.derivation-memo`,
+  `checks.terrane.gates.index-tree-maintenance`.
+  D-100/AD-11's actual `registry-complete` derivation and both mandatory
+  formatting commands pass. The registry still exposes all 292 stable gates;
+  its index row now names DRV-24 explicitly. The index implementation checks
+  remain pending and fail when requested. No task checkbox or milestone
+  status is advanced by this correction.
+- [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
+  `index-roots` value/binding validation, closed executable index-recipe
+  codec and value-plus-object opaque keys. Preserve generic retained recipe
+  validity and all existing identities. D-101 registers these formats before
+  T1's freeze; this task implements ordinary data without giving it current
+  authority. Root/occurrence loading, producer verification, incremental
+  maintenance, complete coverage and native dispatch remain T-DRV-2.
+  Publish independently assembled format witnesses jointly with T-TEST-1.
+  The shared property gate now requires the exact owning-root binding case;
+  its absence must fail rather than qualify the new registry entry from old
+  property tests. — satisfies the format portions of PROP-29, DRV-12,
+  DRV-25, DRV-26, TEST-1 to TEST-3;
+  `checks.terrane.integration.index-format`,
+  `checks.terrane.gates.property-resolution`,
+  `checks.terrane.gates.core-no-std`.
+  D-101's shared prerequisite exposes the module and exact pure check
+  inventory before task branches start. The actual `registry-complete`
+  and `core-no-std` checks pass, as do both mandatory formatters. The actual
+  augmented property gate and index-format check fail on the absent exact
+  owner-binding case (zero selected tests), confirming no old suite can
+  qualify the new format. Runtime index gates remain explicitly pending.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,
@@ -779,6 +831,23 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Its actual full aggregate still fails the legacy state-1 compatibility case
   in `index-generation-manifest`. That failure and the literal-observation gap
   remain explicit; no formal task merge, checkbox or milestone advances.
+  The reviewed legacy correction now reads all five actual published literals
+  through bounded, unique-section readers and compares each with its owning
+  raw or domain-prefixed digest computation. Thirty-five malformed, missing,
+  duplicate or changed-literal controls refuse the input; five surrounding
+  section controls remain accepted. Existing model bytes, identities and
+  normative reference bytes are unchanged. The exact legacy auxiliary and
+  its strict consumer Clippy pass. On the updated combined candidate, the
+  actual complete `golden-vectors` gate again passes seventeen mandatory
+  owning suites and all 28 reviewed sections, closing those five observation
+  gaps. All 611 core Nextest tests pass with zero skips (run
+  `fb739c3a-d26a-40f9-a679-9d55beb3b2f3`), alongside the all-target build,
+  strict all-target Clippy, warnings/missing-docs rustdoc and both mandatory
+  formatters. All 46 temporary inputs and owning bytes remain frozen through
+  every original terminal and are compared before exact restoration/removal.
+  The actual full aggregate still fails the legacy state-1 compatibility
+  assertion in `index-generation-manifest`; T1 and formal task merges remain
+  open despite this stronger golden evidence.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
@@ -1505,6 +1574,40 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   run passes both cases (`adf2a80a-098d-4009-9ba1-2b1692a8d5ab`); both mandatory
   formatters also pass on that source. Thirteen of nineteen boundary contracts
   now have reviewed passing evidence; full native conformance remains open.
+  Full review also accepts the raw-kind and domain-scope fixtures. The raw
+  tree, whiteout, conflict and index refusals use only candidate-reachable
+  uploads, with a genuine file admission control. Canonical overlay/index
+  refusal does not qualify positive native whiteout application or index
+  rebuilding. Independent real source/destination domain caveats are checked
+  before deduplication despite an existing byte-identical destination chunk;
+  actual public-to-private reference refusal preserves the authorized paired
+  private-to-public control. All fifteen reviewed mandatory boundary contracts
+  now pass together on the updated combined source (run
+  `32006d9f-b178-45e7-b76d-b9327edfd760`, fifteen selected, 377 unrelated
+  tests skipped), with both mandatory formatters passing on the same source.
+  Historical rotation, complete current-authority changes, positive whiteout
+  application and positive index rebuilding remain mandatory and unqualified.
+  The rotation fixture is stopped on an actual prerequisite: configured local
+  disclosure roles are selected Guard snapshot inputs, so changing a role's
+  interval or replacing its key cannot pass ordinary reopen's exact snapshot
+  check. Qualifying the PROV-26/DOM-24 rotation fixture requires genuine bounded
+  setup and an authorized selection transition; a changed role file, relabeled
+  key or weakened reopen check cannot qualify ordinary rotation. No such bypass
+  or task advancement occurs.
+  A shared test-only prerequisite now observes an actual retained Candidate
+  slot for one physical publication control and ref before native dispatch's
+  final checks. It delays the unchanged effect without retaining a mutex or
+  adding a production callback. Three exact tests pass (run
+  `3f58c8c6-2f7b-4bb9-8745-235b2ccc1bf1`), including genuine slot publication
+  and independently retained wall-clock state; the native build and both
+  mandatory formatters pass. The initial fixture confused authoring control
+  with publication control and failed; its corrected path comes from the
+  held backend's checked physical registration. All original commands finish
+  before that correction, and all corrected inputs stay frozen through the
+  final commands. Strict native Clippy retains the same 21 production and
+  two test unused-path diagnostics. The actual trunk aggregate still fails
+  missing public core-fuzz inputs. This prerequisite does not qualify the
+  complete current-authority contract or advance the task.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -1533,14 +1636,38 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The DOM-7/PROV-30 native index-rebuild case remains mandatory and unqualified;
   its operational dependency belongs to T-DRV-2. No branch workline is started,
   encoding is not frozen, and no pure-codec result substitutes for that case.
-  A read-only ordering audit identifies the resulting cycle: completed T1
+  A read-only ordering audit identified the former cycle: completed T1
   is needed before B-derive, while this positive native case currently requires
   T-DRV-2's rebuilding operation before T1 can exit. PROV-30/DOM-7 forbid index
   certificates and permit safe materialization or authorized full-source
   retention; they do not independently mandate native rebuild availability.
-  A D-n-backed task/gate scope correction remains required. Raw index refusal
+  AD-11 below resolves this task-ordering cycle. Raw index refusal
   and independent current attribute-producer checks remain T1 obligations;
   no branch work, guessed binding carrier or weaker current-policy rule follows.
+  A broader ordering audit finds that moving this positive contract to B-derive
+  alone would also violate trunk MVP requirements: CI-3 requires the SHA-256
+  CAS index at T4, while AD-5/SBX-12 require an index-tree descriptor lookup at
+  T5. T-SBX-4's temporary per-object lookup contradicts SBX-12. Index-specific
+  prerequisites therefore need a D-n-backed trunk ordering correction that
+  preserves DRV-14's incremental complexity and DRV-16/17 verification/rebuild.
+  DRV-13's owner binding and detached recipe association also need an explicit
+  acyclic registered format; an index containing its owner's hash would cycle
+  with the owner's reference to that index. Finally, SBX-11's media-type and
+  length-framed descriptor SHA-256 differs from DRV-6's plaintext SHA-256;
+  their lookup keys cannot silently be treated as interchangeable. These are
+  unresolved specification/integration prerequisites, not permission to start
+  branch work or substitute a weaker gate.
+  D-99 corrects DRV-18's existing trigger to use the registered `sha256` hash
+  name and `hash.sha256` attribute name in their respective property sets;
+  its complexity and authorization obligations are unchanged. This editorial
+  namespace correction does not resolve the carrier, ordering or framed
+  descriptor prerequisites, and no native index capability is claimed.
+  AD-11 now resolves the task-ordering cycle by placing T-DRV-2 in T1 and
+  adding both of its gates to the milestone exit set. The positive native
+  index case stays mandatory; no B-* workline starts. D-100 explicitly
+  replaces the filtered-output cost bound with DRV-24's candidate and
+  current-check accounting. Acyclic binding, executable recipe, occurrence
+  evidence and the framed descriptor bridge remain unresolved prerequisites.
   — satisfies DOM-1 to DOM-11, DOM-16, DOM-17, DOM-20, DOM-24;
   `checks.terrane.gates.dom-reference-order`,
   `checks.terrane.gates.dom-dedup-scope`.
@@ -1824,10 +1951,13 @@ GitHub Actions cache client exercised end to end in a Nix check.
 
 - [ ] **T-NIX-1** `nix-cache` surface: schema, narinfo, zero-CPU `.nar.zst`
   streaming, store-path lookups, writable uploads, bearer credential
-  mapping. Lookups use a per-root store-path map maintained by the surface
-  until index trees land (T-DRV-2); the map is a derivation in all but
-  name and is replaced, not migrated. — satisfies NIX-1 to NIX-8, NIX-10 to
-  NIX-13; `checks.terrane.gates.nix-frame-concat`,
+  mapping. Lookups use path-keyed lookup in the canonical root whose entry
+  names begin with the store-path hash, as permitted by NIX-9; T-DRV-2's
+  indexes are already a trunk prerequisite. T-NIX-2 replaces this lookup
+  with a store-path index without making the SHA-256 CAS index optional.
+  — satisfies
+  NIX-1 to NIX-8, NIX-10 to NIX-13;
+  `checks.terrane.gates.nix-frame-concat`,
   `checks.terrane.gates.nix-surface-stream`.
 - [ ] **T-REAPI-1** `reapi` surface: `cas/` and `ac/` schema, SHA-256
   addressing through `hash.sha256`, `FindMissingBlobs` from the tree,
@@ -1918,9 +2048,11 @@ conformance tests passing over Terrane.
   satisfies SBX-9, SBX-10; `checks.terrane.integration.domain-map`.
 - [ ] **T-SBX-4** `aos-sandbox-v1` identity profile, SHA-256 attributes on
   sandbox roots, portable-tree adapter, `ObjectSource` and
-  `ImmutableFetchTransport` implementations. The SHA-256 index tree
-  arrives with T-DRV-2; until then lookups use the per-object attribute
-  record. — satisfies SBX-11 to SBX-17;
+  `ImmutableFetchTransport` implementations. Indexed descriptor resolution
+  consumes the completed T-DRV-2 machinery; a per-object record lookup
+  does not satisfy the one-index lookup requirement. The exact framed
+  descriptor bridge still requires its separate normative correction.
+  — satisfies SBX-11 to SBX-17;
   `checks.terrane.integration.identity-profile`,
   `checks.terrane.integration.object-source`,
   `checks.terrane.integration.fetch-transport`.
@@ -1966,20 +2098,19 @@ Exit gates: `checks.terrane.gates.host-crash-recovery`,
 
 ## Branches
 
-### B-derive — Derivations, index trees, rulesets
+### B-derive — Additional tree algebra and rulesets
 
 Forks from T1. Merge gates: `checks.terrane.gates.derivation-memo`,
 `checks.terrane.gates.index-tree-maintenance`,
 `checks.terrane.gates.ruleset-eval-order`.
 
+T-DRV-2 is a T1 trunk task under AD-11. This workline extends its common
+memo/evaluation machinery for additional operations and keeps both existing
+index gates green; it does not supply an MVP index prerequisite.
+
 - [ ] **T-ALG-3** `filter`, `map`, set operations, and recipes for every
   composite kind. Deferred from T-ALG-2. — satisfies ALG-22 to ALG-27;
   `checks.terrane.gates.algebra-diff`.
-- [ ] **T-DRV-2** Derivations, memos, index trees with O(delta) maintenance,
-  `verify_index`, lookup by attribute value, SHA-256 index continuity.
-  Deferred from T-DRV-1. — satisfies DRV-12 to DRV-23;
-  `checks.terrane.gates.derivation-memo`,
-  `checks.terrane.gates.index-tree-maintenance`.
 - [ ] **T-RULE-1** Ruleset IR, compiler to recipes, evaluator, and portable
   policy encoding. — satisfies RULE-1 to RULE-28;
   `checks.terrane.gates.ruleset-eval-order`,
@@ -2213,7 +2344,7 @@ the MVP conformance claim (PLAN-3) says so explicitly.
 | 07 tree algebra | T1, B-derive | T-ALG-1, T-ALG-2, T-ALG-3 |
 | 08 properties | T1 | T-PROP-1 |
 | 09 refs and commits | T1 | T-REF-1, T-REF-2 |
-| 10 derived data | T1, B-derive, B-jobs | T-DRV-1, T-DRV-2, T-JOB-1 |
+| 10 derived data | T1, B-derive, B-jobs | T-DRV-1, T-DRV-2, T-DRV-3, T-JOB-1 |
 | 11 store trait | T1, T2, T3 | T-STORE-1, T-STORE-3, T-STORE-2 |
 | 12 pack format | T1, B-bandwidth | T-PACK-1, T-PACK-2, T-PACK-3 |
 | 13 bucket layout | T1, T2, T3 | T-BKT-1, T-HOST-1, T-BKT-2, T-BKT-3, T-RISK-1 |

@@ -1806,6 +1806,115 @@ is added rather than editing history.
     additive correction precedes T1's initial encoding freeze and does not
     qualify the complete corpus, materialization or native operations.
 
+- **[D-99] Use registered hash and attribute names in the SHA-256 lookup trigger.**
+  - **Status:** Decided
+  - **Decision:** DRV-18's trigger names `sha256` in the root's `hashes`
+    property and `hash.sha256` in its `index` property. The lookup argument
+    remains `hash.sha256`; its result, complexity, reader-authority and
+    root-trust requirements remain unchanged.
+  - **Rationale:** The property registry and PROP-18 distinguish digest
+    algorithm names from derived attribute names. `hashes` accepts `sha256`,
+    while `index` names the derived attribute `hash.sha256`. The previous
+    trigger put `hash.sha256` in both sets and therefore could not be met by
+    a root with valid registered property values. This corrects the trigger
+    to its existing intended meaning without admitting another property
+    value or changing any encoded object, identity, profile or media type.
+    It does not equate a plaintext SHA-256 with an adapter's framed digest.
+  - **Alternatives considered:** Admit attribute names in `hashes` (rejected:
+    changes the registered property contract); drop indexed lookup (rejected:
+    violates the existing lookup and MVP obligations).
+  - **Affects:** DRV-18, PROP-18 and PROP-20. Requirement IDs and gate names
+    remain stable. This correction precedes T1's initial freeze and does not
+    qualify index maintenance, descriptor bridging or native disclosure.
+
+- **[D-100] Account for candidates and current-policy work in indexed lookup.**
+  - **Status:** Decided
+  - **Decision:** Withdraw DRV-18 without reusing its ID. DRV-24 preserves
+    its registered SHA-256 trigger, exact authorized/trusted answer and
+    indexed equality-range lookup, while distinguishing candidate rows,
+    occurrences and current-policy/provenance work from returned objects.
+    Candidate discovery is O(log n + C); additional occurrence and checking
+    work is accounted for explicitly. This changes the former unconditional
+    filtered-output complexity requirement; it is not an editorial fix.
+  - **Rationale:** A file object can appear under M independently governed
+    graft occurrences, with the same secondary hash at every occurrence.
+    If all M current ACLs deny the reader, the candidate object set contains
+    one object and the filtered answer is empty. Under independently
+    evaluated policies, any unchecked occurrence could allow it, so correct
+    rejection can require examination of all M policies. Distinct manifests
+    for identical plaintext, with different permitted advisory media types,
+    also create distinct equal-value candidates without a hash collision.
+    Variable path and provenance work cannot be bounded by returned object
+    count. The specified candidate index supplies no separately maintained
+    policy-aware structure or restricted query class proving the old bound.
+    This is a limitation of that model, not an impossibility proof for every
+    conceivable authorization index. Fresh policy, attribute-producer and
+    trust checks remain mandatory; no stale cache or candidate exposure is
+    an alternative to them.
+  - **Alternatives considered:** Call raw candidates the result size
+    (rejected: conflates denied evidence with the returned answer); retain
+    the old bound by restricting policy/query classes (rejected: changes
+    supported view semantics and requires new preprocessing, invalidation
+    and cost proofs); substitute a root walk (rejected: loses the required
+    indexed lookup). Same-commit O(delta × log n) maintenance and independent
+    verification/rebuild remain required by DRV-14 and DRV-16/17.
+  - **Affects:** DRV-18, DRV-24 and the existing index-tree-maintenance gate.
+    No encoding, identity, profile, property or media type changes. This
+    correction precedes the initial format freeze. Registration does not
+    qualify an index implementation, native disclosure or the cost bound.
+
+- **[D-101] Bind indexes without cycles and make root-only recipes reproducible.**
+  - **Status:** Decided
+  - **Decision:** Register owner-local `index-roots` as an exact noninherited
+    property binding from attribute names to lowercase-hex Node identities.
+    Withdraw DRV-13 and replace it with DRV-25/26: construct the index before
+    the owner, then form the detached one-root `terrane-index/v1` recipe and
+    optional unchanged memo. Preserve generic retained index recipes.
+    DRV-27 requires applicable indexed values inline on added or modified
+    files and separates present indexed rows from independently established
+    completeness. Withdraw DRV-11 and replace it with DRV-28: reuse checked
+    side values without recomputation, but still materialize missing inline
+    index inputs during backfill. Keep conditional classifier applicability,
+    current policy, independent producers and PROP-25's immediate incomplete
+    requirement installation.
+  - **Rationale:** The registered `index` property contains attribute names,
+    not root pointers. Generic property values cannot carry byte-string
+    digests, so a registered text carrier is needed. Root properties are
+    hashed; embedding the owner or recipe inside its index creates a digest
+    cycle. Detached recipes remove that cycle. A root-only recipe also cannot
+    select a mutable side-table function/version/value implicitly: changing
+    the catalog could change the result without changing its recipe identity.
+    Existing selected-side evidence belongs to a consuming view/trust context,
+    includes a Commit identity and is not an immutable root-bound recipe input.
+    Inline indexed values give the recipe immutable data while side records
+    retain their computation-reuse and independently checked producer roles.
+    A missing value is not evidence that it differs from a query. A checked
+    nonmatching classifier can establish a conditional value's nonapplicability;
+    unknown or unavailable evidence remains a gap rather than a sentinel.
+  - **Alternatives considered:** Put digests into the existing `index` list
+    (rejected: changes its declared type); use inherited owner pointers or
+    optional derived refs (rejected: wrong owner or loss of correctness);
+    include the current owner/Commit in index bytes (rejected: hash cycle);
+    select mutable side data invisibly (rejected: nonreproducible memo key);
+    define an explicit extra immutable side-input recipe (possible later,
+    but requires a separate registered input format). No interpretation of
+    reachability, memo data or a decoded pointer grants current authority.
+  - **Compatibility:** Advance the unreleased specification to 1.0-draft-3
+    under README's pre-freeze correction exception. Register only the new
+    property and executable specialization; preserve every existing encoded
+    field, identity domain, generic recipe and golden byte. The published
+    generic two-operand/no-arguments `index` Commit witness remains valid.
+    Affected indexed admission/backfill semantics are changed explicitly;
+    the generic AttrRecord and its side-only uses remain unchanged. The format
+    freeze has not begun. No implementation is qualified by this decision.
+  - **Affects:** PROP-29, DRV-11/13 (withdrawn), DRV-24's explicit
+    incomplete-coverage response, DRV-25 to DRV-28,
+    PROP-22/25, the property registry and executable recipe specialization.
+    Same-commit O(delta × log n) maintenance, index verification/rebuild,
+    typed non-graft occurrence evidence and the positive native index case
+    remain required. This decision supplies no occurrence carrier or runtime
+    dispatch; those remain pre-freeze implementation prerequisites.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

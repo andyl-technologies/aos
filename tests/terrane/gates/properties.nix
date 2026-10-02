@@ -8,6 +8,7 @@ in {
     cd crates
     ${runTests "properties::tests::resolution"}
     ${runTests "properties::depth_tests"}
+    ${runTests "indexing::tests::owner_bindings_require_canonical_noninherited_root_values -- --exact"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 
