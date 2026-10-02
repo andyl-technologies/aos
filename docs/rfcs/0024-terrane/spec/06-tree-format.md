@@ -172,6 +172,21 @@ Three entry types exist for the algebra rather than for consumers.
   path grammar and directory ancestors do not apply. Index trees contain
   only `index` entries, and a tree served by a surface MUST NOT contain one.
 
+- **[TREE-35]** The executable `terrane-index/v1` result MUST use the
+  contextual Index roles in DRV-30. These specialize TREE-32's value-key
+  interpretation: primary keys carry a value and object identity, gap keys
+  carry an object identity, and occurrence-route keys carry root-local
+  filesystem paths. Every role MUST still contain only type-7 entries;
+  route trees MUST NOT add directory markers. Route keys MUST obey TREE-1/2
+  and TREE-6's component limit as well as its total limit, without TREE-4's
+  directory-ancestor requirement. Primary and gap keys remain opaque.
+  Structural `index.occurrences` metadata MUST be interpreted only in its
+  registered role and attribute semantic revision; its presence alone MUST
+  NOT select a role or turn an ordinary namespace entry into an Index entry.
+  Generic retained Index entries and their existing fields, target lists,
+  encodings and identities remain valid outside this specialization.
+  *Gate:* `gate:canonical-cbor`, `gate:index-tree-maintenance`.
+
 ## Node structure
 
 A tree is a B-tree of nodes. Leaf nodes hold entries; internal nodes hold

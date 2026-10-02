@@ -9,6 +9,9 @@
 //! key = canonical-CBOR(attribute-value) || object-digest32
 //! ```
 
+pub mod carrier;
+pub mod evaluation;
+
 mod key;
 mod recipe;
 mod roots;
@@ -54,3 +57,9 @@ impl core::error::Error for Error {}
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod carrier_tests;
+
+#[cfg(test)]
+mod evaluation_tests;

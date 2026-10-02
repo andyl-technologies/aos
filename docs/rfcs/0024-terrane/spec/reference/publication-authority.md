@@ -213,13 +213,29 @@ registered attribute/selector/tree/chunk semantics and identity profile
 from trusted later preserve-only names. Property semantics revisions are
 the exact immutable vocabularies in `property-registry.md` (PROP-30).
 Property revision 1 retains the pre-D-101 33 names; revision 2 adds only
-`index-roots`. Other represented semantics remain revision 1. Current
+`index-roots`; revision 3 adds only `index-gaps` and its auxiliary-root-only
+placement. Attribute revision 1 retains the existing value/function names
+and namespaces; revision 2 adds only the contextual `index.occurrences`
+structural metadata in `property-registry.md`. Active typed carrier
+interpretation requires property revision 3 and attribute revision 2.
+Selector, physical tree and chunk semantics remain revision 1. Physical tree
+semantics fix Node/Entry encoding, boundaries and physical TreeUse; they do
+not make structural auxiliary edges into namespace grafts. Current
 closed property resolution has all registered behavioral names and an
 empty later-name set. Later preserve-only names acquire no behavior from
 their presence, even when newer code recognizes them. Unknown semantic
 revisions refuse verification; names
 acquiring behavior require an explicit registered revision. No invented
 mutable current-property map replaces actual root-property evidence.
+
+Structural index pointers grant no namespace authority. Typed auxiliary
+loading and proof caches keep role, attribute/value/object parameters,
+expected source namespace root and current occurrence/view contexts distinct
+from raw byte identity. An empty Node can have the same bytes and identity
+under ordinary and Index roles. A first-match untyped receipt location or
+Digest-only role cache MUST NOT grant auxiliary role or PROV-31 affected-root
+authority. Older recorded semantic revisions keep later names inert even if
+new code recognizes their spelling; their schemas and identities are unchanged.
 
 Nested consumed-root/view records have no separate property revision. Their
 unfenced intrinsic checks retain the original revision-1 behavioral vocabulary

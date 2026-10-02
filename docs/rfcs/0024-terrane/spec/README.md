@@ -1,6 +1,6 @@
 # Terrane Specification
 
-- **Version:** 1.0-draft-5
+- **Version:** 1.0-draft-6
 - **Status:** Draft
 - **Date:** 2026-10-02
 

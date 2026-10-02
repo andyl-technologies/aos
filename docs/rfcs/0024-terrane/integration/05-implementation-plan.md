@@ -314,8 +314,9 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   D-100 replaces the withdrawn DRV-18 filtered-output bound with DRV-24's
   explicit candidate, occurrence and current-check accounting. D-101 now
   registers the acyclic owner/index binding and executable recipe profile;
-  their pure codecs belong to T-DRV-3. The occurrence carrier and typed
-  non-graft reachability remain pre-freeze prerequisites. An invented
+  their pure codecs belong to T-DRV-3. D-104 now registers the hierarchical
+  occurrence/gap carrier; its pure codecs and typed non-graft reachability
+  remain pre-freeze prerequisites. An invented
   property or optional derived ref cannot substitute for the owner binding.
   Positive native safe-index materialization,
   independent current attribute-producer checks and genuine divergent-index
@@ -325,7 +326,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   canonical boundary work, changed-graft descent, batched reuse, full
   verification/rebuild and the positive native case remain mandatory;
   no implementation is qualified by this correction. — satisfies DRV-12,
-  DRV-15 to DRV-17, DRV-19 to DRV-29
+  DRV-15 to DRV-17, DRV-19 to DRV-30, TREE-35, PROP-31
   (DRV-13/14/18 withdrawn);
   `checks.terrane.gates.derivation-memo`,
   `checks.terrane.gates.index-tree-maintenance`.
@@ -341,9 +342,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   input/data/route counters and measured resynchronization work remain required.
   This records a pre-freeze specification correction, not implementation
   qualification or task completion.
+  The shared pure evaluation module and exact
+  `checks.terrane.integration.index-evaluation` inventory are registered
+  before parallel implementation work. The scaffold compiles under
+  `core-no-std`, and both mandatory formatters pass. The requested evaluation
+  check exits 1 on zero selected tests, confirming that declarations alone
+  cannot qualify construction or relationship verification. This is an
+  implementation prerequisite; same-commit incremental maintenance, typed
+  runtime loading/current checks and the native safe-index case remain open.
 - [ ] **T-DRV-3** Pure index format prerequisites: canonical owner-local
   `index-roots` value/binding validation, closed executable index-recipe
-  codec and value-plus-object opaque keys. Preserve generic retained recipe
+  codec, value-plus-object opaque keys and D-104's contextual primary/gap/route
+  carriers and structural property placement. Preserve generic retained recipe
   validity and all existing identities. D-101 registers these formats before
   T1's freeze; this task implements ordinary data without giving it current
   authority. Root/occurrence loading, producer verification, incremental
@@ -351,8 +361,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Publish independently assembled format witnesses jointly with T-TEST-1.
   The shared property gate now requires the exact owning-root binding case;
   its absence must fail rather than qualify the new registry entry from old
-  property tests. — satisfies the format portions of PROP-29, PROP-30, DRV-12,
-  DRV-25, DRV-26, TEST-1 to TEST-3;
+  property tests. D-104 additionally requires exact role/placement and semantic
+  revision cases; unchanged older codec checks alone cannot qualify those
+  extensions. — satisfies the format portions of PROP-29 to PROP-31, TREE-35,
+  DRV-12, DRV-25, DRV-26, DRV-30, TEST-1 to TEST-3;
   `checks.terrane.integration.index-format`,
   `checks.terrane.integration.property-registry`,
   `checks.terrane.gates.property-resolution`,
@@ -395,6 +407,42 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and restored exactly after every original terminal. The fixture correction
   is isolated before further combined qualification. The index candidate
   remains unmerged into the trunk, with no task or milestone advancement.
+  The isolated fixture correction fixes all four combined regressions while
+  preserving the published revision-1 vocabulary and old witness bytes. Its
+  final full core suite passes 619/619 with zero skipped (Nextest run
+  `db738614-9b40-4038-8c7b-9756c6e80e39`), with core build, strict all-target
+  core Clippy, strict rustdoc and both formatters passing; all 46 temporary
+  inputs are compared and restored exactly after the original terminal.
+  The reviewed unpublished joint source retains exactly those Rust and
+  namespace-witness bytes after integrating D-103's specification metadata.
+  Independent parent qualification passes `core-fuzz`, `canonical-cbor`,
+  `namespace-reference-models`, `golden-vectors`, `property-resolution`,
+  `integration.index-format`, `integration.property-registry`, `core-no-std`,
+  `registry-complete` and both mandatory formatters. The actual aggregate
+  exits 1 on
+  `bucket::retirement_tests::legacy_state1_without_inventory_blocks_opaque_index_aliases_even_with_empty_key6`
+  in `index-generation-manifest`. Runtime index gates, occurrence-carrier
+  registration, normative index witness publication and the remaining native
+  disclosure cases remain incomplete. These results qualify the corrected
+  pure fixtures only; no task merge, checkbox or milestone status advances.
+  D-104 registers the hierarchical carrier before the freeze, separating
+  structural metadata from all existing value/function/index-selector inputs.
+  Property revisions 1/2 and attribute revision 1 retain their immutable
+  meanings; the new active carrier requires exact property revision 3 and
+  attribute revision 2, with unchanged physical tree revision 1. Independent
+  full-diff review accepts the normative correction. Its actual
+  `registry-complete` check passes with all 292 gate names stable, and both
+  mandatory formatters pass. `index-tree-maintenance` exits 1 explicitly as
+  pending with TREE-35, PROP-31 and DRV-30 named. The augmented pure index
+  check rejects zero selected owning-binding tests on the trunk; the property
+  registry check passes all four historical cases then rejects zero selected
+  new semantic-revision cases. The actual trunk aggregate exits 1 through
+  the pending `reconciliation-reference-models` dependency of `golden-vectors`.
+  Exact carrier/placement and recorded-revision tests are now mandatory in
+  shared inventories, including canonical CBOR and property resolution;
+  older suites cannot qualify the new contracts. Pure carrier implementation,
+  independently published witnesses and complete T-DRV-2 runtime qualification
+  remain pending, with no task checkbox or milestone advancement.
 - [x] **T-AUTH-1** Capability token verification (Ed25519, chain, caveats,
   attenuation) in `no_std`. — satisfies AUTH-7 to AUTH-22;
   `checks.terrane.gates.auth-verify-pure`,

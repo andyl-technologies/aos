@@ -15,7 +15,7 @@ governs the name.
 
 Copied from [`../08-properties.md`](../08-properties.md) §Property summary
 (PROP-28) with encoding and inheritance added. Unless its registration
-requires an owner-local binding (PROP-29), every property inherits from
+requires structural noninheritance (PROP-29/31), every property inherits from
 the nearest ancestor root unless overridden (PROP-2); `acl` additionally
 may only narrow `commit` and `admin` in a descendant (PROP-16). Values are
 encoded as `property-value` in
@@ -25,8 +25,9 @@ Each property binding MAY instead use the exact text-keyed wrapper
 `{"inherit": bool, "value": property-value}` (PROP-1). The bare encoding
 means inheritance is enabled. The wrapper is reserved for this binding
 purpose and its `value` is checked against the registered type below.
-`index-roots` is the exception: PROP-29 requires that exact wrapper with
-`inherit=false` on the owner root only; its default is an absent empty binding.
+`index-roots` and `index-gaps` require that exact wrapper with `inherit=false`
+and their registered root placements (PROP-29/31). Neither inherits a pointer;
+the former's default is an absent empty binding and the latter has no default.
 
 | Property | Class | CBOR type and values | Default | Owner |
 | --- | --- | --- | --- | --- |
@@ -61,8 +62,9 @@ purpose and its `value` is checked against the registered type below.
 | `acl` | authority, boundary | `[* [principal-or-group: tstr, verbs: uint]]`, verbs as the grant bitmask | inherited | 22 |
 | `hashes` | requirement | `[* tstr]` from §hash names | `[]` | 10 |
 | `classify` | requirement | `[* tstr]` from §classifiers | `[]` | 10 |
-| `index` | requirement | `[* name]`: attribute names to index | `[]` | 10 |
+| `index` | requirement | `[* name]`: indexable value attribute names only | `[]` | 10 |
 | `index-roots` | requirement, owner-local binding | `index-roots-value` in the CDDL; exact wrapper with `inherit=false` required | `{}` | 08, 10 |
+| `index-gaps` | structural primary-index-root binding | `index-gaps-binding` in the CDDL; exact `inherit=false` wrapper of lowercase Node hex | absent | 08, 10 |
 | `strict-attrs` | requirement | `bool` | `false` | 06 |
 
 Boundary properties (`store`, `domain`, `acl`) mark a root that `flatten`
@@ -88,12 +90,49 @@ whole_pack_threshold wipe writers
 | --- | --- | --- |
 | 1 | The exact 33 names above | Existing pre-D-101 properties and defaults |
 | 2 | Revision 1 plus `index-roots`, sorted together | Revision 1 plus PROP-29 |
+| 3 | Revision 2 plus `index-gaps`, sorted together | Revision 2 plus PROP-31 |
 
-The separate registered attribute, selector, tree and chunk semantics remain
-revision 1. Later preserve-only names remain disjoint from the represented
-behavioral names and acquire no behavior from a newer implementation.
+The separately registered attribute semantics are specified below. Selector,
+physical tree and chunk semantics remain revision 1. Tree semantic revision 1
+fixes the existing Node/Entry encoding, boundary function and physical TreeUse
+constraints; contextual auxiliary roles do not reinterpret historical
+namespace reachability. Later preserve-only names remain disjoint from the
+represented behavioral names and acquire no behavior from a newer implementation.
 Existing revision-1 bytes and identities remain unchanged; new complete
-configurations containing `index-roots` record property revision 2.
+configurations record the exact revision matching their supported vocabulary.
+
+## Attribute semantics revisions and structural metadata
+
+Value-name registration is distinct from contextual structural metadata.
+Indexable value attributes retain the complete derived, dictionary, adapter
+and writer-supplied name/namespace rules below, including `uid`, `gid` and
+`tag.` suffixes. `index`, `index-roots`, the closed index recipe's attribute
+argument and every existing `attr-by` selector accept only that value class.
+Structural pointer names do not enter those inputs, the plaintext-derived
+AttrRecord/function vocabulary, or selector revision 1.
+
+| Revision | Complete meaning |
+| --- | --- |
+| 1 | Existing derived/dictionary and adapter/writer value registrations and namespace rules; no structural pointer behavior |
+| 2 | Revision 1 unchanged, plus the exact contextual structural metadata registration below |
+
+| Name | Value | Semantic revision | Allowed contextual roles | Indexable | Owner |
+| --- | --- | --- | --- | --- | --- |
+| `index.occurrences` | `bstr .size 32`: route Node identity | attribute 2 | Forwarding rows of DRV-30's primary, missing-object and continuation routes only | no | 10 |
+
+Active carrier interpretation requires the registered attribute revision 2
+and property revision 3 in an explicitly checked semantic context. Unknown
+revisions or inconsistent represented vocabularies refuse verification.
+Attribute revision 1 preserves unknown canonical pointer bytes as inert data
+where TREE-14 permits preservation; a newer compiled spelling MUST NOT make
+them active. Under revision 2, the pointer's width and allowed role/placement
+MUST be checked; it MUST NOT be admitted on an ordinary namespace entry or
+as an AttrRecord name, producing function, value-index input or `attr-by`
+argument. Its registration changes no attribute value/function encoding.
+Opaque attribute-receipt metadata can retain the name without turning it
+into a value selector or an independently verified route. Current receipt
+origin remains an external containing-Commit context, not a pointer to that
+Commit encoded inside the carrier. These rules are owned by TREE-35/DRV-30.
 
 ## Chunk profiles
 
@@ -177,12 +216,18 @@ RULE-6) names one of these values; an absent attribute is treated as
 
 | Name | Operation | Schema | Owner |
 | --- | --- | --- | --- |
-| `terrane-index/v1` | `index` | `index-evaluation-recipe` in the CDDL; one completed owner root and one registered attribute | 10 |
+| `terrane-index/v1` | `index` | `index-evaluation-recipe` in the CDDL; one completed owner root and one indexable value attribute; complete DRV-30 result | 10 |
 
 These are executable recipe profiles, not identity or chunk profiles. The
 closed parser does not replace the generic retained `other-recipe` schema.
 DRV-26 and DRV-27 define immutable inline inputs and incomplete coverage;
 DRV-24 still requires current occurrence, producer, authority and trust checks.
+The completed pre-freeze result uses attribute revision 2 and property
+revision 3 for active typed carrier interpretation, with unchanged physical
+tree revision 1. These checks do not choose a different result for the same
+immutable recipe; unsupported older contexts retain data or refuse active
+interpretation. No previously published conforming executable result is
+redefined; D-104 records the unreleased profile completion explicitly.
 
 ## Adapter and writer-supplied attributes
 
