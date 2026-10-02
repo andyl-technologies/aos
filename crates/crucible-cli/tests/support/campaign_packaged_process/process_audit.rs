@@ -17,6 +17,28 @@ struct QemuResources {
 }
 
 impl ProcessAudit {
+    pub(super) fn report_observed_processes(&self, stage: &str) {
+        const MAX_REPORTED_PROCESSES: usize = 32;
+        println!(
+            "packaged_process_audit stage={stage} observed_qemu_count={} omitted_processes={} private_fork_observed={}",
+            self.observed.len(),
+            self.observed.len().saturating_sub(MAX_REPORTED_PROCESSES),
+            self.private_fork,
+        );
+        for pid in self.observed.iter().take(MAX_REPORTED_PROCESSES) {
+            let workloads = self.guest_arguments.get(pid).map(|arguments| {
+                arguments
+                    .iter()
+                    .filter_map(|argument| argument.strip_prefix("crucible.workload="))
+                    .take(8)
+                    .collect::<Vec<_>>()
+            });
+            println!(
+                "packaged_process_audit stage={stage} observed_qemu_pid={pid} observed_workloads={workloads:?}"
+            );
+        }
+    }
+
     pub(super) fn observe(&mut self, service_pid: u32, fork: bool) -> Result<(), Box<dyn Error>> {
         let expected = required_path("CRUCIBLE_FLIGHT_QEMU")?
             .to_string_lossy()

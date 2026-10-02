@@ -1002,6 +1002,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         .unwrap_or_else(|error| panic!("test run directory should build: {error}"));
 
     let mut lifecycle = ProductionVmLifecycleLoop {
+        runtime_progress: runtime::progress::RuntimeProgress::default(),
         inner: BackendQuantumLoop::with_network_output_interceptor(scheduler, nodes, interceptor),
         trigger_graph,
         trigger_state: EventGraphState::default(),

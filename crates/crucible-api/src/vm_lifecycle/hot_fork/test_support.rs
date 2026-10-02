@@ -457,6 +457,7 @@ fn lifecycle_without_backends(
     );
 
     let mut lifecycle = ProductionVmLifecycleLoop {
+        runtime_progress: runtime::progress::RuntimeProgress::default(),
         inner: BackendQuantumLoop::with_network_output_interceptor(scheduler, nodes, interceptor),
         trigger_graph,
         trigger_state: EventGraphState::default(),

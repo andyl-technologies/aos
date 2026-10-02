@@ -8,6 +8,9 @@ mod debug_evidence;
 #[path = "runtime/observation.rs"]
 mod observation;
 
+#[path = "runtime/progress.rs"]
+pub(super) mod progress;
+
 use debug_evidence::*;
 use observation::*;
 

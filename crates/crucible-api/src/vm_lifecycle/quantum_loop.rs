@@ -97,8 +97,8 @@ fn validate_terminal_v9_checkpoint(
     Ok(())
 }
 
-impl QuantumLoop for ProductionVmLifecycleLoop {
-    fn drive_quantum(
+impl ProductionVmLifecycleLoop {
+    fn drive_quantum_runtime(
         &mut self,
         mut request: QuantumRequest,
     ) -> Result<QuantumOutcome, SchedulerError> {
@@ -561,6 +561,24 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             self.pending_live_network_prefix.take();
         }
         combine_attempt_quantum_boundary(operation, boundary)
+    }
+}
+
+impl QuantumLoop for ProductionVmLifecycleLoop {
+    fn drive_quantum(&mut self, request: QuantumRequest) -> Result<QuantumOutcome, SchedulerError> {
+        let report = self.runtime_progress.begin();
+        if report {
+            self.report_runtime_progress("before-quantum");
+        }
+        let result = self.drive_quantum_runtime(request);
+        if report {
+            self.report_runtime_progress(if result.is_ok() {
+                "after-quantum"
+            } else {
+                "quantum-error"
+            });
+        }
+        result
     }
 
     fn backend_step_ceiling(

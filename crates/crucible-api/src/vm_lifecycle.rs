@@ -1062,6 +1062,7 @@ impl ProductionRunDirectory {
 
 /// Lifecycle loop backed by an authoritative scheduler and live QEMU node set.
 pub struct ProductionVmLifecycleLoop {
+    runtime_progress: runtime::progress::RuntimeProgress,
     inner: BackendQuantumLoop<SingleScheduler, QemuNodeSet, ProductionFaultNetworkInterceptor>,
     trigger_graph: EventGraph,
     trigger_state: EventGraphState,
