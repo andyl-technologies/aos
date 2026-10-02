@@ -17,6 +17,7 @@ use crate::store::LocalFs;
 
 use super::Error;
 
+pub(crate) mod disclosure;
 pub(crate) mod import_binding;
 mod native;
 pub(crate) mod public_trust;

@@ -79,6 +79,7 @@ where
         let authority = guard
             .bind_original_authority(namespace, control, registration.view())
             .await?;
+        super::disclosure::initialize(guard, &authority, owner_uid).await?;
         Self::from_native_authority(coordinator, authority, owner_uid).await
     }
 

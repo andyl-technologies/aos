@@ -243,8 +243,13 @@ impl<
                             Some(&proof),
                         )
                         .await?;
-                    let consumed =
-                        crate::guard::ConsumedResolver::new(&concrete, &current_authority)?;
+                    // The held guard carries the independently captured public
+                    // trust state. The dispatch capture deliberately has no
+                    // verifier, avoiding a self-retaining Arc cycle.
+                    let consumed = crate::guard::ConsumedResolver::new(
+                        coordinator.guard(),
+                        &current_authority,
+                    )?;
                     consumed.registration(&current_authority)?;
                     let observation =
                         crate::guard::HistoryObservation::held(&proof).tracked(&consumed);
