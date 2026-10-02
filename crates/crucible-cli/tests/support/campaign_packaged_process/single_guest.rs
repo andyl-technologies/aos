@@ -8,6 +8,7 @@
 use super::*;
 use crucible_campaign::AttemptId;
 use crucible_daemon::{AttemptExecutionKey, AttemptRuntimeState};
+use crucible_qemu::QemuLaunchArtifactIdentity;
 use crucible_session::engine::MarkerId;
 
 const VIRTUAL_BUDGET_PS: u64 = 2_000_000_000_000;
@@ -30,10 +31,14 @@ fn public_single_guest_forks_replays_and_restores() -> Result<(), Box<dyn Error>
 fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
     let fixture = FlightFixture::new()?;
     let compiled = compile_single_guest(&fixture)?;
+    let packaged = QemuLaunchArtifactIdentity::authenticate(
+        required_path("CRUCIBLE_FLIGHT_QEMU")?,
+        required_path("CRUCIBLE_FLIGHT_PLUGIN")?,
+    )?;
     guest_choice::create_guest_choice_campaign_with_timeout(
         &fixture,
         &compiled,
-        "qemu-11.1.1-crucible",
+        packaged.qemu_build_id(),
         Some(VIRTUAL_BUDGET_PS),
     )?;
     let authority = guest_choice::write_component_authority(&fixture)?;
