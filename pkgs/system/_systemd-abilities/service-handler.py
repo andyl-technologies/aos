@@ -292,7 +292,9 @@ def condition_features(unit, value):
         prefix = "!" if condition["negated"] else ""
         if condition["kind"] == "path":
             keys = {"exists": "ConditionPathExists", "is-directory": "ConditionPathIsDirectory", "is-mount-point": "ConditionPathIsMountPoint", "is-nonempty": "ConditionDirectoryNotEmpty"}
-            unit.add(keys[condition["predicate"]], prefix + quote(absolute(condition["path"])), "Unit")
+            # Condition paths are scalar values; systemd does not unquote them.
+            path = absolute(condition["path"]).replace("%", "%%")
+            unit.add(keys[condition["predicate"]], prefix + path, "Unit")
         elif condition["kind"] == "kernel-argument":
             unit.add("ConditionKernelCommandLine", prefix + quote(condition["argument"]), "Unit")
         elif condition["kind"] == "mandatory-access-control":

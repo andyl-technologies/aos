@@ -39,23 +39,10 @@
   # Preserve the production EROFS format and all boot semantics while avoiding
   # zstd-19 recompression on every iterative fleet-test image rebuild.
   aos.image.erofsCompressionLevel = 1;
+  # Image sizes follow the measured production limits; test artifact
+  # admission remains explicit.
   aos.image.allowTestArtifacts = true;
   aos.image.testArtifactRoots = [pkgs.binutils];
-  # The test agent, debug profile, and guest-side diagnostic tools are an
-  # intentional test-image payload. The complete runtime occupies up to 675 MiB
-  # of EROFS; keep its larger allowance local to this dedicated fixture.
-  aos.image.budgets = {
-    maxRootMiB = 704;
-
-    # Diagnostic raw images reach 769 MiB on x86_64 and 772 MiB on AArch64.
-    maxDownloadMiB = 800;
-
-    # Diagnostic VHDs reach 825 MiB on x86_64 and 879 MiB on AArch64.
-    maxConvertedDownloadMiB =
-      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
-      then 896
-      else 832;
-  };
 
   # Guest agent for image machines (baked machines also get it from
   # their /var seed; the extra bundled copy is inert there). See

@@ -44,7 +44,7 @@ let
     (record "aos-boot-identity" ../../pkgs/security/_aos-boot-identity)
     (record "aos-verity-root-guard" ../../pkgs/security/_aos-verity-root-guard)
   ];
-  evaluate = stage: zfs:
+  evaluate = stage: zfs: verified:
     lib.evalPackageModules {
       scope = ["boot" stage];
       inherit packageModules;
@@ -64,21 +64,31 @@ let
             };
           };
           aos.security = {
-            bootIdentityServices.enable = true;
-            verityRootVerification.enable = true;
+            bootIdentityServices.enable = verified;
+            verityRootVerification.enable = verified;
           };
           aos.abilities.serviceManagement.operations.realize.handler.program = artifactLib.value (artifact "service-handler");
           aos.abilities.network.operations.configure.handler.program = artifactLib.value (artifact "network-handler");
         }
       ];
     };
-  initrd = evaluate "initrd" false;
-  host = evaluate "host" false;
-  zfs = evaluate "initrd" true;
+  initrd = evaluate "initrd" false true;
+  host = evaluate "host" false true;
+  zfs = evaluate "initrd" true true;
+  kernel = evaluate "initrd" false false;
   controller = initrd.config.aos.services."boot-preparations.aos-ability-initrd-controller";
   receiver = host.config.aos.services."boot-preparations.aos-ability-host-receiver";
   bootServices = builtins.attrValues initrd.config.aos.services;
 in {
+  transaction_storage_requires_only_enabled_identity_guard = let
+    storage = evaluation: evaluation.config.aos.services."boot-storage.aos-boot-transaction-storage";
+    guard = "aos-boot-identity-guard.service";
+  in
+    assert builtins.elem guard (storage initrd).dependencies.requires;
+    assert builtins.elem guard (storage initrd).dependencies.after;
+    assert !(builtins.elem guard (storage kernel).dependencies.requires);
+    assert !(builtins.elem guard (storage kernel).dependencies.after);
+    assert !kernel.config.aos.services."boot-identity.aos-boot-identity-guard".enable; true;
   initrd_bootstrap_has_native_transaction_and_storage = assert controller.lifecycle.start
   == [
     {
