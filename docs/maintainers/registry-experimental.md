@@ -271,6 +271,21 @@ retaining the approved empty base commit and generation.
 Set the experimental configuration's `predecessor_bundle` to the retained
 snapshot and write the reviewed Linux image decisions to `images.json`.
 
+### Deferred platforms
+
+The first edge releases defer `aarch64-linux`
+([`qualification/deferred-platforms.nix`](../../qualification/deferred-platforms.nix)):
+its hosted toolchain cells take more than a day to realize and the release
+tooling installs no aarch64 qualification executor. These releases ship
+`x86_64-linux` and the Darwin package cells. The contract exports the list as
+`deferred_platforms` (check it with `aos maintain release step contract
+--registry andyl/experimental --json`), every aarch64 package cell is blocked
+with `platform-release-deferred`, `images.json` gives each aarch64 image cell
+the [blocked decision](canonical-releases.md#prepare-a-plan-request), and the
+frozen plan records all of it. The container bundle must carry only the
+`linux/amd64` manifest. To release aarch64, empty the list in a reviewed source
+change and ship it in a later edge release.
+
 Both Hub surfaces authenticate through their `aos hub login` profiles unless
 the configuration sets `token_credential`. Only the active profile is used
 (see [Hub credentials](canonical-releases.md#hub-credentials)): sign in to
