@@ -34,6 +34,9 @@ pub mod original_lookup;
 /// Bounded installed-profile and retained-owner queries under a live SQL claim.
 pub mod metadata;
 
+/// Historical exact codec observations without transport or dispatch permission.
+pub mod observation;
+
 /// Maximum encoded immutable original retained in the physical guard.
 pub const MAX_EXTERNAL_COPY_ORIGINAL_BYTES: usize = 16 * 1024;
 

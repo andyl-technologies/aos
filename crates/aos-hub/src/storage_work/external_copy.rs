@@ -31,7 +31,10 @@ use aos_hub_core::{
 };
 use base64::Engine as _;
 
-use super::{read_bounded_response, HybridSurfaceWrites, RemoteStorageWorkClient};
+use super::{
+    read_observed_response, telemetry::ExchangeTelemetry, HybridSurfaceWrites,
+    RemoteStorageWorkClient,
+};
 
 impl RemoteStorageWorkClient {
     /// Queries installed copy metadata and its genuine retained owner once.
@@ -42,19 +45,31 @@ impl RemoteStorageWorkClient {
         &self,
         request: &CopyMetadataRequest,
     ) -> Result<CopyMetadataReply> {
-        let now = aos_hub_core::clock::now_unix_secs();
-        let (body, signature) = request.sign(&self.key, &self.deployment_id, now)?;
-        let (reply, signature) = self
-            .copy_exchange(EXTERNAL_COPY_METADATA_PATH, body, signature)
-            .await?;
-        CopyMetadataReply::authenticate(
-            &self.key,
-            &signature,
-            &reply,
-            request,
-            &self.deployment_id,
-            aos_hub_core::clock::now_unix_secs(),
-        )
+        let mut exchange =
+            ExchangeTelemetry::control(&request.plan.plan_id, "external_copy_metadata");
+        let result = async {
+            let now = aos_hub_core::clock::now_unix_secs();
+            let (body, signature) = request
+                .sign(&self.key, &self.deployment_id, now)
+                .inspect_err(|_| exchange.finish("invalid_plan"))?;
+            let (reply, signature) = self
+                .copy_exchange(EXTERNAL_COPY_METADATA_PATH, body, signature, &mut exchange)
+                .await?;
+            CopyMetadataReply::authenticate(
+                &self.key,
+                &signature,
+                &reply,
+                request,
+                &self.deployment_id,
+                aos_hub_core::clock::now_unix_secs(),
+            )
+            .inspect_err(|_| exchange.finish("invalid_result"))
+        }
+        .await;
+        if result.is_ok() {
+            exchange.finish("success");
+        }
+        result
     }
 
     /// Sends one fresh claim permission without retrying an ambiguous effect.
@@ -65,22 +80,34 @@ impl RemoteStorageWorkClient {
         &self,
         request: &ExternalCopyRequest,
     ) -> Result<CopyProgress> {
-        let (body, signature) = request.sign(
-            &self.key,
-            &self.deployment_id,
-            aos_hub_core::clock::now_unix_secs(),
-        )?;
-        let (reply, signature) = self
-            .copy_exchange(EXTERNAL_COPY_PATH, body, signature)
-            .await?;
-        let reply = ExternalCopyReply::authenticate(
-            &self.key,
-            &signature,
-            &reply,
-            request,
-            aos_hub_core::clock::now_unix_secs(),
-        )?;
-        Ok(reply.progress)
+        let mut exchange =
+            ExchangeTelemetry::control(&request.plan.plan_id, "external_copy_control");
+        let result = async {
+            let (body, signature) = request
+                .sign(
+                    &self.key,
+                    &self.deployment_id,
+                    aos_hub_core::clock::now_unix_secs(),
+                )
+                .inspect_err(|_| exchange.finish("invalid_plan"))?;
+            let (reply, signature) = self
+                .copy_exchange(EXTERNAL_COPY_PATH, body, signature, &mut exchange)
+                .await?;
+            let reply = ExternalCopyReply::authenticate(
+                &self.key,
+                &signature,
+                &reply,
+                request,
+                aos_hub_core::clock::now_unix_secs(),
+            )
+            .inspect_err(|_| exchange.finish("invalid_result"))?;
+            Ok(reply.progress)
+        }
+        .await;
+        if result.is_ok() {
+            exchange.finish("success");
+        }
+        result
     }
 
     async fn copy_exchange(
@@ -88,6 +115,7 @@ impl RemoteStorageWorkClient {
         path: &str,
         body: Vec<u8>,
         signature: String,
+        exchange: &mut ExchangeTelemetry<'_>,
     ) -> Result<(Vec<u8>, String)> {
         let _permit = self
             .in_flight
@@ -98,6 +126,7 @@ impl RemoteStorageWorkClient {
         endpoint.set_path(path);
         // This client has retries disabled. A timeout cannot acknowledge or
         // redispatch the immutable provider turn retained by the Worker guard.
+        exchange.offer_plan(body.len());
         let response = self
             .semantic_observation_http
             .post(endpoint)
@@ -106,18 +135,26 @@ impl RemoteStorageWorkClient {
             .body(body)
             .send()
             .await
-            .context("requesting external placement copy")?;
-        ensure!(
-            response.status() == reqwest::StatusCode::OK,
-            "external placement copy refused"
-        );
+            .context("requesting external placement copy")
+            .inspect_err(|_| exchange.finish("transport_failed"))?;
+        if response.status() != reqwest::StatusCode::OK {
+            exchange.discard_status_response();
+            exchange.finish("http_rejected");
+            anyhow::bail!("external placement copy refused");
+        }
         let signature = response
             .headers()
             .get(STORAGE_WORK_SIGNATURE_HEADER)
-            .context("copy reply signature absent")?
-            .to_str()?
+            .context("copy reply signature absent")
+            .inspect_err(|_| exchange.finish("invalid_result"))?
+            .to_str()
+            .inspect_err(|_| exchange.finish("invalid_result"))?
             .to_owned();
-        let body = read_bounded_response(response, MAX_EXTERNAL_COPY_CONTROL_BYTES).await?;
+        let body = read_observed_response(response, MAX_EXTERNAL_COPY_CONTROL_BYTES, |length| {
+            exchange.observe_body(length);
+        })
+        .await
+        .inspect_err(|_| exchange.finish("response_read_failed"))?;
         Ok((body, signature))
     }
 }

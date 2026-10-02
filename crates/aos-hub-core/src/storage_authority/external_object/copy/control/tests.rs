@@ -142,3 +142,111 @@ fn positive_close_requires_full_ranges_hash_and_actual_provider_version() {
     value.destination.as_mut().unwrap().provider_version = "null".into();
     assert!(value.validate(&original).is_err());
 }
+
+#[test]
+fn retained_copy_observation_preserves_correlation_without_renewing_permission() {
+    use crate::storage_authority::external_object::copy::observation::decode_copy_control_observation;
+
+    let request = request();
+    let reply = ExternalCopyReply::new(&request, progress()).unwrap();
+    let request_bytes = serde_json::to_vec(&request).unwrap();
+    let reply_bytes = serde_json::to_vec(&reply).unwrap();
+
+    let observed =
+        decode_copy_control_observation(&request_bytes, &reply_bytes, "deployment").unwrap();
+    assert_eq!(observed, (request.clone(), reply.clone()));
+    assert!(request.validate("deployment", 131).is_err());
+
+    let mut changed = request.clone();
+    changed.claim.claim_token = "d".repeat(32);
+    let changed_bytes = serde_json::to_vec(&changed).unwrap();
+    assert!(decode_copy_control_observation(&changed_bytes, &reply_bytes, "deployment").is_err());
+    changed = request.clone();
+    changed.plan.expires_at = changed.plan.issued_at - 1;
+    assert!(changed.validate_observation_shape("deployment").is_err());
+    assert!(decode_copy_control_observation(&request_bytes, &reply_bytes, "foreign").is_err());
+
+    let mut noncanonical = request_bytes.clone();
+    noncanonical.push(b' ');
+    assert!(decode_copy_control_observation(&noncanonical, &reply_bytes, "deployment").is_err());
+    assert!(decode_copy_control_observation(
+        &request_bytes,
+        &reply_bytes[..reply_bytes.len() - 1],
+        "deployment"
+    )
+    .is_err());
+    let mut reply = reply;
+    reply.progress.copied_bytes = LeaseInteger::new(1).unwrap();
+    assert!(decode_copy_control_observation(
+        &request_bytes,
+        &serde_json::to_vec(&reply).unwrap(),
+        "deployment"
+    )
+    .is_err());
+}
+
+#[test]
+fn retained_copy_metadata_observation_keeps_installed_profile_and_owner_exact() {
+    use crate::storage_authority::external_object::copy::{
+        metadata::{
+            CopyMetadataProfile, CopyMetadataReply, CopyMetadataRequest, RetainedCopyOriginal,
+        },
+        observation::decode_copy_metadata_observation,
+    };
+
+    let control = request();
+    let original = &control.original;
+    let mut plan = control.plan.clone();
+    plan.operation = StorageWorkOperation::Head {
+        path: original.path.clone(),
+    };
+    plan.credential_references.truncate(1);
+    let query = CopyMetadataRequest::new(
+        original.topology.clone(),
+        original.source.clone(),
+        original.destination.clone(),
+        Some(control.claim.clone()),
+        plan,
+        original.path.clone(),
+        100,
+    )
+    .unwrap();
+    let reply = CopyMetadataReply {
+        version: 1,
+        request_digest: canonical_digest(&query).unwrap(),
+        profile: CopyMetadataProfile {
+            binding_stable_id: original.binding_stable_id.clone(),
+            binding_write_revision: original.binding_write_revision,
+            profile_digest: original.profile_digest.clone(),
+            part_bytes: original.part_bytes,
+            read_generation: original.read_generation,
+            write_generation: original.write_generation,
+        },
+        retained: Some(RetainedCopyOriginal {
+            original: original.clone(),
+            progress: progress(),
+        }),
+    };
+    let request_bytes = serde_json::to_vec(&query).unwrap();
+    let reply_bytes = serde_json::to_vec(&reply).unwrap();
+
+    decode_copy_metadata_observation(&request_bytes, &reply_bytes, "deployment").unwrap();
+    assert!(query.validate("deployment", 131).is_err());
+    let mut changed = reply.clone();
+    changed.profile.write_generation =
+        LeaseInteger::new(original.write_generation.get() + 1).unwrap();
+    assert!(decode_copy_metadata_observation(
+        &request_bytes,
+        &serde_json::to_vec(&changed).unwrap(),
+        "deployment"
+    )
+    .is_err());
+    changed = reply;
+    changed.retained.as_mut().unwrap().original.path = "another-object".into();
+    assert!(decode_copy_metadata_observation(
+        &request_bytes,
+        &serde_json::to_vec(&changed).unwrap(),
+        "deployment"
+    )
+    .is_err());
+}

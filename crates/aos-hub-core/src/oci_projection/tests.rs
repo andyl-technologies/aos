@@ -137,3 +137,171 @@ fn independent_readback_authenticates_a_near_four_mib_projection() {
         verify_oci_projection_reply(&guard, &signed.signature, &tampered, &request, 104).is_err()
     );
 }
+
+#[test]
+fn historical_oci_observation_keeps_exact_original_incarnation_and_parser_binding() {
+    use crate::mirror_guard::MirrorGuardIssuer;
+    use crate::oci_projection::guard::*;
+    use crate::storage_work::StorageObjectIdentity;
+
+    let raw = br#"{ "schemaVersion" : 2, "manifests" : [] }"#;
+    let descriptor = descriptor(raw, MediaType::OciImageIndex);
+    let request = OciProjectionLookup {
+        version: 1,
+        deployment_id: "deployment".into(),
+        protected_profile_digest: "c".repeat(64),
+        issuer: MirrorGuardIssuer {
+            source_digest: "a".repeat(64),
+            script_version: "script".into(),
+        },
+        clock_uncertainty_seconds: 2,
+        key: "registry/oci/blobs/index".into(),
+        descriptor,
+        admission: None,
+        nonce: "b".repeat(64),
+        issued_at: 100,
+        expires_at: 130,
+    };
+    let reply = OciProjectionReply {
+        request: request.clone(),
+        object: StorageObjectIdentity {
+            key: request.key.clone(),
+            size: raw.len() as u64,
+            etag: "\"exact-tag\"".into(),
+            provider_version: Some("exact-version".into()),
+        },
+        projection: OciDocumentProjection::from_stored_bytes(&request.descriptor, raw).unwrap(),
+        observed_at: 101,
+    };
+    let request_bytes = serde_json::to_vec(&request).unwrap();
+    let reply_bytes = serde_json::to_vec(&reply).unwrap();
+
+    let observed =
+        decode_oci_projection_observation(&request_bytes, &reply_bytes, "deployment").unwrap();
+    assert_eq!(observed.0, request);
+    assert!(observed.0.validate("deployment", 131).is_err());
+    let mut changed = reply.clone();
+    changed.object.provider_version = Some(String::new());
+    assert!(decode_oci_projection_observation(
+        &request_bytes,
+        &serde_json::to_vec(&changed).unwrap(),
+        "deployment"
+    )
+    .is_err());
+    changed = reply.clone();
+    changed.request.nonce = "d".repeat(64);
+    assert!(decode_oci_projection_observation(
+        &request_bytes,
+        &serde_json::to_vec(&changed).unwrap(),
+        "deployment"
+    )
+    .is_err());
+    changed = reply;
+    changed.observed_at = 130;
+    assert!(decode_oci_projection_observation(
+        &request_bytes,
+        &serde_json::to_vec(&changed).unwrap(),
+        "deployment"
+    )
+    .is_err());
+    assert!(decode_oci_projection_observation(
+        &request_bytes,
+        &reply_bytes[..reply_bytes.len() - 1],
+        "deployment"
+    )
+    .is_err());
+}
+
+#[test]
+fn historical_oci_observation_retains_managed_effect_scope_without_renewal() {
+    use crate::hybrid_ingress::{HybridOciManifestAdmission, OciDocumentEffect};
+    use crate::mirror_guard::MirrorGuardIssuer;
+    use crate::oci_projection::guard::*;
+    use crate::storage_work::StorageObjectIdentity;
+
+    let raw = br#"{ "schemaVersion" : 2, "manifests" : [] }"#;
+    let descriptor = descriptor(raw, MediaType::OciImageIndex);
+    let admission = HybridOciManifestAdmission {
+        managed_effect: Some(OciDocumentEffect {
+            protected_profile_digest: "c".repeat(64),
+            acceptance_digest: "d".repeat(64),
+            issued_at: 100,
+            expires_at: 130,
+            clock_uncertainty_seconds: 2,
+        }),
+        original_digest: "e".repeat(64),
+        upload_id: "f".repeat(32),
+        placement_prefix: "registry".into(),
+        staging_object_key: "oci/uploads/original/chunks/0".into(),
+        byte_size: descriptor.size,
+        sha256: descriptor.digest.encoded().into(),
+    };
+    let request = OciProjectionLookup {
+        version: 1,
+        deployment_id: "deployment".into(),
+        protected_profile_digest: "c".repeat(64),
+        issuer: MirrorGuardIssuer {
+            source_digest: "a".repeat(64),
+            script_version: "script".into(),
+        },
+        clock_uncertainty_seconds: 2,
+        key: crate::keymap::r2_key(&admission.placement_prefix, &admission.staging_object_key),
+        descriptor,
+        admission: Some(admission),
+        nonce: "b".repeat(64),
+        issued_at: 100,
+        expires_at: 130,
+    };
+    let reply = OciProjectionReply {
+        request: request.clone(),
+        object: StorageObjectIdentity {
+            key: request.key.clone(),
+            size: raw.len() as u64,
+            etag: "\"exact-tag\"".into(),
+            provider_version: Some("exact-version".into()),
+        },
+        projection: OciDocumentProjection::from_stored_bytes(&request.descriptor, raw).unwrap(),
+        observed_at: 101,
+    };
+    let request_bytes = serde_json::to_vec(&request).unwrap();
+    let reply_bytes = serde_json::to_vec(&reply).unwrap();
+
+    let observed =
+        decode_oci_projection_observation(&request_bytes, &reply_bytes, "deployment").unwrap();
+    assert_eq!(observed.0.admission, request.admission);
+    let effect = observed
+        .0
+        .admission
+        .as_ref()
+        .unwrap()
+        .managed_effect
+        .as_ref()
+        .unwrap();
+    assert!(effect.check(131).is_err());
+    assert!(observed.0.validate("deployment", 131).is_err());
+
+    for substitution in ["acceptance", "profile", "expiry", "omitted"] {
+        let mut changed = reply.clone();
+        let admission = changed.request.admission.as_mut().unwrap();
+        if substitution == "omitted" {
+            admission.managed_effect = None;
+        } else {
+            let effect = admission.managed_effect.as_mut().unwrap();
+            match substitution {
+                "acceptance" => effect.acceptance_digest = "a".repeat(64),
+                "profile" => effect.protected_profile_digest = "b".repeat(64),
+                "expiry" => effect.expires_at = 140,
+                _ => unreachable!(),
+            }
+        }
+        assert!(
+            decode_oci_projection_observation(
+                &request_bytes,
+                &serde_json::to_vec(&changed).unwrap(),
+                "deployment",
+            )
+            .is_err(),
+            "{substitution}"
+        );
+    }
+}

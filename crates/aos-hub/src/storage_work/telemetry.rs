@@ -83,7 +83,7 @@ impl Drop for ExchangeTelemetry<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -102,7 +102,7 @@ mod tests {
     type Fields = BTreeMap<String, String>;
 
     #[derive(Clone, Default)]
-    struct RecordedEvents(Arc<Mutex<Vec<Fields>>>);
+    pub(in crate::storage_work) struct RecordedEvents(Arc<Mutex<Vec<Fields>>>);
 
     impl<S: Subscriber> Layer<S> for RecordedEvents {
         fn on_event(
@@ -117,7 +117,7 @@ mod tests {
     }
 
     impl RecordedEvents {
-        fn exchange(&self) -> Fields {
+        pub(in crate::storage_work) fn exchange(&self) -> Fields {
             let events = self.0.lock().unwrap();
             let exchanges: Vec<_> = events
                 .iter()
@@ -167,7 +167,9 @@ mod tests {
         }
     }
 
-    async fn serve(app: axum::Router) -> (RemoteStorageWorkClient, tokio::task::JoinHandle<()>) {
+    pub(in crate::storage_work) async fn serve(
+        app: axum::Router,
+    ) -> (RemoteStorageWorkClient, tokio::task::JoinHandle<()>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

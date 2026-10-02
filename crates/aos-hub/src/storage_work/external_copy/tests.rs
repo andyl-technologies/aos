@@ -15,6 +15,9 @@ use super::*;
 #[path = "tests/connected.rs"]
 mod connected;
 
+#[path = "tests/telemetry.rs"]
+mod telemetry;
+
 const MATERIAL: &[u8] = b"fixture-access:fixture-secret:fixture-region";
 
 async fn fixture() -> (
@@ -203,38 +206,30 @@ async fn actual_resolved_rows_and_live_claim_precede_all_remote_copy_controls() 
             .claim_token,
         token
     );
-    assert!(
-        writer
-            .recheck_copy(&current, &operation, &"b".repeat(32), &source, &destination)
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .recheck_copy(&current, &operation, &"b".repeat(32), &source, &destination)
+        .await
+        .is_err());
 
     // These rows can have the same generation. Their independently resolved
     // stable targets still forbid exchanging source and destination identities.
     assert_eq!(source.resource_version, destination.resource_version);
-    assert!(
-        writer
-            .current_copy(&operation, &destination, &source, true)
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .current_copy(&operation, &destination, &source, true)
+        .await
+        .is_err());
     let mut stale = source.clone();
     stale.prefix = "objects/replacement".into();
-    assert!(
-        writer
-            .current_copy(&operation, &stale, &destination, true)
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .current_copy(&operation, &stale, &destination, true)
+        .await
+        .is_err());
     let mut forged = operation.clone();
     forged.control_permission = Permission::BindingManage.as_str().into();
-    assert!(
-        writer
-            .current_copy(&forged, &source, &destination, true)
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .current_copy(&forged, &source, &destination, true)
+        .await
+        .is_err());
 
     // A current validated read generation is compared to the acknowledged
     // snapshot before signing. SQL does not supply material to this adapter.
@@ -251,10 +246,8 @@ async fn actual_resolved_rows_and_live_claim_precede_all_remote_copy_controls() 
         .await
         .unwrap();
     assert_eq!(changed.validation_state, "unknown");
-    assert!(
-        writer
-            .check_snapshot(&current, &"c".repeat(64))
-            .await
-            .is_err()
-    );
+    assert!(writer
+        .check_snapshot(&current, &"c".repeat(64))
+        .await
+        .is_err());
 }

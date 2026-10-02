@@ -85,10 +85,30 @@ impl CopyMetadataRequest {
     /// # Errors
     /// Refuses stale claims, different placements, cross-binding geometry or another operation.
     pub fn validate(&self, deployment: &str, now: i64) -> Result<()> {
+        self.validate_checked(deployment, Some(now))
+    }
+
+    /// Checks a retained envelope's intrinsic shape without current permission.
+    ///
+    /// This observation neither authenticates a MAC nor reauthorizes the SQL
+    /// claim. Its exact original window remains checked without inventing a
+    /// historical validation clock.
+    ///
+    /// # Errors
+    /// Returns an error for malformed pins, plan geometry, intrinsic deadlines,
+    /// changed credential selectors or an excessive encoded envelope.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_checked(deployment, None)
+    }
+
+    fn validate_checked(&self, deployment: &str, now: Option<i64>) -> Result<()> {
         self.topology.validate()?;
         self.source.validate(&self.topology.source)?;
         self.destination.validate(&self.topology.destination)?;
-        self.plan.validate(deployment, now)?;
+        match now {
+            Some(now) => self.plan.validate(deployment, now)?,
+            None => self.plan.validate_observation_shape(deployment)?,
+        }
         ensure!(
             self.version == 1
                 && self.domain == DOMAIN
@@ -120,7 +140,7 @@ impl CopyMetadataRequest {
                             .bytes()
                             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                         && self.plan.expires_at < claim.expires_at.get()
-                        && claim.expires_at.get() > now)
+                        && now.is_none_or(|now| claim.expires_at.get() > now))
                 && serde_json::to_vec(self)?.len() <= MAX_EXTERNAL_COPY_CONTROL_BYTES,
             "copy metadata differs from current SQL permission"
         );
@@ -260,6 +280,21 @@ impl CopyMetadataReply {
             );
         }
         Ok(selector)
+    }
+
+    /// Correlates bounded retained metadata without authenticating permission.
+    ///
+    /// # Errors
+    /// Returns an error for malformed original shape, different installed
+    /// profile or retained owner, impossible progress or excessive encoding.
+    pub fn validate_observation_for(&self, request: &CopyMetadataRequest) -> Result<()> {
+        request.validate_observation_shape(&request.plan.deployment_id)?;
+        self.selector(request)?;
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_EXTERNAL_COPY_CONTROL_BYTES,
+            "oversized copy metadata observation reply"
+        );
+        Ok(())
     }
 
     /// Signs a bounded read-only response with an independent reply domain.

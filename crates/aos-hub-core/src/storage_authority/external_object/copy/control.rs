@@ -103,8 +103,28 @@ impl ExternalCopyRequest {
     /// Returns an error for a foreign deployment, changed original/plan pins,
     /// unknown fields, missing credential selectors or expired claim permission.
     pub fn validate(&self, deployment: &str, now: i64) -> Result<()> {
+        self.validate_checked(deployment, Some(now))
+    }
+
+    /// Checks a retained envelope's intrinsic shape without current permission.
+    ///
+    /// This observation neither authenticates a MAC nor reauthorizes the SQL
+    /// claim. Its exact original window remains checked without inventing a
+    /// historical validation clock.
+    ///
+    /// # Errors
+    /// Returns an error for malformed pins, plan geometry, intrinsic deadlines,
+    /// changed credential selectors or an excessive encoded envelope.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_checked(deployment, None)
+    }
+
+    fn validate_checked(&self, deployment: &str, now: Option<i64>) -> Result<()> {
         self.original.validate()?;
-        self.plan.validate(deployment, now)?;
+        match now {
+            Some(now) => self.plan.validate(deployment, now)?,
+            None => self.plan.validate_observation_shape(deployment)?,
+        }
         let original = &self.original;
         let claim = &self.claim;
         ensure!(
@@ -126,8 +146,8 @@ impl ExternalCopyRequest {
                     .claim_token
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                && claim.expires_at.get() > now
-                && self.plan.expires_at > now
+                && now.is_none_or(|now| claim.expires_at.get() > now)
+                && now.is_none_or(|now| self.plan.expires_at > now)
                 && self.plan.expires_at < claim.expires_at.get(),
             "external copy permission differs from original or live claim"
         );
@@ -266,8 +286,7 @@ impl CopyProgress {
             );
             ensure!(
                 (self.phase != CopyPhase::Creating || self.completed_parts == 0)
-                    && (self.phase != CopyPhase::Active
-                        || original.source_object.bytes.get() > 0)
+                    && (self.phase != CopyPhase::Active || original.source_object.bytes.get() > 0)
                     && (self.phase != CopyPhase::Aborted || !self.pending),
                 "copy phase conflicts with progress"
             );
@@ -349,6 +368,23 @@ impl ExternalCopyReply {
         request.validate(&request.original.deployment_id, now)?;
         value.validate(request)?;
         Ok(value)
+    }
+
+    /// Correlates retained progress with an exact observation-only original.
+    ///
+    /// This does not authenticate the reply or issue dispatch permission.
+    ///
+    /// # Errors
+    /// Returns an error for a malformed request, changed original commitment,
+    /// impossible progress or an excessive reply envelope.
+    pub fn validate_observation_for(&self, request: &ExternalCopyRequest) -> Result<()> {
+        request.validate_observation_shape(&request.original.deployment_id)?;
+        self.validate(request)?;
+        ensure!(
+            serde_json::to_vec(self)?.len() <= MAX_EXTERNAL_COPY_CONTROL_BYTES,
+            "oversized copy observation reply"
+        );
+        Ok(())
     }
 
     fn validate(&self, request: &ExternalCopyRequest) -> Result<()> {

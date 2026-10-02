@@ -63,6 +63,22 @@ impl OciProjectionLookup {
     /// Returns an error for malformed identity, unsupported media, an oversized
     /// original, mismatched staging address or a foreign/stale challenge.
     pub fn validate(&self, deployment: &str, latest_now: u64) -> Result<()> {
+        self.validate_checked(deployment, Some(latest_now))
+    }
+
+    /// Checks a retained challenge's intrinsic shape without fresh authority.
+    ///
+    /// The exact original deadline is checked; no substitute clock or MAC is
+    /// supplied. An observation cannot authorize another read or provider turn.
+    ///
+    /// # Errors
+    /// Returns an error for malformed audience, policy, key, descriptor,
+    /// original admission or intrinsic deadline geometry.
+    pub fn validate_observation_shape(&self, deployment: &str) -> Result<()> {
+        self.validate_checked(deployment, None)
+    }
+
+    fn validate_checked(&self, deployment: &str, latest_now: Option<u64>) -> Result<()> {
         ensure!(
             self.version == 1
                 && self.deployment_id == deployment
@@ -76,8 +92,8 @@ impl OciProjectionLookup {
                 && !self.issuer.script_version.chars().any(char::is_control)
                 && (1..30).contains(&self.clock_uncertainty_seconds)
                 && crate::direct_upload::valid_direct_digest(&self.nonce)
-                && self.issued_at <= latest_now
-                && latest_now < self.expires_at
+                && latest_now.is_none_or(|now| self.issued_at <= now)
+                && latest_now.is_none_or(|now| now < self.expires_at)
                 && self
                     .expires_at
                     .checked_sub(self.issued_at)
@@ -295,7 +311,18 @@ fn validate_reply(
     original: &OciProjectionLookup,
     latest_now: u64,
 ) -> Result<()> {
-    original.validate(&original.deployment_id, latest_now)?;
+    validate_reply_checked(reply, original, Some(latest_now))
+}
+
+fn validate_reply_checked(
+    reply: &OciProjectionReply,
+    original: &OciProjectionLookup,
+    latest_now: Option<u64>,
+) -> Result<()> {
+    match latest_now {
+        Some(now) => original.validate(&original.deployment_id, now)?,
+        None => original.validate_observation_shape(&original.deployment_id)?,
+    }
     ensure!(
         reply.request == *original
             && reply.object.key == original.key
@@ -307,13 +334,49 @@ fn validate_reply(
                 .is_some_and(crate::storage_work::valid_provider_version)
             && crate::surface_write::strong_if_match_etag(&reply.object.etag)? == reply.object.etag
             && original.issued_at <= reply.observed_at
-            && reply.observed_at <= latest_now
+            && latest_now.is_none_or(|now| reply.observed_at <= now)
             && reply.observed_at < original.expires_at,
         "OCI projection reply differs from its exact original"
     );
     reply.projection.validate(original.descriptor.media_type)?;
     bounded(reply, MAX_OCI_PROJECTION_BYTES)?;
     Ok(())
+}
+
+/// Decodes a historical exact stored-document projection without authentication.
+///
+/// This shares production original, incarnation and semantic checks but returns
+/// no verified proof. The caller must independently join the request bytes and
+/// accepted transport/body/source/purpose evidence. Descriptor source bytes are
+/// storage-side bytes, not bytes transferred through Native.
+///
+/// # Errors
+/// Returns an error for excessive or noncanonical JSON, unknown fields,
+/// changed original, invalid incarnation, semantic projection or original window.
+pub fn decode_oci_projection_observation(
+    request: &[u8],
+    reply: &[u8],
+    deployment: &str,
+) -> Result<(OciProjectionLookup, OciProjectionReply)> {
+    let request: OciProjectionLookup =
+        decode_observation(request, MAX_OCI_PROJECTION_LOOKUP_BYTES)?;
+    let reply: OciProjectionReply = decode_observation(reply, MAX_OCI_PROJECTION_BYTES)?;
+    request.validate_observation_shape(deployment)?;
+    validate_reply_checked(&reply, &request, None)?;
+    Ok((request, reply))
+}
+
+fn decode_observation<T: Serialize + DeserializeOwned>(body: &[u8], limit: usize) -> Result<T> {
+    ensure!(
+        body.len() <= limit,
+        "OCI observation exceeds its closed bound"
+    );
+    let value = serde_json::from_slice(body)?;
+    ensure!(
+        bounded(&value, limit)? == body,
+        "noncanonical OCI observation"
+    );
+    Ok(value)
 }
 
 fn bounded<T: Serialize>(value: &T, limit: usize) -> Result<Vec<u8>> {
