@@ -96,9 +96,80 @@ async fn existing_database(url: &str) -> Result<Database> {
     Ok(db)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StartupRelease {
+    version: u32,
+    nonce: String,
+}
+
+/// Pauses the ignored helper before input or database access for live pinning.
+async fn startup_handshake() -> Result<()> {
+    let Some(root) = std::env::var_os("AOS_MANAGED_CLEANUP_STARTUP_ROOT") else {
+        ensure!(
+            std::env::var_os("AOS_MANAGED_CLEANUP_STARTUP_NONCE").is_none(),
+            "controlled helper startup root is absent"
+        );
+        return Ok(());
+    };
+    let root = PathBuf::from(root);
+    let nonce = std::env::var("AOS_MANAGED_CLEANUP_STARTUP_NONCE")?;
+    let metadata = fs::symlink_metadata(&root)?;
+    ensure!(
+        root.is_absolute()
+            && fs::canonicalize(&root)? == root
+            && metadata.is_dir()
+            && metadata.permissions().mode() & 0o777 == 0o700
+            && nonce.len() == 32
+            && nonce
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "controlled helper startup selection differs"
+    );
+    let ready = serde_json::to_vec(&json!({
+        "version": 1, "nonce": nonce, "pid": std::process::id(),
+        "scope": "managed_cleanup_before_input"
+    }))?;
+    let ready_path = root.join("authentication-ready.private.json");
+    ensure!(
+        !ready_path.try_exists()?,
+        "controlled helper readiness already exists"
+    );
+    let writing_path = root.join("authentication-ready-writing.private.json");
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&writing_path)?;
+    output.write_all(&ready)?;
+    output.sync_all()?;
+    drop(output);
+    fs::rename(writing_path, ready_path)?;
+
+    let release_path = root.join("authentication-release.private.json");
+    let stop = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        ensure!(
+            tokio::time::Instant::now() < stop,
+            "controlled helper startup release timed out"
+        );
+        if release_path.try_exists()? {
+            let bytes = crate::auth::seal::read_secret_file_zeroizing_capped(&release_path, 1024)?;
+            let release: StartupRelease = serde_json::from_slice(&bytes)?;
+            ensure!(
+                release.version == 1 && release.nonce == nonce,
+                "controlled helper startup release differs"
+            );
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires a real fresh Managed pair, terminal SQL chunk and current Delete probe"]
 async fn actual_managed_terminal_cleanup_pair() -> Result<()> {
+    startup_handshake().await?;
     let input_path = PathBuf::from(
         std::env::var_os("AOS_MANAGED_CLEANUP_CONTROLLED_INPUT")
             .context("owner-private controlled pair input is required")?,
