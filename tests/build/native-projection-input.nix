@@ -80,6 +80,41 @@
       inherit (evaluated.deployment) graph scope;
       system = pkgs.stdenv.hostPlatform.system;
     };
+  sourceOnlyDescriptor = lib.build.evaluationInput {
+    inherit lib pkgs;
+    packages = [package];
+    packageArtifacts = [];
+    supplementalInputs = [custodySource];
+    scope = ["source-only"];
+    system = pkgs.stdenv.hostPlatform.system;
+  };
+  sourceOnlyBundle = consumeOwner: let
+    evaluated = lib.evalPackageModules {
+      packages = [package];
+      packageArtifacts = [];
+      scope = ["source-only"];
+      modules = lib.optional consumeOwner {
+        aos.abilities.echo.operations.run = {
+          handler.program = package;
+          effects.retained.input.message = "Retain the admitted owner's program.";
+        };
+      };
+    };
+  in
+    import ../../pkgs/containers/_aos-oci-backend/deployment-bundle.nix {
+      inherit lib pkgs;
+      packages = [package];
+      packageArtifacts = [];
+      withProfileRecords = true;
+      evaluationInput = sourceOnlyDescriptor;
+      inherit (evaluated.deployment) graph scope;
+      system = pkgs.stdenv.hostPlatform.system;
+    };
+  sourceOnly = sourceOnlyBundle false;
+  sourceOnlyConsumed = sourceOnlyBundle true;
+  sourceOnlyDescriptorInventory = inventory sourceOnlyDescriptor;
+  sourceOnlyInventory = inventory sourceOnly;
+  sourceOnlyConsumedInventory = inventory sourceOnlyConsumed;
   primaryBundle = bundle package false;
   alternateBundle = bundle package.unused false;
   consumedBundle = bundle package true;
@@ -119,7 +154,21 @@ in
     pname = "native-projection-input-check";
     version = "0";
     src = null;
-    buildDeps = [pkgs.jq fullInventory projectionInventory capsuleInventory primaryBundleInventory alternateBundleInventory consumedBundleInventory metadataCompanionInventory selectedCompanionInventory glibcToolsEnvelopeInventory];
+    buildDeps = [
+      pkgs.jq
+      fullInventory
+      projectionInventory
+      capsuleInventory
+      primaryBundleInventory
+      alternateBundleInventory
+      consumedBundleInventory
+      metadataCompanionInventory
+      selectedCompanionInventory
+      glibcToolsEnvelopeInventory
+      sourceOnlyDescriptorInventory
+      sourceOnlyInventory
+      sourceOnlyConsumedInventory
+    ];
     phases = [
       {
         name = "check";
@@ -145,6 +194,39 @@ in
               and any(.paths[]; .path == $schemaEnvelope)
               and any(.paths[]; .path == $custody)' \
             ${projectionInventory}/inventory.json >/dev/null
+          # Admitted source-only packages preserve their authenticated catalogs
+          # without becoming installed payloads, even in a profile bundle.
+          ${pkgs.jq}/bin/jq -e '
+            .packages.artifacts == [] and .packageEnvelopes == {}
+              and (.packages.modules | map(.name)) == ["native-projection-payload", "native-projection-schema"]
+              and (.moduleEnvelopes | keys) == ["native-projection-payload", "native-projection-schema"]' \
+            ${sourceOnlyDescriptor} >/dev/null
+          ${pkgs.jq}/bin/jq -e '. == []' ${sourceOnly}/installed.json >/dev/null
+          ${pkgs.jq}/bin/jq -e '.artifacts == [] and (.packages | length) == 2' \
+            ${sourceOnly}/transaction.json >/dev/null
+          for inventory in \
+            ${sourceOnlyDescriptorInventory}/inventory.json \
+            ${sourceOnlyInventory}/inventory.json; do
+            ${pkgs.jq}/bin/jq -e --arg payload ${lib.escapeShellArg (toString package)} \
+              --arg unused ${lib.escapeShellArg (toString package.unused)} \
+              --arg tool ${lib.escapeShellArg (toString pkgs.binutils)} \
+              --arg source ${lib.escapeShellArg (toString package.module)} \
+              --arg schemaSource ${lib.escapeShellArg (toString schema.module)} \
+              --arg envelope ${lib.escapeShellArg (toString package.deploymentArtifact)} \
+              --arg schemaEnvelope ${lib.escapeShellArg (toString schema.deploymentArtifact)} \
+              'all(.paths[]; .path != $payload and .path != $unused and .path != $tool)
+                and any(.paths[]; .path == $source)
+                and any(.paths[]; .path == $schemaSource)
+                and any(.paths[]; .path == $envelope)
+                and any(.paths[]; .path == $schemaEnvelope)' "$inventory" >/dev/null
+          done
+          ${pkgs.jq}/bin/jq -e --arg payload ${lib.escapeShellArg (toString package)} \
+            --arg unused ${lib.escapeShellArg (toString package.unused)} \
+            --arg tool ${lib.escapeShellArg (toString pkgs.binutils)} \
+            'any(.paths[]; .path == $payload)
+              and all(.paths[]; .path != $unused and .path != $tool)' \
+            ${sourceOnlyConsumedInventory}/inventory.json >/dev/null
+          ${pkgs.jq}/bin/jq -e '. == []' ${sourceOnlyConsumed}/installed.json >/dev/null
           # The complete catalogs remain readable while only chosen outputs
           # and dependencies used by the graph enter each actual store closure.
           ${pkgs.jq}/bin/jq -e --arg primary ${lib.escapeShellArg (toString package)} \

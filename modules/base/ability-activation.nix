@@ -4,8 +4,10 @@
   pkgs,
   lib,
   hostPackages ? [],
+  hostPackageArtifacts ? lib.packageModules.payloads hostPackages,
   hostConfigurationSources ? [],
   initrdPackages ? [],
+  initrdPackageArtifacts ? lib.packageModules.payloads initrdPackages,
   initrdConfigurationSources ? [],
   initrdAbilityEvaluation ? null,
   evaluationInput ? null,
@@ -22,6 +24,7 @@
   hostBundle = buildBundle {
     inherit lib pkgs system osRelease;
     packages = hostPackages;
+    packageArtifacts = hostPackageArtifacts;
     withProfileRecords = true;
     inherit evaluationInput;
     configuration = hostConfigurationSources;
@@ -37,6 +40,7 @@
       buildBundle {
         inherit lib pkgs system osRelease;
         packages = initrdPackages;
+        packageArtifacts = initrdPackageArtifacts;
         evaluationInput = initrdEvaluationInput;
         configuration = initrdConfigurationSources;
         inputs = [config.system.build.bootArtifactContract];

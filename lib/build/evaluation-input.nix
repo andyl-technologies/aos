@@ -3,6 +3,7 @@
   lib,
   pkgs,
   packages,
+  packageArtifacts ? lib.packageModules.payloads packages,
   scope,
   system,
   configuration ? [],
@@ -26,11 +27,23 @@
       };
     }) (modules.closure packages);
   moduleEnvelopes = builtins.mapAttrs (_: builtins.toString) (modules.envelopes packages);
-  packageEnvelopes = builtins.listToAttrs (map (package: {
-      name = builtins.unsafeDiscardStringContext (artifacts.canonicalReference package).path;
-      value = builtins.toString package.deploymentArtifact;
+  # Source admission and installed artifacts are independent. Only selected
+  # artifacts receive payload envelopes; every admitted module keeps its source.
+  resolvedPackages = modules.resolved packages;
+  envelopeFor = artifact: let
+    canonical = artifacts.metadata (artifacts.canonical artifact);
+    matching = builtins.filter (entry:
+      artifacts.metadata entry.identity.artifact == canonical)
+    resolvedPackages;
+  in
+    if builtins.length matching != 1
+    then throw "Selected artifact '${artifact.path}' does not identify one admitted package envelope."
+    else builtins.toString (builtins.head matching).package.deploymentArtifact;
+  packageEnvelopes = builtins.listToAttrs (map (artifact: {
+      name = builtins.unsafeDiscardStringContext (artifacts.canonical artifact).path;
+      value = envelopeFor artifact;
     })
-    packages);
+    packageArtifacts);
   resolutionLock = import ../packages/resolution-lock.nix {inherit packages;};
   descriptor =
     {
@@ -42,7 +55,7 @@
       inherit moduleEnvelopes packageEnvelopes osRelease;
       packages = {
         inherit system;
-        artifacts = map selectedArtifact (modules.payloads packages);
+        artifacts = map selectedArtifact packageArtifacts;
         modules = packageRecords;
       };
       configuration = map builtins.toString configuration;
@@ -91,6 +104,6 @@ in
     # Exposes the original inputs for build-time replay checks without reading
     # the generated descriptor or treating this metadata as runtime authority.
     nativeEvaluationInputs = {
-      inherit packages scope configuration runtimeConfiguration supplementalInputs osRelease;
+      inherit packages packageArtifacts scope configuration runtimeConfiguration supplementalInputs osRelease;
     };
   }

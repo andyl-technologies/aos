@@ -19,6 +19,7 @@
     (builtins.attrValues (lib.filterAttrs (_: selection: selection.enable || selection.bundle)
         selectionEvaluation.config.aos.packages));
   initialHostPackages = selectionEvaluation.config.environment.systemPackages ++ declaredPackages;
+  initialHostArtifacts = packageModuleLib.payloads selectionEvaluation.config.environment.systemPackages;
   initialInitrdPackages = selectionEvaluation.config.aos.boot.initrd.packageRoots;
   recordsFor = packages:
     packageModuleLib.canonicalize (
@@ -42,34 +43,38 @@
   compatibility = import ../packages/release-compatibility.nix {inherit lib;};
   hostScope = ["profile" "system"];
   initrdScope = [systemName "initrd"];
-  buildStage = stage: packages: scope: let
+  buildStage = stage: packages: packageArtifacts: scope: let
     authored = selectionEvaluation.config.aos.activation.stages.${stage}.configuration or [];
     builders = selectionEvaluation.config.aos.activation.stages.${stage}.configurationBuilders or [];
   in
     builtins.foldl' (prior: build: let
       additions = build {
         inherit scope;
-        inherit (prior) packages configuration supplementalInputs;
+        inherit (prior) packages packageArtifacts configuration supplementalInputs;
       };
     in {
       packages = prior.packages ++ additions.packages;
+      packageArtifacts = lib.packageArtifacts.unique (prior.packageArtifacts ++ (additions.packageArtifacts or (packageModuleLib.payloads additions.packages)));
       configuration = prior.configuration ++ additions.configuration;
       supplementalInputs = prior.supplementalInputs ++ (additions.supplementalInputs or []);
     }) {
-      inherit packages;
+      inherit packages packageArtifacts;
       configuration = authored;
       supplementalInputs = selectionEvaluation.config.aos.activation.stages.${stage}.supplementalInputs or [];
     }
     builders;
-  hostStage = buildStage "host" initialHostPackages hostScope;
-  initrdStage = buildStage "initrd" initialInitrdPackages initrdScope;
+  hostStage = buildStage "host" initialHostPackages initialHostArtifacts hostScope;
+  initrdStage = buildStage "initrd" initialInitrdPackages (packageModuleLib.payloads initialInitrdPackages) initrdScope;
   hostPackages = hostStage.packages;
   initrdPackages = initrdStage.packages;
+  hostPackageArtifacts = hostStage.packageArtifacts;
+  initrdPackageArtifacts = initrdStage.packageArtifacts;
   hostConfigurationSources = hostStage.configuration;
   initrdConfigurationSources = initrdStage.configuration;
   hostStageSpecialArgs = stageSpecialArgsFor {
     inherit osRelease;
     packages = hostPackages;
+    packageArtifacts = hostPackageArtifacts;
     scope = hostScope;
     configuration = hostConfigurationSources;
     inherit (hostStage) supplementalInputs;
@@ -78,6 +83,7 @@
   initrdStageSpecialArgs = stageSpecialArgsFor {
     inherit osRelease;
     packages = initrdPackages;
+    packageArtifacts = initrdPackageArtifacts;
     scope = initrdScope;
     configuration = initrdConfigurationSources;
     inherit (initrdStage) supplementalInputs;
@@ -94,7 +100,7 @@
         // stageSpecialArgs
         // {
           packageModulesAvailable = true;
-          inherit hostPackages initrdPackages initrdPackageModules hostConfigurationSources initrdConfigurationSources;
+          inherit hostPackages hostPackageArtifacts initrdPackages initrdPackageArtifacts initrdPackageModules hostConfigurationSources initrdConfigurationSources;
           hostPackageModules = finalPackageModules;
         };
     };
@@ -105,6 +111,7 @@
     inherit osRelease;
     enforceOsRequirements = true;
     packages = initrdPackages;
+    packageArtifacts = initrdPackageArtifacts;
     packageModules = initrdPackageModules;
     scope = initrdScope;
     operatorModules = initrdConfigurationSources;
@@ -114,9 +121,11 @@ in {
   inherit
     finalPackageModules
     hostPackages
+    hostPackageArtifacts
     hostStageSpecialArgs
     initrdStageSpecialArgs
     initrdPackages
+    initrdPackageArtifacts
     initrdPackageModules
     hostScope
     initrdScope

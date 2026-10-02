@@ -66,7 +66,10 @@ let
       runtimeModules = [];
       moduleSpecialArgs = {};
       systemName = "fixture";
-      stageSpecialArgsFor = stage: {retainedStageInputs = stage.supplementalInputs;};
+      stageSpecialArgsFor = stage: {
+        retainedStageInputs = stage.supplementalInputs;
+        selectedStageArtifacts = stage.packageArtifacts;
+      };
     };
   evaluate = evaluateSelection selectionEvaluation;
   result = evaluate [];
@@ -100,8 +103,50 @@ let
         environment.systemPackages = [package];
       };
   } [];
+  enabledOnly = evaluateSelection {
+    config = selectionEvaluation.config // {environment.systemPackages = [];};
+  } [];
+  sourceOnlyBuilder = evaluateSelection {
+    config =
+      selectionEvaluation.config
+      // {
+        environment.systemPackages = [];
+        aos =
+          selectionEvaluation.config.aos
+          // {
+            packages = {};
+            activation.stages =
+              stageConfiguration
+              // {
+                host =
+                  stageConfiguration.host
+                  // {
+                    configurationBuilders = [
+                      (prior:
+                        assert prior.packages == [];
+                        assert prior.packageArtifacts == []; {
+                          packages = [package];
+                          packageArtifacts = [];
+                          configuration = [];
+                        })
+                    ];
+                  };
+              };
+          };
+      };
+  } [];
   rejected = value: !(builtins.tryEval (builtins.deepSeq value true)).success;
 in {
+  enabledOnlyRetainsSources = assert enabledOnly.hostPackages == [package];
+  assert enabledOnly.finalPackageModules == [record];
+  assert enabledOnly.hostPackageArtifacts == [];
+  assert enabledOnly.hostStageSpecialArgs.selectedStageArtifacts == []; true;
+  builderCanAdmitSourcesOnly = assert sourceOnlyBuilder.hostPackages == [package];
+  assert sourceOnlyBuilder.finalPackageModules == [record];
+  assert sourceOnlyBuilder.hostPackageArtifacts == [];
+  assert sourceOnlyBuilder.hostStageSpecialArgs.selectedStageArtifacts == []; true;
+  explicitPayloadSelection = assert builtins.length result.hostPackageArtifacts == 2;
+  assert result.initrdPackageArtifacts == []; true;
   stageIsolation = assert result.hostAbilityEvaluation.config.marker == "host";
   assert result.initrdAbilityEvaluation.config.marker == "initrd"; true;
   supplementalInputsAreNotImported = assert result.hostStageSpecialArgs.retainedStageInputs == [custodySource];

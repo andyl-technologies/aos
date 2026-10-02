@@ -310,7 +310,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         inherit lib;
         pkgs = effectivePkgs;
         system = effectivePkgs.stdenv.hostPlatform.system;
-        inherit (stage) packages scope configuration runtimeConfiguration supplementalInputs osRelease;
+        inherit (stage) packages packageArtifacts scope configuration runtimeConfiguration supplementalInputs osRelease;
       };
     };
     abilityEvaluation = import ./lib/build/evaluate-stages.nix {
@@ -331,9 +331,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     inherit
       (abilityEvaluation)
       hostPackages
+      hostPackageArtifacts
       hostStageSpecialArgs
       initrdStageSpecialArgs
       initrdPackages
+      initrdPackageArtifacts
       finalPackageModules
       hostAbilityEvaluation
       hostConfigurationSources
@@ -363,7 +365,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           initrdEvaluationInput = initrdStageSpecialArgs.evaluationInput;
           packageModulesAvailable = true;
           inherit hostConfigurationSources initrdConfigurationSources;
-          inherit hostPackages initrdPackages initrdPackageModules initrdAbilityEvaluation;
+          inherit hostPackages hostPackageArtifacts initrdPackages initrdPackageArtifacts initrdPackageModules initrdAbilityEvaluation;
           hostPackageModules = finalPackageModules;
         };
     };
