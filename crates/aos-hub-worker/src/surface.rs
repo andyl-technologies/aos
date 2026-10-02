@@ -1426,6 +1426,18 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         expected_binding_resource_version: i64,
         delete_credential_generation: i64,
     ) -> Result<Box<dyn SurfaceWrite>> {
+        // The deployment bucket is deleted through the Worker binding itself;
+        // every other object store needs exact external delete credentials.
+        if let Some(deleter) = self
+            .deployment_r2_deleter(
+                placement.binding_id,
+                expected_binding_resource_version,
+                &placement.prefix,
+            )
+            .await?
+        {
+            return Ok(deleter);
+        }
         let surface = placement_s3_delete_surface(
             &self.db,
             self.credentials.as_ref(),
@@ -1445,8 +1457,13 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
         access: &FrozenSurfaceAccess,
     ) -> Result<Box<dyn SurfaceWrite>> {
         let binding = frozen_access_binding(&self.db, access).await?;
-        if binding.is_instance_default || binding.kind == "deployment_r2" {
-            anyhow::bail!("deployment R2 cannot enforce atomic conditional deletion");
+        if binding.kind == "deployment_r2" {
+            return Ok(Box::new(
+                self.deployment_r2_writer(&access.placement_prefix),
+            ));
+        }
+        if binding.is_instance_default {
+            anyhow::bail!("instance-default object stores cannot enforce conditional deletion");
         }
         anyhow::ensure!(
             matches!(binding.kind.as_str(), "s3" | "r2"),
@@ -1465,6 +1482,43 @@ impl SurfaceWriteProvider for R2SurfaceWriteProvider {
             surface,
             egress: Arc::clone(&self.egress),
         }))
+    }
+}
+
+impl R2SurfaceWriteProvider {
+    /// Returns the bound deployment bucket as a fenced deleter when the
+    /// placement's binding is the Worker's own `deployment_r2` binding.
+    ///
+    /// The binding resource version is checked exactly like the external
+    /// object-store path so a retargeted binding cannot reuse a reviewed plan.
+    async fn deployment_r2_deleter(
+        &self,
+        binding_id: i64,
+        expected_binding_resource_version: i64,
+        prefix: &str,
+    ) -> Result<Option<Box<dyn SurfaceWrite>>> {
+        let binding = self
+            .db
+            .binding(binding_id)
+            .await?
+            .context("deletion placement references a missing binding")?;
+        if binding.kind != "deployment_r2" {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            binding.resource_version == expected_binding_resource_version,
+            "deployment R2 binding changed after deletion was planned"
+        );
+        Ok(Some(Box::new(self.deployment_r2_writer(prefix))))
+    }
+
+    fn deployment_r2_writer(&self, prefix: &str) -> R2Write {
+        R2Write {
+            contract: R2Contract::new(WorkerR2BucketAdapter {
+                bucket: self.bucket.as_ref().clone(),
+            }),
+            prefix: prefix.to_string(),
+        }
     }
 }
 
@@ -1506,6 +1560,15 @@ impl SurfaceWrite for R2Write {
     async fn delete(&self, path: &str) -> Result<()> {
         let key = keymap::r2_key(&self.prefix, path);
         self.contract.delete(&key).await
+    }
+
+    async fn delete_if_matches(
+        &self,
+        path: &str,
+        expected: &aos_hub_core::surface_write::SurfaceDeletePrecondition,
+    ) -> Result<aos_hub_core::surface_write::SurfaceDeleteOutcome> {
+        let key = keymap::r2_key(&self.prefix, path);
+        self.contract.delete_if_matches(&key, expected).await
     }
 
     async fn create_multipart(&self, path: &str) -> Result<String> {

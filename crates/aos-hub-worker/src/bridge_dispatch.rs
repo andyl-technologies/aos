@@ -356,6 +356,7 @@ mod tests {
                         registry: registry.slug.clone(),
                         expected_resource_version: "0".to_string(),
                         idempotency_key: "worker-gc-disabled".to_string(),
+                        retire_registry: false,
                     },
                 )
                 .await,
