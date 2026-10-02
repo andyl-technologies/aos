@@ -78,6 +78,11 @@ fn stage_graft(
     staged
 }
 
+/// Certifies each canonical flattened occurrence under actual paired authority.
+///
+/// # Panics
+/// Panics if genuine native setup or algebra fails, denied token/domain requests
+/// publish, source paths share a certificate, or retained public evidence fails.
 pub(super) async fn certify_flattened_files() {
     let (source, source_authority, _) = independent_factory("private:writer").await;
     let (destination, destination_authority, _) = independent_factory("public").await;
