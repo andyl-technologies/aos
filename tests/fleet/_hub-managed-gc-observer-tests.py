@@ -100,5 +100,50 @@ class ObserverTests(unittest.TestCase):
             observer.collect(selected, "a" * 32, "c" * 64, expected)
 
 
+    def test_terminal_cleanup_exact_capture_scope_and_full_commitments(self):
+        selected = records()
+        subject = "c" * 64 + "d" * 64
+        for row in selected:
+            row.update(scope="managed_terminal_cleanup", subject_id=subject)
+        selected.insert(3, {**selected[0], "event": {
+            "kind": "call_invoke", "ordinal": 2, "method": "get", "range": None}})
+        selected.insert(4, {**selected[2], "event": {
+            **selected[2]["event"], "ordinal": 2, "method": "get"}})
+        selected[5]["event"]["ordinal"] = 3
+        selected[6]["event"]["ordinal"] = 3
+        selected[-1]["event"].update(invoked=3, completed=3)
+        expected = [{"scope": "managed_terminal_cleanup", "key": "controlled/gc/object",
+                     "subject_id": subject}]
+        window = observer.collect(selected, "a" * 32, "e" * 64, expected)
+        self.assertEqual([call["method"] for call in window["calls"]], ["head", "get", "delete"])
+        for field, value in (("capture_id", "f" * 32), ("scope", "managed_gc_guard"),
+                             ("subject_id", "c" * 128), ("key", "other/object")):
+            altered = copy.deepcopy(selected)
+            altered[2][field] = value
+            with self.assertRaises(ValueError):
+                observer.collect(altered, "a" * 32, "e" * 64, expected)
+        selected[3]["event"]["range"] = [0, 1]
+        with self.assertRaises(ValueError):
+            observer.collect(selected, "a" * 32, "e" * 64, expected)
+
+    def test_terminal_cleanup_zero_requires_actual_healthy_route_footer(self):
+        subject = "c" * 64 + "d" * 64
+        selected = records()
+        selected = [selected[0], {**selected[-1], "event": {
+            "kind": "request_terminal", "healthy": True, "invoked": 0, "completed": 0, "pending": 0}}]
+        for row in selected:
+            row.update(scope="managed_terminal_cleanup", subject_id=subject)
+        expected = [{"scope": "managed_terminal_cleanup", "key": "controlled/gc/object",
+                     "subject_id": subject}]
+        self.assertEqual(observer.collect(selected, "a" * 32, "e" * 64, expected)["calls"], [])
+        for altered in ([], selected[:1], [selected[0], {**selected[1], "event": {
+                **selected[1]["event"], "healthy": False}}]):
+            with self.assertRaises(ValueError):
+                observer.collect(altered, "a" * 32, "e" * 64, expected)
+        for invalid in ("c" * 64, "C" * 128, "c" * 129):
+            with self.assertRaises(ValueError):
+                observer.collect(selected, "a" * 32, "e" * 64, [{**expected[0], "subject_id": invalid}])
+
+
 if __name__ == "__main__":
     unittest.main()

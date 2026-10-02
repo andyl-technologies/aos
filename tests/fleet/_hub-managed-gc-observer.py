@@ -3,7 +3,7 @@
 Records come from the installed Worker's private console capture. Expected
 selectors come from actual authenticated StorageWork requests and results;
 neither a caller-created record nor this parser proves their provenance.
-The output covers only managed_gc_guard and managed_inventory_range requests.
+The output covers only the three explicitly instrumented Managed request paths.
 Separate real R2 and persisted guard observations remain mandatory.
 """
 
@@ -11,7 +11,7 @@ import json
 import re
 
 
-SCOPES = {"managed_gc_guard", "managed_inventory_range"}
+SCOPES = {"managed_gc_guard", "managed_inventory_range", "managed_terminal_cleanup"}
 COMMON = {"version", "capture_id", "request_id", "scope", "key", "subject_id", "event"}
 MAX_RECORD_BYTES = 4096
 MAX_REQUEST_BYTES = 256 * 1024
@@ -74,6 +74,9 @@ def collect(records, capture_id, backing_identity, expected_requests):
                 and isinstance(item["subject_id"], str)
                 and 0 < len(item["subject_id"].encode()) <= 128,
                 "actual expected request selector differs")
+        if item["scope"] == "managed_terminal_cleanup":
+            require(re.fullmatch(r"[0-9a-f]{128}", item["subject_id"]),
+                    "terminal cleanup original/request commitments differ")
         expected.add(selector(item))
     require(len(expected) == len(expected_requests), "expected selector is duplicated")
 
@@ -125,7 +128,9 @@ def collect(records, capture_id, backing_identity, expected_requests):
             require((record["scope"] == "managed_gc_guard"
                      and event["method"] in {"head", "delete"} and requested_range is None)
                     or (record["scope"] == "managed_inventory_range"
-                        and event["method"] == "get" and requested_range is not None),
+                        and event["method"] == "get" and requested_range is not None)
+                    or (record["scope"] == "managed_terminal_cleanup"
+                        and requested_range is None),
                     "SDK invocation exceeds its actual caller scope")
             request["calls"][event["ordinal"]] = {
                 "callId": identity + ":" + str(event["ordinal"]), "requestId": identity,

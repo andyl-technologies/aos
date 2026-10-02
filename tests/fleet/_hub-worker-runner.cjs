@@ -11,6 +11,7 @@ const path = require('node:path');
 function acceptanceRegistryServer(
   runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation,
   ociAnchorCreation, ociAcceptanceStaging, publicDocumentCacheObservation,
+  managedCleanupFixtureInstallation,
 ) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
@@ -19,6 +20,7 @@ function acceptanceRegistryServer(
   const sockets = new Set();
   let ociStagingActive = false;
   let publicCacheActive = false;
+  let managedCleanupActive = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
@@ -71,6 +73,18 @@ function acceptanceRegistryServer(
             socket.end(JSON.stringify(await ociAcceptanceStaging(request)) + '\n');
           } finally {
             ociStagingActive = false;
+          }
+          return;
+        }
+        if (request.version === 1 && request.kind === 'managed-oci-cleanup-fixture-install') {
+          if (!managedCleanupFixtureInstallation || managedCleanupActive) {
+            throw new Error('Managed cleanup fixture installer is unavailable');
+          }
+          managedCleanupActive = true;
+          try {
+            socket.end(JSON.stringify(await managedCleanupFixtureInstallation(request)) + '\n');
+          } finally {
+            managedCleanupActive = false;
           }
           return;
         }
@@ -754,7 +768,8 @@ async function main() {
   const {
     certificatePath, privateKeyPath, queueObservationPath, namespaceObservationPath,
     acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled,
-    ociSdkAcceptanceRegistryKey, publicDocumentCacheCase, publicDocumentCacheObserverPath, ...options
+    ociSdkAcceptanceRegistryKey, publicDocumentCacheCase, publicDocumentCacheObserverPath,
+    managedCleanupInstallerPath, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
@@ -854,6 +869,19 @@ async function main() {
           const { observePublicDocumentCache } = require(publicDocumentCacheObserverPath);
           return observePublicDocumentCache(runtime, load, options, configurationBytes,
             publicDocumentCacheCase, request, observer.sha256);
+        },
+        request => {
+          if (typeof managedCleanupInstallerPath !== 'string'
+              || !path.isAbsolute(managedCleanupInstallerPath)) {
+            throw new Error('Managed cleanup fixture requires an explicit installer module');
+          }
+          const installer = ociHashFile(managedCleanupInstallerPath, 64 * 1024);
+          const { installManagedCleanupFixture } = require(managedCleanupInstallerPath);
+          return installManagedCleanupFixture(runtime, options, request,
+            () => observeOciSdkNamespace(runtime, load, options, configurationBytes,
+              ociSdkNamespaceObservation, configurationPath)).then(receipt => ({
+                ...receipt, installerSha256: installer.sha256,
+              }));
         },
       );
       await acceptanceServer.ready;

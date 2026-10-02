@@ -29,6 +29,7 @@ use crate::{
 };
 
 mod permission;
+mod observation;
 
 pub(crate) const PHYSICAL_PATH: &str = "/terminal-oci-cleanup";
 const PHYSICAL_HEADER: &str = "x-aos-managed-oci-cleanup-guard";
@@ -141,6 +142,7 @@ pub(crate) async fn physical_fetch(
                 .context("Managed cleanup physical role absent")?,
             &[PHYSICAL_DOMAIN, &body].concat(),
         )?;
+        let trace = observation::Trace::start(&guard.env, &work, &body);
         let gate = loop {
             work.validate(&work.deployment_id, config::guard_latest_now(&guard.env)?)?;
             if let Some(gate) = gate.try_lock_owned() {
@@ -148,9 +150,11 @@ pub(crate) async fn physical_fetch(
             }
             worker::Delay::from(Duration::from_millis(50)).await;
         };
-        let reply = physical_reply(guard, &work, gate).await?;
+        let reply = physical_reply(guard, &work, gate, &trace).await?;
         work.validate(&work.deployment_id, config::guard_latest_now(&guard.env)?)?;
-        signed_reply(&work, &reply, &role)
+        let response = signed_reply(&work, &reply, &role)?;
+        trace.finish();
+        Ok(response)
     }
     .await;
     match result {
@@ -166,6 +170,7 @@ async fn physical_reply(
     guard: &HybridObjectGuard,
     work: &ManagedOciCleanupRequest,
     gate: OwnedMutexGuard<()>,
+    trace: &observation::Trace,
 ) -> Result<ManagedOciCleanupReply> {
     let storage = guard.state.storage();
     let record_key = format!("terminal-oci-cleanup:{}", work.original.fingerprint()?);
@@ -206,6 +211,7 @@ async fn physical_reply(
         work,
         Rc::clone(&owner),
         &check,
+        trace,
     )
     .await?;
     ensure!(
@@ -239,6 +245,7 @@ async fn physical_reply(
         work,
         Rc::clone(&owner),
         &check,
+        trace,
     )
     .await?;
     // Attach cancellation ownership before rejecting any returned identity.
@@ -304,6 +311,7 @@ async fn physical_reply(
         work,
         Rc::clone(&owner),
         &check,
+        trace,
     )
     .await?;
     guard
@@ -323,6 +331,7 @@ async fn invoke<R: 'static>(
     work: &ManagedOciCleanupRequest,
     owner: Rc<Owner<R>>,
     check: &impl Fn() -> Result<()>,
+    trace: &observation::Trace,
 ) -> Result<JsValue> {
     check()?;
     let function: Function = Reflect::get(object, &JsValue::from_str(method))
@@ -332,20 +341,22 @@ async fn invoke<R: 'static>(
     let arguments = arguments.iter().cloned().collect::<js_sys::Array>();
     check()?;
     provider_capacity::record_dispatch();
+    let call = trace.call(method);
     let promise: Promise = function
         .apply(object, &arguments)
         .map_err(|_| anyhow::anyhow!("Managed cleanup SDK dispatch failed"))?
         .dyn_into()
         .map_err(|_| anyhow::anyhow!("Managed cleanup SDK promise unavailable"))?;
+    let returned_body = method == "get";
+    let deletion = method == "delete";
     let pending = async move {
-        JsFuture::from(promise)
-            .await
-            .map_err(|_| "Managed cleanup SDK acknowledgement unknown")
+        let result = JsFuture::from(promise).await;
+        call.finish(deletion, &result);
+        result.map_err(|_| "Managed cleanup SDK acknowledgement unknown")
     }
     .shared();
     let retained = pending.clone();
     let retained_owner = Rc::clone(&owner);
-    let returned_body = method == "get";
     guard.state.wait_until(async move {
         let result = retained.await;
         if returned_body && retained_owner.check_open().is_err() {

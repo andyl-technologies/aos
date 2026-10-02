@@ -3,7 +3,7 @@
 //! A closed request brackets its actual awaited SDK calls. Unknown results,
 //! dropped calls, recorder failure and overflow make the bracket incomplete.
 //! The trace grants no provider permission and never changes an SDK result.
-//! It covers the instrumented GC guard and inventory-range callers only.
+//! It covers the instrumented GC, inventory-range and terminal-cleanup callers.
 //!
 //! Each bounded private console record has this shape:
 //!
@@ -32,17 +32,18 @@ mod inspection;
 pub(crate) use inspection::fetch as inspect_guard;
 
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
-pub(crate) use runtime::{from_env, record_js_result};
+pub(crate) use runtime::{from_env, from_env_selected, record_js_result};
 
 #[cfg(test)]
 mod tests;
 
-/// Limits observations to two explicitly instrumented request paths.
+/// Limits observations to three explicitly instrumented request paths.
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum Scope {
     ManagedGcGuard,
     ManagedInventoryRange,
+    ManagedTerminalCleanup,
 }
 
 /// Identifies an actual SDK method invocation.
@@ -225,7 +226,13 @@ impl RequestTrace {
         subject_id: String,
         sink: Rc<dyn Fn(&str) -> bool>,
     ) -> Option<Self> {
-        if !configuration.accepts(&key, &subject_id, &request_id) {
+        if !configuration.accepts(&key, &subject_id, &request_id)
+            || (matches!(scope, Scope::ManagedTerminalCleanup)
+                && (subject_id.len() != 128
+                    || !subject_id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))))
+        {
             return None;
         }
         let inner = Rc::new(Inner {
@@ -294,6 +301,11 @@ impl RequestTrace {
             method,
             finished: false,
         })
+    }
+
+    /// Marks coverage incomplete when an actual call cannot be classified.
+    pub(crate) fn invalidate(&self) {
+        self.0.healthy.set(false);
     }
 
     /// Closes an acknowledged request after its real terminal branch.

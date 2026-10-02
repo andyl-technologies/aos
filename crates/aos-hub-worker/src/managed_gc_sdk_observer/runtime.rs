@@ -24,7 +24,18 @@ pub(crate) fn from_env(
     key: &str,
     subject_id: &str,
 ) -> Option<RequestTrace> {
-    let body = env.var("HUB_MANAGED_GC_SDK_OBSERVER").ok()?.to_string();
+    from_env_selected(env, "HUB_MANAGED_GC_SDK_OBSERVER", scope, key, subject_id)
+}
+
+/// Uses the same bounded span format with a caller's distinct opt-in variable.
+pub(crate) fn from_env_selected(
+    env: &Env,
+    variable: &str,
+    scope: Scope,
+    key: &str,
+    subject_id: &str,
+) -> Option<RequestTrace> {
+    let body = env.var(variable).ok()?.to_string();
     if body.len() > 4_096 {
         return None;
     }

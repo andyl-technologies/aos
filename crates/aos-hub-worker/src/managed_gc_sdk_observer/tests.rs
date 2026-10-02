@@ -6,6 +6,13 @@ use std::rc::Rc;
 use super::*;
 
 fn trace() -> (RequestTrace, Rc<RefCell<Vec<serde_json::Value>>>) {
+    trace_selected(Scope::ManagedGcGuard, "actual-action-selector".into())
+}
+
+fn trace_selected(
+    scope: Scope,
+    subject: String,
+) -> (RequestTrace, Rc<RefCell<Vec<serde_json::Value>>>) {
     let records = Rc::new(RefCell::new(Vec::new()));
     let output = records.clone();
     let sink = Rc::new(move |body: &str| {
@@ -21,9 +28,9 @@ fn trace() -> (RequestTrace, Rc<RefCell<Vec<serde_json::Value>>>) {
             prefix: "controlled/gc".into(),
         },
         "b".repeat(32),
-        Scope::ManagedGcGuard,
+        scope,
         "controlled/gc/object".into(),
-        "actual-action-selector".into(),
+        subject,
         sink,
     )
     .unwrap();
@@ -201,4 +208,43 @@ fn call_after_terminal_leaves_visible_invalid_continuation() {
     let records = records.borrow();
     assert_eq!(records[1]["event"]["kind"], "request_terminal");
     assert_eq!(records[2]["event"]["kind"], "call_invoke");
+}
+
+#[test]
+fn terminal_cleanup_binds_both_full_commitments_and_dropped_route_stays_incomplete() {
+    let subject = format!("{}{}", "c".repeat(64), "d".repeat(64));
+    let (selected, records) = trace_selected(Scope::ManagedTerminalCleanup, subject.clone());
+    selected.finish();
+    assert_eq!(records.borrow()[0]["scope"], "managed_terminal_cleanup");
+    assert_eq!(records.borrow()[0]["capture_id"], "a".repeat(32));
+    assert_eq!(records.borrow()[0]["subject_id"], subject);
+    assert_eq!(records.borrow()[1]["event"]["invoked"], 0);
+    assert_eq!(records.borrow()[1]["event"]["healthy"], true);
+
+    let (selected, records) = trace_selected(Scope::ManagedTerminalCleanup, subject);
+    let pending = selected.call(Method::Delete).unwrap();
+    drop(selected);
+    // A pending SDK promise retains the span after its response owner is gone.
+    assert_eq!(records.borrow().len(), 2);
+    pending.finish(Outcome::Resolved);
+    assert_eq!(records.borrow().last().unwrap()["event"]["healthy"], false);
+}
+
+#[test]
+fn terminal_cleanup_rejects_partial_uppercase_or_oversized_subjects() {
+    for subject in ["c".repeat(64), "C".repeat(128), "c".repeat(129)] {
+        assert!(RequestTrace::new(
+            Configuration {
+                version: 1,
+                capture_id: "a".repeat(32),
+                prefix: "controlled/gc".into(),
+            },
+            "b".repeat(32),
+            Scope::ManagedTerminalCleanup,
+            "controlled/gc/object".into(),
+            subject,
+            Rc::new(|_| true),
+        )
+        .is_none());
+    }
 }

@@ -275,3 +275,6 @@ pub(super) struct ControlledCleanup {
     script: String,
     uncertainty: u64,
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod controlled;
