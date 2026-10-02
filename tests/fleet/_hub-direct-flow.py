@@ -712,7 +712,7 @@ def run_external_direct_publication(client, native, worker, s3, tools, controls,
         storage_boundary["workerReceivedBodies"]["bodies"],
         protected_headers["native-outbound"], protected_headers["worker-received"],
         authenticated_storage_transport_receipts(native_copy_log.read_text(), native_copy_capture))
-    storage_codec_input = prepare_storage_codec_cases(storage_transports,
+    storage_codec_input = prepare_storage_codec_segment_bundle(storage_transports,
         storage_boundary["nativeOriginalBodies"]["bodies"],
         storage_boundary["workerReceivedBodies"]["bodies"],
         identity["identity"]["sourceDigest"], tools["deploymentId"])

@@ -88,3 +88,52 @@ real local exchanges and the existing authenticator. Neither gate qualifies a
 Worker, provider, fleet workload, current authority or Native bulk zero. Final
 source/console/package/process binding and actual complete window joins remain
 required before any such assessment.
+
+## Complete corpus segments
+
+The retained inbound and outbound observation roles each keep the existing
+204,704-row workload allowance. This is separate from the executable codec's
+4,096-case limit. The 512 MiB retained body budget remains unchanged. Before
+assessment, the controller commits every original, including unsupported routes
+and incomplete bodies, in one complete inventory.
+
+Each owner-private codec manifest stays within the unchanged 1 MiB manifest,
+4,096-case, 8 MiB individual body and 512 MiB selected reference limits. The
+controller partitions greedily using actual serialized manifest sizes and counts
+all selected body references, including independently offered originals. It never
+raises an RPC limit or omits a row to make a segment pass.
+
+Original, received, accepted receipt and actual transport-call ownership are
+checked across the whole selection before partitioning. A segment cannot reuse
+a receipt consumed by another segment. Proxy-assigned IDs and proxy timestamps
+are excluded from accepted-event identity. A control receipt needs one actual
+handler completion time; an ambiguous set refuses. Generic execution receipts
+without a call ID conservatively keep their real plan/operation/count identity,
+so repeated exact events cannot be assigned to multiple calls. All segments use the same independently
+selected executable, source and provenance. Their exact manifest and membership
+hashes, counts and terminal outcomes are retained. Any missing, refused,
+substituted or excessive segment makes the complete assessment fail; its bulk
+count stays unknown. Unsupported Copy/OCI originals also remain in the complete
+inventory and unresolved assignment list when only a positive subset can be
+prepared for its separate codec.
+
+Inventory/selection and terminal report projections each have a separate
+256 MiB serialized representation bound; each inventory row is at most 2 KiB.
+The terminal bound includes every outcome envelope, array brackets, separators
+and the retained final newline. It is checked incrementally before appending
+items or writing either a full terminal outcome or aggregate. On overflow, the
+controller retains a compact bounded diagnostic if it fits, preserves all raw
+originals and existing decoder stdout, and stops the incomplete collection.
+The coverage diagnostic is separately bounded to 4 KiB and explicitly records
+executed and unexecuted segments; no oversized aggregate is written. If even a
+compact terminal diagnostic cannot fit the selected terminal bound, its
+commitment/count stay in that bounded incomplete coverage record.
+Python object overhead is additional and unmeasured. These source tests cover
+bounded selection and coverage only. They do not establish that supplied receipt
+commitments authenticate traffic or prove actor, purpose, source, placement,
+provider ownership or Native bulk zero. Actual source-bound production joins and
+a final matching codec executable remain required.
+
+```sh
+<aos-python>/bin/python3 tests/fleet/_hub-native-corpus-segment-tests.py
+```

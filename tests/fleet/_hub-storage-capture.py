@@ -368,3 +368,35 @@ def prepare_storage_codec_cases(transport, originals, received, source_digest, d
             "originalIngress": None, "receivedIngress": None})
     return {"version": 1, "sourceDigest": source_digest, "deploymentId": deployment_id,
         "cases": cases} if cases else None
+
+
+def prepare_storage_codec_segment_bundle(transport, originals, received, source_digest, deployment_id):
+    """Account for all originals while preparing bounded positive codec pages.
+
+    Unsupported/unjoined originals stay explicitly unresolved in the complete
+    inventory. A positive subset cannot establish complete workload coverage.
+    No observational page creates actor, purpose or provider evidence.
+    """
+    inventory = native_corpus_inventory(("outbound", row) for row in originals)
+    selection = prepare_storage_codec_cases(transport, originals, received, source_digest, deployment_id)
+    joined = {row["nativeRequestId"]: row for row in transport["joined"]}
+    unresolved = transport["unresolvedNativeRequestIds"]
+    expected = {row["requestId"] for row in originals}
+    if (len(joined) != len(transport["joined"]) or len(set(unresolved)) != len(unresolved)
+            or set(joined) & set(unresolved) or set(joined) | set(unresolved) != expected):
+        raise ValueError("storage transport assignments omit or duplicate an original")
+    bundle = None
+    if selection is not None:
+        selected_originals = native_corpus_inventory(("outbound", row) for row in originals
+            if row["requestId"] in joined)
+        ownership = [{"originalId": "outbound:" + row["requestId"],
+            "receivedId": joined[row["requestId"]]["receivedRequestId"],
+            "receiptIdSha256": native_corpus_receipt_identity(joined[row["requestId"]]),
+            "transportCallIdSha256": joined[row["requestId"]]["transportCallIdSha256"]}
+            for row in selection["cases"]]
+        template = {name: value for name, value in selection.items() if name != "cases"}
+        bundle = partition_native_codec_corpus(selected_originals, template, "cases", selection["cases"], ownership)
+    return {"version": 1, "completeOriginalInventory": inventory,
+        "selectedCodecSegments": bundle, "unresolvedNativeRequestIds": unresolved,
+        "allOriginalsSelected": not unresolved, "nativeBulkBytes": None,
+        "scope": "complete original assignments, including unresolved rows; positive pages alone are not workload qualification"}

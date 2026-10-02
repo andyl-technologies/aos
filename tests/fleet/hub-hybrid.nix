@@ -538,6 +538,7 @@ in {
       + builtins.readFile ./_hub-direct-runtime-observations.py
       + builtins.readFile ./_hub-direct-observations.py
       + builtins.readFile ./_hub-direct-boundary.py
+      + builtins.readFile ./_hub-native-corpus-segments.py
       + builtins.readFile ./_hub-direct-codec-assessment.py
       + builtins.readFile ./_hub-direct-worker-lifecycle.py
       + builtins.readFile ./_hub-direct-concurrent-publications.py

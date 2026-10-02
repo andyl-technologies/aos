@@ -54,8 +54,11 @@ def observe_direct_native_executable(native, tools, expected_sha256):
     return observed
 
 
-def run_direct_native_codec_observer(selection, manifest):
+def run_direct_native_codec_observer(selection, manifest, segment_label=None):
     """Execute only the selected held, hashed source-built observational binary."""
+    if segment_label is not None and not re.fullmatch(r"segment-[0-9]{6}", segment_label):
+        raise ValueError("codec segment artifact label differs")
+    prefix = "native-codec-observer" + ("-" + segment_label if segment_label else "")
     reference = selection["observerExecutable"]
     if (not isinstance(reference, dict) or set(reference) != {"path", "sha256"}
             or not Path(reference["path"]).is_absolute()
@@ -87,9 +90,9 @@ def run_direct_native_codec_observer(selection, manifest):
             exit_code, timed_out = None, True
     finally:
         os.close(descriptor)
-    retain_direct_flow("native-codec-observer.stdout.json", stdout)
-    retain_direct_flow("native-codec-observer.stderr", stderr)
-    retain_direct_flow("native-codec-observer-execution.json", {
+    retain_direct_flow(prefix + ".stdout.json", stdout)
+    retain_direct_flow(prefix + ".stderr", stderr)
+    retain_direct_flow(prefix + "-execution.json", {
         "version": 1, "exitCode": exit_code, "timedOut": timed_out,
         "executableSha256": actual_sha, "manifestSha256": hashlib.sha256(manifest.read_bytes()).hexdigest(),
         "scope": "selected actual source-built codec; not network or authority observation",
@@ -220,10 +223,121 @@ def direct_control_codec_join(item, capture, positive, source_digest):
         "authenticatedHandlerReceiptSemanticSha256": positive["handlerReceiptSemanticSha256"],
         "handlerCompletedAtUnixMillis": positive["handlerCompletedAtUnixMillis"]}
 
+def run_direct_native_codec_segments(selection, bundle, inventory_sha, bundle_sha,
+                                     revision, source_digest, selected_corpus_bytes):
+    """Retain every bounded terminal outcome before checking complete coverage."""
+    outcomes, all_items = [], []
+    terminal_bytes = 3  # JSON array brackets and the retained final newline.
+    selected_executable = selection["observerExecutable"]["sha256"]
+    selected_provenance = selection["runtimeProvenance"]["sha256"]
+    for segment in bundle["segments"]:
+        label = "segment-" + str(segment["index"]).zfill(6)
+        manifest_path = Path("external-direct-flow/native-codec-" + label + ".json")
+        manifest_bytes = native_corpus_json(segment["manifest"])
+        manifest_sha = retain_direct_flow(manifest_path.name, manifest_bytes)
+        outcome = {"index": segment["index"], "status": "refused", "manifestSha256": manifest_sha,
+            "membershipSha256": segment["membershipSha256"],
+            "executableSha256": selected_executable, "provenanceSha256": selected_provenance,
+            "report": None}
+        try:
+            observed = run_direct_native_codec_observer(selection, manifest_path, label)
+            segment_bytes = sum(int(body["byteSize"]) for capture in segment["manifest"]["captures"]
+                for body in capture["bodies"].values())
+            if (not isinstance(observed, dict) or set(observed) != {
+                    "version", "codecRevision", "selectedSourceDigest", "manifestSha256",
+                    "selectedBodyBytes", "maximumSelectedBodyBytes", "maximumBodyBytes", "captures"}
+                    or type(observed["version"]) is not int or observed["version"] != 1
+                    or observed["codecRevision"] != revision or observed["selectedSourceDigest"] != source_digest
+                    or observed["manifestSha256"] != manifest_sha
+                    or int(observed["selectedBodyBytes"]) != segment_bytes
+                    or int(observed["maximumSelectedBodyBytes"]) != NATIVE_CAPTURE_CORPUS_LIMIT
+                    or int(observed["maximumBodyBytes"]) != WORKER_CONTROL_REPLY_LIMIT
+                    or len(observed["captures"]) != segment["count"]):
+                raise ValueError("codec segment observation/source/bounds differ")
+            expected_ids = {row["selectedRequestIdSha256"] for row in segment["members"]}
+            observed_ids = [row["requestIdSha256"] for row in observed["captures"]]
+            if len(set(observed_ids)) != len(observed_ids) or set(observed_ids) != expected_ids:
+                raise ValueError("codec segment omitted or substituted an actual capture")
+            outcome.update(status="success", report=observed)
+        except Exception as error:
+            # All terminal segments are retained. Error values may contain private
+            # paths, so only the exception type enters this bounded projection.
+            outcome["report"] = {"failureClass": type(error).__name__}
+        encoded_outcome = native_corpus_json(outcome)
+        candidate_bytes = terminal_bytes + len(encoded_outcome) + bool(outcomes)
+        if (len(encoded_outcome) + 1 > NATIVE_SEGMENT_REPORT_BYTE_LIMIT
+                or candidate_bytes > NATIVE_SEGMENT_REPORT_BYTE_LIMIT):
+            # The decoder's private stdout and all original bodies remain
+            # retained. Never append or persist an excessive terminal envelope.
+            # Stop this incomplete collection; later selected pages stay in the
+            # frozen inventory/bundle, explicitly not executed or classified.
+            overflow = {"index": segment["index"], "status": "overflow",
+                "manifestSha256": manifest_sha, "membershipSha256": segment["membershipSha256"],
+                "outcomeSha256": hashlib.sha256(encoded_outcome).hexdigest(),
+                "outcomeBytes": len(encoded_outcome) + 1,
+                "attemptedAggregateBytes": candidate_bytes, "nativeBulkBytes": None}
+            overflow_bytes = native_corpus_json(overflow) + b"\n"
+            overflow_sha = None
+            if len(overflow_bytes) <= min(NATIVE_SEGMENT_DIAGNOSTIC_BYTE_LIMIT, NATIVE_SEGMENT_REPORT_BYTE_LIMIT):
+                overflow_sha = retain_direct_flow("native-codec-" + label + "-outcome.json", overflow_bytes)
+            incomplete = {
+                "version": 1, "complete": False, "inventorySha256": inventory_sha,
+                "segmentBundleSha256": bundle_sha, "terminalSegmentsSha256": None,
+                "overflowOutcomeSha256": overflow_sha, "overflowSegmentIndex": segment["index"],
+                "actualOverflowOutcomeSha256": overflow["outcomeSha256"],
+                "overflowOutcomeBytes": overflow["outcomeBytes"],
+                "attemptedAggregateBytes": candidate_bytes,
+                "originalCount": bundle["originalCount"], "segmentCount": len(bundle["segments"]),
+                "executedSegmentCount": segment["index"] + 1,
+                "unexecutedSegmentCount": len(bundle["segments"]) - segment["index"] - 1,
+                "nativeBulkBytes": None,
+                "scope": "terminal representation overflow; raw originals/decoder output retained, remaining segments unexecuted"}
+            incomplete_bytes = native_corpus_json(incomplete) + b"\n"
+            if len(incomplete_bytes) > NATIVE_SEGMENT_DIAGNOSTIC_BYTE_LIMIT:
+                raise ValueError("Native codec overflow diagnostic exceeds its bound")
+            retain_direct_flow("native-codec-complete-coverage.json", incomplete_bytes)
+            raise ValueError("Native codec terminal collection exceeded its exact retained bound")
+        retain_direct_flow("native-codec-" + label + "-outcome.json", encoded_outcome + b"\n")
+        terminal_bytes = candidate_bytes
+        outcomes.append(outcome)
+        if outcome["status"] == "success":
+            all_items.extend(outcome["report"]["captures"])
+    terminal_encoded = native_corpus_json(outcomes) + b"\n"
+    if len(terminal_encoded) != terminal_bytes or len(terminal_encoded) > NATIVE_SEGMENT_REPORT_BYTE_LIMIT:
+        raise ValueError("Native codec terminal representation differs before retention")
+    terminal_sha = retain_direct_flow("native-codec-all-terminal-segments.json", terminal_encoded)
+    try:
+        coverage = validate_native_segment_outputs(bundle, outcomes, selected_executable, selected_provenance)
+    except ValueError:
+        retain_direct_flow("native-codec-complete-coverage.json", {
+            "version": 1, "complete": False, "inventorySha256": inventory_sha,
+            "segmentBundleSha256": bundle_sha, "terminalSegmentsSha256": terminal_sha,
+            "originalCount": bundle["originalCount"], "segmentCount": len(bundle["segments"]),
+            "nativeBulkBytes": None,
+            "scope": "missing/refused/substituted/overflow segment prevents whole-workload classification"})
+        raise
+    retain_direct_flow("native-codec-complete-coverage.json", coverage)
+    return {"version": 2, "codecRevision": revision, "selectedSourceDigest": source_digest,
+        "inventorySha256": inventory_sha, "segmentBundleSha256": bundle_sha,
+        "terminalSegmentsSha256": terminal_sha, "selectedBodyBytes": str(selected_corpus_bytes),
+        "captures": all_items}
+
+
 def assess_direct_native_bodies(body_receipts, control_joins, provider_classification,
                                mapping, source_digest, issuer_verifier, native_executable,
                                storage_work_boundary=None, release_placements=None):
     """Require complete positive-workload type and provider evidence before zero."""
+    if not isinstance(body_receipts, dict) or not isinstance(body_receipts.get("bodies"), list):
+        raise ValueError("actual Native original body inventory is missing")
+    if (storage_work_boundary is not None
+            and not isinstance(storage_work_boundary.get("nativeOriginalBodies", {}).get("bodies"), list)):
+        raise ValueError("actual Native outbound original body inventory is missing")
+    original_rows = [("inbound", row) for row in body_receipts["bodies"]]
+    if storage_work_boundary is not None:
+        original_rows.extend(("outbound", row) for row in
+            storage_work_boundary["nativeOriginalBodies"]["bodies"])
+    inventory = native_corpus_inventory(original_rows)
+    inventory_sha = retain_direct_flow("native-codec-complete-original-inventory.json", inventory)
     if storage_work_boundary is None:
         raise ValueError("Native outbound StorageWork bodies remain unclassified; bulk bytes stay unknown")
     if (not isinstance(storage_work_boundary, dict)
@@ -281,24 +395,33 @@ def assess_direct_native_bodies(body_receipts, control_joins, provider_classific
     selected_corpus_bytes = body_receipts["capturedCorpusBytes"] + sum(
         int(body["byteSize"]) for capture in storage_work_boundary["captures"]
         for body in capture["bodies"].values())
-    if selected_corpus_bytes > NATIVE_CAPTURE_CORPUS_LIMIT or len(captures) > NATIVE_CAPTURE_COUNT_LIMIT:
-        raise ValueError("combined Native inbound/outbound corpus exceeds the selected observer bounds")
-    manifest = {"version": 1, "codecRevision": revision, "sourceDigest": source_digest,
-        "issuerVerifier": issuer_verifier, "captures": captures}
-    manifest_path = Path("external-direct-flow/native-codec-manifest-private.json")
-    manifest_sha = retain_direct_flow(manifest_path.name, manifest)
-    parsed = run_direct_native_codec_observer(selection, manifest_path)
-    if (not isinstance(parsed, dict) or set(parsed) != {
-            "version", "codecRevision", "selectedSourceDigest", "manifestSha256",
-            "selectedBodyBytes", "maximumSelectedBodyBytes", "maximumBodyBytes", "captures"}
-            or type(parsed["version"]) is not int or parsed["version"] != 1
-            or parsed["codecRevision"] != revision or parsed["selectedSourceDigest"] != source_digest
-            or parsed["manifestSha256"] != manifest_sha
-            or int(parsed["selectedBodyBytes"]) != selected_corpus_bytes
-            or int(parsed["maximumSelectedBodyBytes"]) != NATIVE_CAPTURE_CORPUS_LIMIT
-            or int(parsed["maximumBodyBytes"]) != WORKER_CONTROL_REPLY_LIMIT
-            or len(parsed["captures"]) != len(captures)):
-        raise ValueError("codec observation differs from the complete selected Native corpus")
+    if selected_corpus_bytes > NATIVE_CAPTURE_CORPUS_LIMIT:
+        raise ValueError("combined retained Native bodies exceed the existing observation byte bound")
+    storage_owners = {row["requestId"]: row for row in storage_work_boundary["authenticatedCompletions"]}
+    if len(storage_owners) != len(storage_work_boundary["authenticatedCompletions"]):
+        raise ValueError("Native received/authenticated ownership is ambiguous")
+    logical_owners = {row["requestId"]: row for row in control_joins["joined"]}
+    if len(logical_owners) != len(control_joins["joined"]):
+        raise ValueError("logical accepted receipt ownership is ambiguous")
+    ownership = []
+    for capture in captures:
+        outbound = "storageWorkSelection" in capture or "controlSelection" in capture
+        positive = storage_owners.get(capture["requestId"]) if outbound else logical_owners.get(capture["requestId"])
+        if outbound and positive is None:
+            raise ValueError("Native original has no exact received/accepted ownership")
+        ownership.append({
+            "originalId": ("outbound:" + positive["nativeRequestId"]) if outbound
+                else "inbound:" + capture["requestId"],
+            "receivedId": capture["requestId"] if outbound else None,
+            "receiptIdSha256": native_corpus_receipt_identity(positive) if positive is not None else None,
+            "transportCallIdSha256": positive.get("transportCallIdSha256") if outbound else None,
+        })
+    template = {"version": 1, "codecRevision": revision, "sourceDigest": source_digest,
+        "issuerVerifier": issuer_verifier}
+    bundle = partition_native_codec_corpus(inventory, template, "captures", captures, ownership)
+    bundle_sha = retain_direct_flow("native-codec-complete-segment-bundle.json", bundle)
+    parsed = run_direct_native_codec_segments(selection, bundle, inventory_sha, bundle_sha,
+        revision, source_digest, selected_corpus_bytes)
     actual = {hashlib.sha256(capture["requestId"].encode()).hexdigest(): capture for capture in captures}
     if len(actual) != len(captures):
         raise ValueError("combined Native capture request ownership is ambiguous")

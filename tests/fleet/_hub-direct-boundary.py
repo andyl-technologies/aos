@@ -21,6 +21,8 @@ PROVIDER_BOUNDARY_FIELDS = frozenset((
 ))
 
 NATIVE_CAPTURE_COUNT_LIMIT = 4096
+# Retained observations span the whole workload; executable pages keep 4096.
+NATIVE_RETAINED_ROLE_COUNT_LIMIT = 2 * (12_535 + 3) * 8 + 4096
 NATIVE_CAPTURE_CORPUS_LIMIT = 512 * 1024 * 1024
 
 
@@ -110,7 +112,7 @@ def capture_direct_native_bodies(native, tools, observations,
             ("/var/lib/hybrid-native-outbound", "native-original"),
             ("/var/lib/hybrid-worker-boundary", "worker-received")}:
         raise ValueError("body capture root or role differs from the selected fixture")
-    if len(observations) > NATIVE_CAPTURE_COUNT_LIMIT:
+    if len(observations) > NATIVE_RETAINED_ROLE_COUNT_LIMIT:
         raise ValueError("Native observation corpus exceeds its selected capture count")
     captures, measured, incomplete = [], [], []
     corpus_bytes = 0
@@ -159,7 +161,7 @@ def capture_direct_native_bodies(native, tools, observations,
         "incompleteCaptures": incomplete,
         "capturedCorpusBytes": corpus_bytes,
         "maximumCorpusBytes": NATIVE_CAPTURE_CORPUS_LIMIT,
-        "maximumCaptures": NATIVE_CAPTURE_COUNT_LIMIT,
+        "maximumCaptures": NATIVE_RETAINED_ROLE_COUNT_LIMIT,
         "maximumBodyBytes": WORKER_CONTROL_REPLY_LIMIT,
         "observerOverhead": "private request buffering and response storage enabled equally for baseline and loaded probes",
         "rawBodies": "retained owner-private; not included in public numeric evidence",
