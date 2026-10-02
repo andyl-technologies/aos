@@ -16,7 +16,7 @@ mod tests;
 /// Borrows ordinary wire fields extracted by the checked evidence holder.
 pub(super) struct EvidenceFields<'a> {
     /// Exact canonical attribute-record identity.
-    pub(super) record: &'a Digest,
+    pub(super) record: &'a [u8],
     /// Object identity named by the attribute record.
     pub(super) object: &'a Digest,
     /// Registered attribute name.
