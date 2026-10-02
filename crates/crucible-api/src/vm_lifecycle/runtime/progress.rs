@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::io::Write;
-// crucible-lint: allow host-nondeterminism-state -- host time limits diagnostic output only; scheduler state and results remain authoritative.
+// crucible-lint: allow host-monotonic-time -- host time limits stderr sampling only, never scheduler state or results.
 use std::time::{Duration, Instant};
 
 use super::super::ProductionVmLifecycleLoop;
@@ -65,8 +65,11 @@ impl GuestBootProgress {
 }
 
 /// Reads host time solely to limit stderr notices, never scheduler decisions.
+// crucible-lint: allow clippy-disallowed-method -- this private clock limits opt-in stderr notices; disabled reporting returns before calling it.
 #[allow(clippy::disallowed_methods)]
+// crucible-lint: allow host-monotonic-time -- the returned host instant belongs only to process-local stderr cadence.
 fn diagnostic_clock() -> Instant {
+    // crucible-lint: allow host-monotonic-time -- this clock never selects a modeled deadline or affects an operation result.
     Instant::now()
 }
 
@@ -75,6 +78,7 @@ fn diagnostic_clock() -> Instant {
 pub(in crate::vm_lifecycle) struct RuntimeProgress {
     enabled: bool,
     remaining: u16,
+    // crucible-lint: allow host-monotonic-time -- sampling state is excluded from checkpoint and wire formats.
     next_report: Option<Instant>,
     guest_boot: BTreeMap<String, GuestBootProgress>,
 }
@@ -142,6 +146,7 @@ impl RuntimeProgress {
         self.begin_at(diagnostic_clock())
     }
 
+    // crucible-lint: allow host-monotonic-time -- the host instant gates stderr notices only, with no scheduler or queue mutation.
     fn begin_at(&mut self, now: Instant) -> bool {
         if self.remaining < 2 || self.next_report.is_some_and(|next| now < next) {
             return false;
