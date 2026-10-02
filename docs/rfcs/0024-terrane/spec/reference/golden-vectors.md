@@ -2205,6 +2205,90 @@ f6048005810006f6078278587075626c69636174696f6e2f736e617073686f74
 070707070707
 ```
 
+## Two-entry pack and detached index
+
+These TEST-1/TEST-2 witnesses use the field tables in 12-pack-format.md. The
+fixed pack ID is a byte-format fixture and claims no writer entropy. Bodies
+retain physical write order; index records are sorted by content digest. All
+integers in the pack and index are little-endian.
+
+```text
+pack-id = 000102030405060708090a0b0c0d0e0f
+version = 1; flags = 0
+physical bodies = [00 || h'68656c6c6f0a', 00 || h'776f726c640a']
+plaintext bodies = [h'68656c6c6f0a', h'776f726c640a']
+index count = 2; index offset = 38; index CRC32C = a8b09ac2
+index records (digest, offset, body length, plaintext length, codec, kind):
+(a20aaf262a9604b71e92a33c7f79e430f47128cf4b8a473b8c42c83b273a80cf, 24, 7, 6, 0, 0)
+(f8d628d3f53dc54bd01cb5fd43640a894d020dd432d6f2bc69c93700c12de9e5, 31, 7, 6, 0, 0)
+dictionary fields = 0; reserved fields = 0
+```
+
+### pack-two-entry
+
+Positive pack: 178 bytes. Identity:
+
+```text
+blake3:terrane-pack-v1:8fd6d978347c76b205e241da3d94f1bcf5f533b86cddbaea3948533d4048e842
+```
+
+```hex
+5452504b01000000000102030405060708090a0b0c0d0e0f0068656c6c6f0a00776f726c
+640a545249580200000000000000a20aaf262a9604b71e92a33c7f79e430f47128cf4b8a
+473b8c42c83b273a80cf180000000000000007000000060000000000000000000000f8d6
+28d3f53dc54bd01cb5fd43640a894d020dd432d6f2bc69c93700c12de9e51f0000000000
+0000070000000600000000000000000000002600000000000000c29ab0a854525045
+```
+
+### pack-detached-index
+
+Positive header-prefixed index: 148 bytes. Identity:
+
+```text
+blake3:terrane-index-v1:f4630a97d062249ea41b77cf7ad8a754c519b0066e2e3d3099d4776eb4a716d2
+```
+
+```hex
+5452504b01000000000102030405060708090a0b0c0d0e0f545249580200000000000000
+a20aaf262a9604b71e92a33c7f79e430f47128cf4b8a473b8c42c83b273a80cf18000000
+0000000007000000060000000000000000000000f8d628d3f53dc54bd01cb5fd43640a89
+4d020dd432d6f2bc69c93700c12de9e51f00000000000000070000000600000000000000
+00000000
+```
+
+### pack-bad-crc
+
+Negative pack: only the footer CRC's low bit is flipped.
+The decoder rejects it with an index CRC error.
+
+```hex
+5452504b01000000000102030405060708090a0b0c0d0e0f0068656c6c6f0a00776f726c
+640a545249580200000000000000a20aaf262a9604b71e92a33c7f79e430f47128cf4b8a
+473b8c42c83b273a80cf180000000000000007000000060000000000000000000000f8d6
+28d3f53dc54bd01cb5fd43640a894d020dd432d6f2bc69c93700c12de9e51f0000000000
+0000070000000600000000000000000000002600000000000000c39ab0a854525045
+```
+
+### pack-reserved-index
+
+Negative pack: byte 52 of the first sorted index record is 1.
+The footer CRC is recomputed over that index. The decoder
+rejects the reserved field despite its valid CRC.
+
+```hex
+5452504b01000000000102030405060708090a0b0c0d0e0f0068656c6c6f0a00776f726c
+640a545249580200000000000000a20aaf262a9604b71e92a33c7f79e430f47128cf4b8a
+473b8c42c83b273a80cf180000000000000007000000060000000000000001000000f8d6
+28d3f53dc54bd01cb5fd43640a894d020dd432d6f2bc69c93700c12de9e51f0000000000
+0000070000000600000000000000000000002600000000000000993e0bdd54525045
+```
+
+Positive container identities hash the complete corresponding bytes with their
+registered domain and zero separator. They do not enter tree or commit
+identities. Negative wires have no conforming container identity. Structural
+decoding does not verify plaintext chunk identities or authorize serving; the
+positive tests check those identities separately.
+
 ## Reproduction
 
 The vectors were produced with the reference BLAKE3 and Ed25519
@@ -2219,3 +2303,9 @@ raw digest fields hash the exact corresponding canonical bytes. Conformance
 tests separately construct the represented models and check encoder output,
 decoder output, and the explicitly negative decoder inputs. Qualification of
 this partial corpus does not qualify the complete `gate:golden-vectors` corpus.
+
+The two-entry pack witnesses use independent little-endian field assembly,
+CRC32C and the raw BLAKE3 primitive. Negative inputs preserve the remaining
+fields and isolate the stated decoder rejection. Positive tests compare
+the complete container bytes and identities, decoded fields and plaintext
+chunk identities separately.

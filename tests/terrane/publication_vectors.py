@@ -413,14 +413,14 @@ def main():
     if args.check:
         document = args.check.read_text(encoding="utf-8")
         start = document.index(HEADING + "\n")
-        end = document.index("\n## Reproduction\n", start)
+        end = document.index("\n## ", start)
         if document[start:end] != generated:
             raise SystemExit("published D-79 vectors differ from reference inputs")
         print(f"PASS: {len(witnesses)} independent D-79 format witnesses")
     elif args.replace:
         document = args.replace.read_text(encoding="utf-8")
         start = document.index(HEADING + "\n")
-        end = document.index("\n## Reproduction\n", start)
+        end = document.index("\n## ", start)
         args.replace.write_text(
             document[:start] + generated + document[end:],
             encoding="utf-8",

@@ -1499,6 +1499,27 @@ is added rather than editing history.
     This additive reference correction precedes T1's initial encoding freeze
     and establishes no native publication, collection or cold-fork claim.
 
+- **[D-85] Publish independent two-entry pack reference witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add complete input fields and independently reproduced
+    bytes for a data pack containing two raw chunks and its header-prefixed
+    detached index. Publish their registered domain-separated identities,
+    the plaintext chunk identities, physical offsets and sorted records.
+    Add explicit negative pack wires for an incorrect index CRC and a
+    nonzero reserved index field whose CRC has been recomputed correctly.
+    Preserve all existing golden bytes and format definitions.
+  - **Rationale:** TEST-2 requires a pack with a two-entry index, but the
+    reference omitted that format's complete wire vector. Independent
+    little-endian field assembly and CRC32C avoid treating encoder output
+    as its own oracle. Negative witnesses isolate CRC and reserved-field
+    rejection. Container identities remain distinct from the fixture's
+    random-ID field and do not enter tree or commit identities under OBJ-23.
+  - **Affects:** TEST-1 to TEST-3, PACK-1, PACK-3 to PACK-7, PACK-15 and the
+    golden-vector reference. Requirement IDs, schemas, identity domains
+    and existing bytes remain unchanged. This additive reference correction
+    precedes T1's initial format freeze and claims no native writer entropy,
+    serving verification or complete golden-corpus qualification.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

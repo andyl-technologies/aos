@@ -279,13 +279,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   does not qualify TEST-3.
   A separate `checks.terrane.integration.pack-format-vectors` harness requires
   independent reproduction and four exact cases for a two-entry pack, its
-  detached index and explicit CRC/reserved-field rejection witnesses. Its
-  generator, published vectors and tests remain pending; this prerequisite
-  establishes no golden-vector or pack conformance claim.
+  detached index and explicit CRC/reserved-field rejection witnesses. D-85
+  publishes those four witnesses with full fields and registered positive
+  container identities. The independent primitive little-endian/CRC32C
+  generator and all four exact public-model tests pass the actual hermetic
+  harness. All 453 core tests, strict all-target core Clippy and rustdoc pass;
+  the existing 39 publication witnesses and ten exact cases still pass.
+  The publication generator now bounds its own section at the next level-two
+  heading, preserving later reference sections when checking or replacing it.
+  Every previous golden byte remains unchanged. This qualifies the added
+  witnesses, while the remaining complete corpus and fuzz review stay pending.
   Mandatory repository formatting passes. The actual trunk aggregate remains
-  red on the historical-bootstrap candidate: `index-generation-manifest`
-  rejects its legacy-state compatibility assertion. That run does not prove
-  the remaining native disclosure gates green; no task or milestone advances.
+  red: `core-fuzz` refuses the absent `format_properties` target, which remains
+  on its task branch. The historical-bootstrap candidate's aggregate also
+  fails `index-generation-manifest`'s legacy-state compatibility assertion.
+  Neither failure proves the remaining native disclosure gates green; no
+  task or milestone advances.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
