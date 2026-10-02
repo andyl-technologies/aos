@@ -647,16 +647,6 @@
           export PAGER=less
           PROFILE
 
-          # Early networking accounts use the checked native identity policy,
-          # including the exact shells pinned by the selected handler.
-          cat > root/etc/passwd <<'PASSWD'
-          ${accountSeed.passwd}
-          PASSWD
-
-          cat > root/etc/group <<'GROUP'
-          ${accountSeed.group}
-          GROUP
-
           # /etc/hosts — localhost plus GCP's metadata.google.internal, which
           # is the one cloud metadata endpoint reached by name rather than IP
           # literal. No stage-1 DNS resolver, so this static map stands in.
@@ -665,15 +655,6 @@
           ::1 localhost
           169.254.169.254 metadata.google.internal metadata
           HOSTS
-
-          cat > root/etc/shadow <<'SHADOW'
-          ${accountSeed.shadow}
-          SHADOW
-          # The traditional 0000 shadow permission works because root (uid 0)
-          # bypasses the check; but we cannot read back the file during cpio
-          # packing without read bit set. Use 0600 — the archived file still
-          # ends up owned by uid 0 thanks to `cpio -R +0:+0`.
-          chmod 0600 root/etc/shadow
 
           cat > root/etc/machine-id <<'MACHINEID'
           MACHINEID
@@ -758,6 +739,18 @@
                   exit 1
                 }
               done
+        '';
+      }
+      {
+        name = "seed-accounts";
+        script = ''
+          # Preserve the complete native seed texts exactly: an extra newline
+          # creates an empty account row rejected by the identity provider.
+          printf '%s' ${lib.escapeShellArg accountSeed.passwd} > root/etc/passwd
+          printf '%s' ${lib.escapeShellArg accountSeed.group} > root/etc/group
+          printf '%s' ${lib.escapeShellArg accountSeed.shadow} > root/etc/shadow
+          # The archive assigns uid 0; the builder needs read access for cpio.
+          chmod 0600 root/etc/shadow
         '';
       }
       {
