@@ -3,6 +3,169 @@
 use super::*;
 
 #[test]
+fn callback_witness_constructs_only_exact_admitted_child_environment_and_trace() {
+    const PROBE: &str = "CRUCIBLE_CALLBACK_WITNESS_LAUNCH_PROBE";
+    const WITNESS: &str = "CRUCIBLE_CONTROL_CALLBACK_WITNESS";
+    const TEST_NAME: &str = "supervision::node_step_gate::support::tests::callback_witness_constructs_only_exact_admitted_child_environment_and_trace";
+    if std::env::var_os(PROBE).is_none() {
+        let executable =
+            std::env::current_exe().unwrap_or_else(|error| panic!("test executable: {error}"));
+        for value in [
+            None,
+            Some("0"),
+            Some("1"),
+            Some("true"),
+            Some("01"),
+            Some("1 "),
+        ] {
+            for idle in [false, true] {
+                let mut child = std::process::Command::new(&executable);
+                child
+                    .args(["--exact", TEST_NAME, "--nocapture"])
+                    .env(PROBE, "1")
+                    .env_remove(WITNESS)
+                    .env_remove("CRUCIBLE_PHASE7_IDLE_TRACE")
+                    .env("CRUCIBLE_UNADMITTED_SENTINEL", "private-host-value");
+                if let Some(value) = value {
+                    child.env(WITNESS, value);
+                }
+                if idle {
+                    child.env("CRUCIBLE_PHASE7_IDLE_TRACE", "1");
+                }
+                let output = child
+                    .output()
+                    .unwrap_or_else(|error| panic!("launch probe: {error}"));
+                assert!(
+                    output.status.success(),
+                    "witness={value:?} idle={idle}: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+            }
+        }
+        return;
+    }
+
+    let enabled = std::env::var_os(WITNESS).as_deref() == Some(std::ffi::OsStr::new("1"));
+    let config = QemuLiveNodeStepGateConfig::new(
+        "/nix/store/11111111111111111111111111111111-qemu/bin/qemu-system-x86_64",
+        "/nix/store/22222222222222222222222222222222-plugin/lib/crucible-plugin.so",
+        "/nix/store/33333333333333333333333333333333-kernel/bzImage",
+        "/nix/store/44444444444444444444444444444444-firmware/firmware.bin",
+        "/run/crucible",
+    )
+    .with_rr_control_boundary_trace();
+    let profile = launch_profile_candidate(config.architecture)
+        .with_memory_mib(config.memory_mib)
+        .with_smp_vcpus(config.smp_vcpus)
+        .with_rr_switch_quantum(config.rr_switch_quantum)
+        .with_scenario_seed(config.scenario_seed)
+        .try_into_deterministic()
+        .unwrap_or_else(|error| panic!("profile: {error}"));
+    let vm = vm_launch_config(&config, "vm-a");
+    let plugin = live_node_plugin_config(&config, &profile, &vm, "vm-a", None)
+        .unwrap_or_else(|error| panic!("plugin: {error}"));
+    let command = whitebox_probe_command(&config, &profile, &vm, plugin)
+        .unwrap_or_else(|error| panic!("command: {error:?}"));
+    assert_eq!(
+        config.resource_requirements(),
+        command.resource_requirements()
+    );
+    assert_eq!(
+        command.resource_requirements().minimum_writable_bytes(),
+        (u64::from(config.memory_mib) + 512 + 4) * 1024 * 1024
+    );
+    assert_eq!(command.vm_launch_hash_material(), vm.launch_hash_material());
+    assert_eq!(
+        command.diagnostic_envs(),
+        if enabled { &[(WITNESS, "1")][..] } else { &[] }
+    );
+    let selections: Vec<_> = command
+        .args()
+        .windows(2)
+        .filter_map(|pair| (pair[0] == "-trace").then_some(pair[1].as_str()))
+        .collect();
+    let expected = if enabled {
+        vec![
+            crate::launch::QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+            crate::launch::QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION,
+        ]
+    } else if std::env::var_os("CRUCIBLE_PHASE7_IDLE_TRACE").is_some() {
+        vec![crate::launch::QEMU_IDLE_PREFIX_TRACE_SELECTION]
+    } else {
+        vec![crate::launch::QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION]
+    };
+    assert_eq!(selections, expected);
+    crate::validate_pre_spawn_qemu_launch_args(command.args())
+        .unwrap_or_else(|error| panic!("admission: {error}"));
+    let child = crate::spawn::guarded_qemu_process_command(
+        command.executable(),
+        command.args(),
+        command.diagnostic_envs(),
+    );
+    assert_eq!(
+        child.get_args().collect::<Vec<_>>(),
+        command
+            .args()
+            .iter()
+            .map(std::ffi::OsStr::new)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        child.get_envs().collect::<Vec<_>>(),
+        command
+            .diagnostic_envs()
+            .iter()
+            .map(|(key, value)| (std::ffi::OsStr::new(key), Some(std::ffi::OsStr::new(value))))
+            .collect::<Vec<_>>()
+    );
+
+    // Execute the production command constructor against the test executable:
+    // cleared ambient sentinels and the exact opt-in are verified after exec.
+    if enabled {
+        let executable =
+            std::env::current_exe().unwrap_or_else(|error| panic!("test executable: {error}"));
+        let args = [
+            "--exact",
+            "supervision::node_step_gate::support::tests::callback_witness_cleared_child_probe",
+            "--ignored",
+        ]
+        .map(str::to_owned);
+        let mut child = crate::spawn::guarded_qemu_process_command(
+            &executable.to_string_lossy(),
+            &args,
+            command.diagnostic_envs(),
+        );
+        assert!(
+            child
+                .status()
+                .unwrap_or_else(|error| panic!("cleared child: {error}"))
+                .success()
+        );
+    }
+}
+
+#[test]
+#[ignore = "exec probe launched only by the constructed child environment test"]
+fn callback_witness_cleared_child_probe() {
+    assert_eq!(
+        std::env::var("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .ok()
+            .as_deref(),
+        Some("1")
+    );
+    for key in [
+        "CRUCIBLE_UNADMITTED_SENTINEL",
+        "CRUCIBLE_CALLBACK_WITNESS_LAUNCH_PROBE",
+        "CRUCIBLE_PHASE7_IDLE_TRACE",
+        "HOME",
+    ] {
+        assert!(std::env::var_os(key).is_none(), "ambient {key} leaked");
+    }
+}
+
+#[test]
 fn root_image_launch_material_does_not_fall_back_to_firmware() {
     let config = QemuLiveNodeStepGateConfig::new_with_root_image(
         "/aos/bin/qemu-system-x86_64",

@@ -28,6 +28,7 @@ use crate::{
     QemuNodeChild,
 };
 
+mod control_delivery_trace;
 mod image_launch;
 mod materialization;
 mod run_directory;
@@ -953,7 +954,7 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
         run_directory,
         child_resources,
         &image_pins,
-        &[],
+        command.diagnostic_envs(),
         Some(contract),
     )?;
     Ok(QemuSpawnedChild {
@@ -1070,16 +1071,7 @@ fn spawn_process_with_resources(
         .as_ref()
         .map(|overlay| (overlay.read.as_raw_fd(), overlay.write.as_raw_fd()));
 
-    let mut command = Command::new(executable);
-    command
-        .env_clear()
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit());
-    for (key, value) in envs {
-        command.env(key, value);
-    }
+    let mut command = guarded_qemu_process_command(executable, args, envs);
 
     // SAFETY: the closure only calls async-signal-safe syscalls between fork
     // and exec: `write`, `poll`, `setrlimit`, `openat`, `fstat`, `fchdir`, raw
@@ -1103,6 +1095,25 @@ fn spawn_process_with_resources(
         operation: "spawn guarded QEMU child",
         source,
     })
+}
+
+/// Constructs the actual child command with an empty inherited environment.
+pub(crate) fn guarded_qemu_process_command(
+    executable: &str,
+    args: &[String],
+    envs: &[(&str, &str)],
+) -> Command {
+    let mut command = Command::new(executable);
+    command
+        .env_clear()
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit());
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command
 }
 
 /// Runs the stopped QEMU setup probe through an admitted attempt contract.

@@ -192,6 +192,44 @@ fn streamed_control_boundary_trace_rejects_replacement_malformed_and_oversize()
 }
 
 #[test]
+fn streamed_control_trace_retains_delivery_only_and_mixed_late_rows() -> Result<(), Box<dyn Error>>
+{
+    let fixture = TraceRetentionFixture::new()?;
+    fixture.prepared.prepare_rr_control_boundary_trace()?;
+    let boundary = "crucible_sim_rr_control_boundary phase=request request=1 ack=0 complete=0 token=0x0 state=2\n";
+    let delivery = "crucible_sim_rr_control_delivery phase=registered-return request=4432 ack=4432 complete=4432 rr_token=0x0 token=0x0 deferred=0 state=2 runstate=4 owner=4432 pid=12\n";
+
+    for trace in [
+        delivery.to_owned(),
+        format!("{}{delivery}", boundary.repeat(40)),
+    ] {
+        std::fs::write(fixture.trace_path(), &trace)?;
+        let summary = fixture
+            .prepared
+            .summarize_rr_control_boundary_trace_after_reap()?;
+        assert_eq!(summary.lines().last(), Some(delivery.trim_end()));
+        assert!(summary.lines().skip(1).count() <= 32);
+    }
+    for trace in [
+        delivery.trim_end().to_owned(),
+        delivery.replace("control_delivery", "control_unknown"),
+        delivery.replace("ack=4432", "ack=18446744073709551616"),
+        delivery.replace("pid=12", &format!("pid={}", "1".repeat(512))),
+    ] {
+        std::fs::write(fixture.trace_path(), trace)?;
+        assert!(matches!(
+            fixture
+                .prepared
+                .summarize_rr_control_boundary_trace_after_reap(),
+            Err(QemuSpawnError::DiagnosticTraceMalformed { line: 1, .. })
+        ));
+    }
+    // Canonical receipts keep their original seven-field format.
+    assert!(crate::parse_qemu_rr_control_boundary_trace(delivery).is_err());
+    Ok(())
+}
+
+#[test]
 fn retained_runtime_trace_accepts_only_its_prepared_inode() -> Result<(), Box<dyn Error>> {
     let trace = "crucible_sim_determinism_timer seq=1 timer=3 list=1 scope=global owner=rr expire_ps=10 current_ps=10 raw=80\n";
     let fixture = TraceRetentionFixture::new()?;

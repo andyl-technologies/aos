@@ -489,7 +489,12 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
             }
             launch = launch.with_campaign_marker_parking();
         }
-        if campaign_marker_parking || config.rr_control_boundary_trace {
+        // Reserve the existing fixed trace ceiling before guarded admission.
+        // Only the explicit diagnostic opt-in reaches the plugin child.
+        let control_callback_witness = std::env::var_os("CRUCIBLE_CONTROL_CALLBACK_WITNESS")
+            .as_deref()
+            == Some(std::ffi::OsStr::new("1"));
+        if campaign_marker_parking || config.rr_control_boundary_trace || control_callback_witness {
             launch = launch.with_rr_control_boundary_trace();
         }
         if let Some(capabilities) = source
