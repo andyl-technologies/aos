@@ -44,42 +44,74 @@ let
     (record "aos-boot-identity" ../../pkgs/security/_aos-boot-identity)
     (record "aos-verity-root-guard" ../../pkgs/security/_aos-verity-root-guard)
   ];
-  evaluate = stage: zfs: verified:
+  evaluateWithControlPlane = controlPlane: stage: zfs: verified:
     lib.evalPackageModules {
       scope = ["boot" stage];
-      inherit packageModules;
-      operatorModules = [
-        {
-          aos.boot = {
-            inherit stage;
-            substrateServices = {
-              enable = true;
-              handoffEnabled = true;
-              zfsEnabled = zfs;
-              zfsPackagePath = toString (payload "zfs");
+      packageModules = packageModules ++ lib.optional (controlPlane != null) (record "control-plane" ../../pkgs/tools/aos/_abilities/control-plane);
+      operatorModules =
+        [
+          {
+            aos.boot = {
+              inherit stage;
+              substrateServices = {
+                enable = true;
+                handoffEnabled = true;
+                zfsEnabled = zfs;
+                zfsPackagePath = toString (payload "zfs");
+              };
+              storageServices.zfs = {
+                enable = zfs;
+                packagePath = toString (payload "zfs");
+              };
             };
-            storageServices.zfs = {
-              enable = zfs;
-              packagePath = toString (payload "zfs");
+            aos.security = {
+              bootIdentityServices.enable = verified;
+              verityRootVerification.enable = verified;
             };
+            aos.abilities.serviceManagement.operations.realize.handler.program = artifactLib.value (artifact "service-handler");
+            aos.abilities.network.operations.configure.handler.program = artifactLib.value (artifact "network-handler");
+          }
+        ]
+        ++ lib.optional (controlPlane != null) {
+          options.aos.packageRuntime.configurationEvaluation.nixStoreExecutable = lib.mkOption {
+            type = lib.types.str;
+            default = "${(artifact "nix").path}/bin/nix-store";
           };
-          aos.security = {
-            bootIdentityServices.enable = verified;
-            verityRootVerification.enable = verified;
-          };
-          aos.abilities.serviceManagement.operations.realize.handler.program = artifactLib.value (artifact "service-handler");
-          aos.abilities.network.operations.configure.handler.program = artifactLib.value (artifact "network-handler");
-        }
-      ];
+          config.aos.config.unitGraph.enable = controlPlane;
+        };
     };
+  evaluate = evaluateWithControlPlane null;
+  canonicalHost = evaluateWithControlPlane true "host" false true;
+  disabledControlPlaneHost = evaluateWithControlPlane false "host" false true;
+  hostActivators = evaluation:
+    lib.filterAttrs (
+      _: service:
+        service.enable
+        && service.lifecycle != null
+        && builtins.any (command: command.executable.arguments != [] && builtins.head command.executable.arguments == "apply-deployment") service.lifecycle.start
+    )
+    evaluation.config.aos.services;
   initrd = evaluate "initrd" false true;
   host = evaluate "host" false true;
   zfs = evaluate "initrd" true true;
   kernel = evaluate "initrd" false false;
   controller = initrd.config.aos.services."boot-preparations.aos-ability-initrd-controller";
   receiver = host.config.aos.services."boot-preparations.aos-ability-host-receiver";
-  bootServices = builtins.attrValues initrd.config.aos.services;
+  bootServices = builtins.filter (service: service.enable) (builtins.attrValues initrd.config.aos.services);
 in {
+  canonical_host_has_one_activator = assert builtins.attrNames (hostActivators canonicalHost) == ["control-plane.aos-activate"];
+  assert canonicalHost.config.aos.boot.hostActivatorService == "control-plane.aos-activate";
+  assert canonicalHost.config.aos.services."control-plane.aos-activate".resources.memory_max_bytes.value == 2147483648;
+  assert builtins.elem "aos-registry-sync.service" canonicalHost.config.aos.services."control-plane.aos-activate".dependencies.after;
+  assert builtins.elem "aos-ability-host-receiver.service" canonicalHost.config.aos.services."control-plane.aos-activate".dependencies.requires;
+  assert builtins.elem "local-fs.target" canonicalHost.config.aos.services."control-plane.aos-activate".dependencies.requires;
+  assert builtins.elem "multi-user.target" canonicalHost.config.aos.services."control-plane.aos-activate".dependencies.before;
+  assert builtins.elem "multi-user.target" canonicalHost.config.aos.services."control-plane.aos-activate".dependencies.required_by; true;
+  standalone_host_has_one_activator = assert builtins.attrNames (hostActivators host) == ["boot-preparations.aos-ability-host-controller"];
+  assert host.config.aos.boot.hostActivatorService == "boot-preparations.aos-ability-host-controller";
+  assert initrd.config.aos.boot.hostActivatorService == null; true;
+  disabled_control_plane_preserves_boot_activation = assert builtins.attrNames (hostActivators disabledControlPlaneHost) == ["boot-preparations.aos-ability-host-controller"];
+  assert disabledControlPlaneHost.config.aos.boot.hostActivatorService == host.config.aos.boot.hostActivatorService; true;
   transaction_storage_requires_only_enabled_identity_guard = let
     storage = evaluation: evaluation.config.aos.services."boot-storage.aos-boot-transaction-storage";
     guard = "aos-boot-identity-guard.service";

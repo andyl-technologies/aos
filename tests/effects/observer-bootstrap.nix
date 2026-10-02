@@ -53,42 +53,66 @@ let
       daemon = (service "example") // {activationOwner = "ability";};
     };
   };
-  evaluated = lib.evalModules {
-    inherit lib;
-    specialArgs.dependencies = {
-      coreutils = toString ((import ./_fixture-payload.nix) "coreutils");
-      bash = toString ((import ./_fixture-payload.nix) "bash");
+  evaluate = controllerKey:
+    lib.evalModules {
+      inherit lib;
+      specialArgs.dependencies = {
+        coreutils = toString ((import ./_fixture-payload.nix) "coreutils");
+        bash = toString ((import ./_fixture-payload.nix) "bash");
+      };
+      modules = [
+        ../../lib/effects/module.nix
+        ../../pkgs/system/_service-management/module.nix
+        ../../pkgs/system/_aos-host-policy/observer-bootstrap.nix
+        ({lib, ...}: {
+          options.aos.boot = {
+            stage = lib.mkOption {
+              type = lib.types.str;
+              default = "host";
+            };
+            hostActivatorService = lib.mkOption {
+              type = lib.types.nullOr lib.types.str;
+              default = controllerKey;
+            };
+            substrateServices.handoffEnabled = lib.mkOption {
+              type = lib.types.bool;
+              default = controllerKey != null;
+            };
+          };
+          options.aos.abilityCrucible = lib.mkOption {type = lib.types.attrs;};
+          options.aos.tests.executionObserver = lib.mkOption {type = lib.types.attrs;};
+          config.aos = builtins.removeAttrs config.aos ["services"];
+        })
+        {
+          aos.services =
+            {
+              "ability-crucible.adapter" = {
+                enable = false;
+                activationOwner = "manager";
+                service = "aos-ability-crucible";
+              };
+              "boundary-observer.controller" = {
+                enable = false;
+                activationOwner = "manager";
+                service = "aos-ability-boundary-controller";
+              };
+            }
+            // lib.optionalAttrs (controllerKey != null) {
+              ${controllerKey} =
+                (service (
+                  if controllerKey == "control-plane.aos-activate"
+                  then "aos-activate"
+                  else "aos-ability-host-controller"
+                ))
+                // {activationOwner = "image";};
+            };
+        }
+      ];
     };
-    modules = [
-      ../../lib/effects/module.nix
-      ../../pkgs/system/_service-management/module.nix
-      ../../pkgs/system/_aos-host-policy/observer-bootstrap.nix
-      ({lib, ...}: {
-        options.aos.abilityCrucible = lib.mkOption {type = lib.types.attrs;};
-        options.aos.tests.executionObserver = lib.mkOption {type = lib.types.attrs;};
-        config.aos = builtins.removeAttrs config.aos ["services"];
-      })
-      {
-        aos.services = {
-          "ability-crucible.adapter" = {
-            enable = false;
-            activationOwner = "manager";
-            service = "aos-ability-crucible";
-          };
-          "boundary-observer.controller" = {
-            enable = false;
-            activationOwner = "manager";
-            service = "aos-ability-boundary-controller";
-          };
-          controller = {
-            enable = false;
-            activationOwner = "image";
-            service = "aos-ability-host-controller";
-          };
-        };
-      }
-    ];
-  };
+  evaluated = evaluate "boot-preparations.aos-ability-host-controller";
+  canonical = evaluate "control-plane.aos-activate";
+  custom = evaluate "custom.activator";
+  absent = evaluate null;
   projected = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
     config = evaluated.config;
     inherit lib;
@@ -100,4 +124,12 @@ in
   assert projected."observer.bootstrap".isolation.filesystem == "host";
   assert lib.sort builtins.lessThan evaluated.config.aos.services."boundary-observer.controller".dependencies.requires == ["aos-ability-boundary-controller.socket" "aos-ability-crucible.service" "aos-native-observer-bootstrap.service"];
   assert evaluated.config.aos.services."boot-preparations.aos-ability-host-controller".dependencies.requires == ["aos-ability-crucible.service" "aos-ability-boundary-controller.service"];
+  assert canonical.config.aos.services."control-plane.aos-activate".dependencies.requires == ["aos-ability-crucible.service" "aos-ability-boundary-controller.service"];
+  assert custom.config.aos.services."custom.activator".dependencies.requires == ["aos-ability-crucible.service" "aos-ability-boundary-controller.service"];
+  assert !(custom.config.aos.services ? "control-plane.aos-activate");
+  assert !(custom.config.aos.services ? "boot-preparations.aos-ability-host-controller");
+  assert !(canonical.config.aos.services ? "boot-preparations.aos-ability-host-controller");
+  assert !(evaluated.config.aos.services ? "control-plane.aos-activate");
+  assert !(absent.config.aos.services ? "control-plane.aos-activate");
+  assert !(absent.config.aos.services ? "boot-preparations.aos-ability-host-controller");
   assert !(projected ? daemon); true
