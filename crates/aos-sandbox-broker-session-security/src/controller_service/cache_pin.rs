@@ -57,6 +57,10 @@ impl ProductionEffectExecutor {
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<EffectReceipt, EffectFailure> {
+        if self.cache_resident_usage.started() {
+            self.apply_resident_cache_pin(operation_id, consumer, journal, request)?;
+            return cache_pin_receipt(operation_id);
+        }
         self.ensure_cache_physical_owner()?;
         self.recover_pending_cache_pin(operation_id)?;
 
@@ -161,6 +165,9 @@ impl ProductionEffectExecutor {
         &mut self,
         operation_id: OperationId,
     ) -> Result<(), EffectFailure> {
+        if self.cache_resident_usage.started() {
+            return cache_custody::require_absent_legacy_custody(&self.pending_cache_pin);
+        }
         recover_pending_cache_custody(
             &mut self.pending_cache_pin,
             &mut self.cache_inventory,
@@ -172,7 +179,7 @@ impl ProductionEffectExecutor {
     }
 }
 
-fn controller_cache_source_limits() -> CacheCompiledSourceLimitsV1 {
+pub(super) fn controller_cache_source_limits() -> CacheCompiledSourceLimitsV1 {
     const MIB: u64 = 1024 * 1024;
 
     // The controller runs in a 512-MiB cgroup. The worst modeled projection

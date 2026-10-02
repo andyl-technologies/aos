@@ -35,7 +35,9 @@ use super::{
 };
 
 mod retained;
-pub(crate) use retained::{CacheMutationGateV1, HeldCacheMutationGateV1};
+pub(crate) use retained::{
+    BorrowedCacheMutationGateV1, CacheMutationGateV1, HeldCacheMutationGateV1,
+};
 
 pub(crate) const NAME: &str = "policy-hold.journal";
 const GENESIS_KEY: &[u8] = b"\0aos-cache-policy-hold-genesis-v1\0";

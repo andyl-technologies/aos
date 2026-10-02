@@ -41,6 +41,10 @@ impl ProductionEffectExecutor {
         journal: &Journal,
         request: &DormantSandboxRequestKindV1,
     ) -> Result<EffectReceipt, EffectFailure> {
+        if self.cache_resident_usage.started() {
+            self.apply_resident_cache_unpin(operation_id, consumer, journal, request)?;
+            return cache_unpin_receipt(operation_id);
+        }
         self.ensure_cache_physical_owner()?;
         self.recover_pending_cache_unpin(operation_id)?;
 
@@ -104,6 +108,9 @@ impl ProductionEffectExecutor {
         &mut self,
         operation_id: OperationId,
     ) -> Result<(), EffectFailure> {
+        if self.cache_resident_usage.started() {
+            return super::cache_pin::cache_custody::require_absent_legacy_custody(&self.pending_cache_unpin);
+        }
         recover_pending_cache_custody(
             &mut self.pending_cache_unpin,
             &mut self.cache_inventory,

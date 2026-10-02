@@ -172,6 +172,7 @@ mod publisher_credential;
 mod publisher_ingress;
 mod publisher_policy_source;
 mod cache_usage;
+mod cache_mutation;
 mod storage_snapshot;
 mod source_successor_issuance;
 mod view_mutations;
@@ -3406,6 +3407,7 @@ struct ProductionEffectExecutor {
     source_domains: ProtectedSourceDomainJournalOwnerV1,
     cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
     cache_resident_usage: aos_sandbox::cache_residency::CacheResidentInitializationV1,
+    cache_mutation: cache_mutation::ControllerCacheMutationV1,
     cache_physical: Option<DormantCacheOwnerV1>,
     cache_physical_limits: Option<CacheOwnerLimitsV1>,
     pending_cache_pin: Option<cache_pin::PendingControllerCachePinV1>,
@@ -3511,6 +3513,7 @@ impl ProductionEffectExecutor {
             source_domains,
             cache_inventory: None,
             cache_resident_usage: aos_sandbox::cache_residency::CacheResidentInitializationV1::new(),
+            cache_mutation: cache_mutation::ControllerCacheMutationV1::default(),
             cache_physical: None,
             cache_physical_limits: None,
             pending_cache_pin: None,
@@ -4638,6 +4641,14 @@ impl ProductionEffectExecutor {
     }
 
     fn ensure_cache_physical_owner(&mut self) -> Result<(), EffectFailure> {
+        if self.cache_resident_usage.started() {
+            let protected = self.cache_inventory.as_mut().ok_or_else(|| {
+                EffectFailure::Permanent("resident protected Cache inventory is unavailable".to_owned())
+            })?;
+            return self.cache_resident_usage.prepare_existing_physical_owner(
+                protected, &mut self.cache_physical, self.node, CACHE_OWNER_MEMORY_BYTES,
+            ).map_err(|_| self.resident_cache_failure());
+        }
         self.ensure_cache_inventory_owner()?;
         let quotas = self
             .cache_inventory
@@ -5327,6 +5338,7 @@ impl SingleNodeEffectExecutor for ProductionEffectExecutor {
     fn recheck_existing_cache_project_usage_v1(
         &mut self,
     ) -> Result<(), aos_sandbox::cache_residency::CacheResidentUnavailableV1> {
+        self.cache_mutation.require_completed_or_empty()?;
         let owner = self.cache_inventory.as_mut()
             .ok_or(aos_sandbox::cache_residency::CacheResidentUnavailableV1)?;
         self.cache_resident_usage.recheck(owner)

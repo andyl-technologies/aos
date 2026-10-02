@@ -59,6 +59,8 @@ mod root_read_only;
 mod writer_readback;
 
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
+#[cfg(target_os = "linux")]
+use pin_lookup::ResidentCachePinMutationV1;
 pub use initialization::{CacheResidentInitializationV1, CacheResidentUnavailableV1};
 pub use project_usage::{
     CacheProjectUsageLoanV1, CacheProjectUsageObservationErrorV1, CacheProjectUsagePartitionV1,
@@ -1399,13 +1401,9 @@ impl CacheResidencyProtectedOwnerV1 {
                         continue;
                     }
                     for candidate in payload.pins {
-                        if candidate.partition != partition
-                            || &candidate.object != object
-                            || candidate.project != project
-                            || candidate.view != view
-                            || candidate.attachment != attachment
-                            || candidate.kind != super::CachePinKindV1::LogicalLease
-                        {
+                        if !pin_lookup::logical_pin_matches_consumer(
+                            &candidate, partition, object, project, view, attachment,
+                        ) {
                             continue;
                         }
                         if pin.replace(candidate).is_some() {

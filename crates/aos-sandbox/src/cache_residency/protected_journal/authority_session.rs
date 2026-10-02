@@ -150,7 +150,7 @@ pub(in crate::cache_residency) struct RetainedCacheAuthoritySessionV1<
     'clock,
 > {
     authority: &'claim mut ProtectedJournalAuthority<'journal>,
-    gate: &'gate mut HeldCacheMutationGateV1,
+    gate: CacheMutationGateV1<'gate>,
     clock: &'clock CacheClockWriterReadbackGuard<'clock>,
     source: &'claim ProtectedCacheResidencyReplayAuthorityV1,
     partitions: BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>,
@@ -159,6 +159,110 @@ pub(in crate::cache_residency) struct RetainedCacheAuthoritySessionV1<
 }
 
 impl RetainedCacheAuthoritySessionV1<'_, '_, '_, '_> {
+    /// Samples only the same initialization-owned protected clock.
+    pub(in crate::cache_residency) fn current_unix_seconds(
+        &self,
+    ) -> Result<u64, CacheResidencyProtectedJournalErrorV1> {
+        self.clock.current_unix_seconds()
+    }
+
+    /// Issues only the scope derived from this actual acquisition proof.
+    ///
+    /// # Errors
+    /// Keeps the first append result and exact original deadline on failure.
+    pub(in crate::cache_residency) fn issue_pin_acquire(
+        &mut self,
+        acquisition: &super::super::ValidatedPublicLogicalPinAcquisitionV1<'_, '_, '_, '_>,
+        pin: super::super::CachePinId,
+        progress: &mut ResidentPinAuthorityAppendV1,
+        budget: &mut super::ResidentDomainPayloadBudgetV1,
+    ) -> Result<(Vec<u8>, u64), CacheResidencyProtectedJournalErrorV1> {
+        if progress.valid_until.is_some() || progress.record_key.is_some() {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+        let valid_until = self.clock.current_unix_seconds()?
+            .checked_add(super::provisioning::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS)
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        progress.valid_until = Some(valid_until);
+        let scope = acquisition.authority_scope(pin, valid_until)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        progress.record_key = Some(super::provisioning::acquire_record_key(acquisition.partition()));
+        self.finish_pin_issuance(
+            CacheAuthorityPurposeV1::PinAcquire,
+            scope,
+            b"aos.sandbox.cache-residency.logical-pin-acquire-authority.v1\0",
+            progress,
+            budget,
+        )?;
+        let key = progress.record_key.as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        Ok((key.clone(), valid_until))
+    }
+
+    /// Issues only the scope derived from an exact retained logical pin.
+    ///
+    /// # Errors
+    /// Keeps the first append result and original deadline on failed reuse.
+    pub(in crate::cache_residency) fn issue_pin_drain(
+        &mut self,
+        pin: &super::super::CachePinV1,
+        progress: &mut ResidentPinAuthorityAppendV1,
+        budget: &mut super::ResidentDomainPayloadBudgetV1,
+    ) -> Result<Vec<u8>, CacheResidencyProtectedJournalErrorV1> {
+        if progress.valid_until.is_some() || progress.record_key.is_some() {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+        let valid_until = self.clock.current_unix_seconds()?
+            .checked_add(super::provisioning::LOGICAL_PIN_DRAIN_LIFETIME_SECONDS)
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        progress.valid_until = Some(valid_until);
+        let scope = pin.logical_drain_scope(valid_until)
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
+        progress.record_key = Some(super::provisioning::drain_record_key(pin.partition));
+        self.finish_pin_issuance(
+            CacheAuthorityPurposeV1::PinDrain,
+            scope,
+            b"aos.sandbox.cache-residency.logical-pin-drain-authority.v1\0",
+            progress,
+            budget,
+        )?;
+        progress.record_key.clone().ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)
+    }
+
+    fn finish_pin_issuance(
+        &mut self,
+        purpose: CacheAuthorityPurposeV1,
+        scope: CacheAuthorityScopeV1,
+        transaction_domain: &[u8],
+        progress: &mut ResidentPinAuthorityAppendV1,
+        budget: &mut super::ResidentDomainPayloadBudgetV1,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        super::provisioning::append_resident_pin_authority(
+            self.authority,
+            self.source.owner_scope,
+            self.source.maximum_record_bytes,
+            purpose,
+            scope,
+            transaction_domain,
+            &mut self.gate,
+            progress,
+            budget,
+        )?;
+        if progress.unchanged {
+            return self.while_current_records(&[], |_, _, _, _, _| Ok(()));
+        }
+        let transaction = progress.transaction.as_ref()
+            .ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let Some(Ok(result)) = progress.commit.as_ref() else {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        };
+        if let Err(cause) = self.reverify_purpose_own_successor(transaction, result, purpose) {
+            progress.postcheck.get_or_insert(cause);
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+        Ok(())
+    }
+
     // No issuer calls this yet. Its only mutation is replacing a nonauthorizing
     // exact snapshot after the REAL engine sealed this original own append.
     // It grants neither a Root decision nor per-request authority beyond V1.
@@ -167,11 +271,20 @@ impl RetainedCacheAuthoritySessionV1<'_, '_, '_, '_> {
         transaction: &crate::journal::JournalTransaction,
         result: &crate::journal::CommitResult,
     ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-        self.authority.require_retained_cache_own_append_v1(
+        self.reverify_purpose_own_successor(transaction, result, CacheAuthorityPurposeV1::Read)
+    }
+
+    fn reverify_purpose_own_successor(
+        &mut self,
+        transaction: &crate::journal::JournalTransaction,
+        result: &crate::journal::CommitResult,
+        purpose: CacheAuthorityPurposeV1,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        self.authority.require_original_cache_own_append_v1(
             &self.snapshot,
             transaction,
             result,
-            self.gate,
+            &mut self.gate,
         )?;
         self.clock.revalidate()?;
         let partitions = self
@@ -206,13 +319,11 @@ impl RetainedCacheAuthoritySessionV1<'_, '_, '_, '_> {
             {
                 return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
             }
-            // Canonical V1 Read DATA is not a genuine Root decision. This
-            // private recheck cannot issue it or widen its existing scope.
             let read = owner
-                .verify_current_record_for_purpose(CacheAuthorityPurposeV1::Read, record.key())
+                .verify_current_record_for_purpose(purpose, record.key())
                 .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
             owner
-                .validate_for_effect_at(&read, CacheAuthorityPurposeV1::Read, read.scope(), now)
+                .validate_for_effect_at(&read, purpose, read.scope(), now)
                 .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?;
             let value = record
                 .value()
@@ -241,11 +352,11 @@ impl RetainedCacheAuthoritySessionV1<'_, '_, '_, '_> {
             Vec::new(),
             now,
         )?;
-        self.authority.require_retained_cache_own_append_v1(
+        self.authority.require_original_cache_own_append_v1(
             &self.snapshot,
             transaction,
             result,
-            self.gate,
+            &mut self.gate,
         )?;
         self.clock.revalidate()?;
         self.snapshot = self.authority.snapshot()?;
@@ -268,9 +379,29 @@ impl RetainedCacheAuthoritySessionV1<'_, '_, '_, '_> {
             &dyn Fn() -> Result<u64, CacheResidencyProtectedJournalErrorV1>,
         ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
     ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        self.while_current_records_with_gate(requests, |owner, capabilities, now, validator, refresh, _| {
+            action(owner, capabilities, now, validator, refresh)
+        })
+    }
+
+    /// Checks requested records while borrowing the same original gate.
+    ///
+    /// The resident caller parks its full action result before the final checks.
+    pub(in crate::cache_residency) fn while_current_records_with_gate<R>(
+        &mut self,
+        requests: &[(CacheAuthorityPurposeV1, Vec<u8>)],
+        action: impl FnOnce(
+            &CacheAuthorityOwner<'_, '_>,
+            &[super::super::VerifiedCacheCapabilityV1],
+            u64,
+            CacheResidencyReplayValidatorV1,
+            &dyn Fn() -> Result<u64, CacheResidencyProtectedJournalErrorV1>,
+            &mut CacheMutationGateV1<'_>,
+        ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
         self.authority
             .validate_snapshot_for_effect(&self.snapshot)?;
-        self.authority.require_retained_cache_gate_v1(self.gate)?;
+        self.authority.require_original_cache_gate_v1(&mut self.gate)?;
         let now = self.clock.current_unix_seconds()?;
         let owner = CacheAuthorityOwner::new(
             self.authority,
@@ -288,17 +419,19 @@ impl RetainedCacheAuthoritySessionV1<'_, '_, '_, '_> {
             capabilities,
             now,
         )?;
+        let clock = self.clock;
         let refresh =
-            || validate_current(&owner, requests, &view, self.clock.current_unix_seconds()?);
+            || validate_current(&owner, requests, &view, clock.current_unix_seconds()?);
         let result = action(
             &owner,
             &view.capabilities,
             now,
             view.validator.clone(),
             &refresh,
+            &mut self.gate,
         );
         refresh()?;
-        self.authority.require_retained_cache_gate_v1(self.gate)?;
+        self.authority.require_original_cache_gate_v1(&mut self.gate)?;
         result
     }
 }
@@ -341,7 +474,7 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
             .clone();
         let mut session = RetainedCacheAuthoritySessionV1 {
             authority: &mut authority,
-            gate: &mut gate,
+            gate: CacheMutationGateV1::Retained(&mut gate),
             clock,
             source: self,
             partitions,
@@ -351,6 +484,51 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
         let result = action(&mut session, state);
         // Return/unwind releases this cut. No positive post-Root caller is
         // exposed: such a caller first needs actual retained-owner disposition.
+        session.while_current_records(&[], |_, _, _, _, _| Ok(()))?;
+        result
+    }
+
+    /// Loans the existing resident interlock without releasing or reopening it.
+    ///
+    /// The action parks its complete result in the caller's resident progress
+    /// before this method performs its final authority and clock checks.
+    ///
+    /// # Errors
+    /// Refuses foreign clocks, changed original writers, active holds, pending
+    /// policy state or expired authority. Failure is never release permission.
+    pub(in crate::cache_residency) fn with_borrowed_mutable_authority_v1<R>(
+        &self,
+        state: &mut Journal,
+        hold: &mut Journal,
+        clock: &CacheClockWriterReadbackGuard<'_>,
+        action: impl for<'session, 'claim, 'journal, 'gate, 'clock> FnOnce(
+            &'session mut RetainedCacheAuthoritySessionV1<'claim, 'journal, 'gate, 'clock>,
+            &'session mut Journal,
+        ) -> Result<R, CacheResidencyProtectedJournalErrorV1>,
+    ) -> Result<R, CacheResidencyProtectedJournalErrorV1> {
+        clock.require_time_authority(&self.current_time)?;
+        let mut journal = self.journal.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        clock.require_cache_targets(state, &journal)?;
+        let mut gate = Journal::borrow_cache_mutation_gate_v1(state, &journal, hold)?;
+        let mut authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+        let snapshot = authority.snapshot()?;
+        let original_records = authority.records()?
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        let partitions = self.partitions.lock()
+            .map_err(|_| ProtectedDomainJournalErrorV1::NonCanonicalRecord)?
+            .clone();
+        let mut session = RetainedCacheAuthoritySessionV1 {
+            authority: &mut authority,
+            gate: gate.as_gate(),
+            clock,
+            source: self,
+            partitions,
+            snapshot,
+            original_records,
+        };
+        let result = action(&mut session, state);
         session.while_current_records(&[], |_, _, _, _, _| Ok(()))?;
         result
     }
@@ -433,14 +611,14 @@ mod tests {
                 )],
             )
             .unwrap();
-            let preflight = session.authority.preflight_with_retained_cache_gate_v1(
+            let preflight = session.authority.preflight_with_cache_gate(
                 std::slice::from_ref(&transaction),
-                session.gate,
+                session.gate.reborrow(),
             )?;
-            let result = session.authority.commit_with_retained_cache_gate_v1(
+            let result = session.authority.commit_with_original_cache_gate_v1(
                 &preflight,
                 &transaction,
-                session.gate,
+                session.gate.reborrow(),
             )?;
             assert!(
                 session
@@ -482,14 +660,14 @@ mod tests {
                     )],
                 )
                 .unwrap();
-                let preflight = session.authority.preflight_with_retained_cache_gate_v1(
+                let preflight = session.authority.preflight_with_cache_gate(
                     std::slice::from_ref(&transaction),
-                    session.gate,
+                    session.gate.reborrow(),
                 )?;
-                let result = session.authority.commit_with_retained_cache_gate_v1(
+                let result = session.authority.commit_with_original_cache_gate_v1(
                     &preflight,
                     &transaction,
-                    session.gate,
+                    session.gate.reborrow(),
                 )?;
                 let verifier = CacheAuthorityOwner::new(
                     session.authority,
@@ -538,7 +716,7 @@ mod tests {
                     scope,
                     key,
                     b"component-test-only\0",
-                    CacheMutationGateV1::Retained(session.gate),
+                    session.gate.reborrow(),
                 )?;
                 assert_eq!(session.authority.snapshot()?.sequence(), sequence);
                 Ok(())

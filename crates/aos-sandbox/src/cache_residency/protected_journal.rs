@@ -27,6 +27,9 @@ use crate::lifecycle::protected_journal_adapter::{
     RetainedCommitFailureV1, ValidatedDomainPostcommitV1, decode_reducer_payload_with_validator,
     encode_reducer_payload_with_validator,
 };
+pub(in crate::cache_residency) use crate::lifecycle::protected_journal_adapter::{
+    ResidentDomainCommitFailureV1, ResidentDomainPayloadBudgetV1,
+};
 
 use super::{
     CacheAtomicObjectPayloadV1, CacheAuthorityOwner, CacheAuthorityPurposeV1,
@@ -43,6 +46,7 @@ mod pin_effect;
 mod provisioning;
 pub(in crate::cache_residency) use authority_session::RetainedCacheAuthoritySessionV1;
 pub(crate) use provisioning::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS;
+pub(in crate::cache_residency) use provisioning::ResidentPinAuthorityAppendV1;
 
 use pin_effect::{
     CurrentPhysicalPinActionV1, CurrentPhysicalPinEffectV1, current_physical_pin_effect,
@@ -1211,7 +1215,7 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
         )
     }
 
-    fn plan_with_cache_gate(
+    pub(in crate::cache_residency) fn plan_with_cache_gate(
         &self,
         transaction_id: [u8; 16],
         kind: CacheResidencyTransactionKindV1,
@@ -1230,8 +1234,27 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
                 self.inner
                     .plan_with_retained_cache_gate_v1(transaction_id, successors, gate)?
             }
+            resident @ CacheMutationGateV1::Resident(_, _) => {
+                self.inner.plan_with_cache_gate(transaction_id, successors, resident)?
+            }
         };
         Ok(PreparedCacheResidencyTransactionV1 { kind, inner })
+    }
+
+    /// Bounds retained canonical payloads before the same planner copies them.
+    ///
+    /// # Errors
+    /// Returns a bound refusal or the existing canonical planner error.
+    pub(in crate::cache_residency) fn plan_resident_with_cache_gate(
+        &self,
+        transaction_id: [u8; 16],
+        kind: CacheResidencyTransactionKindV1,
+        successors: Vec<CacheResidencyProtectedJournalEnvelopeV1>,
+        gate: CacheMutationGateV1<'_>,
+        budget: &mut ResidentDomainPayloadBudgetV1,
+    ) -> Result<PreparedCacheResidencyTransactionV1, CacheResidencyProtectedJournalErrorV1> {
+        self.inner.reserve_resident_plan_payload(&successors, budget)?;
+        self.plan_with_cache_gate(transaction_id, kind, successors, gate)
     }
 
     /// Commits one cache transition and performs exact readback.
@@ -1259,13 +1282,28 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
         prepared: PreparedCacheResidencyTransactionV1,
         gate: &mut HeldCacheMutationGateV1,
     ) -> Result<CacheResidencyCommitOutcomeV1, CacheRetainedCommitFailureV1> {
+        self.commit_strict_with_original_cache_gate_v1(
+            prepared,
+            CacheMutationGateV1::Retained(gate),
+        )
+    }
+
+    /// Retains the complete commit result under the borrowed original interlock.
+    ///
+    /// # Errors
+    /// Keeps exact Prepared or Pending and the original typed failure cause.
+    pub(in crate::cache_residency) fn commit_strict_with_original_cache_gate_v1(
+        &mut self,
+        prepared: PreparedCacheResidencyTransactionV1,
+        gate: CacheMutationGateV1<'_>,
+    ) -> Result<CacheResidencyCommitOutcomeV1, CacheRetainedCommitFailureV1> {
         if let Err(cause) = self.replay() {
             return Err(RetainedCommitFailureV1::BeforeJournalAppend { prepared, cause });
         }
         let kind = prepared.kind;
         match self
             .inner
-            .commit_strict_with_retained_cache_gate_v1(prepared.inner, gate)
+            .commit_strict_with_original_cache_gate_v1(prepared.inner, gate)
         {
             Ok(outcome) => Ok(self.wrap_commit_outcome(kind, outcome)),
             Err(RetainedCommitFailureV1::BeforeJournalAppend {
@@ -1294,6 +1332,17 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
                 })
             }
         }
+    }
+
+    /// Appends the exact five-alias plan while its Prepared stays parked.
+    pub(in crate::cache_residency) fn commit_resident_prepared(
+        &mut self,
+        prepared: &PreparedCacheResidencyTransactionV1,
+        gate: CacheMutationGateV1<'_>,
+    ) -> Result<CacheResidencyCommitOutcomeV1, ResidentDomainCommitFailureV1> {
+        self.replay().map_err(ResidentDomainCommitFailureV1::Before)?;
+        let applied = self.inner.commit_resident_prepared(&prepared.inner, gate)?;
+        Ok(self.wrap_commit_outcome(prepared.kind, DomainCommitOutcomeV1::Applied(applied)))
     }
 
     fn wrap_commit_outcome(
@@ -1332,6 +1381,15 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
     /// Resolves an exact ambiguous cache commit after protected reopen.
     ///
     pub fn recover(&self, pending: CacheResidencyOutcomeUnknownV1) -> CacheResidencyRecoveryV1 {
+        self.recover_with_cache_gate(pending, CacheMutationGateV1::Ordinary)
+    }
+
+    /// Uses the sole recovery classifier without refreshing a resident cut.
+    pub(in crate::cache_residency) fn recover_with_cache_gate(
+        &self,
+        pending: CacheResidencyOutcomeUnknownV1,
+        gate: CacheMutationGateV1<'_>,
+    ) -> CacheResidencyRecoveryV1 {
         if let Err(cause) = self.replay() {
             return CacheResidencyRecoveryV1::Indeterminate { pending, cause };
         }
@@ -1345,7 +1403,7 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
             }
             CacheResidencyOutcomeUnknownStateV1::Commit(inner) => inner,
         };
-        let recovery = match self.inner.recover_retaining(inner) {
+        let recovery = match self.inner.recover_retaining_with_cache_gate(inner, gate) {
             DomainRetainedRecoveryV1::Outcome(recovery) => recovery,
             DomainRetainedRecoveryV1::Retryable { pending, error } => {
                 return CacheResidencyRecoveryV1::Indeterminate {
@@ -1398,6 +1456,14 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
         &self,
         transaction_id: [u8; 16],
     ) -> Result<CacheResidencyColdRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
+        self.recover_current_transaction_with_payload_budget(transaction_id, None)
+    }
+
+    pub(in crate::cache_residency) fn recover_current_transaction_with_payload_budget(
+        &self,
+        transaction_id: [u8; 16],
+        mut budget: Option<&mut ResidentDomainPayloadBudgetV1>,
+    ) -> Result<CacheResidencyColdRecoveryV1, CacheResidencyProtectedJournalErrorV1> {
         let projection = self.replay()?;
         if let Some(settlement) = projection.records().iter().find(|record| {
             record.key().kind() == CacheResidencyProtectedRecordKindV1::EffectObservation
@@ -1409,7 +1475,9 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
             let settlement =
                 decode_cache_effect_observation(settlement.key().identity(), body.body())
                     .ok_or(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            let capability = match self.inner.recover_current_postcommit(transaction_id)? {
+            let capability = match self.inner.recover_current_postcommit_with_payload_budget(
+                transaction_id, budget.as_deref_mut(),
+            )? {
                 Some(ReplayedDomainPostcommitV1::Prepared(capability))
                 | Some(ReplayedDomainPostcommitV1::Terminal(capability)) => capability,
                 None => return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord),
@@ -1426,7 +1494,7 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
             return Ok(CacheResidencyColdRecoveryV1::StateOnly);
         }
         Ok(
-            match self.inner.recover_current_postcommit(transaction_id)? {
+            match self.inner.recover_current_postcommit_with_payload_budget(transaction_id, budget)? {
                 Some(ReplayedDomainPostcommitV1::Prepared(capability)) => {
                     CacheResidencyColdRecoveryV1::ObservePending(CacheResidencyColdObservationV1 {
                         inner: capability,
@@ -1582,6 +1650,25 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
 }
 
 impl CacheResidencyPostcommitCapabilityV1 {
+    /// Revalidates while keeping the original composite token resident.
+    pub(in crate::cache_residency) fn validate_borrowed<'current>(
+        &'current self,
+        authority: &'current CacheResidencyProtectedJournalV1<'_>,
+    ) -> Result<ValidatedCacheResidencyPostcommitV1<'current>, CacheResidencyProtectedJournalErrorV1> {
+        let projection = authority.replay()?;
+        let inner = self.inner.validate_borrowed(&authority.inner)?;
+        let records = inner.records().iter()
+            .map(|record| record.envelope().clone()).collect::<Vec<_>>();
+        let current_pin_effect = current_physical_pin_effect(
+            self.kind, &records, projection.records(), &authority.validator,
+        )?;
+        Ok(ValidatedCacheResidencyPostcommitV1 {
+            kind: self.kind,
+            inner,
+            current_pin_effect,
+        })
+    }
+
     /// Consumes this capability after full authority-backed cache replay.
     ///
     /// # Errors
@@ -1616,6 +1703,22 @@ impl CacheResidencyPostcommitCapabilityV1 {
 }
 
 impl CacheResidencyColdObservationV1 {
+    /// Revalidates the same cold token without consuming its resident custody.
+    pub(in crate::cache_residency) fn validate_borrowed<'current>(
+        &'current self,
+        authority: &'current CacheResidencyProtectedJournalV1<'_>,
+    ) -> Result<ValidatedCacheResidencyPostcommitV1<'current>, CacheResidencyProtectedJournalErrorV1> {
+        let projection = authority.replay()?;
+        let inner = self.inner.validate_borrowed(&authority.inner)?;
+        let records = inner.records().iter()
+            .map(|record| record.envelope().clone()).collect::<Vec<_>>();
+        let kind = classify_replayed_cache_transaction(&records)?;
+        let current_pin_effect = current_physical_pin_effect(
+            kind, &records, projection.records(), &authority.validator,
+        )?;
+        Ok(ValidatedCacheResidencyPostcommitV1 { kind, inner, current_pin_effect })
+    }
+
     /// Consumes cold terminal authority against the adapter that recovered it.
     ///
     /// # Errors
