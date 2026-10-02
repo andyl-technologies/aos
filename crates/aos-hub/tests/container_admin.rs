@@ -137,7 +137,6 @@ impl RunningHub {
                 expected_resource_version: 0,
                 retire_registry: false,
                 now: aos_hub_core::clock::now_unix_secs(),
-                retire_registry: false,
             })
             .await
             .unwrap()
