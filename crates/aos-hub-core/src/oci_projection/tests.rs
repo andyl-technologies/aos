@@ -148,6 +148,7 @@ fn historical_oci_observation_keeps_exact_original_incarnation_and_parser_bindin
     let raw = br#"{ "schemaVersion" : 2, "manifests" : [] }"#;
     let descriptor = descriptor(raw, MediaType::OciImageIndex);
     let request = OciProjectionLookup {
+        source: crate::oci_projection::OciProjectionSource::Managed,
         version: 1,
         deployment_id: "deployment".into(),
         protected_profile_digest: "c".repeat(64),
@@ -223,6 +224,7 @@ fn historical_oci_observation_retains_managed_effect_scope_without_renewal() {
     let raw = br#"{ "schemaVersion" : 2, "manifests" : [] }"#;
     let descriptor = descriptor(raw, MediaType::OciImageIndex);
     let admission = HybridOciManifestAdmission {
+        external: None,
         managed_effect: Some(OciDocumentEffect {
             protected_profile_digest: "c".repeat(64),
             acceptance_digest: "d".repeat(64),
@@ -238,6 +240,7 @@ fn historical_oci_observation_retains_managed_effect_scope_without_renewal() {
         sha256: descriptor.digest.encoded().into(),
     };
     let request = OciProjectionLookup {
+        source: crate::oci_projection::OciProjectionSource::Managed,
         version: 1,
         deployment_id: "deployment".into(),
         protected_profile_digest: "c".repeat(64),
