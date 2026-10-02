@@ -44,7 +44,7 @@ in
       pname = "aos-initrd-native-contract-check";
       version = "1";
       src = null;
-      buildDeps = [assembly imageContent imageMetadata pkgs.aos.testSupport pkgs.coreutils pkgs.gawk pkgs.libarchive pkgs.erofs-utils pkgs.python3 pkgs.zstd];
+      buildDeps = [assembly imageContent imageMetadata pkgs.aos.testSupport pkgs.coreutils pkgs.diffutils pkgs.gawk pkgs.libarchive pkgs.erofs-utils pkgs.python3 pkgs.zstd];
       phases = [
         {
           name = "check";
@@ -62,7 +62,7 @@ in
             # Early services must find their canonical file prerequisites in
             # the shipped content and metadata before native activation starts.
             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (path: entry: ''
-                ${pkgs.coreutils}/bin/cmp \
+                ${pkgs.diffutils}/bin/cmp \
                   ${lib.escapeShellArg "root-tree/nix/store/${baseNameOf (builtins.toString imageContent)}/${path}"} \
                   ${lib.escapeShellArg system.config.environment.etc.${path}.source}
                 ${pkgs.gawk}/bin/awk \
