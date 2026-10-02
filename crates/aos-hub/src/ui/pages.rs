@@ -52,6 +52,7 @@ pub fn instance_home(
         page_number,
         started,
         &current_session_indicator(),
+        None,
     )
 }
 
@@ -83,6 +84,7 @@ pub fn registry_home(
         manage_link,
         started,
         &current_session_indicator(),
+        None,
     )
 }
 

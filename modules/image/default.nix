@@ -279,7 +279,7 @@ in {
     budgets = {
       maxRootMiB = positiveMiB 512 "Maximum immutable root payload size.";
       maxVerityMiB = positiveMiB 16 "Maximum dm-verity tree size and capacity of each A/B hash partition.";
-      maxInitrdMiB = positiveMiB 132 "Maximum selected early-boot artifact size.";
+      maxInitrdMiB = positiveMiB 160 "Maximum selected early-boot artifact size.";
       # AArch64 carries an uncompressed kernel image and a larger runtime closure.
       maxBootExecutableMiB = positiveMiB (
         if targetPlatform.constraints.cpu == "aarch64"

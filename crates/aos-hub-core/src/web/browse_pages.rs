@@ -40,6 +40,7 @@ use crate::web::console_render::{
     Pager, SessionIndicator, StateLine, ago, live_table, page_with_session, table_raw_headers,
     urlencode,
 };
+use crate::web::host_delivery::{HostDelivery, HostRoutes};
 use crate::web::release_browse::ReleaseContext;
 use crate::web::render::{
     escape, hash_value, hash_value_link, human_size, key_fingerprint, table, trust_key_value,
@@ -312,12 +313,17 @@ fn store_path_link(setup: &RegistrySetup, path: &str) -> String {
 /// `session` renders the masthead identity (signed-in email + logout, or a
 /// log-in link), so the same builder serves the native hub's session-aware
 /// browse and the Cloudflare Worker's.
+///
+/// `host_routes`, when the route dispatcher supplied it, marks each registry
+/// that the request's host does not deliver through a ready route. The slug
+/// still links to the registry home, which explains the status.
 pub fn instance_home(
     rows: &[(RegistryRecord, Option<IndexStatus>)],
     query: Option<&str>,
     page_number: usize,
     started: Instant,
     session: &SessionIndicator,
+    host_routes: Option<&HostRoutes>,
 ) -> String {
     let needle = query.map(str::to_lowercase);
     let matches: Vec<&(RegistryRecord, Option<IndexStatus>)> = rows
@@ -348,8 +354,17 @@ pub fn instance_home(
         .slice(&matches)
         .iter()
         .map(|(reg, status)| {
+            let mut slug = format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug));
+            if let Some(badge) = host_routes
+                .map(|routes| routes.delivery(&reg.slug))
+                .and_then(HostDelivery::badge_html)
+            {
+                slug.push(' ');
+                slug.push_str(badge);
+            }
+
             vec![
-                format!("<a href=\"/{0}/\">{0}</a>", escape(&reg.slug)),
+                slug,
                 escape(
                     status
                         .as_ref()
@@ -414,6 +429,11 @@ pub fn instance_home(
 }
 
 /// Renders registry identity, client setup, and current release rollouts.
+///
+/// `delivery` is the registry's status on the request's host, when known. A
+/// registry that host does not deliver gets an explanatory notice under its
+/// identity; the rest of the page (trust anchors, releases, setup) still
+/// renders, since the control authority can always show what was published.
 #[allow(clippy::too_many_arguments)]
 pub fn registry_home(
     registry: &RegistryRecord,
@@ -425,6 +445,7 @@ pub fn registry_home(
     manage_link: bool,
     started: Instant,
     session: &SessionIndicator,
+    delivery: Option<HostDelivery>,
 ) -> String {
     let slug = &registry.slug;
     let display_name = status
@@ -434,6 +455,9 @@ pub fn registry_home(
     let _ = write!(body, "<h1>{}</h1>", escape(display_name));
     if let Some(description) = status.and_then(|status| status.description.as_deref()) {
         let _ = write!(body, "<p class=\"lede\">{}</p>", escape(description));
+    }
+    if let Some(notice) = delivery.and_then(HostDelivery::notice_html) {
+        body.push_str(notice);
     }
     if let Some(release) = context.selected() {
         let _ = write!(
@@ -3250,6 +3274,7 @@ mod tests {
             false,
             Instant::now(),
             &anon(),
+            None,
         );
         assert!(html.find("<h2>Get started").unwrap() < html.find("Signing keys").unwrap());
         assert!(!html.contains("<summary>Binary cache health and diagnostics</summary>"));
@@ -3293,6 +3318,7 @@ mod tests {
             false,
             Instant::now(),
             &anon(),
+            None,
         );
 
         assert!(html.contains(
@@ -3668,7 +3694,7 @@ mod tests {
                 content_digest: None,
             }),
         )];
-        let html = instance_home(&rows, None, 1, Instant::now(), &anon());
+        let html = instance_home(&rows, None, 1, Instant::now(), &anon(), None);
         assert!(html.contains(">slug</th>"));
         assert!(html.contains(">name</th>"));
         assert!(html.contains(">description</th>"));
@@ -3678,9 +3704,9 @@ mod tests {
         assert!(!html.contains(">outdated</span>"));
         assert!(!html.contains("<bad&state>"));
 
-        let html = instance_home(&rows, Some("fixture"), 1, Instant::now(), &anon());
+        let html = instance_home(&rows, Some("fixture"), 1, Instant::now(), &anon(), None);
         assert!(html.contains("1 of 1 registries match"));
-        let html = instance_home(&rows, Some("zzz"), 1, Instant::now(), &anon());
+        let html = instance_home(&rows, Some("zzz"), 1, Instant::now(), &anon(), None);
         assert!(html.contains("0 of 1 registries match"));
         assert!(html.contains("No registries match."));
     }

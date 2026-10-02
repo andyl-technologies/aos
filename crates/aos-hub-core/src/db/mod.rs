@@ -459,6 +459,8 @@ mod oci_gc;
 pub use oci_gc::*;
 mod ability_deployment_overlays;
 pub use ability_deployment_overlays::*;
+mod oci_namespaces;
+pub use oci_namespaces::*;
 mod placement_policy;
 mod publication_admission;
 mod registry_delete;
@@ -524,17 +526,19 @@ pub(crate) fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 2 | `release_channel_advances.sql` | Channel ledger that admits per-train channel names. |
 /// | 3 | `staged_releases.sql` | Private release drafts, retention roots, and public catalog selections. |
 /// | 4 | `oci_registry_retirement.sql` | Reviewed OCI catalog retirement flag on GC runs. |
-/// | 5 | `migration-0005-release-ability-graphs.sql` | Native release ability references. |
-/// | 6 | `migration-0006-native-documentation.sql` | Native documentation and search projections. |
-/// | 7 | `migration-0007-native-deployment-report.sql` | Native deployment reports and replay fences. |
+/// | 5 | `oci_namespace_routes.sql` | Instance-owned OCI root routes and per-registry OCI namespaces. |
+/// | 6 | `migration-0006-release-ability-graphs.sql` | Native release ability references. |
+/// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
+/// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
     include_str!("staged_releases.sql"),
     include_str!("oci_registry_retirement.sql"),
-    include_str!("migration-0005-release-ability-graphs.sql"),
-    include_str!("migration-0006-native-documentation.sql"),
-    include_str!("migration-0007-native-deployment-report.sql"),
+    include_str!("oci_namespace_routes.sql"),
+    include_str!("migration-0006-release-ability-graphs.sql"),
+    include_str!("migration-0007-native-documentation.sql"),
+    include_str!("migration-0008-native-deployment-report.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -26450,8 +26454,8 @@ requires-features = ["image-artifact-contract-v1"]
     fn fresh_schema_is_final_and_foreign_key_clean() {
         assert_eq!(
             MIGRATIONS.len(),
-            7,
-            "released migrations followed by native reference and report projections"
+            8,
+            "released migrations through OCI namespace routes followed by native reference and report projections"
         );
         let connection = Connection::open_in_memory().unwrap();
         connection
@@ -26577,9 +26581,9 @@ requires-features = ["image-artifact-contract-v1"]
 
     #[tokio::test]
     async fn native_reference_schema_upgrades_from_released_production_versions() {
-        // Released versions 2 through 4 add the channel ledger, private stages, and
-        // OCI retirement before this branch's native reference migrations.
-        for baseline_version in [1, 2, 3, 4] {
+        // Released versions 2 through 5 add the channel ledger, private stages, OCI
+        // retirement, and namespace routes before native reference migrations.
+        for baseline_version in [1, 2, 3, 4, 5] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("hub.db");
             let connection = Connection::open(&path).unwrap();

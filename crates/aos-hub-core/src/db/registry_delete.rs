@@ -4,12 +4,16 @@
 //! records only after transactional OCI GC proves every provider placement
 //! empty. Restrictive composite foreign keys encode useful live-state
 //! invariants, so retirement dismantles the owned graph from leaves to roots
-//! in one checked transaction. Active publication work and cache-retention
-//! roots fail closed before that transaction begins.
+//! in one checked transaction. Active publication work, cache-retention
+//! roots, and a live OCI namespace exposure fail closed before that
+//! transaction begins. Instance OCI routes are never touched: they belong to
+//! the deployment, and only their default-registry binding can refer here.
 
 use anyhow::{bail, Context, Result};
 
-use super::{sanitize_log_text, unix_now, Database, NewTopologyEvent};
+use super::{
+    sanitize_log_text, unix_now, Database, NewTopologyEvent, OCI_NAMESPACE_EXPOSURE_PREDICATE,
+};
 use crate::backend::{CheckedStatement, Statement};
 
 impl Database {
@@ -59,7 +63,11 @@ impl Database {
                    EXISTS (SELECT 1 FROM registry_publication_multipart_uploads
                      WHERE registry_id = ?1 AND active_object_slot = 1),
                    EXISTS (SELECT 1 FROM publish_leases WHERE registry_id = ?1),
-                   EXISTS (SELECT 1 FROM cache_root_reasons WHERE registry_id = ?1)",
+                   EXISTS (SELECT 1 FROM cache_root_reasons WHERE registry_id = ?1),
+                   EXISTS (SELECT 1 FROM registry_oci_namespaces
+                     WHERE registry_id = ?1 AND enabled = 1),
+                   EXISTS (SELECT 1 FROM instance_oci_routes
+                     WHERE default_registry_id = ?1)",
                 &vals![registry_id],
             )
             .await?
@@ -68,11 +76,22 @@ impl Database {
         let active_multipart: i64 = blocked.get(1)?;
         let active_legacy_publish: i64 = blocked.get(2)?;
         let retained_cache_roots: i64 = blocked.get(3)?;
+        let namespace_enabled: i64 = blocked.get(4)?;
+        let instance_route_default: i64 = blocked.get(5)?;
         if active_publication != 0 || active_multipart != 0 || active_legacy_publish != 0 {
             bail!("registry has an active publication or upload");
         }
         if retained_cache_roots != 0 {
             bail!("registry still supplies retained binary-cache roots");
+        }
+        if namespace_enabled != 0 {
+            bail!("registry OCI namespace is still enabled; disable it before deletion");
+        }
+        if instance_route_default != 0 {
+            bail!(
+                "an instance OCI route still serves this registry as its default; \
+                 clear that default before deletion"
+            );
         }
 
         let oldest_inventory = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS);
@@ -112,9 +131,11 @@ impl Database {
             .checked_batch(&[
                 // Reassert quiescence while taking the registry row's write
                 // lock. Publication admission must retain the same parent row,
-                // so it cannot race new work behind this teardown fence.
+                // so it cannot race new work behind this teardown fence. An
+                // expired or aborted GC plan cannot be applied, so it and its
+                // never-claimed actions are retired below instead of blocking.
                 Statement::new(
-                    "UPDATE registries SET updated_at = updated_at
+                    format!("UPDATE registries SET updated_at = updated_at
                      WHERE id = ?1 AND scope_key = ?2 AND resource_version = ?3
                        AND NOT EXISTS (SELECT 1 FROM registry_publications
                          WHERE registry_id = ?1
@@ -126,6 +147,9 @@ impl Database {
                          WHERE registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM cache_root_reasons
                          WHERE registry_id = ?1)
+                       AND NOT {OCI_NAMESPACE_EXPOSURE_PREDICATE}
+                       AND NOT EXISTS (SELECT 1 FROM instance_oci_routes
+                         WHERE default_registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM oci_repositories
                          WHERE registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM oci_blobs
@@ -137,10 +161,15 @@ impl Database {
                        AND NOT EXISTS (SELECT 1 FROM oci_leases
                          WHERE registry_id = ?1 AND expires_at > ?4)
                        AND NOT EXISTS (SELECT 1 FROM oci_gc_runs
-                         WHERE registry_id = ?1 AND state IN('planned', 'applying'))
-                       AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_actions
                          WHERE registry_id = ?1
-                           AND state IN('pending', 'claimed', 'failed'))
+                           AND (state = 'applying'
+                             OR (state = 'planned' AND expires_at > ?4)))
+                       AND NOT EXISTS (SELECT 1 FROM oci_gc_placement_actions action
+                         WHERE action.registry_id = ?1
+                           AND action.state IN('pending', 'claimed', 'failed')
+                           AND NOT EXISTS (SELECT 1 FROM oci_gc_runs action_run
+                             WHERE action_run.id = action.run_id
+                               AND action_run.state IN('planned', 'aborted')))
                        AND NOT EXISTS (SELECT 1 FROM oci_untracked_repair_plans
                          WHERE registry_id = ?1
                            AND state IN('planned', 'pending', 'claimed', 'failed'))
@@ -205,7 +234,7 @@ impl Database {
                                FROM oci_provider_inventory_generations failed
                                WHERE failed.placement_id = placement.id
                                  AND failed.state = 'failed'
-                                 AND failed.started_at > inventory.started_at)))",
+                                 AND failed.started_at > inventory.started_at)))"),
                     vals![
                         registry_id,
                         current.scope_key,
@@ -404,6 +433,9 @@ impl Database {
                 delete("oci_uploads", registry_id),
                 delete("oci_publications", registry_id),
                 delete("oci_registry_state", registry_id),
+                // The namespace row is disabled by the preflight and the
+                // transactional guard above; retire it with the registry.
+                delete("registry_oci_namespaces", registry_id),
                 delete("registry_placement_publication_watermarks", registry_id),
                 delete("registry_index_publication_state", registry_id),
                 delete("object_placements", registry_id),

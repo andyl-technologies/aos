@@ -14,7 +14,7 @@ in {
   aos.image.budgets.maxVerityMiB = lib.mkDefault 16;
   # Both checked x86 variants need 154 MiB. The boot executable additionally
   # embeds the kernel; two executables require bounded firmware headroom.
-  aos.image.budgets.maxInitrdMiB = lib.mkIf isX86 (lib.mkDefault 176);
+  aos.image.budgets.maxInitrdMiB = lib.mkIf isX86 (lib.mkDefault 160);
   aos.image.budgets.maxBootExecutableMiB = lib.mkIf isX86 (lib.mkDefault 200);
   aos.image.budgets.maxFirmwarePartitionMiB = lib.mkIf isX86 (lib.mkDefault 448);
   aos.image.budgets.maxDevelopmentPayloadMiB = lib.mkDefault 48;
