@@ -17,6 +17,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    ProfileDigest {
+        /// Read the exact closed canonical external profile; no authentication is granted.
+        #[arg(long)]
+        profile_file: PathBuf,
+    },
     CopyContract {
         /// Read the actual complete bounded provider observation report.
         #[arg(long)]
@@ -49,6 +54,8 @@ enum Command {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let result = match Cli::parse().command {
+        Command::ProfileDigest { profile_file } =>
+            aos_hub::provider_conformance::export_provider_profile_digest(&profile_file),
         Command::CopyContract {
             report_file,
             journal_directory,

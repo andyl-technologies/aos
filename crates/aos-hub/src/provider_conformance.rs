@@ -11,6 +11,7 @@
 
 mod config;
 mod copy_contract;
+mod profile_digest;
 mod journal;
 mod model;
 mod probe;
@@ -62,4 +63,16 @@ pub fn export_provider_copy_contract(
     output: &Path,
 ) -> Result<String> {
     copy_contract::project(report_file, journal_directory, output)
+}
+
+/// Computes a structural protected-profile digest without authentication or effects.
+///
+/// The caller retains independently authenticated discovery and accepted
+/// artifact originals. This projection supplies neither of those authorities.
+///
+/// # Errors
+/// Returns an error for excessive, malformed, noncanonical or invalid shared
+/// profile facts, and file errors.
+pub fn export_provider_profile_digest(profile_file: &Path) -> Result<String> {
+    profile_digest::project(profile_file)
 }
