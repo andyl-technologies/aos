@@ -158,6 +158,124 @@ fn native_file_copies_bounded_source_and_observes_content_drift() {
 }
 
 #[test]
+fn native_mutable_file_preserves_contents_and_inode_across_reconfiguration() {
+    let (temporary, handler) = fixture();
+    let path = temporary.path().join("application.log");
+    let mut invocation = invocation(&path);
+    invocation.effect.identity[2] = "entry".into();
+    invocation.input["kind"] = "empty-file".into();
+    invocation.input["mode"] = "0660".into();
+    invocation.input["maxBytes"] = 1.into();
+
+    call(&handler, "apply", &invocation);
+    let initial = fs::metadata(&path).unwrap();
+    assert_eq!(initial.len(), 0);
+    fs::write(&path, b"application-owned log contents\n").unwrap();
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+
+    invocation.input["mode"] = "0640".into();
+    invocation.revision = "revision-two".into();
+    call(&handler, "apply", &invocation);
+
+    let updated = fs::metadata(&path).unwrap();
+    assert_eq!(
+        (initial.dev(), initial.ino()),
+        (updated.dev(), updated.ino())
+    );
+    assert_eq!(updated.permissions().mode() & 0o7777, 0o640);
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        b"application-owned log contents\n"
+    );
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "current");
+
+    invocation.action = Action::Remove;
+    call(&handler, "remove", &invocation);
+    assert_eq!(call(&handler, "observe", &invocation)["status"], "absent");
+}
+
+#[test]
+fn native_mutable_file_refuses_unclaimed_files_and_replacement_inodes() {
+    let (temporary, handler) = fixture();
+    let path = temporary.path().join("application.log");
+    let mut invocation = invocation(&path);
+    invocation.effect.identity[2] = "entry".into();
+    invocation.input["kind"] = "empty-file".into();
+    fs::write(&path, b"operator-owned contents").unwrap();
+
+    assert_eq!(
+        call(&handler, "observe", &invocation)["status"],
+        "indeterminate"
+    );
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"operator-owned contents");
+
+    fs::remove_file(&path).unwrap();
+    call(&handler, "apply", &invocation);
+    fs::rename(&path, temporary.path().join("original")).unwrap();
+    fs::write(&path, b"replacement contents").unwrap();
+
+    assert_eq!(
+        call(&handler, "observe", &invocation)["status"],
+        "indeterminate"
+    );
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
+    invocation.action = Action::Remove;
+    assert!(
+        handler
+            .handle("remove", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
+    assert_eq!(fs::read(&path).unwrap(), b"replacement contents");
+}
+
+#[test]
+fn native_mutable_file_rejects_sources_and_symlinks_before_mutation() {
+    let (temporary, handler) = fixture();
+    let path = temporary.path().join("application.log");
+    let target = temporary.path().join("target");
+    fs::write(&target, b"untouched contents").unwrap();
+    let mut invocation = invocation(&path);
+    invocation.effect.identity[2] = "entry".into();
+    invocation.input["kind"] = "empty-file".into();
+    invocation.input["sourcePath"] = json!(target);
+
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
+    assert!(!path.exists());
+
+    invocation
+        .input
+        .as_object_mut()
+        .unwrap()
+        .remove("sourcePath");
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    assert!(
+        handler
+            .handle("apply", &serde_json::to_vec(&invocation).unwrap())
+            .is_err()
+    );
+    assert_eq!(fs::read(&target).unwrap(), b"untouched contents");
+    assert!(
+        fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[test]
 fn native_tree_owns_only_link_and_retains_source_after_teardown() {
     let (temporary, handler) = fixture();
     let source = temporary.path().join("immutable");

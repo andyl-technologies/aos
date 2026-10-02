@@ -8,6 +8,7 @@
   lib,
   service-management,
   openssh,
+  aos-filesystem-provider,
   mkGoPackage,
   fetchurl,
   fetchGoModules,
@@ -124,7 +125,7 @@ in
     ldflags = "-s -w -X main.Version=${version}";
     doCheck = false;
     module = ./_opkssh;
-    moduleDeps = [service-management openssh];
+    moduleDeps = [service-management openssh aos-filesystem-provider];
 
     checks = {
       testing,
