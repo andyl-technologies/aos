@@ -83,6 +83,27 @@ fn image_and_configuration_operations_have_separate_commands() {
 }
 
 #[test]
+fn system_registry_scope_precedes_the_registry_operation() {
+    let command = parse(&[
+        "registry",
+        "--system",
+        "add",
+        "https://registry.example.test",
+    ]);
+    assert!(command.is_system());
+    assert!(
+        TestCli::try_parse_from([
+            "apm",
+            "registry",
+            "add",
+            "--system",
+            "https://registry.example.test",
+        ])
+        .is_err()
+    );
+}
+
+#[test]
 fn desired_set_reconciliation_requires_explicit_system_scope() {
     assert!(TestCli::try_parse_from(["apm", "reconcile", "--from", "desired.toml"]).is_err());
     assert!(TestCli::try_parse_from(["apm", "reconcile", "--system"]).is_err());
