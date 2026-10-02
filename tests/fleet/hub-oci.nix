@@ -2216,12 +2216,15 @@ in {
         + f" | {JQ} -e '.data.fence.post_fence_inventory_ready == true'",
         timeout=360,
     )
+    # Deletion runs as an operation; --wait returns once it has succeeded and
+    # reuses the operator's fence instead of acquiring another.
     reviewed(
         publisher,
         "gc-cancel-registry-delete",
         "registry delete acme/gc-cancel "
-        f"--if-version {shlex.quote(disposable_version)}",
+        f"--if-version {shlex.quote(disposable_version)} --wait --timeout 3m",
         token,
+        timeout=240,
     )
     publisher.fail(hub_command("registry show acme/gc-cancel", token))
 
@@ -2530,5 +2533,72 @@ in {
         token,
         "--plan --idempotency-key oci-private-instance-again-plan",
     ))
+
+    # The published registry's deletion review reports its structured
+    # blockers, and the apply is refused with the same breakdown.
+    blocked = json.loads(publisher.succeed(hub_command(
+        f"registry delete acme/containers --if-version {shlex.quote(registry_version)}",
+        token,
+        "--plan --idempotency-key hub-oci-delete-blocked-plan",
+    )))["data"]
+    readiness = blocked["readiness"]
+    assert readiness["verdict"] == "blocked", readiness
+    assert int(readiness["blockers"]["repositories"]) > 0, readiness
+    assert any(
+        "OCI repositories" in reason for reason in readiness["blocking_reasons"]
+    ), readiness
+    status, refused = publisher.execute(hub_command(
+        "registry delete acme/containers",
+        token,
+        " ".join([
+            "--plan-id", shlex.quote(blocked["plan"]["plan_id"]),
+            "--confirm-hash", shlex.quote(blocked["plan"]["confirmation_hash"]),
+            "--idempotency-key hub-oci-delete-blocked-apply --yes --wait",
+        ]),
+    ) + " 2>&1")
+    assert status != 0, refused
+    assert "failed_precondition" in refused and "OCI repositories" in refused, refused
+    publisher.succeed(hub_command("registry show acme/containers", token))
+
+    # An empty registry whose placement was never scanned or inventoried is
+    # deleted by one reviewed apply: the operation scans, fences, collects a
+    # fresh empty inventory, and deletes without any other operator step.
+    reviewed(
+        publisher,
+        "oneclick-registry-create",
+        "registry create --org acme --name oneclick --visibility public",
+        token,
+    )
+    reviewed(
+        publisher,
+        "oneclick-placement-create",
+        "placement add registry:acme/oneclick primary --binding instance-default "
+        "--prefix oneclick --kind complete --desired-state active --read enabled",
+        token,
+    )
+    oneclick = json.loads(publisher.succeed(
+        hub_command("registry show acme/oneclick", token)
+    ))["data"]["registry"]
+    planned = json.loads(publisher.succeed(hub_command(
+        "registry delete acme/oneclick "
+        f"--if-version {shlex.quote(oneclick['resource_version'])}",
+        token,
+        "--plan --idempotency-key hub-oci-delete-oneclick-plan",
+    )))["data"]
+    assert planned["readiness"]["verdict"] == "automatic", planned
+    assert not planned["readiness"].get("blocking_reasons"), planned
+    deleted = json.loads(publisher.succeed(hub_command(
+        "registry delete acme/oneclick",
+        token,
+        " ".join([
+            "--plan-id", shlex.quote(planned["plan"]["plan_id"]),
+            "--confirm-hash", shlex.quote(planned["plan"]["confirmation_hash"]),
+            "--idempotency-key hub-oci-delete-oneclick-apply --yes --wait --timeout 3m",
+        ]),
+    ), timeout=240))["data"]
+    assert deleted["operation"]["operation"]["state"] == "succeeded", deleted
+    assert deleted["deletion"]["phase"] == "deleted", deleted
+    assert deleted["deletion"]["fence_acquired"] is True, deleted
+    publisher.fail(hub_command("registry show acme/oneclick", token))
   '';
 }

@@ -49,6 +49,9 @@
 //! - [`placement_read`] — deterministic multi-placement read planning, exact
 //!   inventory/current-publication eligibility, and pre-stream failover shared
 //!   by both serving runtimes.
+//! - [`registry_delete_controller`] — the self-driving reviewed registry
+//!   deletion operation: purge fence, placement scans, on-demand provider
+//!   inventories, and the atomic deletion transaction on either runtime.
 //! - [`retention`] — the canonical comparator-only SemVer selector and stable
 //!   verified-release ordering used to materialize cache root reasons.
 //!
@@ -107,6 +110,7 @@ pub mod oci_inventory_controller;
 pub mod placement_read;
 pub mod placement_scan;
 pub mod ratelimit;
+pub mod registry_delete_controller;
 pub mod reindex;
 pub mod release_evidence;
 pub mod retention;

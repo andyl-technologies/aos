@@ -12,6 +12,7 @@ use crate::commands::hub::mutation::{
 };
 use crate::commands::hub::package::{channel, package};
 use crate::commands::hub::publication::publish;
+use crate::commands::hub::registry_delete::delete_registry;
 use anyhow::{Context as _, Result};
 use aos_core::output::Printer;
 use aos_remote::{hub_rpc as HubTopologyMethod, hub_types};
@@ -313,34 +314,8 @@ pub(super) async fn registry(printer: &Printer, command: &HubRegistryCmd) -> Res
             access,
             registry,
             mutation,
-        } => {
-            let client = hub_client(&access.hub, access.token.as_deref()).await?;
-            topology_mutation::<
-                _,
-                hub_types::ApplyDeleteTopologyResourceRequest,
-                hub_types::DeleteTopologyResourceResponse,
-                _,
-            >(
-                printer,
-                &client,
-                HubTopologyMethod::PlanDeleteRegistry,
-                HubTopologyMethod::DeleteRegistry,
-                &hub_types::PlanDeleteTopologyResourceRequest {
-                    stable_id: registry.clone(),
-                    expected_resource_version: mutation.if_version.clone(),
-                    idempotency_key: new_idempotency_key(),
-                },
-                mutation,
-                |plan_id, idempotency_key, confirmation_hash| {
-                    hub_types::ApplyDeleteTopologyResourceRequest {
-                        plan_id: plan_id.into(),
-                        idempotency_key: idempotency_key.into(),
-                        confirmation_hash: confirmation_hash.into(),
-                    }
-                },
-            )
-            .await
-        }
+            operation,
+        } => delete_registry(printer, access, registry, mutation, operation).await,
         HubRegistryCmd::CacheStack { command } => registry_cache_stack(printer, command).await,
         HubRegistryCmd::Mirror { command } => registry_mirror(printer, command).await,
         HubRegistryCmd::Package { command } => package(printer, command).await,

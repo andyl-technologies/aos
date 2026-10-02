@@ -933,6 +933,22 @@ async fn main() -> Result<()> {
                 )
                 .with_credentials(Arc::clone(&app_state.secret_versions)),
             ));
+            // Registry deletion runs before placement scans so a scan it
+            // schedules for an unobserved placement starts in the same tick.
+            let registry_deletions =
+                aos_hub_core::registry_delete_controller::RegistryDeletionController::new(
+                    Arc::clone(&app_state.db),
+                    Arc::new(
+                        aos_hub::coreports::HubSurfaceProvider::new(
+                            Arc::clone(&app_state.db),
+                            app_state.http.clone(),
+                            app_state.image_snapshots.clone(),
+                        )
+                        .with_credentials(Arc::clone(&app_state.secret_versions)),
+                    ),
+                    "native-registry-delete",
+                    aos_hub_core::oci_inventory_controller::NATIVE_OCI_INVENTORY_DISPATCH_BUDGET,
+                );
             tokio::spawn(async move {
                 let mut tick = tokio::time::interval(std::time::Duration::from_secs(2));
                 loop {
@@ -941,6 +957,12 @@ async fn main() -> Result<()> {
                         tracing::warn!(
                             error = %format!("{error:#}"),
                             "domain probe controller pass failed"
+                        );
+                    }
+                    if let Err(error) = registry_deletions.run_due(5).await {
+                        tracing::warn!(
+                            error = %format!("{error:#}"),
+                            "registry deletion controller pass failed"
                         );
                     }
                     if let Err(error) = placement_scans.run_due(5).await {
