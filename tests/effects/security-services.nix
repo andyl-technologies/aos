@@ -125,6 +125,46 @@
     packageImportRoots.${builtins.unsafeDiscardStringContext (toString pkgs.openssh.module)} = toString ../../pkgs/networking/_openssh;
     operatorModules = [{aos.services.ssh.enable = true;}];
   };
+  developmentConfiguration = enabled:
+    (lib.evalModules {
+      inherit lib;
+      specialArgs = {inherit pkgs;};
+      modules = [
+        ../../modules/profiles/development.nix
+        {
+          options = {
+            environment = lib.mkOption {type = lib.types.attrsOf lib.types.anything;};
+            system = lib.mkOption {type = lib.types.attrsOf lib.types.anything;};
+            aos.security = lib.mkOption {type = lib.types.attrsOf lib.types.anything;};
+            aos.activation.stages.host.configuration = lib.mkOption {
+              type = lib.types.listOf lib.types.anything;
+              default = [];
+            };
+          };
+          config.aos.profiles.development.enable = enabled;
+        }
+      ];
+    }).config.aos.activation.stages.host.configuration;
+  pingEffects = enabled:
+    (lib.evalPackageModules {
+      scope = ["profile" "system"];
+      packages = [pkgs.inetutils];
+      packageImportRoots.${builtins.unsafeDiscardStringContext (toString pkgs.inetutils.module)} = toString ../../pkgs/networking/_inetutils;
+      # Read the authored leaf without realizing its retained store copy.
+      operatorModules = map (source:
+        assert source
+        == builtins.path {
+          path = ../../modules/profiles/_development-enable.nix;
+          name = "aos-development-policy.nix";
+        };
+          ../../modules/profiles/_development-enable.nix)
+      (developmentConfiguration enabled);
+    }).config.aos.abilities.filesystem.operations.privilegedExecutable.effects;
+  developmentPing = pingEffects true;
+  originalPingMetadata = name: let
+    input = developmentPing."inetutils-${name}".input;
+  in
+    input.name == name && input.source == "${pkgs.inetutils}/bin/${name}" && input.mode == "4755" && input.owner == "root" && input.group == "root";
 in {
   verifierRetainsIsolation = verifier.input.isolation.network == "none" && verifier.input.identity.ephemeral;
   verifierRetainsOutputPath = builtins.elem "/var/lib/aos-attestation-verifier/result.json" (builtins.head verifier.input.lifecycle.start).executable.arguments;
@@ -134,6 +174,8 @@ in {
   sudoExcludesUserProfilePaths = sudoPolicy userPathSudo == sudoPolicy nativeSudo;
   sudoPreservesImageSystemPath = lib.hasInfix ''Defaults secure_path="${imageSecurePath}"'' (sudoPolicy imageSudo);
   sshPreservesPublicHostKeyDirectoryAccess = sshProjection.config.aos.abilities.filesystem.operations.directory.effects.ssh-host-keys.input.mode == "0755";
+  developmentRetainsOriginalPingWrappers = builtins.all originalPingMetadata ["ping" "ping6"];
+  standardProfileDoesNotEnablePrivilegedPing = pingEffects false == {};
   polkitRegistersRetainedBusPaths = evaluated.config.aos.dbus.activationDirectories == ["${package}/share/dbus-1/system-services"];
   polkitPreservesIdentity = polkit.input.identity.ephemeral == false;
   polkitPreservesIsolation = polkit.input.isolation.network == "none";
