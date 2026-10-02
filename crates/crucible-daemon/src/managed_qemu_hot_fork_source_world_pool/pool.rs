@@ -713,15 +713,21 @@ where
             .lease_usage
             .add_resource_reservation(resources)
             .ok_or(ManagedQemuHotForkSourceWorldCheckoutError::LeaseAccountingOverflow)?;
-        let projected_usage = self
+        let current_usage = self
             .manager
             .usage()
-            .add_reservations(projected_lease_usage)
+            .add_reservations(self.lease_usage)
+            .ok_or(ManagedQemuHotForkSourceWorldCheckoutError::LeaseAccountingOverflow)?;
+        let projected_usage = current_usage
+            .add_resource_reservation(resources)
             .ok_or(ManagedQemuHotForkSourceWorldCheckoutError::LeaseAccountingOverflow)?;
         let limits = self.manager.limits();
         if !projected_usage.fits(limits) {
             return Err(ManagedQemuHotForkSourceWorldCheckoutError::LeaseCapacity {
                 pressure: HotCheckpointPressure::for_usage(projected_usage, limits),
+                current: Box::new(current_usage),
+                projected: Box::new(projected_usage),
+                limits: Box::new(limits),
             });
         }
 

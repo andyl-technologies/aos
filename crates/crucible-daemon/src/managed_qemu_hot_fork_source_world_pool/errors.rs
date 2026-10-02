@@ -6,8 +6,8 @@ use super::ManagedQemuHotForkSourceWorld;
 use crate::{
     DurableHotCheckpointCatalogError, HotCheckpointAdmissionCommitError,
     HotCheckpointAdmissionRejection, HotCheckpointDemotion, HotCheckpointFallbackRetentionError,
-    HotCheckpointFallbackSlot, HotCheckpointInventoryError, HotCheckpointPoolKey,
-    HotCheckpointPressure,
+    HotCheckpointFallbackSlot, HotCheckpointInventoryError, HotCheckpointLimits,
+    HotCheckpointPoolKey, HotCheckpointPressure, HotCheckpointUsage,
 };
 
 /// Invalid managed source-world pool construction.
@@ -31,10 +31,18 @@ pub enum ManagedQemuHotForkSourceWorldCheckoutError {
     #[error("managed source-world concurrent lease accounting overflowed")]
     LeaseAccountingOverflow,
     /// The concurrent child population would exceed retained-resource ceilings.
-    #[error("managed source-world concurrent lease exceeds retained-resource ceilings")]
+    #[error(
+        "managed source-world concurrent lease exceeds retained-resource ceilings: pressure={pressure:?}, current={current:?}, projected={projected:?}, limits={limits:?}"
+    )]
     LeaseCapacity {
         /// Exact retained-resource dimensions that exceed their ceiling.
         pressure: HotCheckpointPressure,
+        /// Aggregate retained sources and child reservations before checkout.
+        current: Box<HotCheckpointUsage>,
+        /// Aggregate usage including the rejected child reservation.
+        projected: Box<HotCheckpointUsage>,
+        /// Enforced resource ceilings at the rejected checkout.
+        limits: Box<HotCheckpointLimits>,
     },
     /// The process exhausted the nonzero source-lease identity space.
     #[error("managed source-world lease identity space is exhausted")]
