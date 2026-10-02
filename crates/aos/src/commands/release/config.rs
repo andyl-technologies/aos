@@ -17,7 +17,7 @@
 //! schema_version = "aos.release.maintainer-config/v1"
 //! work_root = "/var/lib/aos-release-coordinator/releases"
 //! fitness_root = "/var/lib/aos-release-coordinator/fitness"
-//! registry = "andyl/testing"
+//! registry = "andyl/experimental"
 //! protected_branch = "master"
 //! contributor_authorization = "/etc/aos-release/release-contributor-authorization.json"
 //! retention_policy = "/etc/aos-release/release-retention-policy.md"
@@ -37,8 +37,8 @@
 //!
 //! [surfaces.production]
 //! kind = "static"
-//! origin = "s3://aos-registry/andyl-testing"
-//! readback_origin = "https://cdn.example.org/andyl-testing"
+//! origin = "s3://aos-registry/andyl-experimental"
+//! readback_origin = "https://cdn.example.org/andyl-experimental"
 //! identity = "cdn-2026-09"
 //! s3_region = "us-east-1"
 //!
@@ -573,7 +573,7 @@ mod tests {
 schema_version = "aos.release.maintainer-config/v1"
 work_root = "/var/lib/aos-release/releases"
 fitness_root = "/var/lib/aos-release/fitness"
-registry = "andyl/testing"
+registry = "andyl/experimental"
 protected_branch = "master"
 contributor_authorization = "/etc/aos-release/authorization.json"
 retention_policy = "/etc/aos-release/retention.md"
@@ -590,8 +590,8 @@ identity = "staging-2026-09"
 
 [surfaces.production]
 kind = "static"
-origin = "s3://registry/andyl-testing"
-readback_origin = "https://cdn.example/andyl-testing"
+origin = "s3://registry/andyl-experimental"
+readback_origin = "https://cdn.example/andyl-experimental"
 identity = "cdn-2026-09"
 
 [signer]
@@ -630,8 +630,8 @@ keys = [
     #[test]
     fn rejects_unknown_fields_roles_and_mixed_key_forms() {
         let unknown = MINIMAL.replace(
-            "registry = \"andyl/testing\"",
-            "registry = \"andyl/testing\"\nextra = 1",
+            "registry = \"andyl/experimental\"",
+            "registry = \"andyl/experimental\"\nextra = 1",
         );
         assert!(MaintainerConfig::parse(unknown.as_bytes()).is_err());
 
@@ -715,8 +715,8 @@ keys = [
     #[test]
     fn rejects_tooling_and_executor_paths() {
         let tooling = MINIMAL.replace(
-            "registry = \"andyl/testing\"",
-            "registry = \"andyl/testing\"\ntooling_closure = \"/nix/store/aaaa-aos\"",
+            "registry = \"andyl/experimental\"",
+            "registry = \"andyl/experimental\"\ntooling_closure = \"/nix/store/aaaa-aos\"",
         );
         assert!(MaintainerConfig::parse(tooling.as_bytes()).is_err());
 

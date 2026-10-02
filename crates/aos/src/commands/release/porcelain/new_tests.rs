@@ -55,7 +55,7 @@ fn args(fixture: &ConfigFixture, registry: &str) -> Result<ReleaseNewArgs> {
 async fn new_derives_the_request_from_configuration_and_contract() -> Result<()> {
     let fixture = config_fixture()?;
     let prepared = prepare(
-        &args(&fixture, "andyl/testing")?,
+        &args(&fixture, "andyl/experimental")?,
         &fixture.path,
         &fixture.config,
         &StubLive,
@@ -124,7 +124,7 @@ async fn new_derives_the_request_from_configuration_and_contract() -> Result<()>
         canonical::from_slice(&std::fs::read(work.request())?, "request")?;
     assert_eq!(&written, request);
     assert!(work.contributor_authorization().is_file());
-    assert_eq!(prepared.index.registry, "andyl/testing");
+    assert_eq!(prepared.index.registry, "andyl/experimental");
 
     let rows: Vec<&str> = prepared
         .summary
@@ -148,14 +148,14 @@ async fn new_derives_the_request_from_configuration_and_contract() -> Result<()>
 async fn new_is_resumable_until_the_plan_is_frozen() -> Result<()> {
     let fixture = config_fixture()?;
     let first = prepare(
-        &args(&fixture, "andyl/testing")?,
+        &args(&fixture, "andyl/experimental")?,
         &fixture.path,
         &fixture.config,
         &StubLive,
     )
     .await?;
     let again = prepare(
-        &args(&fixture, "andyl/testing")?,
+        &args(&fixture, "andyl/experimental")?,
         &fixture.path,
         &fixture.config,
         &StubLive,
@@ -166,7 +166,7 @@ async fn new_is_resumable_until_the_plan_is_frozen() -> Result<()> {
     std::fs::write(first.work.plan(), b"{}")?;
     assert!(
         prepare(
-            &args(&fixture, "andyl/testing")?,
+            &args(&fixture, "andyl/experimental")?,
             &fixture.path,
             &fixture.config,
             &StubLive

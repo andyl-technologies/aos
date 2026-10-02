@@ -177,7 +177,7 @@ mod tests {
             signed: RootMetadataV1 {
                 schema_version: TUF_ROOT_V1.to_owned(),
                 spec_version: TUF_SPEC_VERSION.to_owned(),
-                registry: "andyl/testing".to_owned(),
+                registry: "andyl/experimental".to_owned(),
                 version: 1,
                 expires: "2030-01-01T00:00:00Z".to_owned(),
                 consistent_snapshot: true,
@@ -188,7 +188,7 @@ mod tests {
         };
         let targets = TufEnvelopeV1 {
             signed: canonical_targets_metadata(
-                "andyl/testing",
+                "andyl/experimental",
                 2,
                 "2030-01-01T00:00:00Z".to_owned(),
             )?,
@@ -196,7 +196,7 @@ mod tests {
         };
         let delegated = TufEnvelopeV1 {
             signed: delegated_release_metadata(
-                "andyl/testing",
+                "andyl/experimental",
                 3,
                 "2030-01-01T00:00:00Z".to_owned(),
                 TufReleaseTargetV1 {
@@ -212,7 +212,7 @@ mod tests {
         };
         let snapshot = TufEnvelopeV1 {
             signed: immutable_snapshot_metadata(
-                "andyl/testing",
+                "andyl/experimental",
                 4,
                 "2030-01-01T00:00:00Z".to_owned(),
                 &root,
@@ -223,7 +223,7 @@ mod tests {
         };
         let timestamp = TufEnvelopeV1 {
             signed: timestamp_metadata(
-                "andyl/testing",
+                "andyl/experimental",
                 5,
                 "2029-12-01T00:00:00Z".to_owned(),
                 "2029-12-02T00:00:00Z".to_owned(),
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn captures_exact_identity_without_claiming_root_trust() -> Result<()> {
         let (timestamp, immutable) = candidate()?;
-        let binding = bind_staged_timestamp("andyl/testing", &timestamp, &immutable)?;
+        let binding = bind_staged_timestamp("andyl/experimental", &timestamp, &immutable)?;
 
         assert_eq!(binding.timestamp_version, 5);
         assert_eq!(binding.snapshot_version, 4);
@@ -272,18 +272,18 @@ mod tests {
         let (timestamp, immutable) = candidate()?;
         let mut changed = immutable.clone();
         changed.get_mut("tuf/1.root.json").unwrap().push(b' ');
-        assert!(bind_staged_timestamp("andyl/testing", &timestamp, &changed).is_err());
+        assert!(bind_staged_timestamp("andyl/experimental", &timestamp, &changed).is_err());
 
         let mut missing = immutable.clone();
         missing.remove("tuf/3.stable.json");
-        assert!(bind_staged_timestamp("andyl/testing", &timestamp, &missing).is_err());
+        assert!(bind_staged_timestamp("andyl/experimental", &timestamp, &missing).is_err());
 
         let mut unsafe_pointer: TufEnvelopeV1<TimestampMetadataV1> =
             canonical::from_slice(&timestamp, "timestamp")?;
         unsafe_pointer.signed.snapshot.path = "../4.snapshot.json".to_owned();
         assert!(
             bind_staged_timestamp(
-                "andyl/testing",
+                "andyl/experimental",
                 &canonical::to_vec(&unsafe_pointer)?,
                 &immutable
             )

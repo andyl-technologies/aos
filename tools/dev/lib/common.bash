@@ -34,7 +34,7 @@ evaluation, broad builds, and checks, and can take a long time. Running aos, apm
 or apr uses ordinary production derivations without shared compiler caches.
 This also applies to 'run package aos', 'run package apm', and 'run package apr'.
 
-Builds use the production testing binary cache and its dedicated Nix signing
+Builds use the production experimental binary cache and its dedicated Nix signing
 key. Missing binaries build from source; failed substitutions also fall back
 to source builds. --release and --no-cache disable shared compiler caches,
 while retaining binary substitution and source fallback.

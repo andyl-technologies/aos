@@ -146,7 +146,7 @@ in
 
           mkdir -p "$store_dir" "$state_dir" "$test_root/etc/aos"
           printf 'tier=testing\n' > "$test_root/etc/aos/release-profile"
-          printf 'ANDYL OS TESTING\nnot for production use\n' > "$test_root/etc/issue"
+          printf 'ANDYL OS EXPERIMENTAL\nnot for production use\n' > "$test_root/etc/issue"
           while IFS= read -r store_path; do
             cp -a --no-preserve=ownership "$store_path" "$store_dir/"
           done < ${referenceGraph}/store-paths
@@ -161,7 +161,7 @@ in
               ${recorder}/bin/aos-container-runtime-recorder \
               'first argument' "$literal" 2> "$TMPDIR/testing-warning"
 
-          grep -Fx 'ANDYL OS TESTING' "$TMPDIR/testing-warning" >/dev/null \
+          grep -Fx 'ANDYL OS EXPERIMENTAL' "$TMPDIR/testing-warning" >/dev/null \
             || fail "testing container init did not display its release warning"
           grep -Fx 'not for production use' "$TMPDIR/testing-warning" >/dev/null \
             || fail "testing container init omitted the support disclaimer"
