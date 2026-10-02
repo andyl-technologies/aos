@@ -109,6 +109,20 @@ where
     for pin in &controls.used.controls {
         let bytes = controls.exclusion.read_record(&pin.key).await?;
         pin.check_record(&bytes).map_err(|_| invalid())?;
+
+        // Complete source history consumed these exact original records before
+        // configuration exclusion. Retain every public producer's checked
+        // context, not merely the top-level selected commit's association.
+        if let Some(commit) = original_control_commit(pin.kind, &bytes)? {
+            let context = source.original_commit(&commit)?;
+            if let Some(existing) = originals.iter().find(|value| value.commit() == &commit) {
+                if existing != &context {
+                    return Err(invalid());
+                }
+            } else {
+                originals.push(context);
+            }
+        }
         records.push((pin.key.clone(), bytes));
     }
     records.extend(
@@ -149,4 +163,31 @@ where
         retained,
         final_check,
     })
+}
+
+/// Reads a consumed original selector from its already checked canonical bytes.
+///
+/// Decoding identifies a context to retain; it cannot create original authority.
+/// The context must already exist in the genuinely verified source guard map.
+fn original_control_commit(
+    kind: terrane_core::gc::publication::evidence::ControlKind,
+    bytes: &[u8],
+) -> Result<Option<terrane_core::identity::Digest>, StoreFailure> {
+    use crate::repository::local_authority::retention::{CommitAssociation, ImportRecord, Record};
+    use terrane_core::gc::publication::evidence::ControlKind;
+
+    match kind {
+        ControlKind::Association => Ok(Some(
+            CommitAssociation::decode(bytes)
+                .map_err(crate::guard::retention_failure)?
+                .commit,
+        )),
+        ControlKind::Import => Ok(Some(
+            ImportRecord::decode(bytes)
+                .map_err(crate::guard::retention_failure)?
+                .association
+                .commit,
+        )),
+        _ => Ok(None),
+    }
 }
