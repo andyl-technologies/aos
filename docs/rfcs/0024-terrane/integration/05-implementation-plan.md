@@ -347,8 +347,10 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   groups: every descriptor, node fields/identities, and the canonical builder's
   root with exact child counts/weights. Strict Clippy for the added test passes,
   as do preservation, section-bound, tamper and duplicate-heading audits and
-  mandatory repository formatting. Full core build/Nextest/strict qualification
-  on these final published inputs is queued. The actual trunk aggregate still
+  mandatory repository formatting. Full core build and Nextest pass on these
+  final published inputs: 483 tests, zero skips, run
+  `21e3a61d-38c1-4474-ac8e-f63ab17f2191`. Strict all-target core Clippy and
+  warnings/missing-docs rustdoc also pass. The actual trunk aggregate still
   rejects the absent `format_properties` target; complete golden/fuzz and native
   qualification remain incomplete. Deferred filter and memo payloads are CDDL
   descriptor inputs; no branch workline starts.
@@ -370,8 +372,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   that same fixture fails with `InvalidValue`. The task stays unmerged;
   the minimal fixture correction now passes all 46 public cases and five exact
   private selectors in the actual hermetic `core-fuzz` check, preserving an
-  explicit empty-argument rejection assertion. This is its pre-D-88 checkpoint;
-  rebase and final complete qualification remain required.
+  explicit empty-argument rejection assertion. The final candidate is now
+  rebased onto the D-88 and principal-comparison prerequisites. Its full core
+  build, 534-test Nextest run (zero skips,
+  `4a750303-88de-4862-9afb-9ecf5f32fb6b`), strict all-target Clippy, strict
+  rustdoc and mandatory formatting pass. The actual hermetic `core-fuzz` check
+  passes all 46 public cases and five exact private selectors. Its exact
+  aggregate still fails: the first required `root_context::bootstrap_fork`
+  selector executes zero tests because the original-bootstrap task remains
+  separate. No gate selector is weakened; the candidate stays unmerged, and
+  complete golden/fuzz and native qualification remain required.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
