@@ -382,6 +382,24 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   selector executes zero tests because the original-bootstrap task remains
   separate. No gate selector is weakened; the candidate stays unmerged, and
   complete golden/fuzz and native qualification remain required.
+  The independently reviewed original-bootstrap candidate passes all 491 core
+  tests with zero skips, strict Clippy/rustdoc and all 20 exact signature-gate
+  cases, including its eight copied-root checks. An isolated joint checkout
+  combines that candidate with the property candidate. Its actual aggregate
+  advances past both core prerequisites and fails `prov-disclosure-boundary`:
+  the nineteen required native selectors remain absent from trunk. The native
+  task's additional paired/recovery regressions do not substitute for those
+  exact contracts. Neither task is merged or advanced.
+  A separate `algebra-reference-models` hermetic check prepares seventeen
+  independently encoded recipe witnesses: twelve positive models and five
+  structural rejections. Four exact public-model groups compare graft/overlay/
+  merge bytes, recipe hashes, decoded fields, replacement and ordered policies;
+  strict Clippy passes. The inert trust profile supplies no executable authority.
+  Normative publication remains required. A legacy owning-codec coverage audit
+  identifies existing published inputs without complete independent model
+  consumers; `legacy-format-vectors` now requires twelve exact public groups
+  and one private unverified token-field group. That candidate remains pending;
+  registering the harness does not qualify the complete golden corpus.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

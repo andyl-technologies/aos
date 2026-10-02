@@ -190,4 +190,6 @@ in {
   integration.foundation-format-vectors = import ./foundation-vectors.nix {inherit sourceGate;};
   integration.retirement-reference-generator = import ./retirement-reference.nix {inherit sourceGate;};
   integration.authorized-principal = import ./authorized-principal.nix {inherit sourceGate;};
+  integration.algebra-reference-models = import ./algebra-models.nix {inherit sourceGate;};
+  integration.legacy-format-vectors = import ./legacy-vectors.nix {inherit sourceGate;};
 }
