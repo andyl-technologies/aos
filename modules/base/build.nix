@@ -46,6 +46,14 @@
         })
         etcTrees);
   managerConfiguration = config.aos.manager.selected.configuration;
+  managerFileEntries = lib.mapAttrs (_: entry:
+    if entry.kind == "text"
+    then {inherit (entry) text mode;}
+    else {
+      source = entry.target;
+      mode = "direct-symlink";
+    })
+  managerConfiguration.filesystemEntries;
   managerConfigurationOutput = managerConfiguration.buildOutput {
     inherit (pkgs) runCommand writeTextFile;
   };
@@ -152,12 +160,13 @@ in {
             '';
           };
           source = lib.mkOption {
-            type = lib.types.path;
+            type = lib.types.either lib.types.path (lib.types.addCheck lib.types.str (_: config.mode == "direct-symlink"));
             description = ''
               On-disk path that the entry materialises. Typically a
               `/nix/store` path produced by a derivation. Behaviour at
               build time depends on `mode` and on whether `source` is
               a regular file or a directory — see `mode` below.
+              Direct symlinks may instead carry a literal relative target.
             '';
           };
           mode = lib.mkOption {
@@ -345,6 +354,9 @@ in {
   };
 
   config = lib.mkMerge [
+    {
+      environment.etc = managerFileEntries;
+    }
     {
       environment.etc =
         etcTreeEntries

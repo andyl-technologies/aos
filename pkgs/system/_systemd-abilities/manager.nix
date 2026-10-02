@@ -8,6 +8,7 @@
 }: let
   managerArtifacts = pkgs;
   systemdPackage = pkgs.systemd;
+  bootstrapConfiguration = import ./bootstrap-config.nix {inherit config lib;};
   rendererPackages = buildContext: {
     inherit (buildContext) runCommand writeTextFile;
     inherit (managerArtifacts) bash coreutils findutils grep sed;
@@ -70,10 +71,10 @@
       inherit buildInitrd;
       buildOutput = buildManagerConfiguration;
       executableScripts = config.system.build.systemdJobScripts;
-      filesystemEntries = {};
+      filesystemEntries = bootstrapConfiguration.filesystemEntries;
       ownership = {
         executableScripts = config.system.build.systemdJobScriptOwners;
-        filesystemEntries = {};
+        filesystemEntries = bootstrapConfiguration.ownership.filesystemEntries;
       };
       rootfs = {
         closureRoots = ["${systemdPackage}"];

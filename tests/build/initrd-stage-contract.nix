@@ -25,17 +25,26 @@
   assembly = system.config.system.build.unsignedImageAssembly;
   rootPaths = map builtins.toString system.config.aos.boot.initrd.packageRoots;
   runtimeRoots = system.config.aos.boot.initrd.runtimeRoots;
+  earlyFiles = lib.filterAttrs (_: entry: entry.kind == "text") system.config.aos.manager.selected.configuration.filesystemEntries;
+  imageContent = system.config.system.build.etcBasedir;
+  imageMetadata = system.config.system.build.etcDump;
 in
   assert assembly != null;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) rootPaths) == 1;
   assert builtins.length (builtins.filter (path: path == builtins.toString pkgs.coreutils) runtimeRoots) == 1;
   assert !(builtins.elem (builtins.toString pkgs.linux) runtimeRoots);
   assert !(builtins.elem (builtins.toString pkgs.aos) runtimeRoots);
+  assert builtins.all (path: let
+    entry = system.config.environment.etc.${path};
+    expected = earlyFiles.${path};
+  in
+    entry.text == expected.text && entry.mode == expected.mode && entry.uid == 0 && entry.gid == 0)
+  (builtins.attrNames earlyFiles);
     pkgs.mkDerivation {
       pname = "aos-initrd-native-contract-check";
       version = "1";
       src = null;
-      buildDeps = [assembly pkgs.aos.testSupport pkgs.coreutils pkgs.libarchive pkgs.erofs-utils pkgs.python3 pkgs.zstd];
+      buildDeps = [assembly imageContent imageMetadata pkgs.aos.testSupport pkgs.coreutils pkgs.gawk pkgs.libarchive pkgs.erofs-utils pkgs.python3 pkgs.zstd];
       phases = [
         {
           name = "check";
@@ -50,6 +59,19 @@ in
             ${pkgs.libarchive}/bin/bsdtar --format=pax -cf initrd.tar @initrd.cpio
             ${pkgs.libarchive}/bin/bsdtar -xpf initrd.tar -C initrd-tree
             ${pkgs.erofs-utils}/bin/fsck.erofs --extract=root-tree ${assembly}/inputs/root.img
+            # Early services must find their canonical file prerequisites in
+            # the shipped content and metadata before native activation starts.
+            ${lib.concatStringsSep "\n" (lib.mapAttrsToList (path: entry: ''
+                ${pkgs.coreutils}/bin/cmp \
+                  ${lib.escapeShellArg "root-tree/nix/store/${baseNameOf (builtins.toString imageContent)}/${path}"} \
+                  ${lib.escapeShellArg system.config.environment.etc.${path}.source}
+                ${pkgs.gawk}/bin/awk \
+                  -v path=${lib.escapeShellArg "/${path}"} \
+                  -v mode=${lib.escapeShellArg ("10" + (lib.optionalString (builtins.stringLength entry.mode == 3) "0") + entry.mode)} \
+                  '$1 == path { found = 1; if ($3 != mode || $5 != 0 || $6 != 0) exit 1 }
+                   END { if (!found) exit 1 }' ${imageMetadata}
+              '')
+              earlyFiles)}
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-attachments ${assembly} initrd-native-contract-check \
               initrd-tree root-tree

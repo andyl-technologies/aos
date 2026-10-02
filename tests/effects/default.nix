@@ -32,6 +32,7 @@
     systemdResources = import ./systemd-resources.nix;
     platformReplay = import ./platform-replay.nix;
     observerBootstrap = import ./observer-bootstrap.nix;
+    bootstrapConfiguration = import ./bootstrap-configuration.nix;
     initrdAccountSeed = initrdAccountSeed.checks;
     nativeReleaseInventory = import ./release-native-inventory.nix {inherit pkgs;};
     releaseMaintenance = import ./release-maintenance.nix;
