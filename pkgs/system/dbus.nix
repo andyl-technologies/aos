@@ -279,13 +279,14 @@ in
             cp -a $out$out/. $out/
             rm -rf $out/nix
           fi
-          # The registration controller owns the deployment-specific search
-          # order. Keep the stock policy and omit the mutable directory hooks
-          # that the controller appends after authenticated package entries.
-          sed -i \
+          # Preserve upstream defaults for ordinary dbus-daemon --system users.
+          # The native controller includes a separate base so local overrides
+          # follow authenticated package policy in its generated configuration.
+          sed \
             -e '/<includedir>system\.d<\/includedir>/d' \
             -e '/<include.*system-local\.conf<\/include>/d' \
-            "$out/share/dbus-1/system.conf"
+            "$out/share/dbus-1/system.conf" \
+            > "$out/share/dbus-1/aos-system-base.conf"
 
           ${lib.optionalString isLinuxCross ''
             # Meson's install step drops some cross-wrapper runtime paths.
@@ -297,6 +298,33 @@ in
           ''}'';
       }
     ];
+
+    checks = {
+      self,
+      pkgs,
+      ...
+    }: {
+      native-base-configuration =
+        pkgs.runCommand "dbus-native-base-configuration-check" {
+          buildDeps = [pkgs.grep pkgs.sed pkgs.coreutils];
+        } ''
+          stock=${self}/share/dbus-1/system.conf
+          native=${self}/share/dbus-1/aos-system-base.conf
+          grep -F '<includedir>system.d</includedir>' "$stock"
+          grep -F 'system-local.conf</include>' "$stock"
+          if grep -E 'system\.d</includedir>|system-local\.conf</include>' "$native"; then
+            echo "Native D-Bus base includes local overrides before package policy" >&2
+            exit 1
+          fi
+          sed \
+            -e '/<includedir>system\.d<\/includedir>/d' \
+            -e '/<include.*system-local\.conf<\/include>/d' \
+            "$stock" > expected
+          cmp expected "$native"
+          mkdir -p "$out"
+          printf '%s\n' PASS > "$out/result"
+        '';
+    };
 
     meta = {
       description = "D-Bus — freedesktop.org message bus system";

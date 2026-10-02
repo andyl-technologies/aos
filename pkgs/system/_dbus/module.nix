@@ -233,7 +233,7 @@ in {
       input = {
         path = "/etc/dbus-1/aos-system.conf";
         fragments =
-          ["<busconfig>\n<include>${package}/share/dbus-1/system.conf</include>\n"]
+          ["<busconfig>\n<include>${package}/share/dbus-1/aos-system-base.conf</include>\n"]
           ++ builtins.map (path: "<servicedir>${xmlPath path}</servicedir>\n") config.aos.dbus.activationDirectories
           ++ builtins.map (path: "<includedir>${xmlPath path}</includedir>\n") config.aos.dbus.policyDirectories
           ++ ["<includedir>/etc/dbus-1/system.d</includedir>\n<include ignore_missing=\"yes\">/etc/dbus-1/system-local.conf</include>\n</busconfig>\n"];
