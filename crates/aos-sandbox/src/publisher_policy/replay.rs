@@ -74,6 +74,7 @@ pub(super) fn validate_namespace(
         BTreeMap::new();
     let mut project_auth_heads: BTreeMap<ProjectId, RetainedProjectAuthorizationHeadV2> =
         BTreeMap::new();
+    let mut git_upload_bootstrap = git_upload_capacity::GitUploadBootstrapReplayV1::default();
     for (key, value) in journal.records(RecordNamespace::PublisherPolicy) {
         records = records
             .checked_add(1)
@@ -186,6 +187,8 @@ pub(super) fn validate_namespace(
             {
                 return Err(PublisherPolicyError::CorruptState);
             }
+        } else if git_upload_bootstrap.consume(journal, key, value)? {
+            // The same bounded namespace pass owns the closed Git families.
         } else {
             return Err(PublisherPolicyError::CorruptState);
         }
@@ -232,5 +235,6 @@ pub(super) fn validate_namespace(
         return Err(PublisherPolicyError::CorruptState);
     }
     validate_rows_and_heads(&project_auth_rows, &project_auth_heads)?;
+    git_upload_bootstrap.finish()?;
     Ok((records, total))
 }

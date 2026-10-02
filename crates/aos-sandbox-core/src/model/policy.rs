@@ -8,7 +8,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AttachmentSlotId, FeatureRef, Grant, ObjectDescriptor, RelativePath, ResourceId, Selector,
+    AttachmentSlotId, FeatureRef, Grant, ObjectDescriptor, RelativePath, ResourceId,
+    ResourceKind, Selector,
 };
 
 use super::{CacheDomain, ResourceProfile, ViewMutation, strictly_increasing};
@@ -34,6 +35,9 @@ pub enum InvalidPolicyModel {
     /// An optimization list contains a duplicate typed action.
     #[error("optimization entries must be unique")]
     DuplicateOptimization,
+    /// Whole-ODB grants, required features and the fixed capacity input disagree.
+    #[error("Git upload policy profile is incomplete or inconsistent")]
+    InvalidGitUploadProfile,
 }
 
 /// Stores one ordered logical namespace-policy action.
@@ -353,6 +357,12 @@ impl Policy {
         }) {
             return Err(InvalidPolicyModel::UnknownExplanationSource);
         }
+        validate_git_upload_profile(
+            &required_features,
+            &input_commitments,
+            &effective_grants,
+            &delegable_grants,
+        )?;
 
         Ok(Self {
             required_features,
@@ -427,6 +437,71 @@ impl Policy {
     pub fn explanation_reasons(&self) -> &[ExplanationReason] {
         &self.explanation_reasons
     }
+}
+
+fn validate_git_upload_profile(
+    features: &[FeatureRef],
+    inputs: &[ObjectDescriptor],
+    effective: &[Grant],
+    delegable: &[Grant],
+) -> Result<(), InvalidPolicyModel> {
+    use crate::registry::{
+        GIT_UPLOAD_CAPACITY_FEATURE_NAMESPACE, GIT_WHOLE_ODB_READ_FEATURE_NAMESPACE,
+    };
+    let namespaces = [
+        GIT_UPLOAD_CAPACITY_FEATURE_NAMESPACE,
+        GIT_WHOLE_ODB_READ_FEATURE_NAMESPACE,
+    ];
+    let feature_count = features.iter()
+        .filter(|feature| namespaces.contains(&feature.namespace()))
+        .count();
+    let media = crate::PortableMediaType::GitUploadCapacity.as_str();
+    let input_count = inputs.iter()
+        .filter(|descriptor| descriptor.media_type().as_str() == media)
+        .count();
+    let has_grant = effective.iter()
+        .any(|grant| grant.resource_kind() == ResourceKind::GitObjectDatabase);
+    let has_delegable_grant = delegable.iter()
+        .any(|grant| grant.resource_kind() == ResourceKind::GitObjectDatabase);
+    if feature_count == 0 && input_count == 0 && !has_grant && !has_delegable_grant {
+        return Ok(());
+    }
+    if feature_count != 2 || input_count != 1 || !has_grant {
+        return Err(InvalidPolicyModel::InvalidGitUploadProfile);
+    }
+    if namespaces.iter().any(|namespace| !features.iter().any(|feature| {
+        feature.namespace() == *namespace && feature.major() == 1 && feature.minor() == 0
+    })) {
+        return Err(InvalidPolicyModel::InvalidGitUploadProfile);
+    }
+    let descriptor = inputs.iter()
+        .find(|descriptor| descriptor.media_type().as_str() == media)
+        .ok_or(InvalidPolicyModel::InvalidGitUploadProfile)?;
+    if descriptor.encoded_size() == 0
+        || descriptor.encoded_size() > super::git_upload_capacity::MAXIMUM_GIT_UPLOAD_CAPACITY_BYTES_V1 as u64
+        || crate::validate_descriptor_role(crate::DescriptorRole::GitUploadCapacityInput, descriptor).is_err()
+    {
+        return Err(InvalidPolicyModel::InvalidGitUploadProfile);
+    }
+
+    let mut resource = None;
+    for grant in effective.iter().chain(delegable) {
+        if grant.resource_kind() != ResourceKind::GitObjectDatabase {
+            continue;
+        }
+        let Selector::Resource { resource: current } = grant.selector() else {
+            return Err(InvalidPolicyModel::InvalidGitUploadProfile);
+        };
+        if current.as_bytes() == &[0; 16]
+            || grant.operations().is_empty()
+            || grant.operations().bits() & !0x0007 != 0
+            || resource.is_some_and(|previous| previous != *current)
+        {
+            return Err(InvalidPolicyModel::InvalidGitUploadProfile);
+        }
+        resource = Some(*current);
+    }
+    Ok(())
 }
 
 fn validate_effective_grants(grants: &[Grant]) -> Result<(), InvalidPolicyModel> {

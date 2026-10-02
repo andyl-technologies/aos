@@ -61,6 +61,11 @@ const MAXIMUM_STRING_BYTES: usize = 64 * 1024;
 const MAXIMUM_DEPTH: usize = 64;
 
 mod model;
+mod git_upload_capacity;
+pub use git_upload_capacity::{
+    GitUploadBootstrapAppendV1, GitUploadBootstrapDataRefV1,
+    GitUploadBootstrapErrorV1, VerifiedPublisherPolicySourceV1,
+};
 mod project_authorization_source_v2;
 mod project_authorization_store_v2;
 pub(crate) use project_authorization_source_v2::{
@@ -532,9 +537,22 @@ impl<'journal> PublisherPolicyStore<'journal> {
         transaction_id: [u8; 16],
         records: Vec<JournalRecord>,
     ) -> Result<CommitResult, PublisherPolicyError> {
+        let (next_records, next_bytes) = self.bounded_replacement_totals(&records)?;
+        let transaction = JournalTransaction::new(transaction_id, records)?;
+        let result = self.journal.commit(&transaction)?;
+        self.records = next_records;
+        self.materialized_bytes = next_bytes;
+        Ok(result)
+    }
+
+    // Shared namespace arithmetic; ordinary construction remains after checks.
+    fn bounded_replacement_totals(
+        &self,
+        records: &[JournalRecord],
+    ) -> Result<(usize, usize), PublisherPolicyError> {
         let mut next_records = self.records;
         let mut next_bytes = self.materialized_bytes;
-        for record in &records {
+        for record in records {
             if record.value().is_none()
                 || record
                     .value()
@@ -564,11 +582,7 @@ impl<'journal> PublisherPolicyStore<'journal> {
                 "materialized namespace",
             ));
         }
-        let transaction = JournalTransaction::new(transaction_id, records)?;
-        let result = self.journal.commit(&transaction)?;
-        self.records = next_records;
-        self.materialized_bytes = next_bytes;
-        Ok(result)
+        Ok((next_records, next_bytes))
     }
 }
 

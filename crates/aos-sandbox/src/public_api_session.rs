@@ -42,6 +42,9 @@ pub(crate) use credentials::{
 };
 pub(crate) use original_registration::CurrentOriginalPublicRegistrationV3;
 pub use stream::AuthenticatedPublicApiStream;
+pub use credentials::{
+    PublisherPolicyBootstrapCredentialCustodyV1, PublisherPolicyBootstrapCredentialErrorV1,
+};
 
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const SESSION_LIFETIME_NANOSECONDS: u64 = 300_000_000_000;

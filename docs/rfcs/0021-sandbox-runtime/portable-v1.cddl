@@ -142,10 +142,32 @@ sandbox-spec-v2 = [
 ]
 
 ; Generic policy registry values are closed for v1.
-resource-kind = 0..14
+resource-kind = 0..17
 ; sandbox, execution, snapshot, tree, live-export, private-delta, secret,
 ; device, network-endpoint, ipc-service, cache-read, cache-publish,
-; environment, attachment-slot, child-delegation
+; environment, attachment-slot, child-delegation, capability, operation,
+; git-object-database (17, conditional whole-ODB feature only)
+
+; Signed full-policy input DATA, not an upload permit or complete usage account.
+git-upload-capacity-v1 = [
+  version: 1,
+  project: id,
+  git-resource: id,
+  immutable-export: id,
+  export-generation: u64,
+  generation-commitment: digest,
+  whole-audience-commitment: digest,
+  project-ceilings: [22*22 u64],
+  uniform-reservation: [22*22 u64],
+  cpu-period-micros: u64,
+  project-io-bytes-per-second: u64,
+  uniform-io-bytes-per-second: u64,
+  maximum-duration-nanoseconds: u64,
+  enforcement: [
+    ["aos.sandbox.enforcement.broker-ledger", 1, 0],
+    ["aos.sandbox.enforcement.cgroup-v2", 1, 0],
+  ],
+]
 
 operation-bits = 0..32767
 ; bit 0 discover, 1 metadata-read, 2 content-read, 3 execute, 4 create,

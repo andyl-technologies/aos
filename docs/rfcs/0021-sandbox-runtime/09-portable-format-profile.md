@@ -73,6 +73,7 @@ application/vnd.aos.sandbox.broker-authorization-plan.v1+cbor
 application/vnd.aos.sandbox.publisher-domain-plan.v1+cbor
 application/vnd.aos.sandbox.ownership-lease.v1+cbor
 application/vnd.aos.sandbox.ownership-transaction-receipt.v1
+application/vnd.aos.sandbox.git-upload-capacity.v1+cbor
 ```
 
 Object size, media type, and digest are verified before semantic use. The
@@ -120,9 +121,10 @@ metadata is rejection, not silent dropping.
 V1 integer registries are closed and have these exact assignments:
 
 ```text
-resource kind 0..14: sandbox, execution, snapshot, tree, live-export,
+resource kind 0..17: sandbox, execution, snapshot, tree, live-export,
   private-delta, secret, device, network-endpoint, ipc-service, cache-read,
-  cache-publish, environment, attachment-slot, child-delegation
+  cache-publish, environment, attachment-slot, child-delegation, capability,
+  operation, git-object-database
 operation bits 0..14: discover, metadata-read, content-read, execute, create,
   content-write, remove, rename, link, metadata-write, attach,
   lifecycle-control, delegate, publish, live-kernel-coupled-read
@@ -211,6 +213,7 @@ matching digest bytes with the wrong media type is invalid:
 | ownership lease signature subject | ownership-lease |
 | ownership transaction receipt signature subject | ownership-transaction-receipt |
 | policy explanation source | a descriptor also present in policy input commitments |
+| Git upload capacity input | git-upload-capacity, under both exact Git features below |
 
 `profile-selector.body` and the feature-owned roles above are legal only when
 the containing object lists that exact required feature and the registry entry
@@ -222,6 +225,36 @@ feature names fail closed.
 
 ### Initial feature registry
 
+The Git read/capacity pair is conditional full-project administrative input.
+A policy containing kind 17 MUST list both exact Git 1.0 features and exactly
+one capacity descriptor in its input commitments. Every effective/delegable
+Git grant MUST select the same nonzero Resource identity and use a nonempty
+subset of Discover, MetadataRead and ContentRead. It is not CacheRead or
+CachePublish, and neither a path slice nor a Profile body is a whole-ODB grant.
+The capacity's Git resource MUST differ from the ordinary signed cache resource.
+
+The fourteen-field capacity body is the exact CDDL profile above: a nonzero
+project/resource/export and positive immutable export generation, nonzero
+generation/audience commitments, two finite vectors in the existing 22-dimension
+ResourceDimension order, positive CPU period, project and uniform I/O rates,
+and maximum duration, followed by the two sorted enforcement 1.0 tuples.
+Its maximum is 645 encoded bytes, 67 visited CBOR values, collection size 22,
+byte-string size 32, text size 37 and depth 4. Uniform ConcurrentOperations
+is exactly one; checked full-slot multiplication MUST fit every project ceiling
+and the uniform I/O rate times slots MUST not exceed the project I/O rate.
+Duration is a nonadditive narrowing of an original operation cut, not a new
+relative timer.
+
+The unchanged 272-byte AOSPSC01 source signs the existing domain and first
+208 bytes, including the complete canonical Policy descriptor. That descriptor
+commits the capacity descriptor's domain/media/length/bytes object identity;
+raw SHA256 of capacity bytes is not object identity. No new signing purpose or
+issuer key is allocated. The independent issuer's full-project administrative
+designation, genuine provisioning, immutable export/currentness, complete
+project debt and physical enforcement remain required separate producers.
+An empty new account family may create non-admitting zero bootstrap DATA only;
+it MUST NOT imply zero total project usage or an upload permit.
+
 Only these exact `(namespace, major, minor)` triples have base-v1 semantics;
 all others are unknown required features until a later RFC adds their schema
 and compatibility rule:
@@ -229,6 +262,8 @@ and compatibility rule:
 | Feature triple | Permitted role and v1 meaning |
 | --- | --- |
 | `aos.sandbox.runtime.linux-systemd, 1, 0` | `sandbox-spec.runtime-profile`; booted Linux userspace with private user/PID/mount/UTS/IPC/network namespaces under the shared-kernel tier |
+| `aos.sandbox.git.whole-odb-read, 1, 0` | Kind 17 grants read discovery/metadata/content of the complete immutable ODB audience; no path selector or CacheRead reinterpretation |
+| `aos.sandbox.git.upload-operation-capacity, 1, 0` | Exactly one canonical signed-policy capacity input under the closed profile below; non-admitting bootstrap DATA |
 | `aos.sandbox.snapshot.project-version-fence, 1, 0` | snapshot fork publication requires an exact current project resource-version compare-and-swap fence |
 | `aos.sandbox.authentication.broker-session, 1, 0` | holder-channel-bound authenticated broker session; the peer identity is verified before a fixed broker method is admitted |
 | `aos.sandbox.cache.consumer-pin, 1, 0` | cache pin and unpin require an explicit, authorized view and optional attachment consumer; repeated pin renews one logical dependency and unpin drains every retained physical obligation |

@@ -52,6 +52,8 @@ pub enum ResourceKind {
     Capability = 15,
     /// A durable asynchronous operation resource.
     Operation = 16,
+    /// Read access to one complete immutable Git object-database audience.
+    GitObjectDatabase = 17,
 }
 
 /// Identifies one closed v1 operation bit.
