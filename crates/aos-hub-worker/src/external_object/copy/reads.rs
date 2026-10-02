@@ -27,7 +27,7 @@ use super::super::{
 };
 use super::{config, read_control, stream, window::DispatchWindow};
 
-/// Executes only configured HEAD, LIST or versioned SHA-256 inspection.
+/// Executes configured HEAD, LIST, versioned inspection or OCI range hashing.
 ///
 /// # Errors
 /// Refuses missing installed cohorts, active owners, changed publications,
@@ -44,6 +44,7 @@ pub(crate) async fn execute(
         StorageWorkOperation::Head { .. }
             | StorageWorkOperation::ListPage { .. }
             | StorageWorkOperation::InspectSha256 { .. }
+            | StorageWorkOperation::HashOciRange { .. }
     ) {
         return Ok(None);
     }
@@ -59,6 +60,15 @@ pub(crate) async fn execute(
         .find(|domain| domain.write_cohort.association.binding_id.get() == plan.binding_id)
         .ok_or_else(|| anyhow::anyhow!("external scan copy domain absent"))?;
     let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
+    // Validate the signed inventory continuation before acquiring a lease or
+    // touching the provider. Its selected version cannot be renewed by HEAD.
+    let hash_range = if matches!(plan.operation, StorageWorkOperation::HashOciRange { .. }) {
+        Some(super::hash_range::Selection::from_operation(
+            &plan.operation,
+        )?)
+    } else {
+        None
+    };
     let (purpose, effect, relative) = match &plan.operation {
         StorageWorkOperation::ListPage { prefix, limit, .. } => {
             ensure!(*limit > 0, "external scan page is empty");
@@ -66,6 +76,9 @@ pub(crate) async fn execute(
         }
         StorageWorkOperation::Head { path } => ("read", LeaseEffect::Head, path.as_str()),
         StorageWorkOperation::InspectSha256 { path, .. } => {
+            ("read", LeaseEffect::Read, path.as_str())
+        }
+        StorageWorkOperation::HashOciRange { path, .. } => {
             ("read", LeaseEffect::Read, path.as_str())
         }
         _ => anyhow::bail!("external scan operation differs"),
@@ -157,7 +170,10 @@ pub(crate) async fn execute(
     crate::direct_upload::provider_capacity::configure(u32::from(domain.provider_concurrency))?;
     let permit = crate::direct_upload::provider_capacity::acquire_class_checked(
         1,
-        if matches!(plan.operation, StorageWorkOperation::InspectSha256 { .. }) {
+        if matches!(
+            plan.operation,
+            StorageWorkOperation::InspectSha256 { .. } | StorageWorkOperation::HashOciRange { .. }
+        ) {
             crate::direct_upload::provider_capacity::Class::Bulk
         } else {
             crate::direct_upload::provider_capacity::Class::Metadata
@@ -337,6 +353,48 @@ pub(crate) async fn execute(
                     sha256,
                 },
                 identity.size,
+            )
+        }
+        StorageWorkOperation::HashOciRange { .. } => {
+            let selection = hash_range
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("external inventory range absent"))?;
+            let Some(identity) = head(&surface, selection.path, plan, &object, &window).await?
+            else {
+                return Ok(Some(crate::surface::storage_work_result(
+                    plan,
+                    Outcome::NotFound,
+                    0,
+                )));
+            };
+            selection.validate_identity(&plan.object_key(selection.path)?, &identity)?;
+            let signed = surface.versioned_conditional_range_request(
+                selection.path,
+                &selection.source,
+                selection.start,
+                selection.bytes,
+                object.clock().observed_at,
+                30,
+            )?;
+            let result = stream::hash_range(
+                &signed,
+                &stream::SourceRange {
+                    source: &selection.source,
+                    offset: selection.start,
+                    bytes: selection.bytes,
+                },
+                selection.continuation.clone(),
+                &window,
+            )
+            .await?;
+            (
+                Outcome::OciRangeHashed {
+                    source: identity,
+                    start: selection.start,
+                    end: selection.end,
+                    sha256_state: result.source_state,
+                },
+                selection.bytes,
             )
         }
         _ => anyhow::bail!("external scan operation differs"),

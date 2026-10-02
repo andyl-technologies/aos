@@ -5,6 +5,8 @@
 
 mod bytes;
 
+mod hash_range;
+
 mod config;
 
 mod protocol;
