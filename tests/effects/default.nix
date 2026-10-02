@@ -104,7 +104,7 @@ in
             ${pkgs.python3}/bin/python3 ${./host-store-seed-test.py} ${pkgs.bash}/bin/bash ${pkgs.coreutils} ${../../pkgs/boot/_aos-boot-preparations/aos-host-store-seed.sh} ${pkgs.nix}
             ${pkgs.python3}/bin/python3 ${./mount-var-test.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/mount-var.sh}
             ${pkgs.python3}/bin/python3 ${./seed-profile-reconciliation.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh} ${pkgs.coreutils}/bin ${pkgs.jq}/bin
-            ${pkgs.python3}/bin/python3 ${./network-handler-test.py} ${../../pkgs/system/_systemd-abilities/network-handler.py}
+            ${pkgs.python3}/bin/python3 ${./network-handler-test.py} ${../../pkgs/system/_systemd-abilities/network-handler.py} ${pkgs.systemd}/lib/tmpfiles.d/systemd-resolve.conf
             ${pkgs.python3}/bin/python3 ${../abilities/reference-nginx}/test-binding-handler.py
             ${pkgs.python3}/bin/python3 ${../abilities/native-handler-interception}/self-test.py ${../abilities/native-handler-interception}/native-handler-interception.py
             ${pkgs.python3}/bin/python3 ${../abilities/native-dependency-barrier}/self-test.py ${../abilities/native-dependency-barrier}/native-dependency-barrier.py
