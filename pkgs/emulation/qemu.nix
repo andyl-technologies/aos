@@ -1672,7 +1672,10 @@ in
               environment["CC"] = command[0]
               environment["CFLAGS"] = shlex.join(flags)
               environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
-              for name in ("net-output-stop", "lifecycle-projection", "control-deferred", "control-observer"):
+              for name in (
+                  "net-output-stop", "lifecycle-projection", "control-deferred",
+                  "control-observer", "control-delivery",
+              ):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
                           sys.executable,
@@ -1681,7 +1684,8 @@ in
                       ], cwd=entry["directory"], env=environment,
                          stdout=result, check=True)
               PYTHON
-              cat net-output-stop.result lifecycle-projection.result control-deferred.result control-observer.result
+              cat net-output-stop.result lifecycle-projection.result \
+                control-deferred.result control-observer.result control-delivery.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
@@ -1690,6 +1694,8 @@ in
                 control-deferred.result
               grep -Fxq 'PASS native OOB template observer, guarded PREPARE/restart, cold mutation' \
                 control-observer.result
+              grep -Fxq 'PASS native delivery witness: disabled, deduplicated, late, callback, child PID' \
+                control-delivery.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -2670,6 +2676,7 @@ in
                    r"&qemu_plugin_rr_control_complete_generation\),\s*"
                    r"qatomic_load_acquire\("
                    r"&qemu_plugin_rr_control_schedule_token\)\);\s*"
+                   r'qemu_plugin_trace_control_delivery\("request"\);\s*'
                    r"qemu_cpu_kick\(first_cpu\);", 1),
                   ("request dispatch event notification count",
                    request_boundary,
@@ -2684,6 +2691,7 @@ in
                    r"QEMU_PLUGIN_WAKE_EVENT_DRAINED\);\s*\}\s*"
                    r"if \(single_threaded_rr &&\s*"
                    r"qemu_plugin_crucible_vmstop_quiesced\(\)\) \{\s*"
+                   r'qemu_plugin_trace_control_delivery\("wake-stopped"\);\s*'
                    r"qemu_plugin_crucible_rr_control_boundary_defer\(\);\s*"
                    r"\} else if \(single_threaded_rr\) \{\s*"
                    r"qemu_plugin_request_rr_control_boundary\(\);\s*"
@@ -2740,6 +2748,7 @@ in
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_pending, 0\);\s*"
                    r"qemu_plugin_rearm_deferred_control_boundary\(\);\s*"
+                   r'qemu_plugin_trace_control_delivery\("advance-settled"\);\s*'
                    r"rr_crucible_sim_signal_time_advance_wake\(\);", 1),
                   ("time advance RR dispatch handles self directly",
                    time_advance_rr_dispatch_code,
@@ -2822,6 +2831,7 @@ in
                    r"qatomic_store_release\("
                    r"&qemu_plugin_time_advance_pending, 0\);\s*"
                    r"qemu_plugin_rearm_deferred_control_boundary\(\);\s*"
+                   r'qemu_plugin_trace_control_delivery\("advance-settled"\);\s*'
                    r"rr_crucible_sim_signal_time_advance_wake\(\);", 1),
                   ("time advance completion finalizes from RR idle",
                    time_advance_finalize_code,
@@ -3381,6 +3391,7 @@ in
                    r"&qemu_plugin_rr_control_complete_generation,\s*"
                    r"request_generation\);\s*"
                    r"qemu_crucible_fault_lifecycle_ready_marker_cancel\(\);\s*"
+                   r'qemu_plugin_trace_control_delivery\("cancel"\);\s*'
                    r"if \(request_generation != complete_generation\) \{\s*"
                    r'rr_crucible_sim_trace_control_boundary\(\s*"cancel",\s*'
                    r"request_generation,\s*request_generation,\s*"
@@ -3750,6 +3761,7 @@ in
                    r"!first_cpu \|\| qemu_force_shutdown_requested\(\) \|\|\s*"
                    r"qatomic_load_acquire\(&qemu_plugin_time_advance_pending\)\) "
                    r"\{\s*return;\s*\}\s*"
+                   r'qemu_plugin_trace_control_delivery\("rearm"\);\s*'
                    r"if \(qemu_plugin_quiesced_control_boundary_available\(\)\) "
                    r"\{\s*qemu_plugin_schedule_control_boundary\(\);\s*"
                    r"\} else if \(!qemu_plugin_crucible_vmstop_pending\(\) &&\s*"
@@ -4152,7 +4164,8 @@ in
                 "$out/share/aos/crucible/procfd-flags.result"
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
-              for name in net-output-stop lifecycle-projection control-deferred control-observer; do
+              for name in net-output-stop lifecycle-projection control-deferred \
+                control-observer control-delivery; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
