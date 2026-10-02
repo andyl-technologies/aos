@@ -470,6 +470,9 @@ struct PublicationManifestRoute {
     liveness_sha256: String,
 }
 
+/// Longest validity window a signed publication manifest may declare.
+const MAX_PUBLICATION_MANIFEST_VALIDITY_SECS: i64 = 24 * 60 * 60;
+
 /// Direct-route adapter backed by a controller-pinned signed publication manifest.
 ///
 /// The manifest is controller configuration, not content read from the probed
@@ -483,14 +486,20 @@ pub struct SignedManifestRouteObservationProvider {
 impl SignedManifestRouteObservationProvider {
     /// Verifies and loads a signed direct-publication manifest.
     ///
+    /// Loading checks authenticity and structure only. The validity window is
+    /// evaluated by [`RouteObservationProvider::observe`] against the probe
+    /// time, so an operator proof that has lapsed makes direct routes
+    /// unobservable without failing the runtime that is built around it.
+    ///
     /// # Errors
     ///
     /// Returns an error for malformed or non-canonical base64url, an invalid
-    /// Ed25519 signature, duplicate route generations, or invalid bounds.
+    /// Ed25519 signature, an unsupported version, a validity window that is
+    /// inverted or longer than one day, duplicate route generations, or
+    /// invalid bounds.
     pub fn from_signed_json(
         json: &str,
         verifying_key: &str,
-        now: i64,
         http: Arc<dyn HttpClient>,
     ) -> Result<Self> {
         anyhow::ensure!(
@@ -528,12 +537,11 @@ impl SignedManifestRouteObservationProvider {
             .context("publication manifest signature is invalid")?;
         let manifest: PublicationManifestSet =
             serde_json::from_slice(&payload).context("decoding publication manifest payload")?;
+        anyhow::ensure!(manifest.version == 1, "publication manifest version is unsupported");
         anyhow::ensure!(
-            manifest.version == 1
-                && manifest.issued_at <= now
-                && manifest.expires_at >= now
-                && manifest.expires_at - manifest.issued_at <= 24 * 60 * 60,
-            "publication manifest version or validity window is invalid"
+            manifest.issued_at <= manifest.expires_at
+                && manifest.expires_at - manifest.issued_at <= MAX_PUBLICATION_MANIFEST_VALIDITY_SECS,
+            "publication manifest validity window is invalid"
         );
         anyhow::ensure!(
             manifest.routes.len() <= 4096,
@@ -3120,5 +3128,96 @@ mod tests {
             super::dns_txt_value("aos-domain-verify=abc").unwrap(),
             "aos-domain-verify=abc"
         );
+    }
+
+    /// Signs a one-route publication manifest for `route_target()` whose
+    /// validity window is `[issued_at, expires_at]`.
+    fn signed_publication_manifest(
+        signing_key: &ed25519_dalek::SigningKey,
+        issued_at: i64,
+        expires_at: i64,
+        edge_body: &[u8],
+    ) -> String {
+        let payload = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "issuedAt": issued_at,
+            "expiresAt": expires_at,
+            "routes": [{
+                "routeId": "route:test",
+                "configurationGeneration": 4,
+                "configurationDigest": "a".repeat(64),
+                "endpointId": "endpoint:test",
+                "endpointGeneration": 7,
+                "accessPolicyDigest": "b".repeat(64),
+                "publicationManifestId": "manifest:4",
+                "livenessUrl": "https://cache.example/cache/live-object",
+                "livenessSha256": hex::encode(Sha256::digest(edge_body)),
+            }],
+        }))
+        .unwrap();
+        let signature = signing_key.sign(&payload);
+        serde_json::json!({
+            "payload": URL_SAFE_NO_PAD.encode(&payload),
+            "signature": URL_SAFE_NO_PAD.encode(signature.to_bytes()),
+        })
+        .to_string()
+    }
+
+    fn publication_manifest_provider(
+        signing_key: &ed25519_dalek::SigningKey,
+        issued_at: i64,
+        expires_at: i64,
+    ) -> Result<SignedManifestRouteObservationProvider> {
+        let edge_body = b"live-object".to_vec();
+        let manifest = signed_publication_manifest(signing_key, issued_at, expires_at, &edge_body);
+        SignedManifestRouteObservationProvider::from_signed_json(
+            &manifest,
+            &URL_SAFE_NO_PAD.encode(signing_key.verifying_key().as_bytes()),
+            Arc::new(MockRouteHttp {
+                url: "https://cache.example/cache/live-object".to_string(),
+                body: edge_body,
+            }),
+        )
+    }
+
+    #[tokio::test]
+    async fn lapsed_publication_manifest_loads_but_does_not_observe() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[13_u8; 32]);
+        let now = clock::now_unix_secs();
+
+        // A proof that expired an hour ago must not fail runtime construction,
+        // which would take unrelated Hub requests down with it.
+        let lapsed = publication_manifest_provider(&signing_key, now - 7 * 3600, now - 3600)
+            .expect("a lapsed manifest still loads");
+        let error = lapsed.observe(&route_target()).await.unwrap_err();
+        assert!(
+            error.to_string().contains("not currently valid"),
+            "unexpected error: {error:#}"
+        );
+
+        let current = publication_manifest_provider(&signing_key, now - 60, now + 3600)
+            .expect("a current manifest loads");
+        let evidence = current.observe(&route_target()).await.unwrap();
+        assert_eq!(evidence.publication_manifest_id.as_deref(), Some("manifest:4"));
+    }
+
+    #[test]
+    fn publication_manifest_window_must_be_ordered_and_bounded() {
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[13_u8; 32]);
+        let now = clock::now_unix_secs();
+
+        assert!(publication_manifest_provider(&signing_key, now, now - 1).is_err());
+        assert!(publication_manifest_provider(
+            &signing_key,
+            now,
+            now + MAX_PUBLICATION_MANIFEST_VALIDITY_SECS + 1
+        )
+        .is_err());
+        assert!(publication_manifest_provider(
+            &signing_key,
+            now,
+            now + MAX_PUBLICATION_MANIFEST_VALIDITY_SECS
+        )
+        .is_ok());
     }
 }
