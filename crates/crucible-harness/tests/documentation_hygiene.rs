@@ -35,13 +35,11 @@ const STD_31_TERMS: &[&str] = &[
 #[test]
 fn comments_only_documentation_policy_matches_root_guidance() -> Result<(), Box<dyn Error>> {
     let root = repo_root();
-    let claude = fs::read_to_string(root.join("CLAUDE.md"))?;
     let agents = fs::read_to_string(root.join("AGENTS.md"))?;
     let standards =
         fs::read_to_string(root.join("docs/rfcs/0010-crucible/28-engineering-standards.md"))?;
     let mut failures = Vec::new();
 
-    require_terms("CLAUDE.md", &claude, COMMENTS_ONLY_TERMS, &mut failures);
     require_terms("AGENTS.md", &agents, COMMENTS_ONLY_TERMS, &mut failures);
     require_terms(
         "28-engineering-standards.md STD-30",
@@ -146,7 +144,7 @@ fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>>
         &documentation_hygiene_nix,
         &[
             "tasks=T-STD-12",
-            "source_filter=CLAUDE.md,AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix",
+            "source_filter=AGENTS.md,documentation_hygiene.rs,phase1-documentation-hygiene.nix",
             "rfc_consistency_check=checks.crucible.phase1.rfcConsistency",
             "phase_gate_wiring_check=checks.crucible.phase1.phaseGateWiring",
         ],
@@ -167,10 +165,7 @@ fn doc_lint_and_gate_catalog_checks_remain_wired() -> Result<(), Box<dyn Error>>
     require_terms(
         "pkgs/tools/crucible/_source.nix",
         &crucible_source_nix,
-        &[
-            "pathString == \"${repoRootString}/CLAUDE.md\"",
-            "pathString == \"${repoRootString}/AGENTS.md\"",
-        ],
+        &["pathString == \"${repoRootString}/AGENTS.md\""],
         &mut failures,
     );
 
