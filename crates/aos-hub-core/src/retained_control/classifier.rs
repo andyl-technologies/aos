@@ -494,10 +494,17 @@ pub fn validate_complete_method_manifest(
         let Some(descriptor) = generated.get(&method.path()) else {
             continue;
         };
+        // A plan may extend the shared plan envelope only where the review
+        // must also carry typed readiness evidence: GC candidates and
+        // blockers, or the registry-deletion blocker breakdown.
+        let extended_plan_response = matches!(
+            (method.path().as_str(), descriptor.response.as_str()),
+            ("ContainerService/PlanRunContainerGc", "ContainerGcPlanResponse")
+                | ("RegistryService/PlanDeleteRegistry", "RegistryDeletePlanResponse")
+        );
         if matches!(method.class, MethodClass::Plan { .. })
             && descriptor.response != "TopologyPlanResponse"
-            && !(method.path() == "ContainerService/PlanRunContainerGc"
-                && descriptor.response == "ContainerGcPlanResponse")
+            && !extended_plan_response
         {
             violations.push(violation(
                 method,

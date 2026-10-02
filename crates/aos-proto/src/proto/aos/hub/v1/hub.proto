@@ -23,8 +23,13 @@ service RegistryService {
   rpc GetRegistryMetadata(GetRegistryRequest) returns (RegistryMetadataResponse);
   rpc PlanUpdateRegistryMetadata(PlanUpdateRegistryMetadataRequest) returns (TopologyPlanResponse);
   rpc UpdateRegistryMetadata(ApplyRegistryMutationRequest) returns (RegistryMetadataChangeResponse);
-  rpc PlanDeleteRegistry(PlanDeleteTopologyResourceRequest) returns (TopologyPlanResponse);
-  rpc DeleteRegistry(ApplyDeleteTopologyResourceRequest) returns (DeleteTopologyResourceResponse);
+  // Plans deletion and reports exactly what blocks it or what the deletion
+  // operation will do first.
+  rpc PlanDeleteRegistry(PlanDeleteTopologyResourceRequest) returns (RegistryDeletePlanResponse);
+  // Starts the reviewed registry deletion operation. The operation acquires
+  // the purge fence, scans and inventories placements, and deletes the
+  // registry once every precondition holds.
+  rpc DeleteRegistry(ApplyDeleteTopologyResourceRequest) returns (OperationResponse);
 }
 
 // Orgs, membership, and invitations (RFC-0004 "Tenancy and IAM").
@@ -4586,6 +4591,75 @@ message ApplyDeleteTopologyResourceRequest {
 }
 
 message DeleteTopologyResourceResponse { bool deleted = 1; }
+
+// Exact counts of every condition that prevents or delays final registry
+// deletion. Each count is independent; zero means the condition is absent.
+message RegistryDeletionBlockers {
+  // OCI repositories that still exist; the catalog must be retired first.
+  uint64 repositories = 1;
+  // OCI catalog blobs that remain after repository retirement.
+  uint64 catalog_objects = 2;
+  // Active OCI upload or publication sessions and unexpired OCI leases.
+  uint64 active_sessions = 3;
+  // Active registry publications, multipart uploads, or publish leases.
+  uint64 active_publications = 4;
+  // Binary-cache retention roots supplied by the registry.
+  uint64 retained_cache_roots = 5;
+  // Unretired staged-release objects that hold container blobs.
+  uint64 staged_container_objects = 6;
+  // OCI GC runs that are applying; they must finish first.
+  uint64 applying_gc_runs = 7;
+  // OCI GC placement actions that are pending, claimed, or failed.
+  uint64 pending_gc_actions = 8;
+  // Untracked-object repairs that are planned or in progress.
+  uint64 active_untracked_repairs = 9;
+  // Live tracked objects in the placements' latest provider inventories.
+  uint64 tracked_provider_objects = 10;
+  // Live untracked objects in the placements' latest provider inventories.
+  uint64 untracked_provider_objects = 11;
+  // Placements without a complete empty inventory under the deletion fence.
+  uint64 placements_needing_inventory = 12;
+  // Image snapshot references and snapshot lease holds.
+  uint64 snapshot_references = 13;
+  // Planned, never-applied OCI GC runs the deletion operation abandons.
+  uint64 abandonable_gc_runs = 14;
+  // Placements that cannot be inventoried, for example offline placements.
+  uint64 unavailable_placements = 15;
+}
+
+// Deletion readiness of one registry placement.
+message RegistryDeletionPlacement {
+  string placement_name = 1;
+  // ready, needs_inventory, collecting, needs_scan, has_objects, or unavailable.
+  string inventory_state = 2;
+  // Human-readable explanation of the state.
+  string detail = 3;
+  uint64 tracked_provider_objects = 4;
+  uint64 untracked_provider_objects = 5;
+  // Observation time of the latest complete inventory, or zero.
+  int64 inventory_observed_at = 6;
+}
+
+// Exact registry deletion readiness shared by the plan and the operation.
+message RegistryDeletionReadiness {
+  // blocked: the apply is refused until blocking_reasons are resolved.
+  // automatic: the deletion operation resolves automatic_steps itself.
+  // ready: the registry can be deleted immediately.
+  string verdict = 1;
+  RegistryDeletionBlockers blockers = 2;
+  repeated RegistryDeletionPlacement placements = 3;
+  // One sentence per condition that only an operator can resolve.
+  repeated string blocking_reasons = 4;
+  // One sentence per step the deletion operation performs before deleting.
+  repeated string automatic_steps = 5;
+  // Whether a registry purge fence currently blocks new registry writes.
+  bool purge_fence_held = 6;
+}
+
+message RegistryDeletePlanResponse {
+  TopologyPlan plan = 1;
+  RegistryDeletionReadiness readiness = 2;
+}
 
 // A delivery workflow coordinates existing topology resources without changing
 // their ownership or granting cross-scope permissions implicitly.
