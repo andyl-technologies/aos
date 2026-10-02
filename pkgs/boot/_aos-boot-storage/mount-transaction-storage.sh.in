@@ -37,7 +37,6 @@ for candidate in "${candidates[@]}"; do
   [ "$configured_match" = true ] || continue
   if mount -t vfat -o rw,noatime,fmask=0077,dmask=0077 "$candidate" "$target"; then
     install -d -m 0700 "$target/aos/initrd-stage-journal"
-    install -d -m 0700 "$target/aos/host-stage-journal"
     exit 0
   fi
 done

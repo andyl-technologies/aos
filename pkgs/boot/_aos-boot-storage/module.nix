@@ -329,9 +329,11 @@ in {
         "boot-storage.aos-boot-transaction-storage" = transactionStorageMount // {enable = stage == "initrd";};
       };
     }
-    (lib.mkIf (builtins.elem stage ["initrd" "host"]) {
+    # The ESP backs the initrd journal. Host activation keeps its own profile
+    # journal on persistent state rather than opening a second ESP journal.
+    (lib.mkIf (stage == "initrd") {
       aos.abilities.bootTransactionStorage.operations.view.effects.stage = {
-        input.path = "${transactionStorageRoot}/aos/${stage}-stage-journal";
+        input.path = "${transactionStorageRoot}/aos/initrd-stage-journal";
       };
     })
   ];
