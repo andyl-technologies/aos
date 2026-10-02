@@ -1,8 +1,8 @@
 """Builds deterministic infra bundles from actual AOS OCI and scan evidence.
 
 Normalization changes only the layout's source tag. Original index and build
-provenance remain bound as build inputs, while the delivery wrapper binds the
-resulting component index to exact GitHub source and workflow coordinates.
+provenance remain bound as build inputs. The wrapper records either the strict
+legacy workflow coordinates or an explicitly selected local Git observation.
 """
 
 import datetime
@@ -17,6 +17,7 @@ import tarfile
 import tempfile
 
 from cargo_inventory import enrich_cargo_inventory
+import local_source
 from transport import DeliveryError, encoded
 
 
@@ -227,7 +228,14 @@ def pack(root, output):
 
 def build_bundle(args):
     """Produces a v2 application bundle only after actual scanning succeeds."""
-    prove_source(args.source_sha)
+    source_mode = getattr(args, "source_proof", "legacy")
+    if source_mode == "local":
+        source_proof = local_source.prove(args.source_sha, REPOSITORY, REF)
+    elif source_mode == "legacy":
+        prove_source(args.source_sha)
+        source_proof = None
+    else:
+        raise DeliveryError("source proof mode is invalid")
     declaration = declaration_content(args.declaration)
     project = read_json(args.declaration)
     components = project.get("releaseGroups", {}).get("native", {}).get("components")
@@ -302,8 +310,6 @@ def build_bundle(args):
             "repository": REPOSITORY,
             "revision": args.source_sha,
             "component": COMPONENT,
-            "workflowRef": WORKFLOW,
-            "runId": os.environ["GITHUB_RUN_ID"],
             "imageIndexDigest": index_digest,
             "originalImageIndexDigest": original_digest,
             "aosBuildEvidence": build_provenance,
@@ -311,6 +317,11 @@ def build_bundle(args):
             "artifactCatalog": catalog_value,
             "normalization": "component source tag only",
         }
+        if source_proof is None:
+            provenance.update(workflowRef=WORKFLOW, runId=os.environ["GITHUB_RUN_ID"])
+        else:
+            provenance["apiVersion"] = "https://aos.dev/attestations/local-bundle/v1"
+            provenance["sourceProof"] = source_proof
         (attestations / "slsa-provenance.json").write_bytes(encoded(provenance))
         media = {
             "sbom": "application/spdx+json",
@@ -341,10 +352,18 @@ def build_bundle(args):
             "sourceRevision": args.source_sha,
             "sourceRef": REF,
             "declarationDigest": digest(declaration),
-            "configurationDigest": archive_digest(args.source_sha),
-            "apiSchemaDigest": archive_digest(args.source_sha, "crates/aos-proto/src/proto/aos/hub"),
+            "configurationDigest": source_proof["archiveDigest"] if source_proof else archive_digest(args.source_sha),
+            "apiSchemaDigest": (local_source.archive_digest if source_proof else archive_digest)(
+                args.source_sha, "crates/aos-proto/src/proto/aos/hub"
+            ),
             "images": {COMPONENT: {"image": image, "attestations": descriptors}},
         }
+        if source_proof is not None:
+            # Registration IDs remain configured v2 fields. The separate local
+            # proof observes source bytes and grants no remote authority.
+            manifest["sourceProof"] = source_proof
         (root / "manifest.json").write_bytes(encoded(manifest))
         catalog.unlink()
+        if source_proof is not None:
+            local_source.recheck(source_proof)
         pack(root, args.output)

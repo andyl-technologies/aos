@@ -43,10 +43,33 @@ Worker's deployment identity, storage attachment, Native origin and shared
 ingress/storage keys. Qualify the actual installed source and unchanged runtime
 before enabling independently accepted provider work.
 
-The former Actions-specific `aos-delivery` transport is retired from the
-delivery procedure. Its source remains for the separate local publisher
-implementation; it currently requires an Actions identity proof and is not a
-working manual publisher. Do not fabricate workflow environment values or
-bypass its source/authentication checks. A local replacement must preserve
-exact source/artifact commitments and the independently authorized deployment
-protocol. No automated release submission is claimed here.
+`aos-delivery prove-source --source-proof local --source-sha FULL_SHA` observes
+the exact clean registered checkout. It requires the registered source branch
+and repository origin, exact HEAD and branch SHA, and no tracked, staged,
+untracked or ignored files. Keep build inputs and outputs outside that checkout.
+Its JSON records the observed repository/ref, commit, tree and Git archive digest;
+it grants no CI identity, provider qualification or publication authority.
+
+Select the same explicit mode for local bundle construction:
+
+```text
+aos-delivery bundle --source-proof local --source-sha FULL_SHA \
+  --declaration PROJECT_JSON --image IMAGE_OUTPUT --evidence EVIDENCE_OUTPUT \
+  --cataloger SYFT_BINARY --scanner GRYPE_BINARY \
+  --database-status ACTUAL_DATABASE_STATUS_JSON --output NEW_BUNDLE_TAR
+```
+
+The declaration is the evaluated `deployment/application-project.nix`. The
+existing OCI closure, build evidence, package recognition, real scanner and
+database gates still apply. Source proof is rechecked after scanning and before
+packing. The output is one exclusively created USTAR file, not a directory or
+deployment receipt. Local provenance uses its own API version and source proof;
+it contains no workflow ref/run ID. Existing v2 repository/owner IDs remain
+configured registration fields; they are not locally observed remote identity
+or caller authorization.
+
+The legacy source mode remains the default. Upload, reconciliation and watch
+retain their strict legacy caller/authentication checks and accept no local-mode
+flag. Their former Actions transport is retired from this local procedure. Do
+not fabricate workflow environment values. No local release submission or
+backend acceptance is claimed by successful bundle construction.

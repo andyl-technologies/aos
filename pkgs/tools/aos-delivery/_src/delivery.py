@@ -219,9 +219,11 @@ def main(argv=None):
     commands = parser.add_subparsers(dest="command", required=True)
     prove = commands.add_parser("prove-source")
     prove.add_argument("--source-sha", required=True)
+    prove.add_argument("--source-proof", choices=("legacy", "local"), default="legacy")
     database = commands.add_parser("validate-database")
     database.add_argument("--status", required=True)
     bundle = commands.add_parser("bundle")
+    bundle.add_argument("--source-proof", choices=("legacy", "local"), default="legacy")
     bundle_inputs = (
         "source-sha", "declaration", "image", "evidence",
         "cataloger", "scanner", "database-status", "output",
@@ -251,7 +253,11 @@ def main(argv=None):
         validate_database(artifact.read_json(args.status))
         return
     if args.command == "prove-source":
-        artifact.prove_source(args.source_sha)
+        if args.source_proof == "local":
+            proof = artifact.local_source.prove(args.source_sha, artifact.REPOSITORY, artifact.REF)
+            print(encoded(proof).decode())
+        else:
+            artifact.prove_source(args.source_sha)
         return
     if args.command == "bundle":
         artifact.build_bundle(args)

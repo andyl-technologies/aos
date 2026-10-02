@@ -33,7 +33,7 @@ mkDerivation {
       name = "install";
       script = ''
         mkdir -p "$out/bin" "$out/lib/aos-delivery"
-        cp delivery.py transport.py artifact.py cargo_inventory.py "$out/lib/aos-delivery/"
+        cp delivery.py transport.py artifact.py cargo_inventory.py local_source.py "$out/lib/aos-delivery/"
         cat > "$out/bin/aos-delivery" <<EOF
         #!${bash}/bin/bash
         export SSL_CERT_FILE=${ca-certificates}/etc/ssl/certs/ca-certificates.crt

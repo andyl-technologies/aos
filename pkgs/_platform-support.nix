@@ -1055,6 +1055,8 @@ let
     "tools/aos-delivery/_src/cargo_inventory_test.py" = "target-independent-source";
     "tools/aos-delivery/_src/delivery.py" = "target-independent-source";
     "tools/aos-delivery/_src/delivery_test.py" = "target-independent-source";
+    "tools/aos-delivery/_src/local_source.py" = "target-independent-source";
+    "tools/aos-delivery/_src/local_source_test.py" = "target-independent-source";
     "tools/aos-delivery/_src/transport.py" = "target-independent-source";
     "tools/_uv-darwin/security.tbd" = "target-independent-source";
     "tools/_uv-darwin/systemconfiguration.tbd" = "target-independent-source";
