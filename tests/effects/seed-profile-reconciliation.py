@@ -12,7 +12,17 @@ import unittest
 
 BASH, SOURCE, COREUTILS, JQ = sys.argv[1:5]
 del sys.argv[1:5]
+metadata_path = sys.argv.pop(1) if len(sys.argv) > 1 else None
 source = Path(SOURCE).read_text()
+library_metadata = (
+    json.loads(Path(metadata_path).read_text())
+    if metadata_path is not None
+    else {
+        "store_path": "/nix/store/selected-library",
+        "nar_hash": "sha256:" + "a" * 64,
+        "nar_size": 1255160,
+    }
+)
 
 
 def shell_function(name):
@@ -28,6 +38,7 @@ FUNCTIONS = "\n".join(
         "publish_image_state",
         "update_running_image_state",
         "repair_image_retention",
+        "validate_module_library_identity",
     )
 )
 
@@ -76,7 +87,7 @@ class SeedReconciliation(unittest.TestCase):
         # read-only even when an earlier publisher used another whitespace style.
         self.state.write_text(json.dumps(self.document, separators=(",", ":")))
 
-    def run_helpers(self, commands):
+    def run_helpers(self, commands, extra_variables=None):
         variables = {
             "image_dir": str(self.image),
             "retention": str(self.retention),
@@ -87,6 +98,7 @@ class SeedReconciliation(unittest.TestCase):
             "module_library_root": self.targets["module-library"],
             "evaluation_descriptor": self.targets["evaluation-descriptor"],
         }
+        variables.update(extra_variables or {})
         assignments = "\n".join(
             f"{name}={shlex.quote(value)}" for name, value in variables.items()
         )
@@ -222,6 +234,54 @@ class SeedReconciliation(unittest.TestCase):
         self.assertEqual(path.read_text(), "external contents")
         self.assertFalse((self.retention / "toplevel").is_symlink())
         self.assertEqual(self.spy.read_text(), "")
+
+    def test_native_library_metadata_is_accepted(self):
+        result = self.run_helpers(
+            "validate_module_library_identity",
+            {"module_library": json.dumps(library_metadata)},
+        )
+
+        self.assert_success(result)
+
+    def test_noncanonical_hashes_are_rejected(self):
+        hashes = (
+            "sha256-" + "A" * 43 + "=",
+            "sha256:" + "A" * 64,
+            "sha256:" + "a" * 63,
+            "sha256:" + "a" * 65,
+            "sha256:" + "g" * 64,
+            "sha256:" + "a" * 64 + "\n",
+            123,
+        )
+        for digest in hashes:
+            with self.subTest(digest=digest):
+                metadata = library_metadata | {"nar_hash": digest}
+
+                result = self.run_helpers(
+                    "validate_module_library_identity",
+                    {"module_library": json.dumps(metadata)},
+                )
+
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_invalid_library_shape_and_size_are_rejected(self):
+        cases = (
+            library_metadata | {"nar_size": 0},
+            library_metadata | {"nar_size": -1},
+            library_metadata | {"nar_size": 1.5},
+            library_metadata | {"nar_size": True},
+            library_metadata | {"nar_size": "1255160"},
+            library_metadata | {"unexpected": "field"},
+            {key: value for key, value in library_metadata.items() if key != "nar_hash"},
+        )
+        for metadata in cases:
+            with self.subTest(metadata=metadata):
+                result = self.run_helpers(
+                    "validate_module_library_identity",
+                    {"module_library": json.dumps(metadata)},
+                )
+
+                self.assertNotEqual(result.returncode, 0)
 
 
 if __name__ == "__main__":
