@@ -24,10 +24,10 @@ in
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/container_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
-    python3 ../tests/terrane/container_vectors.py --emit \
-      --blake3-bin "$reference_binary" > ../tests/terrane/container-reference.md
-    python3 ../tests/terrane/container_vectors.py --check ../tests/terrane/container-reference.md \
+    python3 ../tests/terrane/container_vectors.py --check \
+      ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md \
       --blake3-bin "$reference_binary" >> "$out/reference-result"
+    cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/container-reference.md
     cp ../tests/terrane/container-reference.md "$out/reference.md"
     cp ../tests/terrane/container-models.rs terrane-core/tests/container_vectors.rs
     cargo fmt --all -- --check

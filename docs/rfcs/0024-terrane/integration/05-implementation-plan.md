@@ -502,6 +502,16 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   gap rather than an assumed branch deferral. Complete golden conformance is
   still unproven, and the registered `golden-vectors` check remains pending.
   The task stays unmerged, and complete golden coverage remains open.
+  D-91 publishes 85 additive envelope/shard witnesses: eight envelopes, 38
+  shards and 39 independently constructed negative wires. Ordinary envelopes
+  use the registered profile maximum; two overhead controls explicitly use a
+  local structural oracle. All preceding reference bytes and every prepared
+  wire byte/digest remain unchanged. The prepared three-group hermetic check,
+  strict template Clippy and mandatory formatting pass. The shared auxiliary
+  harness now requires independent reproduction of the normative whole file;
+  its reviewed input branch remains separate, and published-input qualification
+  is pending. This establishes no native codec, index or complete golden
+  conformance; no task or milestone advances.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,

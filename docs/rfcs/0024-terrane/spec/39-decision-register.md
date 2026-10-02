@@ -1626,6 +1626,29 @@ is added rather than editing history.
     not qualify the complete corpus, derived computation, tree operations,
     policy enforcement or native publication.
 
+- **[D-91] Complete envelope and merged-shard field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add eight complete chunk envelopes, 38 complete merged
+    index shards and 39 independently assembled structural rejection inputs.
+    Ordinary positive envelopes use the registered `cdc-1m` maximum; two
+    overhead controls explicitly use a local 100-byte structural size oracle.
+    Assign plaintext chunk identities to envelope inputs and index-domain
+    identities to positive shards. Preserve every previous reference byte.
+  - **Rationale:** TEST-2 requires vectors for implemented formats, but the
+    envelope and merged-shard codecs lacked complete independent field models.
+    Primitive little-endian assembly and RFC 8878 sized raw-block frames
+    reproduce the wire bytes without invoking their owning codecs or a
+    decompressor. Independently constructed public models compare all encoded
+    and decoded fields. Ordinary size contexts also accommodate the dictionary
+    plaintext. Embedded shard hashes, pack IDs and state bytes are opaque
+    fields; structural checks establish no placements, authority or state
+    effects. Envelope checks establish no native dictionary verification.
+  - **Affects:** TEST-1 to TEST-3, CDC-7, CDC-9, PACK-17 to PACK-20 format
+    fields and the golden-vector reference. Requirement IDs, wire schemas,
+    identity domains and existing bytes remain unchanged. This additive
+    correction precedes T1's initial format freeze and does not qualify the
+    complete corpus, codec runtime, index publication or native operations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
