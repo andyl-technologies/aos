@@ -1,9 +1,9 @@
-From 0597a1a38bbfc407d4a49df122146a05674e58b8 Mon Sep 17 00:00:00 2001
+From 8ae5f48bdcd540352168190b3c71a0dc5fb5e790 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
-Date: Fri, 2 Oct 2026 06:57:02 -0700
+Date: Fri, 2 Oct 2026 07:38:05 -0700
 Subject: [PATCH] sim: preserve exact native control and lifecycle boundaries
 
-Retain the selected native control, device, process and fault-state implementation. Admit exact registered packet-output stops, separate canonical lifecycle state from process-local custody, retain deferred control intent across advance/stop settlement, and permit unlocked atomic intent observation while preserving BQL custody mutation gates. Include scoped standalone production-body regressions.
+Retain the selected native control, device, process and fault-state implementation. Admit exact registered packet-output stops, separate canonical lifecycle state from process-local custody, retain deferred control intent across advance/stop settlement, and permit unlocked atomic intent observation while preserving BQL custody mutation gates. Add a disabled-by-default native control delivery trace with per-process diagnostic ownership deduplication and distinct registered callback entry/return records. Include scoped standalone production-body regressions.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3457,10 +3457,10 @@ index 0000000000000000000000000000000000000000..64a0a5db661128340846bd948505d7aa
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756fd2957ae3 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..3b29b3a926af72224c9f4895de64b327a566857f 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,1692 @@
+@@ -27,45 +27,1779 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -4019,6 +4019,93 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
 +    trace_crucible_sim_rr_control_boundary(
 +        phase, request_generation, ack_generation, complete_generation,
 +        schedule_token, qatomic_read(&rr_tcg_exec_state));
++}
++
++static const char * const rr_control_delivery_trace_phases[] = {
++    "request", "defer", "rearm", "complete-bh", "callback-enter",
++    "registered-enter", "registered-return", "cancel", "advance-settled",
++    "wake-stopped",
++};
++
++static struct {
++    uint64_t request_generation;
++    uintptr_t schedule_sequence;
++    bool emitted;
++} rr_control_delivery_trace_seen[ARRAY_SIZE(rr_control_delivery_trace_phases)];
++static pid_t rr_control_delivery_trace_pid;
++
++void rr_crucible_sim_trace_control_delivery(const char *phase,
++                                           uint64_t request_generation,
++                                           uint64_t ack_generation,
++                                           uint64_t complete_generation,
++                                           uintptr_t rr_schedule_token,
++                                           uintptr_t schedule_token,
++                                           bool deferred,
++                                           uintptr_t schedule_sequence)
++{
++    unsigned int index;
++    uint64_t previous_request;
++    uintptr_t previous_sequence;
++    bool emit;
++    pid_t pid;
++    char states[64];
++
++    if (!rr_crucible_sim_mode() ||
++        !trace_event_get_state_backends(TRACE_CRUCIBLE_SIM_RR_CONTROL_DELIVERY)) {
++        return;
++    }
++    pid = getpid();
++    if (qatomic_read(&rr_control_delivery_trace_pid) != pid) {
++        /* Native transition call sites hold BQL; a child owns a fresh cache. */
++        for (index = 0; index < ARRAY_SIZE(rr_control_delivery_trace_seen);
++             index++) {
++            qatomic_set(&rr_control_delivery_trace_seen[index].request_generation,
++                        0);
++            qatomic_set(&rr_control_delivery_trace_seen[index].schedule_sequence,
++                        0);
++            qatomic_set(&rr_control_delivery_trace_seen[index].emitted, false);
++        }
++        qatomic_set(&rr_control_delivery_trace_pid, pid);
++    }
++    for (index = 0; index < ARRAY_SIZE(rr_control_delivery_trace_phases); index++) {
++        if (strcmp(phase, rr_control_delivery_trace_phases[index]) == 0) {
++            break;
++        }
++    }
++    if (index == ARRAY_SIZE(rr_control_delivery_trace_phases)) {
++        return;
++    }
++
++    /*
++     * Diagnostic maxima suppress repeated scans without a lock or a global
++     * budget that could hide a later request. Independent atomic claims can
++     * emit bounded duplicates; they never authenticate native ownership.
++     */
++    emit = !qatomic_xchg(&rr_control_delivery_trace_seen[index].emitted, true);
++    previous_request = qatomic_read(
++        &rr_control_delivery_trace_seen[index].request_generation);
++    if (request_generation > previous_request &&
++        qatomic_cmpxchg(
++            &rr_control_delivery_trace_seen[index].request_generation,
++            previous_request, request_generation) == previous_request) {
++        emit = true;
++    }
++    previous_sequence = qatomic_read(
++        &rr_control_delivery_trace_seen[index].schedule_sequence);
++    if (schedule_sequence > previous_sequence &&
++        qatomic_cmpxchg(
++            &rr_control_delivery_trace_seen[index].schedule_sequence,
++            previous_sequence, schedule_sequence) == previous_sequence) {
++        emit = true;
++    }
++    if (emit) {
++        g_snprintf(states, sizeof(states), "state=%u runstate=%u",
++                   qatomic_read(&rr_tcg_exec_state), runstate_get());
++        trace_crucible_sim_rr_control_delivery(
++            phase, request_generation, ack_generation, complete_generation,
++            rr_schedule_token, schedule_token, deferred, states,
++            icount_crucible_rr_current_vcpu(), pid);
++    }
 +}
 +
 +void rr_crucible_sim_trace_idle_advance(const char *phase,
@@ -5172,7 +5259,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +1731,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +1818,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -5205,7 +5292,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
      }
  }
  
-@@ -110,15 +1769,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +1856,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -5339,7 +5426,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
      }
  }
  
-@@ -140,6 +1915,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2002,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -5358,7 +5445,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +1971,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2058,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -5367,7 +5454,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +1993,199 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2080,199 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -5585,7 +5672,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2201,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2288,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -5618,7 +5705,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2243,123 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2330,123 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -5757,7 +5844,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2367,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2454,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -5897,7 +5984,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
      }
  
      g_assert_not_reached();
-@@ -318,13 +2506,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +2593,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -5935,10 +6022,10 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..c4801e1973885f77894d910f30e1756f
          single_tcg_cpu_thread = cpu->thread;
  
 diff --git a/accel/tcg/tcg-accel-ops-rr.h b/accel/tcg/tcg-accel-ops-rr.h
-index 2a76a296127e81edc61f45a59785a89705daae90..d3d18000815cfa8a79f8a2437c6876c65fa165ac 100644
+index 2a76a296127e81edc61f45a59785a89705daae90..12a6bd9ccbd7eafd0cca3dad7b0d46782877fed2 100644
 --- a/accel/tcg/tcg-accel-ops-rr.h
 +++ b/accel/tcg/tcg-accel-ops-rr.h
-@@ -10,12 +10,231 @@
+@@ -10,12 +10,240 @@
  #ifndef TCG_ACCEL_OPS_RR_H
  #define TCG_ACCEL_OPS_RR_H
  
@@ -6158,6 +6245,15 @@ index 2a76a296127e81edc61f45a59785a89705daae90..d3d18000815cfa8a79f8a2437c6876c6
 +                                             uint64_t ack_generation,
 +                                             uint64_t complete_generation,
 +                                             uintptr_t schedule_token);
++/* Observe delivery without changing control ownership or canonical state. */
++void rr_crucible_sim_trace_control_delivery(const char *phase,
++                                           uint64_t request_generation,
++                                           uint64_t ack_generation,
++                                           uint64_t complete_generation,
++                                           uintptr_t rr_schedule_token,
++                                           uintptr_t schedule_token,
++                                           bool deferred,
++                                           uintptr_t schedule_sequence);
 +/* Trace one explicitly enabled idle-advance lifecycle transition. */
 +void rr_crucible_sim_trace_idle_advance(const char *phase,
 +                                        int64_t target_tick);
@@ -6574,16 +6670,17 @@ index 7186c10cf02248dc5d20a23fddeb66906ce1ba59..60fb182e617f7c645e7230913593a67d
  
  type_init(register_accel_types);
 diff --git a/accel/tcg/trace-events b/accel/tcg/trace-events
-index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..41fcc70155758c83d97ea0673d3810d845a47f0d 100644
+index 0816cafd3361f1979e72ad72c42cc8cb4ecce586..5ddf4844e47acf6202b1a06b0dc791493198c508 100644
 --- a/accel/tcg/trace-events
 +++ b/accel/tcg/trace-events
-@@ -1,6 +1,15 @@
+@@ -1,6 +1,16 @@
  # See docs/devel/tracing.rst for syntax documentation.
  
  # TCG related tracing
 +# tcg-accel-ops-rr.c
 +crucible_sim_rr_dispatch_ceiling_wait(int64_t thread_id, void *event, size_t size) "thread_id=%" PRId64 " event=%p size=%zu"
 +crucible_sim_rr_control_boundary(const char *phase, uint64_t request, uint64_t ack, uint64_t complete, uintptr_t token, unsigned int state) "phase=%s request=%" PRIu64 " ack=%" PRIu64 " complete=%" PRIu64 " token=0x%" PRIxPTR " state=%u"
++crucible_sim_rr_control_delivery(const char *phase, uint64_t request, uint64_t ack, uint64_t complete, uintptr_t rr_token, uintptr_t token, bool deferred, const char *states, uint64_t owner, int64_t pid) "phase=%s request=%" PRIu64 " ack=%" PRIu64 " complete=%" PRIu64 " rr_token=0x%" PRIxPTR " token=0x%" PRIxPTR " deferred=%d %s owner=%" PRIu64 " pid=%" PRId64
 +crucible_sim_main_loop_poll_ready(uint64_t generation, int result, int64_t timeout_ns) "generation=%" PRIu64 " result=%d timeout_ns=%" PRId64
 +crucible_sim_determinism_idle(const char *phase, uint64_t sequence, uint64_t raw, int64_t virtual_ps, int64_t target_tick, int64_t deadline_ps, uint64_t rr_owner, uint64_t rr_cursor, const char *cpu_facts) "phase=%s seq=%" PRIu64 " raw=%" PRIu64 " virtual_ps=%" PRId64 " target_tick=%" PRId64 " deadline_ps=%" PRId64 " rr_owner=%" PRIu64 " rr_cursor=%" PRIu64 " %s"
 +crucible_sim_idle_stage(const char *phase, uint64_t raw, int64_t virtual_ps, int64_t target_tick, int64_t deadline_ps) "phase=%s raw=%" PRIu64 " virtual_ps=%" PRId64 " target_tick=%" PRId64 " deadline_ps=%" PRId64
@@ -13204,6 +13301,51 @@ index a1dcd79e0fdd5142d6e876466e397cf8a25d6d89..d2420c492edc78614bf9bf6956c4ca47
  To be able to calculate the number of executed instructions the
  translator starts by allocating a budget of instructions to be
  executed. The budget of instructions is limited by how long it will be
+diff --git a/docs/devel/tracing.rst b/docs/devel/tracing.rst
+index f4557ee20e4b9111581e3e4d5287a59fd0f40a53..08e011710b0dffb5c2e224aa25e4491a63e66328 100644
+--- a/docs/devel/tracing.rst
++++ b/docs/devel/tracing.rst
+@@ -202,6 +202,40 @@ the following monitor command::
+ 
+     trace-event virtio_blk_* on
+ 
++Native sim control delivery
++===========================
++
++The ``crucible_sim_rr_control_delivery`` companion event is disabled by
++default. Enable it with ``--trace crucible_sim_rr_control_delivery`` or put
++that event name in the file passed to ``--trace events=<file>``. The existing
++``crucible_sim_rr_control_boundary`` event remains independently available.
++The log backend uses the normal QEMU log destination (``-D <file>``).
++
++The companion reports native request, acknowledgment and completion
++generations, the RR claim token, the current main-loop schedule token,
++deferred intent, RR execution state, numeric runstate and current RR vCPU
++owner and process ID. ``registered-enter`` immediately precedes the
++registered callback; ``registered-return`` immediately follows its return.
++``callback-enter``
++alone indicates entry to the native wrapper, which also checks that a CPU
++and callback are present. Native completion precedes the callback and does
++not establish that the callback acknowledged an external request.
++
++Fixed per-phase atomic diagnostic maxima deduplicate observations by native
++request generation and schedule sequence. The sequence distinguishes
++separate paused deliveries whose native generations remain equal. Repeated
++observations of unchanged ownership emit no further records. Concurrent
++claims can emit at most three records for the first ownership tuple and two
++for a subsequent tuple. Total output grows with distinct requests and
++schedules; no process-wide quota hides late requests. Fields are advisory
++snapshots rather than an atomic multi-field receipt. The cache resets on the
++first enabled native observation after a process ID change, so inherited
++parent maxima cannot hide early child delivery. Native transition call sites
++hold BQL; diagnostic fields use atomic accesses. No host clock is read,
++and diagnostic bookkeeping does not participate in admission or canonical
++state. These events establish native delivery only; callback behavior and
++physical fork or guest qualification require their own evidence.
++
+ Trace backends
+ ==============
+ 
 diff --git a/gdbstub/gdbstub.c b/gdbstub/gdbstub.c
 index 0a328b0dd4886ff7a278bbed1bd726c2eb740196..91035ab373024d5a8020db1afe8f313f48e4a9bc 100644
 --- a/gdbstub/gdbstub.c
@@ -74512,7 +74654,7 @@ index 9e9941fe73e77a7b3bcc3ca1ab7ad4bec58f0151..66e2d8cd64d01e2304aa51675bfe4959
  
  static int net_slirp_init(NetClientState *peer, const char *model,
 diff --git a/plugins/api-system.c b/plugins/api-system.c
-index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc3ed22d4e 100644
+index fbf905cd63e4cc109748b379f4209f6ad6547c2c..59e364e33f57b70583b25427ccec771368772396 100644
 --- a/plugins/api-system.c
 +++ b/plugins/api-system.c
 @@ -11,12 +11,39 @@
@@ -74555,7 +74697,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
  
  /*
   * In system mode we cannot trace the binary being executed so the
-@@ -101,14 +128,895 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
+@@ -101,14 +128,896 @@ const char *qemu_plugin_hwaddr_device_name(const struct qemu_plugin_hwaddr *h)
   */
  static bool has_control;
  static Error *migration_blocker;
@@ -75422,6 +75564,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +static void qemu_plugin_request_rr_control_boundary(void);
 +static void qemu_plugin_rearm_deferred_control_boundary(void);
 +static bool qemu_plugin_quiesced_control_boundary_available(void);
++static void qemu_plugin_trace_control_delivery(const char *phase);
 +
 +static uintptr_t qemu_plugin_control_boundary_schedule_sequence;
 +static uintptr_t qemu_plugin_control_boundary_scheduled;
@@ -75454,7 +75597,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
          return &has_control;
      }
      return NULL;
-@@ -123,9 +1031,1680 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
+@@ -123,9 +1032,1703 @@ static void advance_virtual_time__async(CPUState *cpu, run_on_cpu_data data)
  void qemu_plugin_update_ns(const void *handle, int64_t new_time)
  {
      if (handle == &has_control) {
@@ -75623,6 +75766,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +                          QEMU_PLUGIN_TIME_ADVANCE_TIMERS_NOT_READY);
 +    qatomic_store_release(&qemu_plugin_time_advance_pending, 0);
 +    qemu_plugin_rearm_deferred_control_boundary();
++    qemu_plugin_trace_control_delivery("advance-settled");
 +    rr_crucible_sim_signal_time_advance_wake();
 +}
 +
@@ -75689,6 +75833,19 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +        qatomic_load_acquire(&qemu_plugin_rr_control_schedule_token));
 +}
 +
++static void qemu_plugin_trace_control_delivery(const char *phase)
++{
++    rr_crucible_sim_trace_control_delivery(
++        phase,
++        qatomic_load_acquire(&qemu_plugin_rr_control_request_generation),
++        qatomic_load_acquire(&qemu_plugin_rr_control_ack_generation),
++        qatomic_load_acquire(&qemu_plugin_rr_control_complete_generation),
++        qatomic_load_acquire(&qemu_plugin_rr_control_schedule_token),
++        qatomic_load_acquire(&qemu_plugin_control_boundary_scheduled),
++        qatomic_load_acquire(&qemu_plugin_control_boundary_deferred),
++        qatomic_read(&qemu_plugin_control_boundary_schedule_sequence));
++}
++
 +static void qemu_plugin_control_boundary_complete_bh(void *opaque)
 +{
 +    CPUState *cpu;
@@ -75709,6 +75866,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +        &qemu_plugin_control_boundary_deferred) &&
 +        qemu_plugin_quiesced_control_boundary_available();
 +
++    qemu_plugin_trace_control_delivery("complete-bh");
 +    if (qatomic_load_acquire(&qemu_plugin_control_boundary_scheduled) !=
 +        schedule_token) {
 +        return;
@@ -75794,6 +75952,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +            rr_ack_generation, schedule_token);
 +    }
 +    qemu_plugin_trace_rr_control_boundary_state("callback-enter");
++    qemu_plugin_trace_control_delivery("callback-enter");
 +    qemu_plugin_fire_control_boundary_cb(first_cpu);
 +    qatomic_fetch_inc(&qemu_plugin_control_boundary_generation);
 +    if (first_cpu && !qemu_plugin_crucible_vmstop_pending()) {
@@ -75867,6 +76026,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +    }
 +    /* Preserve request/ack/complete until a valid owner actually calls back. */
 +    qemu_plugin_rearm_deferred_control_boundary();
++    qemu_plugin_trace_control_delivery("defer");
 +}
 +
 +static void qemu_plugin_rearm_deferred_control_boundary(void)
@@ -75877,6 +76037,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +        qatomic_load_acquire(&qemu_plugin_time_advance_pending)) {
 +        return;
 +    }
++    qemu_plugin_trace_control_delivery("rearm");
 +    if (qemu_plugin_quiesced_control_boundary_available()) {
 +        qemu_plugin_schedule_control_boundary();
 +    } else if (!qemu_plugin_crucible_vmstop_pending() &&
@@ -75959,6 +76120,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +    qatomic_store_release(&qemu_plugin_rr_control_complete_generation,
 +                          request_generation);
 +    qemu_crucible_fault_lifecycle_ready_marker_cancel();
++    qemu_plugin_trace_control_delivery("cancel");
 +    if (request_generation != complete_generation) {
 +        rr_crucible_sim_trace_control_boundary(
 +            "cancel", request_generation, request_generation,
@@ -75993,6 +76155,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +        "request", request_generation + 1, acknowledged_generation,
 +        qatomic_load_acquire(&qemu_plugin_rr_control_complete_generation),
 +        qatomic_load_acquire(&qemu_plugin_rr_control_schedule_token));
++    qemu_plugin_trace_control_delivery("request");
 +    qemu_cpu_kick(first_cpu);
 +}
 +
@@ -76467,6 +76630,7 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +            }
 +            if (single_threaded_rr &&
 +                qemu_plugin_crucible_vmstop_quiesced()) {
++                qemu_plugin_trace_control_delivery("wake-stopped");
 +                /*
 +                 * A stopped RR thread cannot claim a native request.  Device
 +                 * notifiers have already settled under the BQL, so transfer
@@ -76962,8 +77126,10 @@ index fbf905cd63e4cc109748b379f4209f6ad6547c2c..7ee8b3f04c94319d87fc61e46c2a7bfc
 +        qemu_crucible_fault_lifecycle_ready_marker_control_boundary(
 +            observed_icount);
 +        if (cb) {
++            qemu_plugin_trace_control_delivery("registered-enter");
 +            cb(cpu->cpu_index, observed_icount,
 +               qemu_plugin_control_boundary_userdata);
++            qemu_plugin_trace_control_delivery("registered-return");
 +        }
 +        qemu_plugin_crucible_exact_boundary_leave();
 +        qemu_plugin_crucible_control_boundary_depth--;
@@ -154136,10 +154302,10 @@ index 0000000000000000000000000000000000000000..8d80e3052d7c9a6b187e2f7095f7ab8e
 +    main()
 diff --git a/tests/unit/test-crucible-control-deferred.py b/tests/unit/test-crucible-control-deferred.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f3e26425db598b16d7e9bd324ab6d2d53228eec8
+index 0000000000000000000000000000000000000000..bda940a3f36090a2838f29dec5977298664f1e34
 --- /dev/null
 +++ b/tests/unit/test-crucible-control-deferred.py
-@@ -0,0 +1,424 @@
+@@ -0,0 +1,425 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise control ownership across production TX stop and advance settlement.
 +
@@ -154497,6 +154663,7 @@ index 0000000000000000000000000000000000000000..f3e26425db598b16d7e9bd324ab6d2d5
 +            "int qemu_plugin_advance_time_ticks(int64_t target_tick)",
 +            "static bool qemu_plugin_release_control_boundary_schedule(",
 +            "static void qemu_plugin_trace_rr_control_boundary_state(",
++            "static void qemu_plugin_trace_control_delivery(const char *phase)\n{",
 +            "bool qemu_plugin_crucible_rr_control_boundary_pending(void)",
 +            "void qemu_plugin_crucible_rr_control_boundary_acknowledge(void)",
 +            "void qemu_plugin_crucible_rr_control_boundary_cancel(void)",
@@ -154560,6 +154727,248 @@ index 0000000000000000000000000000000000000000..f3e26425db598b16d7e9bd324ab6d2d5
 +    subprocess.run(command, check=True)
 +    subprocess.run([str(binary), *([arguments.case] if arguments.case else [])],
 +                   cwd=arguments.output_dir, check=True)
++
++
++if __name__ == "__main__":
++    main()
+diff --git a/tests/unit/test-crucible-control-delivery.py b/tests/unit/test-crucible-control-delivery.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..aab9b2220b9b2ca2f5b41b5c53c20d66b7ecac7d
+--- /dev/null
++++ b/tests/unit/test-crucible-control-delivery.py
+@@ -0,0 +1,236 @@
++# SPDX-License-Identifier: GPL-2.0-or-later
++"""Check the actual delivery witness and registered-callback wrapper bodies.
++
++Trace backend, process identity, runstate, RR owner and lifecycle registry are
++bounded providers. This fixture does not execute a physical fork or guest.
++"""
++
++import argparse
++import json
++import os
++from pathlib import Path
++import runpy
++import shlex
++import subprocess
++import sys
++
++
++ROOT = Path(__file__).resolve().parents[2]
++definition = runpy.run_path(str(Path(__file__).with_name(
++    "test-crucible-net-output-stop.py")))["definition"]
++
++PRELUDE = r"""
++#include <assert.h>
++#include <limits.h>
++#include <stdbool.h>
++#include <stdint.h>
++#include <stdio.h>
++#include <string.h>
++#include <unistd.h>
++#include <glib.h>
++#include "qemu/typedefs.h"
++#define qemu_build_assert(condition) _Static_assert(condition, #condition)
++#include "qemu/atomic.h"
++#define ARRAY_SIZE(value) (sizeof(value) / sizeof((value)[0]))
++#define TRACE_CRUCIBLE_SIM_RR_CONTROL_DELIVERY 1
++static bool enabled, sim = true;
++static pid_t fixture_pid = 100;
++#define getpid() fixture_pid
++static unsigned int rr_tcg_exec_state = 2;
++static bool rr_crucible_sim_mode(void) { return sim; }
++static bool trace_event_get_state_backends(int event) { return enabled; }
++static unsigned int runstate_get(void) { return 3; }
++static uint64_t icount_crucible_rr_current_vcpu(void) { return 5; }
++
++typedef struct Record {
++    const char *phase;
++    uint64_t request, ack, complete;
++    uintptr_t rr_token, token;
++    bool deferred;
++    char states[64];
++    uint64_t owner;
++    int64_t pid;
++} Record;
++static Record records[512];
++static unsigned int record_count, callback_calls, markers;
++static void trace_crucible_sim_rr_control_delivery(
++    const char *phase, uint64_t request, uint64_t ack, uint64_t complete,
++    uintptr_t rr_token, uintptr_t token, bool deferred, const char *states,
++    uint64_t owner, int64_t pid)
++{
++    Record *record;
++
++    g_assert_cmpuint(record_count, <, ARRAY_SIZE(records));
++    record = &records[record_count++];
++    *record = (Record) { phase, request, ack, complete, rr_token, token,
++                        deferred, "", owner, pid };
++    g_strlcpy(record->states, states, sizeof(record->states));
++}
++
++static uint64_t qemu_plugin_rr_control_request_generation;
++static uint64_t qemu_plugin_rr_control_ack_generation = 6;
++static uint64_t qemu_plugin_rr_control_complete_generation = 4;
++static uintptr_t qemu_plugin_rr_control_schedule_token = 11;
++static uintptr_t qemu_plugin_control_boundary_scheduled = 13;
++static uintptr_t qemu_plugin_control_boundary_schedule_sequence;
++static bool qemu_plugin_control_boundary_deferred = true;
++static unsigned int qemu_plugin_crucible_exact_boundary_depth;
++static unsigned int qemu_plugin_crucible_control_boundary_depth;
++struct CPUState { unsigned int cpu_index; };
++typedef void (*qemu_plugin_vcpu_idle_resume_cb_t)(unsigned int, uint64_t, void *);
++static qemu_plugin_vcpu_idle_resume_cb_t qemu_plugin_control_boundary_cb;
++static void *qemu_plugin_control_boundary_userdata;
++static uint64_t qemu_plugin_icount_raw(void) { return 42; }
++static void qemu_crucible_fault_lifecycle_ready_marker_control_boundary(uint64_t raw)
++{
++    g_assert_cmpuint(raw, ==, 42);
++    g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, ==, 1);
++    markers++;
++}
++"""
++
++CHECKS = r"""
++static void callback(unsigned int cpu, uint64_t raw, void *userdata)
++{
++    g_assert_cmpuint(cpu, ==, 5);
++    g_assert_cmpuint(raw, ==, 42);
++    g_assert_true(userdata == &callback_calls);
++    g_assert_cmpstr(records[record_count - 1].phase, ==, "registered-enter");
++    g_assert_cmpuint(qemu_plugin_crucible_control_boundary_depth, ==, 1);
++    g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, ==, 1);
++    callback_calls++;
++}
++
++int main(void)
++{
++    CPUState cpu = { 5 };
++    unsigned int before;
++
++    qemu_plugin_trace_control_delivery("request");
++    g_assert_cmpuint(record_count, ==, 0);
++    g_assert_cmpint(rr_control_delivery_trace_pid, ==, 0);
++    enabled = true;
++    qemu_plugin_trace_control_delivery("request");
++    for (unsigned int index = 0; index < 8; index++) {
++        qemu_plugin_trace_control_delivery("request");
++    }
++    g_assert_cmpuint(record_count, ==, 1);
++
++    /* A late request stays visible after hundreds of earlier requests. */
++    for (uint64_t generation = 1; generation <= 400; generation++) {
++        qemu_plugin_rr_control_request_generation = generation;
++        qemu_plugin_trace_control_delivery("request");
++    }
++    g_assert_cmpuint(record_count, ==, 401);
++    qemu_plugin_control_boundary_schedule_sequence = 7;
++    qemu_plugin_trace_control_delivery("request");
++    g_assert_cmpuint(record_count, ==, 402);
++
++    qemu_plugin_control_boundary_cb = callback;
++    qemu_plugin_control_boundary_userdata = &callback_calls;
++    qemu_plugin_fire_control_boundary_cb(&cpu);
++    g_assert_cmpuint(record_count, ==, 404);
++    g_assert_cmpstr(records[403].phase, ==, "registered-return");
++    g_assert_cmpuint(callback_calls, ==, 1);
++    g_assert_cmpuint(markers, ==, 1);
++    g_assert_cmpuint(qemu_plugin_crucible_exact_boundary_depth, ==, 0);
++    g_assert_cmpuint(qemu_plugin_crucible_control_boundary_depth, ==, 0);
++    g_assert_cmpuint(records[403].request, ==, 400);
++    g_assert_cmpuint(records[403].ack, ==, 6);
++    g_assert_cmpuint(records[403].complete, ==, 4);
++    g_assert_cmpuint(records[403].rr_token, ==, 11);
++    g_assert_cmpuint(records[403].token, ==, 13);
++    g_assert_true(records[403].deferred);
++    g_assert_cmpstr(records[403].states, ==, "state=2 runstate=3");
++    g_assert_cmpuint(records[403].owner, ==, 5);
++    g_assert_cmpint(records[403].pid, ==, 100);
++
++    before = record_count;
++    qemu_plugin_control_boundary_cb = NULL;
++    qemu_plugin_control_boundary_schedule_sequence++;
++    qemu_plugin_fire_control_boundary_cb(&cpu);
++    qemu_plugin_fire_control_boundary_cb(NULL);
++    g_assert_cmpuint(record_count, ==, before);
++    g_assert_cmpuint(markers, ==, 2);
++
++    /* Model inherited diagnostic maxima and reset native counters in a child. */
++    fixture_pid = 200;
++    qemu_plugin_rr_control_request_generation = 0;
++    qemu_plugin_control_boundary_schedule_sequence = 0;
++    qemu_plugin_trace_control_delivery("request");
++    g_assert_cmpuint(record_count, ==, before + 1);
++    g_assert_cmpint(records[before].pid, ==, 200);
++    qemu_plugin_control_boundary_cb = callback;
++    qemu_plugin_fire_control_boundary_cb(&cpu);
++    g_assert_cmpuint(record_count, ==, before + 3);
++    g_assert_cmpstr(records[before + 2].phase, ==, "registered-return");
++
++    /* The witness never changes native intent, scope or fulfillment fields. */
++    g_assert_cmpuint(qemu_plugin_rr_control_request_generation, ==, 0);
++    g_assert_cmpuint(qemu_plugin_rr_control_ack_generation, ==, 6);
++    g_assert_cmpuint(qemu_plugin_rr_control_complete_generation, ==, 4);
++    g_assert_cmpuint(qemu_plugin_rr_control_schedule_token, ==, 11);
++    g_assert_cmpuint(qemu_plugin_control_boundary_scheduled, ==, 13);
++    g_assert_true(qemu_plugin_control_boundary_deferred);
++    puts("PASS native delivery witness: disabled, deduplicated, late, callback, child PID");
++    return 0;
++}
++"""
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--output-dir", type=Path, required=True)
++    parser.add_argument("--negative-control", choices=["callback-return", "dedup", "child-cache"])
++    arguments = parser.parse_args()
++    arguments.output_dir.mkdir(parents=True, exist_ok=True)
++
++    sys.path.insert(0, str(ROOT / "scripts"))
++    from tracetool import Event
++    for lineno, line in enumerate((ROOT / "accel/tcg/trace-events").read_text().splitlines(), 1):
++        if line.startswith("crucible_sim_rr_control_delivery("):
++            event = Event.build(line, lineno, "accel/tcg/trace-events")
++            assert len(event.args) == 10
++            break
++    else:
++        raise AssertionError("native witness event missing")
++
++    rr = (ROOT / "accel/tcg/tcg-accel-ops-rr.c").read_text()
++    start = rr.index("static const char * const rr_control_delivery_trace_phases[]")
++    end = rr.index("void rr_crucible_sim_trace_idle_advance(", start)
++    bodies = rr[start:end]
++    api = (ROOT / "plugins/api-system.c").read_text()
++    bodies += "\n\n".join(definition(api, signature) for signature in [
++        "static void qemu_plugin_trace_control_delivery(const char *phase)\n{",
++        "void qemu_plugin_crucible_exact_boundary_enter(void)",
++        "void qemu_plugin_crucible_exact_boundary_leave(void)",
++        "void qemu_plugin_fire_control_boundary_cb(CPUState *cpu)",
++    ])
++    if arguments.negative_control == "callback-return":
++        statement = '            qemu_plugin_trace_control_delivery("registered-return");\n'
++        assert bodies.count(statement) == 1
++        bodies = bodies.replace(statement, "")
++    elif arguments.negative_control == "dedup":
++        assert bodies.count("    if (emit) {") == 1
++        bodies = bodies.replace("    if (emit) {", "    if (true) {")
++    elif arguments.negative_control == "child-cache":
++        statement = "    if (qatomic_read(&rr_control_delivery_trace_pid) != pid) {"
++        assert bodies.count(statement) == 1
++        bodies = bodies.replace(statement, "    if (false) {")
++
++    generated = arguments.output_dir / "control-delivery.c"
++    generated.write_text(PRELUDE + bodies + CHECKS)
++    binary = arguments.output_dir / "control-delivery"
++    command = [os.environ.get("CC", "cc"),
++               *shlex.split(os.environ.get("CFLAGS", "")),
++               "-Wno-missing-prototypes", "-Wno-unused-function", "-Wno-unused-variable",
++               "-Wno-unused-but-set-variable", str(generated), "-o", str(binary),
++               *shlex.split(os.environ.get("LDFLAGS", ""))]
++    (arguments.output_dir / "compile-command.json").write_text(
++        json.dumps(command, indent=2) + "\n")
++    subprocess.run(command, check=True)
++    subprocess.run([str(binary)], cwd=arguments.output_dir, check=True)
 +
 +
 +if __name__ == "__main__":
@@ -165663,10 +166072,10 @@ index 0000000000000000000000000000000000000000..826f34e7c26bdac48f2dab1190635991
 +}
 diff --git a/tests/unit/test-crucible-net-output-stop.py b/tests/unit/test-crucible-net-output-stop.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a2f7a74d22118e116c38bb93ee0f0f7a167c3601
+index 0000000000000000000000000000000000000000..7edc93c230dfb8edc1035c9f48c50507299c9e54
 --- /dev/null
 +++ b/tests/unit/test-crucible-net-output-stop.py
-@@ -0,0 +1,653 @@
+@@ -0,0 +1,658 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Exercise production TX, VM-stop, clock completion, and RR parking bodies.
 +
@@ -165837,6 +166246,7 @@ index 0000000000000000000000000000000000000000..a2f7a74d22118e116c38bb93ee0f0f7a
 +static uintptr_t qemu_plugin_schedule_control_boundary(void);
 +static void qemu_plugin_request_rr_control_boundary(void);
 +static void qemu_plugin_rearm_deferred_control_boundary(void);
++static void qemu_plugin_trace_control_delivery(const char *phase);
 +static bool qemu_plugin_quiesced_control_boundary_available(void);
 +void qemu_plugin_crucible_rr_control_boundary_defer(void);
 +bool qemu_plugin_crucible_rr_control_boundary_pending(void);
@@ -165910,6 +166320,9 @@ index 0000000000000000000000000000000000000000..a2f7a74d22118e116c38bb93ee0f0f7a
 +static void rr_crucible_sim_trace_idle_advance(const char *stage, int64_t target) { }
 +static void rr_crucible_sim_trace_control_boundary(const char *stage,
 +    uint64_t request, uint64_t ack, uint64_t complete, uintptr_t token) { }
++static void rr_crucible_sim_trace_control_delivery(const char *stage,
++    uint64_t request, uint64_t ack, uint64_t complete, uintptr_t rr_token,
++    uintptr_t token, bool deferred, uintptr_t sequence) { }
 +static void qemu_crucible_fault_lifecycle_ready_marker_cancel(void) { }
 +static void qemu_crucible_fault_lifecycle_ready_marker_control_boundary(uint64_t n) { }
 +static void rr_crucible_sim_notify_dispatch_ceiling(void) { }
@@ -166271,6 +166684,7 @@ index 0000000000000000000000000000000000000000..a2f7a74d22118e116c38bb93ee0f0f7a
 +        "int qemu_plugin_advance_time_ticks(int64_t target_tick)",
 +        "static bool qemu_plugin_release_control_boundary_schedule(",
 +        "static void qemu_plugin_trace_rr_control_boundary_state(const char *phase)",
++        "static void qemu_plugin_trace_control_delivery(const char *phase)\n{",
 +        "bool qemu_plugin_crucible_rr_control_boundary_pending(void)",
 +        "void qemu_plugin_crucible_rr_control_boundary_defer(void)",
 +        "static void qemu_plugin_rearm_deferred_control_boundary(void)\n{",
