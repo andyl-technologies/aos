@@ -74,6 +74,36 @@ fn media_types_are_closed_canonical_tokens() {
 }
 
 #[test]
+fn media_types_admit_exact_positive_version_parameters() {
+    let producer_media_type =
+        "application/vnd.aos.metadata.authorized-provisioning-input+json;version=1";
+    assert!(validate_media_type(producer_media_type).is_ok());
+    assert!(validate_media_type("application/json;version=12").is_ok());
+
+    for rejected in [
+        "application/json;version=",
+        "application/json;version=0",
+        "application/json;version=01",
+        "application/json;version=-1",
+        "application/json;version=1.0",
+        "application/json;version=\"1\"",
+        "application/json; version=1",
+        "application/json;Version=1",
+        "application/json;version=1 ",
+        "application/json;version=1;version=2",
+        "application/json;version=1;charset=utf-8",
+        "application/json;charset=utf-8;version=1",
+        "/json;version=1",
+        "application/;version=1",
+    ] {
+        assert!(
+            validate_media_type(rejected).is_err(),
+            "admitted {rejected}"
+        );
+    }
+}
+
+#[test]
 fn content_input_rejects_symlinks() {
     let temporary = tempdir().expect("temporary directory exists");
     fs::write(temporary.path().join("target"), b"content").expect("target");
@@ -95,7 +125,9 @@ fn resource_root_retains_and_reobserves_exact_artifact_identity() {
         store_directory,
         Box::new(FakeArtifactCommands),
     );
-    let desired = request("application/vnd.aos.configuration+json");
+    let desired =
+        request("application/vnd.aos.metadata.authorized-provisioning-input+json;version=1");
+    validate_request(&desired).expect("native producer media type is admitted");
     let stored = provider
         .describe_artifact(Path::new("/test/nix-store"), &store_path, 1_000)
         .expect("artifact identity is derived");
@@ -122,7 +154,7 @@ fn resource_root_retains_and_reobserves_exact_artifact_identity() {
     assert!(matches!(
         provider.inspect(
             &resource(),
-            &request("application/json"),
+            &request("application/vnd.aos.metadata.authorized-provisioning-input+json;version=2"),
             Path::new("/test/nix-store"),
             1_000,
         ),
