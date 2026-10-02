@@ -576,6 +576,7 @@ where
     reconciliation: Option<LinuxQemuHotForkWorldReconciliation<G>>,
     completed: LinuxQemuHotForkWorldReconciliationSet<G>,
     diagnostics_reported: bool,
+    live_diagnostics_enabled: bool,
 }
 
 impl<G> Drop for LinuxQemuHotForkWorldNodeLease<G>
@@ -602,6 +603,15 @@ where
 {
     fn identity(&self) -> &ProductionVmNodeGeneration {
         &self.identity
+    }
+
+    fn observe_operational_diagnostics(&mut self) {
+        diagnostics::observe_live_diagnostics(self.live_diagnostics_enabled, || {
+            self.reconciliation
+                .as_mut()
+                .and_then(|reconciliation| reconciliation.backend.as_mut())
+                .map(|backend| &mut backend.diagnostics_consumer)
+        });
     }
 
     fn open_checkpoint_root_overlay(&self) -> Result<std::fs::File, LifecycleApiError> {
@@ -739,6 +749,7 @@ where
             reconciliation: Some(self),
             completed,
             diagnostics_reported: false,
+            live_diagnostics_enabled: diagnostics::live_diagnostics_enabled(),
         };
         ProductionVmHotForkNodeAdoption::new(identity, node, lease, run_directory)
     }

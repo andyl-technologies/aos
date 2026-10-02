@@ -1574,6 +1574,13 @@ pub trait ProductionVmNodeLease: Send {
     #[must_use]
     fn identity(&self) -> &ProductionVmNodeGeneration;
 
+    /// Observes bounded diagnostics through this lease's existing ownership.
+    ///
+    /// The default does nothing. Implementations must remain nonblocking and
+    /// retain diagnostic failures for reporting and ordered cleanup, without
+    /// changing modeled execution or returning a new runtime failure.
+    fn observe_operational_diagnostics(&mut self) {}
+
     /// Identifies a scripted lease whose QMP boundary intentionally models
     /// VMState-only preparation without a physical root file.
     #[cfg(any(test, feature = "test-support"))]
