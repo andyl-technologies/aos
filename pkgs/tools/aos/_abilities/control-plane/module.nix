@@ -79,7 +79,8 @@ in {
       network = "host";
       process_visibility = "host";
       termination_scope = "all-processes";
-      temporary_directory = "private";
+      # Publishing /etc must reach PID 1; PrivateTmp would isolate its mounts.
+      temporary_directory = "shared";
       devices = [];
       host_paths = [];
       permit_core_dumps = false;
