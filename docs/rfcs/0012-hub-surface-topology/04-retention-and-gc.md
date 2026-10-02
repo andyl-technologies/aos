@@ -426,6 +426,31 @@ applying the indexer refuses to re-project container-release roots for that
 registry. Every physical deletion of a retiring run uses the same inventory,
 capability, and finalization fences as an ordinary run.
 
+The final identity deletion is a `delete_registry` topology operation. It
+removes no provider objects itself. Its blockers fall into two classes:
+
+- Operator blockers refuse the reviewed apply with `failed_precondition` and an
+  exact per-class count. These are repositories, catalog objects, active OCI
+  sessions or leases, active publications or uploads, retained binary-cache
+  roots, staged container objects, applying GC runs, pending GC placement
+  actions, active untracked repairs, snapshot references, offline placements or
+  placements without a current write revision, and provider objects listed by a
+  current inventory.
+- Automatic steps are performed by the operation. It abandons planned GC runs
+  that were never applied, since apply moves a run out of `planned` atomically
+  and so no planned run has destructive work in flight. It acquires an
+  operation-owned purge fence. It requests a scan of any placement that was
+  never observed `ready/complete`. It collects a fresh complete inventory of
+  every placement under that fence.
+
+Missing or stale inventories are therefore never a reason to refuse deletion:
+the operation proves emptiness itself, including for a registry that never
+published and so never entered the scheduled inventory sweep. The deletion
+transaction re-asserts every predicate. If one changed after the last readiness
+evaluation, the transaction reports the changed blocker breakdown instead of an
+affected-row mismatch. An operation that fails or is cancelled releases the
+fence it acquired.
+
 Physical delete capability is also independent of logical write authority.
 The current authority controls where new bytes may be published; it does not
 grant or revoke the ability to remove a reviewed physical replica or shard.
