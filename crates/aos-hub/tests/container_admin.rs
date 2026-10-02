@@ -135,6 +135,7 @@ impl RunningHub {
                 actor_id,
                 idempotency_key: idempotency_key.to_string(),
                 expected_resource_version: 0,
+                retire_registry: false,
                 now: aos_hub_core::clock::now_unix_secs(),
             })
             .await
@@ -400,6 +401,7 @@ async fn direct_connect_requests_cannot_bypass_container_rollout_gates() {
                 registry: hub.registry.clone(),
                 expected_resource_version: "0".to_string(),
                 idempotency_key: "disabled-gc".to_string(),
+                retire_registry: false,
             },
         )
         .await;
@@ -755,6 +757,7 @@ async fn enabled_gc_plan_replay_returns_the_same_actor_bound_review() {
         registry: hub.registry.clone(),
         expected_resource_version: "0".to_string(),
         idempotency_key: "same-enabled-gc-plan".to_string(),
+        retire_registry: false,
     };
 
     let first: pb::ContainerGcPlanResponse = hub.call("PlanRunContainerGc", &owner, &request).await;
@@ -1039,6 +1042,7 @@ async fn reviewed_container_administration_is_private_actor_bound_and_idempotent
         registry: hub.registry.clone(),
         expected_resource_version: policy.resource_version.clone(),
         idempotency_key: "plan-gc".to_string(),
+        retire_registry: false,
     };
     let gc_apply = pb::ApplyContainerMutationRequest {
         plan_id: "missing-gc-plan".to_string(),
