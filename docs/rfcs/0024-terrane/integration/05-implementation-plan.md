@@ -139,6 +139,14 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   identity profile; second-identity-profile registration hook. — satisfies
   OBJ-1 to OBJ-4, OBJ-6 to OBJ-10; `checks.terrane.gates.identity-idempotence`,
   `checks.terrane.gates.descriptor-strict`.
+  The descriptor now exposes the normative four-field canonical byte codec,
+  with configured-profile bounds checked on borrowed input before allocating
+  its owned fields. Five exact codec cases supplement the existing descriptor
+  model test: published bytes, every registered domain and integer boundary,
+  noncanonical/unknown fields, oversized headers and a different
+  configured profile. The actual six-case `descriptor-strict` gate and
+  `core-no-std` pass. All 458 core tests, strict all-target core Clippy and
+  rustdoc pass; no existing identity, descriptor bytes or store trait changes.
 - [x] **T-CDC-1** FastCDC chunker with the seeded gear table, codec bytes,
   dictionary identities, canonical object manifests, and receiver-side
   validation. Content-class dictionary selection is completed jointly with

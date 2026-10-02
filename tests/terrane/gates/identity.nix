@@ -15,6 +15,11 @@ in {
   descriptor-strict = sourceGate "descriptor-strict" ''
     cd crates
     ${runTest "identity::tests::descriptor_rejects_mismatched_fields_and_bytes"}
+    ${runTest "identity::descriptor::tests::published_descriptor_codec_preserves_bytes_and_model"}
+    ${runTest "identity::descriptor::tests::descriptor_codec_roundtrips_every_domain_and_size_boundary"}
+    ${runTest "identity::descriptor::tests::descriptor_codec_rejects_unknown_fields_and_noncanonical_shapes"}
+    ${runTest "identity::descriptor::tests::descriptor_codec_rejects_oversized_headers_before_owned_allocation"}
+    ${runTest "identity::descriptor::tests::descriptor_codec_bounds_follow_the_actual_configured_profile"}
     printf 'PASS: descriptor algorithm, domain, size, and digest validation\n' > "$out/result"
   '';
 }
