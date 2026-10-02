@@ -75,10 +75,10 @@ class BindingsTest(unittest.TestCase):
         path = bindings.package_outputs["k3s-worker"]["config"]
         manifest = {"inputs": {"config_modules": {
             "count": 1, "package_names": ["k3s-worker"], "store_paths": [path],
-            "origins": ["registry"], "registry": "andyl-testing", "release_tag": "1.0.0",
+            "origins": ["registry"], "registry": "andyl-experimental", "release_tag": "1.0.0",
         }}}
         self.assertEqual(verify_role_configuration_binding(
-            manifest, bindings, "k3s-worker", "andyl-testing", "1.0.0"
+            manifest, bindings, "k3s-worker", "andyl-experimental", "1.0.0"
         ), path)
 
         for field, value in (
@@ -92,7 +92,7 @@ class BindingsTest(unittest.TestCase):
             with self.subTest(field=field, value=value):
                 with self.assertRaisesRegex(ValueError, "configuration"):
                     verify_role_configuration_binding(
-                        changed, bindings, "k3s-worker", "andyl-testing", "1.0.0"
+                        changed, bindings, "k3s-worker", "andyl-experimental", "1.0.0"
                     )
 
     def test_topologies_select_only_their_native_roles(self):

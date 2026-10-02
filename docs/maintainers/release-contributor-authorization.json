@@ -1,6 +1,6 @@
 {
   "schema_version": "aos.release.contributor-authorization-summary/v1",
-  "registry": "andyl/testing",
+  "registry": "andyl/experimental",
   "source_repository": "https://github.com/andyl-technologies/aos",
   "policy": "docs/maintainers/contributor-licensing.md",
   "external_contributors": 0,

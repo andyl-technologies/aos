@@ -10,8 +10,8 @@ appropriate Nix store and builders. It also prevents an ephemeral CI runner from
 attempting to bootstrap the AOS package graph before every Worker update.
 
 The normal update path qualifies one installer in staging before production.
-For an explicitly authorized empty testing-only reset, use
-[Direct production setup for testing](#direct-production-setup-for-testing).
+For an explicitly authorized empty experimental-only reset, use
+[Direct production setup for the experimental registry](#direct-production-setup-for-the-experimental-registry).
 That setup does not open `andyl/main` or bypass release-publication verification.
 
 ## Keep the environments isolated
@@ -163,10 +163,10 @@ separate from registry and receipt signing. Omitting the file preserves an
 existing manifest; a new installation otherwise starts with an empty manifest
 and cannot prove an endpoint generation until its signer is configured.
 
-## Direct production setup for testing
+## Direct production setup for the experimental registry
 
 This procedure is limited to the explicitly authorized first production
-checkpoint: a full teardown and fresh installation serving only `andyl/testing`.
+checkpoint: a full teardown and fresh installation serving only `andyl/experimental`.
 No production history has been adopted before this checkpoint.
 Use the ordinary staging promotion procedure for main and normal qualified
 updates. Registry release import continues to require its signed evidence;
@@ -203,9 +203,9 @@ deploying the Hub directly does not manufacture a staging receipt.
    place of `deploy` and supply the fresh JWT and seal values for this setup.
 7. Bootstrap an individual owner using the private deployment configuration,
    configure invite-only signup, and create the `andyl` organization and public
-   `testing` registry through the reviewed Hub plan/apply surface. Do not create
+   `experimental` registry through the reviewed Hub plan/apply surface. Do not create
    `andyl/main` during this production setup. Use the
-   exact public anchor in `systems/aos-testing.nix`. Use separate individual
+   exact public anchor in `systems/aos-experimental.nix`. Use separate individual
    accounts for administrators and a separate group address for operational
    notifications.
 8. Verify the public deployment ID, owner sign-in, authorization denials,
@@ -219,14 +219,14 @@ deploying the Hub directly does not manufacture a staging receipt.
    database name alone does not erase old data or complete this procedure.
 
 Retain the new deployment configuration, recovery material, and verification
-results independently of the Hub. The cryptographic lifecycle for testing and
+results independently of the Hub. The cryptographic lifecycle for the experimental registry and
 the intended main policy are in [Registry key management](registry-key-management.md).
 
-Resetting an established testing trust root requires a new registry epoch and
+Resetting an established experimental trust root requires a new registry epoch and
 new client anchors. Replacing the unused prepared epoch-one anchor during the
 initial setup does not authorize replacing a root after production use.
 
-This is the first stable Hub production checkpoint, regardless of the testing
+This is the first stable Hub production checkpoint, regardless of the experimental
 registry's support tier. After it, upgrades preserve data and use explicit,
 ordered migrations. Do not edit or re-squash the baseline, reuse provider
 migration tags, replace the database instance, or delete/reinstall the Worker
@@ -268,7 +268,7 @@ roll forward with a repair migration or use the reviewed backup recovery procedu
 
 ### Initial production delivery state
 
-The September 8, 2026 production setup creates only `andyl/testing`. It does not
+The September 8, 2026 production setup creates only `andyl/experimental`. It does not
 publish packages, system images, OCI containers, or releases. The direct R2
 attachment at `cdn.aos.andyl.org` targets `aos-hub-v2-surfaces`; activating its
 registry delivery route remains a separate step requiring controller observations
@@ -322,7 +322,7 @@ routine updates. A database name alone does not establish its schema version.
 Production uses `hub-v2` as documented below.
 
 Staging enables OCI pull, authenticated push, and verified publication so the
-testing release flow can upload an immutable graph, commit its signed sidecar,
+experimental release flow can upload an immutable graph, commit its signed sidecar,
 and exercise the public Containers browse pages. Administration and garbage
 collection remain disabled. Preserve all three release-path flags on subsequent
 deployments; omitting one disables that part of container publication or
@@ -330,23 +330,23 @@ consumption.
 
 ### Build artifacts for the staging destination
 
-Build the `aos-testing-staging` system variant for staging publication. It bakes
-`https://cdn.aos.staging.andyl.org/andyl/testing/` into APM configuration and
+Build the `aos-experimental-staging` system variant for staging publication. It bakes
+`https://cdn.aos.staging.andyl.org/andyl/experimental/` into APM configuration and
 `https://aos.staging.andyl.org` into the default Hub environment for both disk
-images and containers. The `aos-testing` variant targets the production delivery
+images and containers. The `aos-experimental` variant targets the production delivery
 origin. Published artifacts cannot change their baked destination after signing.
 For another Hub deployment, set `aos.release.registryOrigin` and
 `aos.release.hubUrl` before building, and publish to that same deployment.
 Planning and image finalization require every planned image's `hubUrl` to
 equal the origin of the Hub surface consumers will install from: production
 when the plan has a production destination, otherwise staging. A staging-only
-release bound for this deployment must therefore plan the `aos-testing-staging`
+release bound for this deployment must therefore plan the `aos-experimental-staging`
 variant (or an equivalent profile), while a release bound for production keeps
-the `aos-testing` variant and is exercised on staging through a cache override.
+the `aos-experimental` variant and is exercised on staging through a cache override.
 
 ```sh
-aos-dev --release build container aos-testing-staging:oci --no-out-link
-aos-dev --release build build aos-testing-staging:unsignedImageAssembly --no-out-link
+aos-dev --release build container aos-experimental-staging:oci --no-out-link
+aos-dev --release build build aos-experimental-staging:unsignedImageAssembly --no-out-link
 ```
 
 ### Configure the direct staging CDN
@@ -465,7 +465,7 @@ would remove it from the generated Worker configuration.
 Repeat `--domain DOMAIN` for every additional domain owned by the production
 Worker. Probe `https://aos.andyl.org/.well-known/aos-deployment` exactly as for
 staging, then repeat the relevant hosted acceptance tests. The three OCI flags
-are required for the public testing release path: authenticated upload remains
+are required for the public experimental release path: authenticated upload remains
 permission-gated, verified publication binds the staged graph to the signed AOS
 release, and pull makes the committed result publicly consumable. Container
 administration and garbage collection remain disabled.
@@ -505,7 +505,7 @@ printf '%s\n' "$PRODUCTION_ROOT_PASSWORD" | \
 ```
 
 Recreate explicit topology/IAM resources through the Hub control surface, then
-bootstrap only `andyl/testing`. Leave `andyl/main` unconfigured until its launch
+bootstrap only `andyl/experimental`. Leave `andyl/main` unconfigured until its launch
 gates are closed. Record the reset approval, old and new resource identities, new
 secret versions, and the validation evidence. Subsequent deployments must keep
 `hub-v2` and omit JWT/seal values unless performing a reviewed rotation.

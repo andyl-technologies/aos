@@ -1,18 +1,18 @@
 //! Closed registry identities and release-channel policy.
 //!
-//! `andyl/main` and `andyl/testing` are separate security and assurance
+//! `andyl/main` and `andyl/experimental` are separate security and assurance
 //! domains: they differ in key custody, publication infrastructure, and data
 //! lifecycle, not in the maturity of the software they carry. Mutable channels
 //! classify releases inside a registry; they do not replace that boundary. A
-//! destructive testing-root reset advances the registry identity
-//! (`andyl/testing-v2`, `andyl/testing-v3`, and so on), so an old image cannot
+//! destructive experimental-root reset advances the registry identity
+//! (`andyl/experimental-v2`, `andyl/experimental-v3`, and so on), so an old image cannot
 //! silently accept a replacement out-of-band root.
 //!
 //! Channels have a *kind*: `edge`, `candidate`, or `stable`. A per-train
 //! channel such as `stable-2026.3` has kind `stable`; the kind is the prefix
 //! before the first `-`. The production tier carries every kind, so the
 //! integration stream ships through the same keys and pipeline as supported
-//! releases. The testing tier carries only `edge`: it exists to rehearse
+//! releases. The experimental tier carries only `edge`: it exists to rehearse
 //! pipeline and key changes, not to publish a second supported stream.
 
 use anyhow::{Result, bail};
@@ -23,7 +23,7 @@ use crate::artifact::require_identifier;
 /// Supported production registry identity.
 pub const MAIN_REGISTRY: &str = "andyl/main";
 /// First-epoch experimental registry identity.
-pub const TESTING_REGISTRY: &str = "andyl/testing";
+pub const EXPERIMENTAL_REGISTRY: &str = "andyl/experimental";
 
 /// Every channel kind, in maturity order.
 pub const CHANNEL_KINDS: [&str; 3] = ["edge", "candidate", "stable"];
@@ -55,8 +55,8 @@ impl RegistryTier {
 
     /// Returns the channel kinds a registry of this tier may carry.
     ///
-    /// Production carries every kind. Testing carries only `edge`, because a
-    /// testing release never graduates and a second candidate or stable stream
+    /// Production carries every kind. The experimental registry carries only `edge`, because a
+    /// experimental release never graduates and a second candidate or stable stream
     /// on experimental infrastructure would only invite confusion.
     #[must_use]
     pub const fn allowed_channel_kinds(self) -> &'static [&'static str] {
@@ -109,7 +109,7 @@ impl RegistryPolicy {
     ///
     /// # Errors
     /// Returns an error for a malformed channel name or a channel kind outside
-    /// the tier's closed set, such as `candidate` on `andyl/testing`.
+    /// the tier's closed set, such as `candidate` on `andyl/experimental`.
     pub fn require_release(self, channels: &[String]) -> Result<()> {
         for channel in channels {
             let kind = channel_kind(channel)?;
@@ -142,7 +142,7 @@ pub fn channel_kind(channel: &str) -> Result<&str> {
 ///
 /// # Errors
 ///
-/// Returns an error for an unknown registry or a malformed testing-root epoch.
+/// Returns an error for an unknown registry or a malformed experimental-root epoch.
 pub fn registry_policy(identity: &str) -> Result<RegistryPolicy> {
     if identity == MAIN_REGISTRY {
         return Ok(RegistryPolicy {
@@ -150,24 +150,24 @@ pub fn registry_policy(identity: &str) -> Result<RegistryPolicy> {
             root_epoch: 1,
         });
     }
-    if identity == TESTING_REGISTRY {
+    if identity == EXPERIMENTAL_REGISTRY {
         return Ok(RegistryPolicy {
             tier: RegistryTier::Testing,
             root_epoch: 1,
         });
     }
-    if let Some(epoch) = identity.strip_prefix("andyl/testing-v") {
+    if let Some(epoch) = identity.strip_prefix("andyl/experimental-v") {
         if epoch.is_empty()
             || !epoch.bytes().all(|byte| byte.is_ascii_digit())
             || (epoch.len() > 1 && epoch.starts_with('0'))
         {
-            bail!("testing registry epochs must use canonical decimal notation");
+            bail!("experimental registry epochs must use canonical decimal notation");
         }
         let root_epoch = epoch
             .parse::<u64>()
-            .map_err(|_| anyhow::anyhow!("testing registry root epoch is malformed"))?;
+            .map_err(|_| anyhow::anyhow!("experimental registry root epoch is malformed"))?;
         if root_epoch < 2 {
-            bail!("testing registry epochs after the first begin at v2");
+            bail!("experimental registry epochs after the first begin at v2");
         }
         return Ok(RegistryPolicy {
             tier: RegistryTier::Testing,
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn testing_carries_edge_only_and_production_carries_every_kind() {
-        for registry in [TESTING_REGISTRY, "andyl/testing-v2"] {
+        for registry in [EXPERIMENTAL_REGISTRY, "andyl/experimental-v2"] {
             let policy = registry_policy(registry).unwrap();
             assert!(!policy.requires_production_assurance());
             assert!(policy.require_release(&["edge".into()]).is_ok());
@@ -218,16 +218,16 @@ mod tests {
 
     #[test]
     fn testing_root_resets_advance_the_registry_identity() {
-        assert_eq!(registry_policy(TESTING_REGISTRY).unwrap().root_epoch(), 1);
-        assert_eq!(registry_policy("andyl/testing-v2").unwrap().root_epoch(), 2);
+        assert_eq!(registry_policy(EXPERIMENTAL_REGISTRY).unwrap().root_epoch(), 1);
+        assert_eq!(registry_policy("andyl/experimental-v2").unwrap().root_epoch(), 2);
         assert_eq!(
-            registry_policy("andyl/testing-v19").unwrap().root_epoch(),
+            registry_policy("andyl/experimental-v19").unwrap().root_epoch(),
             19
         );
-        assert!(registry_policy("andyl/testing-v1").is_err());
-        assert!(registry_policy("andyl/testing-v02").is_err());
-        assert!(registry_policy("andyl/testing-v+2").is_err());
-        assert!(registry_policy("andyl/testing-v+02").is_err());
+        assert!(registry_policy("andyl/experimental-v1").is_err());
+        assert!(registry_policy("andyl/experimental-v02").is_err());
+        assert!(registry_policy("andyl/experimental-v+2").is_err());
+        assert!(registry_policy("andyl/experimental-v+02").is_err());
         assert!(registry_policy("andyl/nightly").is_err());
     }
 

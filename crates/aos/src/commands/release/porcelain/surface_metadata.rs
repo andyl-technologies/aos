@@ -745,7 +745,7 @@ fn copy_regular(source: &Path, destination: &Path, relative: &Path) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use aos_release::registry::TESTING_REGISTRY;
+    use aos_release::registry::EXPERIMENTAL_REGISTRY;
     use aos_release::tuf::{
         RootMetadataV1, TUF_ROOT_V1, TUF_SPEC_VERSION, canonical_targets_metadata,
         immutable_snapshot_metadata, timestamp_metadata,
@@ -763,7 +763,7 @@ mod tests {
             signed: RootMetadataV1 {
                 schema_version: TUF_ROOT_V1.to_owned(),
                 spec_version: TUF_SPEC_VERSION.to_owned(),
-                registry: TESTING_REGISTRY.to_owned(),
+                registry: EXPERIMENTAL_REGISTRY.to_owned(),
                 version: 3,
                 expires: "2030-01-01T00:00:00Z".to_owned(),
                 consistent_snapshot: true,
@@ -774,7 +774,7 @@ mod tests {
         };
         let targets = TufEnvelopeV1 {
             signed: canonical_targets_metadata(
-                TESTING_REGISTRY,
+                EXPERIMENTAL_REGISTRY,
                 targets_version,
                 "2030-01-01T00:00:00Z".to_owned(),
             )?,
@@ -782,7 +782,7 @@ mod tests {
         };
         let delegated = TufEnvelopeV1 {
             signed: aos_release::tuf::delegated_release_metadata(
-                TESTING_REGISTRY,
+                EXPERIMENTAL_REGISTRY,
                 snapshot_version,
                 "2030-01-01T00:00:00Z".to_owned(),
                 aos_release::tuf::TufReleaseTargetV1 {
@@ -798,7 +798,7 @@ mod tests {
         };
         let snapshot = TufEnvelopeV1 {
             signed: immutable_snapshot_metadata(
-                TESTING_REGISTRY,
+                EXPERIMENTAL_REGISTRY,
                 snapshot_version,
                 "2030-01-01T00:00:00Z".to_owned(),
                 &root,
@@ -809,7 +809,7 @@ mod tests {
         };
         let timestamp = TufEnvelopeV1 {
             signed: timestamp_metadata(
-                TESTING_REGISTRY,
+                EXPERIMENTAL_REGISTRY,
                 version,
                 "2029-12-30T00:00:00Z".to_owned(),
                 "2029-12-31T00:00:00Z".to_owned(),
@@ -825,7 +825,7 @@ mod tests {
 
     fn state(timestamp: Option<&[u8]>, snapshot: Option<&[u8]>) -> Result<SurfaceTufState> {
         SurfaceTufState::from_served(
-            TESTING_REGISTRY,
+            EXPERIMENTAL_REGISTRY,
             "production/edge",
             "cdn-2026-09",
             timestamp,

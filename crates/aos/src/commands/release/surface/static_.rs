@@ -822,7 +822,7 @@ mod tests {
         };
         let result = StaticSurface::connect(
             planned,
-            "andyl/testing",
+            "andyl/experimental",
             &aos_cache::backend::AuthOptions::default(),
             None,
         )
