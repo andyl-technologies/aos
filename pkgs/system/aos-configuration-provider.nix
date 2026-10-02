@@ -26,7 +26,8 @@ mkDerivation {
         cp ${./_aos-configuration-provider/handler.py} "$out/libexec/handler.py"
         cat > "$out/bin/aos-configuration-provider" << EOF
         #!${bash}/bin/bash
-        exec "${python3}/bin/python3" "$out/libexec/handler.py" "\$@"
+        # The initrd store can be writable; imports must never change its NAR.
+        exec "${python3}/bin/python3" -B "$out/libexec/handler.py" "\$@"
         EOF
         chmod +x "$out/bin/aos-configuration-provider"
       '';
