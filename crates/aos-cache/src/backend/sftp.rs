@@ -80,6 +80,28 @@ impl CacheBackend for SftpBackend {
         Ok(result.status != 404)
     }
 
+    async fn static_file_identity(
+        &self,
+        relative_path: &str,
+    ) -> Result<Option<super::StaticFileIdentity>> {
+        validate_relative_path(relative_path)?;
+        let url = self.remote_url(relative_path);
+        if self.engine.head(&url).await?.status == 404 {
+            return Ok(None);
+        }
+        let snapshot = tempfile::NamedTempFile::new()?;
+        self.engine
+            .execute(TransferRequest::get_to_file(
+                &url,
+                snapshot.path().to_path_buf(),
+            ))
+            .await?;
+        let (byte_size, sha256) = crate::upload_resume::source_identity(
+            &aos_net::MultipartSource::File(snapshot.path().to_path_buf()),
+        )?;
+        Ok(Some(super::StaticFileIdentity { byte_size, sha256 }))
+    }
+
     async fn has_narinfo(&self, store_hash: &str) -> Result<bool> {
         let url = self.narinfo_url(store_hash);
         let result = self.engine.head(&url).await?;

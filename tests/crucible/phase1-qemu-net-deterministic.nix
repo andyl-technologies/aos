@@ -129,8 +129,8 @@ in
           script = ''
             set -eu
 
-            mkdir -p hw include/net include/plugins include/qemu migration net plugins qapi qemu
-            : > hw/boards.h
+            mkdir -p hw/core include/net include/plugins include/qemu migration net plugins qapi qemu
+            : > hw/core/boards.h
             : > migration/blocker.h
             : > net/net.h
             : > qapi/error.h
@@ -167,6 +167,10 @@ in
             QEMU_PLUGIN_API
             void qemu_plugin_update_ns(const void *handle, int64_t time);
 
+            /**
+             * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
+             * @vcpu_index: the executing vCPU
+             */
             typedef void
             (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
                                              int64_t num, uint64_t a1, uint64_t a2,
@@ -250,7 +254,7 @@ in
             #include "qemu/main-loop.h"
             #include "qapi/error.h"
             #include "migration/blocker.h"
-            #include "hw/boards.h"
+            #include "hw/core/boards.h"
             #include "qemu/plugin-memory.h"
             #include "qemu/plugin.h"
 

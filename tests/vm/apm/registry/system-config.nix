@@ -32,11 +32,11 @@
       ROOT_HASH=$(basename "$ROOT_STORE" | cut -d- -f1)
       LEAF_HASH=$(basename "$LEAF_STORE" | cut -d- -f1)
 
-      $APR create override-reg
+      create_publish_registry override-reg
       REG_DIR="$REG_STORAGE/override-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
 
-      $APR publish "$ROOT_STORE" \
+      publish_vm_package "$ROOT_STORE" \
         --name override-root \
         --version 1.0.0 \
         --description "System config override workflow root" \

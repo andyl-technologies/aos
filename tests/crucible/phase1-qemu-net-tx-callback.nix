@@ -195,6 +195,10 @@ in
             QEMU_PLUGIN_API
             int qemu_plugin_net_inject(const uint8_t *data, size_t len);
 
+            /**
+             * typedef qemu_plugin_vcpu_syscall_cb_t - vCPU syscall callback function type
+             * @vcpu_index: the executing vCPU
+             */
             typedef void
             (*qemu_plugin_vcpu_syscall_cb_t)(qemu_plugin_id_t id, unsigned int vcpu_index,
                                              int64_t num, uint64_t a1, uint64_t a2,
@@ -206,7 +210,7 @@ in
             cat > stock-net-tx-negative.c <<'STOCK_NEGATIVE'
             #include <stddef.h>
             #include <stdint.h>
-            #include "qemu/qemu-plugin.h"
+            #include "plugins/qemu-plugin.h"
 
             int main(void)
             {

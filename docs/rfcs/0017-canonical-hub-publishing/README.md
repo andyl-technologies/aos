@@ -15,16 +15,23 @@
 AOS uses one supported package and system catalog, `andyl/main`. It does not
 create separate registries for `stable` or `unstable` maturity. Registry
 identity is a trust, ownership, policy, and dependency-resolution boundary;
-release maturity is not. AOS expresses supported maturity with two signed
-channels inside `andyl/main`:
+release maturity is not. AOS expresses maturity with three signed channels
+inside `andyl/main`:
 
+- `edge` is the newest integrated development snapshot, cut on changed
+  business days with automated smoke evidence and no support promise;
 - `candidate` is the weekly release candidate; and
 - `stable` is the supported production stream.
 
-The newest integrated development snapshot, `edge`, lives only in the
-experimental `andyl/testing` registry, which exists because it has its own
-trust root, lighter pipeline assurance, and disposable data, not because of
-maturity. Its releases never move into `andyl/main`.
+All three ship through main's hardware-backed keys and production pipeline, so
+a developer following `edge` trusts the same root and exercises the same
+delivery path as the supported releases it leads to.
+
+The experimental `andyl/experimental` registry also carries an `edge` channel. It
+exists because it has its own trust root, lighter key management and
+continuous-deployment infrastructure, and disposable data, not because of
+maturity: it is where a change to the release mechanism itself is rehearsed
+before it runs against main. Its releases never move into `andyl/main`.
 
 Each channel keeps its existing 256 signed partitions. Those partitions are
 rollout rings within a channel, not additional channels or repositories.
@@ -72,10 +79,10 @@ authority.
 
 | Question | Decision |
 | --- | --- |
-| How many public registries? | One supported catalog, `andyl/main`, plus the experimental `andyl/testing` with its own trust root and disposable data. Add another only for a different owner, trust root, legal/distribution policy, or intentionally independent dependency universe. |
+| How many public registries? | One supported catalog, `andyl/main`, plus the experimental `andyl/experimental` with its own trust root and disposable data. Add another only for a different owner, trust root, legal/distribution policy, or intentionally independent dependency universe. |
 | What is the Debian analogue? | AOS channels correspond to Debian's maturity suites. APM registries are closer to independently trusted archives, not suites. |
-| Which channels? | `candidate` and `stable` in `andyl/main`; `edge` only in `andyl/testing`. No environment-named registry. |
-| What decides a release's obligations? | The destination's profile: `build` for staging, `smoke` for testing production, `functional` for candidate, `soak` for stable. An emergency is a signed profile override of stable soak and rings, not a class. |
+| Which channels? | `edge`, `candidate`, and `stable` in `andyl/main`; `edge` only in `andyl/experimental`. No environment-named registry. |
+| What decides a release's obligations? | The destination's profile: `build` for staging, `smoke` for edge, `functional` for candidate, `soak` for stable. A channel kind selects the same profile on both registries. An emergency is a signed profile override of stable soak and rings, not a class. |
 | How is environment recovery proven? | By signed, identity-bound fitness attestations: weekly automated restore and alert checks, quarterly operator exercises. They are not repeated per release. |
 | Which package targets? | `x86_64-linux`, `aarch64-linux`, `x86_64-darwin`, and `aarch64-darwin`, subject to the fail-closed package eligibility inventory. |
 | Which targets receive images? | Both Linux architectures receive the complete raw/QCOW2/VMDK/VHD and recovery matrix. Darwin receives packages only. |

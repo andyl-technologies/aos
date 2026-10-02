@@ -21,11 +21,15 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use futures_util::FutureExt as _;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::security::{sign_payload_signature, verify_payload_signature};
+use crate::security::verify_payload_signature;
+
+#[cfg(test)]
+use crate::security::sign_payload_signature;
 use crate::types::RegistryState;
 
 /// Directory holding committed registry TUF metadata.
@@ -46,7 +50,10 @@ const SCHEMA_TARGETS: &str = "https://andyl.com/aos/registry/tuf/targets/v1";
 const SCHEMA_SNAPSHOT: &str = "https://andyl.com/aos/registry/tuf/snapshot/v1";
 const SCHEMA_TIMESTAMP: &str = "https://andyl.com/aos/registry/tuf/timestamp/v1";
 const SPEC_VERSION: &str = "aos-tuf-1";
-const SIGNATURE_NAMESPACE: &str = "aos-registry-tuf-v1";
+/// SSHSIG namespace authenticating registry catalog metadata.
+pub const REGISTRY_METADATA_SIGNATURE_NAMESPACE: &str = "aos-registry-tuf-v1";
+
+const SIGNATURE_NAMESPACE: &str = REGISTRY_METADATA_SIGNATURE_NAMESPACE;
 
 const ROOT_EXPIRES_SECONDS: u64 = 365 * 24 * 60 * 60;
 const TARGETS_EXPIRES_SECONDS: u64 = 90 * 24 * 60 * 60;
@@ -78,6 +85,12 @@ pub struct MetadataSigningKey {
     /// Whether this key belongs to the new root role policy.
     pub role_key: bool,
 }
+
+mod signer;
+
+pub use signer::{MetadataSigningIdentity, MetadataSigningRequest, RegistryMetadataSigner};
+
+use signer::FileMetadataSigner;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Envelope<T> {
@@ -161,7 +174,7 @@ struct TufVersionedMeta {
 
 /// Generate and write release TUF metadata in a registry authoring clone.
 ///
-/// The catalog covers every file in the current `HEAD` tree except `tuf/`.
+/// The catalog covers every file in the current worktree except `tuf/`.
 /// The caller commits the returned changes before creating the release tag,
 /// so the signed tag covers both the catalog and the generated metadata.
 ///
@@ -176,6 +189,43 @@ pub fn write_release_metadata_worktree(
     release: &semver::Version,
     signing_keys: &[MetadataSigningKey],
 ) -> Result<bool> {
+    let mut signer = FileMetadataSigner { keys: signing_keys };
+    // The file adapter performs synchronous signing and cannot yield. Keeping
+    // this wrapper synchronous preserves APR's existing producer API without
+    // starting or nesting an async runtime.
+    write_metadata_with_signer(repo_dir, registry, release, &mut signer, true)
+        .now_or_never()
+        .context("synchronous catalog metadata signer unexpectedly yielded")?
+}
+
+/// Regenerates catalog metadata over an isolated candidate's current files.
+///
+/// The candidate's `HEAD` may still name its frozen base. The producer hashes
+/// the current worktree, signs all four catalog roles, verifies current and
+/// previous root thresholds, and writes metadata before review digests freeze.
+///
+/// # Errors
+///
+/// Returns an error for invalid or incomplete root authorization, signing or
+/// threshold failures, malformed prior metadata, or unreadable candidate files.
+pub async fn write_release_metadata_worktree_with_signer(
+    repo_dir: &Path,
+    registry: &str,
+    release: &semver::Version,
+    signer: &mut dyn RegistryMetadataSigner,
+) -> Result<bool> {
+    write_metadata_with_signer(repo_dir, registry, release, signer, true).await
+}
+
+async fn write_metadata_with_signer(
+    repo_dir: &Path,
+    registry: &str,
+    release: &semver::Version,
+    signer: &mut dyn RegistryMetadataSigner,
+    current_worktree: bool,
+) -> Result<bool> {
+    let signing_keys = signer.signing_identities();
+    let context = MetadataContext { registry, release };
     if signing_keys.is_empty() {
         bail!("at least one TUF metadata signing key is required");
     }
@@ -189,8 +239,29 @@ pub fn write_release_metadata_worktree(
         read_worktree_envelope::<SnapshotSigned>(&tuf_dir.join("snapshot.json"))?;
     let existing_timestamp =
         read_worktree_envelope::<TimestampSigned>(&tuf_dir.join("timestamp.json"))?;
+    // A maintainer workspace may still descend from an older release. Local
+    // publication history supplies the root authority and version floors, so
+    // a later candidate cannot restart metadata counters from that workspace.
+    let published = published_metadata_history(repo_dir, Some(release))?;
+    let published_root = published
+        .as_ref()
+        .map(|(_, files)| parse_envelope::<RootSigned>(&files.root, ROOT_JSON))
+        .transpose()?;
+    let published_targets = published
+        .as_ref()
+        .map(|(_, files)| parse_envelope::<TargetsSigned>(&files.targets, TARGETS_JSON))
+        .transpose()?;
+    let published_snapshot = published
+        .as_ref()
+        .map(|(_, files)| parse_envelope::<SnapshotSigned>(&files.snapshot, SNAPSHOT_JSON))
+        .transpose()?;
+    let published_timestamp = published
+        .as_ref()
+        .map(|(_, files)| parse_envelope::<TimestampSigned>(&files.timestamp, TIMESTAMP_JSON))
+        .transpose()?;
+    let previous_root = published_root.as_ref().or(existing_root.as_ref());
 
-    let (keys, roles) = root_policy_for_signers(existing_root.as_ref(), signing_keys);
+    let (keys, roles) = root_policy_for_signers(previous_root, &signing_keys);
     validate_root_policy(&keys, &roles)?;
 
     let now = unix_now_secs();
@@ -198,19 +269,25 @@ pub fn write_release_metadata_worktree(
         schema: SCHEMA_ROOT.to_string(),
         spec_version: SPEC_VERSION.to_string(),
         registry: registry.to_string(),
-        version: next_version(existing_root.as_ref().map(|root| root.signed.version)),
+        version: next_version(version_floor(
+            existing_root.as_ref().map(|root| root.signed.version),
+            published_root.as_ref().map(|root| root.signed.version),
+        )),
         expires: format_iso8601_utc(now.saturating_add(ROOT_EXPIRES_SECONDS)),
         keys: keys.clone(),
         roles: roles.clone(),
     };
     let root = sign_root_envelope(
         root_signed,
-        signing_keys,
+        &signing_keys,
         &keys,
         &roles,
-        existing_root.as_ref(),
-    )?;
-    if let Some(previous_root) = &existing_root {
+        previous_root,
+        &context,
+        signer,
+    )
+    .await?;
+    if let Some(previous_root) = previous_root {
         verify_envelope(
             &root,
             ROLE_ROOT,
@@ -228,16 +305,24 @@ pub fn write_release_metadata_worktree(
         None,
     )?;
 
-    let targets_map = collect_commit_catalog(repo_dir, "HEAD")?;
+    let catalog_commit = if current_worktree {
+        snapshot_worktree(repo_dir)?.to_string()
+    } else {
+        "HEAD".to_string()
+    };
+    let targets_map = collect_commit_catalog(repo_dir, &catalog_commit)?;
     let targets_signed = TargetsSigned {
         schema: SCHEMA_TARGETS.to_string(),
         spec_version: SPEC_VERSION.to_string(),
         registry: registry.to_string(),
-        version: next_version(
+        version: next_version(version_floor(
             existing_targets
                 .as_ref()
                 .map(|targets| targets.signed.version),
-        ),
+            published_targets
+                .as_ref()
+                .map(|targets| targets.signed.version),
+        )),
         expires: format_iso8601_utc(now.saturating_add(TARGETS_EXPIRES_SECONDS)),
         release: release.to_string(),
         catalog_hash: catalog_hash(&targets_map)?,
@@ -246,10 +331,13 @@ pub fn write_release_metadata_worktree(
     let targets = sign_envelope(
         targets_signed,
         ROLE_TARGETS,
-        signing_keys,
+        &signing_keys,
         &root.signed.keys,
         &root.signed.roles,
-    )?;
+        &context,
+        signer,
+    )
+    .await?;
     verify_envelope(
         &targets,
         ROLE_TARGETS,
@@ -273,21 +361,27 @@ pub fn write_release_metadata_worktree(
         schema: SCHEMA_SNAPSHOT.to_string(),
         spec_version: SPEC_VERSION.to_string(),
         registry: registry.to_string(),
-        version: next_version(
+        version: next_version(version_floor(
             existing_snapshot
                 .as_ref()
                 .map(|snapshot| snapshot.signed.version),
-        ),
+            published_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.signed.version),
+        )),
         expires: format_iso8601_utc(now.saturating_add(SNAPSHOT_EXPIRES_SECONDS)),
         meta: snapshot_meta,
     };
     let snapshot = sign_envelope(
         snapshot_signed,
         ROLE_SNAPSHOT,
-        signing_keys,
+        &signing_keys,
         &root.signed.keys,
         &root.signed.roles,
-    )?;
+        &context,
+        signer,
+    )
+    .await?;
     verify_envelope(
         &snapshot,
         ROLE_SNAPSHOT,
@@ -301,21 +395,27 @@ pub fn write_release_metadata_worktree(
         schema: SCHEMA_TIMESTAMP.to_string(),
         spec_version: SPEC_VERSION.to_string(),
         registry: registry.to_string(),
-        version: next_version(
+        version: next_version(version_floor(
             existing_timestamp
                 .as_ref()
                 .map(|timestamp| timestamp.signed.version),
-        ),
+            published_timestamp
+                .as_ref()
+                .map(|timestamp| timestamp.signed.version),
+        )),
         expires: format_iso8601_utc(now.saturating_add(TIMESTAMP_EXPIRES_SECONDS)),
         snapshot: versioned_meta(snapshot.signed.version, &snapshot_bytes),
     };
     let timestamp = sign_envelope(
         timestamp_signed,
         ROLE_TIMESTAMP,
-        signing_keys,
+        &signing_keys,
         &root.signed.keys,
         &root.signed.roles,
-    )?;
+        &context,
+        signer,
+    )
+    .await?;
     verify_envelope(
         &timestamp,
         ROLE_TIMESTAMP,
@@ -609,9 +709,13 @@ fn next_version(previous: Option<u64>) -> u64 {
     previous.unwrap_or(0).saturating_add(1)
 }
 
+fn version_floor(workspace: Option<u64>, published: Option<u64>) -> Option<u64> {
+    workspace.into_iter().chain(published).max()
+}
+
 fn root_policy_for_signers(
     existing_root: Option<&Envelope<RootSigned>>,
-    signing_keys: &[MetadataSigningKey],
+    signing_keys: &[MetadataSigningIdentity],
 ) -> (BTreeMap<String, TufKey>, BTreeMap<String, TufRoleSpec>) {
     let policy_keys = signing_keys
         .iter()
@@ -657,12 +761,14 @@ fn state_has_tuf_floors(state: &RegistryState) -> bool {
         || state.tuf_timestamp_version.is_some()
 }
 
-fn sign_root_envelope<T: Serialize>(
+async fn sign_root_envelope<T: Serialize>(
     signed: T,
-    signing_keys: &[MetadataSigningKey],
+    signing_keys: &[MetadataSigningIdentity],
     keys: &BTreeMap<String, TufKey>,
     roles: &BTreeMap<String, TufRoleSpec>,
     previous_root: Option<&Envelope<RootSigned>>,
+    context: &MetadataContext<'_>,
+    provider: &mut dyn RegistryMetadataSigner,
 ) -> Result<Envelope<T>> {
     let role_spec = roles
         .get(ROLE_ROOT)
@@ -692,7 +798,11 @@ fn sign_root_envelope<T: Serialize>(
         {
             continue;
         }
-        let sig = sign_payload_signature(&signer.key_path, SIGNATURE_NAMESPACE, &payload)
+        let request =
+            metadata_signing_request(&signed, context, ROLE_ROOT, &signer.key_id, &payload)?;
+        let sig = provider
+            .sign_metadata(request)
+            .await
             .with_context(|| format!("signing root TUF metadata with '{}'", signer.key_id))?;
         signatures.push(TufSignature {
             key_id: signer.key_id.clone(),
@@ -702,12 +812,14 @@ fn sign_root_envelope<T: Serialize>(
     Ok(Envelope { signed, signatures })
 }
 
-fn sign_envelope<T: Serialize>(
+async fn sign_envelope<T: Serialize>(
     signed: T,
     role: &str,
-    signing_keys: &[MetadataSigningKey],
+    signing_keys: &[MetadataSigningIdentity],
     keys: &BTreeMap<String, TufKey>,
     roles: &BTreeMap<String, TufRoleSpec>,
+    context: &MetadataContext<'_>,
+    provider: &mut dyn RegistryMetadataSigner,
 ) -> Result<Envelope<T>> {
     let role_spec = roles
         .get(role)
@@ -727,7 +839,10 @@ fn sign_envelope<T: Serialize>(
                 signer.key_id,
             );
         }
-        let sig = sign_payload_signature(&signer.key_path, SIGNATURE_NAMESPACE, &payload)
+        let request = metadata_signing_request(&signed, context, role, &signer.key_id, &payload)?;
+        let sig = provider
+            .sign_metadata(request)
+            .await
             .with_context(|| format!("signing {role} TUF metadata with '{}'", signer.key_id))?;
         signatures.push(TufSignature {
             key_id: signer.key_id.clone(),
@@ -735,6 +850,33 @@ fn sign_envelope<T: Serialize>(
         });
     }
     Ok(Envelope { signed, signatures })
+}
+
+struct MetadataContext<'a> {
+    registry: &'a str,
+    release: &'a semver::Version,
+}
+
+fn metadata_signing_request<T: Serialize>(
+    signed: &T,
+    context: &MetadataContext<'_>,
+    role: &str,
+    key_id: &str,
+    payload: &[u8],
+) -> Result<MetadataSigningRequest> {
+    let value = serde_json::to_value(signed)?;
+    let version = value
+        .get("version")
+        .and_then(serde_json::Value::as_u64)
+        .context("catalog metadata lacks a nonzero integer version")?;
+    Ok(MetadataSigningRequest {
+        registry: context.registry.to_string(),
+        release: context.release.to_string(),
+        role: role.to_string(),
+        version,
+        key_id: key_id.to_string(),
+        payload: payload.to_vec(),
+    })
 }
 
 fn verify_envelope<T: Serialize>(
@@ -827,18 +969,98 @@ fn validate_role(role: &str, spec: &TufRoleSpec, keys: &BTreeMap<String, TufKey>
     Ok(())
 }
 
-fn collect_commit_catalog(repo_dir: &Path, commit: &str) -> Result<BTreeMap<String, TufFileMeta>> {
-    let paths = crate::registry::repo::list_tree_paths_blocking(repo_dir, commit)
-        .with_context(|| format!("listing tree for {commit}"))?;
-
-    let mut catalog = BTreeMap::new();
-    for path in paths {
-        if path.starts_with("tuf/") {
-            continue;
-        }
-        let bytes = read_commit_blob(repo_dir, commit, &path)?;
-        catalog.insert(path, file_meta(&bytes));
+/// Verifies current candidate files through the unchanged APM metadata verifier.
+///
+/// The candidate is captured in an unreferenced Git commit; no branch or tag
+/// moves. The latest published metadata supplies root-rotation authorization
+/// and rollback floors; `HEAD` supplies the initial base when no release exists.
+/// Existing metadata cannot be stripped; present metadata must be current and valid.
+/// A pre-TUF base without metadata remains available to legacy library callers.
+///
+/// # Errors
+///
+/// Returns an error for missing, stale, expired, stripped, incorrectly signed,
+/// or unauthorized catalog metadata, or an unreadable worktree snapshot.
+pub fn verify_worktree_metadata(
+    repo_dir: &Path,
+    registry: &str,
+    trusted_keys: &[String],
+) -> Result<Option<VerifiedMetadata>> {
+    let commit = snapshot_worktree(repo_dir)?;
+    let repo = git2::Repository::open(repo_dir)?;
+    let published = published_metadata_history(repo_dir, None)?;
+    let previous = published
+        .as_ref()
+        .map(|(commit, _)| commit.clone())
+        .unwrap_or(repo.head()?.peel_to_commit()?.id().to_string());
+    let commit = commit.to_string();
+    let has_previous = load_commit_metadata(repo_dir, &previous)?.is_some();
+    let has_current = load_commit_metadata(repo_dir, &commit)?.is_some();
+    if let (Some((_, history)), Some(current)) =
+        (&published, load_commit_metadata(repo_dir, &commit)?)
+    {
+        require_history_floor::<RootSigned>(&history.root, &current.root, ROOT_JSON, |value| {
+            value.version
+        })?;
+        require_history_floor::<TargetsSigned>(
+            &history.targets,
+            &current.targets,
+            TARGETS_JSON,
+            |value| value.version,
+        )?;
+        require_history_floor::<SnapshotSigned>(
+            &history.snapshot,
+            &current.snapshot,
+            SNAPSHOT_JSON,
+            |value| value.version,
+        )?;
+        require_history_floor::<TimestampSigned>(
+            &history.timestamp,
+            &current.timestamp,
+            TIMESTAMP_JSON,
+            |value| value.version,
+        )?;
     }
+    verify_commit_metadata(
+        repo_dir,
+        registry,
+        &commit,
+        Some(&previous),
+        trusted_keys,
+        &RegistryState::default(),
+        unix_now_secs(),
+        has_previous || has_current,
+    )
+}
+
+fn snapshot_worktree(repo_dir: &Path) -> Result<git2::Oid> {
+    let repo = git2::Repository::open(repo_dir)?;
+    let base = repo.head()?.peel_to_commit()?;
+    let mut index = repo.index()?;
+    index.add_all(["*"], git2::IndexAddOption::DEFAULT, None)?;
+    index.update_all(["*"], None)?;
+    let tree_id = index.write_tree()?;
+    let tree = repo.find_tree(tree_id)?;
+    let identity = base.author();
+    repo.commit(
+        None,
+        &identity,
+        &identity,
+        "catalog metadata verification snapshot",
+        &tree,
+        &[&base],
+    )
+    .context("snapshotting candidate catalog without moving a ref")
+}
+
+fn collect_commit_catalog(repo_dir: &Path, commit: &str) -> Result<BTreeMap<String, TufFileMeta>> {
+    let mut catalog = BTreeMap::new();
+    crate::registry::repo::visit_tree_blobs_blocking(repo_dir, commit, |path, bytes| {
+        if !path.starts_with("tuf/") {
+            catalog.insert(path.to_string(), file_meta(bytes));
+        }
+        Ok(())
+    })?;
     Ok(catalog)
 }
 
@@ -922,6 +1144,105 @@ fn load_commit_metadata(repo_dir: &Path, commit: &str) -> Result<Option<CommitMe
         snapshot: read_commit_blob(repo_dir, commit, SNAPSHOT_JSON)?,
         timestamp: read_commit_blob(repo_dir, commit, TIMESTAMP_JSON)?,
     }))
+}
+
+fn published_metadata_history(
+    repo_dir: &Path,
+    candidate: Option<&semver::Version>,
+) -> Result<Option<(String, CommitMetadataFiles)>> {
+    let repo = git2::Repository::open(repo_dir)?;
+    let mut history: Option<(String, CommitMetadataFiles)> = None;
+    for version in crate::registry_ops::semver_tag_versions(repo_dir)?
+        .into_iter()
+        .rev()
+    {
+        if candidate == Some(&version) {
+            continue;
+        }
+        let reference = format!("refs/tags/{version}");
+        let tag = repo
+            .find_reference(&reference)?
+            .peel_to_tag()
+            .with_context(|| {
+                format!("published catalog predecessor {version} is not an annotated tag")
+            })?;
+        let commit = tag.target()?.peel_to_commit()?.id().to_string();
+        if let Some(files) = load_commit_metadata(repo_dir, &commit)? {
+            if let Some((root_commit, retained)) = &mut history {
+                // SemVer ordering is independent of publication chronology:
+                // a hotfix on an older release line may carry a newer root.
+                if merge_metadata_floor::<RootSigned>(
+                    &mut retained.root,
+                    &files.root,
+                    ROOT_JSON,
+                    |value| value.version,
+                )? {
+                    *root_commit = commit;
+                }
+                merge_metadata_floor::<TargetsSigned>(
+                    &mut retained.targets,
+                    &files.targets,
+                    TARGETS_JSON,
+                    |value| value.version,
+                )?;
+                merge_metadata_floor::<SnapshotSigned>(
+                    &mut retained.snapshot,
+                    &files.snapshot,
+                    SNAPSHOT_JSON,
+                    |value| value.version,
+                )?;
+                merge_metadata_floor::<TimestampSigned>(
+                    &mut retained.timestamp,
+                    &files.timestamp,
+                    TIMESTAMP_JSON,
+                    |value| value.version,
+                )?;
+            } else {
+                history = Some((commit, files));
+            }
+        }
+    }
+    Ok(history)
+}
+
+fn merge_metadata_floor<T: DeserializeOwned + Serialize>(
+    retained: &mut Vec<u8>,
+    candidate: &[u8],
+    path: &str,
+    version: fn(&T) -> u64,
+) -> Result<bool> {
+    let existing: Envelope<T> = parse_envelope(retained, path)?;
+    let incoming: Envelope<T> = parse_envelope(candidate, path)?;
+    if version(&incoming.signed) > version(&existing.signed) {
+        *retained = candidate.to_vec();
+        return Ok(true);
+    }
+    if version(&incoming.signed) == version(&existing.signed)
+        && signed_payload_bytes(&incoming.signed)? != signed_payload_bytes(&existing.signed)?
+    {
+        bail!(
+            "published {path} identities conflict at metadata version {}",
+            version(&incoming.signed)
+        );
+    }
+    Ok(false)
+}
+
+fn require_history_floor<T: DeserializeOwned + Serialize>(
+    historical: &[u8],
+    candidate: &[u8],
+    path: &str,
+    version: fn(&T) -> u64,
+) -> Result<()> {
+    let previous: Envelope<T> = parse_envelope(historical, path)?;
+    let current: Envelope<T> = parse_envelope(candidate, path)?;
+    ensure_replaced_metadata_version_advances(
+        path,
+        version(&previous.signed),
+        &signed_payload_bytes(&previous.signed)?,
+        version(&current.signed),
+        &signed_payload_bytes(&current.signed)?,
+    )
 }
 
 fn commit_path_exists(repo_dir: &Path, commit: &str, path: &str) -> Result<bool> {
@@ -1465,6 +1786,217 @@ mod tests {
         }
         let err = validate_root_policy(&keys, &roles).unwrap_err();
         assert!(format!("{err:#}").contains("duplicate public key material"));
+    }
+
+    #[test]
+    fn synchronous_metadata_binds_an_uncommitted_container_sidecar() -> Result<()> {
+        let temporary = TempDir::new()?;
+        let repo = init_repo(temporary.path());
+        fs::write(repo.join("registry.toml"), "[registry]\nname = \"core\"\n")?;
+        testutil::git(&repo, &["add", "registry.toml"]);
+        testutil::git(&repo, &["commit", "-m", "initial catalog"]);
+        let base = git2::Repository::open(&repo)?
+            .head()?
+            .peel_to_commit()?
+            .id();
+
+        let sidecar_path = aos_oci_types::CONTAINER_RELEASE_SIDECAR_PATH;
+        let sidecar_bytes = b"exact uncommitted container sidecar\n";
+        fs::create_dir_all(repo.join(sidecar_path).parent().context("sidecar parent")?)?;
+        fs::write(repo.join(sidecar_path), sidecar_bytes)?;
+        let key = write_test_key(temporary.path(), "core", "maintainer", [34; 32]);
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 0, 0),
+            &[metadata_signer(&key)],
+        )?;
+
+        let targets: Envelope<TargetsSigned> =
+            parse_envelope(&fs::read(repo.join(TARGETS_JSON))?, TARGETS_JSON)?;
+        assert_eq!(
+            targets.signed.targets[sidecar_path].length,
+            sidecar_bytes.len() as u64
+        );
+        assert_eq!(
+            targets.signed.targets[sidecar_path].sha256,
+            sha256_digest(sidecar_bytes)
+        );
+        assert!(verify_worktree_metadata(&repo, "core", &[key.trust])?.is_some());
+        assert_eq!(
+            git2::Repository::open(&repo)?
+                .head()?
+                .peel_to_commit()?
+                .id(),
+            base
+        );
+        assert!(
+            git2::Repository::open(&repo)?
+                .find_reference("refs/tags/1.0.0")
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn prepared_catalog_regenerates_apr_metadata_without_moving_refs() -> Result<()> {
+        let tmp = TempDir::new()?;
+        let repo = init_repo(tmp.path());
+        let key = write_test_key(tmp.path(), "core", "maintainer", [31; 32]);
+        fs::write(repo.join("registry.toml"), "[registry]\nname = \"core\"\n")?;
+        testutil::git(&repo, &["add", "."]);
+        testutil::git(&repo, &["commit", "-m", "base catalog"]);
+        let signing_keys = vec![metadata_signer(&key)];
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 0, 0),
+            &signing_keys,
+        )?;
+        testutil::git(&repo, &["add", "tuf"]);
+        testutil::git(&repo, &["commit", "-m", "APR catalog metadata"]);
+        let base = git2::Repository::open(&repo)?
+            .head()?
+            .peel_to_commit()?
+            .id();
+
+        fs::create_dir_all(repo.join("packages/z"))?;
+        fs::write(
+            repo.join("packages/z/zlib.toml"),
+            "new exact catalog bytes\n",
+        )?;
+        let stale = verify_worktree_metadata(&repo, "core", &[key.trust.clone()]).unwrap_err();
+        assert!(format!("{stale:#}").contains("catalog does not match"));
+        assert_eq!(
+            git2::Repository::open(&repo)?
+                .head()?
+                .peel_to_commit()?
+                .id(),
+            base
+        );
+        assert!(
+            git2::Repository::open(&repo)?
+                .find_reference("refs/tags/1.1.0")
+                .is_err()
+        );
+
+        let mut signer = FileMetadataSigner {
+            keys: &signing_keys,
+        };
+        write_release_metadata_worktree_with_signer(
+            &repo,
+            "core",
+            &semver::Version::new(1, 1, 0),
+            &mut signer,
+        )
+        .await?;
+        let verified = verify_worktree_metadata(&repo, "core", &[key.trust])?
+            .context("prepared candidate metadata was not verified")?;
+
+        assert_eq!(verified.root_version, 2);
+        assert_eq!(verified.targets_version, 2);
+        assert_eq!(verified.snapshot_version, 2);
+        assert_eq!(verified.timestamp_version, 2);
+        assert_eq!(
+            git2::Repository::open(&repo)?
+                .head()?
+                .peel_to_commit()?
+                .id(),
+            base
+        );
+        assert!(
+            git2::Repository::open(&repo)?
+                .find_reference("refs/tags/1.1.0")
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stale_workspace_uses_latest_published_catalog_floor() -> Result<()> {
+        let temporary = TempDir::new()?;
+        let repo = init_repo(temporary.path());
+        fs::write(repo.join("registry.toml"), "[registry]\nname = \"core\"\n")?;
+        testutil::git(&repo, &["add", "registry.toml"]);
+        testutil::git(&repo, &["commit", "-m", "initial catalog"]);
+
+        let key = write_test_key(temporary.path(), "core", "maintainer", [32; 32]);
+        let signing_keys = vec![metadata_signer(&key)];
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 4, 0),
+            &signing_keys,
+        )?;
+        testutil::git(&repo, &["add", "tuf"]);
+        testutil::git(&repo, &["commit", "-m", "first published metadata"]);
+        testutil::git(&repo, &["tag", "-a", "1.4.0", "-m", "first release"]);
+        let old_base = git2::Repository::open(&repo)?
+            .head()?
+            .peel_to_commit()?
+            .id()
+            .to_string();
+
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 6, 5),
+            &signing_keys,
+        )?;
+        testutil::git(&repo, &["add", "tuf"]);
+        testutil::git(&repo, &["commit", "-m", "second published metadata"]);
+        testutil::git(&repo, &["tag", "-a", "1.6.5", "-m", "second release"]);
+        let rotated_key = write_test_key(temporary.path(), "core", "rotated", [33; 32]);
+        let mut transition_key = metadata_signer(&key);
+        transition_key.role_key = false;
+        write_release_metadata_worktree(
+            &repo,
+            "core",
+            &semver::Version::new(1, 5, 8),
+            &[transition_key, metadata_signer(&rotated_key)],
+        )?;
+        testutil::git(&repo, &["add", "tuf"]);
+        testutil::git(
+            &repo,
+            &[
+                "commit",
+                "-m",
+                "older-line hotfix rotates metadata authority",
+            ],
+        );
+        testutil::git(&repo, &["tag", "-a", "1.5.8", "-m", "hotfix release"]);
+        testutil::git(
+            &repo,
+            &["checkout", "-b", "dplecki/stale-workspace", &old_base],
+        );
+        let rotated_signers = vec![metadata_signer(&rotated_key)];
+
+        let mut signer = FileMetadataSigner {
+            keys: &rotated_signers,
+        };
+        write_release_metadata_worktree_with_signer(
+            &repo,
+            "core",
+            &semver::Version::new(1, 5, 9),
+            &mut signer,
+        )
+        .await?;
+        let verified = verify_worktree_metadata(&repo, "core", &[rotated_key.trust])?
+            .context("stale workspace candidate metadata was not verified")?;
+
+        assert_eq!(verified.root_version, 4);
+        assert_eq!(verified.targets_version, 4);
+        assert_eq!(verified.snapshot_version, 4);
+        assert_eq!(verified.timestamp_version, 4);
+        assert_eq!(
+            git2::Repository::open(&repo)?
+                .head()?
+                .peel_to_commit()?
+                .id()
+                .to_string(),
+            old_base
+        );
+        Ok(())
     }
 
     #[test]

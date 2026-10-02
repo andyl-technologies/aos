@@ -107,6 +107,15 @@
       "after": [
         "staging"
       ],
+      "channel": "edge",
+      "profile": "smoke",
+      "registry_tier": "production",
+      "surface": "production"
+    },
+    {
+      "after": [
+        "staging"
+      ],
       "channel": "stable",
       "profile": "soak",
       "registry_tier": "production",
@@ -124,6 +133,13 @@
     {
       "after": [],
       "channel": "candidate",
+      "profile": "build",
+      "registry_tier": "production",
+      "surface": "staging"
+    },
+    {
+      "after": [],
+      "channel": "edge",
       "profile": "build",
       "registry_tier": "production",
       "surface": "staging"

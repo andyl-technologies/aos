@@ -38,7 +38,7 @@
     sandbox = false
     NIXCONF
     nix-store --init || true
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
   '';
   mkTrackingLeafTool = {
     rootName,
@@ -376,7 +376,7 @@ in {
       publish_branch_version() {
         version="$1"
         store_path="$2"
-        $APR publish "$store_path" \
+        publish_vm_package "$store_path" \
           --name branch-tool \
           --version "$version" \
           --description "Branch tracking workflow tool" \
@@ -417,7 +417,7 @@ in {
       assert_file_contains /tmp/branch-v9-refs.out "$TOOL_V9_DEP_STORE" \
         "branch-tool default-branch root has a real dependency closure"
 
-      $APR create branch-reg
+      create_publish_registry branch-reg
       REG_DIR="$REG_STORAGE/branch-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       git init --bare --object-format=sha256 /tmp/branch-origin.git
@@ -636,7 +636,7 @@ in {
       publish_tag_version() {
         version="$1"
         store_path="$2"
-        $APR publish "$store_path" \
+        publish_vm_package "$store_path" \
           --name tag-tool \
           --version "$version" \
           --description "Tag tracking workflow tool" \
@@ -686,7 +686,7 @@ in {
       assert_file_contains /tmp/tag-v2-refs.out "$TOOL_V2_DEP_STORE" \
         "tag-tool v2 root has a real dependency closure"
 
-      $APR create tag-reg
+      create_publish_registry tag-reg
       REG_DIR="$REG_STORAGE/tag-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_tag_version 1.0.0 "$TOOL_V1_STORE"
@@ -908,7 +908,7 @@ in {
       publish_vtilde_version() {
         version="$1"
         store_path="$2"
-        $APR publish "$store_path" \
+        publish_vm_package "$store_path" \
           --name vtilde-tool \
           --version "$version" \
           --description "Tilde tracking workflow tool" \
@@ -979,7 +979,7 @@ in {
       assert_file_contains /tmp/vtilde-111-refs.out "$TOOL_111_DEP_STORE" \
         "out-of-range vtilde-tool 1.1.1 root has a real dependency closure"
 
-      $APR create vtilde-reg
+      create_publish_registry vtilde-reg
       REG_DIR="$REG_STORAGE/vtilde-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_vtilde_version 1.0.0 "$TOOL_100_STORE"
@@ -1223,7 +1223,7 @@ in {
       publish_vcaret_version() {
         version="$1"
         store_path="$2"
-        $APR publish "$store_path" \
+        publish_vm_package "$store_path" \
           --name vcaret-tool \
           --version "$version" \
           --description "Caret tracking workflow tool" \
@@ -1292,7 +1292,7 @@ in {
       assert_file_contains /tmp/vcaret-210-refs.out "$TOOL_210_DEP_STORE" \
         "out-of-range vcaret-tool 2.1.0 root has a real dependency closure"
 
-      $APR create vcaret-reg
+      create_publish_registry vcaret-reg
       REG_DIR="$REG_STORAGE/vcaret-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_vcaret_version 1.0.0 "$TOOL_100_STORE"
@@ -1529,7 +1529,7 @@ in {
       publish_commit_version() {
         version="$1"
         store_path="$2"
-        $APR publish "$store_path" \
+        publish_vm_package "$store_path" \
           --name commit-tool \
           --version "$version" \
           --description "Commit tracking workflow tool" \
@@ -1579,7 +1579,7 @@ in {
       assert_file_contains /tmp/commit-v2-refs.out "$TOOL_V2_DEP_STORE" \
         "commit-tool v2 root has a real dependency closure"
 
-      $APR create commit-reg
+      create_publish_registry commit-reg
       REG_DIR="$REG_STORAGE/commit-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_commit_version 1.0.0 "$TOOL_V1_STORE"
@@ -1776,7 +1776,7 @@ in {
       publish_default_version() {
         version="$1"
         store_path="$2"
-        $APR publish "$store_path" \
+        publish_vm_package "$store_path" \
           --name default-tool \
           --version "$version" \
           --description "Default tracking workflow tool" \
@@ -1810,7 +1810,7 @@ in {
       assert_file_contains /tmp/default-v2-refs.out "$TOOL_V2_DEP_STORE" \
         "default-tool v2 root has a real dependency closure"
 
-      $APR create default-reg
+      create_publish_registry default-reg
       REG_DIR="$REG_STORAGE/default-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_default_version 1.0.0 "$TOOL_V1_STORE"
@@ -2049,7 +2049,7 @@ in {
       publish_git_native_version() {
         version="$1"
         store_path="$2"
-        $APR publish "$store_path" \
+        publish_vm_package "$store_path" \
           --name git-native-tool \
           --version "$version" \
           --description "Git-native tracking workflow tool" \
@@ -2107,7 +2107,7 @@ in {
       assert_file_contains /tmp/git-native-200-refs.out "$TOOL_200_DEP_STORE" \
         "out-of-range git-native-tool 2.0.0 root has a real dependency closure"
 
-      $APR create git-native-reg
+      create_publish_registry git-native-reg
       REG_DIR="$REG_STORAGE/git-native-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_git_native_version 1.0.0 "$TOOL_100_STORE"

@@ -120,7 +120,7 @@
         version="$3"
         hash=$(basename "$store" | cut -d- -f1)
         as_maintainer
-        $APR publish "$store" \
+        publish_vm_package "$store" \
           --name "$name" \
           --version "$version" \
           --description "Executable upgrade workflow fixture" \
@@ -155,7 +155,7 @@
 
       echo "==> Maintainer: publish upgrade-alpha and upgrade-beta 1.0.0"
       as_maintainer
-      $APR create upgrade-reg
+      create_publish_registry upgrade-reg
       REG_DIR="$MAINTAINER_HOME/.local/share/apm/registries/upgrade-reg"
       DEFAULT_BRANCH=$(git -C "$REG_DIR" symbolic-ref --short HEAD)
       publish_upgrade_tool "$ALPHA_V1_STORE" upgrade-alpha 1.0.0

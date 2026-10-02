@@ -86,6 +86,9 @@ in {
       pkgs.git
     ];
     testScript = ''
+      mkdir -p /tmp/proj
+      printf '{}\n' > /tmp/proj/default.nix
+      export AOS_ROOT=/tmp/proj
       echo "==> Testing aos describe"
       ${self}/bin/aos describe
       echo "==> aos describe passed"
@@ -99,8 +102,10 @@ in {
     ];
     testScript = ''
       mkdir -p /tmp/proj
+      printf '{}\n' > /tmp/proj/default.nix
+      export AOS_ROOT=/tmp/proj
       cat > /tmp/proj/test.nix << 'EOF'
-      { pkgs }: pkgs.hello
+      {pkgs}: pkgs.hello
       EOF
 
       echo "==> Testing aos fmt --check on valid file"
@@ -110,7 +115,11 @@ in {
   };
 
   host-apr-apm-command-surface = let
+    imageFixtures = import ../../../tests/vm/apm/image-fixtures.nix {inherit pkgs;};
+
     hostAprApmCommandSurfaceDeps = [
+      imageFixtures.imageQcow2
+      imageFixtures.imageUki
       self
       pkgs.bash
       pkgs.coreutils
@@ -147,6 +156,10 @@ in {
         cache_port="18137"
         install_cache_port="18138"
         mkdir -p "$home" "$config" "$data" "$cache" "$cache/nix" "$system_config" "$profile_root" "$store_dir" "$state_dir/db" "$state_dir/gcroots" "$state_dir/log/nix" "$nix_conf" "$host_bin"
+        # System registry commands require an explicitly identified AOS root.
+        mkdir -p "$aos_root/etc"
+        printf '%s\n' 'ID=aos' 'AOS_MODULE_ABI=1' > "$aos_root/etc/os-release"
+
         profile="$profile_root/per-user/unknown"
         default_profile="/var/lib/profiles/per-user/unknown"
         cache_server_pid=""
@@ -1362,11 +1375,19 @@ in {
           'WantMassQuery: 1' \
           'Priority: 41' \
           > "$cache_root/cache/nix-cache-info"
-        printf '%s\n' "hostpkg NAR payload" > "$cache_root/cache/nar/$pkg_hash-hostpkg.nar"
+        # Transport fixtures still follow the producer's content-addressed
+        # payload URL contract, including truthful file hash and size fields.
+        printf '%s\n' "hostpkg NAR payload" > "$work/hostpkg-cache-payload"
+        payload_hash=$(sha256sum "$work/hostpkg-cache-payload" | cut -d ' ' -f1)
+        payload_size=$(wc -c < "$work/hostpkg-cache-payload" | tr -d ' ')
+        payload_name="$pkg_hash-sha256-$payload_hash.nar"
+        mv "$work/hostpkg-cache-payload" "$cache_root/cache/nar/$payload_name"
         printf '%s\n' \
           "StorePath: /nix/store/$pkg_hash-hostpkg-1.0.0" \
-          "URL: nar/$pkg_hash-hostpkg.nar" \
+          "URL: nar/$payload_name" \
           "Compression: none" \
+          "FileHash: sha256:$payload_hash" \
+          "FileSize: $payload_size" \
           'NarHash: sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=' \
           'NarSize: 1234' \
           'References:' \
@@ -1599,12 +1620,22 @@ in {
           "$work/apr-release-resume.json" >/dev/null
         assert_no_profile
 
+        ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
+        resume_public_key=$(${pkgs.coreutils}/bin/cut -d ' ' -f2 < "$work/resume-release-key.pub")
         run_clean ${self}/bin/apr create host-resume \
+          --trust-key "host-resume:Ed25519:$resume_public_key" \
+          --trust-key-id initial \
+          --key "$work/resume-release-key" \
           > "$work/apr-create-host-resume.out" 2>&1
         resume_reg="$data/apm/registries/host-resume"
         git -C "$resume_reg" config user.name "Host Command Test"
         git -C "$resume_reg" config user.email "host-command@example.invalid"
-        ${pkgs.openssh}/bin/ssh-keygen -q -t ed25519 -N "" -f "$work/resume-release-key"
+        run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$resume_reg" \
+          --name host-resume > "$work/apm-add-host-resume-author-config.out" 2>&1
+        run_clean ${self}/bin/apr keys register initial \
+          --registry host-resume \
+          --key "$work/resume-release-key" \
+          > "$work/apr-keys-register-host-resume.out" 2>&1
         # Build a small real package registered in this test's Nix store to
         # release (apr release introspects the store path via `nix-store`).
         cat > "$work/resume-build.sh" << 'SCRIPT'
@@ -1650,7 +1681,7 @@ in {
           --description "Host release resume fixture" \
           --license MIT \
           --maintainer host@example.invalid \
-          --key "$work/resume-release-key" \
+          --key-id initial \
           --cache-url "http://127.0.0.1:$cache_port/resume-cache" \
           --upload-url "file://$work/resume-upload" \
           > "$work/apr-release-host-resume-initial.json"
@@ -1902,7 +1933,7 @@ in {
         test -f "$upload_root/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
         test -f "$upload_root/channels/canary/00"
         test -f "$upload_root/$pkg_hash.narinfo"
-        test -f "$upload_root/nar/$pkg_hash-hostpkg.nar"
+        test -f "$upload_root/nar/$payload_name"
         test -f "$upload_root_mirror/HEAD"
         test -f "$upload_root_mirror/info/refs"
         test -f "$upload_root_mirror/releases/1/0/0/objects/info/packs"
@@ -1911,7 +1942,7 @@ in {
         test -f "$upload_root_mirror/releases/2/0/0/objects/pack/delta-1.0.0.pack.zst"
         test -f "$upload_root_mirror/channels/canary/00"
         test -f "$upload_root_mirror/$pkg_hash.narinfo"
-        test -f "$upload_root_mirror/nar/$pkg_hash-hostpkg.nar"
+        test -f "$upload_root_mirror/nar/$payload_name"
         assert_no_profile
 
         cat > "$work/host-build-leaf.sh" << 'SCRIPT'
@@ -2028,44 +2059,25 @@ in {
         cat > "$work/host-build-sysroot-image.sh" << 'SCRIPT'
         set -eu
         @AOS_COREUTILS@/bin/mkdir -p "$out"
-        {
-          printf '%s\n' "host sysroot image qcow2 fixture"
-          printf '%s\n' "boot-marker=hostsysroot"
-        } > "$out/hostsysroot.qcow2"
-        image_sha256=$(@AOS_COREUTILS@/bin/sha256sum "$out/hostsysroot.qcow2" | @AOS_COREUTILS@/bin/cut -d ' ' -f1)
-        image_size=$(@AOS_COREUTILS@/bin/stat -c %s "$out/hostsysroot.qcow2")
-        uki_store='@AOS_UKI_STORE@'
-        uki_filename=systemd-bootx64.efi
-        uki_sha256=$(@AOS_COREUTILS@/bin/sha256sum "$uki_store/$uki_filename" | @AOS_COREUTILS@/bin/cut -d ' ' -f1)
-        uki_size=$(@AOS_COREUTILS@/bin/stat -c %s "$uki_store/$uki_filename")
-        @AOS_JQ@/bin/jq -S -n \
-          --arg sha256 "$image_sha256" \
-          --arg ukiFilename "$uki_filename" \
-          --arg ukiSha256 "$uki_sha256" \
-          --argjson byteSize "$image_size" \
-          --argjson ukiSize "$uki_size" \
-          '{schemaVersion: 2, name: "hostsysroot", version: "1.0.0",
-            architecture: "x86_64", platform: "x86_64-linux", format: "qcow2",
-            filename: "hostsysroot.qcow2",
-            mediaType: "application/vnd.aos.disk-image.qcow2", compression: "none",
-            byteSize: $byteSize, virtualSizeBytes: $byteSize, sha256: $sha256,
-            compatibleTargets: ["qemu-kvm", "openstack"],
-            partitionTable: "gpt", kernelParams: "",
-            partitions: [{number: 1, label: "root-a", type: "root", filesystem: "fake", sizeMiB: 0, offsetBytes: 0, sizeBytes: $byteSize}],
-            esp: {uki: "EFI/Linux/aos-hostsysroot.efi", sdBoot: "EFI/systemd/systemd-bootx64.efi"},
-            uki: {filename: $ukiFilename, espPath: "EFI/Linux/aos-hostsysroot.efi",
-              byteSize: $ukiSize, sha256: $ukiSha256, signed: false}}' \
-          > "$out/image-info.json"
+        # Reuse the authenticated VM fixture's real GPT/FAT disk and embedded
+        # UKI, retaining its exact hashes, geometry, and artifact budgets.
+        @AOS_COREUTILS@/bin/cp '@AOS_IMAGE_FIXTURE@/aos-test.qcow2' "$out/hostsysroot.qcow2"
+        @AOS_JQ@/bin/jq -S \
+          '.name = "hostsysroot" | .version = "1.0.0" | .filename = "hostsysroot.qcow2"' \
+          '@AOS_IMAGE_FIXTURE@/image-info.json' > "$out/image-info.json"
         SCRIPT
         cat > "$work/host-project-image-file.sh" << 'SCRIPT'
         set -eu
         source=$1
         member=$2
-        @AOS_COREUTILS@/bin/rmdir "$out"
+        # Bare derivations need not precreate a directory for file outputs.
+        if test -d "$out"; then
+          @AOS_COREUTILS@/bin/rmdir "$out"
+        fi
         @AOS_COREUTILS@/bin/cp "$source/$member" "$out"
         SCRIPT
         substitute_fixture_paths() {
-          ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' '${pkgs.findutils}' '${pkgs.grep}' '${pkgs.jq}' '${pkgs.systemd}/lib/systemd/boot/efi' << 'PY'
+          ${pkgs.python3}/bin/python3 - "$1" '${pkgs.bash}' '${pkgs.coreutils}' '${pkgs.findutils}' '${pkgs.grep}' '${pkgs.jq}' '${imageFixtures.imageQcow2}' << 'PY'
         from pathlib import Path
         import sys
 
@@ -2077,7 +2089,7 @@ in {
             .replace("@AOS_FINDUTILS@", sys.argv[4])
             .replace("@AOS_GREP@", sys.argv[5])
             .replace("@AOS_JQ@", sys.argv[6])
-            .replace("@AOS_UKI_STORE@", sys.argv[7])
+            .replace("@AOS_IMAGE_FIXTURE@", sys.argv[7])
         )
         PY
         }
@@ -2210,8 +2222,15 @@ in {
             and .config == $config_path
             and .verification_disabled == true' \
           "$work/apm-add-host-install-author-config.json" >/dev/null
+        run_clean ${self}/bin/apr keys register channel \
+          --registry host-install-channel \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-register-host-install.out" 2>&1
         if run_clean ${self}/bin/apr publish "$install_store" \
           --name ../../escaped-publish \
+          --description "Invalid package name fixture" \
+          --license MIT \
+          --maintainer host@example.invalid \
           --registry host-install-channel \
           --no-commit > "$work/apr-publish-invalid-package-name.out" 2>&1; then
           cat "$work/apr-publish-invalid-package-name.out"
@@ -2242,7 +2261,10 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-leaf.json"
+        # nix-store uses Nix base32, while persisted metadata may use SRI.
+        # Validate a complete SHA-256 digest in either supported encoding.
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_leaf_store" \
           --arg source "$install_leaf_drv" \
@@ -2252,10 +2274,10 @@ in {
             and .version == "1.0.0"
             and .platform == "x86_64-linux"
             and .store_path == $store
-            and (.nar_hash | startswith("sha256-"))
+            and (.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.closure_size > 0)
             and .source.store_path == $source
-            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-leaf.json" >/dev/null
@@ -2272,6 +2294,7 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-install.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_store" \
@@ -2282,11 +2305,11 @@ in {
             and .version == "1.0.0"
             and .platform == "x86_64-linux"
             and .store_path == $store
-            and (.nar_hash | startswith("sha256-"))
+            and (.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.nar_size > 0)
             and (.closure_size > 0)
             and .source.store_path == $source
-            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.source.nar_size > 0)
             and .sysroot == false
             and .previous == null
@@ -2304,6 +2327,7 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-bulk.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$bulk_store" \
@@ -2314,11 +2338,11 @@ in {
             and .version == "1.0.0"
             and .platform == "x86_64-linux"
             and .store_path == $store
-            and (.nar_hash | startswith("sha256-"))
+            and (.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.nar_size > 1000000)
             and (.closure_size > 1000000)
             and .source.store_path == $source
-            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.source.nar_size > 0)
             and .sysroot == false
             and .previous == null
@@ -2412,13 +2436,19 @@ in {
         fi
         grep -q 'upload_urls = \[' \
           "$config/apm/registries.d/host-install-channel.toml"
-        run_clean ${self}/bin/apr --json cache generate \
-          --registry host-install-channel \
-          --output "$work/install-static-cache-output/cache" \
-          --key "$work/host-install-cache-signing-key" \
-          --cache-url "http://127.0.0.1:$install_cache_port/cache" \
-          --priority 77 \
-          --no-commit > "$work/apr-cache-host-install.json"
+        # CPU parallelism must not exhaust descriptor limits while querying
+        # the source closure or opening NAR dumps. Keep this limit local to
+        # the cache-generation regression so later workflows retain theirs.
+        (
+          ulimit -n 128
+          run_clean ${self}/bin/apr --json cache generate \
+            --registry host-install-channel \
+            --output "$work/install-static-cache-output/cache" \
+            --key "$work/host-install-cache-signing-key" \
+            --cache-url "http://127.0.0.1:$install_cache_port/cache" \
+            --priority 77 --jobs 512 \
+            --no-commit > "$work/apr-cache-host-install.json"
+        )
         ${pkgs.jq}/bin/jq -e \
           --arg output "$work/install-static-cache-output/cache" \
           --arg cache_url "http://127.0.0.1:$install_cache_port/cache" \
@@ -2573,11 +2603,20 @@ in {
         git init --bare --object-format=sha256 "$collab_origin" \
           > "$work/git-init-host-collab-origin.out" 2>&1
         run_clean ${self}/bin/apr create host-collab \
+          --trust-key "host-collab:Ed25519:$install_release_public_key" \
+          --trust-key-id channel \
+          --key "$work/host-install-release-key" \
           --remote "$collab_origin" \
           > "$work/apr-create-host-collab.out" 2>&1
         collab_a_reg="$data/apm/registries/host-collab"
         git -C "$collab_a_reg" config user.name "Host Maintainer A"
         git -C "$collab_a_reg" config user.email "host-maintainer-a@example.invalid"
+        run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$collab_a_reg" \
+          --name host-collab > "$work/apm-add-collab-a-author-config.out" 2>&1
+        run_clean ${self}/bin/apr keys register channel \
+          --registry host-collab \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-register-collab-a.out" 2>&1
         run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
           --name hostcollab \
           --version 1.0.0 \
@@ -2585,6 +2624,7 @@ in {
           --license MIT \
           --maintainer maintainer-a@example.invalid \
           --registry host-collab \
+          --key-id channel \
           --message "publish hostcollab from maintainer A" \
           > "$work/apr-publish-host-collab-a.json"
         ${pkgs.jq}/bin/jq -e \
@@ -2629,6 +2669,12 @@ in {
           > "$work/git-clone-host-collab-b.out" 2>&1
         git -C "$collab_b_reg" config user.name "Host Maintainer B"
         git -C "$collab_b_reg" config user.email "host-maintainer-b@example.invalid"
+        run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$collab_b_reg" \
+          --name host-collab > "$work/apm-add-collab-b-author-config.out" 2>&1
+        run_clean ${self}/bin/apr keys register channel \
+          --registry host-collab \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-register-collab-b.out" 2>&1
         run_clean ${self}/bin/apr --json show hostcollab \
           --registry host-collab > "$work/apr-show-host-collab-b-base.json"
         ${pkgs.jq}/bin/jq -e \
@@ -2642,6 +2688,7 @@ in {
           --license MIT \
           --maintainer maintainer-b@example.invalid \
           --registry host-collab \
+          --key-id channel \
           --message "publish hostcollabbulk from maintainer B" \
           > "$work/apr-publish-host-collab-b.json"
         ${pkgs.jq}/bin/jq -e \
@@ -2741,9 +2788,12 @@ in {
         subtree_origin="$work/host-subtree-origin.git"
         git init --bare --object-format=sha256 "$subtree_origin" \
           > "$work/git-init-host-subtree-origin.out" 2>&1
-        run_clean ${self}/bin/aos --json package registry create host-subtree \
+        run_clean ${self}/bin/apr --json create host-subtree \
+          --trust-key "host-subtree:Ed25519:$install_release_public_key" \
+          --trust-key-id channel \
+          --key "$work/host-install-release-key" \
           --remote "$subtree_origin" \
-          > "$work/aos-package-registry-create-host-subtree.json"
+          > "$work/apr-create-host-subtree.json"
         subtree_reg="$data/apm/registries/host-subtree"
         ${pkgs.jq}/bin/jq -e --arg reg "$subtree_reg" \
           '.action == "create"
@@ -2752,18 +2802,25 @@ in {
             and .remote != null
             and .current == "stable"
             and (.head | length == 64)' \
-          "$work/aos-package-registry-create-host-subtree.json" >/dev/null
+          "$work/apr-create-host-subtree.json" >/dev/null
         git -C "$subtree_reg" config user.name "Host Subtree Maintainer"
         git -C "$subtree_reg" config user.email "host-subtree@example.invalid"
-        run_clean ${self}/bin/aos --json package registry publish "$install_leaf_store" \
+        run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$subtree_reg" \
+          --name host-subtree > "$work/apm-add-host-subtree-author-config.out" 2>&1
+        run_clean ${self}/bin/apr keys register channel \
+          --registry host-subtree \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-register-host-subtree.out" 2>&1
+        run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
           --name hostsubtree \
           --version 1.0.0 \
-          --description "Host aos package subtree fixture" \
+          --description "Host registry command surface fixture" \
           --license MIT \
           --maintainer host-subtree@example.invalid \
           --registry host-subtree \
+          --key-id channel \
           --message "publish hostsubtree via apr" \
-          > "$work/aos-package-registry-publish-host-subtree.json"
+          > "$work/apr-publish-host-subtree.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_leaf_store" \
           '.action == "publish"
@@ -2773,12 +2830,12 @@ in {
             and .store_path == $store
             and .committed == true
             and .commit_message == "publish hostsubtree via apr"' \
-          "$work/aos-package-registry-publish-host-subtree.json" >/dev/null
+          "$work/apr-publish-host-subtree.json" >/dev/null
         subtree_commit=$(git -C "$subtree_reg" rev-parse HEAD)
-        run_clean ${self}/bin/aos --json package registry push \
+        run_clean ${self}/bin/apr --json push \
           --registry host-subtree \
           --branch stable \
-          --set-upstream > "$work/aos-package-registry-push-host-subtree.json"
+          --set-upstream > "$work/apr-push-host-subtree.json"
         ${pkgs.jq}/bin/jq -e \
           --arg head "$subtree_commit" \
           '.action == "push"
@@ -2786,7 +2843,7 @@ in {
             and .set_upstream == true
             and .force == false
             and .head == $head' \
-          "$work/aos-package-registry-push-host-subtree.json" >/dev/null
+          "$work/apr-push-host-subtree.json" >/dev/null
 
         subtree_main_home="$home"
         subtree_main_config="$config"
@@ -2801,10 +2858,10 @@ in {
         profile_root="$work/subtree-consumer-profiles"
         profile="$profile_root/per-user/unknown"
         mkdir -p "$home" "$config" "$data" "$cache" "$profile_root"
-        run_clean ${self}/bin/aos --json package registry add --no-verify \
+        run_clean ${self}/bin/apm --json registry add --no-verify \
           "file://$subtree_origin" \
           --name host-subtree-client \
-          --branch stable > "$work/aos-package-registry-add-host-subtree-client.json"
+          --branch stable > "$work/apm-registry-add-host-subtree-client.json"
         ${pkgs.jq}/bin/jq -e \
           --arg head "$subtree_commit" \
           '.action == "registry_add"
@@ -2814,9 +2871,9 @@ in {
             and .synced == true
             and .last_commit == $head
             and .packages == 1' \
-          "$work/aos-package-registry-add-host-subtree-client.json" >/dev/null
-        run_clean ${self}/bin/aos --json package registry list \
-          > "$work/aos-package-registry-list-host-subtree-client.json"
+          "$work/apm-registry-add-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry list \
+          > "$work/apm-registry-list-host-subtree-client.json"
         ${pkgs.jq}/bin/jq -e \
           --arg head "$subtree_commit" \
           'length == 1
@@ -2825,17 +2882,17 @@ in {
             and .[0].status == "enabled"
             and .[0].packages == 1
             and .[0].last_commit == $head' \
-          "$work/aos-package-registry-list-host-subtree-client.json" >/dev/null
-        run_clean ${self}/bin/aos --json package search hostsubtree \
-          --registry host-subtree-client > "$work/aos-package-search-host-subtree-client.json"
+          "$work/apm-registry-list-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/apm --json search hostsubtree \
+          --registry host-subtree-client > "$work/apm-search-host-subtree-client.json"
         ${pkgs.jq}/bin/jq -e \
           'length == 1
             and .[0].name == "hostsubtree"
             and .[0].version == "1.0.0"
             and .[0].registry == "host-subtree-client"' \
-          "$work/aos-package-search-host-subtree-client.json" >/dev/null
-        run_clean ${self}/bin/aos --json package --yes install hostsubtree \
-          --registry host-subtree-client > "$work/aos-package-install-host-subtree.json"
+          "$work/apm-search-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/apm --json --yes install hostsubtree \
+          --registry host-subtree-client > "$work/apm-install-host-subtree.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
           '.action == "install"
             and .status == "installed"
@@ -2850,38 +2907,38 @@ in {
             and .closure[0].name == "hostsubtree"
             and .closure[0].store_path == $store
             and .closure[0].explicit == true' \
-          "$work/aos-package-install-host-subtree.json" >/dev/null
+          "$work/apm-install-host-subtree.json" >/dev/null
         "$profile/current/bin/host-leaf-tool" \
-          > "$work/aos-package-host-subtree-run.out"
+          > "$work/apm-host-subtree-run.out"
         grep -q "host leaf package executed" \
-          "$work/aos-package-host-subtree-run.out"
-        run_clean ${self}/bin/aos --json package show hostsubtree \
-          --registry host-subtree-client > "$work/aos-package-show-host-subtree.json"
+          "$work/apm-host-subtree-run.out"
+        run_clean ${self}/bin/apm --json show hostsubtree \
+          --registry host-subtree-client > "$work/apm-show-host-subtree.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
           '.name == "hostsubtree"
             and .registry == "host-subtree-client"
             and .version == "1.0.0"
             and .installed == true
             and .store_path == $store
-            and .description == "Host aos package subtree fixture"' \
-          "$work/aos-package-show-host-subtree.json" >/dev/null
-        run_clean ${self}/bin/aos --json package list --installed \
-          --registry host-subtree-client > "$work/aos-package-list-installed-host-subtree.json"
+            and .description == "Host registry command surface fixture"' \
+          "$work/apm-show-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-subtree-client > "$work/apm-list-installed-host-subtree.json"
         ${pkgs.jq}/bin/jq -e \
           'length == 1
             and .[0].name == "hostsubtree"
             and .[0].registry == "host-subtree-client"
             and .[0].version == "1.0.0"
             and .[0].status == "installed"' \
-          "$work/aos-package-list-installed-host-subtree.json" >/dev/null
-        run_clean ${self}/bin/aos --json package files hostsubtree \
-          > "$work/aos-package-files-host-subtree.json"
+          "$work/apm-list-installed-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/apm --json files hostsubtree \
+          > "$work/apm-files-host-subtree.json"
         ${pkgs.jq}/bin/jq -e \
           'index("bin/host-leaf-tool") != null
             and index("share/host-leaf/payload.txt") != null' \
-          "$work/aos-package-files-host-subtree.json" >/dev/null
-        run_clean ${self}/bin/aos --json package verify hostsubtree \
-          > "$work/aos-package-verify-host-subtree.json"
+          "$work/apm-files-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/apm --json verify hostsubtree \
+          > "$work/apm-verify-host-subtree.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
           '.package == "hostsubtree"
             and .registry == "host-subtree-client"
@@ -2890,9 +2947,9 @@ in {
             and .verified == true
             and (.expected_nar_hash | startswith("sha256:"))
             and (.actual_nar_hash | startswith("sha256:"))' \
-          "$work/aos-package-verify-host-subtree.json" >/dev/null
-        run_clean ${self}/bin/aos --json package --yes remove hostsubtree \
-          > "$work/aos-package-remove-host-subtree.json"
+          "$work/apm-verify-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/apm --json --yes remove hostsubtree \
+          > "$work/apm-remove-host-subtree.json"
         ${pkgs.jq}/bin/jq -e --arg store "$install_leaf_store" \
           '.action == "remove"
             and .status == "removed"
@@ -2909,17 +2966,17 @@ in {
             and .packages[0].version == "1.0.0"
             and .packages[0].store_path == $store
             and .orphans == []' \
-          "$work/aos-package-remove-host-subtree.json" >/dev/null
-        run_clean ${self}/bin/aos --json package list --installed \
-          --registry host-subtree-client > "$work/aos-package-list-installed-host-subtree-removed.json"
+          "$work/apm-remove-host-subtree.json" >/dev/null
+        run_clean ${self}/bin/apm --json list --installed \
+          --registry host-subtree-client > "$work/apm-list-installed-host-subtree-removed.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' \
-          "$work/aos-package-list-installed-host-subtree-removed.json" >/dev/null
+          "$work/apm-list-installed-host-subtree-removed.json" >/dev/null
         if test -e "$profile/current/bin/host-leaf-tool"; then
           "$profile/current/bin/host-leaf-tool"
           exit 1
         fi
-        run_clean ${self}/bin/aos --json package registry remove host-subtree-client \
-          > "$work/aos-package-registry-remove-host-subtree-client.json"
+        run_clean ${self}/bin/apm --json registry remove host-subtree-client \
+          > "$work/apm-registry-remove-host-subtree-client.json"
         ${pkgs.jq}/bin/jq -e \
           --arg config_path "$config/apm/registries.d/host-subtree-client.toml" \
           --arg local_path "$data/apm/registries/host-subtree-client" \
@@ -2935,11 +2992,11 @@ in {
             and .local_removed == true
             and .cache_removed == true
             and .trusted_keys_removed == false' \
-          "$work/aos-package-registry-remove-host-subtree-client.json" >/dev/null
-        run_clean ${self}/bin/aos --json package registry list \
-          > "$work/aos-package-registry-list-after-host-subtree-remove.json"
+          "$work/apm-registry-remove-host-subtree-client.json" >/dev/null
+        run_clean ${self}/bin/apm --json registry list \
+          > "$work/apm-registry-list-after-host-subtree-remove.json"
         ${pkgs.jq}/bin/jq -e 'length == 0' \
-          "$work/aos-package-registry-list-after-host-subtree-remove.json" >/dev/null
+          "$work/apm-registry-list-after-host-subtree-remove.json" >/dev/null
         assert_default_profile_absent
         rm -rf "$profile_root"
         home="$subtree_main_home"
@@ -2950,10 +3007,19 @@ in {
         profile="$subtree_main_profile"
 
         run_clean ${self}/bin/apr create host-merge-review \
+          --trust-key "host-merge-review:Ed25519:$install_release_public_key" \
+          --trust-key-id channel \
+          --key "$work/host-install-release-key" \
           > "$work/apr-create-host-merge-review.out" 2>&1
         merge_reg="$data/apm/registries/host-merge-review"
         git -C "$merge_reg" config user.name "Host Merge Reviewer"
         git -C "$merge_reg" config user.email "host-merge-reviewer@example.invalid"
+        run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$merge_reg" \
+          --name host-merge-review > "$work/apm-add-merge-author-config.out" 2>&1
+        run_clean ${self}/bin/apr keys register channel \
+          --registry host-merge-review \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-register-merge.out" 2>&1
         run_clean ${self}/bin/apr --json publish "$install_leaf_store" \
           --name hostmergeleaf \
           --version 1.0.0 \
@@ -2961,6 +3027,7 @@ in {
           --license MIT \
           --maintainer merge-reviewer@example.invalid \
           --registry host-merge-review \
+          --key-id channel \
           --message "publish hostmergeleaf base" \
           > "$work/apr-publish-host-merge-base.json"
         ${pkgs.jq}/bin/jq -e \
@@ -2985,6 +3052,7 @@ in {
           --license MIT \
           --maintainer merge-reviewer@example.invalid \
           --registry host-merge-review \
+          --key-id channel \
           --message "publish hostmergeapp feature" \
           > "$work/apr-publish-host-merge-no-ff.json"
         ${pkgs.jq}/bin/jq -e \
@@ -3037,6 +3105,7 @@ in {
           --license MIT \
           --maintainer merge-reviewer@example.invalid \
           --registry host-merge-review \
+          --key-id channel \
           --message "publish hostmergebulk feature" \
           > "$work/apr-publish-host-merge-squash.json"
         ${pkgs.jq}/bin/jq -e \
@@ -3093,6 +3162,7 @@ in {
           --license MIT \
           --maintainer merge-reviewer@example.invalid \
           --registry host-merge-review \
+          --key-id channel \
           --message "feature: update conflicting hostmergeleaf" \
           > "$work/apr-publish-host-merge-conflict-feature.json"
         ${pkgs.jq}/bin/jq -e \
@@ -3113,6 +3183,7 @@ in {
           --license MIT \
           --maintainer merge-reviewer@example.invalid \
           --registry host-merge-review \
+          --key-id channel \
           --message "stable: update conflicting hostmergeleaf" \
           > "$work/apr-publish-host-merge-conflict-stable.json"
         ${pkgs.jq}/bin/jq -e \
@@ -3161,8 +3232,17 @@ in {
         assert_no_profile
 
         run_clean ${self}/bin/apr create host-direct-release \
+          --trust-key "host-direct-release:Ed25519:$install_release_public_key" \
+          --trust-key-id initial \
+          --key "$work/host-install-release-key" \
           > "$work/apr-create-host-direct-release.out" 2>&1
         direct_reg="$data/apm/registries/host-direct-release"
+        run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$direct_reg" \
+          --name host-direct-release > "$work/apm-add-host-direct-author-config.out" 2>&1
+        run_clean ${self}/bin/apr keys register initial \
+          --registry host-direct-release \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-register-host-direct.out" 2>&1
         direct_release_url="http://127.0.0.1:$install_cache_port/direct-release"
         run_clean ${self}/bin/apr --json release 1.0.0 \
           --registry host-direct-release \
@@ -3171,7 +3251,7 @@ in {
           --description "Host direct release fixture" \
           --license MIT \
           --maintainer host@example.invalid \
-          --key "$work/host-install-release-key" \
+          --key-id initial \
           --cache-key "$work/host-install-cache-signing-key" \
           --cache-url "$direct_release_url" \
           --cache-priority 66 \
@@ -3648,6 +3728,12 @@ in {
         image_reg="$data/apm/registries/host-image-channel"
         git -C "$image_reg" config user.name "Host Command Test"
         git -C "$image_reg" config user.email "host-command@example.invalid"
+        run_clean ${self}/bin/apm registry add --no-verify --no-clone "file://$image_reg" \
+          --name host-image-channel > "$work/apm-add-image-author-config.out" 2>&1
+        run_clean ${self}/bin/apr keys register channel \
+          --registry host-image-channel \
+          --key "$work/host-install-release-key" \
+          > "$work/apr-keys-register-image.out" 2>&1
         run_clean ${self}/bin/apr --json publish "$sysroot_store" \
           --name hostsysroot \
           --version 1.0.0 \
@@ -3659,8 +3745,9 @@ in {
           --image-disk "$sysroot_image_disk_store" \
           --image-info "$sysroot_image_info_store" \
           --image-format qcow2 \
-          --image-uki '${pkgs.systemd}/lib/systemd/boot/efi/systemd-bootx64.efi' \
+          --image-uki '${imageFixtures.imageUki}/systemd-bootx64.efi' \
           --registry host-image-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-sysroot-image.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$sysroot_store" \
@@ -3677,7 +3764,7 @@ in {
             and (.images | length == 1)
             and .images[0].format == "qcow2"
             and .images[0].store_path == $image
-            and (.images[0].nar_hash | startswith("sha256-"))
+            and (.images[0].nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.images[0].nar_size > 0)
             and .package_file == "packages/h/hostsysroot.toml"
             and .committed == false' \
@@ -3825,10 +3912,8 @@ in {
             and .downloads.downloaded == 1
             and .downloads.imported == 1' \
           "$work/apm-install-host-sysroot-image.json" >/dev/null
-        grep -q "host sysroot image qcow2 fixture" \
-          "$work/hostsysroot-downloaded.qcow2"
-        grep -q "boot-marker=hostsysroot" \
-          "$work/hostsysroot-downloaded.qcow2"
+        cmp '${imageFixtures.imageQcow2}/aos-test.qcow2' "$work/hostsysroot-downloaded.qcow2"
+        cmp "$sysroot_image_disk_store" "$work/hostsysroot-downloaded.qcow2"
         nix_store --check-validity "$sysroot_image_disk_store" \
           > "$work/nix-valid-host-sysroot-image-imported.out" 2>&1
         assert_default_profile_absent
@@ -4093,7 +4178,7 @@ in {
           '.package == "hostinstall"
             and .registry == "host-install-client"
             and .source_drv == $source
-            and (.source_nar_hash | startswith("sha256-"))
+            and (.source_nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and .installed == false
             and .installed_store_path == null' \
           "$work/apm-source-host-install-preinstall.json" >/dev/null
@@ -4105,7 +4190,7 @@ in {
           '.package == "hostinstall"
             and .registry == "host-install-client"
             and .source_drv == $source
-            and (.source_nar_hash | startswith("sha256-"))
+            and (.source_nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and .installed == false
             and .installed_store_path == null
             and .realised_path == $store' \
@@ -4431,7 +4516,7 @@ in {
         grep -q "host install package executed" \
           "$work/host-install-disabled-before-disable.out"
         disabled_registry_config="$config/apm/registries.d/host-install-disabled.toml"
-        run_clean ${self}/bin/aos --json package registry disable host-install-disabled \
+        run_clean ${self}/bin/apm --json registry disable host-install-disabled \
           > "$work/apm-registry-disable-host-install-disabled.json"
         ${pkgs.jq}/bin/jq -e \
           --arg config_path "$disabled_registry_config" \
@@ -4567,7 +4652,7 @@ in {
         fi
         grep -q "registry 'host-install-disabled' is not enabled" \
           "$work/apm-update-disabled-registry.out"
-        run_clean ${self}/bin/aos --json package registry enable host-install-disabled \
+        run_clean ${self}/bin/apm --json registry enable host-install-disabled \
           > "$work/apm-registry-enable-host-install-disabled.json"
         ${pkgs.jq}/bin/jq -e \
           --arg config_path "$disabled_registry_config" \
@@ -4802,7 +4887,7 @@ in {
           '.package == "hostinstall"
             and .registry == "host-install-client"
             and .source_drv == $source
-            and (.source_nar_hash | startswith("sha256-"))
+            and (.source_nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and .installed == true
             and .installed_store_path == $store' \
           "$work/apm-source-host-install.json" >/dev/null
@@ -4814,7 +4899,7 @@ in {
           '.package == "hostinstall"
             and .registry == "host-install-client"
             and .source_drv == $source
-            and (.source_nar_hash | startswith("sha256-"))
+            and (.source_nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and .installed == true
             and .installed_store_path == $store
             and .built_path == $store
@@ -4875,6 +4960,7 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-leaf-v2.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_leaf_store_v2" \
@@ -4885,7 +4971,7 @@ in {
             and .version == "2.0.0"
             and .store_path == $store
             and .source.store_path == $source
-            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-leaf-v2.json" >/dev/null
@@ -4896,6 +4982,7 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-install-v2.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_store_v2" \
@@ -4906,7 +4993,7 @@ in {
             and .version == "2.0.0"
             and .store_path == $store
             and .source.store_path == $source
-            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-install-v2.json" >/dev/null
@@ -5390,6 +5477,7 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-leaf-v11.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_leaf_store_v11" \
@@ -5400,7 +5488,7 @@ in {
             and .version == "1.1.0"
             and .store_path == $store
             and .source.store_path == $source
-            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-leaf-v11.json" >/dev/null
@@ -5411,6 +5499,7 @@ in {
           --license MIT \
           --maintainer host@example.invalid \
           --registry host-install-channel \
+          --key-id channel \
           --no-commit > "$work/apr-publish-host-install-v11.json"
         ${pkgs.jq}/bin/jq -e \
           --arg store "$install_store_v11" \
@@ -5421,7 +5510,7 @@ in {
             and .version == "1.1.0"
             and .store_path == $store
             and .source.store_path == $source
-            and (.source.nar_hash | startswith("sha256-"))
+            and (.source.nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and (.source.nar_size > 0)
             and .committed == false' \
           "$work/apr-publish-host-install-v11.json" >/dev/null
@@ -7825,7 +7914,7 @@ in {
           '.package == "hostinstall"
             and .registry == "host-install-retired"
             and .source_drv == $source
-            and (.source_nar_hash | startswith("sha256-"))
+            and (.source_nar_hash | test("^sha256(:[0-9abcdfghijklmnpqrsvwxyz]{52}|-[A-Za-z0-9+/]{43}=)$"))
             and .installed == true
             and .installed_store_path == $store' \
           "$work/apm-source-host-install-retired-after-unpublish.json" >/dev/null
@@ -8033,6 +8122,10 @@ in {
           run_clean ${self}/bin/apm registry add --no-verify "file://$reg" \
             --name host-keyresign \
             --no-clone > "$work/apm-add-host-keyresign-config.out" 2>&1
+          run_clean ${self}/bin/apr keys register initial \
+            --registry host-keyresign \
+            --key "$work/initial-release-key" \
+            > "$work/apr-keys-register-host-keyresign.out" 2>&1
           run_clean ${self}/bin/apr keys generate next \
             --registry host-keyresign \
             --add \
@@ -8048,7 +8141,7 @@ in {
             --description "Host key retirement re-sign fixture" \
             --license MIT \
             --maintainer host@example.invalid \
-            --key "$work/initial-release-key" \
+            --key-id initial \
             > "$work/apr-release-host-keyresign.json"
           ${pkgs.jq}/bin/jq -e \
             '.action == "release"
@@ -8241,7 +8334,7 @@ in {
             --license MIT \
             --maintainer host@example.invalid \
             --previous 1.0.0 \
-            --key "$work/initial-release-key" \
+            --key-id initial \
             --rotate-from "$config/apm/keys/host-keyresign-next.key" \
             > "$work/apr-release-host-keyresign-v11.json"
           ${pkgs.jq}/bin/jq -e \
@@ -8832,14 +8925,19 @@ in {
       mkdir -p /tmp/fake-cache/nar
       printf 'StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n' \
         > /tmp/fake-cache/nix-cache-info
+      head -c 128 /dev/zero > /tmp/fixture-cache-payload
+      fixture_file_hash=$(sha256sum /tmp/fixture-cache-payload | cut -d ' ' -f1)
+      fixture_nar_name="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-sha256-$fixture_file_hash.nar"
+      mv /tmp/fixture-cache-payload "/tmp/fake-cache/nar/$fixture_nar_name"
       {
         printf 'StorePath: /nix/store/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-fixture-1.0\n'
-        printf 'URL: nar/fixture.nar\n'
+        printf 'URL: nar/%s\n' "$fixture_nar_name"
         printf 'Compression: none\n'
+        printf 'FileHash: sha256:%s\n' "$fixture_file_hash"
+        printf 'FileSize: 128\n'
         printf 'NarHash: sha256:0000000000000000000000000000000000000000000000000000000000000000\n'
         printf 'NarSize: 128\n'
       } > /tmp/fake-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo
-      head -c 128 /dev/zero > /tmp/fake-cache/nar/fixture.nar
 
       echo "==> apr origin upload over s3://"
       ${self}/bin/apr origin upload \
@@ -8879,8 +8977,8 @@ in {
       assert_same_bytes /tmp/back-narinfo \
         /tmp/fake-cache/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.narinfo narinfo
 
-      webget origin/nar/fixture.nar > /tmp/back-nar
-      assert_same_bytes /tmp/back-nar /tmp/fake-cache/nar/fixture.nar NAR
+      webget "origin/nar/$fixture_nar_name" > /tmp/back-nar
+      assert_same_bytes /tmp/back-nar "/tmp/fake-cache/nar/$fixture_nar_name" NAR
 
       kill "$GARAGE_PID" 2>/dev/null || true
       echo "==> All s3 origin upload tests passed"

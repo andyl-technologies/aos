@@ -383,6 +383,7 @@ in
               source="$1"
               destination="$2"
               gawk '
+                /^#define RNG_MAX_REQUEST_SIZE / { print }
                 /^void rng_backend_request_entropy\(/ { capture = 1 }
                 capture {
                   print
@@ -446,6 +447,10 @@ in
 
             #define RNG_BACKEND_GET_CLASS(backend) ((backend)->klass)
             #define g_malloc(size) malloc(size)
+            /* Keep QEMU's source-defined request ceiling in the extracted
+             * function; supply only the utility macros from its headers. */
+            #define KiB 1024U
+            #define MIN(left, right) ((left) < (right) ? (left) : (right))
             #define QSIMPLEQ_INSERT_TAIL(queue, element, link) do { \
                 (element)->next = NULL; \
                 if ((queue)->last != NULL) { \

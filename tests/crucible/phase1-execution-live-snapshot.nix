@@ -8,7 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   session = import ./_crucible-session-source.nix {inherit lib;};
-  sessionGate = builtins.readFile ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  exploration = builtins.readFile ../../crates/crucible-session/src/session/exploration.rs;
+  sessionGate = import ./_rust-module-source.nix {
+    inherit lib;
+    entry = ../../crates/crucible-session/tests/gate_control_responsive.rs;
+  };
   gateTargetNix = builtins.readFile ./phase1-gate-target-mapping.nix;
   gateTargetRust = builtins.readFile ../../crates/crucible-harness/src/gate_targets.rs;
   defaultChecks = builtins.readFile ./default.nix;
@@ -62,10 +66,6 @@
         needle = "pub fn read(&self) -> LiveSnapshotView";
       }
       {
-        label = "actor-only publish helper";
-        needle = "fn publish(&self, snapshot: &EngineSnapshot, control_acknowledgements: u64)";
-      }
-      {
         label = "session actor owns live snapshot";
         needle = "live: Arc<LiveSnapshot>";
       }
@@ -84,6 +84,24 @@
       {
         label = "monotone progress live snapshot test";
         needle = "session_actor_live_snapshot_publishes_monotone_progress";
+      }
+    ]
+    ++ failuresFor "crates/crucible-session/src/session/exploration.rs" exploration [
+      {
+        label = "actor-only publish helper";
+        needle = "pub(super) fn publish(";
+      }
+      {
+        label = "publish engine snapshot input";
+        needle = "snapshot: &EngineSnapshot,";
+      }
+      {
+        label = "publish control acknowledgement input";
+        needle = "control_acknowledgements: u64,";
+      }
+      {
+        label = "publish state transition sequence input";
+        needle = "state_transition_sequence: u64,";
       }
     ]
     ++ failuresFor "crates/crucible-session/tests/gate_control_responsive.rs" sessionGate [

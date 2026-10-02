@@ -89,6 +89,9 @@ pub async fn run(cli: &Cli, args: &MaintainArgs, printer: &Printer) -> Result<Co
     let _activity = activity_label(args).map(|label| printer.activity(label));
 
     match &args.command {
+        Some(MaintainCommand::Release { .. }) => {
+            anyhow::bail!("release commands must use the independent release dispatcher")
+        }
         None => cached_completion("home", args, None),
         Some(MaintainCommand::Inventory(command)) => {
             let evaluated = NixRunner::new(cli.verbose, cli.quiet).and_then(|nix| {
@@ -3210,6 +3213,7 @@ fn diagnostic(code: &str, severity: DiagnosticSeverity, summary: &str) -> Diagno
 fn command_name(args: &MaintainArgs) -> &'static str {
     match &args.command {
         None => "home",
+        Some(MaintainCommand::Release { .. }) => "release",
         Some(MaintainCommand::Inventory(_)) => "inventory",
         Some(MaintainCommand::Scan(_)) => "scan",
         Some(MaintainCommand::Report(_)) => "report",
@@ -3237,6 +3241,7 @@ fn command_name(args: &MaintainArgs) -> &'static str {
 
 fn activity_label(args: &MaintainArgs) -> Option<&'static str> {
     match args.command.as_ref()? {
+        MaintainCommand::Release { .. } => None,
         MaintainCommand::Inventory(_) => Some("Evaluating package maintenance inventory"),
         MaintainCommand::Scan(_) => Some("Checking direct upstreams and advisory evidence"),
         MaintainCommand::RefreshHashes(_) => Some("Refreshing fixed-output package hashes"),

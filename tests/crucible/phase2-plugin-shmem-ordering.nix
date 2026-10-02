@@ -56,34 +56,13 @@
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
-  occurrences = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0 || maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-  in
-    builtins.length (builtins.filter (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes);
-
+  # Native string splitting avoids allocating one Nix value per source byte.
   firstIndexOf = needle: haystack: let
-    needleLen = builtins.stringLength needle;
-    haystackLen = builtins.stringLength haystack;
-    maxStart = haystackLen - needleLen;
-    indexes =
-      if needleLen == 0 || maxStart < 0
-      then []
-      else builtins.genList (index: index) (maxStart + 1);
-    matches = builtins.filter (index:
-      builtins.substring index needleLen haystack == needle)
-    indexes;
+    parts = lib.splitString needle haystack;
   in
-    if matches == []
+    if needle == "" || builtins.length parts < 2
     then null
-    else builtins.head matches;
+    else builtins.stringLength (builtins.head parts);
 
   productionRust = content: let
     testIndex = firstIndexOf "mod tests {" content;
@@ -99,7 +78,7 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/device_io.rs";
-      content = productionRust pluginDeviceIo;
+      content = productionRust (builtins.readFile ../../crates/crucible-qemu-plugin/src/device_io.rs);
     }
     {
       label = "crates/crucible-qemu-plugin/src/idle_loop production module";
@@ -118,7 +97,10 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/block_io.rs";
-      content = productionRust pluginBlockIo;
+      content = builtins.concatStringsSep "\n" (map (file: productionRust (builtins.readFile file)) [
+        ../../crates/crucible-qemu-plugin/src/block_io.rs
+        ../../crates/crucible-qemu-plugin/src/block_io/history.rs
+      ]);
     }
     {
       label = "crates/crucible-qemu-plugin/src/ninep_io.rs";
@@ -194,7 +176,10 @@
     }
     {
       label = "crates/crucible-qemu-plugin/src/block_io.rs";
-      content = productionRust pluginBlockIo;
+      content = builtins.concatStringsSep "\n" (map (file: productionRust (builtins.readFile file)) [
+        ../../crates/crucible-qemu-plugin/src/block_io.rs
+        ../../crates/crucible-qemu-plugin/src/block_io/history.rs
+      ]);
     }
     {
       label = "crates/crucible-qemu-plugin/src/ninep_io.rs";
@@ -233,7 +218,7 @@
     forbiddenRawOrderingSources;
 
   deviceIoProduction = productionRust pluginDeviceIo;
-  deviceIoRelaxedCount = occurrences "Ordering::Relaxed" deviceIoProduction;
+  deviceIoRelaxedCount = builtins.length (lib.splitString "Ordering::Relaxed" deviceIoProduction) - 1;
   deviceIoOrderingFailures =
     lib.concatMap (
       needle:

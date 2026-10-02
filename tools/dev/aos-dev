@@ -1,0 +1,21 @@
+# shellcheck shell=bash
+# Loaded by the dev-shell launcher using AOS-built Bash.
+set -euo pipefail
+
+aos_dev_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+aos_dev_root="$(cd "$aos_dev_dir/../.." && pwd -P)"
+
+# shellcheck source=tools/dev/lib/common.bash
+source "$aos_dev_dir/lib/common.bash"
+# shellcheck source=tools/dev/lib/targets.bash
+source "$aos_dev_dir/lib/targets.bash"
+# shellcheck source=tools/dev/lib/cache.bash
+source "$aos_dev_dir/lib/cache.bash"
+# shellcheck source=tools/dev/lib/maintenance.bash
+source "$aos_dev_dir/lib/maintenance.bash"
+# shellcheck source=tools/dev/lib/cache-report.bash
+source "$aos_dev_dir/lib/cache-report.bash"
+# shellcheck source=tools/dev/lib/commands.bash
+source "$aos_dev_dir/lib/commands.bash"
+
+aos_dev_main "$@"

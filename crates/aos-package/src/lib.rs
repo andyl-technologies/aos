@@ -72,6 +72,7 @@ pub(crate) mod exposed_units;
 pub(crate) mod gitcmd;
 pub mod graph_compile;
 pub mod hold;
+pub mod hub_auth;
 pub mod images;
 pub mod install;
 pub mod metadata;
@@ -329,6 +330,9 @@ pub enum PackageCommand {
         /// Show package from this registry
         #[arg(long)]
         registry: Option<String>,
+        /// Show permission metadata only
+        #[arg(long)]
+        permissions: bool,
         /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
@@ -365,20 +369,6 @@ pub enum PackageCommand {
         #[arg(long, env = "AOS_TOKEN", requires = "hub")]
         token: Option<String>,
         /// Read the system package profile instead of the user profile
-        #[arg(long)]
-        system: bool,
-    },
-    /// Show package information
-    Info {
-        /// Package name
-        package: String,
-        /// Show package from this registry
-        #[arg(long)]
-        registry: Option<String>,
-        /// Show permission metadata only
-        #[arg(long)]
-        permissions: bool,
-        /// Query the system scope instead of the user scope
         #[arg(long)]
         system: bool,
     },
@@ -1285,7 +1275,6 @@ impl PackageCommand {
             | PackageCommand::Docs { .. }
             | PackageCommand::Options { .. }
             | PackageCommand::Schema { .. }
-            | PackageCommand::Info { .. }
             | PackageCommand::List { .. }
             | PackageCommand::Depends { .. }
             | PackageCommand::Rdepends { .. }
@@ -1330,7 +1319,6 @@ impl PackageCommand {
             PackageCommand::Registry { system, .. } => *system,
             PackageCommand::Search { system, .. } => *system,
             PackageCommand::Show { system, .. } => *system,
-            PackageCommand::Info { system, .. } => *system,
             PackageCommand::List { system, .. } => *system,
             PackageCommand::Depends { system, .. } => *system,
             PackageCommand::Rdepends { system, .. } => *system,
@@ -1954,13 +1942,34 @@ pub enum RegistryCommand {
         #[command(subcommand)]
         command: WebCommand,
     },
+    /// Inspect or discard isolated unpublished release candidates
+    Stage {
+        #[command(subcommand)]
+        command: RegistryStageCommand,
+    },
     /// Run the ordered producer release pipeline
+    #[command(group(clap::ArgGroup::new("stage_identity").args(["stage", "from_stage"]).multiple(false)))]
     Release {
         /// Semver release tag, with no `v` prefix
         semver: String,
+        /// Create or update an unpublished candidate with this identity
+        #[arg(long, conflicts_with = "from_stage")]
+        stage: Option<String>,
+        /// Expected candidate revision for an update, resume, or finalization
+        #[arg(long, requires = "stage_identity")]
+        stage_revision: Option<u64>,
+        /// Finalize this exact unpublished candidate
+        #[arg(long, conflicts_with = "stage", requires = "stage_revision")]
+        from_stage: Option<String>,
         /// Canonical signed container release sidecar to commit in the release
         #[arg(long = "container-release")]
         container_release: Option<PathBuf>,
+        /// OCI image layout whose exact graph belongs to the container candidate
+        #[arg(long = "container-layout", requires = "container_release")]
+        container_layout: Option<PathBuf>,
+        /// Distribution repository for the signed container image
+        #[arg(long = "container-repository", requires = "container_layout")]
+        container_repository: Option<String>,
         /// Canonical Nix signature input bound by the container release
         #[arg(long = "container-signature-input")]
         container_signature_input: Option<PathBuf>,
@@ -2101,6 +2110,35 @@ pub enum RegistryCommand {
         /// Resolve signing key path from [registry.signing_keys] by keys.toml id
         #[arg(long = "key-id")]
         key_id: Option<String>,
+        /// Registry to operate on
+        #[arg(long)]
+        registry: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum RegistryStageCommand {
+    /// List retained unpublished release candidates
+    List {
+        /// Registry to inspect
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Inspect one candidate's exact inventory and revision
+    Show {
+        /// Candidate identity
+        id: String,
+        /// Registry to inspect
+        #[arg(long)]
+        registry: Option<String>,
+    },
+    /// Discard a candidate after checking its current revision
+    Discard {
+        /// Candidate identity
+        id: String,
+        /// Exact expected candidate revision
+        #[arg(long = "stage-revision")]
+        revision: u64,
         /// Registry to operate on
         #[arg(long)]
         registry: Option<String>,
@@ -2933,8 +2971,8 @@ fn parse_system_transition_mode(reboot: bool) -> SystemTransitionMode {
 }
 
 const DEFAULT_SWITCH_HOST_NIX: &str = "/run/aos-metadata/host.nix";
-const DEFAULT_SWITCH_BASE_LIB: &str = "/aos-toplevel/base-lib";
-const DEFAULT_SWITCH_OS_RELEASE: &str = "/aos-toplevel/os-release";
+const DEFAULT_SWITCH_BASE_LIB: &str = "/usr/lib/aos/toplevel/base-lib";
+const DEFAULT_SWITCH_OS_RELEASE: &str = "/usr/lib/aos/toplevel/os-release";
 const DEFAULT_SYSTEM_GENERATION_PROFILE: &str = "/var/lib/profiles/system";
 
 fn resolve_switch_manifest(selector: Option<&str>, profile: &Path) -> Result<(PathBuf, String)> {
@@ -4026,14 +4064,18 @@ pub async fn run(
             .await
         }
         PackageCommand::Show {
-            package, registry, ..
-        } => query::show(&config, package, registry.as_deref(), printer).await,
-        PackageCommand::Info {
             package,
             registry,
             permissions,
             ..
-        } => query::info(&config, package, registry.as_deref(), *permissions, printer).await,
+        } => {
+            if *permissions {
+                query::show_package_permissions(&config, package, registry.as_deref(), printer)
+                    .await
+            } else {
+                query::show(&config, package, registry.as_deref(), printer).await
+            }
+        }
         PackageCommand::List {
             installed,
             upgradable,
@@ -5303,8 +5345,9 @@ pub async fn run_apr(
 /// them, and accepting it would suggest the flag had been considered where it
 /// had not; refusing says plainly that the command never writes anyway.
 ///
-/// `release` is also absent: it carries its own `--dry-run`, which belongs
-/// after the subcommand name and is threaded through separately.
+/// `release` is accepted only when its explicit preview option is set.
+/// Clap propagates that option into the global flag as well, so rejecting
+/// the global value would also reject valid release previews.
 fn implements_global_dry_run(command: &RegistryCommand) -> bool {
     matches!(
         command,
@@ -5324,6 +5367,7 @@ fn implements_global_dry_run(command: &RegistryCommand) -> bool {
             | RegistryCommand::Pull { .. }
             | RegistryCommand::Push { .. }
             | RegistryCommand::Remove { .. }
+            | RegistryCommand::Release { dry_run: true, .. }
             | RegistryCommand::SbCerts { .. }
             | RegistryCommand::Sign { .. }
             | RegistryCommand::Store { .. }
@@ -5653,10 +5697,18 @@ async fn run_registry(
             registry_ops::run_origin(config, command, printer).await
         }
         RegistryCommand::Web { command } => registry_ops::run_web(config, command, printer).await,
+        RegistryCommand::Stage { command } => {
+            registry_ops::run_stage(config, command, printer).await
+        }
         RegistryCommand::Release {
             semver,
+            stage,
+            stage_revision,
+            from_stage,
             container_release,
             container_signature_input,
+            container_layout,
+            container_repository,
             store_path,
             name,
             version,
@@ -5733,6 +5785,11 @@ async fn run_registry(
                 *resume,
                 registry.as_deref(),
                 *jobs,
+                container_layout.as_deref(),
+                container_repository.as_deref(),
+                stage.as_deref(),
+                *stage_revision,
+                from_stage.as_deref(),
                 printer,
             )
             .await
@@ -7637,6 +7694,7 @@ contributable = ["allowedTCPPorts"]
             PackageCommand::Show {
                 package: "curl".into(),
                 registry: None,
+                permissions: false,
                 system: true,
             }
             .is_system()

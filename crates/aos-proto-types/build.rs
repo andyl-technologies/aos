@@ -35,6 +35,13 @@ fn out_dir() -> BuildResult<PathBuf> {
         .ok_or_else(|| failure("prost-build: OUT_DIR is not set"))
 }
 
+fn manifest_dir() -> BuildResult<PathBuf> {
+    // A shared target directory can reuse this executable in another checkout.
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .ok_or_else(|| failure("prost-build: CARGO_MANIFEST_DIR is not set"))
+}
+
 fn main() -> BuildResult<()> {
     let proto_root = "../aos-proto/src/proto";
     let proto = format!("{proto_root}/aos/hub/v1/hub.proto");
@@ -495,8 +502,8 @@ fn required_proto_identifier<'a>(value: Option<&'a str>, kind: &str) -> BuildRes
 }
 
 fn verify_checked_api_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
-    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json");
+    let manifest_path =
+        manifest_dir()?.join("../../docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json");
     println!("cargo:rerun-if-changed={}", manifest_path.display());
     let manifest_source = std::fs::read_to_string(&manifest_path)?;
     let manifest: serde_json::Value = serde_json::from_str(&manifest_source)?;
@@ -553,7 +560,7 @@ fn verify_checked_api_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
 }
 
 fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResult<()> {
-    let manifest_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+    let manifest_path = manifest_dir()?
         .join("../../docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json");
     println!("cargo:rerun-if-changed={}", manifest_path.display());
     let manifest_source = std::fs::read_to_string(&manifest_path)?;
@@ -672,7 +679,7 @@ fn verify_checked_capability_manifest(generated: &[ConnectMethod]) -> BuildResul
 }
 
 fn checked_console_source() -> BuildResult<String> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../aos-hub-console/src");
+    let root = manifest_dir()?.join("../aos-hub-console/src");
     let mut paths = Vec::new();
     collect_rust_sources(&root, &mut paths)?;
     paths.sort();

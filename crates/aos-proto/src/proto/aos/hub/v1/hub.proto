@@ -457,6 +457,11 @@ service ContainerService {
 // every required placement has verified every immutable object and mutable
 // pointer. No resource-slug upload facade exists.
 service PublishService {
+  rpc UpsertStagedRelease(UpsertStagedReleaseRequest) returns (StagedRelease);
+  rpc GetStagedRelease(GetStagedReleaseRequest) returns (StagedRelease);
+  rpc ListStagedReleases(ListStagedReleasesRequest) returns (ListStagedReleasesResponse);
+  rpc FinalizeStagedRelease(FinalizeStagedReleaseRequest) returns (StagedRelease);
+  rpc DiscardStagedRelease(DiscardStagedReleaseRequest) returns (StagedRelease);
   rpc BeginRegistryPublication(BeginRegistryPublicationRequest)
       returns (RegistryPublication);
   rpc BeginRegistryPublicationManifest(
@@ -1728,6 +1733,8 @@ message Registry {
   string authorization_scope_key = 18;
   // Exact scope that owns shared infrastructure usable by this registry.
   string owner_scope_key = 19;
+  // Exact ready OCI route origin, including HTTP(S) scheme; empty until ready.
+  string oci_distribution_origin = 20;
 }
 
 message ConsumerCacheStackEntry {
@@ -5531,4 +5538,64 @@ message ExplainRouteResponse {
   string normalized_url = 1;
   repeated string decisions = 2;
   repeated string rejection_reasons = 3;
+}
+
+// A private mutable draft, distinct from deployment staging receipts.
+message UpsertStagedReleaseRequest {
+  string registry = 1;
+  // Canonical portable aos.registry-stage/v1 JSON.
+  string revision_json = 2;
+  // Zero creates a draft; later edits compare-and-swap the current revision.
+  uint64 expected_revision = 3;
+  // The ordinary upload publication; may be attached after draft creation.
+  string publication_id = 4;
+  // Gzip-compressed canonical revision JSON; exclusive with revision_json.
+  bytes revision_gzip = 5;
+}
+message GetStagedReleaseRequest { string registry = 1; string stage_id = 2; }
+message ListStagedReleasesRequest {
+  string registry = 1;
+  uint32 page_size = 2;
+  string page_token = 3;
+}
+message ListStagedReleasesResponse {
+  repeated StagedRelease stages = 1;
+  string next_page_token = 2;
+}
+message FinalizeStagedReleaseRequest {
+  string registry = 1;
+  string stage_id = 2;
+  uint64 expected_revision = 3;
+  string release_id = 4;
+}
+message DiscardStagedReleaseRequest {
+  string registry = 1;
+  string stage_id = 2;
+  uint64 expected_revision = 3;
+}
+message StagedRelease {
+  string registry = 1;
+  string stage_id = 2;
+  string revision_json = 3;
+  // draft, ready, releasing, released, or discarded.
+  string state = 4;
+  string publication_id = 5;
+  uint64 total_bytes = 6;
+  uint64 uploaded_bytes = 7;
+  repeated string missing_paths = 8;
+  int64 created_at = 9;
+  int64 updated_at = 10;
+  string released_version = 11;
+  uint64 revision = 12;
+  string release_id = 13;
+  string source_branch = 14;
+  string commit = 15;
+  string inventory_digest = 16;
+  uint64 object_count = 17;
+  uint64 missing_object_count = 18;
+  // Gzip-compressed canonical revision JSON; exclusive with revision_json.
+  bytes revision_gzip = 19;
+  // Complete objects verified at every required placement; uploaded_bytes also
+  // includes durable accepted multipart and OCI offsets.
+  uint64 verified_bytes = 20;
 }

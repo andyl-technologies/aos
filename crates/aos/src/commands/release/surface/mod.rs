@@ -81,6 +81,12 @@ pub(super) struct PublishedSurface {
     pub(super) parent: Option<String>,
 }
 
+/// An uploaded immutable candidate and its shared lifecycle record.
+pub(super) struct StagedSurface {
+    pub(super) publication: PublishedSurface,
+    pub(super) record: aos_registry_surface::staging::StageRecord,
+}
+
 /// Exact signed receipt bytes and their digest.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct SignedReceipt {
@@ -247,6 +253,23 @@ pub(super) trait SurfaceClient {
     async fn publish_surface(
         &self,
         root: &Path,
+        base_commit: &str,
+        printer: &Printer,
+    ) -> Result<PublishedSurface>;
+
+    /// Uploads and verifies an exact common stage without exposing mutable pointers.
+    async fn stage_surface(
+        &self,
+        root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
+        printer: &Printer,
+    ) -> Result<StagedSurface>;
+
+    /// Finalizes an exact candidate after rechecking its withheld pointer preconditions.
+    async fn finalize_stage(
+        &self,
+        root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
         base_commit: &str,
         printer: &Printer,
     ) -> Result<PublishedSurface>;

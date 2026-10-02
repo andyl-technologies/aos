@@ -73,6 +73,35 @@ A channel page shows the target release, the minimum allowed release, and the
 share of the 256 rollout buckets assigned, then the rollout bar and a
 colour-coded bucket map. Enter a host's bucket to see which release it gets.
 
+## Review unpublished release candidates
+
+Maintainers with the registry's Publish permission use **Publishing** at
+`/<org>/<registry>/-/settings/staged-releases`. Its candidate list is separate
+from the public Releases, Packages, and Images pages. A candidate is a portable
+`aos.registry-stage/v1` revision, with an ordinary authoring branch, exact
+prepared signed commit, object inventory, and withheld publication pointers.
+
+Open **Review candidate** to inspect the branch, commit, uploaded bytes,
+verified complete bytes, and missing-object progress. Readiness requires every
+object to be verified; partial transfer progress alone is insufficient. Resume
+the exact APR revision with the displayed command, replacing its registry
+placeholder with your configured local alias for this Hub destination, or
+upload an individual small object. A prepared next-revision JSON
+file can be reviewed and saved with the current revision precondition;
+concurrent changes require a fresh review.
+
+A ready candidate is already signed. **Publish reviewed release** freezes the
+exact revision and its reserved semver identity, then publishes those bytes;
+the browser never needs a private signing key. Channel assignments remain a
+separate operation. **Discard** requires the stage id and exact revision;
+discarded and superseded candidate roots retain a 24-hour grace period.
+Released and shared objects keep their other retention roots.
+
+Default public catalogs and channels omit unpublished candidates. Direct refs,
+digests, cache paths, and CDN URLs may expose uploaded bytes; stage hiding is a
+publication boundary. See [release stages](../../registry/release-stages.md)
+for the common APR, Hub, and filesystem contracts.
+
 ## Sign in and administer a Hub
 
 Open `/login`. A deployment may offer password, passkey, magic-link, or OIDC

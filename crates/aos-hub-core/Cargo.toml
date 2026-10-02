@@ -109,13 +109,19 @@ sqlx = { workspace = true, features = ["sqlite"] }
 tokio = { workspace = true }
 
 [dev-dependencies]
-# The native SqlxBackend batch tests are async; drive them on a tokio runtime.
-tokio = { workspace = true }
+# Native tests use Tokio, including controlled time for provider deadlines.
+tokio = { workspace = true, features = ["test-util"] }
 # The Database migration tests stage old-schema sqlite files with raw rusqlite,
 # then reopen them through the sqlx Database to assert the upgrade path; other
 # tests use a temp dir for a file-backed hub.db (RFC-0004 Phase 5).
 rusqlite = { workspace = true }
 tempfile = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+# The staged-release contract test exercises the actual maintainer client
+# against the shared Connect router with an ephemeral native HTTP listener.
+aos-package = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["tokio", "http1"] }
 
 # The OS CSPRNG (argon2 salt, and the secret/token generators to come) reaches
 # the browser/Workers `crypto.getRandomValues` through getrandom's JS backend on

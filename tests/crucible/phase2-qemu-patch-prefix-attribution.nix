@@ -536,6 +536,14 @@
       kind = "recorded";
       symbols = [];
     };
+    "0117-crucible-qemu-11-runtime-semantics.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
+    "0118-crucible-queued-runtime-tb-invalidation.patch" = {
+      kind = "recorded";
+      symbols = [];
+    };
   };
 
   unclassified =

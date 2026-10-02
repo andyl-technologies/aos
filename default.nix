@@ -10,7 +10,7 @@
 #   nix-build -A systems.server.build.toplevel       Build the server system
 #   nix-build -A systems.server.checks.boot-basics   Run a module check
 #   nix-build -A systems.server.checks.system-boot   Run a system-level check
-#   nix-build -A checks                              Run all tests
+#   nix-build -A allChecks                           Run all tests
 #   nix-build -A checks.eval                         Run evaluation checks only
 #
 # Architecture:
@@ -443,7 +443,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     probes = qualificationPackageProbesFor (
       qualificationPackageNamesByPlatform.${hostPlatform.system}
     );
-    trustKeys = discoverSystems."aos-testing".config.aos.release.trustKeys;
+    trustKeys = discoverSystems."aos-experimental".config.aos.release.trustKeys;
   };
   containerLifecycleScenario =
     if hostPlatform.isLinux
@@ -543,6 +543,16 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
     workRoot = "/var/lib/aos-release/qualification/${hostPlatform.system}";
     timeoutSeconds = 21600;
+  };
+  # The closure a maintainer machine installs: the CLI plus the executor for
+  # the platform it can qualify natively. `aos release` discovers its own
+  # closure and executors from this layout, so neither appears in the
+  # maintainer configuration.
+  releaseTooling = import ./pkgs/tools/aos/_release-tooling.nix {
+    inherit lib;
+    inherit (pkgs) runCommand runtimeShell;
+    aos = pkgs.aos;
+    executors = {${hostPlatform.system} = releaseQualificationExecutor;};
   };
 
   prefixAttrs = prefix: attrs:
@@ -1378,8 +1388,15 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     if stdenv.isCross && hostPlatform.isDarwin
     then (import ./. {inherit system;}).systems.server.config.aos.config.evalAtBoot.baseLib
     else discoverSystems.server.config.aos.config.evalAtBoot.baseLib;
-in {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor allPackages;
+in rec {
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkFleetTestFromFile packagesWithExpose containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
+  # nix-build does not descend through arbitrary nested check attrsets. An
+  # explicit list reaches every gate while stopping at derivations, whose
+  # passthru attributes are metadata rather than additional checks.
+  allChecks = lib.collect (value: builtins.isAttrs value && lib.isDerivation value) {
+    repository = checks;
+    systems = lib.mapAttrs (_: system: system.checks) discoverSystems;
+  };
   packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
@@ -1720,7 +1737,7 @@ in {
       eval = import ./tests/containers/eval.nix {
         inherit pkgs lib mkSystem;
         serverModule = ./systems/server.nix;
-        testingModule = ./systems/aos-testing.nix;
+        experimentalModule = ./systems/aos-experimental.nix;
         aosSystem = hostPlatform.system;
       };
       oci-builders = import ./tests/containers/oci-builders.nix {inherit pkgs lib;};

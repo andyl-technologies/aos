@@ -118,7 +118,7 @@
     experimental-features = nix-command
     NIXCONF
     nix-store --init
-    nix-store --load-db < /aos-registration
+    nix-store --load-db < /usr/lib/aos/nix-registration
   '';
 
   registryFixtureHelpers = ''
@@ -127,13 +127,13 @@
       store_path="$2"
       store_hash=$(basename "$store_path" | cut -d- -f1)
 
-      $APR create "$reg_name" > "/tmp/$reg_name-create.log" 2>&1 || {
+      create_publish_registry "$reg_name" > "/tmp/$reg_name-create.log" 2>&1 || {
         cat "/tmp/$reg_name-create.log"
         return 1
       }
       cat "/tmp/$reg_name-create.log"
 
-      $APR publish "$store_path" \
+      publish_vm_package "$store_path" \
         --name fixture \
         --version 1.0.0 \
         --description "VM validation fixture" \
@@ -740,7 +740,7 @@ in {
           --priority 37 \
           --no-commit
 
-        $APR create cdn-reg
+        create_publish_registry cdn-reg
         REG_DIR="$REG_STORAGE/cdn-reg"
         mkdir -p "$REG_DIR/channels/stable" "$REG_DIR/.git/channels/stable"
         printf 'channel-pointer\n' > "$REG_DIR/.git/channels/stable/00"
@@ -926,9 +926,7 @@ in {
         test ! -e /tmp/s3-origin-root/aos-origin/origin/tmp
         rm -rf "$REG_DIR/target" /tmp/generated-cache/target /tmp/generated-cache/tmp
 
-        ssh-keygen -q -t ed25519 -N "" -f /tmp/cdn-release-key
-        $APR release 1.0.0 --registry cdn-reg \
-          --key /tmp/cdn-release-key \
+        release_vm_package 1.0.0 --registry cdn-reg \
           --upload-url s3://aos-origin/release \
           > /tmp/release-upload.log 2>&1
         cat /tmp/release-upload.log
@@ -938,8 +936,7 @@ in {
         test -f /tmp/s3-origin-root/aos-origin/release/releases/1/0/0/objects/info/packs
         test ! -e /tmp/s3-origin-root/aos-origin/release/target
 
-        $APR release 1.0.0 --registry cdn-reg \
-          --key /tmp/cdn-release-key \
+        release_vm_package 1.0.0 --registry cdn-reg \
           --upload-url s3://aos-origin/release-resume \
           --resume \
           > /tmp/release-resume-upload.log 2>&1

@@ -221,7 +221,7 @@ fn resolve(tree: &Path, relative: &Path) -> Result<PathBuf> {
             }
             Some(Component::Normal(name)) => {
                 let candidate = tree.join(&resolved).join(name);
-                let lower_store = tree.join("nix.lower/store");
+                let lower_store = tree.join("usr/lib/aos/nix/store");
 
                 // The root image mounts its immutable lower store at /nix/store
                 // only after boot. Resolve that mount through the captured tree.
@@ -229,11 +229,11 @@ fn resolve(tree: &Path, relative: &Path) -> Result<PathBuf> {
                     && name == "store"
                     && fs::symlink_metadata(&candidate)
                         .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-                    && fs::symlink_metadata(tree.join("nix.lower"))
+                    && fs::symlink_metadata(tree.join("usr/lib/aos/nix"))
                         .is_ok_and(|metadata| metadata.is_dir())
                     && fs::symlink_metadata(&lower_store).is_ok_and(|metadata| metadata.is_dir())
                 {
-                    resolved = PathBuf::from("nix.lower/store");
+                    resolved = PathBuf::from("usr/lib/aos/nix/store");
                     continue;
                 }
 
@@ -397,8 +397,11 @@ mod tests {
         let temporary = fixture()?;
         let runtime = temporary.path().join("runtime");
 
-        fs::create_dir(runtime.join("nix.lower"))?;
-        fs::rename(runtime.join("nix/store"), runtime.join("nix.lower/store"))?;
+        fs::create_dir_all(runtime.join("usr/lib/aos/nix"))?;
+        fs::rename(
+            runtime.join("nix/store"),
+            runtime.join("usr/lib/aos/nix/store"),
+        )?;
 
         let capabilities = collect(temporary.path())?;
         capabilities.satisfies(&scope())?;

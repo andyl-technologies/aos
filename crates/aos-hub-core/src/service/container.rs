@@ -6,19 +6,209 @@
 //! verified release root.
 
 use aos_oci_types::{
-    to_canonical_json, ContainerRelease, Descriptor, RepositoryName, Sha256Digest, Tag,
+    ContainerRelease, Descriptor, RepositoryName, Sha256Digest, Tag, to_canonical_json,
 };
 use aos_proto_types as pb;
 
-use super::{clock, Permission, RpcError, RpcService};
+use super::{Permission, RpcError, RpcService, clock};
 use crate::db::{
-    oci_blob_object_key, oci_catalog_declaration_digest, oci_publication_confirmation_hash,
-    AddOciPublicationObject, BeginOciPublication, ContainerReleaseDescriptorRole, OciCatalogObject,
-    OciCatalogProjection, OciPublicationRecord, OciPublicationRequiredPlacement,
-    OCI_MAX_SESSION_SECONDS,
+    AddOciPublicationObject, BeginOciPublication, ContainerReleaseDescriptorRole,
+    OCI_MAX_SESSION_SECONDS, OciCatalogObject, OciCatalogProjection, OciPublicationRecord,
+    OciPublicationRequiredPlacement, oci_blob_object_key, oci_catalog_declaration_digest,
+    oci_publication_confirmation_hash,
 };
 
 impl RpcService {
+    /// Verifies staged OCI membership and every required placement without tags.
+    ///
+    /// Partial server-confirmed offsets contribute to progress, but an object
+    /// remains missing until its complete digest and placement are verified.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid candidate, inconsistent closed graph,
+    /// unavailable topology, or database failure.
+    pub(crate) async fn staged_container_progress(
+        &self,
+        registry: &crate::db::RegistryRecord,
+        revision: &aos_registry_surface::staging::StageRevision,
+    ) -> Result<(u64, u64, Vec<String>), RpcError> {
+        let Some(container) = &revision.container else {
+            return Ok((0, 0, Vec::new()));
+        };
+        container
+            .validate(&revision.inventory, &revision.release_id)
+            .map_err(|error| RpcError::invalid(error.to_string()))?;
+        validate_initial_release(&container.release)?;
+        let placements = self
+            .db
+            .registry_publication_write_placements(registry.id)
+            .await
+            .map_err(RpcError::internal)?;
+        let repository = self
+            .db
+            .oci_repository(registry.id, &container.repository)
+            .await
+            .map_err(RpcError::internal)?;
+        let mut total = 0_u64;
+        let mut uploaded = 0_u64;
+        let mut missing = Vec::new();
+        for descriptor in &container.descriptors {
+            total = total
+                .checked_add(descriptor.size)
+                .ok_or_else(|| RpcError::invalid("OCI stage byte total overflows"))?;
+            let path = oci_blob_object_key(descriptor.digest);
+            let Some(repository) = &repository else {
+                missing.push(path);
+                continue;
+            };
+            let blob = self
+                .db
+                .oci_blob_for_repository(repository.id, descriptor.digest)
+                .await
+                .map_err(RpcError::internal)?;
+            let mut complete = !placements.is_empty()
+                && blob.as_ref().is_some_and(|blob| {
+                    blob.byte_size == descriptor.size && blob.media_type == descriptor.media_type
+                });
+            if complete {
+                for placement in &placements {
+                    if self
+                        .db
+                        .oci_release_descriptor_placement(
+                            repository.id,
+                            placement.id,
+                            descriptor_role(&container.release, descriptor),
+                            descriptor,
+                        )
+                        .await
+                        .map_err(RpcError::internal)?
+                        .is_none()
+                    {
+                        complete = false;
+                        break;
+                    }
+                }
+            }
+            let available = if complete {
+                descriptor.size
+            } else {
+                missing.push(path);
+                self.db
+                    .staged_oci_descriptor_offset(repository.id, descriptor, clock::now_unix_secs())
+                    .await
+                    .map_err(RpcError::internal)?
+                    .min(descriptor.size)
+            };
+            uploaded = uploaded
+                .checked_add(available)
+                .ok_or_else(|| RpcError::invalid("OCI stage progress overflows"))?;
+        }
+        if missing.is_empty() {
+            let graph = self
+                .db
+                .oci_repository_closed_graph(
+                    repository
+                        .as_ref()
+                        .ok_or_else(|| {
+                            RpcError::FailedPrecondition("OCI repository is absent".into())
+                        })?
+                        .id,
+                    &release_roots(&container.release),
+                )
+                .await
+                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
+            validate_release_graph(&container.release, &graph)?;
+            let declared = container
+                .descriptors
+                .iter()
+                .map(|descriptor| (descriptor.digest, descriptor))
+                .collect::<std::collections::BTreeMap<_, _>>();
+            if graph.len() != declared.len()
+                || graph.iter().any(|object| {
+                    declared
+                        .get(&object.descriptor.digest)
+                        .is_none_or(|descriptor| {
+                            descriptor.size != object.descriptor.size
+                                || descriptor.media_type != object.descriptor.media_type
+                        })
+                })
+            {
+                return Err(RpcError::FailedPrecondition(
+                    "staged OCI inventory differs from the admitted closed graph".into(),
+                ));
+            }
+        }
+        Ok((total, uploaded, missing))
+    }
+
+    /// Publishes the immutable OCI version tag bound to the indexed stage.
+    ///
+    /// The caller must have installed and indexed the exact signed Git release.
+    /// This reuses the existing closed-graph publication transaction and its
+    /// immutable tag preconditions, so retries cannot replace a version tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for failed authorization, missing graph placement,
+    /// mismatched indexed release, or immutable publication conflicts.
+    pub(crate) async fn finalize_staged_container_publications(
+        &self,
+        auth: Option<&str>,
+        revision: &aos_registry_surface::staging::StageRevision,
+    ) -> Result<(), RpcError> {
+        let Some(container) = &revision.container else {
+            return Ok(());
+        };
+        let registry = self.registry_or_not_found(&revision.registry).await?;
+        let (_, _, missing) = self.staged_container_progress(&registry, revision).await?;
+        if !missing.is_empty() {
+            return Err(RpcError::FailedPrecondition(
+                "staged OCI graph is incomplete".into(),
+            ));
+        }
+        if !self
+            .db
+            .staged_release_commit_indexed(registry.id, &revision.release_id, &revision.commit)
+            .await
+            .map_err(RpcError::internal)?
+        {
+            return Err(RpcError::FailedPrecondition(
+                "exact staged Git release has not been indexed".into(),
+            ));
+        }
+        let canonical = to_canonical_json(&container.release).map_err(RpcError::internal)?;
+        let key = Sha256Digest::digest(
+            &aos_oci_types::to_canonical_json(revision).map_err(RpcError::internal)?,
+        )
+        .encoded();
+        let publication = self
+            .begin_container_publication(
+                auth,
+                pb::BeginContainerPublicationRequest {
+                    registry: revision.registry.clone(),
+                    repository: container.repository.to_string(),
+                    container_release_json: canonical,
+                    target_kind: "release".into(),
+                    target_tag: revision.release_id.clone(),
+                    idempotency_key: format!("stage-{key}"),
+                    ..Default::default()
+                },
+            )
+            .await?;
+        self.commit_container_publication(
+            auth,
+            pb::CommitContainerPublicationRequest {
+                publication_id: publication.publication_id,
+                expected_resource_version: publication.resource_version,
+                confirmation_hash: publication.confirmation_hash,
+                idempotency_key: format!("stage-commit-{key}"),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
     /// Begins verified admission of one complete, already-uploaded container graph.
     ///
     /// # Errors
@@ -609,4 +799,263 @@ fn validate_apply_identity(idempotency_key: &str, confirmation_hash: &str) -> Re
     Sha256Digest::parse(confirmation_hash)
         .map(|_| ())
         .map_err(|error| RpcError::invalid(error.to_string()))
+}
+
+#[cfg(test)]
+mod staging_tests {
+    use super::*;
+    use aos_oci_types::*;
+    use aos_registry_surface::staging::{
+        STAGE_SCHEMA, StageContainerGraph, StageObject, StageRevision, inventory_digest,
+    };
+
+    fn descriptor(media_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            media_type,
+            digest: Sha256Digest::digest(label.as_bytes()),
+            size: u64::try_from(label.len()).expect("fixture size"),
+            urls: Vec::new(),
+            annotations: Annotations::new(),
+            data: None,
+            artifact_type: None,
+            platform: None,
+        }
+    }
+
+    fn evidence_descriptor(artifact_type: MediaType, label: &str) -> Descriptor {
+        Descriptor {
+            artifact_type: Some(artifact_type),
+            ..descriptor(MediaType::OciImageManifest, label)
+        }
+    }
+
+    fn qualification_fixture() -> ContainerEvidenceQualification {
+        ContainerEvidenceQualification {
+            schema: CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA.to_string(),
+            mapping: ContainerEvidenceMappingQualification {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            corresponding_source: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            licensing: ContainerEvidenceQualificationCheck {
+                complete: true,
+                unknown_paths: Vec::new(),
+            },
+            ready_for_verified_publication: true,
+        }
+    }
+
+    fn release_fixture() -> ContainerRelease {
+        let mut platform_manifest = descriptor(MediaType::OciImageManifest, "amd64-manifest");
+        platform_manifest.platform = Some(Platform::linux_amd64());
+        ContainerRelease {
+            schema_version: CONTAINER_RELEASE_SCHEMA_VERSION,
+            media_type: MediaType::AosContainerRelease,
+            identity: ContainerReleaseIdentity {
+                release: "1.0.0".to_string(),
+                package: "aos".to_string(),
+                package_version: "0.1.0".to_string(),
+                image: "aos".to_string(),
+            },
+            oci: ContainerOciRelease {
+                index: descriptor(MediaType::OciImageIndex, "index"),
+                platform_manifests: vec![platform_manifest],
+            },
+            nix: ContainerNixProvenance {
+                definition: NixDefinitionIdentity {
+                    attribute: "containerImages.aos".to_string(),
+                    derivation_path:
+                        "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container.drv".to_string(),
+                },
+                output: NixOutputIdentity {
+                    name: "out".to_string(),
+                    store_path: "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-aos-container"
+                        .to_string(),
+                },
+                closure: evidence_descriptor(MediaType::AosNixClosure, "closure"),
+            },
+            qualification: qualification_fixture(),
+            evidence: ContainerReleaseEvidence {
+                sbom: evidence_descriptor(MediaType::SpdxJson, "sbom"),
+                source: evidence_descriptor(MediaType::AosSourceClosure, "source"),
+                license: evidence_descriptor(MediaType::AosLicenseReport, "license"),
+                provenance: evidence_descriptor(MediaType::InTotoJson, "provenance"),
+                signature: evidence_descriptor(MediaType::DsseEnvelope, "signature"),
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn staged_container_missing_graph_stays_unready_and_cannot_finalize() {
+        let (service, db, auth) = super::super::cache_upload_tests::release_test_service().await;
+        let org_id = db
+            .create_org("oci-candidate", "OCI Candidate")
+            .await
+            .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "containers", "private", &[], false)
+            .await
+            .unwrap();
+        let registry = db.registry_by_id(registry_id).await.unwrap().unwrap();
+        let release = release_fixture();
+        release.validate().unwrap();
+        let mut descriptors = release_roots(&release);
+        descriptors.extend(release.oci.platform_manifests.iter().cloned());
+        descriptors.sort_by_key(|descriptor| descriptor.digest);
+        let container = StageContainerGraph {
+            repository: RepositoryName::parse("aos").unwrap(),
+            release,
+            descriptors,
+        };
+        let mut inventory = container
+            .descriptors
+            .iter()
+            .map(|descriptor| StageObject {
+                path: oci_blob_object_key(descriptor.digest),
+                sha256: descriptor.digest.to_string(),
+                byte_size: descriptor.size,
+                kind: "oci_manifest".into(),
+                media_type: descriptor.media_type.to_string(),
+            })
+            .collect::<Vec<_>>();
+        inventory.sort_by(|left, right| left.path.cmp(&right.path));
+        let revision = StageRevision {
+            schema: STAGE_SCHEMA.into(),
+            id: "container-candidate".into(),
+            registry: registry.slug.clone(),
+            revision: 1,
+            release_id: "1.0.0".into(),
+            source_branch: "maintainer/candidate".into(),
+            commit: "a".repeat(40),
+            inventory_digest: inventory_digest(&inventory).unwrap(),
+            inventory,
+            publication: vec![],
+            store_roots: vec![],
+            container: Some(container),
+        };
+        revision.validate().unwrap();
+        let epoch_sql = "SELECT COALESCE(state.mutation_epoch, 0)
+            FROM registries registry LEFT JOIN oci_registry_state state
+              ON state.registry_id = registry.id WHERE registry.id = ?1";
+        let before_epoch: i64 = db
+            .backend
+            .query_opt(epoch_sql, &[crate::value::Value::Int(registry_id)])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        db.upsert_staged_release(registry_id, &revision, 0, None, clock::now_unix_secs())
+            .await
+            .unwrap();
+        let after_epoch: i64 = db
+            .backend
+            .query_opt(epoch_sql, &[crate::value::Value::Int(registry_id)])
+            .await
+            .unwrap()
+            .unwrap()
+            .get(0)
+            .unwrap();
+        assert_eq!(
+            after_epoch,
+            before_epoch + 1,
+            "typed stage admission must invalidate an earlier OCI GC review"
+        );
+
+        let (total, uploaded, missing) = service
+            .staged_container_progress(&registry, &revision)
+            .await
+            .unwrap();
+        assert_eq!(
+            total,
+            revision
+                .inventory
+                .iter()
+                .map(|object| object.byte_size)
+                .sum::<u64>()
+        );
+        assert_eq!(uploaded, 0);
+        assert_eq!(missing.len(), revision.inventory.len());
+        assert!(
+            service
+                .finalize_staged_container_publications(Some(&auth), &revision)
+                .await
+                .is_err()
+        );
+        assert!(
+            db.oci_repository(registry_id, &RepositoryName::parse("aos").unwrap())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(db.list_releases(registry_id).await.unwrap().is_empty());
+
+        let now = clock::now_unix_secs();
+        let container = revision.container.as_ref().unwrap();
+        let repository = db
+            .ensure_oci_repository(registry_id, &container.repository, now)
+            .await
+            .unwrap();
+        let descriptor = &container.descriptors[0];
+        for (offset, tail) in [(1_i64, "61"), (2_i64, "6162")] {
+            let upload = db
+                .begin_oci_upload(&crate::db::BeginOciUpload {
+                    registry_id,
+                    repository_id: repository.id,
+                    publication_id: None,
+                    writer_id: "writer:staging-progress".into(),
+                    token_id: "token:staging-progress".into(),
+                    idempotency_key: format!("staging-progress-{offset}"),
+                    expected_digest: Some(descriptor.digest),
+                    expected_size: Some(descriptor.size),
+                    maximum_size: descriptor.size,
+                    now,
+                    expires_at: now + 60,
+                })
+                .await
+                .unwrap();
+            // Seed the accepted SHA state of a short contiguous prefix. Two
+            // retries for one digest must contribute their maximum, not sum.
+            db.backend
+                .execute(
+                    "UPDATE oci_upload_sessions SET uploaded_size = ?2,
+                       sha256_total_bytes = ?2, sha256_tail_hex = ?3 WHERE id = ?1",
+                    &[
+                        crate::value::Value::Text(upload.id),
+                        crate::value::Value::Int(offset),
+                        crate::value::Value::Text(tail.into()),
+                    ],
+                )
+                .await
+                .unwrap();
+        }
+        let (_, uploaded, missing) = service
+            .staged_container_progress(&registry, &revision)
+            .await
+            .unwrap();
+        let partial = db
+            .staged_container_summary_partial_bytes(registry_id, &revision.id, 1, now)
+            .await
+            .unwrap();
+        assert_eq!(uploaded, 2);
+        assert_eq!(partial, uploaded, "List and detail accept the same offset");
+        assert_eq!(missing.len(), revision.inventory.len());
+        assert_eq!(
+            db.staged_container_summary_progress(registry_id, &revision.id, 1)
+                .await
+                .unwrap(),
+            (0, 0),
+            "partial bytes never count as verified objects"
+        );
+        assert_eq!(
+            db.staged_container_summary_partial_bytes(registry_id, &revision.id, 1, now + 60)
+                .await
+                .unwrap(),
+            0,
+            "expired upload offsets do not count as accepted progress"
+        );
+    }
 }

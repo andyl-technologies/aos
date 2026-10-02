@@ -11,12 +11,14 @@
 //!
 //! # Module map
 //!
+//! - [`channel`] - pure rollout selection, floors, frontiers, and partition tags.
 //! - [`object`] — SHA-256 loose objects: inflate, hash-verify, and parse
 //!   commits, trees, and tags.
 //! - [`object_bundle`] — bounded OID-sharded loose-object transport bundles.
 //! - [`pack_index`] — bounded SHA-256 pack-index structural and checksum
 //!   validation.
 //! - [`package_version`] — exact upstream package-version validation.
+//! - [`publication`] - shared ordering for prepared publication pointers.
 //! - [`keymap`] — machine paths, mutability, and HTTP response metadata shared
 //!   by producers and serving runtimes.
 //! - [`sshsig`] — OpenSSH SSHSIG signature parsing and Ed25519
@@ -39,15 +41,18 @@
 //! those live in the consumer (`aos-hub`'s `surface::load`, or the
 //! SPA's own fetch glue) so this core stays pure.
 
+pub mod channel;
 pub mod keymap;
 pub mod manifest;
 pub mod object;
 pub mod object_bundle;
 pub mod pack_index;
 pub mod package_version;
+pub mod publication;
 pub mod refs;
 pub mod sshsig;
 pub mod stack;
+pub mod staging;
 pub mod store;
 pub mod support;
 pub mod tag;

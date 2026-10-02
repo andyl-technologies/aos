@@ -63,11 +63,32 @@ pub(super) fn restore_app_random_continuation() -> Result<(), LiveWhiteboxError>
 
 #[derive(Clone, Copy, Default)]
 struct LiveWhiteboxRegisters {
-    pointer: Option<NonNull<QemuPluginRegister>>,
-    length: Option<NonNull<QemuPluginRegister>>,
+    // QEMU encodes register zero as a null-valued opaque handle.
+    // Option records whether the descriptor was found, independently of its value.
+    pointer: Option<*mut QemuPluginRegister>,
+    length: Option<*mut QemuPluginRegister>,
 }
 
 impl LiveWhiteboxRegisters {
+    fn observe(
+        &mut self,
+        architecture: QemuPluginTargetArchitecture,
+        name: &[u8],
+        handle: *mut QemuPluginRegister,
+    ) {
+        match (architecture, name) {
+            (QemuPluginTargetArchitecture::X86_64, b"rax")
+            | (QemuPluginTargetArchitecture::Aarch64, b"x0") => {
+                self.pointer = Some(handle);
+            }
+            (QemuPluginTargetArchitecture::X86_64, b"rcx")
+            | (QemuPluginTargetArchitecture::Aarch64, b"x1") => {
+                self.length = Some(handle);
+            }
+            _ => {}
+        }
+    }
+
     const fn complete(self, _architecture: QemuPluginTargetArchitecture) -> bool {
         self.pointer.is_some() && self.length.is_some()
     }
@@ -273,18 +294,7 @@ impl LiveWhiteboxState {
             // strings retained for the plugin lifetime.
             let raw_name = unsafe { CStr::from_ptr(descriptor.name) }.to_bytes();
             let name = raw_name.strip_prefix(b"%").unwrap_or(raw_name);
-            let handle = NonNull::new(descriptor.handle);
-            match (self.architecture, name) {
-                (QemuPluginTargetArchitecture::X86_64, b"rax")
-                | (QemuPluginTargetArchitecture::Aarch64, b"x0") => {
-                    registers.pointer = handle;
-                }
-                (QemuPluginTargetArchitecture::X86_64, b"rcx")
-                | (QemuPluginTargetArchitecture::Aarch64, b"x1") => {
-                    registers.length = handle;
-                }
-                _ => {}
-            }
+            registers.observe(self.architecture, name, descriptor.handle);
         }
         (self.apis.g_array_free)(array.as_ptr(), true);
         if !registers.complete(self.architecture) {
@@ -394,15 +404,12 @@ impl LiveWhiteboxState {
         Ok(())
     }
 
-    fn read_register_u64(
-        &self,
-        handle: NonNull<QemuPluginRegister>,
-    ) -> Result<u64, LiveWhiteboxError> {
+    fn read_register_u64(&self, handle: *mut QemuPluginRegister) -> Result<u64, LiveWhiteboxError> {
         let array = (self.apis.g_byte_array_new)();
         let Some(array) = NonNull::new(array) else {
             return Err(LiveWhiteboxError::ByteArrayAllocation);
         };
-        let read = (self.apis.read_register)(handle.as_ptr(), array.as_ptr());
+        let read = (self.apis.read_register)(handle, array.as_ptr());
         if !read {
             (self.apis.g_byte_array_free)(array.as_ptr(), true);
             return Err(LiveWhiteboxError::RegisterRead);
@@ -570,3 +577,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_whitebox_vcpu_init_cb(
         state.fail_loud(&error);
     }
 }
+
+#[cfg(test)]
+#[path = "live_whitebox/tests.rs"]
+mod tests;
