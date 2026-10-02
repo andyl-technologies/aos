@@ -36,9 +36,11 @@ use sha2::{Digest as _, Sha256};
 
 mod credential;
 mod custody;
+mod delete_cohort;
 mod publication;
 
 pub use credential::{stage_queued_credential, write_cleanup_stage_receipt, write_stage_receipt};
+pub use delete_cohort::export_delete_cohort;
 pub use publication::export_publication;
 
 #[cfg(test)]

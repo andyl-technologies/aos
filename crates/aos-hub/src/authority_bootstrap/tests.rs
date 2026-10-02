@@ -30,6 +30,9 @@ mod binding_lifetime;
 #[path = "publication_tests.rs"]
 mod publication_export;
 
+#[path = "delete_cohort_tests.rs"]
+mod delete_cohort_export;
+
 const AUTHORITY: &str = "00000000-0000-4000-8000-000000000041";
 const EXECUTOR: &str = "qualification-executor";
 const NAMESPACE: &str = "qualification-guard-namespace";
@@ -98,6 +101,10 @@ async fn decision(
 }
 
 async fn fixture_with_database(db: Database) -> Fixture {
+    fixture_with_database_and_purposes(db, &["presign", "read", "write"]).await
+}
+
+async fn fixture_with_database_and_purposes(db: Database, purposes: &[&str]) -> Fixture {
     let directory = private_directory();
     let db = Arc::new(db);
     let user = db
@@ -170,7 +177,7 @@ async fn fixture_with_database(db: Database) -> Fixture {
         .await
         .unwrap();
     let mut credentials = Vec::new();
-    for purpose in ["presign", "read", "write"] {
+    for &purpose in purposes {
         let credential = db
             .set_binding_credential_revision(
                 binding_id,

@@ -4,7 +4,7 @@ use aos_hub_core::storage_authority::StorageAuthorityAdmissionState;
 
 use super::*;
 
-async fn set_admission(fixture: &Fixture, state: pb::StorageAuthorityDesiredState, key: &str) {
+pub(super) async fn set_admission(fixture: &Fixture, state: pb::StorageAuthorityDesiredState, key: &str) {
     let authority = PhysicalStorageAuthorityId::parse(AUTHORITY).unwrap();
     let head = fixture
         .db
