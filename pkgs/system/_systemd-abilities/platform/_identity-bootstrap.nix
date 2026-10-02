@@ -1,8 +1,9 @@
-##! Derives early account rows from checked native identities and image account policy.
+##! Derives image-owned early account rows from checked native identity policy.
 {
   lib,
   identities,
   principalReferences,
+  groupReferences ? [],
   accounts,
   shells,
 }: let
@@ -10,7 +11,7 @@
     effect = identities.${operation}.effects.${lib.last reference.identity};
   in
     if reference != effect.outputs.name
-    then throw "initrd account reference does not match its native identity declaration"
+    then throw "bootstrap account reference does not match its native identity declaration"
     else effect.input;
   principals = map (resolve "principal") principalReferences;
   supplementaryName = group:
@@ -18,7 +19,8 @@
     then group
     else (resolve "group" group).name;
   nativeGroups =
-    map (principal: resolve "group" principal.primary_group) principals
+    map (resolve "group") groupReferences
+    ++ map (principal: resolve "group" principal.primary_group) principals
     ++ builtins.concatMap (principal:
       map (resolve "group")
       (builtins.filter (group: !builtins.isString group) principal.supplementary_groups))
@@ -27,9 +29,9 @@
   groups =
     lib.foldl' (result: group:
       if group.requested_id == null
-      then throw "an early initrd group must declare its exact numeric identity"
+      then throw "an early bootstrap group must declare its exact numeric identity"
       else if result ? ${group.name} && result.${group.name}.gid != group.requested_id
-      then throw "native initrd group conflicts with its image numeric identity"
+      then throw "native bootstrap group conflicts with its image numeric identity"
       else
         result
         // {
@@ -59,7 +61,7 @@
     builtinUsers
     ++ map (principal:
       if principal.requested_id == null
-      then throw "an early initrd principal must declare its exact numeric identity"
+      then throw "an early bootstrap principal must declare its exact numeric identity"
       else "${principal.name}:x:${toString principal.requested_id}:${toString (groupId (resolve "group" principal.primary_group).name)}:${principal.description}:${principal.home_directory}:${principalShell principal}")
     principals;
   names = builtins.attrNames builtinUsers ++ map (principal: principal.name) principals;
