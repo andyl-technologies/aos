@@ -383,7 +383,13 @@ fn interactive_session_captures_and_replays_exact_live_artifact() -> Result<(), 
     let replay_state = secure_state_root(root, "interactive-replay-state")?;
     let artifact_dir = root.join("interactive-artifacts");
     fs::create_dir(&artifact_dir)?;
-    let scenario_path = write_scenario(root, Action::Pass)?;
+    // Keep the scenario live through the control exchange; Continue may finish
+    // a short scenario before the following Pause reaches the session actor.
+    let scenario_path = write_scenario_with_terminal_delay(
+        root,
+        Action::Pass,
+        SimDuration::from_nanoseconds(1_000_000_000)?,
+    )?;
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
 
     let mut capture_command =
@@ -398,12 +404,13 @@ fn interactive_session_captures_and_replays_exact_live_artifact() -> Result<(), 
         .stdin
         .take()
         .ok_or("interactive capture has no stdin")?
-        .write_all(b"continue\npause\nstop\n")?;
+        .write_all(b"continue\npause\nquery\nstop\n")?;
     let capture = capture.wait_with_output()?;
     require_success(&capture, "interactive packaged-QEMU capture")?;
     let capture_stdout = String::from_utf8(capture.stdout)?;
     assert!(capture_stdout.contains("interactive-ack\tcommand=continue\tstatus=accepted"));
     assert!(capture_stdout.contains("interactive-ack\tcommand=pause\tstatus=accepted"));
+    assert!(capture_stdout.contains("interactive-query\tstate=paused"));
     assert!(capture_stdout.contains("interactive-ack\tcommand=stop\tstatus=accepted"));
 
     let artifact_path = single_reproduction_artifact_with_status(&artifact_dir, "passed")?;
