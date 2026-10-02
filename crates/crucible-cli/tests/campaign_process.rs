@@ -260,8 +260,8 @@ fn campaign_virtual_time_save_feeds_native_resume() -> Result<(), Box<dyn Error>
 
     let handle_text = fs::read_to_string(&handle)?;
     assert!(handle_text.contains("schema\tcrucible.savepoint-handle.v6\n"));
-    assert_eq!(artifact_field(&handle_text, "frontier")?, "2000000");
-    assert!(handle_text.contains("boundary-proof\tcoordinate\t2000000\t"));
+    assert_eq!(artifact_field(&handle_text, "frontier")?, "2000000000");
+    assert!(handle_text.contains("boundary-proof\tcoordinate\t2000000000\t"));
     let checkpoint = artifact_field(&handle_text, "checkpoint")?;
     assert!(checkpoint.starts_with("blake3:"));
 
@@ -283,7 +283,7 @@ fn campaign_virtual_time_save_feeds_native_resume() -> Result<(), Box<dyn Error>
     );
     assert_eq!(
         summary_field(resume_final, "frontier_ticks"),
-        Some("4000000"),
+        Some("4000000000"),
         "native resume did not reach four milliseconds; stdout:\n{resume_stdout}"
     );
 
