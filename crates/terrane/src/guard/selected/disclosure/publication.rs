@@ -189,9 +189,9 @@ where
             paths: &paths,
             surface: &admitted.surface,
             expected: session.record(),
+            started,
+            timing,
         },
-        started,
-        timing,
     )
     .await?;
     let observed = destination.store().observe_publication().await?;
