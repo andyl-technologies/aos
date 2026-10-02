@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -1150,6 +1151,98 @@ def attribute_members(setools: Any, policy: Any, name: str) -> set[str]:
     return {str(member) for member in attributes[0].expand()}
 
 
+def _check_selected_launcher_image_ioctls(setools: Any, policy: Any) -> list[str]:
+    """Checks the closed image cells using complete native ioctl selector sets.
+
+    Empty expected DATA still rejects base and extended grants in every branch.
+    This offline matrix observes 16-bit MAC selectors, not the full native ioctl
+    command or the provenance/currentness of an actual received image FD.
+    """
+
+    cells = owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_CELLS
+    selectors = owner_policy.SELECTED_LAUNCHER_IMAGE_IOCTL_SELECTORS
+    if type(selectors) is not frozenset or (selectors and selectors != {0x6686}):
+        raise ValueError("unsupported selected-launcher ioctl expectation")
+
+    image_target = cells[0][1]
+    if str(policy.lookup_type(image_target)) != image_target:
+        raise ValueError(f"selected-launcher image target is aliased: {image_target}")
+
+    for source, _ in cells:
+        try:
+            observed = policy.lookup_type(source)
+        except setools.exception.InvalidType as error:
+            if selectors:
+                raise ValueError(
+                    f"missing selected-launcher image source: {source}"
+                ) from error
+        else:
+            if str(observed) != source:
+                raise ValueError(f"selected-launcher image source is aliased: {source}")
+
+    # Regex criteria do not look up absent source types. Native indirect
+    # matching still expands real attributes; never skip the default scan.
+    source_pattern = (
+        "^(?:" + "|".join(re.escape(source) for source, _ in cells) + ")$"
+    )
+    permitted_pairs = set(cells) if selectors else set()
+    enabled_base_pairs: set[tuple[str, str]] = set()
+    enabled_selectors = {cell: set() for cell in cells}
+
+    for rule_type in (setools.TERuletype.allow, setools.TERuletype.allowxperm):
+        query = setools.TERuleQuery(
+            policy,
+            ruletype=[rule_type],
+            source=source_pattern,
+            source_regex=True,
+            source_indirect=True,
+            target=image_target,
+            target_indirect=True,
+            tclass=["file"],
+            perms=["ioctl"],
+        )
+        for rule in query.results():
+            sources = {str(source) for source in rule.source.expand()}
+            targets = {str(target) for target in rule.target.expand()}
+            pairs = {(source, target) for source in sources for target in targets}
+            if not pairs or pairs - permitted_pairs:
+                raise ValueError(f"forbidden selected-launcher image ioctl grant: {rule}")
+
+            if rule_type == setools.TERuletype.allow:
+                if rule.enabled():
+                    enabled_base_pairs.update(pairs)
+                continue
+
+            # Querying only 0x6686 would hide an excess range or driver grant.
+            # Preserve the full native integer set, including inactive rules.
+            observed_selectors = set(rule.perms)
+            if (
+                rule.xperm_type != "ioctl"
+                or not observed_selectors
+                or any(type(selector) is not int for selector in observed_selectors)
+                or observed_selectors - selectors
+            ):
+                raise ValueError(
+                    f"forbidden selected-launcher image ioctl selectors: {rule}"
+                )
+            if rule.enabled():
+                for pair in pairs:
+                    enabled_selectors[pair].update(observed_selectors)
+
+    evidence = []
+    for source, target in cells:
+        if not selectors:
+            continue
+        pair = (source, target)
+        if pair not in enabled_base_pairs:
+            raise ValueError(f"missing selected-launcher base ioctl: {source} {target}")
+        if enabled_selectors[pair] != selectors:
+            raise ValueError(f"missing selected-launcher ioctl selectors: {source} {target}")
+        evidence.append(f"allowxperm\t{source}\t{target}\tfile\tioctl\t0x6686")
+
+    return evidence
+
+
 def check_policy(setools: Any, policy: Any) -> list[str]:
     """Returns deterministic evidence lines or raises on a policy mismatch."""
 
@@ -1328,6 +1421,7 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
             f"{access.object_class}\t{access.permission}"
         )
 
+    evidence.extend(_check_selected_launcher_image_ioctls(setools, policy))
     return evidence
 
 
