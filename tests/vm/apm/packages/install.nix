@@ -482,7 +482,7 @@
       echo "==> System package names preserve the existing package set"
       mkdir -p /usr/lib/aos/toplevel
       printf 'ID=aos\nAOS_MODULE_ABI=1\n' > /usr/lib/aos/toplevel/os-release
-      $APM registry add --system --no-verify file:///tmp/install-deps-origin.git \
+      $APM registry --system add --no-verify file:///tmp/install-deps-origin.git \
         --name install-deps-reg --branch "$DEFAULT_BRANCH"
       $APM install --system install-basic-tool --yes
       $APM install --system install-with-deps --yes
