@@ -4757,7 +4757,7 @@ mod tests {
 
         /// Uses a different control origin, so the route's host is a pure
         /// delivery authority.
-        fn as_delivery_host(self) -> Self {
+        fn into_delivery_host(self) -> Self {
             let mut service = Arc::into_inner(self.service).unwrap();
             service.external_url = "https://hub.example.test".to_string();
             Self {
@@ -4765,12 +4765,13 @@ mod tests {
             }
         }
 
+        /// Runs route dispatch, reducing a refusal to its status code.
         async fn dispatch(
             &self,
             origin: &str,
             path: &str,
             accept: &str,
-        ) -> Result<Request, Response> {
+        ) -> Result<Request, StatusCode> {
             let url = url::Url::parse(&format!("{origin}{path}")).unwrap();
             let request = axum::http::Request::builder()
                 .uri(url.as_str())
@@ -4778,7 +4779,9 @@ mod tests {
                 .extension(DeliveryTransportEvidence::from_verified_url(&url, "hub").unwrap())
                 .body(axum::body::Body::empty())
                 .unwrap();
-            rewrite_for_route(&self.service, request).await
+            rewrite_for_route(&self.service, request)
+                .await
+                .map_err(|response| response.status())
         }
 
         /// Dispatches like the native and Worker pipelines, then renders the
@@ -4789,7 +4792,7 @@ mod tests {
                 .await
             {
                 Ok(request) => request,
-                Err(response) => return response,
+                Err(status) => return status.into_response(),
             };
             assert_eq!(request.uri().path(), format!("/{slug}/"));
 
@@ -5046,13 +5049,13 @@ mod tests {
 
     #[tokio::test]
     async fn delivery_authorities_still_require_an_explicit_route() {
-        let fixture = ControlHostFixture::new(true).await.as_delivery_host();
+        let fixture = ControlHostFixture::new(true).await.into_delivery_host();
 
         let routed_host = fixture
             .dispatch(CONTROL_ORIGIN, "/route-probes/fresh/", "text/html")
             .await
             .unwrap_err();
-        assert_eq!(routed_host.status(), StatusCode::NOT_FOUND);
+        assert_eq!(routed_host, StatusCode::NOT_FOUND);
 
         let unknown_host = fixture
             .dispatch(
@@ -5062,6 +5065,6 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert_eq!(unknown_host.status(), StatusCode::MISDIRECTED_REQUEST);
+        assert_eq!(unknown_host, StatusCode::MISDIRECTED_REQUEST);
     }
 }
