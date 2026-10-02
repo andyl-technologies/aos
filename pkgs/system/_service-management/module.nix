@@ -13,13 +13,18 @@
     service = enabledServices.${name};
     identity = service.manager_identity;
   in
-    if service.instantiation != null
+    if service.instantiation != null && service.instantiation.kind != "singleton"
     then []
     else
       [
         (
           if identity == null
-          then name
+          then
+            (
+              if service.service == ""
+              then name
+              else service.service
+            )
           else identity.name
         )
       ]

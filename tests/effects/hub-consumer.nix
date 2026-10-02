@@ -93,7 +93,7 @@ let
     };
   };
   nodes = builtins.attrValues evaluated.config.aos.activation.graph.nodes;
-  service = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "hub") nodes);
+  service = builtins.head (builtins.filter (node: node.input ? service && node.input.service == "aos-hub") nodes);
   allocations = builtins.filter (node: node.input ? path && node.input.path == "/var/lib/aos-hub") nodes;
   credentials = builtins.filter (node: builtins.elemAt node.identity 3 == "credential" && builtins.elemAt node.identity 4 == "deliver") nodes;
   credentialViews = builtins.listToAttrs (builtins.map (view: {
@@ -116,6 +116,8 @@ let
   command = builtins.head service.input.lifecycle.start;
   assertionsPass = evaluated: builtins.all (entry: entry.assertion) evaluated.config.assertions;
   checks = {
+    hubPreservesStateAccountIds = evaluated.config.aos.abilities.identity.operations.group.effects.hub.input.requested_id == 802 && evaluated.config.aos.abilities.identity.operations.principal.effects.hub.input.requested_id == 802;
+    hubStableManagerIdentity = service.input.service == "aos-hub" && service.input.instance == "hub";
     hubUsesNativeService = evaluated.config.aos.services.hub.enable && service.owner == "service-management";
     hubRetainsPersistentStorage = builtins.length allocations == 1 && (builtins.head allocations).lifetime == "persistent";
     hubUsesExactPayload = (builtins.head service.input.lifecycle.start).executable.path == "${fixturePayload "aos-hub"}/bin/aos-hub";

@@ -123,7 +123,7 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    service = "main";
+    service = "garage";
     lifecycle = {
       description = "Garage object-storage server";
       execution_model = "foreground";

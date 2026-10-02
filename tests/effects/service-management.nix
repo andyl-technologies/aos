@@ -70,18 +70,68 @@ let
         first = {
           enable = true;
           inherit lifecycle;
+          service = "same";
+        };
+        second = {
+          enable = true;
+          inherit lifecycle;
+          service = "same";
+        };
+      };
+      aos.abilities.serviceManagement.operations.realize.handler = {inherit program;};
+    }
+  ];
+  singletonCollision = evaluate [
+    {
+      aos.services = {
+        first = {
+          enable = true;
+          inherit lifecycle;
+          service = "same";
+        };
+        second = {
+          enable = true;
+          inherit lifecycle;
+          service = "same";
+          instantiation.kind = "singleton";
+        };
+      };
+      aos.abilities.serviceManagement.operations.realize.handler = {inherit program;};
+    }
+  ];
+  managerCollision = evaluate [
+    {
+      aos.services = builtins.listToAttrs (builtins.map (name: {
+        inherit name;
+        value = {
+          enable = true;
+          inherit lifecycle;
+          service = name;
           manager_identity = {
             name = "same";
             aliases = [];
           };
         };
+      }) ["first" "second"]);
+      aos.abilities.serviceManagement.operations.realize.handler = {inherit program;};
+    }
+  ];
+  aliasCollision = evaluate [
+    {
+      aos.services = {
+        first = {
+          enable = true;
+          inherit lifecycle;
+          service = "first";
+          manager_identity = {
+            name = "override";
+            aliases = ["second"];
+          };
+        };
         second = {
           enable = true;
           inherit lifecycle;
-          manager_identity = {
-            name = "same";
-            aliases = [];
-          };
+          service = "second";
         };
       };
       aos.abilities.serviceManagement.operations.realize.handler = {inherit program;};
@@ -131,6 +181,9 @@ in {
   recursivePortableSchema = assert projected.fields.watchdog.value.fields.timeout_millis.min == 1;
   assert projected.fields.socket_activation.value.fields.sockets.element.fields.mode.value.max_length == 4; true;
   ambiguousManagerNamesFail = assert !(builtins.tryEval (builtins.deepSeq collision.config.aos.activation.graph true)).success; true;
+  explicitSingletonCollisionFails = assert !(builtins.tryEval (builtins.deepSeq singletonCollision.config.aos.activation.graph true)).success; true;
+  managerOverrideCollisionFails = assert !(builtins.tryEval (builtins.deepSeq managerCollision.config.aos.activation.graph true)).success; true;
+  managerAliasCollisionFails = assert !(builtins.tryEval (builtins.deepSeq aliasCollision.config.aos.activation.graph true)).success; true;
   invalidModeFails = assert !(builtins.tryEval (builtins.deepSeq invalidMode.config.aos.activation.graph true)).success; true;
   taggedPathCondition = assert (builtins.head signalCondition.config.aos.services.example.conditions.all).predicate == "exists"; true;
 }

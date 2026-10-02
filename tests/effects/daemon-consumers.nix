@@ -108,6 +108,14 @@ let
   services = builtins.filter (node: builtins.elem "serviceManagement" node.identity) nodes;
   inputFiles = evaluated.config.aos.abilities.configuration.operations.file.effects;
 in {
+  stableManagerIdentities = assert evaluated.config.aos.abilities.serviceManagement.operations.realize.effects.chrony.input.service == "chronyd";
+  assert evaluated.config.aos.abilities.serviceManagement.operations.realize.effects.tailscale.input.service == "tailscaled"; true;
+  chronyPreservesStateIdentity = assert evaluated.config.aos.abilities.identity.operations.group.effects.chrony.input.requested_id == 994;
+  assert evaluated.config.aos.abilities.identity.operations.principal.effects.chrony.input.requested_id == 994; true;
+  chronyConfigurationChangesReconcile = assert builtins.any (reference: reference == evaluated.config.aos.abilities.configuration.operations.file.effects.chrony.outputs.resource) evaluated.config.aos.services.chrony.dependencies.prerequisites; true;
+  dockerWaitsForConfiguredAddress = assert evaluated.config.aos.abilities.network.operations.ready.effects.docker.input.scope == "address-configured"; true;
+  protectedHomeDirectories = assert evaluated.config.aos.services.chrony.isolation.home_access == "inaccessible";
+  assert evaluated.config.aos.services.tailscale.isolation.home_access == "inaccessible"; true;
   sharedServiceManager = assert builtins.length services == 7;
   assert builtins.all (node: node.owner == "service-management") services;
   assert builtins.all (node: node.dependencies != []) services; true;

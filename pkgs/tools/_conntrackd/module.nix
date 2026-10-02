@@ -111,7 +111,7 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    service = "main";
+    service = "conntrackd";
     lifecycle = {
       description = "Connection tracking state daemon";
       execution_model = "foreground";

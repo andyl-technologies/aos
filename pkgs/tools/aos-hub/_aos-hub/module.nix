@@ -155,7 +155,7 @@
       operation_profile = "privileged";
       isolated_identity_mapping = "none";
     };
-    service = "hub";
+    service = "aos-hub";
     lifecycle = {
       description = "AOS registry management hub (${packageName} ${packageVersion})";
       execution_model = "foreground";
@@ -353,9 +353,13 @@ in {
     }
     (lib.mkIf serviceEnabled {
       aos.abilities = {
-        identity.operations.group.effects.hub.input.name = principalName;
+        identity.operations.group.effects.hub.input = {
+          name = principalName;
+          requested_id = 802;
+        };
         identity.operations.principal.effects.hub.input = {
           name = principalName;
+          requested_id = 802;
           description = "AOS registry hub";
           home_directory = cfg.root;
           login_access = "disabled";

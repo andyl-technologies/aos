@@ -454,7 +454,7 @@
       operation_profile = "system-service";
       isolated_identity_mapping = "none";
     };
-    service = "main";
+    service = "nginx";
     lifecycle = {
       description = "nginx HTTP and reverse proxy server";
       execution_model = "foreground";

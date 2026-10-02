@@ -64,10 +64,15 @@ let
         }
       ];
     };
-  enabled = (evaluate true).config.system.checks;
+  enabledConfiguration = (evaluate true).config;
+  enabled = enabledConfiguration.system.checks;
   disabled = (evaluate false).config.system.checks;
   names = ["audit" "bind" "chrony" "dnsmasq" "docker" "firewall" "libvirt" "ssh" "tailscale"];
 in {
+  libvirtPreservesAccountIds = assert enabledConfiguration.aos.abilities.identity.operations.group.effects.libvirt-qemu.input.requested_id == 64054;
+  assert enabledConfiguration.aos.abilities.identity.operations.group.effects.libvirt-access.input.requested_id == 64055;
+  assert enabledConfiguration.aos.abilities.identity.operations.principal.effects.libvirt-qemu.input.requested_id == 64054; true;
+  dnsmasqPreservesHomeProtection = assert enabledConfiguration.aos.services.dnsmasq.isolation.home_access == "inaccessible"; true;
   selected = assert builtins.attrNames enabled == names; true;
   preservedScripts = assert builtins.all (name: enabled.${name}.checks != [] && builtins.all (check: check.name != "" && check.script != "") enabled.${name}.checks) names; true;
   disabled = assert disabled == {}; true;

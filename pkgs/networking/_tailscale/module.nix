@@ -117,6 +117,7 @@
     isolation = {
       privilege = "privileged";
       filesystem = "read-only-system";
+      home_access = "inaccessible";
       network = "host";
       process_visibility = "host";
       termination_scope = "all-processes";

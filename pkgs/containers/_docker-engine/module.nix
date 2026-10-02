@@ -199,7 +199,7 @@ in {
           };
         };
         network.operations.ready.effects.docker.input = {
-          scope = "stack-prepared";
+          scope = "address-configured";
           families = ["ipv4" "ipv6"];
         };
       };

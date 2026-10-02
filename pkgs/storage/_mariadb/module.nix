@@ -203,7 +203,7 @@
   };
   initializeService = {
     policy.hardening = commonHardening;
-    service = "initialize";
+    service = "mariadb-init";
     lifecycle = {
       description = "Initialize MariaDB state";
       execution_model = "oneshot";
@@ -247,7 +247,7 @@
   };
   mainService = {
     policy.hardening = commonHardening;
-    service = "main";
+    service = "mariadb";
     lifecycle = {
       description = "MariaDB database server";
       execution_model = "foreground";

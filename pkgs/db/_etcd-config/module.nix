@@ -159,7 +159,7 @@
       operation_profile = "restricted";
       isolated_identity_mapping = "none";
     };
-    service = "main";
+    service = "etcd";
     lifecycle = {
       description = "etcd distributed key-value store";
       execution_model = "foreground";
