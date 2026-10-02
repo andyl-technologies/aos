@@ -2,6 +2,9 @@
 
 use super::*;
 
+use std::error::Error as _;
+use std::io::Write;
+
 pub(crate) enum PackagedQemuInitialExecutionRunner<H, F> {
     HotFork(H),
     Fresh(F),
@@ -58,19 +61,19 @@ where
             .inspect_err(|error| {
                 if let SharedManagedQemuHotForkSourceWorldShutdownError::Sources(sources) = error {
                     for (key, failure) in sources.failures().iter().take(8) {
-                        let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(failure);
-                        for depth in 0..4 {
+                        let mut stderr = std::io::stderr().lock();
+                        report_shutdown_cause(&mut stderr, key, 0, failure);
+                        let mut cause = failure.source();
+                        for depth in 1..4 {
                             let Some(current) = cause else {
                                 break;
                             };
-                            let message = current.to_string().chars().take(256).collect::<String>();
-                            eprintln!(
-                                "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} depth={depth} cause_prefix={message:?}"
-                            );
+                            report_shutdown_cause(&mut stderr, key, depth, current);
                             cause = current.source();
                         }
                     }
-                    eprintln!(
+                    let _ = writeln!(
+                        std::io::stderr().lock(),
                         "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 failed_sources={} omitted_sources={}",
                         sources.failures().len(),
                         sources.failures().len().saturating_sub(8),
@@ -82,6 +85,20 @@ where
     fn retention_admin(&self) -> Arc<dyn crate::HotCheckpointFallbackRetentionAdmin> {
         Arc::clone(&self.retention)
     }
+}
+
+/// Writes bounded cause detail without replacing the typed shutdown failure.
+fn report_shutdown_cause(
+    output: &mut impl Write,
+    key: &impl std::fmt::Debug,
+    depth: usize,
+    cause: &(impl std::fmt::Display + ?Sized),
+) {
+    let message = cause.to_string().chars().take(256).collect::<String>();
+    let _ = writeln!(
+        output,
+        "CRUCIBLE-HOT-FORK-SHUTDOWN-V1 source_key={key:?} depth={depth} cause_prefix={message:?}"
+    );
 }
 
 impl<D, R> Drop for ConcretePackagedQemuHotForkSourceOwner<D, R>

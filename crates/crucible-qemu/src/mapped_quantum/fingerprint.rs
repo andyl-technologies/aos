@@ -2,6 +2,7 @@
 
 use super::*;
 
+use std::io::Write;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU16, Ordering};
 
@@ -119,7 +120,8 @@ fn report_fingerprint_components(
     {
         return;
     }
-    eprintln!(
+    let _ = writeln!(
+        std::io::stderr().lock(),
         "{}",
         fingerprint_component_diagnostic(node, fingerprint, material)
     );

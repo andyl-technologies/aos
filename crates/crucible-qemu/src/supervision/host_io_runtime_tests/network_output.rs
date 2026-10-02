@@ -6,7 +6,37 @@ use std::os::unix::net::UnixStream;
 
 use super::*;
 
-fn read_wake(stream: &mut UnixStream) -> Result<(), Box<dyn std::error::Error>> {
+#[derive(Debug, thiserror::Error)]
+enum NetworkOutputTestError {
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Spawn(#[from] crate::QemuSpawnError),
+    #[error(transparent)]
+    Runtime(#[from] QemuAsyncDriverRuntimeError),
+    #[error(transparent)]
+    HostRuntime(#[from] crate::QemuLiveHostIoRuntimeError),
+    #[error(transparent)]
+    Layout(#[from] crucible_shmem::RegionLayoutError),
+    #[error(transparent)]
+    Serialization(#[from] crucible_shmem::RegionSerializationError),
+    #[error(transparent)]
+    Mapping(#[from] crucible_shmem::SetupRegionMapError),
+    #[error(transparent)]
+    Access(#[from] crucible_shmem::MappedSetupRegionAccessError),
+    #[error(transparent)]
+    Slot(#[from] crucible_shmem::NodeSlotError),
+    #[error(transparent)]
+    Lookahead(#[from] crucible_shmem::LookaheadGateError),
+    #[error(transparent)]
+    Frame(#[from] crucible_shmem::FrameEntryError),
+    #[error(transparent)]
+    Ring(#[from] crucible_shmem::SpscRingError),
+    #[error("{0}")]
+    ThreadPanicked(&'static str),
+}
+
+fn read_wake(stream: &mut UnixStream) -> Result<(), NetworkOutputTestError> {
     let mut bytes = [0; std::mem::size_of::<u64>()];
     stream.read_exact(&mut bytes)?;
     assert_eq!(u64::from_ne_bytes(bytes), 1);
@@ -15,7 +45,7 @@ fn read_wake(stream: &mut UnixStream) -> Result<(), Box<dyn std::error::Error>> 
 
 #[test]
 fn network_output_witness_waits_for_the_matching_producer_publication()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NetworkOutputTestError> {
     let allocation =
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
@@ -74,7 +104,7 @@ fn network_output_witness_waits_for_the_matching_producer_publication()
 
 #[test]
 fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_ack()
--> Result<(), Box<dyn std::error::Error>> {
+-> Result<(), NetworkOutputTestError> {
     let allocation =
         crucible_shmem::RegionAllocation::new_model(crucible_shmem::RegionConfig::new(1, 4))?;
     let layout = allocation.layout();
@@ -139,7 +169,9 @@ fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_a
 
     plugin.node_slot(0)?.publish_control_boundary(1_000, 20)?;
     let final_ack = plugin.node_slot(0)?.acknowledge_control_boundary();
-    let (mut runtime, result) = host.join().map_err(|_| "host output poll panicked")?;
+    let (mut runtime, result) = host
+        .join()
+        .map_err(|_| NetworkOutputTestError::ThreadPanicked("host output poll panicked"))?;
     assert_eq!(result?, QemuAsyncWaitOutcome::Completed);
     assert_eq!(final_ack, clamped.control_boundary_ack.wrapping_add(1));
     assert_eq!(runtime.completed_outbound_write_index, 1);
@@ -191,7 +223,8 @@ fn network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_a
     }
     plugin.node_slot(0)?.publish_pause_quiesced(1_000, 20)?;
     assert_eq!(
-        host.join().map_err(|_| "stale output poll panicked")??,
+        host.join()
+            .map_err(|_| NetworkOutputTestError::ThreadPanicked("stale output poll panicked"))??,
         QemuAsyncWaitOutcome::TimedOut,
     );
     Ok(())
