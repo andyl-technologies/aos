@@ -144,6 +144,7 @@ pub struct HostBroker<C, S, W> {
     state_healthy: bool,
     observed_leaders: BTreeMap<HostRuntimeIdentity, PinnedLeader>,
     pub(crate) runtime_pins: BTreeMap<HostRuntimeIdentity, RetainedRuntimePins>,
+    live_limit_attempts: BTreeMap<[u8; 16], guardian_transaction::RetainedHostLimitAttemptV1>,
     fuse_workers: BTreeMap<[u8; 16], fuse_worker::RetainedOriginalHostFuseWorkerV1>,
     #[cfg(test)]
     fail_runtime_retention: bool,
@@ -541,6 +542,7 @@ where
             state_healthy: true,
             observed_leaders: BTreeMap::new(),
             runtime_pins: BTreeMap::new(),
+            live_limit_attempts: BTreeMap::new(),
             fuse_workers: BTreeMap::new(),
             #[cfg(test)]
             fail_runtime_retention: false,
@@ -2772,25 +2774,7 @@ where
             supervisor,
             observation.payload.take(),
         ) {
-            payload.recheck_kernel(&supervisor)?;
-            let mut prior_scope = None;
-            for (prior_identity, retained) in &self.runtime_pins {
-                if let Some(handle) = retained.scope_for_observation(
-                    prior_identity,
-                    &identity,
-                    invocation_id,
-                    &supervisor,
-                    &payload,
-                )? {
-                    let duplicate = prior_scope.replace(handle).is_some();
-                    if duplicate {
-                        return Err(HostError::State(
-                            "ambiguous retained payload scope".to_owned(),
-                        ));
-                    }
-                }
-            }
-            let scope_handle = prior_scope.map_or_else(|| self.mint_scope_handle(), Ok)?;
+            let scope_handle = self.prepare_runtime_scope(&identity, invocation_id, &supervisor, &payload)?;
             // The opaque scope identifies physical pins, not assignment
             // authority. Reindex only after a complete current proof; old
             // assignment handles remain rejected by the durable fence checks.
@@ -2842,6 +2826,35 @@ where
             self.runtime_pins.remove(&identity);
         }
         Ok(())
+    }
+
+    /// Runs the ordinary scope checks while its physical originals stay borrowed.
+    fn prepare_runtime_scope(
+        &self,
+        identity: &HostRuntimeIdentity,
+        invocation_id: [u8; 16],
+        supervisor: &PinnedLeader,
+        payload: &crate::worker::PinnedPayloadLeader,
+    ) -> Result<[u8; 32]> {
+        payload.recheck_kernel(supervisor)?;
+        let mut prior_scope = None;
+        for (prior_identity, retained) in &self.runtime_pins {
+            if let Some(handle) = retained.scope_for_observation(
+                prior_identity,
+                identity,
+                invocation_id,
+                supervisor,
+                payload,
+            )? {
+                let duplicate = prior_scope.replace(handle).is_some();
+                if duplicate {
+                    return Err(HostError::State(
+                        "ambiguous retained payload scope".to_owned(),
+                    ));
+                }
+            }
+        }
+        prior_scope.map_or_else(|| self.mint_scope_handle(), Ok)
     }
 
     fn mint_scope_handle(&self) -> Result<[u8; 32]> {

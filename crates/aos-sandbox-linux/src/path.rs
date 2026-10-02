@@ -20,6 +20,81 @@ use crate::{Error, Result};
 const MAX_RELATIVE_PATH_BYTES: usize = 4096;
 const MAXIMUM_BOUNDED_READ_BYTES: usize = 16 * 1024 * 1024;
 
+/// Holds a regular-file acquisition before its first fallible inspection.
+#[derive(Debug, Default)]
+pub(crate) struct PendingRegularFileV1 {
+    raw: Option<OwnedFd>,
+    validated: Option<ResolvedFile>,
+}
+
+impl PendingRegularFileV1 {
+    pub(crate) fn file(&self) -> Result<&ResolvedFile> {
+        self.validated
+            .as_ref()
+            .ok_or_else(|| Error::invalid("regular-file acquisition", "not validated"))
+    }
+}
+
+// The closed dispositions share the original opening recipe. Local deliberately
+// keeps its original lexical descriptor lifetime; Retained parks it before fstat.
+macro_rules! regular_open_step {
+    (Local, stage, $pending:ident, $fd:ident) => {};
+    (Retained, stage, $pending:ident, $fd:ident) => {
+        $pending.raw = Some($fd);
+    };
+    (Local, descriptor, $pending:ident, $fd:ident) => { $fd.as_fd() };
+    (Retained, descriptor, $pending:ident, $fd:ident) => {
+        $pending.raw.as_ref().ok_or_else(|| {
+            Error::invalid("regular-file acquisition", "descriptor missing")
+        })?.as_fd()
+    };
+    (Local, finish, $pending:ident, $fd:ident, $identity:ident) => {
+        Ok(ResolvedFile { fd: $fd, identity: $identity })
+    };
+    (Retained, finish, $pending:ident, $fd:ident, $identity:ident) => {{
+        let fd = match $pending.raw.take() {
+            Some(fd) => fd,
+            None => std::process::abort(),
+        };
+        $pending.validated = Some(ResolvedFile { fd, identity: $identity });
+        Ok(())
+    }};
+}
+
+macro_rules! open_regular_recipe {
+    ($root:ident, $relative:ident, $disposition:ident, $pending:ident) => {{
+        let bytes = validate_relative_path($relative)?;
+        let path =
+            CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
+        // The type is checked after open: reject FIFO candidates without waiting
+        // for a writer and never acquire a terminal while inspecting a candidate.
+        let flags = u64::try_from(
+            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY,
+        )
+        .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
+        let fd = uapi::openat2(
+            $root.fd.as_fd(),
+            &path,
+            &OpenHow {
+                flags,
+                mode: 0,
+                resolve: RESOLVE_BENEATH
+                    | RESOLVE_NO_MAGICLINKS
+                    | RESOLVE_NO_SYMLINKS
+                    | RESOLVE_NO_XDEV,
+            },
+        )?;
+        regular_open_step!($disposition, stage, $pending, fd);
+        let identity = inspect(regular_open_step!($disposition, descriptor, $pending, fd))?;
+        if identity.file_type != FileType::Regular {
+            return Err(Error::WrongDescriptorType {
+                expected: "regular file",
+            });
+        }
+        regular_open_step!($disposition, finish, $pending, fd, identity)
+    }};
+}
+
 /// A pre-opened directory beneath which untrusted relative paths are resolved.
 #[derive(Debug)]
 pub struct BeneathRoot {
@@ -152,34 +227,18 @@ impl BeneathRoot {
     /// Returns an error for invalid paths, resolution failures, non-regular
     /// results, or descriptor inspection failures.
     pub fn open_regular(&self, relative: &Path) -> Result<ResolvedFile> {
-        let bytes = validate_relative_path(relative)?;
-        let path =
-            CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
-        // The type is checked after open: reject FIFO candidates without waiting
-        // for a writer and never acquire a terminal while inspecting a candidate.
-        let flags = u64::try_from(
-            libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY,
-        )
-        .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
-        let fd = uapi::openat2(
-            self.fd.as_fd(),
-            &path,
-            &OpenHow {
-                flags,
-                mode: 0,
-                resolve: RESOLVE_BENEATH
-                    | RESOLVE_NO_MAGICLINKS
-                    | RESOLVE_NO_SYMLINKS
-                    | RESOLVE_NO_XDEV,
-            },
-        )?;
-        let identity = inspect(fd.as_fd())?;
-        if identity.file_type != FileType::Regular {
-            return Err(Error::WrongDescriptorType {
-                expected: "regular file",
-            });
+        open_regular_recipe!(self, relative, Local, unused)
+    }
+
+    pub(crate) fn open_regular_retaining(
+        &self,
+        relative: &Path,
+        pending: &mut PendingRegularFileV1,
+    ) -> Result<()> {
+        if pending.raw.is_some() || pending.validated.is_some() {
+            return Err(Error::invalid("regular-file acquisition", "already attempted"));
         }
-        Ok(ResolvedFile { fd, identity })
+        open_regular_recipe!(self, relative, Retained, pending)
     }
 
     /// Opens and type-checks a bind-pinned namespace beneath this root.

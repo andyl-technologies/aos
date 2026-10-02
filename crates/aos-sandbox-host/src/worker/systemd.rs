@@ -5,6 +5,381 @@
 
 use super::*;
 
+// One verification recipe preserves Local's lexical ownership while the retained
+// disposition parks returned originals before the next fallible observation.
+macro_rules! verification_slot {
+    (Local, park_observation, $s:ident, $v:ident) => {};
+    (Retained, park_observation, $s:ident, $v:ident) => { $s.observation = Some($v); };
+    (Local, observation, $s:ident, $v:ident) => { $v };
+    (Retained, observation, $s:ident, $v:ident) => {
+        $s.observation.as_ref().ok_or_else(|| resident_readback_missing("observation"))?
+    };
+    (Local, park_payload, $s:ident, $v:ident) => {};
+    (Retained, park_payload, $s:ident, $v:ident) => { $s.pending_payload = Some($v); };
+    (Local, payload, $s:ident, $v:ident) => { &$v };
+    (Retained, payload, $s:ident, $v:ident) => {
+        $s.pending_payload.as_ref().ok_or_else(|| resident_readback_missing("payload"))?
+    };
+    (Local, park_proof, $s:ident, $v:ident) => {};
+    (Retained, park_proof, $s:ident, $v:ident) => { $s.proof = Some($v); };
+    (Local, park_shifted, $s:ident, $v:ident) => {};
+    (Retained, park_shifted, $s:ident, $v:ident) => { $s.shifted = Some($v); };
+    (Local, join_payload, $s:ident, $o:ident, $p:ident) => { $o.payload = Some($p); };
+    (Retained, join_payload, $s:ident, $o:ident, $p:ident) => {};
+    (Local, limits, $s:ident, $w:ident, $spec:ident) => {};
+    (Retained, limits, $s:ident, $w:ident, $spec:ident) => {
+        $w.capture_service_limits($spec, $s)?;
+    };
+    (Local, limits_after, $s:ident, $w:ident, $spec:ident, $identity:ident, $after:ident) => {};
+    (Retained, limits_after, $s:ident, $w:ident, $spec:ident, $identity:ident, $after:ident) => {
+        $w.recheck_service_limits($spec, $s)?;
+        if $w.observe_bound_payload($identity).await? != $after {
+            return Err(HostError::Worker(
+                "bound payload manager changed during final limit bookend".to_owned(),
+            ));
+        }
+    };
+    (Local, finish, $s:ident, $after:ident, $id:ident, $o:ident, $p:ident, $shift:ident) => {
+        Ok(BoundPayloadVerification {
+            binding: $after.binding,
+            invocation_id: $id,
+            observation: $o,
+            proof: $p,
+            shifted_payload_inspection: Some($shift),
+        })
+    };
+    (Retained, finish, $s:ident, $after:ident, $id:ident, $o:ident, $p:ident, $shift:ident) => {{
+        if $s.observation.is_none() || $s.pending_payload.is_none()
+            || $s.proof.is_none() || $s.shifted.is_none()
+        {
+            return Err(resident_readback_missing("final assembly"));
+        }
+        // All fields were checked together. No observation or allocation lies
+        // between the exclusive takes and their move into the resident result.
+        let (Some(mut observation), Some(payload), Some(proof), Some(shifted)) = (
+            $s.observation.take(), $s.pending_payload.take(), $s.proof.take(), $s.shifted.take(),
+        ) else { std::process::abort() };
+        observation.payload = Some(payload);
+        $s.verification = Some(BoundPayloadVerification {
+            binding: $after.binding,
+            invocation_id: $id,
+            observation,
+            proof,
+            shifted_payload_inspection: Some(shifted),
+        });
+        Ok(())
+    }};
+}
+
+macro_rules! verify_bound_payload_recipe {
+    ($worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $mode:ident, $state:ident) => {{
+        let expected_binding = $spec.launch_binding().ok_or_else(|| {
+            HostError::Worker("Host 1.0 payload spec lost its launch binding".to_owned())
+        })?;
+        let exact_before = $worker.observe_bound_payload($identity).await?;
+        if exact_before.binding != Some(expected_binding)
+            || exact_before.state != GuardianObservedState::ActiveRunning
+        {
+            return Err(HostError::Worker(
+                "bound payload is foreign, absent, or non-running".to_owned(),
+            ));
+        }
+        let invocation_id = exact_before.invocation_id.ok_or_else(|| {
+            HostError::Worker("bound payload has no invocation identity".to_owned())
+        })?;
+
+        let mut observation = $worker.observe_with_client($client, $identity).await?;
+        verification_slot!($mode, park_observation, $state, observation);
+        if verification_slot!($mode, observation, $state, observation).invocation_id != Some(invocation_id)
+            || !matches!(verification_slot!($mode, observation, $state, observation).state, ObservedRuntimeState::Ready)
+        {
+            return Err(HostError::Worker(
+                "bound payload changed before kernel proof construction".to_owned(),
+            ));
+        }
+        let leader = verification_slot!($mode, observation, $state, observation).leader.as_ref().ok_or_else(|| {
+            HostError::Worker("bound payload has no pinned supervisor".to_owned())
+        })?;
+        let payload = verify_supervisor_pins(
+            &$worker.cgroup_root,
+            $pins,
+            leader,
+            $spec.payload_root_continuity_policy(),
+        )?;
+        verification_slot!($mode, park_payload, $state, payload);
+        let proof = runtime_proof_snapshot($pins, leader, verification_slot!($mode, payload, $state, payload))?;
+        verification_slot!($mode, park_proof, $state, proof);
+        let shifted_payload_inspection = VerifiedShiftedPayloadInspectionV1::inspect(
+            $identity,
+            $spec,
+            invocation_id,
+            leader,
+            verification_slot!($mode, payload, $state, payload),
+            &proof,
+        )?;
+        verification_slot!($mode, park_shifted, $state, shifted_payload_inspection);
+        verification_slot!($mode, join_payload, $state, observation, payload);
+        verification_slot!($mode, limits, $state, $worker, $spec);
+
+        let exact_after = $worker.observe_bound_payload($identity).await?;
+        if exact_after != exact_before {
+            return Err(HostError::Worker(
+                "bound payload manager identity changed during kernel proof".to_owned(),
+            ));
+        }
+        verification_slot!($mode, limits_after, $state, $worker, $spec, $identity, exact_after);
+        verification_slot!($mode, finish, $state, exact_after, invocation_id, observation, proof, shifted_payload_inspection)
+    }};
+}
+
+macro_rules! bound_call_finish {
+    (LocalStart, $worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $state:ident) => {
+        Ok(CurrentJobDone {
+            verification: $worker.verify_bound_payload(&$client, $spec, $pins, $identity).await?,
+        })
+    };
+    (LocalProve, $worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $state:ident) => {
+        Ok(RecoveredExactProof {
+            verification: $worker.verify_bound_payload(&$client, $spec, $pins, $identity).await?,
+        })
+    };
+    (Retained, $worker:ident, $client:ident, $spec:ident, $pins:ident, $identity:ident, $state:ident) => {
+        {
+            let retained_client = &$client;
+            verify_bound_payload_recipe!($worker, retained_client, $spec, $pins, $identity, Retained, $state)
+        }
+    };
+}
+
+macro_rules! start_bound_payload_recipe {
+    ($worker:ident, $spec:ident, $pins:ident, $identity:ident, $guardian_invocation_id:ident,
+        $before_effect:ident, $mode:ident, $state:ident) => {{
+        let initial = $worker.observe_bound_payload($identity).await?;
+        if initial.state != GuardianObservedState::Absent {
+            return Err(HostError::Worker(
+                "fresh payload start requires proven manager and cgroup absence".to_owned(),
+            ));
+        }
+
+        let binding = $spec.launch_binding().ok_or_else(|| {
+            HostError::Worker("bound payload spec has no Guardian launch binding".to_owned())
+        })?;
+        let guardian = ExactUnitTarget::new(binding, $guardian_invocation_id)
+            .map_err(|error| worker_error(&error))?;
+        let outcome = ExactUnitClient::connect()
+            .await
+            .map_err(|error| worker_error(&error))?
+            .start_payload_guarded($spec, guardian, $before_effect)
+            .await
+            .map_err(|error| match error {
+                ExactStartError::Guard(error) => error,
+                ExactStartError::Systemd(error) => worker_error(&error),
+            })?;
+        if outcome.result != JobResult::Done {
+            return Err(HostError::Worker(format!(
+                "bound payload start job completed as {:?}",
+                outcome.result
+            )));
+        }
+
+        let client = SystemdClient::connect()
+            .await
+            .map_err(|error| worker_error(&error))?;
+
+        bound_call_finish!($mode, $worker, client, $spec, $pins, $identity, $state)
+    }};
+}
+
+macro_rules! prove_bound_payload_recipe {
+    ($worker:ident, $spec:ident, $pins:ident, $identity:ident, $mode:ident, $state:ident) => {{
+        let client = SystemdClient::connect()
+            .await
+            .map_err(|error| worker_error(&error))?;
+
+        bound_call_finish!($mode, $worker, client, $spec, $pins, $identity, $state)
+    }};
+}
+
+fn resident_readback_missing(field: &str) -> HostError {
+    HostError::Worker(format!("resident payload readback lost {field}"))
+}
+
+fn retain_native_limit_result<T>(
+    result: aos_sandbox_linux::Result<T>,
+    failure: &mut Option<aos_sandbox_linux::Error>,
+) -> Result<T> {
+    result.map_err(|error| {
+        if failure.is_none() {
+            *failure = Some(error);
+        }
+        resident_readback_missing("native cgroup observation; cause retained")
+    })
+}
+
+fn check_limit_membership(state: &mut BoundPayloadReadbackV1) -> Result<()> {
+    let observation = state.observation.as_ref()
+        .ok_or_else(|| resident_readback_missing("membership observation"))?;
+    let leader = observation.leader.as_ref()
+        .ok_or_else(|| resident_readback_missing("membership supervisor"))?;
+    let payload = state.pending_payload.as_ref()
+        .ok_or_else(|| resident_readback_missing("membership payload"))?;
+    let service = state.anchors[3].as_ref()
+        .ok_or_else(|| resident_readback_missing("membership service"))?;
+    retain_native_limit_result(
+        service.verify_descendant_membership(leader.pidfd(), Path::new("supervisor")),
+        &mut state.native_failure,
+    )?;
+    let anchor = state.payload_anchor.as_ref()
+        .ok_or_else(|| resident_readback_missing("payload anchor"))?;
+    if anchor.kernel_id() != payload.cgroup.identity().inode {
+        return Err(HostError::Worker("payload subtree is not beneath the retained service".to_owned()));
+    }
+    let membership = if payload.relative_cgroup_hint.is_empty() {
+        anchor.verify_exact_membership(&payload.pidfd)
+    } else {
+        anchor.verify_descendant_membership(&payload.pidfd, Path::new(&payload.relative_cgroup_hint))
+    };
+    retain_native_limit_result(membership, &mut state.native_failure)?;
+    Ok(())
+}
+
+fn required_limit_control<'a>(
+    readback: &'a CgroupLimitReadbackV1,
+    index: usize,
+    control: CgroupLimitControlV1,
+    missing: &mut Option<(usize, CgroupLimitControlV1)>,
+) -> Result<&'a [u8]> {
+    readback.bytes(control).ok_or_else(|| {
+        *missing = Some((index, control));
+        resident_readback_missing("required control; missing-file cause retained")
+    })
+}
+
+fn require_limit_topology(
+    readback: &CgroupLimitReadbackV1,
+    index: usize,
+    missing: &mut Option<(usize, CgroupLimitControlV1)>,
+) -> Result<()> {
+    let controllers = required_limit_control(
+        readback, index, CgroupLimitControlV1::Controllers, missing,
+    )?;
+    let enabled = required_limit_control(
+        readback, index, CgroupLimitControlV1::SubtreeControl, missing,
+    )?;
+    for required in [b"cpu".as_slice(), b"pids".as_slice(), b"memory".as_slice()] {
+        for observed in [controllers, enabled] {
+            let Some(body) = observed.strip_suffix(b"\n") else {
+                return Err(resident_readback_missing("controller newline"));
+            };
+            if !body.split(|byte| *byte == b' ').any(|word| word == required) {
+                return Err(HostError::Worker("required cgroup controller is absent or disabled".to_owned()));
+            }
+        }
+    }
+    // The installed worker's mount-root provenance is unchanged. Root-only
+    // absence is retained as ENOENT, never synthesized as an unlimited value.
+    if index == 0 && readback.bytes(CgroupLimitControlV1::Type)
+        .is_some_and(|bytes| bytes != b"domain\n")
+    {
+        return Err(HostError::Worker("root topology is not a domain cgroup".to_owned()));
+    }
+    if index != 0 {
+        if required_limit_control(readback, index, CgroupLimitControlV1::Type, missing)? != b"domain\n" {
+            return Err(HostError::Worker("service ancestry is not a domain cgroup".to_owned()));
+        }
+        for control in [
+            CgroupLimitControlV1::PidsMax, CgroupLimitControlV1::CpuWeight,
+            CgroupLimitControlV1::MemoryHigh, CgroupLimitControlV1::MemoryMax,
+        ] {
+            required_limit_control(readback, index, control, missing)?;
+        }
+    }
+    Ok(())
+}
+
+fn limit_decimal(readback: &CgroupLimitReadbackV1, control: CgroupLimitControlV1) -> Result<u64> {
+    let bytes = readback.bytes(control).and_then(|record| record.strip_suffix(b"\n"))
+        .ok_or_else(|| resident_readback_missing("finite control"))?;
+    std::str::from_utf8(bytes).ok().and_then(|text| text.parse().ok())
+        .ok_or_else(|| HostError::Worker("service control is not a finite decimal".to_owned()))
+}
+
+fn fixed_limit_paths(service: &SandboxCgroupPath) -> [&str; 4] {
+    [
+        ".",
+        "aos.slice",
+        "aos.slice/aos-sandboxes.slice",
+        service.as_str().trim_start_matches('/'),
+    ]
+}
+
+impl RetainedPayloadWorkerV1<'_> {
+    pub(crate) fn start<'a>(
+        &'a self,
+        spec: &'a SandboxUnitSpec,
+        pins: &'a LaunchPins,
+        identity: &'a HostRuntimeIdentity,
+        guardian_invocation_id: [u8; 16],
+        before_effect: &'a mut (dyn FnMut() -> Result<()> + Send),
+        state: &'a mut BoundPayloadReadbackV1,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
+        let admission = begin_resident_readback(state);
+        async move {
+            admission?;
+            let worker = self.worker;
+            let result = async {
+                start_bound_payload_recipe!(worker, spec, pins, identity, guardian_invocation_id,
+                    before_effect, Retained, state)
+            }.await;
+            finish_resident_readback(state, result)
+        }
+    }
+
+    pub(crate) fn prove<'a>(
+        &'a self,
+        spec: &'a SandboxUnitSpec,
+        pins: &'a LaunchPins,
+        identity: &'a HostRuntimeIdentity,
+        state: &'a mut BoundPayloadReadbackV1,
+    ) -> impl std::future::Future<Output = Result<()>> + Send + 'a {
+        let admission = begin_resident_readback(state);
+        async move {
+            admission?;
+            let worker = self.worker;
+            let result = async {
+                prove_bound_payload_recipe!(worker, spec, pins, identity, Retained, state)
+            }.await;
+            finish_resident_readback(state, result)
+        }
+    }
+}
+
+fn begin_resident_readback(state: &mut BoundPayloadReadbackV1) -> Result<()> {
+    if state.phase != BoundReadbackPhaseV1::Fresh {
+        return Err(resident_readback_missing("fresh verification point"));
+    }
+    // This runs before the future exists, including unpolled cancellation.
+    state.phase = BoundReadbackPhaseV1::Checking;
+    Ok(())
+}
+
+fn finish_resident_readback(state: &mut BoundPayloadReadbackV1, result: Result<()>) -> Result<()> {
+    match result {
+        Ok(()) => {
+            state.phase = BoundReadbackPhaseV1::Ready;
+            Ok(())
+        }
+        Err(error) => {
+            state.failure = Some(error);
+            state.phase = BoundReadbackPhaseV1::Failed;
+            let cause = state.failure_cause().ok_or_else(|| {
+                resident_readback_missing("first verification failure")
+            })?;
+            Err(HostError::Worker(format!("original payload verification failed: {cause}")))
+        }
+    }
+}
+
 impl SystemdOneShotWorker {
     /// Constructs a worker around a pre-opened cgroup-v2 mount root.
     #[must_use]
@@ -122,62 +497,82 @@ impl SystemdOneShotWorker {
         pins: &LaunchPins,
         identity: &HostRuntimeIdentity,
     ) -> Result<BoundPayloadVerification> {
-        let expected_binding = spec.launch_binding().ok_or_else(|| {
-            HostError::Worker("Host 1.0 payload spec lost its launch binding".to_owned())
-        })?;
-        let exact_before = self.observe_bound_payload(identity).await?;
-        if exact_before.binding != Some(expected_binding)
-            || exact_before.state != GuardianObservedState::ActiveRunning
-        {
-            return Err(HostError::Worker(
-                "bound payload is foreign, absent, or non-running".to_owned(),
-            ));
-        }
-        let invocation_id = exact_before.invocation_id.ok_or_else(|| {
-            HostError::Worker("bound payload has no invocation identity".to_owned())
-        })?;
+        verify_bound_payload_recipe!(self, client, spec, pins, identity, Local, unused)
+    }
 
-        let mut observation = self.observe_with_client(client, identity).await?;
-        if observation.invocation_id != Some(invocation_id)
-            || !matches!(observation.state, ObservedRuntimeState::Ready)
+    fn capture_service_limits(
+        &self,
+        spec: &SandboxUnitSpec,
+        state: &mut BoundPayloadReadbackV1,
+    ) -> Result<()> {
+        // Root/directory constructors still have their existing pre-return
+        // acquisition gaps. Every successfully returned owner is parked here
+        // before the next gate; fixed regular-file acquisition is retained below.
+        let descriptor = self.cgroup_root.as_fd().try_clone_to_owned()
+            .map_err(|source| HostError::Descriptor {
+                operation: "duplicate limit-readback cgroup root",
+                source,
+            })?;
+        state.root = Some(retain_native_limit_result(
+            CgroupV2Root::from_owned(descriptor), &mut state.native_failure,
+        )?);
+        let root = state.root.as_ref().ok_or_else(|| resident_readback_missing("cgroup root"))?;
+        let service_path = spec.name().cgroup_path();
+        let paths = fixed_limit_paths(&service_path);
+        for (index, path) in paths.iter().enumerate() {
+            state.anchors[index] = Some(retain_native_limit_result(
+                root.resolve(Path::new(path)), &mut state.native_failure,
+            )?);
+            let anchor = state.anchors[index].as_ref()
+                .ok_or_else(|| resident_readback_missing("cgroup ancestor"))?;
+            state.limits[index].capture(anchor)
+                .map_err(|_| resident_readback_missing("native control capture; cause retained"))?;
+            require_limit_topology(&state.limits[index], index, &mut state.missing_control)?;
+        }
+        let service = state.anchors[3].as_ref()
+            .ok_or_else(|| resident_readback_missing("service anchor"))?;
+        state.payload_anchor = Some(retain_native_limit_result(
+            service.resolve_descendant(Path::new("payload")), &mut state.native_failure,
+        )?);
+        check_limit_membership(state)?;
+        let limits = &state.limits[3];
+        let expected = spec.resources();
+        if limit_decimal(limits, CgroupLimitControlV1::PidsMax)? != expected.tasks_max()
+            || limit_decimal(limits, CgroupLimitControlV1::CpuWeight)? != expected.cpu_weight().get()
         {
-            return Err(HostError::Worker(
-                "bound payload changed before kernel proof construction".to_owned(),
-            ));
+            return Err(HostError::Worker("service task limit or CPU weight differs from original Spec".to_owned()));
         }
-        let leader = observation.leader.as_ref().ok_or_else(|| {
-            HostError::Worker("bound payload has no pinned supervisor".to_owned())
-        })?;
-        let payload = verify_supervisor_pins(
-            &self.cgroup_root,
-            pins,
-            leader,
-            spec.payload_root_continuity_policy(),
-        )?;
-        let proof = runtime_proof_snapshot(pins, leader, &payload)?;
-        let shifted_payload_inspection = VerifiedShiftedPayloadInspectionV1::inspect(
-            identity,
-            spec,
-            invocation_id,
-            leader,
-            &payload,
-            &proof,
-        )?;
-        observation.payload = Some(payload);
+        // Memory bytes remain paired with the actual original byte request in
+        // the resident PreparedLaunch. No page conversion/equality is invented.
+        Ok(())
+    }
 
-        let exact_after = self.observe_bound_payload(identity).await?;
-        if exact_after != exact_before {
-            return Err(HostError::Worker(
-                "bound payload manager identity changed during kernel proof".to_owned(),
-            ));
+    fn recheck_service_limits(
+        &self,
+        spec: &SandboxUnitSpec,
+        state: &mut BoundPayloadReadbackV1,
+    ) -> Result<()> {
+        check_limit_membership(state)?;
+        for index in 0..4 {
+            let anchor = state.anchors[index].as_ref()
+                .ok_or_else(|| resident_readback_missing("final ancestor"))?;
+            state.limits[index].recheck(anchor)
+                .map_err(|_| resident_readback_missing("native control bookend; cause retained"))?;
         }
-        Ok(BoundPayloadVerification {
-            binding: exact_after.binding,
-            invocation_id,
-            observation,
-            proof,
-            shifted_payload_inspection: Some(shifted_payload_inspection),
-        })
+        let root = state.root.as_ref().ok_or_else(|| resident_readback_missing("final root"))?;
+        let service_path = spec.name().cgroup_path();
+        for (index, path) in fixed_limit_paths(&service_path).iter().enumerate() {
+            state.anchor_bookends[index] = Some(retain_native_limit_result(
+                root.resolve(Path::new(path)), &mut state.native_failure,
+            )?);
+            let (Some(original), Some(bookend)) = (&state.anchors[index], &state.anchor_bookends[index]) else {
+                return Err(resident_readback_missing("ancestor bookend"));
+            };
+            if original.kernel_id() != bookend.kernel_id() {
+                return Err(HostError::Worker("named service ancestry changed during limit readback".to_owned()));
+            }
+        }
+        check_limit_membership(state)
     }
 
     pub(super) fn verify_absent_cgroup(&self, name: &SandboxUnitName) -> Result<()> {
@@ -553,6 +948,10 @@ pub(super) fn open_payload_root(pid: NonZeroU32) -> Result<OwnedFd> {
 
 #[async_trait]
 impl HostWorker for SystemdOneShotWorker {
+    fn retained_payload_worker(&self) -> Option<RetainedPayloadWorkerV1<'_>> {
+        Some(RetainedPayloadWorkerV1 { worker: self })
+    }
+
     async fn execute(
         &self,
         fence: &ValidatedAssignmentFence,
@@ -777,42 +1176,8 @@ impl HostWorker for SystemdOneShotWorker {
         guardian_invocation_id: [u8; 16],
         before_effect: &mut (dyn FnMut() -> Result<()> + Send),
     ) -> Result<CurrentJobDone> {
-        let initial = self.observe_bound_payload(identity).await?;
-        if initial.state != GuardianObservedState::Absent {
-            return Err(HostError::Worker(
-                "fresh payload start requires proven manager and cgroup absence".to_owned(),
-            ));
-        }
-
-        let binding = spec.launch_binding().ok_or_else(|| {
-            HostError::Worker("bound payload spec has no Guardian launch binding".to_owned())
-        })?;
-        let guardian = ExactUnitTarget::new(binding, guardian_invocation_id)
-            .map_err(|error| worker_error(&error))?;
-        let outcome = ExactUnitClient::connect()
-            .await
-            .map_err(|error| worker_error(&error))?
-            .start_payload_guarded(spec, guardian, before_effect)
-            .await
-            .map_err(|error| match error {
-                ExactStartError::Guard(error) => error,
-                ExactStartError::Systemd(error) => worker_error(&error),
-            })?;
-        if outcome.result != JobResult::Done {
-            return Err(HostError::Worker(format!(
-                "bound payload start job completed as {:?}",
-                outcome.result
-            )));
-        }
-
-        let client = SystemdClient::connect()
-            .await
-            .map_err(|error| worker_error(&error))?;
-        Ok(CurrentJobDone {
-            verification: self
-                .verify_bound_payload(&client, spec, pins, identity)
-                .await?,
-        })
+        start_bound_payload_recipe!(self, spec, pins, identity, guardian_invocation_id,
+            before_effect, LocalStart, unused)
     }
 
     async fn prove_bound_payload(
@@ -821,15 +1186,7 @@ impl HostWorker for SystemdOneShotWorker {
         pins: &LaunchPins,
         identity: &HostRuntimeIdentity,
     ) -> Result<RecoveredExactProof> {
-        let client = SystemdClient::connect()
-            .await
-            .map_err(|error| worker_error(&error))?;
-
-        Ok(RecoveredExactProof {
-            verification: self
-                .verify_bound_payload(&client, spec, pins, identity)
-                .await?,
-        })
+        prove_bound_payload_recipe!(self, spec, pins, identity, LocalProve, unused)
     }
 
     async fn recover_completed_payload(
