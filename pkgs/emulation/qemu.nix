@@ -1672,7 +1672,7 @@ in
               environment["CC"] = command[0]
               environment["CFLAGS"] = shlex.join(flags)
               environment["LDFLAGS"] = "-L${glib.dev}/lib -Wl,-rpath,${glib}/lib -lglib-2.0"
-              for name in ("net-output-stop", "lifecycle-projection", "control-deferred"):
+              for name in ("net-output-stop", "lifecycle-projection", "control-deferred", "control-observer"):
                   with (source_root / f"{name}.result").open("w") as result:
                       subprocess.run([
                           sys.executable,
@@ -1681,13 +1681,15 @@ in
                       ], cwd=entry["directory"], env=environment,
                          stdout=result, check=True)
               PYTHON
-              cat net-output-stop.result lifecycle-projection.result control-deferred.result
+              cat net-output-stop.result lifecycle-projection.result control-deferred.result control-observer.result
               grep -Fxq 'PASS production TX/stop/clock/RR: batches, race, completion settlement, paused ack, explicit retry' \
                 net-output-stop.result
               grep -Fxq 'PASS lifecycle production encode/rebind: full save retained, canonical custody independence, guest frontier sensitivity, invalid rebind refusal' \
                 lifecycle-projection.result
               grep -Fxq 'PASS production control: TX stop overlap, advance settlement, retained generation, explicit resume' \
                 control-deferred.result
+              grep -Fxq 'PASS native OOB template observer, guarded PREPARE/restart, cold mutation' \
+                control-observer.result
               build/tests/unit/test-vmstate --tap \
                 -p /vmstate/subsection/prefix-boundary
               QTEST_QEMU_BINARY="$PWD/build/qemu-system-x86_64" \
@@ -2004,6 +2006,13 @@ in
               control_outstanding = plugin[
                   plugin.index("bool qemu_plugin_crucible_control_boundary_outstanding(void)\n{"):
                   plugin.index("void qemu_plugin_crucible_rr_control_boundary_defer(void)\n{")
+              ]
+              control_outstanding_code = re.sub(
+                  r"/\*.*?\*/", "", control_outstanding, flags=re.DOTALL
+              )
+              cold_stop_begin = plugin[
+                  plugin.index("int qemu_plugin_crucible_vmstop_cold_begin(void)\n{"):
+                  plugin.index("bool qemu_plugin_crucible_vmstop_cold_publish")
               ]
               wake_handler = plugin[
                   plugin.index("static void qemu_plugin_wake_fd_read"):
@@ -3764,8 +3773,9 @@ in
                    r"if \(cpu->stop \|\| cpu->unplug\) \{\s*"
                    r"return false;\s*\}\s*\}\s*return true;", 1),
                   ("outstanding control includes intent token and generation",
-                   control_outstanding,
-                   r"g_assert\(bql_locked\(\)\);\s*"
+                   control_outstanding_code,
+                   r"\Abool qemu_plugin_crucible_control_boundary_outstanding"
+                   r"\(void\)\s*\{\s*"
                    r"return qatomic_load_acquire\("
                    r"&qemu_plugin_control_boundary_deferred\) \|\|\s*"
                    r"qatomic_load_acquire\("
@@ -3773,7 +3783,23 @@ in
                    r"qatomic_load_acquire\("
                    r"&qemu_plugin_rr_control_request_generation\) !=\s*"
                    r"qatomic_load_acquire\("
-                   r"&qemu_plugin_rr_control_complete_generation\);", 1),
+                   r"&qemu_plugin_rr_control_complete_generation\);\s*\}\s*\Z", 1),
+                  ("atomic control observer has no BQL dependency",
+                   control_outstanding_code,
+                   r"bql_(?:locked|lock|unlock)\(", 0),
+                  ("cold mutation retains BQL and outstanding admission",
+                   cold_stop_begin,
+                   r"g_assert\(bql_locked\(\)\);\s*"
+                   r"if \(qemu_plugin_crucible_control_boundary_outstanding\(\)\) "
+                   r"\{\s*return -EBUSY;\s*\}\s*"
+                   r"status = qemu_plugin_crucible_vmstop_begin\(\);", 1),
+                  ("RR restart retains BQL before outstanding admission",
+                   hot_fork,
+                   r"if \(!single_tcg_cpu_thread \|\| !single_tcg_halt_cond "
+                   r"\|\| !first_cpu \|\|\s*!bql_locked\(\)\) "
+                   r"\{\s*return -EINVAL;\s*\}\s*"
+                   r"if \(qemu_plugin_crucible_control_boundary_outstanding\(\)\) "
+                   r"\{\s*return -EBUSY;\s*\}", 1),
                   ("exact paused admission rejects outstanding control", monitor,
                    r"qemu_plugin_crucible_vmstop_flush_status\(\) == 0 &&\s*"
                    r"!qemu_plugin_crucible_control_boundary_outstanding\(\) &&",
@@ -4126,7 +4152,7 @@ in
                 "$out/share/aos/crucible/procfd-flags.result"
               install -m 644 procfd-flags-proof/compile-command.json \
                 "$out/share/aos/crucible/procfd-flags.compile-command.json"
-              for name in net-output-stop lifecycle-projection control-deferred; do
+              for name in net-output-stop lifecycle-projection control-deferred control-observer; do
                 install -m 644 "$name.result" \
                   "$out/share/aos/crucible/$name.result"
                 install -m 644 "$name-proof/compile-command.json" \
