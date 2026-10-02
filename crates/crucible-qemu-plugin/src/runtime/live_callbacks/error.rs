@@ -202,6 +202,16 @@ pub enum LiveVcpuTimeCallbackError {
     /// QEMU re-entered the network TX callback before its prior call returned.
     #[error("live network TX callback was re-entered")]
     NetworkTxReentered,
+    /// A newer publication would replace QEMU's original TX event coordinate.
+    #[error(
+        "live network TX captured {captured_icount} but current publication is {current_icount}"
+    )]
+    NetworkTxBoundarySuperseded {
+        /// Logical coordinate of the original raw device sample.
+        captured_icount: u64,
+        /// Logical coordinate returned by the latest callback publication.
+        current_icount: u64,
+    },
     /// A pending timer-boundary TX batch exceeded addressable memory.
     #[error("buffered live network TX frame count overflowed")]
     BufferedNetworkTxCountOverflow,

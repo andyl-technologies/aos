@@ -251,14 +251,14 @@ mod tests {
     #[test]
     fn exact_deadline_reader_rejects_unrepresentable_and_unknown_sentinels() {
         let overflow_reader = ExactDeadlineReader::require(Some(test_overflow_deadline))
-            .expect("resolved deadline symbol should be accepted");
+            .unwrap_or_else(|error| panic!("resolved deadline symbol should be accepted: {error}"));
         assert_eq!(
             overflow_reader.read_next_deadline(),
             Err(ExactDeadlineError::UnrepresentableDeadline)
         );
 
         let unknown_reader = ExactDeadlineReader::require(Some(test_unknown_deadline))
-            .expect("resolved deadline symbol should be accepted");
+            .unwrap_or_else(|error| panic!("resolved deadline symbol should be accepted: {error}"));
         assert_eq!(
             unknown_reader.read_next_deadline(),
             Err(ExactDeadlineError::UnexpectedDeadlineSentinel { value: -3 })

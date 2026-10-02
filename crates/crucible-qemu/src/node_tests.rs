@@ -34,6 +34,8 @@ mod fault_command;
 pub(crate) mod host_io_runtime;
 #[path = "node/tests/hot_fork.rs"]
 mod hot_fork;
+#[path = "node/tests/network_output.rs"]
+mod network_output;
 #[path = "node/tests/scripted_qmp.rs"]
 mod scripted_qmp;
 #[path = "node/tests/selectable_node_set.rs"]
@@ -195,6 +197,7 @@ struct ScriptedPluginControl {
 struct ScriptedShmemHotPath {
     log: SharedLog,
     fail_advance: bool,
+    network_outputs: Option<VecDeque<ScriptedNetworkOutput>>,
     coverage_enabled: bool,
     quantum_coverage: Arc<Mutex<VecDeque<Vec<ObservableEvent>>>>,
     teardown_coverage: Arc<Mutex<Vec<ObservableEvent>>>,
@@ -660,7 +663,7 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
         if let Some(events) = self.quantum_coverage.lock().unwrap().pop_front() {
             self.teardown_coverage.lock().unwrap().extend(events);
         }
-        let (outcome, final_state) = match pending.stop_condition {
+        let (mut outcome, mut final_state) = match pending.stop_condition {
             crate::QemuQuantumStopCondition::Ceiling => (
                 AdvanceOutcome::ReachedHorizon,
                 QemuNodeIdleState {
@@ -678,12 +681,33 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
                 },
             ),
         };
+        let mut emitted_frames = Vec::new();
+        if let Some(output) = self.network_outputs.as_mut().and_then(VecDeque::pop_front) {
+            outcome = output.outcome;
+            final_state = QemuNodeIdleState {
+                current_icount: Icount {
+                    retired: output.stopped_tick,
+                },
+                next_deadline: output.next_deadline.map(|retired| Icount { retired }),
+            };
+            emitted_frames = (0..2)
+                .map(|sequence| QemuNodeEmittedFrame {
+                    source: node_id("vm-a"),
+                    destination: node_id("vm-b"),
+                    emit_icount: Icount {
+                        retired: output.emit_tick,
+                    },
+                    sequence,
+                    payload: vec![sequence as u8],
+                })
+                .collect();
+        }
         Ok(QemuAsyncQuantumCompletion {
             ceiling: Icount { retired: horizon },
             outcome,
             final_state,
             inbound_frames_consumed: 0,
-            emitted_frames: Vec::new(),
+            emitted_frames,
             operations: vec![
                 QemuQuantumOperation::StoreSchedulerCeiling,
                 QemuQuantumOperation::FutexWake,
@@ -784,6 +808,9 @@ impl QemuShmemHotPathChannel for ScriptedShmemHotPath {
 
     fn emit_frame(&mut self) -> Result<Option<QemuNodeEmittedFrame>, QemuNodeChannelError> {
         self.log.lock().unwrap().push(ChannelCall::ShmemEmit);
+        if self.network_outputs.is_some() {
+            return Ok(None);
+        }
         Ok(Some(QemuNodeEmittedFrame {
             source: node_id("vm-a"),
             destination: node_id("vm-b"),
@@ -1932,6 +1959,7 @@ fn scripted_hot_fork_capture_node(
         ScriptedShmemHotPath {
             log: Arc::clone(&log),
             fail_advance: false,
+            network_outputs: None,
             coverage_enabled: false,
             quantum_coverage: Arc::new(Mutex::new(VecDeque::new())),
             teardown_coverage: Arc::new(Mutex::new(Vec::new())),
@@ -2052,6 +2080,7 @@ fn scripted_node_with_runtime(
             fingerprint_retry_countdown: 0,
             fingerprint_fault_event_count: 0,
             track_process_endpoint_retirement: false,
+            network_output: None,
         },
         runtime_outcomes,
     )
@@ -2067,6 +2096,15 @@ struct ScriptedNodeOptions {
     fingerprint_retry_countdown: u8,
     fingerprint_fault_event_count: u8,
     track_process_endpoint_retirement: bool,
+    network_output: Option<ScriptedNetworkOutput>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ScriptedNetworkOutput {
+    emit_tick: u64,
+    stopped_tick: u64,
+    outcome: AdvanceOutcome,
+    next_deadline: Option<u64>,
 }
 
 fn scripted_node_with_options(
@@ -2098,6 +2136,7 @@ fn scripted_node_with_fault_events(
         ScriptedShmemHotPath {
             log: Arc::clone(&log),
             fail_advance: false,
+            network_outputs: None,
             coverage_enabled: false,
             quantum_coverage: Arc::new(Mutex::new(VecDeque::new())),
             teardown_coverage: Arc::new(Mutex::new(Vec::new())),
@@ -2202,6 +2241,9 @@ fn scripted_node_with_coverage(
         ScriptedShmemHotPath {
             log: Arc::clone(&log),
             fail_advance: options.fail_shmem_advance,
+            network_outputs: options
+                .network_output
+                .map(|output| VecDeque::from([output])),
             coverage_enabled,
             quantum_coverage: Arc::new(Mutex::new(quantum_coverage)),
             teardown_coverage: Arc::new(Mutex::new(teardown_coverage)),

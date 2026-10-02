@@ -176,6 +176,12 @@ pub enum QemuNodeError {
         /// Sequence carried by the emitted frame.
         observed: u64,
     },
+    /// A frame batch was not paired with its exact physical producer stop.
+    #[error("QEMU network output boundary mismatch: {message}")]
+    NetworkOutputBoundary {
+        /// Missing or inconsistent producer boundary evidence.
+        message: String,
+    },
     /// A live QEMU fault command violated its admitted boundary contract.
     #[error("QEMU fault command failed closed: {message}")]
     FaultCommand {

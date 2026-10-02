@@ -53,10 +53,10 @@ use super::{
 };
 
 mod devices;
-mod network_inbound;
 mod error;
 mod fingerprint_worker;
 mod logical_restore;
+mod network_inbound;
 mod preemption;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
@@ -2116,6 +2116,7 @@ impl LiveVcpuTimeCallbackState {
             .pending
             .validate_completion(completion)
             .map_err(|source| LiveVcpuTimeCallbackError::IdleAdvanceCompletion { source })?;
+        let emitted_network_output = !pending.buffered_tx_payloads.is_empty();
         if let Some(network) = self.network.as_ref() {
             let mut outbound = network.outbound.outbound();
             network
@@ -2155,8 +2156,15 @@ impl LiveVcpuTimeCallbackState {
         // expose a due device response and wake its coroutine. Publishing first
         // would let that wake re-enter QEMU while this callback still considered
         // the queued idle advance pending.
-        PluginShmemOrdering::publish_reached_icount(self.slot.get(), target_icount)
-            .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        if emitted_network_output {
+            self.publish_network_output_stop(
+                target_icount,
+                self.last_raw_icount.load(Ordering::Acquire),
+            )?;
+        } else {
+            PluginShmemOrdering::publish_reached_icount(self.slot.get(), target_icount)
+                .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
+        }
         Ok(target_icount)
     }
 
@@ -2204,13 +2212,36 @@ impl LiveVcpuTimeCallbackState {
         }
         drop(pending_slot);
 
-        let mut outbound = network.outbound.outbound();
         let current_icount = self.callback_supplied_raw_icount_without_pause(raw_emit_icount)?;
-        network
-            .tx
-            .enqueue_guest_frame(&mut outbound, current_icount, payload)
-            .map(|_enqueue| ())
-            .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })
+        let captured_icount = self.logical_icount_for_raw(raw_emit_icount)?;
+        if current_icount != captured_icount {
+            // TX binds the frame to QEMU's original device sample. A newer
+            // publication cannot silently replace that event coordinate.
+            return Err(LiveVcpuTimeCallbackError::NetworkTxBoundarySuperseded {
+                captured_icount,
+                current_icount,
+            });
+        }
+        {
+            let mut outbound = network.outbound.outbound();
+            network
+                .tx
+                .enqueue_guest_frame(&mut outbound, current_icount, payload)
+                .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
+        }
+
+        self.publish_network_output_stop(current_icount, raw_emit_icount)
+    }
+
+    /// Fences the exact output coordinate before native dispatch can continue.
+    fn publish_network_output_stop(
+        &self,
+        current_icount: u64,
+        raw_icount: u64,
+    ) -> Result<(), LiveVcpuTimeCallbackError> {
+        PluginShmemOrdering::publish_pause_quiesced(self.slot.get(), current_icount, raw_icount)
+            .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+        self.request_checkpoint_vmstop("network-output")
     }
 
     fn on_block_wait(&self, _request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {

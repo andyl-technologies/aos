@@ -91,6 +91,7 @@ fn fault_command_applies_at_exact_current_boundary_without_guest_progress()
             ScriptedShmemHotPath {
                 log: Arc::clone(&log),
                 fail_advance: false,
+                network_outputs: None,
                 coverage_enabled: false,
                 quantum_coverage: Arc::new(Mutex::new(VecDeque::new())),
                 teardown_coverage: Arc::new(Mutex::new(Vec::new())),

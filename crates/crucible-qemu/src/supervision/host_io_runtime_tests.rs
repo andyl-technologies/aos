@@ -6,6 +6,8 @@ use super::*;
 #[cfg(target_os = "linux")]
 #[path = "host_io_runtime_tests/block_coordinator_tests.rs"]
 mod block_coordinator;
+#[path = "host_io_runtime_tests/network_output.rs"]
+mod network_output;
 
 #[test]
 fn on_demand_fingerprint_host_waits_for_exact_capture_request_ack()

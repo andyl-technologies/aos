@@ -78,6 +78,8 @@ pub struct QemuLiveHostIoRuntime {
     device_wake_publish_generation: Option<u32>,
     /// Zero-length idle coordinate left by an exact checkpoint pause.
     checkpoint_idle_coordinate: Option<u64>,
+    /// Outbound producer frontier covered by the preceding completed quantum.
+    completed_outbound_write_index: u64,
     block: Option<BlockIoServicing>,
     ninep: Option<NinepIoServicing>,
     accelerator: Option<QemuLiveAcceleratorServicer>,
@@ -167,7 +169,9 @@ impl QemuLiveHostIoRuntime {
     ///
     /// Returns [`QemuLiveHostIoRuntimeError::MapRegion`] when the shared-memory
     /// region cannot be mapped, or [`QemuLiveHostIoRuntimeError::CloneWakeFd`] when
-    /// the wake descriptor cannot be cloned.
+    /// the wake descriptor cannot be cloned, or
+    /// [`QemuLiveHostIoRuntimeError::NetworkRing`] when the node's outbound
+    /// network ring cannot be bound.
     pub fn from_shmem_fd(
         shmem_fd: BorrowedFd<'_>,
         wake_fd: BorrowedFd<'_>,
@@ -190,7 +194,9 @@ impl QemuLiveHostIoRuntime {
     /// Returns [`QemuLiveHostIoRuntimeError::MapRegion`] when the shared-memory
     /// region cannot be mapped, [`QemuLiveHostIoRuntimeError::CloneWakeFd`] when the
     /// wake descriptor cannot be cloned, or
-    /// [`QemuLiveHostIoRuntimeError::ZeroPollInterval`] when `poll_interval` is zero.
+    /// [`QemuLiveHostIoRuntimeError::ZeroPollInterval`] when `poll_interval` is zero,
+    /// or [`QemuLiveHostIoRuntimeError::NetworkRing`] when the node's outbound
+    /// network ring cannot be bound.
     pub fn from_shmem_fd_with_poll_interval(
         shmem_fd: BorrowedFd<'_>,
         wake_fd: BorrowedFd<'_>,
@@ -201,8 +207,20 @@ impl QemuLiveHostIoRuntime {
         if poll_interval.is_zero() {
             return Err(QemuLiveHostIoRuntimeError::ZeroPollInterval);
         }
-        let region = mmap_setup_region(shmem_fd, region_len)
+        let mut region = mmap_setup_region(shmem_fd, region_len)
             .map_err(|source| QemuLiveHostIoRuntimeError::MapRegion { source })?;
+        let completed_outbound_write_index = region
+            .node_directed_ring_pair_mut(
+                vm_slot,
+                vm_slot,
+                crucible_shmem::SLOT_NET_ROUTER as u32,
+                crucible_shmem::SLOT_NET_ROUTER as u32,
+                vm_slot,
+            )
+            .map_err(|source| QemuLiveHostIoRuntimeError::NetworkRing { source })?
+            .first
+            .header
+            .write_index();
         let wake = wake_fd
             .try_clone_to_owned()
             .map(File::from)
@@ -217,6 +235,7 @@ impl QemuLiveHostIoRuntime {
             advance_stop_condition: crate::QemuQuantumStopCondition::Ceiling,
             device_wake_publish_generation: None,
             checkpoint_idle_coordinate: None,
+            completed_outbound_write_index,
             block: None,
             ninep: None,
             accelerator: None,
@@ -378,10 +397,12 @@ impl QemuLiveHostIoRuntime {
             {
                 self.device_wake_publish_generation = None;
             }
-            let checkpoint_idle_unreleased = checkpoint_idle_publication_is_unreleased(
-                self.checkpoint_idle_coordinate,
-                &snapshot,
-            );
+            let output_stop = self.network_output_stop_write_index(&snapshot)?;
+            let checkpoint_idle_unreleased = output_stop.is_none()
+                && checkpoint_idle_publication_is_unreleased(
+                    self.checkpoint_idle_coordinate,
+                    &snapshot,
+                );
             if !checkpoint_idle_unreleased {
                 self.checkpoint_idle_coordinate = None;
             }
@@ -423,6 +444,7 @@ impl QemuLiveHostIoRuntime {
                     self.scheduler_input_publish_generation = None;
                     self.checkpoint_idle_coordinate = None;
                     self.clamp_completed_quantum(&snapshot, timeout)?;
+                    self.completed_outbound_write_index = self.outbound_write_index()?;
                     self.service_console_output()?;
                     return Ok(QemuAsyncWaitOutcome::Completed);
                 }
