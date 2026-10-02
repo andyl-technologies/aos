@@ -1,5 +1,6 @@
 //! Lease observation preserves original runtime and resource-guard precedence.
 
+// crucible-lint: allow panic-shortcut -- Lease fixtures intentionally panic to localize invalid test setup and poisoned diagnostic mutexes.
 #![allow(clippy::expect_used)]
 
 use std::sync::Arc;
