@@ -115,6 +115,10 @@ in
           mkdir -p /run/nginx
           chown -R 101:101 /run/nginx /var/lib/nginx /var/log/nginx
 
+          ${pkgs.lib.optionalString strictHttpResponse ''
+            crucible-guest event boot.init-mounted
+          ''}
+
           ip link set lo up
           ip link set eth0 up
 
@@ -122,10 +126,21 @@ in
           case "$cmdline" in
             *" crucible.workload=httpd "*)
               ip address add 10.0.0.2/24 dev eth0
+              ${pkgs.lib.optionalString strictHttpResponse ''
+            crucible-guest event boot.network-configured
+            crucible-guest event boot.service-starting
+            # This attests init/network setup, not nginx request readiness.
+            crucible-guest setup-complete
+          ''}
               exec nginx -c /etc/nginx/nginx.conf -g 'daemon off; master_process off;'
               ;;
             *" crucible.workload=httpget "*)
               ip address add 10.0.0.3/24 dev eth0
+              ${pkgs.lib.optionalString strictHttpResponse ''
+            crucible-guest event boot.network-configured
+            crucible-guest event boot.service-starting
+            crucible-guest setup-complete
+          ''}
               if [ "${hotForkEquivalenceEnabled}" = 1 ]; then
                 crucible-guest selectable register-u64 \
                   1 hot-fork.retry-quanta 1 9 2 3 quanta

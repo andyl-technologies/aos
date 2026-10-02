@@ -402,15 +402,16 @@
             /tmp/two-node-http-list.log
 
           # The scenario requires the routed exchange within its virtual budget.
-          # This watchdog bounds only a stuck host or unavailable service.
+          # Leave time for the finite 1800s startup and 180s application panic
+          # fallbacks, plus owned-process cleanup and the retained diagnostics.
           : > "$http_log"
-          ${pkgs.coreutils}/bin/timeout -k 5 600 \
+          ${pkgs.coreutils}/bin/timeout -k 5 2100 \
             ${flight}/bin/campaign-store-process-flight --ignored --exact \
             "$http_selector" --nocapture > "$http_log" 2>&1 &
           http_test=$!
           (
             ${pkgs.coreutils}/bin/tail --pid="$http_test" -n +1 -F "$http_log" \
-              | ${pkgs.coreutils}/bin/head -c 1048576
+              | ${pkgs.coreutils}/bin/head -c 2097152
           ) &
           http_tail=$!
           if ! wait "$http_test"; then

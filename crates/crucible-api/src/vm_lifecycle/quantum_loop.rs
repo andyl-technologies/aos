@@ -571,7 +571,16 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
             self.report_runtime_progress("before-quantum");
         }
         let result = self.drive_quantum_runtime(request);
-        if report {
+        let stage_observed = result.as_ref().is_ok_and(|outcome| {
+            self.runtime_progress
+                .observe(outcome, self.source.world().vm_nodes())
+        });
+        // Boot attestations and failures keep their actual event evidence visible
+        // between periodic samples, within the same finite diagnostic budget.
+        if report
+            || ((stage_observed || result.is_err())
+                && self.runtime_progress.reserve_evidence_report())
+        {
             self.report_runtime_progress(if result.is_ok() {
                 "after-quantum"
             } else {
