@@ -1,4 +1,4 @@
-; Terrane Specification 1.0-draft-3 — canonical object schemas (RFC 8610 CDDL)
+; Terrane Specification 1.0-draft-6 — canonical object schemas (RFC 8610 CDDL)
 ;
 ; This file is normative for every CBOR-encoded immutable and record in a
 ; terrane-v1 store (00-conventions.md CONV-3, 04-content-model.md OBJ-4,
@@ -61,10 +61,15 @@ property-value = tstr / uint / bool / [ * property-value ]
 ; Owner-root-only property (PROP-29). Hex MUST be lowercase [0-9a-f].
 ; This is a specialization of property-value, not a new generic wire type.
 index-node-hex = tstr .size 64
-index-roots-value = { * name => index-node-hex }
+index-roots-value = { * name => index-node-hex } ; indexable value names only
 index-roots-binding = {
   "inherit" => false,
   "value" => index-roots-value,
+}
+; Primary Index root only, nonempty missing-object tree (PROP-31/DRV-30).
+index-gaps-binding = {
+  "inherit" => false,
+  "value" => index-node-hex,
 }
 
 ; ---------------------------------------------------------------------------
@@ -116,6 +121,23 @@ content-ref = [ 0, chunk: digest32 ]    ; inline single chunk (OBJ-16)
             / [ 1, manifest: digest32 ] ; object manifest
 provenance-ref = digest32               ; identity of a commit (PROV-7)
 xattr-map = { * bstr .size (1..255) => bstr .size (0..65536) }
+
+; Closed executable result specializations; generic entry/node unchanged.
+; Role is supplied independently by DRV-30's owner/attribute/traversed edge.
+; key 14 is always the namespace file's O, never the route Node's P.
+index-occurrences = digest32
+index-terminal-entry = { 1 => 7, 14 => [ digest32 ] }
+index-forward-entry = {
+  1 => 7,
+  9 => { "index.occurrences" => index-occurrences },
+  14 => [ digest32 ],
+}
+primary-index-props = { "index-gaps" => index-gaps-binding }
+; Primary full key: canonical-CBOR(V) || O, combined length 33..4096.
+; Gap full key: exactly O's 32 bytes. Route full key: local TREE-1/2/6 path.
+; Terminal attrs and empty props maps are absent, not explicitly empty.
+; All physical Nodes use node and its canonical boundary algorithm; only
+; I's root may carry primary-index-props, and only when G is nonempty.
 
 ; ---------------------------------------------------------------------------
 ; Commit — domain terrane-commit-v1 (09-refs-and-commits.md §Commit object,
@@ -319,7 +341,7 @@ index-evaluation-recipe = {
   1 => "index",
   2 => [ owner: digest32 ],
   3 => {
-    "attribute" => name,               ; registered attribute
+    "attribute" => name,               ; indexable value attribute only
     "profile" => "terrane-index/v1",
   },
 }

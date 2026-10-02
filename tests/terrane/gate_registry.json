@@ -22,7 +22,7 @@
   {
     "name": "canonical-cbor",
     "owner": "00",
-    "requirements": "TREE-4, TREE-25, TREE-28, TEST-3"
+    "requirements": "TREE-4, TREE-25, TREE-28, TREE-35, DRV-30, TEST-3"
   },
   {
     "name": "cdc-boundaries",
@@ -77,7 +77,7 @@
   {
     "name": "index-tree-maintenance",
     "owner": "10",
-    "requirements": "DRV-12, DRV-24 to DRV-29, PROP-29"
+    "requirements": "DRV-12, DRV-24 to DRV-30, TREE-35, PROP-29, PROP-31"
   },
   {
     "name": "no-duplicate-tiers",
@@ -112,7 +112,7 @@
   {
     "name": "property-resolution",
     "owner": "08",
-    "requirements": "PROP-1, PROP-29, PROP-30"
+    "requirements": "PROP-1, PROP-29, PROP-30, PROP-31"
   },
   {
     "name": "publisher-sole-writer",

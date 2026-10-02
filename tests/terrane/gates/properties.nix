@@ -13,6 +13,10 @@ in {
     ${runTests "gc::publication::evidence::validation::policy::tests::later_property_names_remain_inert_under_their_recorded_revision -- --exact"}
     ${runTests "gc::publication::evidence::cbor::tests::lineage::enclosing_lineage_preserves_recorded_inert_property_names -- --exact"}
     ${runTests "indexing::tests::owner_bindings_require_canonical_noninherited_root_values -- --exact"}
+    ${runTests "indexing::carrier_tests::gap_bindings_require_primary_root_placement_and_exact_wrapper -- --exact"}
+    ${runTests "indexing::carrier_tests::structural_index_names_do_not_become_value_inputs -- --exact"}
+    ${runTests "gc::publication::evidence::validation::policy::tests::property_and_attribute_revisions_bind_structural_index_names_exactly -- --exact"}
+    ${runTests "gc::publication::evidence::validation::policy::tests::legacy_semantic_contexts_preserve_inert_index_carriers -- --exact"}
     printf 'PASS: closed registry and view-path property resolution\n' > "$out/result"
   '';
 

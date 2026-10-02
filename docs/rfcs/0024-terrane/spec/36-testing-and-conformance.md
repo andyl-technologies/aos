@@ -145,7 +145,7 @@ here is a conformance error of this document.
 | `gate:algebra-fork` | 07 | ALG-32 |
 | `gate:algebra-graft` | 07 | ALG-1, TEST-4 |
 | `gate:algebra-merge` | 07 | ALG-15, TEST-4 |
-| `gate:canonical-cbor` | 00 | TREE-4, TREE-25, TREE-28, TEST-3 |
+| `gate:canonical-cbor` | 00 | TREE-4, TREE-25, TREE-28, TREE-35, DRV-30, TEST-3 |
 | `gate:cdc-boundaries` | 05 | CDC-1, CDC-16, CDC-6 |
 | `gate:chunk-bomb-cap` | 05 | CDC-12 |
 | `gate:chunk-codec` | 05 | CDC-7 |
@@ -156,14 +156,14 @@ here is a conformance error of this document.
 | `gate:formats-no-std` | 03 | ARCH-1 |
 | `gate:gc-grace` | 01 | INV-3 |
 | `gate:identity-idempotence` | 04 | PERF-11, TEST-15, OBJ-1, OBJ-5 |
-| `gate:index-tree-maintenance` | 10 | DRV-12, DRV-24 to DRV-29, PROP-29 |
+| `gate:index-tree-maintenance` | 10 | DRV-12, DRV-24 to DRV-30, TREE-35, PROP-29, PROP-31 |
 | `gate:no-duplicate-tiers` | 01 | INV-4 |
 | `gate:no-privileged-mounts` | 03 | ARCH-9 |
 | `gate:object-identity-from-manifest` | 04 | OBJ-13 |
 | `gate:one-protocol` | 03 | ARCH-5 |
 | `gate:property-domain-reference` | 08 | PROP-26 |
 | `gate:property-required-attrs` | 08 | PROP-21, DRV-27 |
-| `gate:property-resolution` | 08 | PROP-1, PROP-29, PROP-30 |
+| `gate:property-resolution` | 08 | PROP-1, PROP-29, PROP-30, PROP-31 |
 | `gate:publisher-sole-writer` | 03 | ARCH-8 |
 | `gate:ref-advance-ordering` | 09 | REF-12 |
 | `gate:ref-cas-only` | 01 | INV-2 |

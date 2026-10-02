@@ -223,9 +223,9 @@ recomputation.
 - **[DRV-26]** The registered `terrane-index/v1` evaluation profile MUST
   accept exactly the `index-evaluation-recipe` CDDL: operation `index`,
   one completed owner-root operand and arguments `attribute` and `profile`.
-  The attribute MUST be registered and the profile MUST be
-  `terrane-index/v1`. Evaluation MUST derive DRV-12's value-plus-object
-  keys from canonical inline values in the owner's regular-file entries,
+  The attribute MUST be a registered indexable value attribute and the
+  profile MUST be `terrane-index/v1`. Evaluation MUST derive DRV-12's
+  value-plus-object keys from canonical inline values in the owner's regular-file entries,
   including entries reached through namespace grafts, without incorporating
   `index-roots` or other structural bindings into the indexed data. Each
   resulting row MUST carry exactly the object named in its key. The
@@ -235,6 +235,7 @@ recomputation.
   their existing encoding and MUST NOT become executable solely by having
   the `index` operation string. *Gate:* `gate:derivation-memo`,
   `gate:index-tree-maintenance`.
+
 - **[DRV-27]** For each effective `index` attribute applicable to an added
   or modified regular-file entry, a writer MUST supply its canonical value
   inline, even when a side record already exists. This does not replace
@@ -282,6 +283,88 @@ for computation reuse and producer evidence; indexed values are materialized
 inline so that re-evaluation does not select a different function or value
 from a changed catalog. Lookup still checks the actual current occurrence,
 its content and value, producer evidence, authority and trust under DRV-24.
+
+#### Hierarchical occurrence and missing-value carriers
+
+- **[DRV-30]** A `terrane-index/v1` result MUST contain the canonical
+  hierarchical occurrence and missing-value structures below. Construction
+  MUST be a pure function of the completed owner's immutable namespace data
+  and the named value attribute, without mutable catalog, policy or producer
+  selection. Every primary, route and gap tree MUST use the existing Node
+  encoding, identity domain, boundary function and size/depth limits. Each
+  row MUST carry exactly one target `O`, the actual regular file's content
+  identity: its inline Chunk identity under OBJ-16/TREE-8 or its Manifest
+  identity otherwise. A writer MUST NOT substitute a route Node identity
+  or a synthetic object identity in that target. A forwarding row MUST carry
+  exactly `index.occurrences: P` in entry key 9, where `P` is a 32-byte Node
+  identity of a nonempty route. A terminal row MUST have key 9 absent.
+  These specialized entries MUST have only keys 1, 14 and, for forwarding
+  rows, 9; xattrs, provenance and other attributes/fields MUST be absent.
+  *Gate:* `gate:canonical-cbor`, `gate:index-tree-maintenance`.
+
+The following roles are contextual: the owner binding, named attribute and
+traversed edge supply the role, rather than a guessed name or an untyped
+Digest cache. `V` is the complete canonical inline value, and `O` is always
+the actual namespace file identity, including the existing content-ref tag
+and size checks. V MUST have the registered attribute value type where one
+is defined; canonical CBOR alone does not validate that type. `I`, `P` and `G`
+all use `terrane-node-v1`.
+
+| Role | Full key | Entry and relationship | Root properties |
+| --- | --- | --- | --- |
+| Primary candidates for A | canonical-CBOR(V) followed by O | Forwarding row; target equals suffix O; P covers all occurrences of this pair | Exactly `index-gaps` when G is nonempty, otherwise absent |
+| Missing objects for A | O's 32 bytes | Forwarding row; target equals key O; P covers all occurrences lacking inline A | Absent |
+| Present routes for A,V,O | Root-local file or graft key | Terminal at an actual matching file; forwarding at an actual graft to its child route | Absent |
+| Missing routes for A,O | Root-local file or graft key | Same shapes, checking actual absence of inline A at terminals | Absent |
+
+Every pointer route is nonempty. Omit empty continuations. One object can
+have both present and missing occurrences; its primary and gap rows have
+independent exact routes, without inferring one predicate from the other.
+Construct each route from the source namespace root's matching local regular
+files and actual Tree grafts with matching descendants, preserving sorted local keys
+and prefix compression. Terminal rows retain O. A continuation also retains
+O in key 14 and stores only the child route's Node identity in key 9. The
+expected source namespace root at every hop comes from the independently
+selected owner or actual graft target, not a back-reference in the carrier.
+No `index-roots` binding belongs on I, P or G. Empty physical Nodes remain
+valid; the byte-identical empty ordinary/Index Node acquires its role from
+context, not its digest.
+
+Verification MUST establish the complete owner-to-I/P/G relationship,
+rejecting omitted or extra rows, routes or gaps and wrong file, value,
+content-ref or graft targets. G MUST represent every regular-file occurrence
+missing inline A, independent of current policy, producer availability and
+conditional classifier applicability. All present values remain indexed
+under DRV-27. Verifying listed routes alone, zero candidate rows, an absent
+gap binding or an empty decoded Node MUST NOT establish complete coverage.
+Unsupported conditional occurrence/addressing coverage and unavailable
+evidence remain explicit incomplete results under DRV-27; a proved current
+exclusion can close a gap, while absence alone cannot.
+
+Route keys obey the local filesystem grammar and limits. A sequence of graft
+hops MUST NOT be flattened into a composed key exceeding TREE-6. Repeated
+grafts can share child route bytes but MUST retain distinct occurrences and
+policy layers. Active-branch cycle checks and the independent tree-height
+and graft-depth limits MUST apply; sibling sharing is valid and MUST NOT be
+discarded by globally deduplicating root/route digests. The existing public
+request path limit is unchanged. Lookup MUST retain DRV-24's separate
+candidate, occurrence and current-check accounting; traversing G can require
+work even when C is zero. A full namespace walk MUST NOT substitute for
+indexed candidate discovery. Initial construction and independent exhaustive
+verification/rebuild remain separately measured under DRV-29.
+
+The registered profile completes its unreleased result definition before the
+initial freeze (D-104). Generic retained recipes and Index Nodes preserve
+their old validity. Experimental candidate-only results do not qualify the
+completed profile. Older semantic contexts can retain its recipe as data;
+they MUST refuse unsupported active interpretation rather than compute a
+different result for the same Q(R,A) through a hidden semantic/catalog
+revision. Typed loading MUST keep raw-byte identity, physical TreeUse/root
+placement/chunk geometry, semantic role and A/V/O parameters, independently
+expected namespace root, and current view/occurrence policy contexts distinct.
+Auxiliary edges MUST NOT become namespace grafts or create PROV-31 affected
+root authority. Unqualified receipt locations MUST NOT acquire a role by
+first-match lookup.
 
 #### Lookup by secondary hash
 

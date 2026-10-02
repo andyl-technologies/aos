@@ -1988,6 +1988,58 @@ is added rather than editing history.
     independent verification/rebuild and runtime checks remain mandatory and
     separately measured; index work stays in the trunk before the freeze.
 
+- **[D-104] Complete the pre-freeze hierarchical index result carrier.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Register `index.occurrences` as contextual structural Index
+    entry metadata and `index-gaps` as noninherited primary-index-root-only
+    metadata. Define canonical primary, missing-object and hierarchical
+    present/missing occurrence-route roles in the existing type-7 Entry and
+    Node encodings. Keep the actual file's Chunk/Manifest identity O in key
+    14; put route Node identity P only in key 9. Register exact property
+    revision 3 and attribute revision 2 while retaining physical tree,
+    selector and chunk semantic revision 1. Complete `terrane-index/v1`'s
+    unreleased result definition before the initial freeze.
+  - **Rationale:** A value-plus-object row cannot identify all independently
+    governed occurrences or establish missing-inline coverage. Flat composed
+    paths can exceed local key limits through grafts, and repeated grafts
+    require distinct current policy checks even when immutable child bytes
+    coincide. Recursive routes retain local grammar, shared canonical data
+    and separate occurrence contexts. A missing-object tree represents gaps
+    even with zero matching candidates; it does not certify applicability,
+    current permission, producer evidence or complete coverage by itself.
+    Putting the new pointer into the existing value-name predicate would
+    silently admit it as an index input and `attr-by` argument, expanding
+    unrelated selector semantics. Structural registration and contextual
+    classification avoid that reinterpretation. Explicit semantic fences
+    prevent a newer parser from following historical inert pointer bytes.
+  - **Alternatives considered:** Put route Node identities in `targets`
+    (rejected: changes O's meaning); flatten graft paths (rejected: key limits
+    and occurrence policy); add ordinary directory markers to routes
+    (rejected: violates Index TreeUse); infer role from a name or digest cache
+    (rejected: role ambiguity and identical empty Nodes); attach owner/recipe
+    back-references (rejected: digest cycle); use hidden catalog/revision
+    selection for one recipe (rejected: nonreproducible memo lookup key).
+  - **Compatibility:** Advance the unreleased draft to 1.0-draft-6 under
+    README/D-66's pre-freeze correction exception. Existing generic Entries,
+    Nodes, retained recipes, fields, domains, media types and golden bytes
+    keep their identities and validity. Attribute revision 1 and property
+    revisions 1/2 remain immutable; later names remain inert in those
+    contexts. New revisions reuse existing scalar revision fields. Physical
+    tree revision 1 describes unchanged bytes, boundaries and TreeUse, not
+    new namespace authority. This explicitly completes the unreleased
+    executable result semantics, not only a CDDL comment: experimental
+    pointerless results are not automatically valid completed results.
+    There is no published conforming executable profile or completed freeze
+    to preserve. Unsupported older active contexts refuse; the same Q(R,A)
+    does not choose different I by hidden revision. Accepting distinct active
+    algorithms after a freeze would require a new explicit profile.
+  - **Affects:** TREE-35, PROP-29/30/31, DRV-12/25/26/27/30, attribute/property
+    registrations, CDDL and typed publication-evidence contexts. Pure codecs
+    and independent containing-Node witnesses remain prerequisites; typed
+    loading, exhaustive owner/route/gap verification, incremental maintenance,
+    lookup, independent producers and the native index case remain mandatory.
+    This decision qualifies no runtime behavior or task completion.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

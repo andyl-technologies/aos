@@ -199,8 +199,8 @@ hash algorithm, a secondary index, a classification) without a format change.
 - **[PROP-29]** The registered `index-roots` property MUST occur only on
   an owning root node, in the exact wrapper
   `{"inherit": false, "value": {attribute: node-hex, ...}}`. Each key MUST
-  be a registered attribute name and each value MUST be exactly 64
-  lowercase hexadecimal characters encoding a Node identity. A bare
+  be a registered indexable value attribute name and each value MUST be
+  exactly 64 lowercase hexadecimal characters encoding a Node identity. A bare
   binding, `inherit=true`, malformed identity or binding on a graft-entry
   override MUST be rejected. Bindings MUST NOT propagate to descendant
   roots or be substituted from another occurrence. A root MAY bind extra
@@ -217,7 +217,9 @@ hash algorithm, a secondary index, a classification) without a format change.
   in `reference/property-registry.md`. Revision 1 MUST retain its exact
   original 33 behavioral names and MUST NOT acquire `index-roots` behavior.
   Revision 2 MUST contain exactly those names plus `index-roots`, with
-  PROP-29's owner-local semantics. A record whose names do not match its
+  PROP-29's owner-local semantics. Revision 3 MUST contain exactly revision
+  2's names plus `index-gaps`, with PROP-31's auxiliary-root-only semantics.
+  A record whose names do not match its
   revision MUST be rejected; unknown revisions MUST be rejected. Trusted
   later preserve-only names MUST remain inert under the recorded revision,
   even when newer implementation code recognizes the name. A current
@@ -225,6 +227,21 @@ hash algorithm, a secondary index, a classification) without a format change.
   behavioral vocabulary. Decoding a revision MUST NOT grant current authority
   or replace independently checked configuration and root policy.
   *Gate:* `gate:property-resolution`.
+
+## Structural index gap binding
+
+- **[PROP-31]** The registered `index-gaps` property MUST occur only on
+  the primary index root of DRV-30, in the exact wrapper
+  `{"inherit": false, "value": node-hex}` with exactly 64 lowercase
+  hexadecimal characters encoding the nonempty missing-object tree's Node
+  identity. It MUST be absent when that tree is empty. A bare value,
+  `inherit=true`, malformed identity, or placement on a namespace root,
+  graft override, route root, gap root or non-root node MUST be rejected
+  when interpreting these semantics. It MUST NOT inherit, acquire a default
+  reference, resolve as namespace policy or grant authority. The primary
+  index root MUST carry no other properties under this executable profile;
+  its property field MUST be absent when no gap binding is needed.
+  *Gate:* `gate:property-resolution`, `gate:index-tree-maintenance`.
 
 ## Property summary
 
@@ -269,6 +286,7 @@ unregistered (CONV-3).
 | `classify` | requirement | set of classifier names | empty | 10 |
 | `index` | requirement | set of attribute names | empty | 10 |
 | `index-roots` | requirement, owner-local binding | attribute-to-Node lowercase-hex map, exact noninherited wrapper | empty | 08, 10 |
+| `index-gaps` | structural primary-index-root binding | Node lowercase-hex text, exact noninherited wrapper | absent | 08, 10 |
 | `strict-attrs` | requirement | boolean | `false` | 06 |
 
 - **[PROP-28]** The registry MUST contain every property in the table above

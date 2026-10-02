@@ -70,6 +70,9 @@ in {
     ${runTests "cbor::tests"}
     ${runTests "gc::lease::tests"}
     ${runTests "tree_format::tests::golden_leaf_round_trips_byte_exactly -- --exact"}
+    ${runTests "indexing::carrier_tests::contextual_carriers_preserve_object_targets_and_role_shapes -- --exact"}
+    ${runTests "indexing::carrier_tests::structural_index_names_do_not_become_value_inputs -- --exact"}
+    ${runTests "indexing::carrier_tests::gap_bindings_require_primary_root_placement_and_exact_wrapper -- --exact"}
     ${builtins.concatStringsSep "\n" (map (test: runTests "${test} -- --exact") collectorTests)}
     ${builtins.concatStringsSep "\n" (map (test: runTests "${test} -- --exact") retirementTests)}
 
