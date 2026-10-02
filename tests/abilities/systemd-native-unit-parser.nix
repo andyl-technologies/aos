@@ -14,10 +14,11 @@ pkgs.mkAosCargoPackage {
   cargoRoot = "crates";
   cargoFlags = "-p aos-systemd-provider";
   cargoBuildCommands = [
-    "test --release --frozen --offline -j$NIX_BUILD_CORES -p aos-systemd-provider --features systemd-parser-tests resource_effects::unit::parser_tests:: -- --nocapture"
+    "test --no-run --release --frozen --offline -j$NIX_BUILD_CORES -p aos-systemd-provider --bin aos-systemd-native-resource-provider --features systemd-parser-tests"
   ];
+  cargoTestFlags = "-p aos-systemd-provider --bin aos-systemd-native-resource-provider --features systemd-parser-tests resource_effects::unit::parser_tests:: -- --nocapture";
   buildDeps = [pkgs.cmake pkgs.perl pkgs.pkg-config pkgs.protobuf pkgs.systemd pkgs.bash];
   runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.libssh2 pkgs.zlib];
   installBins = false;
-  doCheck = false;
+  doCheck = true;
 }
