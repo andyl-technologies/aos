@@ -102,6 +102,32 @@
     destination = "/value";
     text = "hub-oci-qualification-delivery-attestation-key-v1";
   };
+  # Staged registry releases discover the Hub through its public deployment
+  # identity, which the native Hub advertises only with a complete release
+  # evidence authority. These seeds and keys are public test material.
+  releaseEvidenceCredential = name: text:
+    pkgs.writeTextFile {
+      inherit name text;
+      destination = "/value";
+    };
+  releaseEvidenceCredentials = {
+    hub-oci-release-receipt-seed =
+      releaseEvidenceCredential "hub-oci-release-receipt-seed"
+      "DQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0=";
+    hub-oci-channel-receipt-seed =
+      releaseEvidenceCredential "hub-oci-channel-receipt-seed"
+      "Dg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4ODg4=";
+    hub-oci-release-publication-keys =
+      releaseEvidenceCredential "hub-oci-release-publication-keys.json"
+      (builtins.toJSON {
+        "hub-oci-publication-v1" = "/RckOFqgx1tk+3jNYC+h2ZH96/drE8WO1wLqyDXp9hg=";
+      });
+    hub-oci-qualification-keys =
+      releaseEvidenceCredential "hub-oci-qualification-keys.json"
+      (builtins.toJSON {
+        "hub-oci-qualification-v1" = "E5j2LG0aRXxRumpLXz29L2n8qTIWIY3ImX5Ba9F9k8o=";
+      });
+  };
   deliveryAttestationSigner = pkgs.writeTextFile {
     name = "hub-oci-delivery-attestation-signer";
     destination = "/bin/hub-oci-delivery-attestation-signer";
@@ -312,11 +338,29 @@
 
   hubOciModule = {
     aos.firewall.allowedTCP = [8443];
+    # The provider-inventory assertion reads the Hub's durable generation
+    # checkpoints directly; the packaged sqlite shell is an AOS-built tool.
+    environment.systemPackages = [pkgs.sqlite];
     aos.security.pki.certificateFiles = ["${tlsCa}/ca.crt"];
-    aos.registry-hub.credentials.deliveryAttestationKey = "hub-oci-delivery-attestation-key";
     environment.etc."tmpfiles.d/hub-oci-delivery-attestation.conf".text = ''
       C /run/credentials/@system/hub-oci-delivery-attestation-key 0600 root root - ${deliveryAttestationKey}/value
     '';
+    aos.registry-hub = {
+      deploymentId = "hub-oci-qualification-v1";
+      releaseReceiptKeyId = "hub-oci-release-receipt-v1";
+      channelReceiptKeyId = "hub-oci-channel-receipt-v1";
+      credentials = {
+        deliveryAttestationKey = "hub-oci-delivery-attestation-key";
+        releaseReceiptKey = "hub-oci-release-receipt-seed";
+        channelReceiptKey = "hub-oci-channel-receipt-seed";
+        releasePublicationKeys = "hub-oci-release-publication-keys";
+        qualificationKeys = "hub-oci-qualification-keys";
+      };
+    };
+    environment.etc."tmpfiles.d/hub-oci-release-evidence.conf".text = lib.concatStrings (lib.mapAttrsToList (name: credential: ''
+        C /run/credentials/@system/${name} 0600 root root - ${credential}/value
+      '')
+      releaseEvidenceCredentials);
     aos.users.users.nginx = {
       uid = 803;
       group = "nginx";
@@ -658,6 +702,8 @@ in {
 
     # The verified container sidecar crosses the ordinary signed APR release
     # and managed Hub publication boundary before the OCI tag is committed.
+    # Prepare the authoring registry now; its release is staged once the Hub
+    # registry and its acknowledged OCI route exist.
     publisher.succeed(textwrap.dedent(f"""
         set -euo pipefail
         export HOME=/var/lib/aos-oci-publisher USER=publisher
@@ -682,16 +728,6 @@ in {
         {APR} keys register initial --registry containers --key "$key"
         {APR} create containers --trust-key {shlex.quote(public_trust)} \
           --trust-key-id initial --key-id initial
-        {APR} release {shlex.quote(signed_release)} --registry containers \
-          --container-release /var/tmp/container-final/container-release.json \
-          --container-signature-input /var/tmp/container-final/signature-input.json \
-          --store-path ${pkgs.aos} --name aos --version "$package_version" \
-          --description 'AOS production command-line tools' \
-          --license Apache-2.0 --maintainer 'Andyl, Inc.' \
-          --channel stable --init-channel --key-id initial \
-          --cache-url http://hub:8420/acme/containers/ \
-          --upload-url file:///var/tmp/container-publication-surface
-        {APR} verify --registry containers
     """), timeout=900)
 
     reviewed(
@@ -814,6 +850,30 @@ in {
 
     prepare_registry("containers", "public", "public", public_trust)
     prepare_registry("containers-private", "private", "private", private_trust)
+
+    # A registry placement also carries the binary cache that the signed APR
+    # release publishes beside the OCI blobs. Seed deterministic non-OCI keys
+    # that sort on both sides of `oci/blobs/sha256/` before any inventory can
+    # begin, so every provider inventory generation of this placement must
+    # enumerate the blob namespace alone rather than page through them.
+    PUBLIC_PLACEMENT_ROOT = "/var/lib/aos-hub/storage/public"
+    SEEDED_NON_OCI_KEYS = [
+        "0000000000000000000000000000000a.narinfo",
+        "nar/0000000000000000000000000000000a.nar.zst",
+        "nar/zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.nar.zst",
+        "nix-cache-info",
+        "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz.narinfo",
+    ]
+    hub.succeed(textwrap.dedent(f"""
+        set -eu
+        for key in {" ".join(shlex.quote(key) for key in SEEDED_NON_OCI_KEYS)}; do
+            mkdir -p "$(dirname {PUBLIC_PLACEMENT_ROOT}/$key)"
+            printf 'seeded non-OCI placement key %s\n' "$key" \
+              > {PUBLIC_PLACEMENT_ROOT}/$key
+            chmod 0644 {PUBLIC_PLACEMENT_ROOT}/$key
+        done
+    """))
+    inventory_seeded_at = int(hub.succeed("date +%s").strip())
 
     def http_status(machine, url, accept="text/html"):
         return machine.succeed(
@@ -964,33 +1024,249 @@ in {
     assert private_push["index_digest"] == root_digest, private_push
     assert signed_root == root_digest, (signed_root, root_digest)
 
-    signed_publish = (
-        f"HOME=/var/lib/aos-oci-publisher {AOS} "
-        "--json --progress off --color never container publish aos "
-        "hub:8443/aos:stable "
-        "--release /var/tmp/container-final/container-release.json "
-        "--release-layout /var/tmp/container-final/layout "
-        "--signature-input /var/tmp/container-final/signature-input.json "
-        "--registry acme/containers "
-        "--registry-origin https://hub:8443 "
-        f"--registry-token {shlex.quote(token)} "
+    # The signed release crosses the staged registry lifecycle. A new Hub
+    # origin first receives the signed registry initialization and its default
+    # HEAD; APR then stages the release from a maintainer branch, uploading its
+    # cache, catalog objects, and exact signed OCI graph while withholding the
+    # release and channel pointers until finalization.
+    REGISTRY_DIR = "/var/lib/aos-oci-publisher/.local/share/apm/registries/containers"
+    AUTHORING_BRANCH = "qualification/aos-container"
+    STAGE_ID = "aos-container"
+    STAGE_RECORD = "/var/tmp/container-registry-stage.json"
+    STAGE_UPLOAD_URL = "http://hub:8420/acme/containers"
+
+    def publisher_apr(script, timeout=900):
+        environment = textwrap.dedent("""
+            set -euo pipefail
+            export HOME=/var/lib/aos-oci-publisher USER=publisher
+            export PATH=${pkgs.git}/bin:${pkgs.nix}/bin:$PATH
+            export NIX_REMOTE=""
+            export NIX_CONF_DIR="$HOME/.config/nix"
+        """)
+        return publisher.succeed(
+            environment + textwrap.dedent(script),
+            timeout=timeout,
+        )
+
+    def stage_record(path):
+        publisher_apr(f"""
+            {APR} --json stage show {STAGE_ID} --registry containers > {path}
+        """)
+        return json.loads(publisher.succeed(f"cat {path}"))
+
+    # Browser session JWTs expire after five minutes. Release staging may spend
+    # longer generating its cache, so APR authenticates as an org publisher
+    # whose provisioning token exchanges for a one-hour access token.
+    token = browser_session_token()
+    release_token_response = reviewed_control(
+        publisher,
+        "oci-release-token",
+        f"access-token issue plan {shlex.quote(org_scope)} "
+        "--owner service_account:acme/oci-controller "
+        "--permission read --permission publish --ttl-secs 3600 "
+        "--comment 'OCI release publisher'",
+        "access-token issue apply",
+        token,
     )
+    release_secret = release_token_response["data"]["result"]["secret"]
+    release_bearer = json.loads(publisher.succeed(
+        f"{CURL} -fsS -X POST "
+        "-H 'Content-Type: application/x-www-form-urlencoded' "
+        f"-H 'Authorization: Bearer {release_secret}' "
+        "--data-urlencode "
+        "'grant_type=urn:aos:params:oauth:grant-type:provisioning-token' "
+        f"{HUB}/oauth2/token"
+    ))["access_token"]
+
+    # Staging reads the destination's public HEAD and ref advertisement at the
+    # upload URL and calls the stage API on the same origin. Serve the
+    # registry's Git surface and binary cache from the Hub control origin.
+    reviewed(
+        publisher,
+        "control-endpoint-create",
+        "endpoint add http://hub:8420 --stable-id fleet-native-hub --org acme "
+        "--acknowledge-cleartext --network-policy instance:public@1 --ingress hub "
+        "--listener-provider hub-native --listener-resource-id aos-hub.service "
+        "--probe-provider native-file --probe-signer-secret-ref fleet-probe-v1 "
+        "--probe-public-key ${fixture.probePublicKey}",
+        token,
+    )
+    control_endpoint = json.loads(publisher.succeed(
+        hub_command("endpoint show fleet-native-hub", token)
+    ))["data"]["endpoint"]
+    control_generation = int(control_endpoint["desired_generation"])
+    control_observation = {
+        "stableId": "fleet-native-hub",
+        "expectedObservationVersion": control_endpoint["resource_version"],
+        "controllerLeaseId": "fleet-oci-controller",
+        "controllerGeneration": 1,
+        "observation": {
+            "observedGeneration": control_generation,
+            "boundaryRevision": control_endpoint["desired"]["boundary_revision"],
+            "state": "healthy",
+            "listenerObserved": True,
+            "tlsObserved": False,
+        },
+    }
+    publisher.succeed(
+        f"{CURL} -fsS -X POST "
+        "-H 'Content-Type: application/json' "
+        "-H 'Connect-Protocol-Version: 1' "
+        f"-H 'Authorization: Bearer {controller_token}' "
+        f"--data {shlex.quote(json.dumps(control_observation))} "
+        f"{HUB}/aos.hub.v1.DeliveryControllerService/ReportEndpoint"
+    )
+    reviewed(
+        publisher,
+        "containers-git-route-create",
+        "route add registry:acme/containers --stable-id containers-git-route "
+        f"--endpoint fleet-native-hub@{control_generation} "
+        "--base-path /acme/containers --mode hub-proxy --placement primary "
+        "--serves git --serves cache --access public",
+        token,
+    )
+    git_route = next(
+        item
+        for item in json.loads(publisher.succeed(
+            hub_command("route list registry:acme/containers", token)
+        ))["data"]["routes"]
+        if item["stable_id"] == "containers-git-route"
+    )
+    reviewed(
+        publisher,
+        "containers-git-route-enable",
+        "route enable containers-git-route "
+        f"--if-version {shlex.quote(git_route['resource_version'])}",
+        token,
+    )
+    publisher.wait_until_succeeds(
+        hub_command("route list registry:acme/containers", token)
+        + f" | {JQ} -e '.data.routes[] | select(.stable_id == \"containers-git-route\") "
+        "| .observation.state == \"healthy\"'",
+        timeout=180,
+    )
+
+    publisher_apr(f"""
+        rm -rf /var/tmp/container-bootstrap-surface
+        {APR} origin upload --registry containers \
+          --upload-url file:///var/tmp/container-bootstrap-surface
+    """)
+    bootstrap = json.loads(publisher.succeed(
+        hub_command(
+            "registry publish upload acme/containers",
+            release_bearer,
+            "--root /var/tmp/container-bootstrap-surface",
+        ),
+        timeout=900,
+    ))["data"]
+    assert bootstrap["state"] == "ready", bootstrap
+
+    publisher_apr(f"""
+        git -C {REGISTRY_DIR} switch -c {AUTHORING_BRANCH}
+        package_version=$(${pkgs.jq}/bin/jq -er \
+          .identity.packageVersion \
+          /var/tmp/container-final/container-release.json)
+        {APR} release {shlex.quote(signed_release)} --registry containers \
+          --stage {STAGE_ID} \
+          --container-release /var/tmp/container-final/container-release.json \
+          --container-signature-input /var/tmp/container-final/signature-input.json \
+          --container-layout /var/tmp/container-final/layout \
+          --store-path ${pkgs.aos} --name aos --version "$package_version" \
+          --description 'AOS production command-line tools' \
+          --license Apache-2.0 --maintainer 'Andyl, Inc.' \
+          --key-id initial \
+          --cache-url {STAGE_UPLOAD_URL}/ \
+          --upload-url {STAGE_UPLOAD_URL} \
+          --token {shlex.quote(release_bearer)}
+    """)
+    registry_stage = stage_record(STAGE_RECORD)
+    stage_revision = registry_stage["revision"]
+    assert registry_stage["state"] == "ready", registry_stage
+    assert stage_revision["registry"] == "acme/containers", stage_revision
+    assert stage_revision["revision"] == 1, stage_revision
+    assert stage_revision["release_id"] == signed_release, stage_revision
+    assert stage_revision["source_branch"] == AUTHORING_BRANCH, stage_revision
+    assert stage_revision["container"]["repository"] == "aos", stage_revision
+    assert stage_revision["container"]["release"]["oci"]["index"]["digest"] == signed_root
+    # The candidate is not a release yet: its immutable version tag is absent.
+    publisher.fail(hub_command(
+        f"registry container tag show acme/containers aos {shlex.quote(signed_release)}",
+        token,
+    ))
+
+    def signed_publish(token, mutation):
+        return (
+            f"HOME=/var/lib/aos-oci-publisher {AOS} "
+            "--json --progress off --color never container publish aos "
+            "hub:8443/aos:stable "
+            "--release /var/tmp/container-final/container-release.json "
+            "--release-layout /var/tmp/container-final/layout "
+            "--signature-input /var/tmp/container-final/signature-input.json "
+            "--registry acme/containers "
+            "--registry-origin https://hub:8443 "
+            f"--registry-token {shlex.quote(token)} "
+            f"--hub {HUB} --token {shlex.quote(token)} "
+            + mutation
+        )
+
+    token = browser_session_token()
     staged = json.loads(publisher.succeed(
-        signed_publish
-        + "--stage-only --idempotency-key hub-oci-signed-stage",
+        signed_publish(
+            token,
+            f"--stage-only --registry-stage {STAGE_RECORD} "
+            "--idempotency-key hub-oci-signed-stage",
+        ),
         timeout=900,
     ))
     assert staged["state"] == "staged", staged
     assert staged["index_digest"] == signed_root, staged
+    assert staged["tag_updated"] is False, staged
+    assert staged["verification"] == "pending-control-plane-commit", staged
+    assert staged["registry_stage"]["revision"] == stage_revision, staged
+    assert staged["registry_stage"]["state"] == "ready", staged
+    assert staged["missing_paths"] == [], staged
+
+    # Finalization publishes the frozen release and binds its immutable OCI
+    # version tag. The channel is initialized separately and its pointers are
+    # uploaded from the default channel branch.
+    publisher_apr(f"""
+        {APR} release {shlex.quote(signed_release)} --registry containers \
+          --from-stage {STAGE_ID} --stage-revision 1 \
+          --upload-url {STAGE_UPLOAD_URL} \
+          --token {shlex.quote(release_bearer)}
+    """)
+    released_stage = stage_record("/var/tmp/container-registry-stage-released.json")
+    assert released_stage["state"] == "released", released_stage
+    assert released_stage["released_version"] == signed_release, released_stage
+    assert released_stage["revision"] == stage_revision, released_stage
+    version_tag_command = hub_command(
+        f"registry container tag show acme/containers aos {shlex.quote(signed_release)}",
+        token,
+    )
+    publisher.wait_until_succeeds(version_tag_command, timeout=180)
+    version_tag = json.loads(publisher.succeed(version_tag_command))["data"]["tag"]
+    assert version_tag["digest"] == signed_root, version_tag
+
+    publisher_apr(f"""
+        {APR} channel init stable {shlex.quote(signed_release)} \
+          --registry containers --key-id initial
+        git -C {REGISTRY_DIR} switch stable
+        rm -rf /var/tmp/container-channel-surface
+        {APR} origin upload --registry containers \
+          --upload-url file:///var/tmp/container-channel-surface
+        {APR} verify --registry containers
+        git -C {REGISTRY_DIR} switch {AUTHORING_BRANCH}
+    """)
     indexed = json.loads(publisher.succeed(
         hub_command(
             "registry publish upload acme/containers",
-            token,
-            "--root /var/tmp/container-publication-surface",
+            release_bearer,
+            "--root /var/tmp/container-channel-surface",
         ),
         timeout=900,
     ))["data"]
     assert indexed["state"] == "ready", indexed
+    token = browser_session_token()
     try:
         publisher.wait_until_succeeds(
             hub_command(
@@ -1007,13 +1283,13 @@ in {
         """))
         raise AssertionError((error, diagnostics)) from error
     verified_publish = json.loads(publisher.succeed(
-        signed_publish
-        + f"--hub {HUB} --token {shlex.quote(token)} "
-        + "--idempotency-key hub-oci-signed-commit",
+        signed_publish(token, "--idempotency-key hub-oci-signed-commit"),
         timeout=900,
     ))
     assert verified_publish["verification"] == "verified", verified_publish
     assert verified_publish["index_digest"] == signed_root, verified_publish
+    assert verified_publish["target_tag"] == "stable", verified_publish
+    assert verified_publish["source_kind"] == "channel", verified_publish
     publication_id = verified_publish["publication_id"]
     assert publication_id, verified_publish
 
@@ -1537,6 +1813,7 @@ in {
           --key-id initial \
           --no-commit
         mkdir -p /var/lib/hub-oci-container-fixtures
+        printf '%s\n' "$trust" > /var/lib/hub-oci-container-fixtures/trust-key
         NIX_CONFIG='experimental-features = nix-command' \
           "$APR" cache generate \
           --registry hub-oci-runtime \
@@ -1547,6 +1824,10 @@ in {
         ${pkgs.git}/bin/git -C "$REG_DIR" add -A
         ${pkgs.git}/bin/git -C "$REG_DIR" commit \
           -m 'release: hub-oci-container-tool 1.0.0'
+        # Consumers resolve packages through the released default channel,
+        # not through unreleased commits on its branch.
+        "$APR" release 1.0.0 --registry hub-oci-runtime --key-id initial \
+          --channel stable --init-channel
         cp -a "$REG_DIR" /var/lib/hub-oci-container-fixtures/registry
         PYTHONUNBUFFERED=1 ${pkgs.coreutils}/bin/nohup \
           ${pkgs.python3}/bin/python3 -m http.server 18120 \
@@ -1624,9 +1905,16 @@ in {
         "hub:8443/aos:stable --hub https://hub:8443",
         timeout=900,
     )
+    # Default-channel selection verifies signed channel partitions, so the
+    # consumer pins the fixture registry's signing key instead of skipping
+    # verification.
+    runtime_trust_key = consumer.succeed(
+        "cat /var/lib/hub-oci-container-fixtures/trust-key"
+    ).strip()
     consumer.succeed(
         "${nerdctl} exec aos-hub-runtime /usr/bin/apm registry add "
-        "--no-verify file:///fixtures/registry --name hub-oci-runtime"
+        f"--trust-key '{runtime_trust_key}' file:///fixtures/registry "
+        "--name hub-oci-runtime"
     )
     consumer.succeed(
         "${nerdctl} exec aos-hub-runtime /usr/bin/apm install "
@@ -1750,5 +2038,47 @@ in {
         "--idempotency-key hub-oci-purge-wrong-confirm --yes",
         token,
     ))
+
+    # The native Hub inventories the public placement on its maintenance tick.
+    # The placement holds the seeded keys plus the published binary cache and
+    # git objects, yet a complete generation bound to the current mutation
+    # epoch must have paged exactly one object per checkpoint and only the
+    # blobs: its page count and object count both equal the blob count on disk.
+    for key in SEEDED_NON_OCI_KEYS:
+        hub.succeed(f"test -f {PUBLIC_PLACEMENT_ROOT}/{key}")
+    hub.succeed(
+        f"test -n \"$(ls {PUBLIC_PLACEMENT_ROOT}/nar)\" "
+        f"&& ls {PUBLIC_PLACEMENT_ROOT}/*.narinfo >/dev/null"
+    )
+    blob_count = int(hub.succeed(
+        f"find {PUBLIC_PLACEMENT_ROOT}/oci/blobs/sha256 -type f | wc -l"
+    ).strip())
+    assert blob_count > 0, blob_count
+    SQLITE = "${pkgs.sqlite}/bin/sqlite3 -readonly -separator ' ' /var/lib/aos-hub/hub.db"
+    CURRENT_INVENTORY_QUERY = textwrap.dedent("""
+        SELECT inventory.state, inventory.checkpoint_ordinal,
+               inventory.object_count, inventory.started_at
+        FROM oci_provider_inventory_generations inventory
+        JOIN surface_placements placement ON placement.id = inventory.placement_id
+        JOIN oci_registry_state registry_state
+          ON registry_state.registry_id = inventory.registry_id
+        WHERE placement.prefix = 'public'
+          AND inventory.state = 'complete'
+          AND inventory.captured_mutation_epoch = registry_state.mutation_epoch
+        ORDER BY inventory.started_at DESC
+        LIMIT 1
+    """).strip()
+    hub.wait_until_succeeds(
+        f"{SQLITE} {shlex.quote(CURRENT_INVENTORY_QUERY)} | grep -q '^complete '",
+        timeout=600,
+    )
+    state, page_count, object_count, started_at = hub.succeed(
+        f"{SQLITE} {shlex.quote(CURRENT_INVENTORY_QUERY)}"
+    ).split()
+    inventory = (state, int(page_count), int(object_count), int(started_at))
+    assert inventory[0] == "complete", inventory
+    assert inventory[3] >= inventory_seeded_at, (inventory, inventory_seeded_at)
+    assert inventory[1] == blob_count, (inventory, blob_count)
+    assert inventory[2] == blob_count, (inventory, blob_count)
   '';
 }

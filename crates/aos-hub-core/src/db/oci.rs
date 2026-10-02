@@ -80,7 +80,7 @@ pub const OCI_MAX_SESSION_SECONDS: i64 = 24 * 60 * 60;
 /// Returns the canonical registry-surface key for an OCI content digest.
 #[must_use]
 pub fn oci_blob_object_key(digest: Sha256Digest) -> String {
-    format!("oci/blobs/sha256/{}", digest.encoded())
+    format!("{}{}", crate::keymap::OCI_BLOB_KEY_PREFIX, digest.encoded())
 }
 
 /// Computes the stable digest of one frozen closed catalog declaration.
