@@ -212,6 +212,39 @@ pub enum LiveVcpuTimeCallbackError {
         /// Logical coordinate returned by the latest callback publication.
         current_icount: u64,
     },
+    /// Physical progress replaced an unconsumed original output stop.
+    #[error(
+        "network output stop at logical {logical_icount}/raw {raw_icount} observed logical {observed_logical_icount}/raw {observed_raw_icount} before original consumption"
+    )]
+    NetworkOutputStopProgressed {
+        /// Logical coordinate of the original output callback.
+        logical_icount: u64,
+        /// Raw coordinate of the original output callback.
+        raw_icount: u64,
+        /// Logical coordinate of the later callback.
+        observed_logical_icount: u64,
+        /// Raw coordinate of the later callback.
+        observed_raw_icount: u64,
+    },
+    /// A restore or child rebind preceded original output consumption.
+    #[error("network output stop frontier {write_index} remains unconsumed at {read_index}")]
+    NetworkOutputStopUnconsumed {
+        /// Original producer frontier retained by the output callback.
+        write_index: u64,
+        /// Current index of that same ring's consumer.
+        read_index: u64,
+    },
+    /// Another callback still owns the original output-stop transaction.
+    #[error("original network output stop is borrowed by another callback")]
+    NetworkOutputStopBorrowed,
+    /// The original producer frontier changed beyond one admitted ring batch.
+    #[error("network output frontier {write_index} changed to {observed_write_index}")]
+    NetworkOutputStopFrontierChanged {
+        /// Original write frontier retained by the prior callback.
+        write_index: u64,
+        /// Current write index of that same registered ring.
+        observed_write_index: u64,
+    },
     /// A pending timer-boundary TX batch exceeded addressable memory.
     #[error("buffered live network TX frame count overflowed")]
     BufferedNetworkTxCountOverflow,

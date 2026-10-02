@@ -35,6 +35,7 @@ impl LiveVcpuTimeCallbackState {
         // RX poison is process-local and cannot be reconstructed from VMState.
         // Refuse restore before acknowledging or applying a new continuation.
         self.require_network_rx_commit_certain()?;
+        self.require_consumed_network_output_stop()?;
 
         let applied_generation = self
             .logical_restore_continuation_generation

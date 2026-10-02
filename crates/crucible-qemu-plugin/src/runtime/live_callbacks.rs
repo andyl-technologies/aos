@@ -9,7 +9,9 @@
 use std::os::raw::{c_uint, c_void};
 use std::pin::Pin;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicPtr, AtomicU8, AtomicU32, AtomicU64, Ordering,
+};
 use std::sync::{Arc, Mutex, TryLockError, mpsc};
 
 use crucible_shmem::{
@@ -58,6 +60,7 @@ mod error;
 mod fingerprint_worker;
 mod logical_restore;
 mod network_inbound;
+mod network_output_stop;
 mod preemption;
 pub use devices::LiveDeviceCallbackError;
 use devices::LiveDeviceCallbackState;
@@ -649,6 +652,12 @@ impl StableDirectedRingHandle {
         InboundFrameRing::new(self.descriptor.index, header, entries)
     }
 
+    fn header(&self) -> &RingHeader {
+        // The read-only mapped view supplies the original header without
+        // borrowing producer entries or granting delivery authority.
+        self.inbound().header()
+    }
+
     fn outbound(&self) -> NetworkTxRing<'_> {
         // SAFETY: registration validated single-threaded round-robin callback
         // execution. `LiveVcpuTimeCallbackState` rejects callback re-entry, and
@@ -679,6 +688,8 @@ struct LiveNetworkCallbackState {
     inbound: StableDirectedRingHandle,
     tx_callback_active: AtomicBool,
     rx_delivery_active: AtomicBool,
+    output_stop: Mutex<Option<network_output_stop::RetainedNetworkOutputStop>>,
+    output_stop_refusal: AtomicI32,
 }
 
 /// Original registered inbound owner and exact live SPSC head.
@@ -729,6 +740,8 @@ impl LiveNetworkCallbackState {
             inbound: StableDirectedRingHandle::new(inbound)?,
             tx_callback_active: AtomicBool::new(false),
             rx_delivery_active: AtomicBool::new(false),
+            output_stop: Mutex::new(None),
+            output_stop_refusal: AtomicI32::new(0),
         })
     }
 
@@ -1335,6 +1348,7 @@ impl LiveVcpuTimeCallbackState {
         &mut self,
         worker_quiescence: Arc<LiveWorkerQuiescence>,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
+        self.require_consumed_network_output_stop()?;
         let Some(fingerprint) = self.fingerprint.as_mut() else {
             return Ok(());
         };
@@ -1451,6 +1465,9 @@ impl LiveVcpuTimeCallbackState {
         // forbidden there; the host requests a BQL-held control boundary after
         // accepting the paused quantum and samples that exact coordinate.
         self.publish_current_icount_for_boundary(raw_icount, true, "vcpu-idle")?;
+        if self.preserve_network_output_stop(raw_icount)? {
+            return Ok(());
+        }
         let current_icount = self.last_icount.load(Ordering::Acquire);
         let next_inbound_delivery_icount = if let Some(network) = self.network.as_ref() {
             let inbound = network.inbound.inbound();
@@ -1633,6 +1650,9 @@ impl LiveVcpuTimeCallbackState {
         if self.publish_pause_for_boundary(raw_icount, true, false, None, "vcpu-resume")? {
             return Ok(());
         }
+        if self.preserve_network_output_stop(raw_icount)? {
+            return Ok(());
+        }
         let control_boundary_requested =
             PluginShmemOrdering::control_boundary_is_requested(self.slot.get());
         if self.idle_advance_is_pending() {
@@ -1732,6 +1752,7 @@ impl LiveVcpuTimeCallbackState {
             "control-boundary",
         )?;
         if !paused {
+            self.preserve_network_output_stop(raw_icount)?;
             let current_icount = self.logical_icount_for_raw(raw_icount)?;
             let (ceiling_icount, _) = self.scheduler_advance()?;
             if current_icount > ceiling_icount {
@@ -1787,6 +1808,9 @@ impl LiveVcpuTimeCallbackState {
         boundary: &'static str,
     ) -> Result<(), LiveVcpuTimeCallbackError> {
         if self.publish_pause_for_boundary(raw_icount, checkpoint_handoff, false, None, boundary)? {
+            return Ok(());
+        }
+        if self.preserve_network_output_stop(raw_icount)? {
             return Ok(());
         }
         let raw_icount_at_entry = self.last_raw_icount.load(Ordering::Acquire);
@@ -2130,6 +2154,14 @@ impl LiveVcpuTimeCallbackState {
             .validate_completion(completion)
             .map_err(|source| LiveVcpuTimeCallbackError::IdleAdvanceCompletion { source })?;
         let emitted_network_output = !pending.buffered_tx_payloads.is_empty();
+        let mut output_stop = if emitted_network_output {
+            Some(self.begin_network_output_stop(
+                target_icount,
+                self.last_raw_icount.load(Ordering::Acquire),
+            )?)
+        } else {
+            None
+        };
         if let Some(network) = self.network.as_ref() {
             let mut outbound = network.outbound.outbound();
             network
@@ -2169,11 +2201,14 @@ impl LiveVcpuTimeCallbackState {
         // expose a due device response and wake its coroutine. Publishing first
         // would let that wake re-enter QEMU while this callback still considered
         // the queued idle advance pending.
-        if emitted_network_output {
-            self.publish_network_output_stop(
+        if let Some(mut output_stop) = output_stop.take() {
+            self.finish_network_output_stop(
+                &mut output_stop,
                 target_icount,
                 self.last_raw_icount.load(Ordering::Acquire),
             )?;
+            drop(output_stop);
+            self.request_network_output_stop()?;
         } else {
             PluginShmemOrdering::publish_reached_icount(self.slot.get(), target_icount)
                 .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
@@ -2200,6 +2235,8 @@ impl LiveVcpuTimeCallbackState {
         let _active = NetworkTxActiveGuard(&network.tx_callback_active);
         let mut pending_slot = self.try_pending_idle_advance()?;
         if let Some(pending) = pending_slot.as_mut() {
+            let _output_stop =
+                self.begin_network_output_stop(pending.target_icount, raw_emit_icount)?;
             FrameEntry::new(pending.target_icount, network.tx.src_slot(), 0, payload).map_err(
                 |crucible_shmem::FrameEntryError::PayloadLengthExceedsCapacity {
                      len,
@@ -2235,6 +2272,7 @@ impl LiveVcpuTimeCallbackState {
                 current_icount,
             });
         }
+        let mut output_stop = self.begin_network_output_stop(current_icount, raw_emit_icount)?;
         {
             let mut outbound = network.outbound.outbound();
             network
@@ -2243,18 +2281,19 @@ impl LiveVcpuTimeCallbackState {
                 .map_err(|source| LiveVcpuTimeCallbackError::NetworkTx { source })?;
         }
 
-        self.publish_network_output_stop(current_icount, raw_emit_icount)
+        self.finish_network_output_stop(&mut output_stop, current_icount, raw_emit_icount)?;
+        drop(output_stop);
+        self.request_network_output_stop()
     }
 
     /// Fences the exact output coordinate before native dispatch can continue.
-    fn publish_network_output_stop(
-        &self,
-        current_icount: u64,
-        raw_icount: u64,
-    ) -> Result<(), LiveVcpuTimeCallbackError> {
-        PluginShmemOrdering::publish_pause_quiesced(self.slot.get(), current_icount, raw_icount)
-            .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
-        self.request_checkpoint_vmstop("network-output")
+    fn request_network_output_stop(&self) -> Result<(), LiveVcpuTimeCallbackError> {
+        let admission = self.request_checkpoint_vmstop("network-output");
+        if let Err(LiveVcpuTimeCallbackError::CheckpointVmStopRejected { status, .. }) = &admission
+        {
+            self.retain_network_output_stop_refusal(*status);
+        }
+        admission
     }
 
     fn on_block_wait(&self, _request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {
@@ -2433,6 +2472,9 @@ impl LiveVcpuTimeCallbackState {
         if raw_icount_publication_is_superseded(raw_icount_at_entry, raw_icount, latest_raw_icount)?
         {
             return self.logical_icount_for_raw(latest_raw_icount);
+        }
+        if self.preserve_network_output_stop(raw_icount)? {
+            return Ok(self.last_icount.load(Ordering::Acquire));
         }
         let current_icount = self.logical_icount_for_raw(raw_icount)?;
         let (ceiling_icount, _) = self.scheduler_advance()?;
