@@ -93,16 +93,21 @@ pub struct SurfaceListedEvidence {
 impl SurfaceListPage {
     /// Validates the page before shared code retains or processes it.
     ///
+    /// `prefix` is the surface-relative prefix the page was requested under
+    /// (see [`SurfaceFetch::list_page`]); every listed key must lie under it.
+    ///
     /// # Errors
     ///
     /// Returns an error for an oversized page or cursor, empty/unsorted keys,
-    /// or a cursor repeated by the backend.
-    pub fn validate(&self, requested_limit: usize, prior_cursor: Option<&str>) -> Result<()> {
-        let cursor_limit = if cfg!(target_arch = "wasm32") {
-            WORKER_MAX_SURFACE_LIST_CURSOR_BYTES
-        } else {
-            MAX_SURFACE_LIST_CURSOR_BYTES
-        };
+    /// a key outside `prefix`, or a cursor repeated by the backend.
+    pub fn validate(
+        &self,
+        requested_limit: usize,
+        prefix: &str,
+        prior_cursor: Option<&str>,
+    ) -> Result<()> {
+        let cursor_limit = surface_list_cursor_limit();
+        validate_surface_list_prefix(prefix)?;
         if requested_limit == 0 || self.paths.len() > requested_limit {
             bail!("surface listing returned more keys than requested");
         }
@@ -131,6 +136,9 @@ impl SurfaceListPage {
             {
                 bail!("surface listing page keys are not strictly increasing");
             }
+            if !path.starts_with(prefix) {
+                bail!("surface listing page key escaped the requested prefix");
+            }
             prior = Some(path);
         }
         if self.paths.is_empty() && self.next_cursor.is_some() {
@@ -138,6 +146,41 @@ impl SurfaceListPage {
         }
         Ok(())
     }
+}
+
+/// Maximum bytes accepted for a listing cursor or key on this platform.
+fn surface_list_cursor_limit() -> usize {
+    if cfg!(target_arch = "wasm32") {
+        WORKER_MAX_SURFACE_LIST_CURSOR_BYTES
+    } else {
+        MAX_SURFACE_LIST_CURSOR_BYTES
+    }
+}
+
+/// Validates a surface-relative listing prefix for [`SurfaceFetch::list_page`].
+///
+/// The empty prefix walks the whole surface. Any other prefix is a relative
+/// key fragment: it may end mid-component, but it must not be absolute, must
+/// not contain `.` or `..` components, and must fit the platform key bound, so
+/// a backend can compose it directly onto its own placement prefix.
+///
+/// # Errors
+///
+/// Returns an error for an absolute, dot-traversing, or oversized prefix.
+pub fn validate_surface_list_prefix(prefix: &str) -> Result<()> {
+    if prefix.len() > surface_list_cursor_limit() {
+        bail!("surface listing prefix is too large");
+    }
+    if prefix.starts_with('/') {
+        bail!("surface listing prefix must be surface-relative");
+    }
+    if prefix
+        .split('/')
+        .any(|component| component == "." || component == "..")
+    {
+        bail!("surface listing prefix must not traverse directories");
+    }
+    Ok(())
 }
 
 /// Tracks fail-closed object-count and key-byte bounds while enumerating a surface.
@@ -393,29 +436,46 @@ pub trait SurfaceFetch: BackendBounds {
         Ok(Some(bytes))
     }
 
-    /// Enumerates one ordered page of surface-relative object paths.
+    /// Enumerates one ordered page of surface-relative object paths under
+    /// `prefix`.
     ///
     /// Returns the logical paths [`fetch`](Self::fetch) accepts (e.g.
-    /// `objects/ab/cd…`, `nar/…`, `<hash>.narinfo`, `nix-cache-info`), walking
-    /// the whole surface. The store (the bucket, the source of truth) is
-    /// authoritative; this is how the hub re-derives what it holds when it
-    /// cannot enumerate from the derived relational index alone:
+    /// `objects/ab/cd…`, `nar/…`, `<hash>.narinfo`, `nix-cache-info`). The
+    /// store (the bucket, the source of truth) is authoritative; this is how
+    /// the hub re-derives what it holds when it cannot enumerate from the
+    /// derived relational index alone:
     ///
     /// - **Storage migration** copies every listed object to the new backend.
     /// - **Cache re-scan** rebuilds the `cache_objects` index from the
     ///   narinfos it lists, reconciling drift after a direct (`apr`-presigned)
     ///   upload that bypassed the facade write-through.
+    /// - **OCI provider inventory** hashes every blob under
+    ///   `oci/blobs/sha256/` on a registry placement that also holds the
+    ///   binary cache and git objects.
     ///
-    /// `cursor` is the opaque value returned by the preceding page. Keys within
-    /// a page must be strictly increasing and a backend must never return an
-    /// empty non-terminal page. The default errors, so an HTTP-only origin with
-    /// no index need not implement enumeration.
+    /// `prefix` is a surface-relative key prefix (see
+    /// [`validate_surface_list_prefix`]); the empty string walks the whole
+    /// surface. A backend applies it natively, as an object-store list prefix
+    /// or a filesystem walk rooted at the prefix, never by enumerating the
+    /// surface and filtering, so a caller pays only for the namespace it asks
+    /// for. Every returned key starts with `prefix`.
+    ///
+    /// `cursor` is the opaque value returned by the preceding page of the same
+    /// prefix and is meaningful only for that prefix. Keys within a page must
+    /// be strictly increasing and a backend must never return an empty
+    /// non-terminal page. The default errors, so an HTTP-only origin with no
+    /// index need not implement enumeration.
     ///
     /// # Errors
     ///
-    /// Returns an error when the store cannot enumerate, or on IO/transport
-    /// failure.
-    async fn list_page(&self, _cursor: Option<&str>, _limit: usize) -> Result<SurfaceListPage> {
+    /// Returns an error when the store cannot enumerate, for an invalid
+    /// prefix, or on IO/transport failure.
+    async fn list_page(
+        &self,
+        _prefix: &str,
+        _cursor: Option<&str>,
+        _limit: usize,
+    ) -> Result<SurfaceListPage> {
         anyhow::bail!(
             "this surface ({}) does not support listing",
             self.describe()
@@ -774,9 +834,9 @@ mod tests {
             evidence: Default::default(),
             next_cursor: Some("cursor-2".into()),
         };
-        assert!(valid.validate(2, Some("cursor-1")).is_ok());
-        assert!(valid.validate(1, Some("cursor-1")).is_err());
-        assert!(valid.validate(2, Some("cursor-2")).is_err());
+        assert!(valid.validate(2, "", Some("cursor-1")).is_ok());
+        assert!(valid.validate(1, "", Some("cursor-1")).is_err());
+        assert!(valid.validate(2, "", Some("cursor-2")).is_err());
 
         let mut invalid_evidence = valid.clone();
         invalid_evidence.evidence.insert(
@@ -786,21 +846,49 @@ mod tests {
                 strong_etag: "version-1".into(),
             },
         );
-        assert!(invalid_evidence.validate(2, Some("cursor-1")).is_err());
+        assert!(invalid_evidence.validate(2, "", Some("cursor-1")).is_err());
 
         let unordered = SurfaceListPage {
             paths: vec!["b".into(), "a".into()],
             evidence: Default::default(),
             next_cursor: None,
         };
-        assert!(unordered.validate(2, None).is_err());
+        assert!(unordered.validate(2, "", None).is_err());
 
         let empty_non_terminal = SurfaceListPage {
             paths: Vec::new(),
             evidence: Default::default(),
             next_cursor: Some("cursor".into()),
         };
-        assert!(empty_non_terminal.validate(2, None).is_err());
+        assert!(empty_non_terminal.validate(2, "", None).is_err());
+    }
+
+    #[test]
+    fn listing_page_keys_must_lie_under_the_requested_prefix() {
+        let scoped = SurfaceListPage {
+            paths: vec!["oci/blobs/sha256/aa".into(), "oci/blobs/sha256/ab".into()],
+            evidence: Default::default(),
+            next_cursor: None,
+        };
+        assert!(scoped.validate(2, "oci/blobs/sha256/", None).is_ok());
+        assert!(scoped.validate(2, "oci/blobs/sha256/a", None).is_ok());
+        assert!(scoped.validate(2, "", None).is_ok());
+        assert!(scoped.validate(2, "nar/", None).is_err());
+
+        let escaped = SurfaceListPage {
+            paths: vec!["nar/x.nar.zst".into(), "oci/blobs/sha256/aa".into()],
+            evidence: Default::default(),
+            next_cursor: None,
+        };
+        assert!(escaped.validate(2, "oci/blobs/sha256/", None).is_err());
+
+        assert!(validate_surface_list_prefix("").is_ok());
+        assert!(validate_surface_list_prefix("oci/blobs/sha256/").is_ok());
+        assert!(validate_surface_list_prefix("/oci").is_err());
+        assert!(validate_surface_list_prefix("oci/../nar/").is_err());
+        assert!(validate_surface_list_prefix("./oci").is_err());
+        let oversized = "k".repeat(MAX_SURFACE_LIST_CURSOR_BYTES + 1);
+        assert!(validate_surface_list_prefix(&oversized).is_err());
     }
 
     #[tokio::test]
