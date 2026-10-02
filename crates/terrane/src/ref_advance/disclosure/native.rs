@@ -83,7 +83,17 @@ where
         let started = self.guard().clock().monotonic();
         let mut selections = Vec::with_capacity(request.selections.len());
         for selector in request.selections {
-            selections.push(preload(source, selector, &request.proposal.surface).await?);
+            let mut selection = preload(source, selector, &request.proposal.surface).await?;
+            // Source reads validate the exact immutable encoding under its own
+            // registered profile. Staging supplies the destination's validation
+            // parameters; it never imports the source's random profile seed.
+            // Actual destination validation still checks every encoded payload.
+            for upload in &mut selection.uploads {
+                if let StagedUpload::Chunk { profile, .. } = upload {
+                    *profile = self.guard().config().chunk_profile.clone();
+                }
+            }
+            selections.push(selection);
             self.check_time(started)?;
         }
         crate::selected_bridge::native_guard::disclosure::publish(
