@@ -28,6 +28,8 @@ use crate::{
     oci_projection::lifetime::{Owner, Scope},
 };
 
+mod permission;
+
 pub(crate) const PHYSICAL_PATH: &str = "/terminal-oci-cleanup";
 const PHYSICAL_HEADER: &str = "x-aos-managed-oci-cleanup-guard";
 const PHYSICAL_DOMAIN: &[u8] = b"aos.managed-oci-cleanup-physical.v1\0";
@@ -183,14 +185,10 @@ async fn physical_reply(
     let pending = storage.get("pending-mutation").await?;
     let deleting = storage.get("pending-delete").await?;
     crate::hybrid_object_state::ensure_ready(pending.as_ref(), deleting.as_ref())?;
-    let accepted = config::QualifiedConfig::load(&guard.env).await?;
+    let permission = permission::Permission::load(&guard.env, work).await?;
     let check = || {
         work.validate(&work.deployment_id, config::guard_latest_now(&guard.env)?)?;
-        accepted.latest_now()?;
-        ensure!(
-            accepted.managed(&guard.env)?.0.digest()? == work.protected_profile_digest,
-            "Managed cleanup ordinary provider profile changed"
-        );
+        permission.check(&guard.env, work)?;
         Ok(())
     };
     let capacity =

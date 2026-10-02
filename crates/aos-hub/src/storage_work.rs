@@ -142,6 +142,8 @@ pub struct RemoteStorageWorkClient {
     key: StorageWorkKey,
     mirror_profiles: Option<crate::direct_upload::authority::NativeDirectUploadAcceptances>,
     mirror_guard_key: Option<StorageWorkKey>,
+    #[cfg(test)]
+    controlled_managed_cleanup: Option<oci_cleanup::ControlledCleanup>,
     external_oci: Option<Arc<ExternalOciRuntime>>,
     oci_sdk_emulation: Option<crate::oci_sdk_emulation::NativeOciSdkEmulation>,
     #[cfg(test)]
@@ -206,6 +208,8 @@ impl RemoteStorageWorkClient {
             key: StorageWorkKey::new(key)?,
             mirror_profiles: None,
             mirror_guard_key: None,
+            #[cfg(test)]
+            controlled_managed_cleanup: None,
             external_oci: None,
             oci_sdk_emulation: None,
             #[cfg(test)]

@@ -364,3 +364,30 @@ fn authenticated<T: serde::de::DeserializeOwned + Serialize>(
     );
     Ok(value)
 }
+
+/// Commits the actual secret-free descriptor for a confined cleanup fixture.
+///
+/// This identity is neither provider acceptance nor Delete permission. Only
+/// the do-e2e Worker and test-only Native selector consume it; production
+/// permission continues to require the ordinary accepted protected profile.
+///
+/// # Errors
+/// Refuses malformed descriptor coordinates or canonical encoding failure.
+pub fn managed_cleanup_fixture_profile_digest(
+    profile: &crate::oci_sdk_emulation::OciSdkEmulationProfile,
+) -> Result<String> {
+    profile.validate()?;
+    canonical_digest(&("aos.managed-oci-cleanup-fixture-raw-profile.v1", profile))
+}
+
+/// Names the distinct owner-installed local cleanup fixture identity slot.
+///
+/// Ordinary Worker builds never read this key. Its value grants no Delete
+/// permission and is separate from the signed OCI SDK acceptance artifact.
+pub const MANAGED_OCI_CLEANUP_FIXTURE_KEY: &str = "managed-oci-terminal-cleanup-fixture-v1";
+
+/// Bounds a closed cleanup selection together with its raw observed SDK profile.
+///
+/// A typical full raw profile and selection occupy approximately 2 KiB. Longer
+/// records are refused rather than increasing the isolate's metadata budget.
+pub const MAX_MANAGED_OCI_CLEANUP_FIXTURE_BYTES: usize = 4096;

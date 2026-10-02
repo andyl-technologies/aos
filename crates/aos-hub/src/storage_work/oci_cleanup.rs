@@ -1,6 +1,6 @@
 //! Actual terminal SQL claims and independent Managed R2 cleanup receipts.
 
-use anyhow::{Context as _, Result, ensure};
+use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::{
     db::{BindingRecord, OciTerminalChunkCleanupClaim, SurfacePlacementRecord},
     mirror_guard::MirrorGuardIssuer,
@@ -57,20 +57,10 @@ impl HybridSurfaceWrites {
             capability.capability_fingerprint.clone(),
             capability.resource_version,
         )?;
+        let (profile, source_digest, script_version, uncertainty) = self
+            .work
+            .managed_cleanup_identity(&original.placement_prefix)?;
         let origin = self.work.executor_origin()?;
-        // An OCI-only anchor artifact is deliberately insufficient for Delete.
-        let profile = self
-            .work
-            .mirror_profiles
-            .as_ref()
-            .context("Managed cleanup ordinary provider issuer is not installed")?
-            .retained_managed_profile_digest(&self.work.deployment_id, &origin)?;
-        let (source_digest, script_version, uncertainty) = self
-            .work
-            .mirror_profiles
-            .as_ref()
-            .context("Managed cleanup ordinary provider acceptance is not installed")?
-            .retained_guard_issuer(&self.work.deployment_id, &origin, &profile)?;
         let guard = self
             .work
             .mirror_guard_key
@@ -196,4 +186,92 @@ async fn recheck(
         "Managed terminal cleanup current placement, binding or Delete capability changed"
     );
     Ok(())
+}
+
+impl super::RemoteStorageWorkClient {
+    fn managed_cleanup_identity(&self, prefix: &str) -> Result<(String, String, String, u64)> {
+        #[cfg(test)]
+        if let Some(selected) = &self.controlled_managed_cleanup {
+            anyhow::ensure!(
+                selected.prefix == prefix,
+                "Managed cleanup fixture prefix changed"
+            );
+            return Ok((
+                selected.profile.clone(),
+                selected.source.clone(),
+                selected.script.clone(),
+                selected.uncertainty,
+            ));
+        }
+        #[cfg(not(test))]
+        let _ = prefix;
+
+        // An OCI-only anchor artifact is deliberately insufficient for Delete.
+        let origin = self.executor_origin()?;
+        let accepted = self
+            .mirror_profiles
+            .as_ref()
+            .context("Managed cleanup ordinary provider issuer is not installed")?;
+        let profile = accepted.retained_managed_profile_digest(&self.deployment_id, &origin)?;
+        let (source, script, uncertainty) =
+            accepted.retained_guard_issuer(&self.deployment_id, &origin, &profile)?;
+        Ok((profile, source, script, uncertainty))
+    }
+
+    /// Selects a confined actual emulator identity for terminal cleanup tests.
+    ///
+    /// The physical namespace profile carries no Delete permission. The actual
+    /// terminal SQL claim and independent current capability are checked by
+    /// `cleanup_managed_oci_chunk` before this selection is consumed.
+    ///
+    /// # Errors
+    /// Rejects changed deployment, executor origin, source, script or an
+    /// unconfined cleanup prefix.
+    #[cfg(test)]
+    pub(crate) fn with_controlled_managed_cleanup(
+        mut self,
+        profile: aos_hub_core::oci_sdk_emulation::OciSdkEmulationProfile,
+        issuer: aos_hub_core::mirror_guard::MirrorGuardIssuer,
+        prefix: String,
+    ) -> Result<Self> {
+        profile.validate()?;
+        anyhow::ensure!(
+            profile.deployment_id == self.deployment_id
+                && profile.public_origin == self.executor_origin()?
+                && profile.worker_source_digest == issuer.source_digest
+                && profile.worker_script_version == issuer.script_version
+                && aos_hub_core::direct_upload::valid_direct_digest(&issuer.source_digest)
+                && issuer.script_version
+                    == aos_hub_core::direct_upload::direct_worker_emulated_script_id(
+                        &issuer.source_digest
+                    )?,
+            "Managed cleanup fixture deployment or emulated issuer differs"
+        );
+        let run = prefix.strip_prefix("qualification/oci-terminal-cleanup/");
+        anyhow::ensure!(
+            run.is_some_and(|run| !run.is_empty()
+                && run.len() <= 64
+                && run.bytes().all(|byte| byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || byte == b'-')),
+            "Managed cleanup fixture prefix is not confined"
+        );
+        self.controlled_managed_cleanup = Some(ControlledCleanup {
+            prefix,
+            profile: aos_hub_core::oci_cleanup::managed_cleanup_fixture_profile_digest(&profile)?,
+            source: issuer.source_digest,
+            script: issuer.script_version,
+            uncertainty: profile.clock_policy.uncertainty_seconds.get(),
+        });
+        Ok(self)
+    }
+}
+
+#[cfg(test)]
+pub(super) struct ControlledCleanup {
+    prefix: String,
+    profile: String,
+    source: String,
+    script: String,
+    uncertainty: u64,
 }

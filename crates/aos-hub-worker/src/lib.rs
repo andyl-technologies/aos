@@ -164,6 +164,9 @@ mod oci_manifest_ingress;
 mod oci_projection;
 #[cfg(target_arch = "wasm32")]
 mod oci_cleanup;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "oci_cleanup/permission.rs"]
+mod oci_cleanup_permission_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod oci_cleanup_state;
 #[cfg(test)]
