@@ -757,76 +757,106 @@
           )
           imports;
 
-      collectModules = provenance: importRoot: artifactContext: packageIdentity: propagateToImports: mods:
-        builtins.concatLists (
-          builtins.map (
-            mod: let
-              evaled =
-                evalModule {
-                  config = visibleConfigFor provenance;
-                  options = optionsTree;
-                  pkgs =
-                    if artifactContext == null
-                    then pkgs
-                    else {};
-                  lib = moduleLib;
-                  extraArgs =
-                    extraArgs
-                    // specialArgs
-                    // {provenance = provenanceQueries;}
-                    // (
-                      if packageIdentity == null
-                      then {}
-                      else
-                        {
-                          packageName = packageIdentity.name;
-                          packageVersion = packageIdentity.version;
+      # Repeated source imports share one evaluation within an identical
+      # resolver context. Inline modules remain separate mergeable definitions;
+      # authored `_file` values never determine source identity.
+      collectModules = provenance: importRoot: artifactContext: packageIdentity: propagateToImports: mods: let
+        visit = provenance: importRoot: artifactContext: packageIdentity: propagateToImports: state: mods:
+          builtins.foldl' (prior: mod: let
+            sourceKey =
+              if builtins.isPath mod || (builtins.isString mod && (builtins.hasContext mod || builtins.pathExists mod))
+              then
+                builtins.hashString "sha256" (builtins.toJSON {
+                  source = builtins.toString mod;
+                  inherit provenance importRoot artifactContext packageIdentity;
+                })
+              else null;
+            evaled =
+              evalModule {
+                config = visibleConfigFor provenance;
+                options = optionsTree;
+                pkgs =
+                  if artifactContext == null
+                  then pkgs
+                  else {};
+                lib = moduleLib;
+                extraArgs =
+                  extraArgs
+                  // specialArgs
+                  // {provenance = provenanceQueries;}
+                  // (
+                    if packageIdentity == null
+                    then {}
+                    else
+                      {
+                        packageName = packageIdentity.name;
+                        packageVersion = packageIdentity.version;
+                      }
+                      // (
+                        if artifactContext == null
+                        then {}
+                        else {
+                          package = artifactLib.value artifactContext.package;
+                          dependencies = builtins.mapAttrs (_: artifactLib.value) artifactContext.dependencies;
                         }
-                        // (
-                          if artifactContext == null
-                          then {}
-                          else {
-                            package = artifactLib.value artifactContext.package;
-                            dependencies = builtins.mapAttrs (_: artifactLib.value) artifactContext.dependencies;
-                          }
-                        )
+                      )
+                  );
+              }
+              mod;
+          in
+            if sourceKey != null && prior.seen ? ${sourceKey}
+            then prior
+            else let
+              admitted =
+                prior
+                // {
+                  seen =
+                    prior.seen
+                    // (
+                      if sourceKey == null
+                      then {}
+                      else {${sourceKey} = true;}
                     );
-                }
-                mod;
+                };
+              imported =
+                visit
+                (
+                  if propagateToImports
+                  then provenance
+                  else if provenance == "@host" || provenance == "@host-import"
+                  then "@host-import"
+                  else if provenance == "@runtime" || provenance == "@runtime-import"
+                  then "@runtime-import"
+                  else "@base"
+                )
+                (
+                  if propagateToImports
+                  then importRoot
+                  else null
+                )
+                (
+                  if propagateToImports
+                  then artifactContext
+                  else null
+                )
+                (
+                  if propagateToImports
+                  then packageIdentity
+                  else null
+                )
+                propagateToImports
+                admitted
+                (confinedPackageImports provenance importRoot evaled.imports);
             in
-              collectModules
-              (
-                if propagateToImports
-                then provenance
-                else if provenance == "@host" || provenance == "@host-import"
-                then "@host-import"
-                else if provenance == "@runtime" || provenance == "@runtime-import"
-                then "@runtime-import"
-                else "@base"
-              )
-              (
-                if propagateToImports
-                then importRoot
-                else null
-              )
-              (
-                if propagateToImports
-                then artifactContext
-                else null
-              )
-              (
-                if propagateToImports
-                then packageIdentity
-                else null
-              )
-              propagateToImports
-              (confinedPackageImports provenance importRoot evaled.imports)
-              ++ [
-                (evaled // {_provenance = provenance;})
-              ]
-          )
-          mods
-        );
+              imported // {modules = imported.modules ++ [(evaled // {_provenance = provenance;})];})
+          state
+          mods;
+      in
+        (visit provenance importRoot artifactContext packageIdentity propagateToImports {
+            seen = {};
+            modules = [];
+          }
+          mods).modules;
 
       artifactLib = import ./packages/artifacts.nix {};
       validArtifacts = artifacts:
@@ -1760,7 +1790,7 @@
                 throw ''
                   The option '${pathStr}' is read-only, but it has ${builtins.toString (builtins.length priorityFilteredDefs)} definitions:
                   ${builtins.concatStringsSep "\n" (
-                    builtins.map (d: "  - in ${d.file or "<unknown>"}: ${builtins.toJSON d.value}") priorityFilteredDefs
+                    builtins.map (d: "  - in ${d.file or "<unknown>"} (${builtins.typeOf d.value})") priorityFilteredDefs
                   )}
                 ''
               else null;

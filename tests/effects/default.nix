@@ -5,6 +5,7 @@
   initrdAccountSeed = import ./initrd-account-seed.nix {inherit pkgs;};
   checks = {
     modules = import ./modules.nix;
+    sourceImports = import ./source-imports.nix;
     types = import ./types.nix;
     composition = import ./composition.nix;
     dependencyBarrier = import ./native-dependency-barrier.nix;
@@ -40,6 +41,7 @@
     platformPackages = import ./platform-packages.nix;
     nativeOperationMatrix = import ./native-operation-matrix.nix;
     configurationPolicy = import ./configuration-policy.nix;
+    configurationProvider = import ./configuration-provider.nix {inherit lib pkgs;};
     storageProfile = import ./storage-profile.nix;
     buildInvariants = import ./build-invariants.nix {inherit lib pkgs;};
     runtimeRoles = import ./runtime-roles.nix {inherit lib pkgs;};
@@ -74,7 +76,7 @@ in
           script = ''
             export PYTHONDONTWRITEBYTECODE=1
             test -f ${initrdAccountSeed.serialization}/result
-            ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py}
+            ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py} ${../../pkgs/system/_aos-configuration-provider/aos_configuration.py} ${../../pkgs/system/_aos-configuration-provider/handler.py}
             ${pkgs.python3}/bin/python3 ${../services/native-flight-oracle.py} ${../fleet/native-reference-service-flights.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-filesystem-firewall-oracles-self-test.py} ${../fleet/native-filesystem-firewall-oracles.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-reference-filesystem-flights-self-test.py} ${../fleet/native-reference-filesystem-flights.py}
