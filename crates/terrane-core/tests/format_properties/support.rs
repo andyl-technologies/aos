@@ -7,6 +7,10 @@ use terrane_core::cbor::Decoder;
 pub(super) struct Generator(u64);
 
 impl Generator {
+    /// Creates a reproducible generator from a nonzero seed.
+    ///
+    /// # Panics
+    /// Panics if `seed` is zero, which is the xorshift absorbing state.
     pub(super) const fn new(seed: u64) -> Self {
         assert!(seed != 0);
         Self(seed)
