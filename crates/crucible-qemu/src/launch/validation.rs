@@ -8,8 +8,9 @@ use super::{
     QEMU_CONSOLE_SOCKET_FILE_NAME, QEMU_DEBUG_GUEST_ACTIVATION_CHARDEV_ID,
     QEMU_DEBUG_GUEST_ACTIVATION_SOCKET_FILE_NAME, QEMU_IDLE_PREFIX_TRACE_SELECTION,
     QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
-    QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME, QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
-    QEMU_RUNTIME_LIVENESS_TRACE_SELECTION, entropy::GUEST_ENTROPY_RNG_ID,
+    QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+    QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION, QEMU_RUNTIME_LIVENESS_TRACE_SELECTION,
+    entropy::GUEST_ENTROPY_RNG_ID,
 };
 
 mod values;
@@ -394,6 +395,26 @@ pub(in crate::launch) fn validate_optional_diagnostic_trace(
         return Err(QemuPreSpawnLaunchValidationError::DuplicateOption { option: "-D" });
     }
     if trace_selections.len() > 1 {
+        let witness = [
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+            "-trace",
+            QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION,
+        ];
+        if log_files.as_slice() == [QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME]
+            && trace_selections.as_slice()
+                == [
+                    QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+                    QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION,
+                ]
+            && args
+                .windows(witness.len())
+                .any(|window| window.iter().map(String::as_str).eq(witness))
+        {
+            return Ok(());
+        }
         return Err(QemuPreSpawnLaunchValidationError::DuplicateOption { option: "-trace" });
     }
     if log_files.is_empty() && trace_selections.is_empty() {
@@ -945,6 +966,40 @@ fn validate_pre_spawn_rtc(rtc: &str) -> Result<(), QemuPreSpawnLaunchValidationE
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delivery_witness_admits_only_two_exact_adjacent_selections() {
+        let accepted = [
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+            "-trace",
+            QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION,
+        ]
+        .map(str::to_owned);
+        assert_eq!(validate_optional_diagnostic_trace(&accepted), Ok(()));
+
+        for (index, replacement) in [
+            (1, "other.trace"),
+            (3, "enable=crucible_sim_rr_control_*"),
+            (5, "enable=crucible_sim_*"),
+            (5, QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION),
+        ] {
+            let mut rejected = accepted.to_vec();
+            rejected[index] = replacement.to_owned();
+            assert!(validate_optional_diagnostic_trace(&rejected).is_err());
+        }
+        let mut separated = accepted.to_vec();
+        separated.insert(4, "-nodefaults".to_owned());
+        assert!(validate_optional_diagnostic_trace(&separated).is_err());
+        let mut duplicate = accepted.to_vec();
+        duplicate.extend([
+            "-trace".to_owned(),
+            QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION.to_owned(),
+        ]);
+        assert!(validate_optional_diagnostic_trace(&duplicate).is_err());
+    }
 
     #[test]
     fn idle_prefix_trace_is_one_fixed_whitelisted_pair() {

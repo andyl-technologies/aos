@@ -463,8 +463,30 @@ mod tests {
     use super::*;
     use crate::launch::{
         QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME, QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
-        QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME, QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
+        QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION, QEMU_RUNTIME_DETERMINISM_TRACE_FILE_NAME,
+        QEMU_RUNTIME_DETERMINISM_TRACE_SELECTION,
     };
+
+    #[test]
+    fn setup_probe_removes_both_exact_control_witness_selections() {
+        let launch = [
+            "-nodefaults",
+            "-D",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME,
+            "-trace",
+            QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION,
+            "-trace",
+            QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION,
+            "-plugin",
+            "plugin.so",
+            "-monitor",
+            "none",
+        ]
+        .map(str::to_owned);
+        let probe = x86_whitebox_probe_args_from(&launch)
+            .unwrap_or_else(|error| panic!("witness stripping: {error}"));
+        assert_eq!(probe, ["-nodefaults", "-monitor", "stdio", "-S"]);
+    }
 
     #[test]
     fn setup_probe_removes_fixed_control_boundary_trace_pair() {

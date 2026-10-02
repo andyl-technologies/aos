@@ -83,6 +83,9 @@ pub const QEMU_CONSOLE_SOCKET_FILE_NAME: &str = "crucible-console.sock";
 pub const QEMU_RR_CONTROL_BOUNDARY_TRACE_FILE_NAME: &str = "crucible-rr-control-boundary.trace";
 pub(crate) const QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION: &str =
     "enable=crucible_sim_rr_control_boundary";
+pub(crate) const QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION: &str =
+    "enable=crucible_sim_rr_control_delivery";
+const CONTROL_CALLBACK_WITNESS_ENV: &str = "CRUCIBLE_CONTROL_CALLBACK_WITNESS";
 pub(crate) const QEMU_IDLE_PREFIX_TRACE_SELECTION: &str = "enable=crucible_sim_idle_*";
 pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_BYTES: u64 = 4 * 1024 * 1024;
 pub(crate) const MAXIMUM_RR_CONTROL_BOUNDARY_TRACE_LINES: usize = 65_536;
@@ -380,6 +383,7 @@ impl LaunchProfileCandidate {
 pub struct QemuLaunchCommand {
     executable: String,
     args: Vec<String>,
+    control_callback_witness: bool,
     vmstate_size_mib: u64,
     vm_hash_material: String,
     gdbstub: Option<QemuGdbstubChannelConfig>,
@@ -505,6 +509,19 @@ impl QemuLaunchCommand {
     #[must_use]
     pub fn args(&self) -> &[String] {
         &self.args
+    }
+
+    /// Returns the fixed diagnostic opt-in admitted for this child command.
+    ///
+    /// Guarded spawn clears every inherited host variable and applies only
+    /// these named, constant values. Environment entries do not enter launch
+    /// hash material; the existing argv hash includes the exact trace selections.
+    pub(crate) fn diagnostic_envs(&self) -> &'static [(&'static str, &'static str)] {
+        if self.control_callback_witness {
+            &[(CONTROL_CALLBACK_WITNESS_ENV, "1")]
+        } else {
+            &[]
+        }
     }
 
     /// Returns the world-derived VM launch material paired with this command.
@@ -905,8 +922,15 @@ impl QemuLaunchCommandBuilder {
         if let Some(gdbstub) = &self.gdbstub {
             args.extend(["-gdb".to_owned(), gdbstub.qemu_endpoint().to_owned()]);
         }
+        let control_callback_witness = self.rr_control_boundary_trace
+            && std::env::var_os(CONTROL_CALLBACK_WITNESS_ENV).as_deref()
+                == Some(std::ffi::OsStr::new("1"));
         if self.rr_control_boundary_trace {
-            let selection = if std::env::var_os("CRUCIBLE_PHASE7_IDLE_TRACE").is_some() {
+            // The explicit witness pair takes precedence over the broader idle
+            // diagnostic mode; witness-off launches retain its existing selection.
+            let selection = if !control_callback_witness
+                && std::env::var_os("CRUCIBLE_PHASE7_IDLE_TRACE").is_some()
+            {
                 QEMU_IDLE_PREFIX_TRACE_SELECTION
             } else {
                 QEMU_RR_CONTROL_BOUNDARY_TRACE_SELECTION
@@ -917,6 +941,15 @@ impl QemuLaunchCommandBuilder {
                 "-trace".to_owned(),
                 selection.to_owned(),
             ]);
+            if control_callback_witness {
+                // QEMU applies each -trace selection independently. Two fixed
+                // event names preserve the boundary receipt and avoid enabling
+                // unrelated future events through a wildcard.
+                args.extend([
+                    "-trace".to_owned(),
+                    QEMU_RR_CONTROL_DELIVERY_TRACE_SELECTION.to_owned(),
+                ]);
+            }
         } else if self.runtime_determinism_trace {
             args.extend([
                 "-D".to_owned(),
@@ -943,6 +976,7 @@ impl QemuLaunchCommandBuilder {
         Ok(QemuLaunchCommand {
             executable: self.executable,
             args,
+            control_callback_witness,
             vmstate_size_mib,
             vm_hash_material,
             gdbstub: self.gdbstub,

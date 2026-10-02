@@ -769,6 +769,7 @@ fn start_packaged_service_with_artifacts(
     }
     if matches!(diagnostics, FlightDiagnostics::ControlCallback) {
         invocation.env("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1");
+        invocation.env("CRUCIBLE_RR_CLAMP_TAIL", "1");
     }
     invocation
         .arg("--qemu")

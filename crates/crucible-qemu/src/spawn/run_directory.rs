@@ -360,6 +360,8 @@ impl QemuPreparedRunDirectory {
     /// The diagnostic keeps the original whole-file reader's 4 MiB limit
     /// unchanged. This separate bounded pass verifies every row and hashes the
     /// pinned file before rechecking its named inode and size after QEMU reap.
+    /// Advisory delivery rows use a separate schema validator and share the
+    /// existing final 32-row, 512-byte-per-row tail; they are never receipts.
     ///
     /// # Errors
     ///
@@ -404,7 +406,9 @@ impl QemuPreparedRunDirectory {
                     source,
                 })?;
             let row = row.trim_end_matches('\n');
-            if !valid_rr_control_boundary_row(row) {
+            if !valid_rr_control_boundary_row(row)
+                && !super::control_delivery_trace::valid_control_delivery_row(row)
+            {
                 return Err(QemuSpawnError::DiagnosticTraceMalformed {
                     file: file_name,
                     line: row_count + 1,
