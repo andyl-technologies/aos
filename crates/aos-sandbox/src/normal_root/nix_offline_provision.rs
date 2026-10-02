@@ -3,8 +3,10 @@
 //! No TPM device, approval signer, runtime floor or journal is opened here.
 //! Returned activation descriptors and parked partial observations stay in the
 //! owner on error or unwind. Current-self pidfd adoption and original stat reads
-//! use one resident lower DATA owner. Cgroup pre-return custody gaps remain
-//! functional dependencies; this adapter does not repair that engine.
+//! use one resident lower DATA owner. Hardware startup also parks the returned
+//! initial hierarchy/self-cgroup candidates through the shared lower validators.
+//! Raw open/clone pre-return gaps and later consuming membership observations
+//! remain functional dependencies; ordinary prepare/inspection is unchanged.
 //! A genuine borrow exists only after selected image,
 //! PID1 delivery, confinement, stopped-runtime and credential comparisons.
 //! SecureBits=12 is a selected manager/unit configuration comparison, not a
@@ -288,6 +290,7 @@ struct HardwareStartupV5 {
     cgroup_observations: Vec<[aos_sandbox_linux::cgroup::NixOfflineStoppedCgroupReadbackV5; 2]>,
     thread_failure: Option<io::Error>,
     unwind: Option<Box<dyn std::any::Any + Send>>,
+    initial_cgroup: aos_sandbox_linux::cgroup::NixOfflineInitialCgroupReadbackV5,
 }
 
 impl HardwareStartupV5 {
@@ -304,6 +307,7 @@ impl HardwareStartupV5 {
             cgroup_observations: Vec::new(),
             thread_failure: None,
             unwind: None,
+            initial_cgroup: aos_sandbox_linux::cgroup::NixOfflineInitialCgroupReadbackV5::new(),
         }
     }
 }
@@ -709,8 +713,24 @@ impl OfflineNixPrepareStartupV3 {
         let root_file = self.raw.last().ok_or(Error::Rejected)?;
         self.cgroup_mount = Some(MountId::from_fd(root_file.as_fd())?);
         self.cgroup_file_index = Some(self.raw.len() - 1);
-        self.cgroup_root = Some(CgroupV2Root::from_owned(root_file.try_clone()?.into())?);
-        self.cgroup = Some(self.cgroup_root.as_ref().ok_or(Error::Rejected)?.resolve(Path::new(CGROUP))?);
+        if mode.hardware() {
+            let hardware = self.hardware.as_mut().ok_or(Error::Rejected)?;
+            hardware
+                .initial_cgroup
+                .capture_provisioner(root_file.try_clone()?.into())?;
+            let (root, anchor) = hardware
+                .initial_cgroup
+                .take_validated_pair()
+                .ok_or(Error::Rejected)?;
+
+            // Both owning moves are infallible; all partials and probes remain
+            // on the same external startup owner before any later observation.
+            self.cgroup_root = Some(root);
+            self.cgroup = Some(anchor);
+        } else {
+            self.cgroup_root = Some(CgroupV2Root::from_owned(root_file.try_clone()?.into())?);
+            self.cgroup = Some(self.cgroup_root.as_ref().ok_or(Error::Rejected)?.resolve(Path::new(CGROUP))?);
+        }
 
         self.observe_selected()?;
         let observed = self.observed.as_ref().ok_or(Error::Rejected)?;
