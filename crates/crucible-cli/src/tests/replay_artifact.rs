@@ -2761,7 +2761,12 @@ pub(super) fn cli_verify_builtin_corpus_host_profiles() -> Result<(), Box<dyn Er
             &mut NullBackendCommandRunner,
         )?;
 
-        assert_eq!(outcome.status, BackendCommandStatus::Passed);
+        assert_eq!(
+            outcome.status,
+            BackendCommandStatus::Passed,
+            "{scenario_name}: {:?}",
+            outcome.stdout
+        );
         assert_eq!(
             outcome
                 .stdout
@@ -2794,6 +2799,94 @@ pub(super) fn cli_verify_builtin_corpus_host_profiles() -> Result<(), Box<dyn Er
         );
     }
 
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_verify_coalesced_states_preserve_semantic_divergence()
+-> Result<(), Box<dyn Error>> {
+    let temp = TempDir::new()?;
+    let cli = Cli::parse_from([
+        "crucible",
+        "verify",
+        "builtin:happy-path.scn",
+        "--runs",
+        "2",
+    ]);
+    let Commands::Verify(args) = &cli.command else {
+        panic!("expected verify command");
+    };
+    let verify_plan = plan_verify_invocation(args, temp.path())?;
+    let reduction = verify_plan.reductions[0].clone();
+    let scenario = verify_plan.scenario().expect("scenario verify plan");
+    let run_plan = verify_run_invocation_plan(
+        scenario.clone(),
+        scenario.scenario_def().seed(),
+        reduction.clone(),
+    );
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-verify-state-projection",
+        Vec::new(),
+        |_scenario: &crucible::ScenarioDef, _seed| QuiescentLifecycleLoop::new(),
+    )
+    .with_terminal_session_retention(true);
+    let client = InProcessLifecycleClient::new(control_plane);
+    let mut report = run_control_client_workflow_async(&client, &run_plan, &[]).await?;
+    assert!(!report.streamed_event_frames.is_empty());
+    assert_eq!(report.execution_fingerprints.len(), 4);
+    report.state_updates = vec!["running".into(), "paused".into(), "quiescent".into()];
+    let mut coalesced = report.clone();
+    coalesced.state_updates = vec!["running".into(), "quiescent".into()];
+    assert_ne!(
+        canonical_run_log_entries(&run_plan, &report),
+        canonical_run_log_entries(&run_plan, &coalesced)
+    );
+
+    let witness = |report: &RunWorkflowReport| {
+        verify_witness_from_run_report(
+            reduction.clone(),
+            &run_plan,
+            report,
+            None,
+            None,
+            temp.path(),
+        )
+    };
+    assert!(compare_verify_witnesses(&[witness(&report)?, witness(&coalesced)?]).is_none());
+    let assert_diverges = |changed: &RunWorkflowReport| -> Result<(), Box<dyn Error>> {
+        assert!(compare_verify_witnesses(&[witness(&report)?, witness(changed)?]).is_some());
+        Ok(())
+    };
+
+    let mut changed = coalesced.clone();
+    changed.final_state = String::from("failed");
+    assert_diverges(&changed)?;
+    let mut changed = coalesced.clone();
+    changed.outcome = Some(OutcomeKind::Failed);
+    assert_diverges(&changed)?;
+    let mut changed = coalesced.clone();
+    changed.final_frontier_ticks += 1;
+    assert_diverges(&changed)?;
+    let mut changed = coalesced.clone();
+    changed.final_quanta += 1;
+    assert_diverges(&changed)?;
+    let mut changed = coalesced.clone();
+    changed.terminal_savepoint = Some(crucible::ContentHash::from_bytes(b"different-savepoint"));
+    assert_diverges(&changed)?;
+    let mut changed = coalesced.clone();
+    changed
+        .streamed_event_frames
+        .push(changed.streamed_event_frames[0].clone());
+    assert_diverges(&changed)?;
+    let mut changed = coalesced.clone();
+    changed
+        .acknowledged_commands
+        .push(SessionCommandKind::Pause);
+    assert_diverges(&changed)?;
+    let mut changed = coalesced;
+    changed.execution_fingerprints[0].fingerprint.hash =
+        crucible::ContentHash::from_bytes(b"different-execution");
+    assert_diverges(&changed)?;
     Ok(())
 }
 
