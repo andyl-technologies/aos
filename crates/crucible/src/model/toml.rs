@@ -1,4 +1,7 @@
 //! TOML schema types and semantic conversion helpers.
+//!
+//! Current scenario triggers and relative timers retain exact picosecond ticks;
+//! separately declared nanosecond fields retain checked unit conversion.
 
 use super::*;
 use crucible_campaign::SelectableDeclaration;
@@ -320,7 +323,11 @@ pub(super) enum FirePolicyToml {
 pub(super) enum ActionToml {
     ArmTimer {
         name: String,
-        after_nanos: u64,
+        #[serde(
+            deserialize_with = "deserialize_u64_toml_number_or_string",
+            serialize_with = "serialize_u64_toml_number_or_string"
+        )]
+        after_ticks: u64,
     },
     CancelTimer {
         name: String,
@@ -409,7 +416,11 @@ pub(super) enum PredicateTomlKind {
         at_ticks: u64,
     },
     After {
-        duration_nanos: u64,
+        #[serde(
+            deserialize_with = "deserialize_u64_toml_number_or_string",
+            serialize_with = "serialize_u64_toml_number_or_string"
+        )]
+        duration_ticks: u64,
         of: String,
     },
     Timer {
@@ -1144,7 +1155,7 @@ pub(super) fn action_to_toml(action: &Action) -> Result<ActionToml, EngineError>
     Ok(match action {
         Action::ArmTimer { name, after } => ActionToml::ArmTimer {
             name: name.name.clone(),
-            after_nanos: authored_duration_to_nanos(*after)?,
+            after_ticks: after.ticks,
         },
         Action::CancelTimer { name } => ActionToml::CancelTimer {
             name: name.name.clone(),
@@ -1180,9 +1191,9 @@ pub(super) fn action_to_toml(action: &Action) -> Result<ActionToml, EngineError>
 
 pub(super) fn action_from_toml(toml: ActionToml) -> Result<Action, EngineError> {
     Ok(match toml {
-        ActionToml::ArmTimer { name, after_nanos } => Action::ArmTimer {
+        ActionToml::ArmTimer { name, after_ticks } => Action::ArmTimer {
             name: TimerId { name },
-            after: authored_duration_from_nanos(after_nanos)?,
+            after: SimDuration { ticks: after_ticks },
         },
         ActionToml::CancelTimer { name } => Action::CancelTimer {
             name: TimerId { name },
@@ -1458,7 +1469,7 @@ pub(super) fn predicate_to_toml(predicate: &Predicate) -> Result<PredicateToml, 
     Ok(PredicateToml::Structured(match predicate {
         Predicate::At { at } => PredicateTomlKind::At { at_ticks: at.ticks },
         Predicate::After { duration, of } => PredicateTomlKind::After {
-            duration_nanos: authored_duration_to_nanos(*duration)?,
+            duration_ticks: duration.ticks,
             of: of.name.clone(),
         },
         Predicate::Timer { name } => PredicateTomlKind::Timer {
@@ -1542,8 +1553,10 @@ pub(super) fn predicate_from_toml(toml: PredicateToml) -> Result<Predicate, Engi
         PredicateTomlKind::At { at_ticks } => Predicate::At {
             at: VirtualTime { ticks: at_ticks },
         },
-        PredicateTomlKind::After { duration_nanos, of } => Predicate::After {
-            duration: authored_duration_from_nanos(duration_nanos)?,
+        PredicateTomlKind::After { duration_ticks, of } => Predicate::After {
+            duration: SimDuration {
+                ticks: duration_ticks,
+            },
             of: EventId { name: of },
         },
         PredicateTomlKind::Timer { name } => Predicate::Timer {
