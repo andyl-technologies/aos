@@ -129,7 +129,9 @@ impl ContentArtifactProvider {
                 "bundled nix-store is not executable"
             );
         }
-        Ok(resolved)
+        // Nix dispatches its legacy CLI by argv[0]; resolving the symlink for
+        // invocation would select `nix` instead of the bundled `nix-store`.
+        Ok(executable)
     }
 
     fn inspect(

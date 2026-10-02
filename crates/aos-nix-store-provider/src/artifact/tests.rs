@@ -104,6 +104,96 @@ fn media_types_admit_exact_positive_version_parameters() {
 }
 
 #[test]
+fn bundled_executable_preserves_nix_store_multicall_alias() {
+    let temporary = tempdir().expect("temporary directory exists");
+    let binary = temporary.path().join("nix");
+    let alias = temporary.path().join("nix-store");
+    fs::write(&binary, b"multicall executable").expect("multicall target is written");
+    symlink(&binary, &alias).expect("legacy CLI alias is created");
+    let mut provider = ContentArtifactProvider::test(
+        temporary.path().join("gcroots"),
+        temporary.path().join("store"),
+        Box::new(FakeArtifactCommands),
+    );
+    provider.executable = Some(alias.clone());
+
+    let selected = provider.executable().expect("bundled alias resolves");
+
+    assert_eq!(selected, alias);
+    assert_eq!(fs::canonicalize(selected).expect("target resolves"), binary);
+}
+
+#[test]
+#[ignore = "requires AOS_TEST_NIX_STORE pointing to source-built Nix"]
+fn source_built_nix_store_alias_adds_and_verifies_exact_content() {
+    let executable = PathBuf::from(
+        std::env::var("AOS_TEST_NIX_STORE").expect("source-built nix-store fixture is selected"),
+    );
+    let temporary = tempdir().expect("temporary directory exists");
+    let mut provider = ContentArtifactProvider::test(
+        temporary.path().join("gcroots"),
+        temporary.path().join("store"),
+        Box::new(FakeArtifactCommands),
+    );
+    provider.executable = Some(executable.clone());
+    provider.validate_executable_file = true;
+    let selected = provider
+        .executable()
+        .expect("immutable executable is valid");
+    assert_eq!(selected, executable);
+
+    let local_root = temporary.path().join("local-root");
+    let store_uri = format!("local?root={}", local_root.display());
+    let source = temporary.path().join("authorized-provisioning-input");
+    let content = b"{\"schema\":\"aos.test/v1\"}";
+    fs::write(&source, content).expect("exact content is written");
+
+    let run = |arguments: &[&str]| {
+        let output = std::process::Command::new(&selected)
+            .args(["--store", &store_uri])
+            .args(arguments)
+            .env_clear()
+            .output()
+            .expect("source-built nix-store executes");
+        assert!(
+            output.status.success(),
+            "nix-store {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        output.stdout
+    };
+
+    let added = run(&[
+        "--add-fixed",
+        "sha256",
+        source.to_str().expect("UTF-8 path"),
+    ]);
+    let added = std::str::from_utf8(&added)
+        .expect("UTF-8 store path")
+        .trim();
+    let digest = Sha256Digest::of_bytes(content);
+    let expected = run(&[
+        "--print-fixed-path",
+        "sha256",
+        &digest.hex(),
+        "authorized-provisioning-input",
+    ]);
+
+    assert_eq!(
+        added,
+        std::str::from_utf8(&expected).expect("UTF-8 path").trim()
+    );
+    assert!(run(&["--check-validity", "--print-invalid", added]).is_empty());
+    assert!(run(&["--query", "--references", added]).is_empty());
+    let physical_path = local_root.join(added.strip_prefix('/').expect("absolute store path"));
+    assert!(!run(&["--dump", physical_path.to_str().expect("UTF-8 object path")]).is_empty());
+    assert_eq!(
+        fs::read(physical_path).expect("stored content exists"),
+        content
+    );
+}
+
+#[test]
 fn content_input_rejects_symlinks() {
     let temporary = tempdir().expect("temporary directory exists");
     fs::write(temporary.path().join("target"), b"content").expect("target");

@@ -150,7 +150,8 @@ impl NixStoreProvider {
             .parent()
             .context("Nix handler has no parent")?
             .join("../libexec/nix-store");
-        let path = fs::canonicalize(path)?;
+        // Validate the resolved immutable target without losing nix-store's
+        // argv[0] dispatch through the package-owned multicall symlink.
         let executable = Executable { path };
         executable.validate(self.validate_executable_file)?;
         Ok(executable)

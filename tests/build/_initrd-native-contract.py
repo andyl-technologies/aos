@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import tempfile
 
 LIMIT = 32 * 1024 * 1024
 
@@ -61,27 +62,33 @@ def check_units(tree, contract):
 
 
 def check_rejected_unit_mutations(tree, contract):
-    """Require the qualified graph check to reject broken handoff ordering."""
-    name = contract["handoff"]["required_units"][0]
-    unit = confined(tree, "etc/systemd/system/" + name, "nix/store")
-    original = unit.read_bytes()
+    """Reject broken ordering using private copies of the archived unit bytes."""
     completion = contract["handoff"]["completion_target"]
-    mutations = [
-        "[Service]\nBefore=" + completion + "\n",
-        "[Unit]\nBefore=" + completion + "\nBefore=\n",
-        "[Unit]\nBefore=" + completion + "-unrelated\n",
-    ]
-    try:
+    required_units = contract["handoff"]["required_units"]
+    with tempfile.TemporaryDirectory(prefix="aos-handoff-units-") as directory:
+        fixture = Path(directory)
+        units = fixture / "etc/systemd/system"
+        requirements = units / (completion + ".requires")
+        requirements.mkdir(parents=True)
+        for name in required_units:
+            archived = confined(tree, "etc/systemd/system/" + name, "nix/store")
+            (units / name).write_bytes(archived.read_bytes())
+            (requirements / name).symlink_to("../" + name)
+        check_units(fixture, contract)
+
+        unit = units / required_units[0]
+        mutations = [
+            "[Service]\nBefore=" + completion + "\n",
+            "[Unit]\nBefore=" + completion + "\nBefore=\n",
+            "[Unit]\nBefore=" + completion + "-unrelated\n",
+        ]
         for contents in mutations:
             unit.write_text(contents)
             try:
-                check_units(tree, contract)
+                check_units(fixture, contract)
             except ValueError:
                 continue
             raise ValueError("handoff graph accepted invalid unit ordering")
-    finally:
-        unit.write_bytes(original)
-    check_units(tree, contract)
 
 
 def check_bundle(assembly, stage, tree, directory, store):
@@ -121,11 +128,11 @@ def check_minimal_base(root):
         r"^[0-9a-z]{32}-(?:tailscale|docker|docker-engine|docker-buildx|docker-compose|"
         r"containerd|qemu|libvirt|aos-hub|bind|dnsmasq)-[0-9]"
     )
-    store = root / "nix.lower/store"
+    store = root / "usr/lib/aos/nix/store"
     unexpected = sorted(entry.name for entry in store.iterdir() if optional_payload.match(entry.name))
     require(not unexpected, "optional workload payloads retained in base: " + ", ".join(unexpected))
 
-    installed = json.loads(confined(root, "usr/lib/aos/host/deployment/installed.json", "nix.lower/store").read_bytes())
+    installed = json.loads(confined(root, "usr/lib/aos/host/deployment/installed.json", "usr/lib/aos/nix/store").read_bytes())
     apm_roots = [record for record in installed if record["apm"]["name"] == "aos"]
     require(apm_roots, "base lacks the APM package")
     require(
@@ -143,7 +150,7 @@ def main():
     check_units(initrd, contract)
     check_rejected_unit_mutations(initrd, contract)
     check_bundle(assembly, "initrd", initrd, "lib/aos/initrd/deployment", "nix/store")
-    check_bundle(assembly, "host", root, "usr/lib/aos/host/deployment", "nix.lower/store")
+    check_bundle(assembly, "host", root, "usr/lib/aos/host/deployment", "usr/lib/aos/nix/store")
     check_minimal_base(root)
     # A runtime retained through a package dependency need not be a direct
     # closure root; verify the actual public executable in the archive.
