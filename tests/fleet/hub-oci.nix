@@ -2149,7 +2149,8 @@ in {
     diagnostic = json.loads(
         publisher.succeed("cat /tmp/hub-oci-gc-diagnostic.json")
     )["data"]["run"]
-    assert int(diagnostic["candidate_object_count"]) == 0, diagnostic
+    # ProtoJSON omits zero-valued fields, so an empty plan has no count.
+    assert int(diagnostic.get("candidate_object_count", 0)) == 0, diagnostic
     # Inventory waits can outlive the session JWT used to create the review.
     token = browser_session_token()
 
@@ -2509,7 +2510,8 @@ in {
         f"--if-version {shlex.quote(private_instance['resource_version'])}",
         token,
     )["data"]["route"]
-    assert not private_instance["spec"]["enabled"], private_instance
+    # ProtoJSON omits false booleans, so a disabled route has no flag.
+    assert not private_instance["spec"].get("enabled", False), private_instance
     consumer.succeed(
         "${nerdctl} pull --platform linux/amd64 192.168.50.11:8443/aos:private",
         timeout=900,
