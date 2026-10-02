@@ -76,7 +76,7 @@ in
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-contract ${assembly} initrd-native-contract-check
             mkdir initrd-tree root-tree
-            ${pkgs.zstd}/bin/zstd -dc ${initrd}/initrd.img > initrd.cpio
+            ${pkgs.zstd}/bin/zstd -dc < ${initrd}/initrd.img > initrd.cpio
             # Resolve cpio's deferred hardlinks before extraction so directory
             # permissions are restored after every child, even across directories.
             ${pkgs.libarchive}/bin/bsdtar --format=pax -cf initrd.tar @initrd.cpio
