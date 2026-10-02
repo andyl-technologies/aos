@@ -3,6 +3,40 @@
   pkgs,
   lib,
 }: let
+  provisioningTypes = import ../../pkgs/system/_aos-storage-provisioning-provider/types.nix {inherit lib;};
+  provisioningWire = lib.evalModules {
+    inherit lib;
+    modules = [
+      ../../lib/effects/module.nix
+      {
+        aos.activation.scope = ["fixture" "provisioning-wire"];
+        aos.abilities = {
+          provisioningMarker.operations.observe = {
+            result.options.marker = lib.mkOption {
+              type = provisioningTypes.marker;
+              description = "Actual durable marker wire contract.";
+            };
+            handler.program = pkgs.bash;
+            effects.single.input = {};
+          };
+          provisioningEvaluation.operations.evaluate = {
+            result.options = {
+              provisioning_plan = lib.mkOption {
+                type = provisioningTypes.plan;
+                description = "Actual canonical provisioning plan wire contract.";
+              };
+              canonical_plan = lib.mkOption {
+                type = lib.types.str;
+                description = "Canonical provisioning plan bytes.";
+              };
+            };
+            handler.program = pkgs.bash;
+            effects.single.input = {};
+          };
+        };
+      }
+    ];
+  };
   schema = name: module:
     pkgs.mkDerivation {
       pname = name;
@@ -123,11 +157,24 @@
     };
   };
 in
-  pkgs.writeTextFile {
+  (pkgs.writeTextFile {
     name = "boot-bootstrap-fixture";
     destination = "/fixture.json";
     text = builtins.toJSON {
       inherit hostBundle initrdBundle binding;
       library = lib.packageModuleLibrary;
     };
-  }
+  }).overrideAttrs (previous: {
+    phases =
+      previous.phases
+      ++ [
+        {
+          name = "provisioning-wire";
+          script = ''
+            cat > "$out/provisioning-wire-graph.json" <<'PROVISIONING_WIRE'
+            ${builtins.toJSON provisioningWire.config.aos.activation.graph}
+            PROVISIONING_WIRE
+          '';
+        }
+      ];
+  })
