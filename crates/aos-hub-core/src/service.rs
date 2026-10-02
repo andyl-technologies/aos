@@ -34,7 +34,9 @@ mod delivery_workflow;
 #[cfg(test)]
 mod delivery_workflow_tests;
 mod instance_settings;
+mod oci_namespaces;
 mod publication_manifest;
+mod registry_delete;
 mod registry_metadata;
 mod registry_policy;
 mod release_publication;
@@ -851,15 +853,6 @@ struct RegistryCreatePlanInput {
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 struct RegistryUpdatePlanInput {
     request: pb::PlanUpdateRegistryRequest,
-    registry_id: i64,
-    owner_scope_key: String,
-    expected_resource_version: i64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct RegistryDeletePlanInput {
-    stable_id: String,
-    slug: String,
     registry_id: i64,
     owner_scope_key: String,
     expected_resource_version: i64,
@@ -10923,6 +10916,7 @@ impl RpcService {
             generation: 0,
             content_digest: None,
         });
+        let exposure = self.container_distribution_exposure(record.id).await?;
         Ok(pb::Registry {
             slug: record.slug.clone(),
             name: status.name.unwrap_or_default(),
@@ -10942,9 +10936,12 @@ impl RpcService {
             updated_at: record.updated_at,
             authorization_scope_key: record.scope_key.clone(),
             owner_scope_key: record.owner_scope_key.clone(),
-            oci_distribution_origin: self
-                .container_distribution_origin(record.id)
-                .await?
+            oci_distribution_origin: exposure
+                .as_ref()
+                .map(|exposure| exposure.origin.clone())
+                .unwrap_or_default(),
+            oci_repository_namespace: exposure
+                .and_then(|exposure| exposure.namespace)
                 .unwrap_or_default(),
         })
     }
@@ -22671,138 +22668,6 @@ impl RpcService {
         Ok(response)
     }
 
-    /// Plans deletion of one unused registry identity.
-    pub async fn plan_delete_registry(
-        &self,
-        auth: Option<&str>,
-        mut req: pb::PlanDeleteTopologyResourceRequest,
-    ) -> Result<pb::TopologyPlanResponse, RpcError> {
-        let claims = self.require_claims(auth)?;
-        let registry = self.registry_or_not_found(&req.stable_id).await?;
-        self.require_permission(
-            &claims,
-            Permission::RegistryConfigure,
-            &self.registry_scope(&registry).await?,
-        )
-        .await?;
-        let expected = req
-            .expected_resource_version
-            .as_deref()
-            .ok_or_else(|| RpcError::invalid("expectedResourceVersion is required"))
-            .and_then(|value| parse_resource_version(value, 0))?;
-        if expected != registry.resource_version {
-            return Err(RpcError::FailedPrecondition(
-                "registry resource version is stale".to_string(),
-            ));
-        }
-        let idempotency_key = std::mem::take(&mut req.idempotency_key);
-        let input = RegistryDeletePlanInput {
-            stable_id: registry.stable_id.clone(),
-            slug: registry.slug.clone(),
-            registry_id: registry.id,
-            owner_scope_key: registry.owner_scope_key.clone(),
-            expected_resource_version: expected,
-        };
-        let confirmation_hash = hex::encode(Sha256::digest(
-            serde_json::to_vec(&input).map_err(RpcError::internal)?,
-        ));
-        self.create_control_plan(
-            &claims,
-            "delete_registry",
-            &registry.scope_key,
-            &input,
-            &idempotency_key,
-            vec![
-                format!("delete registry identity '{}'", registry.slug),
-                "retire its routes, placements, and terminal publication metadata".to_string(),
-            ],
-            vec![
-                "physical placement objects are not deleted".to_string(),
-                "active publication work or retained cache roots prevent deletion".to_string(),
-            ],
-            Some(confirmation_hash),
-        )
-        .await
-    }
-
-    /// Applies a quiescent registry deletion plan exactly once.
-    pub async fn apply_delete_registry(
-        &self,
-        auth: Option<&str>,
-        req: pb::ApplyDeleteTopologyResourceRequest,
-    ) -> Result<pb::DeleteTopologyResourceResponse, RpcError> {
-        if let Some(response) = self
-            .replayed_control_result(
-                auth,
-                &req.plan_id,
-                "delete_registry",
-                Some(&req.confirmation_hash),
-                &req.idempotency_key,
-            )
-            .await?
-        {
-            return Ok(response);
-        }
-        self.begin_control_plan_apply(
-            auth,
-            &req.plan_id,
-            "delete_registry",
-            &req.idempotency_key,
-            Some(&req.confirmation_hash),
-        )
-        .await?;
-        let (plan, input): (_, RegistryDeletePlanInput) = self
-            .load_control_plan(
-                auth,
-                &req.plan_id,
-                "delete_registry",
-                Some(&req.confirmation_hash),
-            )
-            .await?;
-        let claims = self.require_claims(auth)?;
-        self.require_permission(
-            &claims,
-            Permission::RegistryConfigure,
-            &Scope::parse(&input.stable_id),
-        )
-        .await?;
-        if let Some(registry) = self
-            .db
-            .registry_by_id(input.registry_id)
-            .await
-            .map_err(RpcError::internal)?
-        {
-            if registry.stable_id != input.stable_id
-                || registry.owner_scope_key != input.owner_scope_key
-            {
-                return Err(RpcError::FailedPrecondition(
-                    "registry identity changed after planning".to_string(),
-                ));
-            }
-            if !self
-                .db
-                .delete_registry_at_version(
-                    input.registry_id,
-                    input.expected_resource_version,
-                    &plan.plan_id,
-                    &claims.owner_kind,
-                    Some(claims.owner_id),
-                    &claims.sub,
-                )
-                .await
-                .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?
-            {
-                return Err(RpcError::FailedPrecondition(
-                    "registry changed after planning".to_string(),
-                ));
-            }
-        }
-        let response = pb::DeleteTopologyResourceResponse { deleted: true };
-        self.complete_control_plan(&plan.plan_id, &req.idempotency_key, &response)
-            .await?;
-        Ok(response)
-    }
-
     /// Creates a managed registry attributed to an already-reserved plan.
     ///
     /// The registry is created at the canonical path `{org}/{project_path}/{name}`
@@ -32852,7 +32717,7 @@ impl RpcService {
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;
         if matches!(
             updated.operation_kind.as_str(),
-            "scan_placement" | "replicate_placement" | "repair_placement"
+            "scan_placement" | "replicate_placement" | "repair_placement" | "delete_registry"
         ) {
             self.topology_probes
                 .wake_controller()
@@ -36550,7 +36415,7 @@ mod publication_upload_limit_tests {
 }
 
 #[cfg(test)]
-mod cache_upload_tests {
+pub(crate) mod cache_upload_tests {
     use std::collections::{BTreeMap, VecDeque};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -36841,7 +36706,7 @@ mod cache_upload_tests {
         injected_service_with_sealer(fetch_behaviors, write_behaviors, vec![]).await
     }
 
-    pub(super) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
+    pub(crate) async fn delivery_test_service() -> (RpcService, Arc<Database>) {
         let (service, database, _, _) = injected_service(vec![], vec![]).await;
         (service, database)
     }

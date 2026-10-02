@@ -15,7 +15,7 @@ const HUB_CLI_JSON_SCHEMA: &str = "aos.hub.cli/v1";
 
 /// Converts canonical Connect-JSON lowerCamelCase keys to the CLI's stable
 /// snake_case machine-output convention.
-fn snake_case_json(value: serde_json::Value) -> serde_json::Value {
+pub(super) fn snake_case_json(value: serde_json::Value) -> serde_json::Value {
     match value {
         serde_json::Value::Object(object) => serde_json::Value::Object(
             object

@@ -19,14 +19,29 @@
   # Specialized writable-root test variants may override this mkDefault.
   aos.security.verity.enable = lib.mkDefault true;
   aos.image.budgets = {
-    maxRootMiB = 640;
+    # The AArch64 root image measures 647 MiB with the complete runtime; its
+    # uncompressed kernel also makes the UKIs, the ESP that retains normal and
+    # recovery UKIs, and the compressed raw disk larger than on x86_64.
+    maxRootMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 768
+      else 640;
+    maxUkiMiB = lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") 224;
+    # The ESP retains the normal UKI and both recovery UKIs, each embedding
+    # the uncompressed AArch64 kernel, plus bootloader and FAT headroom.
+    maxEspMiB = lib.mkIf (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") 768;
     maxVerityMiB = 16;
-    maxInitrdMiB = 132;
-    maxDownloadMiB = 768;
-    # VHD block allocation adds a small fixed overhead above 800 MiB on AArch64.
+    # The recovery-capable runtime initrd measures 140 MiB on x86_64 with the
+    # complete aos, apm, and package-runtime CLIs; keep headroom for growth.
+    maxInitrdMiB = 160;
+    maxDownloadMiB =
+      if pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64"
+      then 1280
+      else 768;
+    # Converted formats carry the full ESP and root payload on AArch64.
     maxConvertedDownloadMiB =
       lib.mkIf
-      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 801);
+      (pkgs.stdenv.hostPlatform.constraints.cpu == "aarch64") (lib.mkDefault 1792);
   };
 
   # The service modules retain backwards-compatible enabled defaults. Keep

@@ -730,7 +730,33 @@ aos hub route probe <route>
 aos hub route explain <route> [--path <machine-path>]
 aos hub route enable|disable|remove <route>
 aos hub route canonical <route> --audience git|cache|web
+
+aos hub instance oci-route list
+aos hub instance oci-route show <route>
+aos hub instance oci-route add --endpoint <endpoint>
+  [--endpoint-generation <generation>] --access public|hub-auth
+  [--default-registry <slug>] [--enabled] [--bind-existing-reservation]
+  [--stable-id <id>]
+aos hub instance oci-route update <route> --if-version <version>
+  [--endpoint-generation <generation>] [--access public|hub-auth]
+  [--default-registry <slug> | --clear-default-registry] [--enable | --disable]
+aos hub instance oci-route remove <route> --if-version <version>
+aos hub instance oci-route convert <route> --if-version <version>
+  [--stable-id <id>]
+aos hub registry container namespace show <registry>
+aos hub registry container namespace enable|disable <registry>
+  [--if-version <version>]
 ```
+
+Instance OCI routes are instance-scope resources administered by `IamAdmin`;
+`add`, `update`, `remove`, and `convert` are reviewed plan/apply mutations.
+`add --bind-existing-reservation` binds an already reserved host root to the
+instance and must be stated explicitly. `convert` rewrites a registry-bound
+hub-proxy root route that serves only OCI into an instance route in place,
+keeping its URL reservation, binding the route's registry as the default, and
+enabling that registry's namespace. The namespace commands are reviewed
+registry-scope mutations; an enabled namespace serves the registry as
+`<host>/<registry-slug>/<repository>` on every enabled instance OCI route.
 
 Topology-default reads are total for every existing writable scope. Before the
 first `set`, the API returns that scope key with empty optional references and
@@ -1569,7 +1595,34 @@ or target change is an update only when the final rendered URL is byte-identical
 while retaining its privacy-minimized URL reservation and append-only audit
 event. The signed registry commit remains signed history.
 
-### RegistryMirrorService
+### Instance OCI routes and container namespaces
+
+```text
+InstanceService:
+  ListInstanceOciRoutes
+  GetInstanceOciRoute
+  PlanCreateInstanceOciRoute / CreateInstanceOciRoute
+  PlanUpdateInstanceOciRoute / UpdateInstanceOciRoute
+  PlanDeleteInstanceOciRoute / DeleteInstanceOciRoute
+  PlanConvertRouteToInstanceOciRoute / ConvertRouteToInstanceOciRoute
+ContainerService:
+  GetContainerNamespace
+  PlanSetContainerNamespace / SetContainerNamespace
+```
+
+`InstanceOciRouteSpec` carries the endpoint reference, a `DeliveryAccessPolicy`
+limited to `public` or `hub_auth`, an optional `default_registry` slug, and the
+enabled posture; the response adds the canonical rendered URL, derived
+readiness, and resource version. `PlanCreateInstanceOciRoute` takes
+`bind_existing_reservation`, and `PlanUpdateInstanceOciRoute` uses an update
+mask over `spec.endpoint_generation`, `spec.access_policy`,
+`spec.default_registry`, and `spec.enabled`.
+`PlanConvertRouteToInstanceOciRoute` takes the registry-bound route id, its
+expected resource version, and an optional stable id for the new route.
+`ContainerNamespace` reports the registry slug, enabled state, and resource
+version; `Registry.oci_repository_namespace` reports the slug the registry is
+currently served under when its exposure is namespaced, and
+`oci_distribution_origin` reports the instance route origin.
 
 ```text
 GetRegistryMirror

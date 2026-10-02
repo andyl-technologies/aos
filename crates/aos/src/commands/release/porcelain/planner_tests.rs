@@ -50,6 +50,7 @@ fn staging() -> DestinationFacts {
         surface: SurfaceRole::Staging,
         state: None,
         after_blocker: None,
+        bootstrap_blocker: None,
         fitness_blocker: None,
         surface_metadata: None,
         review_threshold: 0,
@@ -211,6 +212,43 @@ fn staging_destinations_publish_then_advance_their_single_ring() -> anyhow::Resu
         committed_at: now(),
     }];
     assert!(next(&release, &destination, &options()).is_err());
+    Ok(())
+}
+
+#[test]
+fn first_release_publication_waits_for_the_surface_bootstrap() -> anyhow::Result<()> {
+    let release = finalized_release();
+    let instruction =
+        "bootstrap the staging surface with step bootstrap --output bootstrap/staging";
+
+    let mut destination = staging();
+    destination.bootstrap_blocker = Some(instruction.to_owned());
+    assert!(waits(
+        &next(&release, &destination, &options())?,
+        "bootstrap/staging"
+    ));
+
+    // The production surface waits before its staging-phase qualification,
+    // which would otherwise read an unbootstrapped surface's state.
+    let mut production = stable();
+    production.bootstrap_blocker = Some(instruction.replace("staging", "production"));
+    assert!(waits(
+        &next(&release, &production, &options())?,
+        "bootstrap/production"
+    ));
+
+    // An unmet `after` dependency is reported first.
+    production.after_blocker = Some("publish a staging destination first".to_owned());
+    assert!(waits(
+        &next(&release, &production, &options())?,
+        "staging destination first"
+    ));
+
+    destination.bootstrap_blocker = None;
+    assert_eq!(
+        next(&release, &destination, &options())?,
+        run(Step::Publish)
+    );
     Ok(())
 }
 

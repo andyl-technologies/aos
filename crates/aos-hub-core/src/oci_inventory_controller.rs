@@ -218,6 +218,19 @@ impl InventoryDispatchTracker {
     }
 }
 
+/// Progress of one bounded inventory dispatch for an exact placement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OciPlacementInventoryProgress {
+    /// A complete inventory head was published for the placement.
+    Completed,
+    /// The dispatch budget ended; resume with this opaque continuation.
+    Continue(String),
+    /// The generation failed durably; a new attempt needs a new seed.
+    Failed,
+    /// Another collector holds a live lease on the placement's inventory.
+    Busy,
+}
+
 /// Produces exact provider inventories for ready OCI placements.
 pub struct OciProviderInventoryController {
     db: Arc<Database>,
@@ -439,6 +452,206 @@ impl OciProviderInventoryController {
             }
         }
         Ok(stats)
+    }
+
+    /// Runs one bounded inventory dispatch for exactly one placement.
+    ///
+    /// Registry deletion uses this to collect the post-fence inventory of the
+    /// registry's own placements on demand instead of waiting for the
+    /// maintenance schedule. `idempotency_seed` identifies one attempt: the
+    /// same seed reopens the same generation and receipt after response loss,
+    /// and a new seed starts a fresh generation after a durable failure. A
+    /// live generation owned by another collector is never taken over before
+    /// its lease expires.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid selector, continuation, or budget, a
+    /// placement that cannot be inventoried, or a database failure that
+    /// prevents durable checkpoint or failure recording.
+    pub async fn inventory_placement_bounded(
+        &self,
+        collector_id: &str,
+        idempotency_seed: &str,
+        now: i64,
+        placement_id: i64,
+        continuation: Option<&str>,
+        dispatch_budget: OciInventoryDispatchBudget,
+    ) -> Result<OciPlacementInventoryProgress> {
+        anyhow::ensure!(
+            !collector_id.is_empty()
+                && collector_id.len() <= 128
+                && !idempotency_seed.is_empty()
+                && idempotency_seed.len() <= 128
+                && now >= 0
+                && placement_id > 0,
+            "invalid OCI placement inventory selector"
+        );
+        let mut dispatch = InventoryDispatchTracker::new(dispatch_budget)?;
+        let claim_token = inventory_claim_token(idempotency_seed, placement_id);
+
+        let resumed = match continuation {
+            Some(cursor) => {
+                self.resume_placement_continuation(collector_id, now, placement_id, cursor)
+                    .await?
+            }
+            None => None,
+        };
+        let (generation, object) = match resumed {
+            Some(resumed) => resumed,
+            None => match self
+                .begin_or_claim_placement(
+                    collector_id,
+                    idempotency_seed,
+                    &claim_token,
+                    now,
+                    placement_id,
+                )
+                .await?
+            {
+                Some(generation) => (generation, None),
+                None => return Ok(OciPlacementInventoryProgress::Busy),
+            },
+        };
+        match generation.state.as_str() {
+            "complete" => return Ok(OciPlacementInventoryProgress::Completed),
+            "failed" => return Ok(OciPlacementInventoryProgress::Failed),
+            _ => {}
+        }
+
+        let placement = self
+            .db
+            .surface_placement(generation.placement_id)
+            .await?
+            .context("inventoried placement disappeared")?;
+        let mut stats = OciInventoryControllerStats::default();
+        let continuation = self
+            .process_generation(
+                &placement,
+                &generation,
+                collector_id,
+                now,
+                &mut stats,
+                &mut dispatch,
+                object,
+            )
+            .await?;
+        Ok(match continuation {
+            Some(cursor) => OciPlacementInventoryProgress::Continue(cursor),
+            None if stats.completed > 0 => OciPlacementInventoryProgress::Completed,
+            None => OciPlacementInventoryProgress::Failed,
+        })
+    }
+
+    /// Reopens the generation named by a continuation, when it is still live.
+    async fn resume_placement_continuation(
+        &self,
+        collector_id: &str,
+        now: i64,
+        placement_id: i64,
+        cursor: &str,
+    ) -> Result<
+        Option<(
+            OciProviderInventoryGenerationRecord,
+            Option<InventoryObjectContinuation>,
+        )>,
+    > {
+        let continuation = parse_inventory_continuation(cursor)?;
+        anyhow::ensure!(
+            continuation.placement_id == placement_id,
+            "OCI inventory continuation names another placement"
+        );
+        let Some(generation) = self
+            .db
+            .oci_provider_inventory_generation(&continuation.generation_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        if !matches!(generation.state.as_str(), "collecting" | "sealing")
+            || generation.collector_claim_token != continuation.claim_token
+        {
+            return Ok(None);
+        }
+        continuation.validate_identity_for_generation(&generation)?;
+        let generation = self
+            .db
+            .claim_oci_provider_inventory(
+                &generation.id,
+                collector_id,
+                &continuation.claim_token,
+                inventory_now(now),
+                INVENTORY_CLAIM_LEASE_SECONDS,
+            )
+            .await?;
+        let object = continuation.resumable_object_for_generation(&generation)?;
+        Ok(Some((generation, object)))
+    }
+
+    /// Claims this attempt's live generation or begins a new one.
+    ///
+    /// Returns `Ok(None)` while another collector holds a live lease on the
+    /// placement's active generation.
+    async fn begin_or_claim_placement(
+        &self,
+        collector_id: &str,
+        idempotency_seed: &str,
+        claim_token: &str,
+        now: i64,
+        placement_id: i64,
+    ) -> Result<Option<OciProviderInventoryGenerationRecord>> {
+        if let Some(active) = self.db.active_oci_provider_inventory(placement_id).await? {
+            let owned = active.collector_claim_token == claim_token;
+            let expired = active
+                .collector_lease_expires_at
+                .is_some_and(|expires_at| expires_at <= now);
+            if !owned && !expired {
+                return Ok(None);
+            }
+            return self
+                .db
+                .claim_oci_provider_inventory(
+                    &active.id,
+                    collector_id,
+                    claim_token,
+                    inventory_now(now),
+                    INVENTORY_CLAIM_LEASE_SECONDS,
+                )
+                .await
+                .map(Some);
+        }
+
+        let placement = self
+            .db
+            .surface_placement(placement_id)
+            .await?
+            .context("OCI inventory placement does not exist")?;
+        let registry_id = placement
+            .registry_id
+            .context("OCI inventory placement does not belong to a registry")?;
+        let observation_version = placement
+            .observation_version
+            .context("OCI inventory placement has never been observed")?;
+        self.db
+            .begin_oci_provider_inventory(&BeginOciProviderInventory {
+                registry_id,
+                placement_id,
+                expected_placement_resource_version: placement.resource_version,
+                expected_placement_observation_version: observation_version,
+                collector_id: collector_id.to_string(),
+                collector_claim_token: claim_token.to_string(),
+                collector_lease_seconds: INVENTORY_CLAIM_LEASE_SECONDS,
+                idempotency_key: inventory_idempotency_key(
+                    idempotency_seed,
+                    registry_id,
+                    placement_id,
+                    placement.resource_version,
+                    observation_version,
+                ),
+                now,
+            })
+            .await
+            .map(Some)
     }
 
     async fn process_generation(

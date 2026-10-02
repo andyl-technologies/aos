@@ -603,6 +603,26 @@ enum HubTopologyMethod {
     TriggerInstanceMaintenance,
     /// Selects the normalized instance-settings apply operation.
     SetInstanceSettings,
+    /// Selects the normalized `ListInstanceOciRoutes` Connect operation.
+    ListInstanceOciRoutes,
+    /// Selects the normalized `GetInstanceOciRoute` Connect operation.
+    GetInstanceOciRoute,
+    /// Selects the normalized `PlanCreateInstanceOciRoute` Connect operation.
+    PlanCreateInstanceOciRoute,
+    /// Selects the normalized `CreateInstanceOciRoute` Connect operation.
+    CreateInstanceOciRoute,
+    /// Selects the normalized `PlanUpdateInstanceOciRoute` Connect operation.
+    PlanUpdateInstanceOciRoute,
+    /// Selects the normalized `UpdateInstanceOciRoute` Connect operation.
+    UpdateInstanceOciRoute,
+    /// Selects the normalized `PlanDeleteInstanceOciRoute` Connect operation.
+    PlanDeleteInstanceOciRoute,
+    /// Selects the normalized `DeleteInstanceOciRoute` Connect operation.
+    DeleteInstanceOciRoute,
+    /// Selects the normalized `PlanConvertRouteToInstanceOciRoute` Connect operation.
+    PlanConvertRouteToInstanceOciRoute,
+    /// Selects the normalized `ConvertRouteToInstanceOciRoute` Connect operation.
+    ConvertRouteToInstanceOciRoute,
     /// Selects the normalized `ListChangesets` Connect operation.
     ListChangesets,
     /// Selects the normalized `GetChangeset` Connect operation.
@@ -765,8 +785,12 @@ enum HubTopologyMethod {
     GetContainerRetentionPolicy,
     PlanSetContainerRetentionPolicy,
     SetContainerRetentionPolicy,
+    GetContainerNamespace,
+    PlanSetContainerNamespace,
+    SetContainerNamespace,
     PlanRunContainerGc,
     RunContainerGc,
+    CancelContainerGcRun,
     GetContainerGcRun,
     ListContainerGcRuns,
     ListContainerGcCandidates,
@@ -1180,6 +1204,20 @@ impl HubTopologyMethod {
             PlanSetInstanceSettings => "aos.hub.v1.InstanceService/PlanSetInstanceSettings",
             SetInstanceSettings => "aos.hub.v1.InstanceService/SetInstanceSettings",
             TriggerInstanceMaintenance => "aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
+            ListInstanceOciRoutes => "aos.hub.v1.InstanceService/ListInstanceOciRoutes",
+            GetInstanceOciRoute => "aos.hub.v1.InstanceService/GetInstanceOciRoute",
+            PlanCreateInstanceOciRoute => "aos.hub.v1.InstanceService/PlanCreateInstanceOciRoute",
+            CreateInstanceOciRoute => "aos.hub.v1.InstanceService/CreateInstanceOciRoute",
+            PlanUpdateInstanceOciRoute => "aos.hub.v1.InstanceService/PlanUpdateInstanceOciRoute",
+            UpdateInstanceOciRoute => "aos.hub.v1.InstanceService/UpdateInstanceOciRoute",
+            PlanDeleteInstanceOciRoute => "aos.hub.v1.InstanceService/PlanDeleteInstanceOciRoute",
+            DeleteInstanceOciRoute => "aos.hub.v1.InstanceService/DeleteInstanceOciRoute",
+            PlanConvertRouteToInstanceOciRoute => {
+                "aos.hub.v1.InstanceService/PlanConvertRouteToInstanceOciRoute"
+            }
+            ConvertRouteToInstanceOciRoute => {
+                "aos.hub.v1.InstanceService/ConvertRouteToInstanceOciRoute"
+            }
             ListChangesets => "aos.hub.v1.RegistryConfigurationService/ListChangesets",
             GetChangeset => "aos.hub.v1.RegistryConfigurationService/GetChangeset",
             ListPackages => "aos.hub.v1.PackageService/ListPackages",
@@ -1322,8 +1360,12 @@ impl HubTopologyMethod {
             SetContainerRetentionPolicy => {
                 "aos.hub.v1.ContainerService/SetContainerRetentionPolicy"
             }
+            GetContainerNamespace => "aos.hub.v1.ContainerService/GetContainerNamespace",
+            PlanSetContainerNamespace => "aos.hub.v1.ContainerService/PlanSetContainerNamespace",
+            SetContainerNamespace => "aos.hub.v1.ContainerService/SetContainerNamespace",
             PlanRunContainerGc => "aos.hub.v1.ContainerService/PlanRunContainerGc",
             RunContainerGc => "aos.hub.v1.ContainerService/RunContainerGc",
+            CancelContainerGcRun => "aos.hub.v1.ContainerService/CancelContainerGcRun",
             GetContainerGcRun => "aos.hub.v1.ContainerService/GetContainerGcRun",
             ListContainerGcRuns => "aos.hub.v1.ContainerService/ListContainerGcRuns",
             ListContainerGcCandidates => "aos.hub.v1.ContainerService/ListContainerGcCandidates",
@@ -1656,8 +1698,8 @@ pub mod hub_rpc {
         UpdateRegistryMetadata: ApplyRegistryMutationRequest => RegistryMetadataChangeResponse;
         PlanUpdateRegistry: PlanUpdateRegistryRequest => TopologyPlanResponse;
         UpdateRegistry: ApplyRegistryMutationRequest => RegistryResponse;
-        PlanDeleteRegistry: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
-        DeleteRegistry: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
+        PlanDeleteRegistry: PlanDeleteTopologyResourceRequest => RegistryDeletePlanResponse;
+        DeleteRegistry: ApplyDeleteTopologyResourceRequest => OperationResponse;
         ListOrganizations: ListOrganizationsRequest => ListOrganizationsResponse;
         GetOrganization: GetOrganizationRequest => OrganizationResponse;
         PlanCreateOrganization: PlanCreateOrganizationRequest => TopologyPlanResponse;
@@ -1690,6 +1732,16 @@ pub mod hub_rpc {
         PlanSetInstanceSettings: PlanSetInstanceSettingsRequest => TopologyPlanResponse;
         SetInstanceSettings: ApplyTopologyPlanRequest => GetInstanceSettingsResponse;
         TriggerInstanceMaintenance: TriggerInstanceMaintenanceRequest => InstanceMaintenanceTriggerResponse;
+        ListInstanceOciRoutes: ListInstanceOciRoutesRequest => ListInstanceOciRoutesResponse;
+        GetInstanceOciRoute: GetTopologyResourceRequest => InstanceOciRouteResponse;
+        PlanCreateInstanceOciRoute: PlanInstanceOciRouteMutationRequest => TopologyPlanResponse;
+        CreateInstanceOciRoute: ApplyTopologyPlanRequest => InstanceOciRouteResponse;
+        PlanUpdateInstanceOciRoute: PlanInstanceOciRouteMutationRequest => TopologyPlanResponse;
+        UpdateInstanceOciRoute: ApplyTopologyPlanRequest => InstanceOciRouteResponse;
+        PlanDeleteInstanceOciRoute: PlanDeleteTopologyResourceRequest => TopologyPlanResponse;
+        DeleteInstanceOciRoute: ApplyDeleteTopologyResourceRequest => DeleteTopologyResourceResponse;
+        PlanConvertRouteToInstanceOciRoute: PlanConvertRouteToInstanceOciRouteRequest => TopologyPlanResponse;
+        ConvertRouteToInstanceOciRoute: ApplyTopologyPlanRequest => InstanceOciRouteResponse;
         ListChangesets: ListChangesetsRequest => ListChangesetsResponse;
         GetChangeset: GetChangesetRequest => GetChangesetResponse;
         ListPackages: ListPackagesRequest => ListPackagesResponse;
@@ -1808,8 +1860,12 @@ pub mod hub_rpc {
         GetContainerRetentionPolicy: GetContainerRetentionPolicyRequest => ContainerRetentionPolicyResponse;
         PlanSetContainerRetentionPolicy: PlanSetContainerRetentionPolicyRequest => TopologyPlanResponse;
         SetContainerRetentionPolicy: ApplyContainerMutationRequest => ContainerRetentionPolicyResponse;
+        GetContainerNamespace: GetContainerNamespaceRequest => ContainerNamespaceResponse;
+        PlanSetContainerNamespace: PlanSetContainerNamespaceRequest => TopologyPlanResponse;
+        SetContainerNamespace: ApplyTopologyPlanRequest => ContainerNamespaceResponse;
         PlanRunContainerGc: PlanRunContainerGcRequest => ContainerGcPlanResponse;
         RunContainerGc: ApplyContainerMutationRequest => OperationResponse;
+        CancelContainerGcRun: CancelContainerGcRunRequest => ContainerGcRunResponse;
         GetContainerGcRun: GetContainerGcRunRequest => ContainerGcRunResponse;
         ListContainerGcRuns: ListContainerGcRunsRequest => ListContainerGcRunsResponse;
         ListContainerGcCandidates: ListContainerGcCandidatesRequest => ListContainerGcCandidatesResponse;
@@ -2363,8 +2419,24 @@ mod tests {
                 HubTopologyMethod::SetContainerRetentionPolicy,
                 "SetContainerRetentionPolicy",
             ),
+            (
+                HubTopologyMethod::GetContainerNamespace,
+                "GetContainerNamespace",
+            ),
+            (
+                HubTopologyMethod::PlanSetContainerNamespace,
+                "PlanSetContainerNamespace",
+            ),
+            (
+                HubTopologyMethod::SetContainerNamespace,
+                "SetContainerNamespace",
+            ),
             (HubTopologyMethod::PlanRunContainerGc, "PlanRunContainerGc"),
             (HubTopologyMethod::RunContainerGc, "RunContainerGc"),
+            (
+                HubTopologyMethod::CancelContainerGcRun,
+                "CancelContainerGcRun",
+            ),
             (HubTopologyMethod::GetContainerGcRun, "GetContainerGcRun"),
             (
                 HubTopologyMethod::ListContainerGcRuns,
