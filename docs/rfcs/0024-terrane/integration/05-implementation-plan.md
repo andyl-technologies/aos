@@ -1608,6 +1608,31 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   two test unused-path diagnostics. The actual trunk aggregate still fails
   missing public core-fuzz inputs. This prerequisite does not qualify the
   complete current-authority contract or advance the task.
+  Full review and combined execution now qualify the current-authority case.
+  Independently initialized private source and public destination factories
+  expire each genuine attenuated token at the actual Candidate slot, retain
+  competing authority transitions until release, and require exact Read or
+  Commit denial. Fresh valid tokens still succeed at the advanced clock.
+  The same-epoch destination change distinguishes a stale whole head from
+  valid current-parent provenance; separate current epochs, token scopes and
+  canonical-root ACL changes are checked against historical source selection.
+  All sixteen reviewed mandatory cases pass together on the clean combined
+  candidate (run `497e74ec-4581-4da0-9a40-84a6f9cfc6b0`, sixteen selected,
+  380 unrelated tests skipped). Three equivalent prior fixture lint corrections
+  preserve their precise refusal assertions and separately pass all three
+  owning tests. Strict isolated native Clippy still rejects seven production
+  and two test unused-path diagnostics; none are suppressed. Both mandatory
+  formatters pass on the combined source. Its actual full aggregate fails
+  `property-resolution` because D-101's exact owner-binding case is absent;
+  T-DRV-3 implements that prerequisite separately. Earlier backend retirement
+  failures remain unresolved. No formal task merge or checkbox advances.
+  Historical rotation, positive whiteout application and positive index
+  rebuilding remain mandatory and unqualified. Whiteout review identifies
+  missing contextual native layer verification and recipe admission: existing
+  signed Commit/root and ordered overlay-recipe formats can carry the inputs,
+  but raw layer roots cannot replace checked original and current evidence.
+  Ordinary tree loading must continue rejecting whiteouts. No new byte field,
+  global decoder fallback or substitute positive fixture is introduced.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
