@@ -670,7 +670,8 @@ const GC_RUN_COLUMNS: &str = "id, registry_id, actor_id, state,
     plan_digest, confirmation_hash, inventory_object_count, inventory_byte_size,
     reachable_object_count, planned_bytes, planned_objects,
     deleted_object_count, deleted_byte_size, placement_action_count, expires_at,
-    created_at, applied_at, finished_at, last_error, resource_version";
+    created_at, applied_at, finished_at, last_error, resource_version,
+    retire_registry";
 
 const GC_CANDIDATE_COLUMNS: &str = "candidate.run_id, candidate.digest,
     candidate.media_type, candidate.byte_size, candidate.object_key,
@@ -721,6 +722,7 @@ fn row_to_generation(row: &Row) -> Result<OciGcGenerationRecord> {
         finished_at: row.get(24)?,
         last_error: row.get(25)?,
         resource_version: row.get(26)?,
+        retire_registry: row.get::<i64>(27)? != 0,
     })
 }
 
