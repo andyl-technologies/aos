@@ -13,6 +13,10 @@ use terrane_core::gc::publication::{BackendBinding, RawDigest};
 
 use super::{CheckedEvidence, CheckedMutation};
 
+#[cfg(unix)]
+#[path = "selected/cold_fork.rs"]
+pub(crate) mod cold_fork;
+
 #[cfg(not(feature = "send"))]
 use std::rc::Rc as SharedCheck;
 #[cfg(feature = "send")]

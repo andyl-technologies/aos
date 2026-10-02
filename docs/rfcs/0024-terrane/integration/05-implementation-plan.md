@@ -187,8 +187,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   signed views; fold replay retains resolved source ownership. The four pure
   gates cover all 60 algebra tests. `algebra-fork` remains registered and fails
   explicitly as pending; pure commit-binding tests do not qualify native cold
-  forks. Complete native fork, fold and publication checks remain incomplete. —
-  satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
+  forks. Complete native fork, fold and publication checks remain incomplete.
+  Private Unix module registrations now separate the forthcoming current-policy
+  and native lineage factories. Their native build and mandatory formatting
+  pass; they add no cold-fork behavior or authority. Read-only review confirms
+  both preparation and final publication must qualify retained lineage without
+  TreeNode I/O; optimizing preparation alone cannot satisfy ALG-32.
+  — satisfies ALG-15 to ALG-21, ALG-28 to ALG-39;
   `checks.terrane.gates.algebra-merge`, `checks.terrane.gates.algebra-fork`.
 - [x] **T-PROP-1** Property resolution, types, boundary properties,
   completeness, commit-time requirement checks, and strict attribute-name
