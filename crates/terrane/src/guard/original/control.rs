@@ -128,6 +128,29 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
         &mut self,
         pins: &[terrane_core::gc::publication::evidence::RequiredControlPin],
     ) -> Result<RetainedControls, StoreFailure> {
+        let mut expected = Vec::with_capacity(pins.len());
+        for pin in pins {
+            let bytes = self.read_record(&pin.key).await?;
+            pin.check_record(&bytes).map_err(|_| invalid())?;
+            expected.push((pin.key.clone(), bytes));
+        }
+        self.retain_named(&expected).await
+    }
+
+    /// Retains exact checked administrative records without assigning a pin kind.
+    ///
+    /// Dedicated disclosure-role configuration has no registered control-pin
+    /// variant. Its checked producer supplies exact canonical bytes here solely
+    /// to retain physical exclusion and detect replacement in the native worker.
+    /// This receipt establishes no role, actor or repository authority.
+    ///
+    /// # Errors
+    /// Rejects duplicate names, differing bytes, replaced records or ancestors,
+    /// unsafe protection and unsupported native descriptor retention.
+    pub(crate) async fn retain_named(
+        &mut self,
+        expected: &[(String, Vec<u8>)],
+    ) -> Result<RetainedControls, StoreFailure> {
         self.revalidate().await?;
         let ancestors = self.capture_ancestors().await?;
         let exclusion = self
@@ -144,12 +167,18 @@ impl<'a, F: LocalFs + BucketBinding> ControlExclusion<'a, F> {
                 }
             })?;
 
-        let mut records = Vec::with_capacity(pins.len());
-        for pin in pins {
-            let path = self.record_path(&pin.key)?;
+        let mut names = std::collections::BTreeSet::new();
+        let mut records = Vec::with_capacity(expected.len());
+        for (key, expected_bytes) in expected {
+            if !names.insert(key) {
+                return Err(invalid());
+            }
+            let path = self.record_path(key)?;
             let identity = protected_file(self.fs, &path, self.owner).await?;
-            let bytes = self.read_record(&pin.key).await?;
-            pin.check_record(&bytes).map_err(|_| invalid())?;
+            let bytes = self.read_record(key).await?;
+            if bytes != *expected_bytes {
+                return Err(invalid());
+            }
             if protected_file(self.fs, &path, self.owner).await? != identity {
                 return Err(invalid());
             }

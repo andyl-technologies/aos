@@ -92,19 +92,35 @@ impl OriginalCommitContext {
             .map(|evidence| evidence.trust().map(|trust| trust.issuer_keys))
             .transpose()
     }
+
+    /// Returns independently retained disclosure-role mappings for an import.
+    ///
+    /// # Errors
+    /// Rejects malformed retained public trust bytes.
+    pub(crate) fn historical_disclosure_roles(
+        &self,
+    ) -> Result<
+        Option<Vec<crate::repository::local_authority::public_trust::DisclosureRoleRecord>>,
+        StoreFailure,
+    > {
+        self.imported
+            .as_ref()
+            .map(|evidence| evidence.trust().map(|trust| trust.disclosure_roles))
+            .transpose()
+    }
 }
 
 impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator + BucketBinding, C>
     Guard<FileBucket<F, B, V>, C>
 {
-    /// Checks the complete configured historical mappings under existing exclusion.
+    /// Checks the complete configured dedicated role set under existing exclusion.
     ///
     /// Role configuration changes cannot remain hidden behind a cached snapshot.
-    /// Imported mappings are checked against exact retained bytes without reading
-    /// any former source namespace or its private signing material.
+    /// Imported mappings are separately rechecked when their original contexts
+    /// are consumed; this check owns only this physical owner's role records.
     ///
     /// # Errors
-    /// Rejects added, removed, replaced or changed role rows and imported controls.
+    /// Rejects malformed names and added, removed, replaced or changed role rows.
     pub(crate) async fn check_retained_trust_controls(
         &self,
         owner: &OriginalAuthority,
@@ -131,20 +147,22 @@ impl<F: LocalFs + BucketBinding, B: Clock + BucketBinding, V: ContentValidator +
                 return Err(invalid());
             }
         }
-        let actual_roles = self
+        let mut actual_roles = std::collections::BTreeSet::new();
+        for path in self
             .store()
             .fs()
             .read_dir(owner.control())
             .await
             .map_err(super::io_failure)?
-            .into_iter()
-            .filter_map(|path| {
-                path.file_name()
-                    .and_then(|name| name.to_str())
-                    .filter(|name| name.starts_with("disclosure-role-"))
-                    .map(str::to_owned)
-            })
-            .collect::<std::collections::BTreeSet<_>>();
+        {
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid)?;
+            if name.starts_with("disclosure-role-") {
+                actual_roles.insert(name.to_owned());
+            }
+        }
         if actual_roles != expected_roles {
             return Err(invalid());
         }
@@ -308,8 +326,10 @@ pub(super) fn retention_failure(error: crate::repository::Error) -> StoreFailure
 impl<S, C> Guard<S, C> {
     /// Returns roles loaded by the concrete factory from protected source configuration.
     ///
+    /// A guard without native dispatch has no configured disclosure roles.
+    ///
     /// # Errors
-    /// Rejects missing native dispatch or unavailable synchronized state.
+    /// Rejects unavailable synchronized state.
     pub(crate) fn configured_disclosure_roles(
         &self,
     ) -> Result<
