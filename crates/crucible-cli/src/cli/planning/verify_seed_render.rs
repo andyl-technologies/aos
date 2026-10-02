@@ -315,6 +315,7 @@ pub(crate) fn reseed_run_scenario_ref(
     })
 }
 
+/// Parses a positive run duration into exact picosecond simulation ticks.
 pub(crate) fn parse_run_duration_budget_ticks(duration: &str) -> Option<u64> {
     let trimmed = duration.trim();
     if trimmed.is_empty() {
@@ -329,15 +330,18 @@ pub(crate) fn parse_run_duration_budget_ticks(duration: &str) -> Option<u64> {
         return None;
     }
     let suffix = &trimmed[digit_len..];
-    let multiplier = match suffix {
-        "" | "tick" | "ticks" => 1,
+    let nanos_per_unit = match suffix {
+        "" | "tick" | "ticks" => return Some(value),
         "ns" => 1,
         "us" => 1_000,
         "ms" => 1_000_000,
         "s" => 1_000_000_000,
         _ => return None,
     };
-    value.checked_mul(multiplier)
+    let nanos = value.checked_mul(nanos_per_unit)?;
+    SimDuration::from_nanoseconds(nanos)
+        .ok()
+        .map(|duration| duration.ticks)
 }
 
 pub(crate) fn run_interactive_session_command_set() -> Vec<SessionCommandKind> {

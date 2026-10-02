@@ -3,6 +3,59 @@
 use super::*;
 
 #[test]
+fn campaign_virtual_time_run_preserves_duration_units_and_refuses_overflow() {
+    for (duration, expected) in [
+        ("2", 2),
+        ("2tick", 2),
+        ("2ticks", 2),
+        ("2ns", 2_000),
+        ("2us", 2_000_000),
+        ("2ms", 2_000_000_000),
+        ("2s", 2_000_000_000_000),
+    ] {
+        let cli = Cli::parse_from([
+            "crucible",
+            "run",
+            "builtin:happy-path.scn",
+            "--until",
+            "virtual-time",
+            "--max-virtual-time",
+            duration,
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+        let plan = plan_run_invocation(args, Path::new(".")).or_panic("duration run plan");
+
+        assert_eq!(
+            guarded_discovery_stop(&plan).or_panic("duration deadline"),
+            StopCondition::VirtualTimePicoseconds(expected),
+        );
+    }
+
+    for unit in ["ns", "us", "ms", "s"] {
+        let duration = format!("{}{unit}", u64::MAX);
+        let cli = Cli::parse_from([
+            "crucible",
+            "run",
+            "builtin:happy-path.scn",
+            "--until",
+            "virtual-time",
+            "--max-virtual-time",
+            &duration,
+        ]);
+        let Commands::Run(args) = &cli.command else {
+            panic!("expected run command");
+        };
+
+        assert!(
+            plan_run_invocation(args, Path::new(".")).is_err(),
+            "{duration}"
+        );
+    }
+}
+
+#[test]
 fn default_run_reports_attempt_timeout_and_bounded_primary_separately() {
     let mut plan = default_run_plan();
     plan.max_virtual_time_ticks = Some(10);
@@ -68,12 +121,12 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
         .or_panic("virtual-time run should produce an invocation plan");
     assert_eq!(
         guarded_discovery_stop(&plan).or_panic("converted virtual-time stop"),
-        StopCondition::VirtualTimePicoseconds(2_000_000)
+        StopCondition::VirtualTimePicoseconds(2_000_000_000)
     );
     assert_eq!(
         campaign_stop_status(
             &plan,
-            &StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(2_000_000)),
+            &StopOutcome::Reached(StopCondition::VirtualTimePicoseconds(2_000_000_000)),
         )
         .or_panic("reached deadline status"),
         (BackendCommandStatus::Timeout, OutcomeKind::Timeout)
@@ -130,11 +183,11 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
     );
 
     plan.max_virtual_time = Some(String::from("2ms"));
-    plan.max_virtual_time_ticks = Some(2_000_000);
+    plan.max_virtual_time_ticks = Some(2_000_000_000);
     assert_eq!(
         guarded_discovery_stop(&plan).or_panic("combined stop"),
         StopCondition::VirtualTimeOrExecutionQuanta {
-            virtual_time_picoseconds: 2_000_000,
+            virtual_time_picoseconds: 2_000_000_000,
             execution_quanta: 1,
         }
     );
@@ -142,7 +195,7 @@ fn batch_campaign_route_accepts_exact_semantic_stops() {
         campaign_stop_status(
             &plan,
             &StopOutcome::Reached(StopCondition::VirtualTimeOrExecutionQuanta {
-                virtual_time_picoseconds: 2_000_000,
+                virtual_time_picoseconds: 2_000_000_000,
                 execution_quanta: 1,
             }),
         )
@@ -255,7 +308,7 @@ fn campaign_save_schedule_taxonomy_admits_typed_selections() {
 fn campaign_virtual_time_save_exports_closure_for_resume_and_replay_readers() {
     assert_campaign_save_exports_closure(
         &["--at", "virtual-time", "--max-virtual-time", "2ms"],
-        StopCondition::VirtualTimePicoseconds(2_000_000),
+        StopCondition::VirtualTimePicoseconds(2_000_000_000),
         false,
     );
 }
@@ -340,4 +393,62 @@ fn campaign_typed_save_without_a_replay_closure_fails_before_export() {
     );
     assert!(!capture.output.exists());
     assert!(!capture.temporary.path().join("_indexes").exists());
+}
+
+#[test]
+fn run_duration_units_produce_picosecond_ticks() {
+    for (duration, expected) in [
+        ("2", 2),
+        ("2tick", 2),
+        ("2ticks", 2),
+        ("2ns", 2_000),
+        ("2us", 2_000_000),
+        ("2ms", 2_000_000_000),
+        ("2s", 2_000_000_000_000),
+        (" 2ms ", 2_000_000_000),
+    ] {
+        assert_eq!(parse_run_duration_budget_ticks(duration), Some(expected));
+    }
+}
+
+#[test]
+fn run_duration_rejects_overflow_at_each_unit_boundary() {
+    for (unit, ticks_per_unit) in [
+        ("ns", 1_000),
+        ("us", 1_000_000),
+        ("ms", 1_000_000_000),
+        ("s", 1_000_000_000_000),
+    ] {
+        let maximum = u64::MAX / ticks_per_unit;
+        assert_eq!(
+            parse_run_duration_budget_ticks(&format!("{maximum}{unit}")),
+            Some(maximum * ticks_per_unit),
+        );
+        assert_eq!(
+            parse_run_duration_budget_ticks(&format!("{}{unit}", maximum + 1)),
+            None,
+        );
+        assert_eq!(
+            parse_run_duration_budget_ticks(&format!("{}{unit}", u64::MAX)),
+            None,
+        );
+    }
+
+    for unit in ["", "tick", "ticks"] {
+        assert_eq!(
+            parse_run_duration_budget_ticks(&format!("{}{unit}", u64::MAX)),
+            Some(u64::MAX),
+        );
+    }
+    assert_eq!(
+        parse_run_duration_budget_ticks("18446744073709551616"),
+        None
+    );
+}
+
+#[test]
+fn run_duration_requires_a_positive_supported_integer() {
+    for invalid in ["", "0", "0ns", "-1ms", "1.5s", "1 ms", "1ps", "1m"] {
+        assert_eq!(parse_run_duration_budget_ticks(invalid), None, "{invalid}");
+    }
 }
