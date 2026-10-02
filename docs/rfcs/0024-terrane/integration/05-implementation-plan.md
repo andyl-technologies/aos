@@ -591,6 +591,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Durable certificates, original foreign authority,
   and complete publication qualification remain incomplete; these focused
   passes do not qualify the task or milestone exit.
+  The shared final-effect context now carries independently owned protected
+  control receipts. Its executor duplicates every owner's descriptors and
+  captures exact ancestors, directories, locks and records under that owner's
+  protection; the primary receipt must remain the destination's. Existing
+  producers still provide one receipt. This prerequisite does not qualify the
+  paired disclosure producer. The actual ordering gate compiles and passes
+  five selected cases before cancellation fails at the unchanged two-second
+  barrier-arrival limit; the final publication barrier is not reached within
+  that limit. The case exits after 5.60 seconds, rather than demonstrating a
+  cancellation-release failure. The full aggregate again fails the known
+  retirement assertion in `index-generation-manifest`. Mandatory formatting
+  passes; source receipts and the complete disclosure path remain unqualified.
   — satisfies
   TREE-16, REF-12 to REF-23, REF-27 to REF-31, PROV-26 to PROV-31, DOM-24;
   `checks.terrane.gates.prov-commit-verify`,
@@ -825,6 +837,18 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Documented `Chunk`, `Object`, `Ref` and `Root` SDK names now reuse the
   canonical core representations. Strict core Clippy, core/native rustdoc,
   `formats-no-std`, and both mandatory formatting commands pass for this facade.
+  An isolated SDK read candidate removes redundant target verification when a
+  trusted live policy reference is configured. Its two genuine factory
+  regressions pass current ACL revocation and protected original-association
+  loss after a prior successful read. Seven existing security regressions also
+  pass, including named-root removal, scoped content, actual physical original
+  authority and held expiry. The actual feature matrix passes both 439-case
+  core runs and 73 portable cases; native execution passes 354 of 361 tests,
+  with six known backend failures and the unchanged cancellation failure.
+  The full aggregate remains red on the backend retirement assertion. Direct
+  complete qualification is still queued on the shared Cargo target, and the
+  original-authority fallback still needs the same single-traversal treatment.
+  This candidate is unmerged and does not qualify the task.
   Pure core view, endpoint, exposure
   and schema vocabulary is integrated as an SDK prerequisite. View parsing
   rejects an explicit empty subtree and normalizes the grammar's optional
