@@ -534,6 +534,7 @@ mod oci_gc;
 pub use oci_gc::*;
 mod oci_namespaces;
 pub use oci_namespaces::*;
+mod oci_release_projection;
 mod package_documentation_reads;
 mod placement_policy;
 mod publication_admission;
@@ -4197,6 +4198,15 @@ impl Database {
             .release_artifact_snapshots
             .iter()
             .any(|release| release.container_release.is_some());
+        // An unchanged rewrite keeps the OCI mutation epoch, so the periodic
+        // re-index does not invalidate provider inventories and GC plans.
+        let unchanged_projection_epoch =
+            if had_container_admin_projections || has_container_admin_projections {
+                self.unchanged_container_release_projection_epoch(registry_id, snapshot)
+                    .await?
+            } else {
+                None
+            };
         // Assign surrogate ids client-side so the whole snapshot is one
         // self-contained batch (HubDb has no mid-batch `last_insert_rowid`). The
         // bases are read once before the batch; the indexer runs sequentially
@@ -5097,15 +5107,11 @@ impl Database {
                     vals![registry_id, indexed_at],
                 )
                 .unchecked(),
-                Statement::new(
-                    "UPDATE oci_registry_state
-                     SET mutation_epoch = mutation_epoch + 1, updated_at = ?2
-                     WHERE registry_id = ?1
-                       AND NOT EXISTS (SELECT 1 FROM oci_gc_registry_locks registry_lock
-                         WHERE registry_lock.registry_id = ?1)",
-                    vals![registry_id, indexed_at],
-                )
-                .expecting(1),
+                oci_release_projection::container_release_projection_epoch_statement(
+                    registry_id,
+                    indexed_at,
+                    unchanged_projection_epoch,
+                ),
             ]);
         }
         if has_container_admin_projections && self.oci_catalog_retired(registry_id).await? {
@@ -28607,9 +28613,34 @@ source_nar_hash = ""
             .get(0)
             .unwrap();
         assert_eq!(epoch_after_shared_root, epoch_before_shared_root + 1);
+
+        async fn mutation_epoch(db: &Database, registry_id: i64) -> i64 {
+            db.backend
+                .query_opt(
+                    "SELECT mutation_epoch FROM oci_registry_state WHERE registry_id = ?1",
+                    &vals![registry_id],
+                )
+                .await
+                .unwrap()
+                .unwrap()
+                .get(0)
+                .unwrap()
+        }
+
+        // Dropping the second release changes the projection again.
         db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
             .await
             .unwrap();
+        let epoch_after_revert = mutation_epoch(&db, registry_id).await;
+        assert_eq!(epoch_after_revert, epoch_after_shared_root + 1);
+
+        // The periodic re-index rewrites an unchanged projection. Keeping the
+        // epoch keeps provider inventories and GC plans of the registry current.
+        db.apply_snapshot_from_placement(registry_id, &snapshot, Some(placement.id))
+            .await
+            .unwrap();
+        assert_eq!(mutation_epoch(&db, registry_id).await, epoch_after_revert);
+        assert!(db.has_container_release_catalog(registry_id).await.unwrap());
 
         db.backend
             .execute(
