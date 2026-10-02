@@ -1,6 +1,7 @@
 # Registry VM checks for lifecycle workflows.
 {
   testing,
+  pkgs,
   fixtures,
 }: {
   # -------------------------------------------------------------------------
@@ -287,6 +288,73 @@
         fail "apr remove should not create the package profile"
       else
         pass "apr remove leaves package profile untouched"
+      fi
+
+      check_fail
+    '';
+  };
+
+  # -------------------------------------------------------------------------
+  # registry-stage-administration — Inspect and discard a staged candidate
+  # -------------------------------------------------------------------------
+  registry-stage-administration = testing.mkVMTest {
+    name = "apm-registry-stage-administration";
+    rootfsDeps = fixtures.commonDeps ++ [pkgs.jq];
+    memory = 512;
+    testScript = ''
+      ${fixtures.setupPreamble}
+
+      echo "==> Test: apr stage list, show, and discard"
+      ssh-keygen -q -t ed25519 -N "" -f /tmp/stage-key
+      STAGE_TRUST_KEY="stage-reg:Ed25519:$(cut -d ' ' -f2 < /tmp/stage-key.pub)"
+      $APR create stage-reg --trust-key "$STAGE_TRUST_KEY" --key /tmp/stage-key
+      REG_DIR="$REG_STORAGE/stage-reg"
+      ORIGIN_URL="file:///tmp/stage-origin"
+      $APR origin upload --registry stage-reg --upload-url "$ORIGIN_URL"
+      git -C "$REG_DIR" switch -c candidate-source
+
+      assert_cmd_success \
+        "$APR release 1.0.0 --stage vm-candidate --registry stage-reg --key /tmp/stage-key --upload-url $ORIGIN_URL" \
+        "apr release --stage retains an unpublished candidate"
+
+      $APR --json stage list --registry stage-reg > /tmp/stage-list.json
+      if jq -e 'length == 1 and .[0].revision.id == "vm-candidate" and .[0].state == "ready"' \
+        /tmp/stage-list.json > /dev/null; then
+        pass "apr stage list reports the ready candidate"
+      else
+        cat /tmp/stage-list.json
+        fail "apr stage list reports the ready candidate"
+      fi
+
+      $APR --json stage show vm-candidate --registry stage-reg > /tmp/stage-show.json
+      STAGE_REVISION=$(jq -er '.revision.revision' /tmp/stage-show.json)
+      if [ "$STAGE_REVISION" = 1 ] && jq -e '.revision.inventory | length > 0' \
+        /tmp/stage-show.json > /dev/null; then
+        pass "apr stage show reports the exact revision and inventory"
+      else
+        cat /tmp/stage-show.json
+        fail "apr stage show reports the exact revision and inventory"
+      fi
+
+      assert_cmd_fails \
+        "$APR stage discard vm-candidate --stage-revision 2 --registry stage-reg" \
+        "apr stage discard rejects a stale revision"
+      $APR --json stage discard vm-candidate --stage-revision "$STAGE_REVISION" \
+        --registry stage-reg > /tmp/stage-discard.json
+      if jq -e '.state == "discarded"' /tmp/stage-discard.json > /dev/null; then
+        pass "apr stage discard retires the exact revision"
+      else
+        cat /tmp/stage-discard.json
+        fail "apr stage discard retires the exact revision"
+      fi
+
+      assert_cmd_fails \
+        "$APR release 1.0.0 --from-stage vm-candidate --stage-revision $STAGE_REVISION --registry stage-reg --key /tmp/stage-key --upload-url $ORIGIN_URL" \
+        "a discarded candidate cannot be published"
+      if git -C "$REG_DIR" rev-parse -q --verify refs/tags/1.0.0 > /dev/null; then
+        fail "a discarded candidate leaves no release tag"
+      else
+        pass "a discarded candidate leaves no release tag"
       fi
 
       check_fail
