@@ -6,8 +6,8 @@
 
 use anyhow::{Context as _, Result};
 
-use super::{MetadataSigningKey, REGISTRY_METADATA_SIGNATURE_NAMESPACE};
 use crate::security::sign_payload_signature;
+use super::{MetadataSigningKey, REGISTRY_METADATA_SIGNATURE_NAMESPACE};
 
 /// Public identity available to sign registry catalog metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,26 +62,17 @@ pub(super) struct FileMetadataSigner<'a> {
 #[async_trait::async_trait]
 impl RegistryMetadataSigner for FileMetadataSigner<'_> {
     fn signing_identities(&self) -> Vec<MetadataSigningIdentity> {
-        self.keys
-            .iter()
-            .map(|key| MetadataSigningIdentity {
-                key_id: key.key_id.clone(),
-                key: key.key.clone(),
-                role_key: key.role_key,
-            })
-            .collect()
+        self.keys.iter().map(|key| MetadataSigningIdentity {
+            key_id: key.key_id.clone(),
+            key: key.key.clone(),
+            role_key: key.role_key,
+        }).collect()
     }
 
     async fn sign_metadata(&mut self, request: MetadataSigningRequest) -> Result<String> {
-        let key = self
-            .keys
-            .iter()
-            .find(|key| key.key_id == request.key_id)
+        let key = self.keys.iter().find(|key| key.key_id == request.key_id)
             .context("catalog metadata signer key is unavailable")?;
-        sign_payload_signature(
-            &key.key_path,
-            REGISTRY_METADATA_SIGNATURE_NAMESPACE,
-            &request.payload,
-        )
+        sign_payload_signature(&key.key_path, REGISTRY_METADATA_SIGNATURE_NAMESPACE, &request.payload)
     }
 }
+

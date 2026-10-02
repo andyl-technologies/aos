@@ -60,9 +60,9 @@ mod provenance;
 mod publish;
 mod query;
 mod release;
+mod staging;
 mod sb_certs;
 mod signing;
-mod staging;
 mod store_commands;
 mod store_paths;
 mod tags;
@@ -76,9 +76,7 @@ pub use cache_validation::validate;
 pub use channels::run_channel;
 pub use config::{local_registry_name, resolve_mirrors, resolve_mirrors_for_registry};
 pub use distribution::{run_cache, run_origin, run_web};
-pub(crate) use git::{
-    refresh_registry_object_store, semver_tag_versions, validate_canonical_release_registry_index,
-};
+pub(crate) use git::{refresh_registry_object_store, semver_tag_versions, validate_canonical_release_registry_index};
 pub use lifecycle::{LocalRegistry, authoring_clone_precious, create, local_registries};
 #[cfg(test)]
 pub(crate) use metadata::record_named_output;
@@ -91,8 +89,8 @@ pub use release::{
     load_container_release_attachment, release, release_registry_tree,
 };
 pub use sb_certs::run_sb_certs;
-pub use staging::run_stage;
 pub use store_commands::run_store;
+pub use staging::run_stage;
 pub(crate) use tags::release_commit;
 pub use tags::{sign, tag};
 pub use trust::{run_keys, run_trust};
