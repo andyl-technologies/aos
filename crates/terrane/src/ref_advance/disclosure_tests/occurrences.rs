@@ -166,6 +166,152 @@ pub(super) async fn certify_repeated_roots() {
         .begin(reference, destination_authority.token(), "sdk")
         .await
         .unwrap();
+
+    // The same public physical root may be placed beneath a more closed
+    // effective graft policy. This is a valid reference, but this native
+    // namespace cannot honor that placement. Checking only the outer public
+    // domain would incorrectly accept the differently governed occurrence.
+    let mut closing_items = public_wrapper.iter().cloned().collect::<Vec<_>>();
+    let EntryKind::Tree { props, .. } = &mut closing_items[0].entry.kind else {
+        panic!("wrapper lost its actual graft")
+    };
+    *props = Some(vec![Property {
+        name: "domain",
+        value: b"\x6eprivate:writer",
+    }]);
+    let closing_wrapper = Tree::build(
+        closing_items,
+        materialization::properties(false),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let mut mixed_items = public_outer.iter().cloned().collect::<Vec<_>>();
+    let EntryKind::Tree { root, .. } = &mut mixed_items[1].entry.kind else {
+        panic!("outer root lost its right graft")
+    };
+    *root = closing_wrapper.root_identity();
+    let mixed = Tree::build(
+        mixed_items,
+        materialization::properties(false),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let offered = proposal(&mixed, &[&public_wrapper, &closing_wrapper, &public_leaf]);
+    let mixed_evidence = crate::guard::TreeEvidence::load_tree(
+        destination.store(),
+        mixed.root_identity(),
+        &offered.uploads,
+        262144,
+    )
+    .await
+    .unwrap();
+    let policy_paths = [
+        b"/left/inner/file".as_slice(),
+        b"/right/inner/file".as_slice(),
+        b"/right".as_slice(),
+    ];
+    let layers = policy_paths.map(|path| mixed_evidence.policy_path(path, 262144).unwrap());
+    let bindings = layers
+        .iter()
+        .map(|layers| {
+            layers
+                .iter()
+                .map(
+                    |(properties, overrides)| terrane_core::properties::RootLayer {
+                        properties,
+                        overrides,
+                    },
+                )
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let policies = bindings
+        .iter()
+        .map(|layers| {
+            terrane_core::properties::resolve(
+                layers,
+                destination.guard().defaults_for(&mixed_evidence),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let left = &policies[0];
+    let right = &policies[1];
+    let parent = &policies[2];
+    assert_eq!(
+        left.domain().unwrap(),
+        terrane_core::properties::Domain::Public
+    );
+    assert_eq!(
+        right.domain().unwrap(),
+        terrane_core::properties::Domain::Private("writer")
+    );
+    terrane_core::properties::validate_commit(
+        &[terrane_core::properties::EntryChange {
+            entry: closing_wrapper.get(b"inner").unwrap(),
+            properties: parent,
+            reference_domains: &[terrane_core::properties::Domain::Public],
+            graft_properties: Some(right),
+        }],
+        &[],
+    )
+    .unwrap();
+    // The genuine credential permits both claimed domains and all affected
+    // roots. Placement refusal must not be satisfied by token attenuation.
+    let verified = Token::decode(destination_authority.token())
+        .unwrap()
+        .verify(&[destination_authority.issuer_key().clone()], 0)
+        .unwrap();
+    let authorized_roots = [
+        terrane_core::auth::RequestRoot {
+            path: b"/",
+            domain: "public",
+        },
+        terrane_core::auth::RequestRoot {
+            path: b"/left/inner",
+            domain: "public",
+        },
+        terrane_core::auth::RequestRoot {
+            path: b"/right/inner",
+            domain: "private:writer",
+        },
+    ];
+    verified
+        .authorize(&terrane_core::auth::Request {
+            reference: reference.as_bytes(),
+            verb: terrane_core::auth::Verb::Commit,
+            roots: &authorized_roots,
+            now: 0,
+            surface: "sdk",
+            locality: &destination.guard().config().home,
+            epochs: &[(reference, 0)],
+        })
+        .unwrap();
+    let rejected = destination.advance(&mut target, offered).await;
+    assert!(
+        matches!(rejected, Err(AdvanceError::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { verb: "commit", pattern } if pattern == reference))
+    );
+    assert!(target.record().is_none());
+    let mixed_nodes = mixed_evidence
+        .roots
+        .iter()
+        .map(|root| TERRANE_V1.from_digest(IdentityKind::Node, root).unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        destination.store().has(&mixed_nodes).await.unwrap(),
+        vec![false; mixed_nodes.len()]
+    );
+    assert_eq!(
+        destination
+            .store()
+            .has(std::slice::from_ref(&content))
+            .await
+            .unwrap(),
+        [false]
+    );
+
     let rejected = destination
         .advance_disclosure(
             source.guard(),
