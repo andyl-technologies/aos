@@ -2115,6 +2115,101 @@ pub(super) async fn cli_run_workflow_acknowledges_interactive_reader_commands()
 }
 
 #[tokio::test(flavor = "current_thread")]
+pub(super) async fn cli_interactive_continue_hands_control_back_before_autonomous_run()
+-> Result<(), Box<dyn Error>> {
+    struct CountedQuiescentLoop {
+        inner: QuiescentLifecycleLoop,
+        driven: Arc<std::sync::atomic::AtomicU64>,
+    }
+
+    impl EngineLoop for CountedQuiescentLoop {
+        fn drive_quantum(&mut self, request: QReq) -> Result<QOut, QErr> {
+            self.driven
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.inner.drive_quantum(request)
+        }
+    }
+
+    let temp = TempDir::new()?;
+    let scenario = write_valid_run_scenario(&temp)?;
+    let cli = Cli::parse_from([
+        "crucible",
+        "run",
+        &scenario.display().to_string(),
+        "--interactive",
+    ]);
+    let Commands::Run(args) = &cli.command else {
+        panic!("expected run command");
+    };
+    let plan = plan_run_invocation(args, temp.path())?;
+    let driven = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let factory_driven = driven.clone();
+    let control_plane = LifecycleControlPlane::new(
+        "crucible-cli-control-handoff-test",
+        Vec::new(),
+        move |_scenario: &crucible::ScenarioDef, _seed| CountedQuiescentLoop {
+            inner: QuiescentLifecycleLoop::new(),
+            driven: factory_driven.clone(),
+        },
+    );
+    let client = InProcessLifecycleClient::new(control_plane);
+    let created = client
+        .create_session(
+            CreateSessionRequest::inline(
+                plan.scenario.scenario_form().clone(),
+                plan.scenario.scenario_def().seed(),
+            )
+            .with_start_paused(true),
+        )
+        .await?;
+    let control = client
+        .control_attach(
+            AttachRequest::new(created.session)
+                .with_expected_epoch(created.session.epoch)
+                .with_client_name("crucible-cli-control-handoff-test"),
+        )
+        .await?;
+
+    // A single autonomous RUN completes this backend. The actual command reader
+    // must receive Continue's outer acknowledgement and enqueue Pause first.
+    let mut acknowledged = Vec::new();
+    let mut output = Vec::new();
+    let result = drive_interactive_command_reader(
+        &control,
+        &mut 1,
+        &mut acknowledged,
+        io::Cursor::new("continue\npause\nquery\nstop\n"),
+        &mut output,
+    )
+    .await;
+
+    assert_eq!(
+        driven.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "actor entered autonomous RUN before the acknowledged client could pause: {:?}",
+        result.as_ref().err()
+    );
+    let terminal = result?.ok_or("interactive stop did not return terminal evidence")?;
+    assert!(matches!(
+        terminal.snapshot.state,
+        EngineState::Stopped { .. }
+    ));
+    assert_eq!(
+        acknowledged,
+        vec![
+            SessionCommandKind::Continue,
+            SessionCommandKind::Pause,
+            SessionCommandKind::Query,
+            SessionCommandKind::Query,
+            SessionCommandKind::Stop,
+        ]
+    );
+    assert!(String::from_utf8(output)?.contains("interactive-query\tstate=paused\n"));
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
 pub(super) async fn cli_interactive_stop_uses_terminal_snapshot_after_registry_cleanup()
 -> Result<(), Box<dyn Error>> {
     #[derive(Default)]

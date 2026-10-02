@@ -2,6 +2,97 @@
 
 use super::*;
 
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn acknowledged_continue_preserves_engine_rejection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let engine = engine_with_lifecycle_state(LifecycleStateKind::Loaded);
+    let (sender, receiver) = mpsc::channel(4);
+    let mut actor = SessionActor::new(engine, receiver);
+    let (reply, receiver) = CommandReply::channel();
+    let (observed, observation) = oneshot::channel();
+    sender
+        .send(SessionCommand::acknowledged(
+            SessionCommand::Continue,
+            reply.with_observation(observation),
+        ))
+        .await?;
+
+    let (actor_result, received) = tokio::join!(actor.run_once(), async {
+        let received = receiver.await;
+        let _ = observed.send(());
+        received
+    });
+
+    actor_result?;
+    assert!(matches!(
+        received?,
+        Err(SessionError::InvalidTransition { state, command })
+            if *state == EngineState::Loaded && *command == SessionCommand::Continue
+    ));
+    assert_eq!(actor.live_status().state_kind, LiveStateKind::Loaded);
+    assert_eq!(actor.live_status().quanta_stepped, 0);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn reply_observation_preserves_once_only_success_and_publication_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    for result in [
+        Ok(()),
+        Err(SessionError::Engine(EngineError::SchedulePrefix(
+            crucible::ScheduleError::PrefixTooLong {
+                requested: 1,
+                available: 0,
+            },
+        ))),
+    ] {
+        let (reply, receiver) = CommandReply::channel();
+        let (observed, observation) = oneshot::channel();
+        let reply = reply.with_observation(observation);
+        let ((), received) = tokio::join!(
+            complete_acknowledgement(Some(reply.clone()), &result),
+            async {
+                let received = receiver.await;
+                reply.complete(Err(SessionError::ChannelClosed));
+                let _ = observed.send(());
+                received
+            }
+        );
+
+        assert_eq!(received?, result);
+    }
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+pub(super) async fn reply_observation_cancellation_releases_actor_before_and_after_publication()
+-> Result<(), Box<dyn std::error::Error>> {
+    for cancel_before_publication in [true, false] {
+        let (reply, receiver) = CommandReply::channel();
+        let (observed, observation) = oneshot::channel();
+        let mut receiver = Some(receiver);
+        let mut observed = Some(observed);
+        if cancel_before_publication {
+            drop(observed.take());
+            drop(receiver.take());
+        }
+        let completion = tokio::spawn(async move {
+            complete_acknowledgement(Some(reply.with_observation(observation)), &Ok(())).await;
+        });
+
+        if let Some(receiver) = receiver {
+            assert_eq!(receiver.await?, Ok(()));
+            assert!(!completion.is_finished());
+            drop(observed.take());
+        }
+        completion.await?;
+    }
+
+    Ok(())
+}
+
 #[test]
 pub(super) fn session_actor_live_snapshot_starts_as_loaded_without_mailbox() {
     let scenario = generated_scenario(17);
