@@ -1,4 +1,4 @@
-##! Seeds image-owned early accounts from the selected native network policy.
+##! Seeds image-owned accounts required by the selected manager and early services.
 {
   config,
   lib,
@@ -7,13 +7,17 @@
 }: let
   identity = config.aos.abilities.identity.operations;
   accountPolicy = import ../network-account-policy.nix {inherit lib identity;};
+  bootstrapServices = lib.filterAttrs (_: service: service.enable && service.bootstrap) config.aos.services;
   accountSeed = import ./_identity-bootstrap.nix {
     inherit lib;
     identities = identity;
     accounts = config.aos.users;
-    principalReferences = builtins.filter (reference:
-      identity.principal.effects.${lib.last reference.identity}.enable)
-    accountPolicy.references;
+    principalReferences = lib.unique (
+      builtins.filter (reference:
+        identity.principal.effects.${lib.last reference.identity}.enable)
+      accountPolicy.references
+      ++ builtins.concatMap (service: service.bootstrapPrincipals) (builtins.attrValues bootstrapServices)
+    );
     groupReferences = builtins.filter (reference:
       identity.group.effects.${lib.last reference.identity}.enable)
     accountPolicy.groupReferences;

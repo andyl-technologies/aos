@@ -52,7 +52,48 @@
   service = default.config.aos.services.dbus;
   realization = default.config.aos.abilities.serviceManagement.operations.realize.effects.dbus;
   file = default.config.aos.abilities.configuration.operations.file.effects.dbus;
+  identities = default.config.aos.abilities.identity.operations;
+  effectId = ability: operation:
+    builtins.head (builtins.attrNames (lib.filterAttrs (_: node:
+      builtins.elem ability node.identity && builtins.elem operation node.identity)
+    default.deployment.graph.nodes));
+  serviceNode = default.deployment.graph.nodes.${effectId "serviceManagement" "realize"};
+  seed = import ../../pkgs/system/_systemd-abilities/platform/_identity-bootstrap.nix {
+    inherit lib identities;
+    principalReferences = service.bootstrapPrincipals;
+    accounts = {
+      users = {};
+      groups = {};
+    };
+    shells = {
+      nologin = "${payload "util-linux"}/sbin/nologin";
+      login = "${payload "bash"}/bin/bash";
+    };
+  };
 in
+  assert service.bootstrap;
+  assert service.activationOwner == "ability";
+  assert service.activationAfter == [];
+  assert service.bootstrapPrincipals == [identities.principal.effects.dbus.outputs.name];
+  assert service.activationInputs == [file.outputs.resource];
+  assert builtins.elem (effectId "configuration" "file") serviceNode.dependencies;
+  assert builtins.elem (effectId "identity" "principal") serviceNode.dependencies;
+  assert builtins.length serviceNode.dependencies == 2;
+  assert identities.group.effects.dbus.input.requested_id == 81;
+  assert identities.principal.effects.dbus.input.requested_id == 81;
+  assert seed.passwd == "messagebus:x:81:81:D-Bus Message Bus:/var/run/dbus:${payload "util-linux"}/sbin/nologin\n";
+  assert seed.group == "messagebus:x:81:\n";
+  assert (builtins.head service.lifecycle.start).executable.arguments
+  == [
+    "--address=systemd:"
+    "--nofork"
+    "--nopidfile"
+    "--systemd-activation"
+    "--config-file"
+    file.input.path
+  ];
+  assert (builtins.head service.configuration.views).source == file.input.path;
+  assert builtins.all builtins.isString service.dependencies.prerequisites;
   assert service.lifecycle.configuration_change_action == "reload";
   assert service.manager_identity
   == {
@@ -68,9 +109,9 @@ in
   };
   assert limited.config.aos.services.dbus.resources.processes.kind == "unbounded";
   assert realization.input.instance == "dbus";
-  assert builtins.any (fragment: lib.hasInfix "${payload "polkit"}/share/dbus-1/system-services" fragment) file.input.fragments;
-  assert file.input.fragments
-  == [
+  assert file.input.fragments == [];
+  assert file.input.content
+  == lib.concatStringsSep "" [
     "<busconfig>\n<include>${payload "dbus"}/share/dbus-1/aos-system-base.conf</include>\n"
     "<servicedir>${payload "polkit"}/share/dbus-1/system-services</servicedir>\n"
     "<includedir>${payload "polkit"}/share/dbus-1/system.d</includedir>\n"

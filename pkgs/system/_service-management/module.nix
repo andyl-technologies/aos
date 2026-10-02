@@ -39,7 +39,7 @@
     if service.lifecycle == null
     then throw "Enabled service ${name} has no lifecycle configuration."
     else {
-      after = service.activationAfter;
+      after = service.activationAfter ++ service.bootstrapPrincipals;
       input =
         builtins.listToAttrs (builtins.map (field: {
             name = field;
@@ -92,6 +92,16 @@ in {
             type = lib.types.bool;
             default = true;
             description = "Start this service during activation.";
+          };
+          bootstrap = lib.mkOption {
+            type = lib.types.bool;
+            default = false;
+            description = "Render this service into the image for startup before native activation; its normal handler retains lifecycle ownership.";
+          };
+          bootstrapPrincipals = lib.mkOption {
+            type = lib.types.listOf lib.types.effectOutput;
+            default = [];
+            description = "Native principal outputs required by early startup, seeded from their exact declared identities and consumed during activation.";
           };
           activationOwner = lib.mkOption {
             type = lib.types.enum ["ability" "image" "manager"];

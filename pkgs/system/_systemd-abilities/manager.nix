@@ -26,7 +26,7 @@
       etc = config.system.build.systemdEtcEntries;
       jobScripts = config.system.build.systemdJobScripts;
     };
-    bootstrapServices = import ./observer-bootstrap.nix {
+    bootstrapServices = import ./bootstrap-services.nix {
       inherit config lib;
       pkgs = managerArtifacts;
     };

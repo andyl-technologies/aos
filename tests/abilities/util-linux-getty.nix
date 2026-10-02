@@ -29,7 +29,7 @@
   }) {config.aos.packages = {};};
   fleetPolicies = fleet.aos.activation.stages.initrd.configuration;
   fleetInitrd = evaluate "initrd" (debug.config.aos.activation.stages.initrd.configuration ++ fleetPolicies);
-  fleetBootstrap = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
+  fleetBootstrap = import ../../pkgs/system/_systemd-abilities/bootstrap-services.nix {
     inherit lib pkgs;
     config = fleetInitrd.config;
   };
@@ -48,7 +48,7 @@
   initrdVirtual = initrd.config.aos.services."getty.virtual-console";
   hostSerial = host.config.aos.services."getty.serial-console";
   initrdSerial = initrd.config.aos.services."getty.serial-console";
-  bootstrap = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
+  bootstrap = import ../../pkgs/system/_systemd-abilities/bootstrap-services.nix {
     inherit lib pkgs;
     config = initrd.config;
   };

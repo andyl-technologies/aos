@@ -11,7 +11,7 @@
   renderedPaths =
     map (path: lib.removePrefix "systemd/system/" path)
     (builtins.attrNames config.system.build.systemdEtcEntries);
-  bootstrapServices = import ../../pkgs/system/_systemd-abilities/observer-bootstrap.nix {
+  bootstrapServices = import ../../pkgs/system/_systemd-abilities/bootstrap-services.nix {
     inherit config lib pkgs;
   };
   outputs = [manager config.system.build.etcDump config.environment.etc."os-release".source];

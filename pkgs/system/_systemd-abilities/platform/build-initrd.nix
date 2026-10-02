@@ -47,7 +47,7 @@
     if initrdAbilityEvaluation == null
     then throw "the initrd requires its completed native module evaluation"
     else initrdAbilityEvaluation.config;
-  bootstrapJSON = builtins.toJSON (import ../observer-bootstrap.nix {
+  bootstrapJSON = builtins.toJSON (import ../bootstrap-services.nix {
     config = stageConfig;
     inherit lib;
     pkgs = artifacts;
