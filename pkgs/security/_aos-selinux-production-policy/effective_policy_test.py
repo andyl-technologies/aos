@@ -26,6 +26,10 @@ class FakeAttribute:
         return self.name
 
 
+class FakeTERuleNoFilename(AttributeError):
+    """Matches the selected SETools exception for a generic transition."""
+
+
 @dataclass(frozen=True)
 class FakeRule:
     """Supplies the rule surface consumed by the checker."""
@@ -35,6 +39,13 @@ class FakeRule:
     default: str | None = None
     target: FakeTypeAttribute | None = None
     source: FakeType | FakeTypeAttribute | FakeAttribute | None = None
+    filename_value: str | None = None
+
+    @property
+    def filename(self) -> str:
+        if self.filename_value is None:
+            raise FakeTERuleNoFilename
+        return self.filename_value
 
     def enabled(self) -> bool:
         return self.active
@@ -71,6 +82,9 @@ class FakePolicy:
                 FakeRule(
                     f"type_transition {transition}",
                     default=transition.default,
+                    filename_value=(
+                        transition.filename if isinstance(transition.filename, str) else None
+                    ),
                 )
             ]
             for transition in effective_policy.TRANSITIONS
@@ -144,7 +158,13 @@ class FakeQuery:
                 str(self.criteria["tclass"][0]),
                 str(self.criteria["default"]),
             )
-            return self.policy.transitions.get(transition, [])
+            return [
+                rule
+                for candidate, rules in self.policy.transitions.items()
+                if (candidate.source, candidate.target, candidate.object_class, candidate.default)
+                == (transition.source, transition.target, transition.object_class, transition.default)
+                for rule in rules
+            ]
 
         return [
             rule
@@ -195,11 +215,138 @@ FAKE_SETOOLS = SimpleNamespace(
     TERuleQuery=FakeQuery,
     TERuletype=SimpleNamespace(allow="allow", type_transition="type_transition"),
     TypeAttributeQuery=FakeTypeAttributeQuery,
+    exception=SimpleNamespace(TERuleNoFilename=FakeTERuleNoFilename),
 )
 
 
 class EffectivePolicyTest(unittest.TestCase):
     """Exercises positive, negative, conditional, and permissive gates."""
+
+    def _storage_policy(self) -> FakePolicy:
+        """Uses the current custody cohort only for the new delivery vectors."""
+
+        policy = FakePolicy()
+        # Leave legacy fixture/expectations unchanged; new B vectors must
+        # reach their own checks rather than fail an inherited stale cohort.
+        policy.attributes[effective_policy.PRIVATE_ROOT_CUSTODY_ATTRIBUTE] = {
+            "aos_sandbox_policy_authority_t", "aos_nix_offline_prepare_t",
+        }
+        return policy
+
+    def test_transition_no_filter_never_observes_filename(self) -> None:
+        class UnobservableName:
+            @property
+            def filename(self):
+                raise RuntimeError("legacy query must not observe filename")
+
+        rule = UnobservableName()
+        queries = SimpleNamespace(TERuleQuery=lambda policy, **criteria: SimpleNamespace(
+            results=lambda: [rule],
+        ))
+        transition = effective_policy.Transition("source", "target", "file", "default")
+
+        self.assertEqual(effective_policy.transition_rules(queries, None, transition), [rule])
+        self.assertEqual(
+            effective_policy.transition_candidates(queries, None, "source", "target", "file"),
+            [rule],
+        )
+        evidence = effective_policy.check_policy(FAKE_SETOOLS, self._storage_policy())
+        self.assertIn("transition\tkernel_t\tinit_exec_t\tprocess\tinit_t", evidence)
+
+    def test_transition_named_unnamed_and_no_filter_are_disjoint(self) -> None:
+        named = FakeRule("named", filename_value="selected")
+        sibling = FakeRule("sibling", filename_value="other")
+        generic = FakeRule("generic")
+        rules = [named, generic, sibling]
+
+        self.assertIs(effective_policy._transition_filename_rules(FAKE_SETOOLS, rules, None), rules)
+        self.assertEqual(
+            effective_policy._transition_filename_rules(FAKE_SETOOLS, rules, "selected"),
+            [named],
+        )
+        self.assertEqual(
+            effective_policy._transition_filename_rules(
+                FAKE_SETOOLS, rules, effective_policy.Transition.UNNAMED,
+            ),
+            [generic],
+        )
+        self.assertEqual(
+            effective_policy._transition_filename_rules(FAKE_SETOOLS, rules, "missing"), [],
+        )
+
+    def test_transition_unsupported_filename_observation_fails(self) -> None:
+        for rule in (SimpleNamespace(filename=None), SimpleNamespace()):
+            with self.subTest(rule=rule):
+                with self.assertRaises((ValueError, AttributeError)):
+                    effective_policy._transition_filename_rules(FAKE_SETOOLS, [rule], "selected")
+
+        with self.assertRaisesRegex(ValueError, "unsupported.*selector"):
+            effective_policy._transition_filename_rules(FAKE_SETOOLS, [], object())
+
+    def test_storage_generic_promotion_cannot_satisfy_named_delivery(self) -> None:
+        policy = self._storage_policy()
+        transition = next(
+            transition for transition in effective_policy.OWNER_TRANSITIONS
+            if transition.filename == "storage-zfs-hold-key-v1"
+        )
+        policy.transitions[transition] = [FakeRule("generic impostor", default=transition.default)]
+
+        with self.assertRaisesRegex(ValueError, "missing effective transition"):
+            effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_storage_delivery_rejects_disabled_generic_and_named_sibling(self) -> None:
+        credential = effective_policy.owner_policy.STORAGE_CREDENTIAL
+        for name, default in (
+            (None, credential),
+            ("unknown-credential", credential),
+            (None, "other_tmpfs_t"),
+        ):
+            with self.subTest(name=name, default=default):
+                policy = self._storage_policy()
+                transition = effective_policy.Transition(
+                    "init_t", credential, "file", default, filename=name,
+                )
+                policy.transitions[transition] = [FakeRule(
+                    "disabled delivery alternative", active=False, default=default,
+                    filename_value=name,
+                )]
+
+                with self.assertRaisesRegex(ValueError, "unexpected Storage credential"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_storage_source_read_and_destination_copy_are_separate(self) -> None:
+        owner = effective_policy.owner_policy
+        for target, permission in (
+            (owner.STORAGE_CREDENTIAL_SOURCE, "read"),
+            (owner.STORAGE_CREDENTIAL, "write"),
+        ):
+            policy = self._storage_policy()
+            policy.allows[effective_policy.Access("init_t", target, "file", permission)] = []
+            with self.assertRaisesRegex(ValueError, "missing effective allow"):
+                effective_policy.check_policy(FAKE_SETOOLS, policy)
+        for domain, target, permission in (
+            ("init_t", owner.STORAGE_CREDENTIAL_SOURCE, "write"),
+            ("aos_sandbox_storage_t", owner.STORAGE_CREDENTIAL_SOURCE, "read"),
+            ("aos_sandbox_controller_t", owner.STORAGE_CREDENTIAL_SOURCE, "open"),
+            ("aos_sandbox_storage_t", owner.STORAGE_CREDENTIAL, "write"),
+            ("init_t", owner.STORAGE_CREDENTIAL, "append"),
+        ):
+            with self.subTest(domain=domain, target=target, permission=permission):
+                policy = self._storage_policy()
+                access = effective_policy.Access(domain, target, "file", permission)
+                policy.allows[access] = [FakeRule("unexpected source/delivery mutation")]
+                with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_storage_source_never_inherits_domain_or_file_type(self) -> None:
+        source = effective_policy.owner_policy.STORAGE_CREDENTIAL_SOURCE
+        for attribute in ("domain", "file_type"):
+            with self.subTest(attribute=attribute):
+                policy = self._storage_policy()
+                members = policy.file_types if attribute == "file_type" else policy.attributes[attribute]
+                members.add(source)
+                with self.assertRaisesRegex(ValueError, "Storage credential source inherited"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_gateway_is_enforcing_but_not_a_writer_or_default_entry(self) -> None:
         owner = effective_policy.owner_policy
@@ -298,7 +445,8 @@ class EffectivePolicyTest(unittest.TestCase):
             + len(effective_policy.GUARDED_OBJECT_TYPES)
             + 2 * sum(len(domains) for _, domains in effective_policy.EXPLICIT_DOMAIN_ATTRIBUTES)
             + len(effective_policy.POSITIVE_ACCESS)
-            + len(effective_policy.NEGATIVE_ACCESS),
+            + len(effective_policy.NEGATIVE_ACCESS)
+            + 3,  # One closed delivery set and two source attribute cuts.
         )
 
     def test_explicit_loader_membership_is_exact_and_preserves_domains(self) -> None:

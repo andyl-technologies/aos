@@ -235,6 +235,21 @@ in {
           message = "Source original-worker startup requires Source, an external ZFS hold key, exact AOS Storage/PID1 packages, and explicitly selected immutable enforcing production SELinux";
         }
         {
+          assertion =
+            !sourceOriginalWorkerStartup
+            || (
+              cfg.zfsHoldSigningKey == "/var/lib/aos/sandbox-storage-credential-sources/storage-zfs-hold-key-v1"
+              && (
+                !operatorRecoveryConfigured
+                || (
+                  cfg.operatorRecoveryControllerPublicKey == "/var/lib/aos/sandbox-storage-credential-sources/operator-recovery-controller-public-key-v1"
+                  && cfg.operatorRecoveryStorageOwnerKey == "/var/lib/aos/sandbox-storage-credential-sources/operator-recovery-storage-owner-key-v1"
+                )
+              )
+            );
+          message = "Source original-worker startup requires independently provisioned fixed Storage credential sources; operator Recovery remains an optional pair";
+        }
+        {
           assertion = !(config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0") || worker.package == pkgs.aos-sandbox-zfs-worker;
           message = "confined Guest publisher requires the exact policy-labelled AOS worker package";
         }

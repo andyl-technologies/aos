@@ -17,6 +17,7 @@ require {
     type sysctl_kernel_t;
     type cgroup_t;
     type init_exec_t;
+    type init_tmpfs_t;
     # Matches pinned refpolicy's init_get_generic_units_status target.
     type systemd_unit_t;
     type system_dbusd_t;
@@ -244,6 +245,7 @@ role system_r types aos_sandbox_storage_t;
 type aos_sandbox_storage_exec_t;
 type aos_sandbox_storage_state_t;
 type aos_sandbox_storage_credential_t;
+type aos_sandbox_storage_credential_source_t;
 type aos_sandbox_storage_runtime_t;
 
 # Explicit normal-unit context only: no ELF-based init_t default transition.
@@ -286,6 +288,21 @@ allow aos_sandbox_storage_t aos_sandbox_storage_state_t:file { append create get
 type_transition aos_sandbox_storage_t aos_sandbox_storage_state_t:file aos_sandbox_storage_state_t;
 allow aos_sandbox_storage_t aos_sandbox_storage_credential_t:dir { getattr open search };
 allow aos_sandbox_storage_t aos_sandbox_storage_credential_t:file { getattr open read };
+# Independently provisioned source originals are never delivery-copy objects.
+# PID1 reads these exact labelled records; no runtime source mutation is added.
+allow aos_sandbox_storage_credential_source_t fs_t:filesystem associate;
+allow init_t aos_sandbox_storage_credential_source_t:dir { getattr open search };
+allow init_t aos_sandbox_storage_credential_source_t:file { getattr open read };
+
+# The manager labels the fixed directory before plain openat creates copies.
+# Unknown names keep the existing ordinary temporary type, not secret custody.
+allow init_t aos_sandbox_storage_credential_t:dir { add_name create getattr mounton open read relabelto remove_name search setattr write };
+allow init_t aos_sandbox_storage_credential_t:file { create getattr open read setattr unlink write };
+type_transition init_t aos_sandbox_storage_credential_t:file init_tmpfs_t;
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "storage-zfs-hold-key-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "operator-recovery-controller-public-key-v1";
+type_transition init_t aos_sandbox_storage_credential_t:file aos_sandbox_storage_credential_t "operator-recovery-storage-owner-key-v1";
+
 allow aos_sandbox_storage_t aos_sandbox_storage_runtime_t:dir { add_name getattr open read remove_name search write };
 allow aos_sandbox_storage_t aos_sandbox_storage_runtime_t:sock_file { create getattr open read setattr unlink write };
 type_transition aos_sandbox_storage_t aos_sandbox_storage_runtime_t:sock_file aos_sandbox_storage_runtime_t;

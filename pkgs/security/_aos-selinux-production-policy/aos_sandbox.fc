@@ -51,6 +51,10 @@
 /run/credentials/aos-sandbox-cache-signerd\.service(/.*)? system_u:object_r:aos_sandbox_cache_signer_credential_t
 /run/credentials/aos-sandbox-policy-authorityd\.service(/.*)? system_u:object_r:aos_sandbox_policy_authority_credential_t
 /run/credentials/aos-sandboxd\.service(/.*)? system_u:object_r:aos_sandbox_controller_credential_t
+/var/lib/aos/sandbox-storage-credential-sources -d system_u:object_r:aos_sandbox_storage_credential_source_t
+/var/lib/aos/sandbox-storage-credential-sources/(storage-zfs-hold-key-v1|operator-recovery-controller-public-key-v1|operator-recovery-storage-owner-key-v1) -- system_u:object_r:aos_sandbox_storage_credential_source_t
+/run/credentials/aos-storaged\.service -d system_u:object_r:aos_sandbox_storage_credential_t
+/run/credentials/aos-storaged\.service/(storage-zfs-hold-key-v1|operator-recovery-controller-public-key-v1|operator-recovery-storage-owner-key-v1) -- system_u:object_r:aos_sandbox_storage_credential_t
 /run/credentials/aos-sandbox-git-gateway\.service(/.*)? system_u:object_r:aos_sandbox_git_gateway_credential_t
 /sysroot -d system_u:object_r:root_t
 

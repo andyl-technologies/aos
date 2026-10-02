@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any, ClassVar, Iterable, Sequence
 
 import fuse_worker_policy
 import guest_file_policy
@@ -122,14 +123,22 @@ class Access:
     permission: str
 
 
+class _UnnamedFilename(Enum):
+    """Distinguishes an explicitly unnamed transition from no filtering."""
+
+    VALUE = "unnamed"
+
+
 @dataclass(frozen=True, order=True)
 class Transition:
-    """Names one required type transition."""
+    """Names a type transition; None preserves the legacy unfiltered query."""
 
     source: str
     target: str
     object_class: str
     default: str
+    filename: str | _UnnamedFilename | None = field(default=None, repr=False)
+    UNNAMED: ClassVar[_UnnamedFilename] = _UnnamedFilename.VALUE
 
 
 TRANSITIONS = (
@@ -1066,7 +1075,7 @@ def allow_rules(setools: Any, policy: Any, access: Access) -> list[Any]:
 
 
 def transition_rules(setools: Any, policy: Any, transition: Transition) -> list[Any]:
-    """Returns attribute-expanded process transitions matching one domain."""
+    """Returns the same expanded query, optionally selecting its actual name."""
 
     query = setools.TERuleQuery(
         policy,
@@ -1078,7 +1087,7 @@ def transition_rules(setools: Any, policy: Any, transition: Transition) -> list[
         tclass=[transition.object_class],
         default=transition.default,
     )
-    return list(query.results())
+    return _transition_filename_rules(setools, list(query.results()), transition.filename)
 
 
 def transition_candidates(
@@ -1087,6 +1096,8 @@ def transition_candidates(
     source: str,
     target: str,
     object_class: str,
+    *,
+    filename: str | _UnnamedFilename | None = None,
 ) -> list[Any]:
     """Returns every transition, including disabled alternatives, for one entry point."""
 
@@ -1099,7 +1110,35 @@ def transition_candidates(
         target_indirect=True,
         tclass=[object_class],
     )
-    return list(query.results())
+    return _transition_filename_rules(setools, list(query.results()), filename)
+
+
+def _transition_filename_rules(
+    setools: Any,
+    rules: list[Any],
+    filename: str | _UnnamedFilename | None,
+) -> list[Any]:
+    """Filters real filename properties without replacing SETools matching."""
+
+    if filename is None:
+        # Old queries must never inspect a filename or alter rule ordering.
+        return rules
+    if filename is not Transition.UNNAMED and not isinstance(filename, str):
+        raise ValueError("unsupported transition filename selector")
+
+    matching = []
+    for rule in rules:
+        try:
+            observed = rule.filename
+        except setools.exception.TERuleNoFilename:
+            if filename is Transition.UNNAMED:
+                matching.append(rule)
+        else:
+            if not isinstance(observed, str):
+                raise ValueError("unsupported transition filename observation")
+            if observed == filename:
+                matching.append(rule)
+    return matching
 
 
 def attribute_members(setools: Any, policy: Any, name: str) -> set[str]:
@@ -1128,11 +1167,36 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
                 f"{transition.source} {transition.target}:"
                 f"{transition.object_class} {transition.default}"
             )
-        evidence.append(
+        line = (
             "transition\t"
             f"{transition.source}\t{transition.target}\t"
             f"{transition.object_class}\t{transition.default}"
         )
+        if transition.filename is not None:
+            name = (
+                "<unnamed>"
+                if transition.filename is Transition.UNNAMED
+                else transition.filename
+            )
+            line += f"\tfilename={name}"
+        evidence.append(line)
+
+    # Reject all alternatives, including disabled rules; generic promotion
+    # must not satisfy any of the three literal-name delivery checks.
+    storage_credential = owner_policy.STORAGE_CREDENTIAL
+    candidates = transition_candidates(
+        setools, policy, "init_t", storage_credential, "file",
+    )
+    permitted = _transition_filename_rules(setools, candidates, Transition.UNNAMED)
+    permitted = [rule for rule in permitted if str(rule.default) == "init_tmpfs_t"]
+    for name in owner_policy.STORAGE_CREDENTIAL_NAMES:
+        permitted.extend(
+            rule for rule in _transition_filename_rules(setools, candidates, name)
+            if str(rule.default) == storage_credential
+        )
+    if any(rule not in permitted for rule in candidates):
+        raise ValueError("unexpected Storage credential delivery transition")
+    evidence.append("exclusive-storage-credential-transitions")
 
     # Explicit normal-unit contexts must not promote another shared-ELF mode.
     for domain in owner_policy.NO_DEFAULT_ENTRY:
@@ -1213,6 +1277,11 @@ def check_policy(setools: Any, policy: Any) -> list[str]:
             evidence.append(f"member-attribute\t{domain}\tdomain")
 
     file_types = attribute_members(setools, policy, "file_type")
+    for attribute, members in (("domain", domains), ("file_type", file_types)):
+        source = owner_policy.STORAGE_CREDENTIAL_SOURCE
+        if source in members:
+            raise ValueError(f"Storage credential source inherited {attribute}")
+        evidence.append(f"deny-attribute\t{source}\t{attribute}")
     guest_file_policy.validate_names(policy, file_types)
     for object_type in GUARDED_OBJECT_TYPES:
         if object_type in file_types:
