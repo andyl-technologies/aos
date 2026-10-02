@@ -21,13 +21,12 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, ensure};
 use aos_ability_plan::module_graph::GRAPH_LIMITS;
 use aos_ability_runtime::adapter::CancellationToken;
-use aos_ability_runtime::journal::JournalLimits;
 use aos_contract::Sha256Digest;
 use serde::{Deserialize, Serialize};
 
 use crate::deployment::model::{Deployment, ResolvedPackages};
 use crate::deployment::retention::{ArtifactAdmission, NixStore};
-use crate::deployment::transaction::Transactions;
+use crate::deployment::transaction::{Transactions, journal_limits};
 use crate::store::verification::verify_store_object_in;
 
 mod admission;
@@ -494,7 +493,7 @@ fn apply_profile(
         command.state_directory.join("roots"),
         admission,
     )?;
-    let mut consumer = ProfileDeployment::open(&profile, store, JournalLimits::default())?;
+    let mut consumer = ProfileDeployment::open(&profile, store, journal_limits())?;
     configure_profile_observer(&mut consumer, &profile, None, cancellation)?;
     consumer.recover(cancellation)?;
     // The image seeds an empty profile. Subsequent boots reconcile the latest
@@ -737,7 +736,7 @@ fn apply_profile(
         command.state_directory.join("roots"),
         admission,
     )?;
-    let mut consumer = ProfileDeployment::open(&profile, store, JournalLimits::default())?;
+    let mut consumer = ProfileDeployment::open(&profile, store, journal_limits())?;
     let generation = profile.new_generation()?;
     let staged = Profile {
         path: generation.path.clone(),
@@ -948,8 +947,7 @@ pub fn apply(command: &NativeDeploymentCommand, cancellation: &CancellationToken
         command.state_directory.join("roots"),
         admission,
     )?;
-    let mut transactions =
-        Transactions::open(&command.state_directory, store, JournalLimits::default())?;
+    let mut transactions = Transactions::open(&command.state_directory, store, journal_limits())?;
     transactions.set_observer(observer);
     transactions.resume(cancellation)?;
     transactions.apply(&deployment, cancellation)?;
@@ -1088,10 +1086,8 @@ pub fn verify(command: &NativeDeploymentCommand) -> Result<()> {
             && command.state_directory.join("roots").is_dir(),
         "native deployment has no durable completion state"
     );
-    let transactions = crate::deployment::transaction::inspect(
-        &command.state_directory,
-        JournalLimits::default(),
-    )?;
+    let transactions =
+        crate::deployment::transaction::inspect(&command.state_directory, journal_limits())?;
     ensure!(
         !transactions.has_pending_work()
             && transactions.incomplete_tail_bytes() == 0

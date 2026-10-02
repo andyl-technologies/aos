@@ -150,7 +150,7 @@ pub fn resume_profile(
     let mut consumer = crate::profile::deployment::ProfileDeployment::open(
         &profile,
         store,
-        aos_ability_runtime::journal::JournalLimits::default(),
+        crate::deployment::transaction::journal_limits(),
     )?;
     super::configure_profile_observer(&mut consumer, &profile, None, cancellation)?;
     consumer.recover(cancellation)?;

@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use anyhow::{Result, ensure};
+use aos_ability_plan::module_graph::GRAPH_LIMITS;
 use aos_ability_runtime::activation::{Activation, ActivationResults};
 use aos_ability_runtime::adapter::CancellationToken;
 use aos_ability_runtime::journal::{
@@ -29,6 +30,29 @@ use serde_json::Value;
 
 use super::handler::{HandlerArtifacts, ProcessAdapter};
 use super::model::{Deployment, ResolvedPackages};
+
+/// Bounds native generation and effect journals using the deployment document contract.
+///
+/// A prepared generation contains both the transaction and its resolved package
+/// context. The latter duplicates a subset of the transaction, so records admit
+/// two document budgets plus the event envelope. Additional nesting covers
+/// invocation migration state. Readers must use the same policy as writers.
+///
+/// The file budget leaves room for multi-record dispatch reservations and bounded
+/// history. Reaching it still stops activation; it does not enable compaction or
+/// remove the journal's record-count, integrity, or durable-write checks.
+#[must_use]
+pub fn journal_limits() -> JournalLimits {
+    let max_body_bytes = 2 * GRAPH_LIMITS.max_bytes + 1024;
+    JournalLimits {
+        max_body_bytes,
+        max_depth: GRAPH_LIMITS.max_depth + 4,
+        max_items: 2 * GRAPH_LIMITS.max_items + 16,
+        max_string_bytes: GRAPH_LIMITS.max_string_bytes,
+        max_file_bytes: 8 * max_body_bytes as u64,
+        ..JournalLimits::default()
+    }
+}
 
 /// Retains deployment inputs and handler closures in the owning package store.
 pub trait DeploymentStore: HandlerArtifacts {
