@@ -893,6 +893,268 @@ mod tests {
         }
     }
 
+    /// Builds a Hub whose control host also carries a root OCI route.
+    ///
+    /// Container delivery requires a root `hub_proxy` route that never serves
+    /// Web, so on `route-probes.example.test` every non-reserved path first
+    /// matches the route of `route-probes/route-probes`. `route-probes/fresh`
+    /// is a visible registry with no route at all. `external_url` selects the
+    /// control authority, so another origin turns the route host into a pure
+    /// delivery authority.
+    async fn control_host_with_root_oci_route(
+        oci_route_enabled: bool,
+        external_url: &str,
+    ) -> Arc<aos_hub::server::AppState> {
+        use aos_hub_core::db::{
+            EndpointHostInput, EndpointRevisionSpec, GrantResource, NewSurfacePlacementSpec,
+            RouteSpec, SurfaceTarget,
+        };
+        use sha2::{Digest as _, Sha256};
+
+        let db = Arc::new(aos_hub_core::db::Database::open_in_memory().await.unwrap());
+        let org_id = db.create_org("route-probes", "Route probes").await.unwrap();
+        let org = db.org_by_id(org_id).await.unwrap().unwrap();
+        db.grant_consumer_scope(
+            GrantResource::NetworkPolicy {
+                id: "instance:public",
+            },
+            &org.stable_id,
+            "explicit",
+            "test",
+            "request:worker-control-host-boundary",
+        )
+        .await
+        .unwrap();
+
+        let binding_id = db
+            .create_topology_binding(
+                Some(org_id),
+                "binding:route-probes",
+                &org.stable_id,
+                "route-probes",
+                "r2",
+                None,
+                Some("route-probes"),
+                Some("routes"),
+                Some("https"),
+                Some("dns"),
+                Some(b"storage.example.invalid"),
+                Some(443),
+                Some("auto"),
+                Some("private"),
+            )
+            .await
+            .unwrap();
+        let registry_id = db
+            .create_managed_registry(org_id, "", "route-probes", "public", &[], false)
+            .await
+            .unwrap();
+        db.create_managed_registry(org_id, "", "fresh", "public", &[], false)
+            .await
+            .unwrap();
+        let placement = db
+            .create_surface_placement(&NewSurfacePlacementSpec {
+                surface: SurfaceTarget::Registry(registry_id),
+                name: "primary".to_string(),
+                binding_id,
+                prefix: "registry-route-probes".to_string(),
+                kind: "complete".to_string(),
+                desired_state: "active".to_string(),
+                hash_range: None,
+                desired_read_enabled: true,
+                read_order: 0,
+                requires_conditional_writes: false,
+            })
+            .await
+            .unwrap();
+
+        let domain = db
+            .create_delivery_domain(
+                &org.stable_id,
+                Some(org_id),
+                "route-probes.example.test",
+                "plan:worker-control-host-domain",
+            )
+            .await
+            .unwrap();
+        db.create_endpoint(
+            "endpoint:route-probes",
+            &org.stable_id,
+            Some(org_id),
+            "https",
+            &EndpointHostInput::Domain(domain.stable_id),
+            443,
+            "instance:public",
+            &EndpointRevisionSpec {
+                boundary_revision: 1,
+                ingress_kind: "hub".to_string(),
+                listener_configuration: "listener:route-probes".to_string(),
+                tls_configuration: "{\"provider\":\"external\",\"certificate_ref\":\"secret:test\",\"require_client_certificate\":false}".to_string(),
+                probe_configuration: "{\"provider\":\"native_file\",\"signerSecretRef\":\"test-probe-key\",\"publicKey\":\"11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo\"}".to_string(),
+            },
+            None,
+            "test",
+            "request:worker-endpoint-route-probes",
+        )
+        .await
+        .unwrap();
+
+        let access_policy_json = "{}".to_string();
+        let reservation_digest = [7_u8; 32];
+        db.create_route(
+            "route:oci-control-root",
+            SurfaceTarget::Registry(registry_id),
+            &RouteSpec {
+                consumer_scope_key: org.stable_id,
+                endpoint_id: "endpoint:route-probes".to_string(),
+                endpoint_generation: 1,
+                endpoint_ingress_kind: "hub".to_string(),
+                base_path: String::new(),
+                mode: "hub_proxy".to_string(),
+                access_policy_kind: "public".to_string(),
+                access_policy_digest: hex::encode(Sha256::digest(access_policy_json.as_bytes())),
+                access_policy_json,
+                access_boundary_id: None,
+                access_boundary_revision: None,
+                external_provider_kind: None,
+                external_provider_resource_id: None,
+                external_provider_revision: None,
+                gateway_id: None,
+                gateway_generation: None,
+                target_binding_id: None,
+                gateway_client_base_path: None,
+                target_placement_prefix: None,
+                placement_id: Some(placement.id),
+                placement_policy_revision_id: None,
+                serves_git: false,
+                serves_cache: false,
+                serves_web: false,
+                serves_oci: true,
+                enabled: oci_route_enabled,
+            },
+            "https://route-probes.example.test",
+            1,
+            &reservation_digest,
+            &[(1, reservation_digest.to_vec())],
+            None,
+            "test",
+        )
+        .await
+        .unwrap();
+
+        Arc::new(aos_hub::server::AppState::new(db, external_url.to_string()).await)
+    }
+
+    /// Sends one browser read through the production Worker pipeline.
+    async fn worker_browser_read(
+        state: &Arc<aos_hub::server::AppState>,
+        origin: &str,
+        path: &str,
+        accept: &str,
+    ) -> (StatusCode, String) {
+        let deps = aos_hub::server::console_deps_for_worker_test(state);
+        let svc = worker_rpc_service(state);
+        let router = aos_hub_core::connect::router(Arc::new(worker_rpc_service(state)))
+            .merge(console_router(deps.clone()));
+
+        let url = url::Url::parse(&format!("{origin}{path}")).unwrap();
+        let request = http::Request::builder()
+            .method(Method::GET)
+            .uri(url.as_str())
+            .header(http::header::ACCEPT, accept)
+            .extension(
+                aos_hub_core::connect::DeliveryTransportEvidence::from_verified_url(&url, "hub")
+                    .unwrap(),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let response = worker_console_request(router, &svc, deps, request).await;
+
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    #[tokio::test]
+    async fn worker_control_authority_explains_registries_its_host_does_not_deliver() {
+        let _presentation = SITE_PRESENTATION.lock().await;
+        let control = "https://route-probes.example.test";
+        let state = control_host_with_root_oci_route(true, control).await;
+
+        let (status, html) =
+            worker_browser_read(&state, control, "/route-probes/fresh/", "text/html").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("no public route on this host yet"), "{html}");
+
+        let (status, _) = worker_browser_read(
+            &state,
+            control,
+            "/route-probes/fresh/-/packages",
+            "text/html",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let (status, home) = worker_browser_read(&state, control, "/", "text/html").await;
+        assert_eq!(status, StatusCode::OK);
+        let fresh = home
+            .split("<tr")
+            .find(|row| row.contains("href=\"/route-probes/fresh/\""))
+            .unwrap();
+        assert!(fresh.contains("no route on this host"), "{fresh}");
+
+        for (path, accept) in [
+            ("/route-probes/missing/", "text/html"),
+            ("/route-probes/fresh/", "application/json"),
+        ] {
+            let (status, _) = worker_browser_read(&state, control, path, accept).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "{path} {accept}");
+        }
+    }
+
+    #[tokio::test]
+    async fn worker_control_authority_explains_a_disabled_route() {
+        let _presentation = SITE_PRESENTATION.lock().await;
+        let state =
+            control_host_with_root_oci_route(false, "https://route-probes.example.test").await;
+
+        let (status, html) = worker_browser_read(
+            &state,
+            "https://route-probes.example.test",
+            "/route-probes/route-probes/",
+            "text/html",
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("delivery route is disabled"), "{html}");
+    }
+
+    #[tokio::test]
+    async fn worker_delivery_authority_still_requires_an_explicit_route() {
+        let _presentation = SITE_PRESENTATION.lock().await;
+        let state = control_host_with_root_oci_route(true, "https://hub.example.test").await;
+
+        let (status, _) = worker_browser_read(
+            &state,
+            "https://route-probes.example.test",
+            "/route-probes/fresh/",
+            "text/html",
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        let (status, _) = worker_browser_read(
+            &state,
+            "https://elsewhere.example.test",
+            "/route-probes/fresh/",
+            "text/html",
+        )
+        .await;
+        assert_eq!(status, StatusCode::MISDIRECTED_REQUEST);
+    }
+
     #[tokio::test]
     async fn rejects_a_body_before_nested_dispatch_can_buffer_past_its_limit() {
         let request = http::Request::builder()
