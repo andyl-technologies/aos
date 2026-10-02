@@ -6,7 +6,10 @@
 //! budget, so a one-second failed ACK wait remains observable. Follow-up records
 //! are at least five seconds apart within each phase. Waits that complete before
 //! their first sample spend no budget. The original host deadline supplies
-//! sampling time; no additional clock is read.
+//! sampling time; no additional clock is read. Renewed advance slices retain
+//! only consumption established by the original remaining-budget reads. This
+//! conservatively omits time after the last read rather than inventing elapsed
+//! time when a caller renews early.
 //! Snapshots and independently acquire-read ring cursors are advisory, never a
 //! coherent cross-transport state or input to a control decision.
 //! Fixed phases and scalar fields keep each record below 2048 bytes, for at most
@@ -37,7 +40,10 @@ pub(super) struct ClampExpectation {
 /// Keeps diagnostic-only state outside checkpoints and runtime counters.
 pub(super) struct WaitObservation {
     remaining: u16,
-    next_remaining: Option<Duration>,
+    slice_timeout: Duration,
+    slice_remaining: Duration,
+    consumed_slices: Duration,
+    next_elapsed: Option<Duration>,
     region_inode: Option<u64>,
     /// Last deadline computed by the original host publication, without rereading it.
     pub(super) host_published_device_deadline: Cell<Option<u64>>,
@@ -63,32 +69,64 @@ impl WaitObservation {
             } else {
                 0
             },
-            next_remaining: None,
+            slice_timeout: Duration::ZERO,
+            slice_remaining: Duration::ZERO,
+            consumed_slices: Duration::ZERO,
+            next_elapsed: None,
             region_inode: None,
             host_published_device_deadline: Cell::new(None),
         }
     }
 
     pub(super) fn begin(&mut self, timeout: Duration) {
-        self.next_remaining = timeout.checked_sub(SAMPLE_INTERVAL);
+        self.slice_timeout = timeout;
+        self.slice_remaining = timeout;
+        self.consumed_slices = Duration::ZERO;
+        self.next_elapsed = Some(SAMPLE_INTERVAL);
+    }
+
+    pub(super) fn observe_remaining(&mut self, remaining: Duration) {
+        if self.remaining != 0 {
+            self.slice_remaining = self.slice_remaining.min(remaining);
+        }
+    }
+
+    /// Carries observed consumption across an original successful renewal.
+    pub(super) fn renew(&mut self, timeout: Duration) {
+        if self.remaining == 0 {
+            return;
+        }
+        self.consumed_slices = self
+            .consumed_slices
+            .saturating_add(self.slice_timeout.saturating_sub(self.slice_remaining));
+        self.slice_timeout = timeout;
+        self.slice_remaining = timeout;
     }
 
     pub(super) fn begin_clamp(&mut self, timeout: Duration) {
         let first_sample_after = SAMPLE_INTERVAL.min(timeout / 2);
-        self.next_remaining = if first_sample_after.is_zero() {
+        self.begin(timeout);
+        self.next_elapsed = if first_sample_after.is_zero() {
             None
         } else {
-            timeout.checked_sub(first_sample_after)
+            Some(first_sample_after)
         };
     }
 
     /// Reserves a record before acquiring any diagnostic transport views.
     fn due(&mut self, remaining: Duration) -> bool {
-        if self.remaining == 0 || !self.next_remaining.is_some_and(|next| remaining <= next) {
+        if self.remaining == 0 {
+            return false;
+        }
+        self.observe_remaining(remaining);
+        let elapsed = self
+            .consumed_slices
+            .saturating_add(self.slice_timeout.saturating_sub(self.slice_remaining));
+        if !self.next_elapsed.is_some_and(|next| elapsed >= next) {
             return false;
         }
         self.remaining -= 1;
-        self.next_remaining = remaining.checked_sub(SAMPLE_INTERVAL);
+        self.next_elapsed = elapsed.checked_add(SAMPLE_INTERVAL);
         true
     }
 }
