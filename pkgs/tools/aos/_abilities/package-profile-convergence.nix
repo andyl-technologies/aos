@@ -12,38 +12,6 @@
     && lib.take 1 config.aos.activation.scope != ["container"];
   specification = config.aos.abilities.configuration.operations.file.effects.package-profile-specification;
   service = {
-    policy.hardening = {
-      allow_privilege_escalation = false;
-      ambient_privileges = [];
-      privilege_bounds = {
-        kind = "restricted";
-        privileges = [];
-      };
-      resource_control_delegation = false;
-      resource_control_access = "read-only";
-      device_access_scope = "private";
-      host_clock_mutation = false;
-      host_name_mutation = false;
-      operating_system_log_access = false;
-      operating_system_extension_access = false;
-      operating_system_tunable_access = false;
-      lock_execution_personality = false;
-      writable_executable_memory = false;
-      remove_interprocess_communication = false;
-      isolation_domains = [];
-      isolation_domain_creation = "denied";
-      network_families = ["ipv4" "ipv6" "local"];
-      memory_pressure_adjustment = 0;
-      permit_realtime = false;
-      permit_elevated_file_identity = false;
-      process_visibility = "all";
-      operation_architectures = [];
-      operation_allow = [];
-      operation_deny = [];
-      denied_operation_action = "return-permission-denied";
-      operation_profile = "system-service";
-      isolated_identity_mapping = "none";
-    };
     service = "package-profile-convergence";
     activationOwner = "manager";
     autoStart = false;
@@ -90,29 +58,18 @@
       variables = {};
       search_path = [];
     };
+    # APM dispatches native handlers directly; their mounts and host mutations
+    # must reach the same namespace and authority as the image host activator.
     isolation = {
       privilege = "privileged";
-      filesystem = "read-only-system";
-      home_access = "inaccessible";
+      filesystem = "host";
+      home_access = "host";
       network = "host";
       process_visibility = "host";
       termination_scope = "all-processes";
-      temporary_directory = "private";
+      temporary_directory = "shared";
       devices = [];
-      host_paths = [
-        {
-          source = "/nix";
-          mode = "read-write";
-        }
-        {
-          source = "/var/lib/apm";
-          mode = "read-write";
-        }
-        {
-          source = "/var/lib/profiles/system";
-          mode = "read-write";
-        }
-      ];
+      host_paths = [];
       permit_core_dumps = false;
     };
   };

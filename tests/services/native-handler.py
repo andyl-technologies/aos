@@ -20,6 +20,7 @@ configuration_entrypoint = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else confi
 configuration_wrapper = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 systemd_analyze = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 host_activation_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+package_convergence_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
 configuration_module = importlib.util.module_from_spec(configuration_spec)
 sys.modules["aos_configuration"] = configuration_module
@@ -111,6 +112,30 @@ class NativeHandlerTests(unittest.TestCase):
         ]:
             with self.subTest(directive=directive):
                 self.assertNotIn(directive, directives)
+
+    def test_package_convergence_retains_native_host_executor_authority(self):
+        self.assertIsNotNone(package_convergence_input, "requires the actual package convergence projection")
+        value = json.loads(package_convergence_input.read_text())
+
+        text = handler_module.realize_service(value)["units"]["package-profile-convergence.service"]
+        directives = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+        for directive in ["PrivateTmp", "ProtectSystem", "ProtectHome", "NoNewPrivileges"]:
+            with self.subTest(directive=directive):
+                self.assertEqual(directives[directive], "no")
+        for directive in [
+            "PrivateMounts", "PrivateDevices", "RootDirectory", "RootImage",
+            "BindPaths", "BindReadOnlyPaths", "ReadOnlyPaths", "ReadWritePaths",
+            "InaccessiblePaths", "TemporaryFileSystem", "CapabilityBoundingSet",
+            "RestrictNamespaces", "SystemCallFilter", "ProtectControlGroups",
+            "ProtectKernelTunables", "ProtectKernelModules",
+        ]:
+            with self.subTest(directive=directive):
+                self.assertNotIn(directive, directives)
+        self.assertIn('/bin/apm" "install" "--system" "--from" "/run/apm/package-profile-desired.toml" "--yes"', directives["ExecStart"])
+        self.assertIn("After=aos-activate.service", text)
+        self.assertIn("Requires=aos-registry-sync.service", text)
+        self.assertEqual(directives["TimeoutStartSec"], "120000ms")
 
     def test_workload_profiles_preserve_master_syscall_filters(self):
         for profile, expected in [
