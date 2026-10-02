@@ -18,7 +18,9 @@ use clap::Parser as _;
 
 use super::{proof, reader};
 use crate::deployment::process::run_bounded_with_input_limit;
-use crate::native_deployment::{EvaluationInput, ImportControl, NativeDeploymentArgs};
+use crate::native_deployment::{
+    EvaluationInput, ImportControl, NativeDeploymentArgs, NativeDeploymentCommand,
+};
 use crate::store::temp_roots::TemporaryRoots;
 
 const TRANSFER_LIMIT: usize = 8 * 1024 * 1024;
@@ -62,11 +64,34 @@ pub(super) fn run_from_process() -> Result<()> {
         return Ok(());
     }
 
-    let committed = reader::read_committed_preparation(&command, Path::new(BINDING))?;
+    handoff_in(
+        &command,
+        Path::new(BINDING),
+        Path::new(TARGET_ROOT),
+        &CancellationToken::default(),
+    )
+}
+
+/// Transfers receipts selected by an authenticated, completely committed initrd.
+///
+/// The production caller supplies its fixed image binding and mounted host
+/// root. Keeping this boundary separate permits the same authority and store
+/// transport to be exercised against two isolated stores.
+///
+/// # Errors
+/// Returns an error for invalid image admission or journal authority, changed
+/// receipt provenance, or failed import, verification, or durable retention.
+pub(super) fn handoff_in(
+    command: &NativeDeploymentCommand,
+    binding: &Path,
+    target_root: &Path,
+    cancellation: &CancellationToken,
+) -> Result<()> {
+    let committed = reader::read_committed_preparation(command, binding)?;
     let descriptor = EvaluationInput::read_in(
         &command.input.join("evaluation.json"),
         &command.nix_store,
-        &CancellationToken::default(),
+        cancellation,
     )?;
     let bytes = reader::read_immutable_bounded(
         &committed.result.authorized_input,
@@ -84,9 +109,9 @@ pub(super) fn run_from_process() -> Result<()> {
     );
     transfer_receipts(
         &command.nix_store,
-        Path::new(TARGET_ROOT),
+        target_root,
         &committed.result,
-        &CancellationToken::default(),
+        cancellation,
     )?;
     // Keep the committed decision's shared journal locks through retention.
     drop(committed);
