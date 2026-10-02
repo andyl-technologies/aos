@@ -377,6 +377,7 @@ fn replay_cache_journals_at(
         authority: replay_authority,
         clock: None,
         owner_uid,
+        project_usage: super::project_usage::CacheProjectUsageProgressV1::default(),
     };
     let inventories = owner.reconstructed_partitions()?;
     let partitions = inventories.len();

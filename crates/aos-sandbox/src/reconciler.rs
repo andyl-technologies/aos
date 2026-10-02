@@ -754,6 +754,30 @@ impl EffectFailure {
 
 /// Executes idempotent single-node effects through fixed local boundaries.
 pub trait SingleNodeEffectExecutor {
+    /// Initializes the same fixed existing Cache and borrows local project usage.
+    ///
+    /// # Errors
+    /// Returns unavailable when the concrete executor lacks resident originals,
+    /// complete provisioned history, or current observation custody. No global
+    /// project account or operation admission is produced by this hook.
+    fn existing_cache_project_usage_v1(
+        &mut self,
+        _project: aos_sandbox_core::ProjectId,
+    ) -> Result<crate::cache_residency::CacheProjectUsageLoanV1<'_>, crate::cache_residency::CacheResidentUnavailableV1> {
+        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    }
+
+    /// Rechecks the same initialization originals after the short usage loan.
+    ///
+    /// # Errors
+    /// Refuses unavailable or changed resident originals; implementations must
+    /// retain actual causes and must not reopen or reconstruct their owners.
+    fn recheck_existing_cache_project_usage_v1(
+        &mut self,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        Err(crate::cache_residency::CacheResidentUnavailableV1)
+    }
+
     /// Issues only the fixed administrative successor on real original owners.
     ///
     /// The default is retaining terminal refusal. Production borrows its SAME
@@ -1204,6 +1228,19 @@ where
     pub(crate) fn journal_mut(&mut self) -> &mut Journal {
         self.ledger_validated = false;
         &mut self.journal
+    }
+
+    pub(crate) fn existing_cache_project_usage_v1(
+        &mut self,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<crate::cache_residency::CacheProjectUsageLoanV1<'_>, crate::cache_residency::CacheResidentUnavailableV1> {
+        self.executor.existing_cache_project_usage_v1(project)
+    }
+
+    pub(crate) fn recheck_existing_cache_project_usage_v1(
+        &mut self,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.executor.recheck_existing_cache_project_usage_v1()
     }
 
     #[cfg(target_os = "linux")]

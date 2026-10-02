@@ -141,6 +141,8 @@ pub(crate) use protected_owner::{
     release_fixed_closed_policy_cache_hold_after_root_readback_v1,
 };
 pub use protected_owner::{
+    CacheResidentInitializationV1, CacheResidentUnavailableV1,
+    CacheProjectUsageLoanV1, CacheProjectUsageObservationErrorV1, CacheProjectUsagePartitionV1,
     CacheResidencyAuthorizedControllerV1, CacheResidencyAuthorizedPayloadV1,
     CacheResidencyProtectedColdOutcomeV1, CacheResidencyProtectedOpenReportV1,
     CacheResidencyProtectedOwnerRecoveryV1, CacheResidencyProtectedOwnerV1,

@@ -52,11 +52,17 @@ use super::{
 };
 
 mod pin_lookup;
+mod initialization;
+pub(super) mod project_usage;
 mod provisioning;
 mod root_read_only;
 mod writer_readback;
 
 pub use pin_lookup::PublicLogicalPinAcquisitionCommitV1;
+pub use initialization::{CacheResidentInitializationV1, CacheResidentUnavailableV1};
+pub use project_usage::{
+    CacheProjectUsageLoanV1, CacheProjectUsageObservationErrorV1, CacheProjectUsagePartitionV1,
+};
 pub(crate) use provisioning::validate_genesis_checkpoint;
 #[cfg(target_os = "linux")]
 pub(crate) use root_read_only::SIGNER_READ_ONLY_CACHE_VIEW;
@@ -98,6 +104,26 @@ fn open_cache_journal(
 ) -> Result<(Journal, RecoveryReport), crate::journal::JournalError> {
     reject_legacy_cache_journals()?;
     Journal::initialize_cache_policy_hold_at(root, owner_uid)?;
+    let (mut journal, report) = open_cache_journal_file(root, name, limits, owner_uid, CacheOpenProfileV1::Ordinary)?;
+    enable_cache_journal_gate(&mut journal, root, name, owner_uid)?;
+    Ok((journal, report))
+}
+
+enum CacheOpenProfileV1 {
+    Ordinary,
+    ExistingOnly,
+}
+
+fn open_cache_journal_file(
+    root: &Path,
+    name: &str,
+    limits: JournalLimits,
+    owner_uid: u32,
+    profile: CacheOpenProfileV1,
+) -> Result<(Journal, RecoveryReport), crate::journal::JournalError> {
+    if matches!(profile, CacheOpenProfileV1::ExistingOnly) {
+        return Journal::open_existing_protected_at_for_uid(root, name, limits, owner_uid);
+    }
     #[cfg(test)]
     let opened = if root == Path::new(PROTECTED_CACHE_ROOT) {
         Journal::open_protected_at_for_uid(root, name, limits, owner_uid)
@@ -106,11 +132,19 @@ fn open_cache_journal(
     };
     #[cfg(not(test))]
     let opened = Journal::open_protected_at_for_uid(root, name, limits, owner_uid);
-    let (mut journal, report) = opened?;
+    opened
+}
+
+fn enable_cache_journal_gate(
+    journal: &mut Journal,
+    root: &Path,
+    name: &str,
+    owner_uid: u32,
+) -> Result<(), crate::journal::JournalError> {
     if matches!(name, CACHE_STATE_JOURNAL | CACHE_AUTHORITY_JOURNAL) {
         journal.enable_cache_policy_hold_gate(root, owner_uid)?;
     }
-    Ok((journal, report))
+    Ok(())
 }
 
 fn require_cache_named_writer(
@@ -183,6 +217,7 @@ pub struct CacheResidencyProtectedOwnerV1 {
     authority: Arc<ProtectedCacheResidencyReplayAuthorityV1>,
     clock: Option<Arc<ProtectedCacheClockV1>>,
     owner_uid: u32,
+    project_usage: project_usage::CacheProjectUsageProgressV1,
 }
 
 impl CacheResidencyProtectedOwnerV1 {
@@ -1133,6 +1168,7 @@ impl CacheResidencyProtectedOwnerV1 {
             authority,
             clock: Some(clock),
             owner_uid,
+            project_usage: project_usage::CacheProjectUsageProgressV1::default(),
         };
         owner.replay()?;
 
@@ -2722,13 +2758,7 @@ impl ProtectedCacheClockV1 {
             cache_clock_journal_limits(),
             owner_uid,
         )?;
-        let retained = {
-            let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
-            authority
-                .get(CACHE_CLOCK_KEY)?
-                .map(decode_cache_clock_floor)
-                .transpose()?
-        };
+        let retained = read_cache_clock_floor(&mut journal)?;
         let sampled = sample_wall_clock()?;
         let floor = match retained {
             Some(floor)
@@ -2753,20 +2783,40 @@ impl ProtectedCacheClockV1 {
             }
         };
         Ok((
-            Self {
-                state: Mutex::new(ProtectedCacheClockStateV1 {
-                    journal: Some(journal),
-                    floor,
-                    last_sampled_unix_seconds: floor.observed_unix_seconds,
-                    readback_held: false,
-                }),
-                root: root.to_path_buf(),
-                owner_scope,
-                owner_uid,
-            },
+            Self::from_validated_floor(journal, root, owner_scope, owner_uid, floor),
             report,
         ))
     }
+
+    fn from_validated_floor(
+        journal: Journal,
+        root: &Path,
+        owner_scope: ObjectDigest,
+        owner_uid: u32,
+        floor: CacheClockFloorV1,
+    ) -> Self {
+        Self {
+            state: Mutex::new(ProtectedCacheClockStateV1 {
+                journal: Some(journal),
+                floor,
+                last_sampled_unix_seconds: floor.observed_unix_seconds,
+                readback_held: false,
+            }),
+            root: root.to_path_buf(),
+            owner_scope,
+            owner_uid,
+        }
+    }
+}
+
+fn read_cache_clock_floor(
+    journal: &mut Journal,
+) -> Result<Option<CacheClockFloorV1>, CacheResidencyProtectedJournalErrorV1> {
+    let authority = journal.claim_protected_authority(RecordNamespace::DesiredState)?;
+    authority
+        .get(CACHE_CLOCK_KEY)?
+        .map(decode_cache_clock_floor)
+        .transpose()
 }
 
 impl CacheResidencyCurrentTimeAuthorityV1 for ProtectedCacheClockV1 {
@@ -3449,6 +3499,7 @@ pub(in crate::cache_residency) mod tests {
                 authority,
                 clock: Some(clock),
                 owner_uid: uid,
+                project_usage: project_usage::CacheProjectUsageProgressV1::default(),
             },
         )
     }

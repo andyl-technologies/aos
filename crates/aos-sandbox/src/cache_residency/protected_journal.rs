@@ -47,6 +47,8 @@ pub(crate) use provisioning::LOGICAL_PIN_ACQUIRE_LIFETIME_SECONDS;
 use pin_effect::{
     CurrentPhysicalPinActionV1, CurrentPhysicalPinEffectV1, current_physical_pin_effect,
 };
+use super::recovery::CacheRecoverySelectionV1;
+use super::protected_owner::project_usage::CacheProjectUsagePartitionV1;
 
 const PARTITION_DESCRIPTOR_MAGIC: &[u8; 8] = b"AOSCPP01";
 const PARTITION_DESCRIPTOR_BYTES: usize = 241;
@@ -181,6 +183,20 @@ trait CacheResidencyReplayAuthorityV1: Send + Sync {
         published_checkpoints: &[Vec<u8>],
         records: &[Vec<u8>],
         limits: CacheRecoveryLimitsV1,
+    ) -> Result<CacheRecoveryInventoryV1, RecoveryError> {
+        self.validate_partition_selected(
+            partition, published_checkpoints, records, limits,
+            &mut CacheRecoverySelectionV1::Ordinary,
+        )
+    }
+
+    fn validate_partition_selected(
+        &self,
+        partition: PhysicalPartitionId,
+        published_checkpoints: &[Vec<u8>],
+        records: &[Vec<u8>],
+        limits: CacheRecoveryLimitsV1,
+        selection: &mut CacheRecoverySelectionV1,
     ) -> Result<CacheRecoveryInventoryV1, RecoveryError>;
 
     /// Authenticates one exact physical observation from protected storage.
@@ -274,12 +290,13 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
             .collect())
     }
 
-    fn validate_partition(
+    fn validate_partition_selected(
         &self,
         partition: PhysicalPartitionId,
         published_checkpoints: &[Vec<u8>],
         records: &[Vec<u8>],
         limits: CacheRecoveryLimitsV1,
+        selection: &mut CacheRecoverySelectionV1,
     ) -> Result<CacheRecoveryInventoryV1, RecoveryError> {
         let session = self
             .partitions
@@ -300,7 +317,7 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
         {
             return Err(RecoveryError::AnchorMismatch);
         }
-        CacheRecoveryInventoryV1::from_authority_session(
+        CacheRecoveryInventoryV1::from_authority_session_selected(
             partition,
             &evidence.typed_checkpoint,
             evidence.prior_typed_checkpoint.as_deref(),
@@ -309,6 +326,7 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
             limits,
             session.scope,
             session.record_digest,
+            selection,
         )
     }
 
@@ -334,6 +352,67 @@ impl CacheResidencyReplayAuthorityV1 for CacheResidencyAuthoritySessionV1 {
 }
 
 impl ProtectedCacheResidencyReplayAuthorityV1 {
+    pub(crate) fn capture_existing(
+        original: &mut Option<Journal>,
+        destination: &mut Option<Arc<Self>>,
+        owner_scope: ObjectDigest,
+        maximum_record_bytes: usize,
+        evidence: Vec<CacheResidencyReplayPartitionEvidenceV1>,
+        limits: CacheRecoveryLimitsV1,
+        current_time: Arc<dyn CacheResidencyCurrentTimeAuthorityV1>,
+    ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+        if destination.is_some() {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        }
+        let journal = original.as_mut().ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        let (limits, partitions) = validate_protected_replay_parts(
+            journal, owner_scope, maximum_record_bytes, evidence, limits,
+            current_time.as_ref(),
+        )?;
+        let Some(journal) = original.take() else {
+            return Err(ProtectedDomainJournalErrorV1::StaleAuthority);
+        };
+        // No fallible operation separates this one move from resident parking.
+        *destination = Some(Arc::new(Self {
+            journal: Mutex::new(journal),
+            owner_scope,
+            maximum_record_bytes,
+            partitions: Mutex::new(partitions),
+            current_time,
+            limits,
+        }));
+        let authority = destination.as_ref().ok_or(ProtectedDomainJournalErrorV1::StaleAuthority)?;
+        CacheResidencyReplayValidatorV1::new(authority.clone(), limits)?;
+        Ok(())
+    }
+
+    /// Parks the actual action Result before the sole boundary's final refresh.
+    pub(crate) fn while_authority_current_resident<T>(
+        &self,
+        destination: &mut Option<Result<T, CacheResidencyProtectedJournalErrorV1>>,
+        postcheck: &mut Option<CacheResidencyProtectedJournalErrorV1>,
+        action: impl FnOnce(
+            &CacheAuthorityOwner<'_, '_>,
+            u64,
+            CacheResidencyReplayValidatorV1,
+        ) -> Result<T, CacheResidencyProtectedJournalErrorV1>,
+    ) {
+        let returned = self.while_authority_current(
+            &[],
+            |owner, _capabilities, now, validator, _refresh| {
+                *destination = Some(action(owner, now, validator));
+                Ok(())
+            },
+        );
+        if let Err(cause) = returned {
+            if destination.is_some() {
+                postcheck.get_or_insert(cause);
+            } else {
+                *destination = Some(Err(cause));
+            }
+        }
+    }
+
     pub(crate) fn writer_name_witness(
         &self,
     ) -> Result<crate::journal::ProtectedWriterNameWitness, CacheResidencyProtectedJournalErrorV1>
@@ -372,6 +451,18 @@ impl ProtectedCacheResidencyReplayAuthorityV1 {
             refresh()?;
             Ok(evidence)
         })
+    }
+
+    pub(crate) fn capture_current_replay_partition_evidence(
+        &self,
+        destination: &mut Option<Result<Vec<CacheResidencyReplayPartitionEvidenceV1>, CacheResidencyProtectedJournalErrorV1>>,
+        postcheck: &mut Option<CacheResidencyProtectedJournalErrorV1>,
+    ) {
+        self.while_authority_current_resident(destination, postcheck, |_owner, _now, _validator| {
+            Ok(self.partitions.lock()
+                .map_err(|_| ProtectedDomainJournalErrorV1::StaleAuthority)?
+                .values().cloned().collect())
+        });
     }
 
     pub(crate) fn while_authority_current<T>(
@@ -443,12 +534,13 @@ impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV
             .collect())
     }
 
-    fn validate_partition(
+    fn validate_partition_selected(
         &self,
         partition: PhysicalPartitionId,
         published_checkpoints: &[Vec<u8>],
         records: &[Vec<u8>],
         limits: CacheRecoveryLimitsV1,
+        selection: &mut CacheRecoverySelectionV1,
     ) -> Result<CacheRecoveryInventoryV1, RecoveryError> {
         let evidence = self
             .partitions
@@ -488,7 +580,7 @@ impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV
             CacheAuthorityOwner::new(&authority, self.owner_scope, self.maximum_record_bytes)?;
         let capability =
             owner.verify_current_record(evidence.purpose, evidence.scope, &evidence.record_key)?;
-        CacheRecoveryInventoryV1::from_verified(
+        CacheRecoveryInventoryV1::from_verified_selected(
             &owner,
             &capability,
             partition,
@@ -498,6 +590,7 @@ impl CacheResidencyReplayAuthorityV1 for ProtectedCacheResidencyReplayAuthorityV
             records.iter().cloned(),
             limits,
             now,
+            selection,
         )
     }
 
@@ -624,58 +717,10 @@ impl CacheResidencyReplayValidatorV1 {
         (Self, Arc<ProtectedCacheResidencyReplayAuthorityV1>),
         CacheResidencyProtectedJournalErrorV1,
     > {
-        if owner_scope.as_bytes() == &[0; 32] || evidence.is_empty() {
-            return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-        }
-        let limits = limits
-            .validate()
-            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-        let mut partitions = BTreeMap::new();
-        {
-            let authority = journal
-                .claim_protected_authority(RecordNamespace::DesiredState)
-                .map_err(ProtectedDomainJournalErrorV1::from)?;
-            let owner = CacheAuthorityOwner::new(&authority, owner_scope, maximum_record_bytes)
-                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-            for item in evidence {
-                let now = current_time.current_unix_seconds()?;
-                if now == 0
-                    || item.purpose != CacheAuthorityPurposeV1::Replay
-                    || now >= item.scope.valid_until()
-                    || item.scope.partition() != item.partition.digest()
-                    || decode_typed_checkpoint(item.partition, &item.typed_checkpoint, limits)
-                        .is_err()
-                    || item
-                        .prior_typed_checkpoint
-                        .as_ref()
-                        .is_some_and(|checkpoint| {
-                            decode_typed_checkpoint(item.partition, checkpoint, limits).is_err()
-                        })
-                {
-                    return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-                }
-                let capability = owner
-                    .verify_current_record(item.purpose, item.scope, &item.record_key)
-                    .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-                // A newly provisioned partition has no state records yet, so
-                // its checkpoint and floor must be checked here as well.
-                CacheRecoveryInventoryV1::from_verified(
-                    &owner,
-                    &capability,
-                    item.partition,
-                    &item.typed_checkpoint,
-                    item.prior_typed_checkpoint.as_deref(),
-                    item.floor,
-                    std::iter::empty(),
-                    limits,
-                    now,
-                )
-                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
-                if partitions.insert(item.partition.digest(), item).is_some() {
-                    return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
-                }
-            }
-        }
+        let (limits, partitions) = validate_protected_replay_parts(
+            &mut journal, owner_scope, maximum_record_bytes, evidence, limits,
+            current_time.as_ref(),
+        )?;
         let authority = Arc::new(ProtectedCacheResidencyReplayAuthorityV1 {
             journal: Mutex::new(journal),
             owner_scope,
@@ -1098,6 +1143,19 @@ impl<'journal> CacheResidencyProtectedJournalV1<'journal> {
     {
         let projection = self.inner.replay()?;
         validate_cache_projection(&projection, &self.validator)?;
+        Ok(projection)
+    }
+
+    pub(super) fn replay_project_usage(
+        &self,
+        project: ProjectId,
+        partitions: &mut Vec<CacheProjectUsagePartitionV1>,
+    ) -> Result<CacheResidencyProtectedJournalProjectionV1, CacheResidencyProtectedJournalErrorV1> {
+        let projection = self.inner.replay()?;
+        validate_cache_projection_selected(
+            &projection, &self.validator,
+            CacheHistorySelectionV1::Project { project, partitions },
+        )?;
         Ok(projection)
     }
 
@@ -2268,7 +2326,15 @@ fn validate_cache_projection(
     projection: &CacheResidencyProtectedJournalProjectionV1,
     validator: &CacheResidencyReplayValidatorV1,
 ) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
-    validate_cache_history(projection.records(), validator)?;
+    validate_cache_projection_selected(projection, validator, CacheHistorySelectionV1::Ordinary)
+}
+
+fn validate_cache_projection_selected(
+    projection: &CacheResidencyProtectedJournalProjectionV1,
+    validator: &CacheResidencyReplayValidatorV1,
+    selection: CacheHistorySelectionV1<'_>,
+) -> Result<(), CacheResidencyProtectedJournalErrorV1> {
+    reconstruct_cache_history_selected(projection.records(), validator, selection)?;
 
     let mut original_transactions = BTreeMap::<[u8; 16], Vec<(ObjectDigest, ObjectDigest)>>::new();
     let mut observations = BTreeMap::<[u8; 16], CacheEffectObservationV1>::new();
@@ -2363,10 +2429,92 @@ fn validate_cache_history<'envelope>(
     reconstruct_cache_history(envelopes, validator).map(|_| ())
 }
 
+/// Validates the same replay input while its actual Journal remains borrowed.
+fn validate_protected_replay_parts(
+    journal: &mut Journal,
+    owner_scope: ObjectDigest,
+    maximum_record_bytes: usize,
+    evidence: Vec<CacheResidencyReplayPartitionEvidenceV1>,
+    limits: CacheRecoveryLimitsV1,
+    current_time: &dyn CacheResidencyCurrentTimeAuthorityV1,
+) -> Result<
+    (CacheRecoveryLimitsV1, BTreeMap<ObjectDigest, CacheResidencyReplayPartitionEvidenceV1>),
+    CacheResidencyProtectedJournalErrorV1,
+> {
+    if owner_scope.as_bytes() == &[0; 32] || evidence.is_empty() {
+        return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+    }
+    let limits = limits
+        .validate()
+        .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+    let mut partitions = BTreeMap::new();
+    {
+        let authority = journal
+            .claim_protected_authority(RecordNamespace::DesiredState)
+            .map_err(ProtectedDomainJournalErrorV1::from)?;
+        let owner = CacheAuthorityOwner::new(&authority, owner_scope, maximum_record_bytes)
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        for item in evidence {
+            let now = current_time.current_unix_seconds()?;
+            if now == 0
+                || item.purpose != CacheAuthorityPurposeV1::Replay
+                || now >= item.scope.valid_until()
+                || item.scope.partition() != item.partition.digest()
+                || decode_typed_checkpoint(item.partition, &item.typed_checkpoint, limits)
+                    .is_err()
+                || item
+                    .prior_typed_checkpoint
+                    .as_ref()
+                    .is_some_and(|checkpoint| {
+                        decode_typed_checkpoint(item.partition, checkpoint, limits).is_err()
+                    })
+            {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+            let capability = owner
+                .verify_current_record(item.purpose, item.scope, &item.record_key)
+                .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+            // A newly provisioned partition has no state records yet, so
+            // its checkpoint and floor must be checked here as well.
+            CacheRecoveryInventoryV1::from_verified(
+                &owner,
+                &capability,
+                item.partition,
+                &item.typed_checkpoint,
+                item.prior_typed_checkpoint.as_deref(),
+                item.floor,
+                std::iter::empty(),
+                limits,
+                now,
+            )
+            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+            if partitions.insert(item.partition.digest(), item).is_some() {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            }
+        }
+    }
+    Ok((limits, partitions))
+}
 /// Reconstructs every custodied partition, including checkpoint-only state.
 pub(super) fn reconstruct_cache_history<'envelope>(
     envelopes: impl IntoIterator<Item = &'envelope CacheResidencyProtectedJournalEnvelopeV1>,
     validator: &CacheResidencyReplayValidatorV1,
+) -> Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1> {
+    reconstruct_cache_history_selected(envelopes, validator, CacheHistorySelectionV1::Ordinary)
+}
+
+pub(super) enum CacheHistorySelectionV1<'result> {
+    Ordinary,
+    Project {
+        project: ProjectId,
+        partitions: &'result mut Vec<CacheProjectUsagePartitionV1>,
+    },
+}
+
+pub(super) fn reconstruct_cache_history_selected<'envelope>(
+    envelopes: impl IntoIterator<Item = &'envelope CacheResidencyProtectedJournalEnvelopeV1>,
+    validator: &CacheResidencyReplayValidatorV1,
+    mut selection: CacheHistorySelectionV1<'_>,
 ) -> Result<Vec<CacheRecoveryInventoryV1>, CacheResidencyProtectedJournalErrorV1> {
     let mut partitions = BTreeMap::<ObjectDigest, PhysicalPartitionId>::new();
     for partition in validator
@@ -2458,10 +2606,22 @@ pub(super) fn reconstruct_cache_history<'envelope>(
             .unwrap_or_default()
             .into_values()
             .collect::<Vec<_>>();
-        let inventory = validator
-            .authority
-            .validate_partition(partition, &checkpoints, &records, validator.limits)
-            .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
+        let mut observation = match &selection {
+            CacheHistorySelectionV1::Ordinary => CacheRecoverySelectionV1::Ordinary,
+            CacheHistorySelectionV1::Project { project, .. } => {
+                CacheRecoverySelectionV1::Project { project: *project, result: None }
+            }
+        };
+        let inventory = match &selection {
+            CacheHistorySelectionV1::Ordinary => validator.authority.validate_partition(
+                partition, &checkpoints, &records, validator.limits,
+            ),
+            CacheHistorySelectionV1::Project { .. } => {
+                validator.authority.validate_partition_selected(
+                    partition, &checkpoints, &records, validator.limits, &mut observation,
+                )
+            }
+        }.map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
         if let Some(last) = records.last() {
             let decoded = decode_atomic_object_record(partition, last, validator.limits)
                 .map_err(|_| CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord)?;
@@ -2470,6 +2630,14 @@ pub(super) fn reconstruct_cache_history<'envelope>(
             {
                 return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
             }
+        }
+        if let CacheHistorySelectionV1::Project { partitions, .. } = &mut selection {
+            let CacheRecoverySelectionV1::Project { result: Some((quota, usage)), .. } = observation else {
+                return Err(CacheResidencyProtectedJournalErrorV1::NonCanonicalRecord);
+            };
+            partitions.push(CacheProjectUsagePartitionV1::from_replay(
+                partition, &inventory, quota, usage,
+            ));
         }
         inventories.push(inventory);
     }

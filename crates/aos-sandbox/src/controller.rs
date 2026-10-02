@@ -3091,6 +3091,33 @@ where
         self.reconciler.issue_source_successor_v2(profile, credentials)
     }
 
+    /// Borrows partition-local project Cache quantities from the actual executor.
+    ///
+    /// This fixed existing-owner hook creates no total project account, funding
+    /// or public operation permission. It initializes before the selected
+    /// worker's first cycle and refuses missing provisioning instead of repair.
+    ///
+    /// # Errors
+    /// Returns unavailable on original custody, replay, currentness or a prior
+    /// resident failure. The installed executor retains the actual typed cause.
+    pub fn existing_cache_project_usage_v1(
+        &mut self,
+        project: aos_sandbox_core::ProjectId,
+    ) -> Result<crate::cache_residency::CacheProjectUsageLoanV1<'_>, crate::cache_residency::CacheResidentUnavailableV1> {
+        self.reconciler.existing_cache_project_usage_v1(project)
+    }
+
+    /// Rechecks the same fixed initialization owners after a project usage loan.
+    ///
+    /// # Errors
+    /// Returns unavailable for changed originals or a prior resident failure.
+    /// This performs no reopen, mutation or operation admission.
+    pub fn recheck_existing_cache_project_usage_v1(
+        &mut self,
+    ) -> Result<(), crate::cache_residency::CacheResidentUnavailableV1> {
+        self.reconciler.recheck_existing_cache_project_usage_v1()
+    }
+
     /// Issues or replays a first public capability from signed deployment entitlement.
     ///
     /// The request supplies only an idempotency key. Fixed protected credential
