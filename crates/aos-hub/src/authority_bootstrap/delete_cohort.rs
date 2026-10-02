@@ -3,6 +3,17 @@
 //! `delete-cohort.json` retains the actual publication, configured issuer and
 //! narrowed cohort. It supplies no capability result, credential material,
 //! signing permission, GC claim or provider-dispatch authority.
+//!
+//! The outer document contains complete existing canonical protocol records:
+//!
+//! ```text
+//! DeleteCohortExport {
+//!     version: 1,
+//!     publication: StorageAuthorityPublication,
+//!     issuer_installation: IssuerInstallation,
+//!     delete_cohort: LeaseCohort,
+//! }
+//! ```
 
 use std::path::Path;
 
