@@ -29,9 +29,11 @@ async fn protected_retained_copy_refuses_lost_current_sql_size() {
     let SqlxBackend::Sqlite(pool) = &backend else {
         panic!("fixture must use SQLite");
     };
-    let database = Arc::new(Database::with_backend(Box::new(
-        SqlxBackend::Sqlite(pool.clone()),
-    )).await.unwrap());
+    let database = Arc::new(
+        Database::with_backend(Box::new(SqlxBackend::Sqlite(pool.clone())))
+            .await
+            .unwrap(),
+    );
     let (writer, _, source, _, _) = fixture_with_database(database).await;
     let surface = SurfaceTarget::Registry(source.registry_id.unwrap());
     let input = aos_hub_core::db::SetSurfaceObject {
@@ -43,18 +45,33 @@ async fn protected_retained_copy_refuses_lost_current_sql_size() {
         mutable_publication_id: None,
     };
     writer.db.create_surface_object(&input).await.unwrap();
-    let original = writer.copy_catalogue(&source, &input.object_key).await.unwrap().unwrap();
+    let original = writer
+        .copy_catalogue(&source, &input.object_key)
+        .await
+        .unwrap()
+        .unwrap();
     require_retained_catalogue_size(2, 11, Some(&original)).unwrap();
 
     // Deliberately lose only the trusted size on the exact current SQL row.
     // This mutation supplies no physical observation or provider authority.
-    backend.checked_batch(&[Statement::new(
-        "UPDATE surface_objects SET size = NULL, resource_version = resource_version + 1
+    backend
+        .checked_batch(&[Statement::new(
+            "UPDATE surface_objects SET size = NULL, resource_version = resource_version + 1
          WHERE id = ?1 AND resource_version = ?2 AND object_key = ?3",
-        vec![Value::Int(original.id), Value::Int(original.resource_version),
-             Value::Text(original.object_key.clone())],
-    ).expecting(1)]).await.unwrap();
-    let changed = writer.copy_catalogue(&source, &input.object_key).await.unwrap().unwrap();
+            vec![
+                Value::Int(original.id),
+                Value::Int(original.resource_version),
+                Value::Text(original.object_key.clone()),
+            ],
+        )
+        .expecting(1)])
+        .await
+        .unwrap();
+    let changed = writer
+        .copy_catalogue(&source, &input.object_key)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(changed.id, original.id);
     assert_eq!(changed.content_hash, original.content_hash);
     assert_eq!(changed.size, None);

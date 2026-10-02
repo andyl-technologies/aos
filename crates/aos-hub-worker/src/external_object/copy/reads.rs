@@ -7,7 +7,7 @@
 //! Cross-request OCI hash continuations require a real provider version; their
 //! wire state has no permanent closure pin for the protected versionless form.
 
-use anyhow::{Result, ensure};
+use anyhow::{ensure, Result};
 use aos_hub_core::{
     db::OciSha256State,
     s3surface::{Method as S3Method, S3Surface},

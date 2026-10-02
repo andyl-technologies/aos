@@ -10,7 +10,11 @@
 //! request_digest = SHA256(canonical private request with ticket omitted)
 //! ```
 
-use std::{cell::{Cell, RefCell}, collections::BTreeMap, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::BTreeMap,
+    rc::Rc,
+};
 
 use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
@@ -44,12 +48,19 @@ impl Ticket {
     /// Refuses malformed identities or a noncanonical SHA-256 commitment.
     pub(crate) fn validate(&self) -> Result<()> {
         for identity in [&self.origin_isolate, &self.pool_generation, &self.ticket_id] {
-            ensure!(uuid::Uuid::parse_str(identity)?.to_string() == *identity,
-                "provider transfer identity malformed");
+            ensure!(
+                uuid::Uuid::parse_str(identity)?.to_string() == *identity,
+                "provider transfer identity malformed"
+            );
         }
-        ensure!(self.request_digest.len() == 64
-            && self.request_digest.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-            "provider transfer request commitment malformed");
+        ensure!(
+            self.request_digest.len() == 64
+                && self
+                    .request_digest
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "provider transfer request commitment malformed"
+        );
         Ok(())
     }
 }
@@ -82,7 +93,10 @@ impl Cancellation {
         self.canceled.set(true);
         TRANSFERS.with(|entries| {
             let mut entries = entries.borrow_mut();
-            if entries.get(&self.ticket_id).is_some_and(|entry| Rc::ptr_eq(&entry.canceled, &self.canceled)) {
+            if entries
+                .get(&self.ticket_id)
+                .is_some_and(|entry| Rc::ptr_eq(&entry.canceled, &self.canceled))
+            {
                 entries.remove(&self.ticket_id);
             }
         });
@@ -124,11 +138,18 @@ pub(crate) struct SourcePermit {
 /// # Errors
 /// Refuses any other count, class, pool or already changed pool generation.
 pub(crate) fn split(mut permit: Permit) -> Result<(Permit, Permit)> {
-    ensure!(permit.count == 2 && permit.class == Class::Bulk
-        && POOL.with(|current| Rc::ptr_eq(&permit.pool, &current.borrow())),
-        "provider transfer requires the actual atomic copy reservation");
+    ensure!(
+        permit.count == 2
+            && permit.class == Class::Bulk
+            && POOL.with(|current| Rc::ptr_eq(&permit.pool, &current.borrow())),
+        "provider transfer requires the actual atomic copy reservation"
+    );
     permit.count = 1;
-    let source = Permit {pool: Rc::clone(&permit.pool), count: 1, class: Class::Bulk};
+    let source = Permit {
+        pool: Rc::clone(&permit.pool),
+        count: 1,
+        class: Class::Bulk,
+    };
     Ok((permit, source))
 }
 
@@ -137,23 +158,43 @@ pub(crate) fn split(mut permit: Permit) -> Result<(Permit, Permit)> {
 /// # Errors
 /// Refuses another count/class/pool, malformed digest or an exhausted registry.
 pub(crate) fn register(permit: Permit, request_digest: String) -> Result<Reservation> {
-    ensure!(permit.count == 1 && permit.class == Class::Bulk
-        && POOL.with(|current| Rc::ptr_eq(&permit.pool, &current.borrow())),
-        "provider source transfer differs from admitted capacity");
-    let ticket = Ticket {origin_isolate: ISOLATE.with(Clone::clone),
-        pool_generation: permit.pool.generation.clone(), ticket_id: uuid::Uuid::new_v4().to_string(),
-        request_digest};
+    ensure!(
+        permit.count == 1
+            && permit.class == Class::Bulk
+            && POOL.with(|current| Rc::ptr_eq(&permit.pool, &current.borrow())),
+        "provider source transfer differs from admitted capacity"
+    );
+    let ticket = Ticket {
+        origin_isolate: ISOLATE.with(Clone::clone),
+        pool_generation: permit.pool.generation.clone(),
+        ticket_id: uuid::Uuid::new_v4().to_string(),
+        request_digest,
+    };
     ticket.validate()?;
-    let cancellation = Cancellation {ticket_id: ticket.ticket_id.clone(), canceled: Rc::new(Cell::new(false))};
+    let cancellation = Cancellation {
+        ticket_id: ticket.ticket_id.clone(),
+        canceled: Rc::new(Cell::new(false)),
+    };
     TRANSFERS.with(|entries| -> Result<()> {
         let mut entries = entries.borrow_mut();
-        ensure!(entries.len() < MAX_TRANSFERS && !entries.contains_key(&ticket.ticket_id),
-            "provider transfer registry bound reached");
-        entries.insert(ticket.ticket_id.clone(), Entry {ticket: ticket.clone(), permit,
-            canceled: Rc::clone(&cancellation.canceled)});
+        ensure!(
+            entries.len() < MAX_TRANSFERS && !entries.contains_key(&ticket.ticket_id),
+            "provider transfer registry bound reached"
+        );
+        entries.insert(
+            ticket.ticket_id.clone(),
+            Entry {
+                ticket: ticket.clone(),
+                permit,
+                canceled: Rc::clone(&cancellation.canceled),
+            },
+        );
         Ok(())
     })?;
-    Ok(Reservation {ticket, cancellation})
+    Ok(Reservation {
+        ticket,
+        cancellation,
+    })
 }
 
 /// Consumes a local actual slot once, or requires a distinct isolate's own admission.
@@ -166,21 +207,36 @@ pub(crate) fn register(permit: Permit, request_digest: String) -> Result<Reserva
 /// Refuses changed commitments, local pool/registry identity or canceled/reused tokens.
 pub(crate) fn accept(ticket: &Ticket, request_digest: &str) -> Result<Option<SourcePermit>> {
     ticket.validate()?;
-    ensure!(ticket.request_digest == request_digest, "provider transfer request changed");
+    ensure!(
+        ticket.request_digest == request_digest,
+        "provider transfer request changed"
+    );
     if ticket.origin_isolate != ISOLATE.with(Clone::clone) {
         return Ok(None);
     }
-    ensure!(POOL.with(|current| current.borrow().generation == ticket.pool_generation),
-        "provider transfer local pool changed");
+    ensure!(
+        POOL.with(|current| current.borrow().generation == ticket.pool_generation),
+        "provider transfer local pool changed"
+    );
     TRANSFERS.with(|entries| -> Result<Option<SourcePermit>> {
         let mut entries = entries.borrow_mut();
-        let entry = entries.get(&ticket.ticket_id)
+        let entry = entries
+            .get(&ticket.ticket_id)
             .ok_or_else(|| anyhow::anyhow!("provider transfer absent or consumed"))?;
-        ensure!(entry.ticket == *ticket && !entry.canceled.get(), "provider transfer identity changed");
-        let entry = entries.remove(&ticket.ticket_id)
+        ensure!(
+            entry.ticket == *ticket && !entry.canceled.get(),
+            "provider transfer identity changed"
+        );
+        let entry = entries
+            .remove(&ticket.ticket_id)
             .ok_or_else(|| anyhow::anyhow!("provider transfer absent or consumed"))?;
-        Ok(Some(SourcePermit {permit: entry.permit,
-            cancellation: Cancellation {ticket_id: ticket.ticket_id.clone(), canceled: entry.canceled}}))
+        Ok(Some(SourcePermit {
+            permit: entry.permit,
+            cancellation: Cancellation {
+                ticket_id: ticket.ticket_id.clone(),
+                canceled: entry.canceled,
+            },
+        }))
     })
 }
 

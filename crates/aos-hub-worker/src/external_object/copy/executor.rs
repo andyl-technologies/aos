@@ -238,7 +238,8 @@ async fn execute(
     )
     .await?;
     let (capacity, mut source_capacity) = if part && work.original.version == 2 {
-        let (destination, source) = crate::direct_upload::provider_capacity::transfer::split(capacity)?;
+        let (destination, source) =
+            crate::direct_upload::provider_capacity::transfer::split(capacity)?;
         (destination, Some(source))
     } else {
         (capacity, None)

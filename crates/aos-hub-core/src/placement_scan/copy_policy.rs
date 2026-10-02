@@ -26,12 +26,15 @@ impl PlacementScanController {
         policy: &PlacementCopyPolicy,
         policy_path: &str,
     ) -> Result<serde_json::Value> {
-        let known = catalogue.iter().map(|object| object.object_key.as_str())
+        let known = catalogue
+            .iter()
+            .map(|object| object.object_key.as_str())
             .collect::<BTreeSet<_>>();
         for object in &catalogue {
-            anyhow::ensure!(object.content_hash.is_some()
-                && object.size.is_some_and(|size| size >= 0),
-                "protected placement copy requires every current catalogue hash and size");
+            anyhow::ensure!(
+                object.content_hash.is_some() && object.size.is_some_and(|size| size >= 0),
+                "protected placement copy requires every current catalogue hash and size"
+            );
         }
 
         let mut cursor = None;
@@ -48,8 +51,10 @@ impl PlacementScanController {
             };
             current.validate(page_limit, cursor.as_deref())?;
             for path in current.paths {
-                anyhow::ensure!(prior_path.as_ref().is_none_or(|prior| prior < &path),
-                    "protected copy source returned keys out of global order");
+                anyhow::ensure!(
+                    prior_path.as_ref().is_none_or(|prior| prior < &path),
+                    "protected copy source returned keys out of global order"
+                );
                 budget.record(&path)?;
                 prior_path = Some(path.clone());
                 if known.contains(path.as_str()) {
@@ -57,7 +62,8 @@ impl PlacementScanController {
                         evidence.insert(path, value.clone());
                     }
                 } else {
-                    unknown_objects = unknown_objects.checked_add(1)
+                    unknown_objects = unknown_objects
+                        .checked_add(1)
                         .context("protected copy unknown count overflow")?;
                     if unknown_sample.len() < PLACEMENT_SCAN_ISSUE_SAMPLE_LIMIT {
                         unknown_sample.push(path);
@@ -77,21 +83,39 @@ impl PlacementScanController {
         for object in &catalogue {
             // The adapter checks the pinned installed profile in its existing
             // authenticated per-object metadata exchange before effects/replay.
-            let size = writes.copy_placement_object_with_policy(operation, claim_token,
-                source, destination, &object.object_key,
-                evidence.get(&object.object_key), Some(policy)).await?
+            let size = writes
+                .copy_placement_object_with_policy(
+                    operation,
+                    claim_token,
+                    source,
+                    destination,
+                    &object.object_key,
+                    evidence.get(&object.object_key),
+                    Some(policy),
+                )
+                .await?
                 .context("protected placement copy refuses a Native body fallback")?;
-            anyhow::ensure!(u64::try_from(object.size.context("trusted size disappeared")?)? == size,
-                "protected copy receipt differs from trusted catalogue size");
-            copied_bytes = copied_bytes.checked_add(size)
+            anyhow::ensure!(
+                u64::try_from(object.size.context("trusted size disappeared")?)? == size,
+                "protected copy receipt differs from trusted catalogue size"
+            );
+            copied_bytes = copied_bytes
+                .checked_add(size)
                 .context("protected placement copy byte count overflow")?;
         }
 
-        anyhow::ensure!(writes.placement_copy_policy(operation, claim_token, source,
-            destination, policy_path).await?.as_ref() == Some(policy),
-            "installed protected placement copy policy changed");
-        anyhow::ensure!(self.db.list_active_surface_objects(surface).await? == catalogue,
-            "logical catalogue changed during protected placement copy");
+        anyhow::ensure!(
+            writes
+                .placement_copy_policy(operation, claim_token, source, destination, policy_path)
+                .await?
+                .as_ref()
+                == Some(policy),
+            "installed protected placement copy policy changed"
+        );
+        anyhow::ensure!(
+            self.db.list_active_surface_objects(surface).await? == catalogue,
+            "logical catalogue changed during protected placement copy"
+        );
         Ok(serde_json::json!({
             "source": source.name,
             "destination": destination.name,

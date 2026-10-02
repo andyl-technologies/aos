@@ -208,23 +208,45 @@ impl HybridSurfaceWrites {
         destination: &SurfacePlacementRecord,
         path: &str,
     ) -> Result<aos_hub_core::surface_write::PlacementCopyPolicy> {
-        let current = self.current_copy(operation, source, destination, true).await?;
-        self.work.ensure_remote_binding_snapshot(&self.db, &current.binding).await?;
-        let claim = self.recheck_copy(&current, operation, claim_token, source, destination).await?;
+        let current = self
+            .current_copy(operation, source, destination, true)
+            .await?;
+        self.work
+            .ensure_remote_binding_snapshot(&self.db, &current.binding)
+            .await?;
+        let claim = self
+            .recheck_copy(&current, operation, claim_token, source, destination)
+            .await?;
         let now = aos_hub_core::clock::now_unix_secs();
-        let plan = self.work.plan_for_placement(destination, &current.binding,
-            StorageWorkOperation::Head { path: path.into() }, now)?;
-        let mut query = CopyMetadataRequest::new(current.topology.clone(), current.source.clone(),
-            current.destination.clone(), Some(claim), plan, path.into(), now)?;
+        let plan = self.work.plan_for_placement(
+            destination,
+            &current.binding,
+            StorageWorkOperation::Head { path: path.into() },
+            now,
+        )?;
+        let mut query = CopyMetadataRequest::new(
+            current.topology.clone(),
+            current.source.clone(),
+            current.destination.clone(),
+            Some(claim),
+            plan,
+            path.into(),
+            now,
+        )?;
         query.profile_only = true;
         let metadata = self.work.external_copy_metadata(&query).await?;
         let selector = metadata.selector(&query)?;
-        ensure!(selector.binding_stable_id == current.binding.stable_id
-            && metadata.profile.binding_write_revision.get() == current.revision.revision
-            && metadata.profile.write_generation.get() == current.revision.write_credential_generation,
-            "installed copy policy differs from current SQL");
-        self.check_snapshot(&current, &selector.snapshot_revision).await?;
-        self.recheck_copy(&current, operation, claim_token, source, destination).await?;
+        ensure!(
+            selector.binding_stable_id == current.binding.stable_id
+                && metadata.profile.binding_write_revision.get() == current.revision.revision
+                && metadata.profile.write_generation.get()
+                    == current.revision.write_credential_generation,
+            "installed copy policy differs from current SQL"
+        );
+        self.check_snapshot(&current, &selector.snapshot_revision)
+            .await?;
+        self.recheck_copy(&current, operation, claim_token, source, destination)
+            .await?;
         Ok(aos_hub_core::surface_write::PlacementCopyPolicy {
             profile_digest: metadata.profile.profile_digest,
             catalogue_only: metadata.profile.protected_versionless,
@@ -309,7 +331,16 @@ impl HybridSurfaceWrites {
         path: &str,
         listed: Option<&SurfaceListedEvidence>,
     ) -> Result<Option<u64>> {
-        self.copy_external_with_policy(operation, claim_token, source, destination, path, listed, None).await
+        self.copy_external_with_policy(
+            operation,
+            claim_token,
+            source,
+            destination,
+            path,
+            listed,
+            None,
+        )
+        .await
     }
 
     pub(super) async fn copy_external_with_policy(
@@ -360,9 +391,11 @@ impl HybridSurfaceWrites {
             .await?;
         let selector = metadata.selector(&query)?;
         if let Some(policy) = policy {
-            ensure!(metadata.profile.profile_digest == policy.profile_digest
-                && metadata.profile.protected_versionless == policy.catalogue_only,
-                "installed placement copy policy changed before object dispatch");
+            ensure!(
+                metadata.profile.profile_digest == policy.profile_digest
+                    && metadata.profile.protected_versionless == policy.catalogue_only,
+                "installed placement copy policy changed before object dispatch"
+            );
         }
         ensure!(
             selector.binding_stable_id == current.binding.stable_id
@@ -807,11 +840,15 @@ fn require_retained_catalogue_size(
     catalogue: Option<&SurfaceObjectRecord>,
 ) -> Result<()> {
     if version == 2 {
-        ensure!(catalogue.and_then(|object| object.size) == Some(original_bytes),
-            "retained protected copy lacks exact current catalogue size");
+        ensure!(
+            catalogue.and_then(|object| object.size) == Some(original_bytes),
+            "retained protected copy lacks exact current catalogue size"
+        );
     } else if let Some(object) = catalogue {
-        ensure!(object.size.is_none_or(|bytes| bytes == original_bytes),
-            "retained copy differs from current catalogue size");
+        ensure!(
+            object.size.is_none_or(|bytes| bytes == original_bytes),
+            "retained copy differs from current catalogue size"
+        );
     }
     Ok(())
 }

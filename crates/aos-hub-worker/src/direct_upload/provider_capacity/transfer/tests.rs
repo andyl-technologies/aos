@@ -1,11 +1,14 @@
 //! Real pool ownership at the smallest accepted copy bound.
 
-use std::{future::Future, task::{Context, Poll}};
+use std::{
+    future::Future,
+    task::{Context, Poll},
+};
 
 use futures_util::{task::noop_waker, FutureExt};
 
-use super::*;
 use super::super::{acquire_class, acquire_class_checked, configure, observation};
+use super::*;
 
 fn digest() -> String {
     "a".repeat(64)
@@ -127,11 +130,16 @@ async fn a_real_distinct_isolate_uses_its_own_pool_and_keeps_origin_reservation(
     let remote = std::thread::spawn(move || {
         configure(3).unwrap();
         assert!(accept(&ticket, &digest()).unwrap().is_none());
-        let own = acquire_class(1, Class::Bulk).now_or_never().unwrap().unwrap();
+        let own = acquire_class(1, Class::Bulk)
+            .now_or_never()
+            .unwrap()
+            .unwrap();
         assert_eq!(observation().active, 1);
         drop(own);
         observation().active
-    }).join().unwrap();
+    })
+    .join()
+    .unwrap();
 
     assert_eq!(remote, 0);
     assert_eq!(observation().active, 2);
@@ -152,7 +160,10 @@ async fn cutoff_while_queued_cannot_admit_or_extend_a_source_slot() {
     };
     let mut waiting = Box::pin(acquire_class_checked(1, Class::Bulk, &current));
     let waker = noop_waker();
-    assert!(matches!(waiting.as_mut().poll(&mut Context::from_waker(&waker)), Poll::Pending));
+    assert!(matches!(
+        waiting.as_mut().poll(&mut Context::from_waker(&waker)),
+        Poll::Pending
+    ));
     now.set(120);
 
     assert!(waiting.await.is_err());

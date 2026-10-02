@@ -70,16 +70,20 @@ pub(super) async fn reserve(
     initial: Option<crate::direct_upload::provider_capacity::Permit>,
     window: &super::window::DispatchWindow<'_>,
 ) -> Result<crate::direct_upload::provider_capacity::transfer::Reservation> {
-    use crate::direct_upload::provider_capacity::{self, Class, transfer};
+    use crate::direct_upload::provider_capacity::{self, transfer, Class};
     window.check()?;
     let permit = match initial {
         Some(permit) => permit,
-        None => provider_capacity::acquire_class_checked(1, Class::Bulk, &|| window.check()).await?,
+        None => {
+            provider_capacity::acquire_class_checked(1, Class::Bulk, &|| window.check()).await?
+        }
     };
     let reservation = transfer::register(permit, message.capacity_digest()?)?;
     message.capacity_transfer = Some(reservation.ticket());
     message.validate()?;
-    window.lifetime.retain_transfer(reservation.cancellation())?;
+    window
+        .lifetime
+        .retain_transfer(reservation.cancellation())?;
     Ok(reservation)
 }
 
@@ -348,18 +352,32 @@ impl ExternalObjectGuard {
             lifetime.retain_source_gate(gate)?;
             // The application reserves GET+PUT atomically. Consume its real
             // GET slot only after exact MAC, source, closure and lease checks.
-            crate::direct_upload::provider_capacity::configure(u32::from(domain.provider_concurrency))?;
-            message.current(object.clock().observed_at.checked_add(object.clock().uncertainty)
-                .ok_or_else(|| anyhow::anyhow!("protected source clock overflow"))?)?;
+            crate::direct_upload::provider_capacity::configure(u32::from(
+                domain.provider_concurrency,
+            ))?;
+            message.current(
+                object
+                    .clock()
+                    .observed_at
+                    .checked_add(object.clock().uncertainty)
+                    .ok_or_else(|| anyhow::anyhow!("protected source clock overflow"))?,
+            )?;
             let transferred = match &message.operation {
                 Operation::Range { .. } => {
-                    let ticket = message.capacity_transfer.as_ref()
+                    let ticket = message
+                        .capacity_transfer
+                        .as_ref()
                         .ok_or_else(|| anyhow::anyhow!("protected copy source capacity absent"))?;
-                    crate::direct_upload::provider_capacity::transfer::accept(ticket, &message.capacity_digest()?)?
+                    crate::direct_upload::provider_capacity::transfer::accept(
+                        ticket,
+                        &message.capacity_digest()?,
+                    )?
                 }
                 _ => None,
             };
-            let origin_cancellation = transferred.as_ref().map(|source| source.cancellation.clone());
+            let origin_cancellation = transferred
+                .as_ref()
+                .map(|source| source.cancellation.clone());
             let lifetime_check = Rc::clone(&lifetime);
             let read_cohort = domain.read_cohort.clone();
             let current_object = object.clone();
@@ -391,9 +409,14 @@ impl ExternalObjectGuard {
             fresh()?;
             let permit = match transferred {
                 Some(source) => source.permit,
-                None => crate::direct_upload::provider_capacity::acquire_class_checked(
-                    1, crate::direct_upload::provider_capacity::Class::Bulk, &|| fresh(),
-                ).await?,
+                None => {
+                    crate::direct_upload::provider_capacity::acquire_class_checked(
+                        1,
+                        crate::direct_upload::provider_capacity::Class::Bulk,
+                        &|| fresh(),
+                    )
+                    .await?
+                }
             };
             lifetime.retain_capacity(permit)?;
             let credential = publication.credential_text(

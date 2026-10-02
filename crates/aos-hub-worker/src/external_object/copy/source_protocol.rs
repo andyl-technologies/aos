@@ -84,9 +84,11 @@ impl Request {
             .validate_observation_shape(&self.plan.deployment_id)?;
         if let Some(ticket) = &self.capacity_transfer {
             ticket.validate()?;
-            ensure!(matches!(self.operation, Operation::Range { .. })
-                && ticket.request_digest == self.capacity_digest()?,
-                "protected capacity transfer differs from its exact range");
+            ensure!(
+                matches!(self.operation, Operation::Range { .. })
+                    && ticket.request_digest == self.capacity_digest()?,
+                "protected capacity transfer differs from its exact range"
+            );
         }
         if let Some(selector) = &self.selector {
             selector.validate()?;

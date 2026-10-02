@@ -49,9 +49,15 @@ enum Command {
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     let result = match Cli::parse().command {
-        Command::CopyContract { report_file, journal_directory, output } =>
-            aos_hub::provider_conformance::export_provider_copy_contract(
-                &report_file, &journal_directory, &output),
+        Command::CopyContract {
+            report_file,
+            journal_directory,
+            output,
+        } => aos_hub::provider_conformance::export_provider_copy_contract(
+            &report_file,
+            &journal_directory,
+            &output,
+        ),
         Command::Run {
             config_file,
             journal_directory,

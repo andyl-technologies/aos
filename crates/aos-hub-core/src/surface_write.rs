@@ -548,11 +548,22 @@ pub trait SurfaceWriteProvider: BackendBounds {
     ) -> Result<Option<u64>> {
         if policy.is_some() {
             anyhow::ensure!(
-                self.placement_copy_policy(operation, claim_token, source, destination, path).await?.as_ref() == policy,
+                self.placement_copy_policy(operation, claim_token, source, destination, path)
+                    .await?
+                    .as_ref()
+                    == policy,
                 "installed placement copy policy changed"
             );
         }
-        self.copy_placement_object_claimed(operation, claim_token, source, destination, path, listed_source).await
+        self.copy_placement_object_claimed(
+            operation,
+            claim_token,
+            source,
+            destination,
+            path,
+            listed_source,
+        )
+        .await
     }
 
     /// Prepares a real External OCI reservation beside the protected byte executor.

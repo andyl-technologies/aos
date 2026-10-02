@@ -88,7 +88,9 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
         if query.profile_only {
             query.validate(&deployment, object.clock().observed_at)?;
             publication.snapshot.authorizes(
-                &query.plan, &deployment, object.clock().observed_at,
+                &query.plan,
+                &deployment,
+                object.clock().observed_at,
             )?;
             return reply.sign(&key, &query);
         }

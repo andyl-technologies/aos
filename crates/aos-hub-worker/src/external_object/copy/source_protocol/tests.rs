@@ -70,19 +70,24 @@ fn fixture() -> (Request, CopySourceClosure) {
 
 #[tokio::test]
 async fn actual_capacity_ticket_binds_the_full_private_range_without_read_authority() {
-    use crate::direct_upload::provider_capacity::{self, Class, transfer};
+    use crate::direct_upload::provider_capacity::{self, transfer, Class};
 
     let (mut request, _) = fixture();
     provider_capacity::configure(3).unwrap();
     let (destination, source) = transfer::split(
-        provider_capacity::acquire_class(2, Class::Bulk).await.unwrap(),
-    ).unwrap();
+        provider_capacity::acquire_class(2, Class::Bulk)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let reservation = transfer::register(source, request.capacity_digest().unwrap()).unwrap();
     request.capacity_transfer = Some(reservation.ticket());
     request.validate().unwrap();
 
     let mut changed = request.clone();
-    let Operation::Range { read_lease, .. } = &mut changed.operation else { panic!("actual range fixture") };
+    let Operation::Range { read_lease, .. } = &mut changed.operation else {
+        panic!("actual range fixture")
+    };
     read_lease.push_str("-different");
     assert!(changed.validate().is_err());
     let mut changed = request.clone();
@@ -97,8 +102,11 @@ async fn actual_capacity_ticket_binds_the_full_private_range_without_read_author
     assert_eq!(provider_capacity::observation().active, 2);
 
     drop(reservation);
-    assert!(transfer::accept(request.capacity_transfer.as_ref().unwrap(),
-        &request.capacity_digest().unwrap()).is_err());
+    assert!(transfer::accept(
+        request.capacity_transfer.as_ref().unwrap(),
+        &request.capacity_digest().unwrap()
+    )
+    .is_err());
     drop(destination);
     assert_eq!(provider_capacity::observation().active, 0);
 }
