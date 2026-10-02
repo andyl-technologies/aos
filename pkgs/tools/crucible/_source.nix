@@ -16,7 +16,6 @@ in
       && (
         pathString
         == repoRootString
-        || pathString == "${repoRootString}/CLAUDE.md"
         || pathString == "${repoRootString}/AGENTS.md"
         || pathString == "${repoRootString}/LICENSE"
         || pathString == "${repoRootString}/LICENSES"
