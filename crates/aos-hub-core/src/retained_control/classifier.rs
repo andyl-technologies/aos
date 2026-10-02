@@ -343,12 +343,15 @@ pub fn validate_method_manifest(methods: &[MethodDescriptor]) -> Vec<ManifestVio
                     "maintenance replay methods mutate durable action state",
                     &mut violations,
                 );
-                if path != "ContainerService/RequeueContainerGcPlacementAction"
-                    || method.external_effects
+                if !matches!(
+                    path.as_str(),
+                    "ContainerService/RequeueContainerGcPlacementAction"
+                        | "InstanceService/TriggerInstanceMaintenance"
+                ) || method.external_effects
                 {
                     violations.push(violation(
                         method,
-                        "maintenance-replay exception is limited to the local GC action requeue",
+                        "maintenance-replay exception is limited to the local GC action requeue and maintenance trigger",
                     ));
                 }
             }
@@ -504,16 +507,25 @@ pub fn validate_complete_method_manifest(
         if matches!(method.class, MethodClass::MaintenanceReplay) {
             let mut fields = descriptor.request_fields.clone();
             fields.sort();
-            if !fields.iter().map(String::as_str).eq([
-                "action_id",
-                "expected_resource_version",
-                "idempotency_key",
-                "registry",
-                "run_id",
-            ]) {
+            // The scheduled-job trigger names one instance-wide job and
+            // nothing else; every other maintenance replay rebinds one frozen
+            // action exactly.
+            let expected: &[&str] = if method.path() == "InstanceService/TriggerInstanceMaintenance"
+            {
+                &["job"]
+            } else {
+                &[
+                    "action_id",
+                    "expected_resource_version",
+                    "idempotency_key",
+                    "registry",
+                    "run_id",
+                ]
+            };
+            if !fields.iter().map(String::as_str).eq(expected.iter().copied()) {
                 violations.push(violation(
                     method,
-                    "maintenance replay must bind the exact registry, run, action, CAS, and idempotency key",
+                    "maintenance replay must bind the exact registry, run, action, CAS, and idempotency key, or only the scheduled job for the maintenance trigger",
                 ));
             }
         }

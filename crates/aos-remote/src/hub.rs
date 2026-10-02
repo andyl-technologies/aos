@@ -600,6 +600,7 @@ enum HubTopologyMethod {
     GetInstanceSettings,
     /// Selects the normalized instance-settings planning operation.
     PlanSetInstanceSettings,
+    TriggerInstanceMaintenance,
     /// Selects the normalized instance-settings apply operation.
     SetInstanceSettings,
     /// Selects the normalized `ListChangesets` Connect operation.
@@ -1178,6 +1179,7 @@ impl HubTopologyMethod {
             GetInstanceSettings => "aos.hub.v1.InstanceService/GetInstanceSettings",
             PlanSetInstanceSettings => "aos.hub.v1.InstanceService/PlanSetInstanceSettings",
             SetInstanceSettings => "aos.hub.v1.InstanceService/SetInstanceSettings",
+            TriggerInstanceMaintenance => "aos.hub.v1.InstanceService/TriggerInstanceMaintenance",
             ListChangesets => "aos.hub.v1.RegistryConfigurationService/ListChangesets",
             GetChangeset => "aos.hub.v1.RegistryConfigurationService/GetChangeset",
             ListPackages => "aos.hub.v1.PackageService/ListPackages",
@@ -1687,6 +1689,7 @@ pub mod hub_rpc {
         GetInstanceSettings: GetInstanceSettingsRequest => GetInstanceSettingsResponse;
         PlanSetInstanceSettings: PlanSetInstanceSettingsRequest => TopologyPlanResponse;
         SetInstanceSettings: ApplyTopologyPlanRequest => GetInstanceSettingsResponse;
+        TriggerInstanceMaintenance: TriggerInstanceMaintenanceRequest => InstanceMaintenanceTriggerResponse;
         ListChangesets: ListChangesetsRequest => ListChangesetsResponse;
         GetChangeset: GetChangesetRequest => GetChangesetResponse;
         ListPackages: ListPackagesRequest => ListPackagesResponse;

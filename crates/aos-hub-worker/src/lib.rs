@@ -1167,6 +1167,7 @@ mod entry {
             ),
         ))
         .with_route_reservation_keyring(route_reservation_keyring)
+        .with_maintenance_jobs(Arc::new(crate::workerqueue::WorkerQueue::from_env(env)?))
         // RFC-0004 ch.14 Phase C: read-through cache hot point-key state
         // (sessions/tokens/config/routing) off the relational read path via Workers
         // KV (the `SESSIONS` namespace). When the binding is absent the
@@ -2001,10 +2002,15 @@ mod entry {
                     &envelope.operation_id,
                     now_for_worker(),
                     25,
+                    // Only the controller's own canonical JSON continuation
+                    // resumes a generation. The maintenance dispatcher labels
+                    // its fan-out children with a plain cursor, which must
+                    // start a fresh bounded pass rather than fail parsing.
                     envelope
                         .continuation
                         .as_ref()
-                        .map(|continuation| continuation.cursor.as_str()),
+                        .map(|continuation| continuation.cursor.as_str())
+                        .filter(|cursor| cursor.starts_with('{')),
                     aos_hub_core::oci_inventory_controller::WORKER_OCI_INVENTORY_DISPATCH_BUDGET,
                 )
                 .await
