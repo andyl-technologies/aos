@@ -7,7 +7,7 @@
   shared = import ./registry/fixtures.nix {inherit pkgs aosPkg;};
 in
   (import ./registry/lifecycle.nix {
-    inherit testing;
+    inherit testing pkgs;
     inherit (shared) fixtures;
   })
   // (import ./registry/publish.nix {

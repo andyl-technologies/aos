@@ -28780,7 +28780,7 @@ source_nar_hash = ""
         let mut snapshot = IndexSnapshot {
             commit: "c".repeat(64),
             public_catalog_commit: Some("c".repeat(64)),
-            public_catalog_release: Some("1.0.0".into()),
+            public_catalog_release: Some("2026.8.0".into()),
             name: "AOS system".into(),
             packages: vec![package.clone()],
             releases: vec![ReleaseRow {
