@@ -34,7 +34,10 @@ use crate::pidfd::{PidFd, PidFdInfo};
 use crate::uapi::{self, RawAncillary};
 
 mod listener;
-pub use listener::RecordSubjectListener;
+pub use listener::{
+    ListenerAdmissionFailureRefV1, RecordSubjectListener,
+    RecordSubjectListenerAdmissionAttemptV1,
+};
 
 mod socket_binding;
 use socket_binding::{ConnectedSocketBinding, ReceivedSocketOrigin};

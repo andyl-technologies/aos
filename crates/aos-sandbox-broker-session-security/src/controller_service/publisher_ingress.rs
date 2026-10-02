@@ -20,12 +20,15 @@ use aos_sandbox::publisher_control::{PublisherControlError, PublisherControlPoli
 use aos_sandbox::publisher_ingress::PublisherIngressLimits;
 use aos_sandbox::publisher_policy::PublisherPolicyLimits;
 use aos_sandbox::publisher_sessions::{
-    PublisherSessionLimits, PublisherSessionRegistry, PublisherSessionScope,
+    PublisherSessionError, PublisherSessionLimits, PublisherSessionRegistry, PublisherSessionScope,
 };
 use aos_sandbox_core::{NodeId, PrincipalId, ProjectId, PublisherInstanceId, ResourceId};
 use aos_sandbox_linux::cgroup::CgroupV2Root;
 use aos_sandbox_linux::pidfd::PidFd;
-use aos_sandbox_linux::seqpacket::{RecordSubjectListener, SeqpacketError};
+use aos_sandbox_linux::seqpacket::{
+    ListenerAdmissionFailureRefV1, RecordSubjectListener,
+    RecordSubjectListenerAdmissionAttemptV1, SeqpacketError,
+};
 use aos_systemd::SystemdClient;
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, open};
@@ -198,6 +201,293 @@ pub(super) fn adopt_observed_listener(
     Ok(listener)
 }
 
+/// Borrows a resident Publisher startup failure without releasing originals.
+#[derive(Debug)]
+pub(super) enum PublisherStartupFailureRefV1<'a> {
+    /// The lower owner retains its original listener and typed first cause.
+    Lower(ListenerAdmissionFailureRefV1<'a>),
+    /// The existing fixed scope credential classification remains resident.
+    Scope(&'a PublisherIngressError),
+    /// The fixed registry constructor's actual error remains resident.
+    Registry(&'a PublisherSessionError),
+    /// The current-thread runtime constructor's actual error remains resident.
+    Runtime(&'a std::io::Error),
+    /// A crossing was reentered or its required ownership state is unavailable.
+    Closed,
+}
+
+enum PublisherStartupFailureV1 {
+    Lower,
+    Scope(PublisherIngressError),
+    Registry(PublisherSessionError),
+    Runtime(std::io::Error),
+    Closed,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum PublisherStartupPhaseV1 {
+    Fresh,
+    CheckingListener,
+    ListenerReady,
+    CheckingRegistration,
+    RegistrationReady,
+    Ended,
+    Taken,
+}
+
+/// Retains one original Publisher listener and its staged registration owners.
+///
+/// Listener admission and scope/registry/runtime construction remain separate
+/// crossings at their existing caller positions. Failed or unwinding attempts
+/// terminate with originals resident; they do not claim process or owner drain.
+/// The installed Controller caller has not migrated to this dormant seam.
+#[must_use]
+pub(super) struct PublisherStartupAttemptV1 {
+    lower: RecordSubjectListenerAdmissionAttemptV1,
+    listener: Option<RecordSubjectListener>,
+    sessions: Option<PublisherSessionRegistry>,
+    scope: Option<PublisherServiceScopeV1>,
+    runtime: Option<tokio::runtime::Runtime>,
+    completed: Option<PublisherRegistrationOwnerV1>,
+    phase: PublisherStartupPhaseV1,
+    failure: Option<PublisherStartupFailureV1>,
+    armed: bool,
+}
+
+impl PublisherStartupAttemptV1 {
+    /// Parks the descriptor from the concrete original Publisher role handoff.
+    pub(super) const fn from_original_listener(descriptor: OwnedFd) -> Self {
+        Self {
+            lower: RecordSubjectListenerAdmissionAttemptV1::new(descriptor),
+            listener: None,
+            sessions: None,
+            scope: None,
+            runtime: None,
+            completed: None,
+            phase: PublisherStartupPhaseV1::Fresh,
+            failure: None,
+            armed: true,
+        }
+    }
+
+    /// Admits only the existing fixed listener, before node and recipe reads.
+    ///
+    /// # Errors
+    /// Borrows the resident lower cause or permanent closed-state refusal.
+    pub(super) fn admit_listener_once(
+        &mut self,
+    ) -> Result<(), PublisherStartupFailureRefV1<'_>> {
+        if self.phase != PublisherStartupPhaseV1::Fresh || self.failure.is_some() {
+            return Err(self.retain_failure(PublisherStartupFailureV1::Closed));
+        }
+        self.phase = PublisherStartupPhaseV1::CheckingListener;
+
+        let result = {
+            let _unwind = AbortPublisherStartupUnwind;
+            self.admit_listener_body()
+        };
+        match result {
+            Ok(()) => {
+                self.phase = PublisherStartupPhaseV1::ListenerReady;
+                Ok(())
+            }
+            Err(cause) => Err(self.retain_failure(cause)),
+        }
+    }
+
+    /// Builds registration at the original fixed scope-credential position.
+    ///
+    /// # Errors
+    /// Borrows the first scope, registry, runtime or closed-state cause while
+    /// keeping every earlier returned listener/table/runtime original resident.
+    pub(super) fn construct_registration_once(
+        &mut self,
+        node: NodeId,
+    ) -> Result<(), PublisherStartupFailureRefV1<'_>> {
+        if self.phase != PublisherStartupPhaseV1::ListenerReady || self.failure.is_some() {
+            return Err(self.retain_failure(PublisherStartupFailureV1::Closed));
+        }
+        self.phase = PublisherStartupPhaseV1::CheckingRegistration;
+
+        let result = {
+            let _unwind = AbortPublisherStartupUnwind;
+            self.construct_registration_body(node)
+        };
+        match result {
+            Ok(()) => {
+                self.phase = PublisherStartupPhaseV1::RegistrationReady;
+                Ok(())
+            }
+            Err(cause) => Err(self.retain_failure(cause)),
+        }
+    }
+
+    /// Borrows the actual first cause through the still-resident owning fields.
+    pub(super) fn first_failure(&self) -> Option<PublisherStartupFailureRefV1<'_>> {
+        self.failure.as_ref().map(|_| self.failure_view())
+    }
+
+    /// Transfers the same completed registration once, without fallible work.
+    ///
+    /// The caller must prepare its receiving destination before this move and
+    /// retain that owner across every later fallible startup operation.
+    pub(super) fn take_completed_registration(&mut self) -> Option<PublisherRegistrationOwnerV1> {
+        if self.phase != PublisherStartupPhaseV1::RegistrationReady
+            || self.failure.is_some()
+            || self.listener.is_some()
+            || self.sessions.is_some()
+            || self.scope.is_some()
+            || self.runtime.is_some()
+            || self.completed.is_none()
+        {
+            return None;
+        }
+
+        let completed = self.completed.take();
+        self.phase = PublisherStartupPhaseV1::Taken;
+        self.armed = false;
+        completed
+    }
+
+    fn admit_listener_body(&mut self) -> Result<(), PublisherStartupFailureV1> {
+        if self.listener.is_some()
+            || self.sessions.is_some()
+            || self.scope.is_some()
+            || self.runtime.is_some()
+            || self.completed.is_some()
+        {
+            return Err(PublisherStartupFailureV1::Closed);
+        }
+        if self.lower.admit_once(Path::new(SOCKET)).is_err() {
+            return Err(PublisherStartupFailureV1::Lower);
+        }
+        let Some(listener) = self.lower.take_completed_listener() else {
+            return Err(PublisherStartupFailureV1::Closed);
+        };
+        self.listener = Some(listener);
+        Ok(())
+    }
+
+    fn construct_registration_body(
+        &mut self,
+        node: NodeId,
+    ) -> Result<(), PublisherStartupFailureV1> {
+        if self.listener.is_none()
+            || self.sessions.is_some()
+            || self.scope.is_some()
+            || self.runtime.is_some()
+            || self.completed.is_some()
+        {
+            return Err(PublisherStartupFailureV1::Closed);
+        }
+
+        self.scope = Some(
+            PublisherServiceScopeV1::from_process_credential(node)
+                .map_err(PublisherStartupFailureV1::Scope)?,
+        );
+        self.sessions = Some(
+            fixed_registration_sessions().map_err(PublisherStartupFailureV1::Registry)?,
+        );
+        self.runtime = Some(
+            fixed_registration_runtime().map_err(PublisherStartupFailureV1::Runtime)?,
+        );
+
+        // Check every source/destination before moving any original. Final
+        // assembly performs no observation, allocation or fallible continuation.
+        if self.listener.is_none()
+            || self.sessions.is_none()
+            || self.scope.is_none()
+            || self.runtime.is_none()
+            || self.completed.is_some()
+        {
+            return Err(PublisherStartupFailureV1::Closed);
+        }
+        let originals = (
+            self.listener.take(),
+            self.sessions.take(),
+            self.scope.take(),
+            self.runtime.take(),
+        );
+        match originals {
+            (Some(listener), Some(sessions), Some(scope), Some(runtime)) => {
+                self.completed = Some(PublisherRegistrationOwnerV1 {
+                    listener,
+                    sessions,
+                    scope,
+                    runtime,
+                    instance: None,
+                });
+                Ok(())
+            }
+            (listener, sessions, scope, runtime) => {
+                self.listener = listener;
+                self.sessions = sessions;
+                self.scope = scope;
+                self.runtime = runtime;
+                Err(PublisherStartupFailureV1::Closed)
+            }
+        }
+    }
+
+    fn retain_failure(
+        &mut self,
+        cause: PublisherStartupFailureV1,
+    ) -> PublisherStartupFailureRefV1<'_> {
+        self.failure.get_or_insert(cause);
+        self.phase = PublisherStartupPhaseV1::Ended;
+        self.failure_view()
+    }
+
+    fn failure_view(&self) -> PublisherStartupFailureRefV1<'_> {
+        match &self.failure {
+            Some(PublisherStartupFailureV1::Lower) => match self.lower.first_failure() {
+                Some(cause) => PublisherStartupFailureRefV1::Lower(cause),
+                None => PublisherStartupFailureRefV1::Closed,
+            },
+            Some(PublisherStartupFailureV1::Scope(cause)) => {
+                PublisherStartupFailureRefV1::Scope(cause)
+            }
+            Some(PublisherStartupFailureV1::Registry(cause)) => {
+                PublisherStartupFailureRefV1::Registry(cause)
+            }
+            Some(PublisherStartupFailureV1::Runtime(cause)) => {
+                PublisherStartupFailureRefV1::Runtime(cause)
+            }
+            Some(PublisherStartupFailureV1::Closed) | None => PublisherStartupFailureRefV1::Closed,
+        }
+    }
+}
+
+impl Drop for PublisherStartupAttemptV1 {
+    fn drop(&mut self) {
+        if self.armed {
+            std::process::abort();
+        }
+    }
+}
+
+struct AbortPublisherStartupUnwind;
+
+impl Drop for AbortPublisherStartupUnwind {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            std::process::abort();
+        }
+    }
+}
+
+fn fixed_registration_sessions() -> Result<PublisherSessionRegistry, PublisherSessionError> {
+    PublisherSessionRegistry::new(PublisherSessionLimits {
+        maximum_sessions: 1,
+    })
+}
+
+fn fixed_registration_runtime() -> Result<tokio::runtime::Runtime, std::io::Error> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+}
+
 /// Owns one live registration slot beside the controller's sole journal writer.
 pub(super) struct PublisherRegistrationOwnerV1 {
     listener: RecordSubjectListener,
@@ -216,13 +506,9 @@ impl PublisherRegistrationOwnerV1 {
         listener: RecordSubjectListener,
         scope: PublisherServiceScopeV1,
     ) -> Result<Self, PublisherIngressError> {
-        let sessions = PublisherSessionRegistry::new(PublisherSessionLimits {
-            maximum_sessions: 1,
-        })
-        .map_err(|_| PublisherIngressError::Scope)?;
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
+        let sessions = fixed_registration_sessions()
+            .map_err(|_| PublisherIngressError::Scope)?;
+        let runtime = fixed_registration_runtime()
             .map_err(|_| PublisherIngressError::Execution)?;
         Ok(Self {
             listener,

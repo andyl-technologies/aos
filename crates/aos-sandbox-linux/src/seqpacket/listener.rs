@@ -39,6 +39,146 @@ pub struct RecordSubjectListener {
     fd: OwnedFd,
 }
 
+/// Borrows a retained listener admission cause or a permanent closed state.
+#[derive(Debug)]
+pub enum ListenerAdmissionFailureRefV1<'a> {
+    /// The original typed validation or pathname failure remains resident.
+    Cause(&'a SeqpacketError),
+    /// Admission was reentered, abandoned during checking, or already ended.
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ListenerAdmissionPhaseV1 {
+    Fresh,
+    Checking,
+    Ready,
+    Ended,
+    Taken,
+}
+
+/// Retains one original listening descriptor through one complete admission.
+///
+/// Kernel and pathname checks are mechanical DATA observations, not PID 1 or
+/// application authority. The same exclusive configuration/acceptance contract
+/// as [`RecordSubjectListener`] applies. A failed attempt exposes neither its
+/// descriptor nor a listener; dropping it releases custody without proving
+/// population drain. Higher owners must retain it across their own failures.
+#[must_use]
+pub struct RecordSubjectListenerAdmissionAttemptV1 {
+    descriptor: Option<OwnedFd>,
+    listener: Option<RecordSubjectListener>,
+    phase: ListenerAdmissionPhaseV1,
+    failure: Option<SeqpacketError>,
+}
+
+impl RecordSubjectListenerAdmissionAttemptV1 {
+    /// Parks the original descriptor without observing or configuring it.
+    #[must_use]
+    pub const fn new(original: OwnedFd) -> Self {
+        Self {
+            descriptor: Some(original),
+            listener: None,
+            phase: ListenerAdmissionPhaseV1::Fresh,
+            failure: None,
+        }
+    }
+
+    /// Checks the original listener and its exact pathname once.
+    ///
+    /// Checking is armed before the validator. Only success of both checks
+    /// permits handoff; a caught unwind remains nonextractable. Reentry closes
+    /// admission without IO and does not replace an earlier typed cause.
+    ///
+    /// # Errors
+    ///
+    /// Borrows the first actual type, option, flag or pathname cause, or reports
+    /// a closed phase. Every original remains in this attempt on rejection.
+    pub fn admit_once(
+        &mut self,
+        expected: &Path,
+    ) -> Result<(), ListenerAdmissionFailureRefV1<'_>> {
+        if self.phase != ListenerAdmissionPhaseV1::Fresh
+            || self.failure.is_some()
+            || self.listener.is_some()
+        {
+            return Err(self.close());
+        }
+        self.phase = ListenerAdmissionPhaseV1::Checking;
+
+        let Some(descriptor) = self.descriptor.as_ref() else {
+            return Err(self.close());
+        };
+        if let Err(cause) =
+            uapi::prepare_record_subject_listener(descriptor.as_fd()).map_err(map_kernel_error)
+        {
+            return Err(self.fail(cause));
+        }
+
+        // The actual validated listener is resident before the fallible path
+        // check. There is deliberately no Ready interval between the checks.
+        let Some(fd) = self.descriptor.take() else {
+            return Err(self.close());
+        };
+        self.listener = Some(RecordSubjectListener { fd });
+        let Some(listener) = self.listener.as_ref() else {
+            return Err(self.close());
+        };
+        if let Err(cause) = listener.require_local_filesystem_path(expected) {
+            return Err(self.fail(cause));
+        }
+
+        self.phase = ListenerAdmissionPhaseV1::Ready;
+        Ok(())
+    }
+
+    /// Borrows the resident first failure without observing the original.
+    #[must_use]
+    pub fn first_failure(&self) -> Option<ListenerAdmissionFailureRefV1<'_>> {
+        if self.failure.is_some() || self.phase == ListenerAdmissionPhaseV1::Ended {
+            Some(self.failure_view())
+        } else {
+            None
+        }
+    }
+
+    /// Moves the same completely admitted listener exactly once.
+    ///
+    /// No observation, allocation or repair follows the checked move. The
+    /// receiving owner must park it before any fallible continuation.
+    #[must_use]
+    pub fn take_completed_listener(&mut self) -> Option<RecordSubjectListener> {
+        if self.phase != ListenerAdmissionPhaseV1::Ready
+            || self.failure.is_some()
+            || self.descriptor.is_some()
+            || self.listener.is_none()
+        {
+            return None;
+        }
+
+        let listener = self.listener.take();
+        self.phase = ListenerAdmissionPhaseV1::Taken;
+        listener
+    }
+
+    fn close(&mut self) -> ListenerAdmissionFailureRefV1<'_> {
+        self.phase = ListenerAdmissionPhaseV1::Ended;
+        self.failure_view()
+    }
+
+    fn fail(&mut self, cause: SeqpacketError) -> ListenerAdmissionFailureRefV1<'_> {
+        self.failure.get_or_insert(cause);
+        self.close()
+    }
+
+    fn failure_view(&self) -> ListenerAdmissionFailureRefV1<'_> {
+        match &self.failure {
+            Some(cause) => ListenerAdmissionFailureRefV1::Cause(cause),
+            None => ListenerAdmissionFailureRefV1::Closed,
+        }
+    }
+}
+
 impl RecordSubjectListener {
     /// Creates an owned record-subject listener at a filesystem pathname.
     ///
@@ -254,6 +394,157 @@ mod tests {
         let fd = uapi::seqpacket_listener().expect("create listener");
         uapi::enable_seqpacket_identity(fd.as_fd()).expect("configure listener");
         RecordSubjectListener::from_owned(fd).expect("adopt listener")
+    }
+
+    #[test]
+    fn retained_wrong_kind_keeps_same_descriptor_and_first_cause() {
+        let original: OwnedFd = tempfile::tempfile().expect("ordinary file").into();
+        let raw = original.as_raw_fd();
+        let mut attempt = RecordSubjectListenerAdmissionAttemptV1::new(original);
+
+        assert!(matches!(
+            attempt.admit_once(Path::new("/tmp/unused-publisher-listener")),
+            Err(ListenerAdmissionFailureRefV1::Cause(SeqpacketError::Kernel(_)))
+        ));
+        let first = std::ptr::from_ref(attempt.failure.as_ref().expect("actual first cause"));
+
+        assert_eq!(
+            attempt
+                .descriptor
+                .as_ref()
+                .expect("resident original")
+                .as_raw_fd(),
+            raw
+        );
+        assert!(attempt.take_completed_listener().is_none());
+        assert!(
+            attempt
+                .admit_once(Path::new("not-another-observation"))
+                .is_err()
+        );
+        assert_eq!(
+            std::ptr::from_ref(attempt.failure.as_ref().expect("same first cause")),
+            first
+        );
+        assert_eq!(attempt.phase, ListenerAdmissionPhaseV1::Ended);
+    }
+
+    #[test]
+    fn retained_missing_options_keep_original_without_repair() {
+        for enabled in [libc::SO_PASSCRED, uapi::SO_PASSPIDFD] {
+            let original = uapi::seqpacket_listener().expect("create listener");
+            uapi::enable_test_socket_option(original.as_fd(), enabled)
+                .expect("enable only one option");
+            let raw = original.as_raw_fd();
+            let mut attempt = RecordSubjectListenerAdmissionAttemptV1::new(original);
+
+            assert!(matches!(
+                attempt.admit_once(Path::new("/tmp/unused-publisher-listener")),
+                Err(ListenerAdmissionFailureRefV1::Cause(
+                    SeqpacketError::Kernel(Error::InvalidInput {
+                        field: "record subject options",
+                        ..
+                    })
+                ))
+            ));
+
+            let original = attempt.descriptor.as_ref().expect("resident original");
+            assert_eq!(original.as_raw_fd(), raw);
+            assert!(uapi::require_seqpacket_identity(original.as_fd()).is_err());
+            assert!(attempt.take_completed_listener().is_none());
+        }
+    }
+
+    #[test]
+    fn retained_path_failure_keeps_validated_listener_nonextractable() {
+        let directory = tempfile::tempdir().expect("test directory");
+        let path = directory.path().join("original.sock");
+        let listener = RecordSubjectListener::bind(&path, 1).expect("bind listener");
+        let raw = listener.fd.as_raw_fd();
+        let mut attempt = RecordSubjectListenerAdmissionAttemptV1::new(listener.fd);
+
+        assert!(matches!(
+            attempt.admit_once(&directory.path().join("different.sock")),
+            Err(ListenerAdmissionFailureRefV1::Cause(
+                SeqpacketError::Kernel(Error::InvalidInput {
+                    field: "record subject listener path",
+                    ..
+                })
+            ))
+        ));
+
+        assert!(attempt.descriptor.is_none());
+        assert_eq!(
+            attempt.listener.as_ref().expect("resident listener").fd.as_raw_fd(),
+            raw
+        );
+        assert_eq!(attempt.phase, ListenerAdmissionPhaseV1::Ended);
+        assert!(attempt.take_completed_listener().is_none());
+    }
+
+    #[test]
+    fn checking_phase_cannot_extract_or_retry_even_with_resident_listener() {
+        let directory = tempfile::tempdir().expect("test directory");
+        let path = directory.path().join("original.sock");
+        let listener = RecordSubjectListener::bind(&path, 1).expect("bind listener");
+        let raw = listener.fd.as_raw_fd();
+        let mut attempt = RecordSubjectListenerAdmissionAttemptV1::new(listener.fd);
+        assert!(attempt.admit_once(&path).is_ok());
+
+        // Pure phase vector: model a caught crossing unwind, not an executed
+        // panic fixture or a positive PID 1/application provenance assertion.
+        attempt.phase = ListenerAdmissionPhaseV1::Checking;
+        assert!(attempt.take_completed_listener().is_none());
+        assert!(matches!(
+            attempt.admit_once(&path),
+            Err(ListenerAdmissionFailureRefV1::Closed)
+        ));
+        assert!(attempt.take_completed_listener().is_none());
+        assert_eq!(
+            attempt.listener.as_ref().expect("resident listener").fd.as_raw_fd(),
+            raw
+        );
+    }
+
+    #[test]
+    fn ready_reentry_ends_admission_without_handoff() {
+        let directory = tempfile::tempdir().expect("test directory");
+        let path = directory.path().join("original.sock");
+        let listener = RecordSubjectListener::bind(&path, 1).expect("bind listener");
+        let mut attempt = RecordSubjectListenerAdmissionAttemptV1::new(listener.fd);
+        assert!(attempt.admit_once(&path).is_ok());
+
+        assert!(matches!(
+            attempt.admit_once(&path),
+            Err(ListenerAdmissionFailureRefV1::Closed)
+        ));
+
+        assert_eq!(attempt.phase, ListenerAdmissionPhaseV1::Ended);
+        assert!(attempt.listener.is_some());
+        assert!(attempt.take_completed_listener().is_none());
+    }
+
+    #[test]
+    fn complete_admission_hands_off_same_original_once() {
+        let directory = tempfile::tempdir().expect("test directory");
+        let path = directory.path().join("original.sock");
+        let listener = RecordSubjectListener::bind(&path, 1).expect("bind listener");
+        let raw = listener.fd.as_raw_fd();
+        let mut attempt = RecordSubjectListenerAdmissionAttemptV1::new(listener.fd);
+
+        assert!(attempt.admit_once(&path).is_ok());
+        let listener = attempt
+            .take_completed_listener()
+            .expect("single completed listener");
+
+        assert_eq!(listener.fd.as_raw_fd(), raw);
+        assert_eq!(attempt.phase, ListenerAdmissionPhaseV1::Taken);
+        assert!(attempt.first_failure().is_none());
+        assert!(attempt.take_completed_listener().is_none());
+        assert!(matches!(
+            attempt.admit_once(&path),
+            Err(ListenerAdmissionFailureRefV1::Closed)
+        ));
     }
 
     #[test]
