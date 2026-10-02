@@ -24,6 +24,8 @@ mod coverage;
 #[cfg(unix)]
 mod dictionaries;
 #[cfg(unix)]
+mod domain_scope;
+#[cfg(unix)]
 mod fresh_recovery;
 #[cfg(unix)]
 mod import_controls;
@@ -40,6 +42,20 @@ mod original_acl;
 mod parents;
 #[cfg(unix)]
 mod producers;
+#[cfg(unix)]
+mod raw_kinds;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_domain_reference_order_and_dedup_remain_scoped() {
+    domain_scope::preserve_domain_scope().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_projection_rejects_tree_whiteout_conflict_and_index_entries() {
+    raw_kinds::reject_special_projections().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
