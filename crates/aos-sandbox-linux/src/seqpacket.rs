@@ -140,6 +140,121 @@ pub(super) struct PendingSocketAdmissionV1 {
     shutdown_failure: Option<std::io::Error>,
 }
 
+/// Retains the returned originals of one selected offline helper socket pair.
+///
+/// This is transport DATA only, not child, approval, Session or TPM authority.
+/// The caller keeps this owner resident on error or unwind. Prefixes which a
+/// lower constructor does not return are not retroactively captured here.
+pub struct NixOfflineSeqpacketPairV5 {
+    attempted: bool,
+    ready: bool,
+    pending: Option<PendingSocketAdmissionV1>,
+    socket: Option<SeqpacketSocket>,
+    endpoint: Option<OwnedFd>,
+    first_failure: Option<SeqpacketError>,
+}
+
+impl NixOfflineSeqpacketPairV5 {
+    /// Parks empty fixed pair slots without creating or admitting a descriptor.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            attempted: false,
+            ready: false,
+            pending: None,
+            socket: None,
+            endpoint: None,
+            first_failure: None,
+        }
+    }
+
+    /// Creates and admits one fixed nonblocking pair with record subjects.
+    ///
+    /// # Errors
+    /// Retains the first actual creation, option or connected-peer cause and
+    /// every returned original. Reuse and caught interruption remain closed.
+    pub fn prepare(&mut self) -> Result<(), &SeqpacketError> {
+        if self.attempted {
+            self.ready = false;
+            return Err(self.first_failure.get_or_insert(SeqpacketError::Closed));
+        }
+        self.attempted = true;
+        match self.prepare_inner() {
+            Ok(()) => {
+                self.ready = true;
+                Ok(())
+            }
+            Err(error) => {
+                if let Some(pending) = self.pending.as_mut() {
+                    pending.end_transport();
+                }
+                self.first_failure.get_or_insert(error);
+                Err(self.first_failure.get_or_insert(SeqpacketError::Closed))
+            }
+        }
+    }
+
+    fn prepare_inner(&mut self) -> Result<(), SeqpacketError> {
+        let (receiver, endpoint) = uapi::seqpacket_pair()?;
+        self.pending = Some(PendingSocketAdmissionV1::new(receiver));
+        self.endpoint = Some(endpoint);
+        let pending = self.pending.as_mut().ok_or(SeqpacketError::Closed)?;
+        pending.enable_subjects()?;
+        uapi::enable_seqpacket_identity(
+            self.endpoint.as_ref().ok_or(SeqpacketError::Closed)?.as_fd(),
+        )?;
+        pending.admit_peer()?;
+
+        // Admission has completed. Move both receiver owners infallibly before
+        // disarming; no post-return check drops either acquired original.
+        let originals = (pending.fd.take(), pending.peer.take());
+        let (fd, peer) = match originals {
+            (Some(fd), Some(peer)) => (fd, peer),
+            (fd, peer) => {
+                pending.fd = fd;
+                pending.peer = peer;
+                return Err(SeqpacketError::Closed);
+            }
+        };
+        pending.armed = false;
+        self.socket = Some(SeqpacketSocket { fd: Some(fd), peer });
+        Ok(())
+    }
+
+    /// Transfers only the fully admitted child endpoint into the fixed launcher.
+    ///
+    /// # Errors
+    /// Refuses a failed, incomplete, interrupted or previously transferred pair.
+    pub fn take_child_endpoint(&mut self) -> Result<OwnedFd, SeqpacketError> {
+        if !self.ready {
+            return Err(SeqpacketError::Closed);
+        }
+        self.endpoint.take().ok_or(SeqpacketError::Closed)
+    }
+
+    /// Borrows the actual admitted parent socket without releasing pair custody.
+    ///
+    /// # Errors
+    /// Refuses an incomplete or fenced pair.
+    pub fn socket(&mut self) -> Result<&mut SeqpacketSocket, SeqpacketError> {
+        if !self.ready {
+            return Err(SeqpacketError::Closed);
+        }
+        self.socket.as_mut().ok_or(SeqpacketError::Closed)
+    }
+
+    /// Borrows the original first returned failure without cloning it.
+    pub fn failure(&self) -> Option<&SeqpacketError> {
+        self.first_failure.as_ref()
+    }
+}
+
+impl Default for NixOfflineSeqpacketPairV5 {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PendingSocketAdmissionV1 {
     pub(super) fn new(fd: OwnedFd) -> Self {
         Self {
@@ -715,6 +830,26 @@ impl SeqpacketSocket {
             record,
             peer: &self.peer,
         })
+    }
+
+    /// Compares a resident offline record with this original socket by borrow.
+    ///
+    /// The caller keeps the complete record and subject parked before this
+    /// observation. Success establishes only same-socket continuity DATA, not
+    /// a syscall writer, executed image, TPM result or protocol authority.
+    ///
+    /// # Errors
+    /// Closes the original socket on the same binding failures as the consuming
+    /// adapters. Neither the record nor its subject is moved, cloned or dropped.
+    pub fn require_nix_offline_received_original_v5(
+        &mut self,
+        record: &ReceivedRecord,
+    ) -> Result<(), RecordBindingError> {
+        if let Err(error) = self.require_record_origin(record) {
+            self.fd.take();
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn receive_inner(&self, maximum_bytes: usize) -> Result<ReceivedRecord, SeqpacketError> {

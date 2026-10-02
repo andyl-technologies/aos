@@ -19,4 +19,8 @@ struct aos_nv_custody_profile {
 };
 
 int aos_nv_custody_run(int argc, const struct aos_nv_custody_profile *profile);
+
+/* The independent offline entry admits only the fixed paired 058/059 job.
+ * It never implements a runtime floor, NV seeding, or another profile role. */
+int aos_nix_offline_provision_run(int argc);
 #endif

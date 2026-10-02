@@ -15,6 +15,7 @@
 /(nix|nix\.lower)/store/@AOS_STORAGE_BASENAME_REGEX@/bin/aos-storaged -- system_u:object_r:aos_sandbox_storage_exec_t
 /(nix|nix\.lower)/store/@AOS_TPM_HELPER_BASENAME_REGEX@/libexec/aos-method46-tpm-helper -- system_u:object_r:aos_method46_helper_exec_t
 /dev/tpmrm0 -c system_u:object_r:aos_method46_tpm_device_t
+/(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-nix-offline-tpm-helper-5/libexec/aos-nix-offline-tpm-helper -- system_u:object_r:aos_nix_offline_tpm_helper_exec_t
 # These public immutable inputs are not signer secrets or runtime authority.
 /(nix|nix\.lower)/store/@AOS_SYSTEMD_BASENAME_REGEX@/share/aos/backend-policy-artifact-v2 -- system_u:object_r:etc_t
 /(nix|nix\.lower)/store/[0123456789abcdfghijklmnpqrsvwxyz]{32}-aos-normal-root-startup-profile-1/(profile\.json|effective-policy\.tsv|source-policy\.33) -- system_u:object_r:aos_sandbox_policy_authority_profile_t
@@ -34,9 +35,9 @@
 /run/etc -d system_u:object_r:var_run_t
 /var/lib/aos/sandbox -d system_u:object_r:aos_sandbox_view_parent_t
 /var/lib/aos/sandbox-nix-floor-provision -d system_u:object_r:aos_nix_offline_prepare_state_t
-/var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3|approved-job-v3) -- system_u:object_r:aos_nix_offline_prepare_state_t
+/var/lib/aos/sandbox-nix-floor-provision/(installation\.lock|candidate-private-v3|candidate-public-v3|approved-job-v3|approved-effect-v4|approved-recovery-v4|provisioning-v4\.journal(\.lock)?) -- system_u:object_r:aos_nix_offline_prepare_state_t
 /run/credentials/aos-sandbox-nix-floor-provision\.service -d system_u:object_r:aos_nix_offline_prepare_credential_t
-/run/credentials/aos-sandbox-nix-floor-provision\.service/(node-id|nix-floor-provision-approval-public-key-v3) -- system_u:object_r:aos_nix_offline_prepare_credential_t
+/run/credentials/aos-sandbox-nix-floor-provision\.service/(node-id|nix-floor-provision-approval-public-key-v3|nix-fixed-domain-pins-v2|nix-floor-owner-hierarchy-auth-v4) -- system_u:object_r:aos_nix_offline_prepare_credential_t
 /var/lib/aos/sandbox/source-evidence -d system_u:object_r:aos_sandbox_policy_authority_state_t
 /var/lib/aos/sandbox/source-evidence/git-authority-v1\.journal(\.lock|\.compact\.tmp)? -- system_u:object_r:aos_sandbox_policy_authority_state_t
 /var/lib/aos/sandbox/source-domains(/.*)? system_u:object_r:aos_sandbox_source_journal_t

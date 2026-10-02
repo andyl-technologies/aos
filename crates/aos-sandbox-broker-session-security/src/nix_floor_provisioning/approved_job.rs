@@ -17,17 +17,20 @@ use std::io;
 use std::os::fd::AsFd as _;
 
 use aos_sandbox::normal_root::OfflineNixPrepareOriginV3;
+#[cfg(test)]
 use aos_sandbox_broker_session_protocol::{
     BrokerSessionKeyUsageV1, BrokerSessionProtocolV1,
 };
+use aos_sandbox_broker_session_protocol::manifest::BrokerSessionManifestErrorV1;
+#[cfg(test)]
 use aos_sandbox_broker_session_protocol::manifest::{
-    BrokerSessionManifestAudienceV1, BrokerSessionManifestErrorV1, BrokerSessionManifestV1,
+    BrokerSessionManifestAudienceV1, BrokerSessionManifestV1,
 };
 use aos_sandbox_linux::inventory::MountId;
 use aos_sandbox_linux::protected_file::{
     open_nofollow_child, read_exact_positioned_retaining_cause,
 };
-use ed25519_dalek::{Signature, SignatureError, VerifyingKey};
+use ed25519_dalek::SignatureError;
 use rustix::fs::{Mode, OFlags};
 use zeroize::{Zeroize as _, Zeroizing};
 
@@ -41,9 +44,11 @@ const NAMED_CAPACITY: usize = 12;
 const SIGNED_PREFIX_BYTES: usize = 1268;
 const APPROVAL_DOMAIN: &[u8] = b"aos.sandbox.nix-floor.approved-job-inspection.v3\0";
 const PREIMAGE_BYTES: usize = 1317;
+#[cfg(test)]
 const CONTROLLER_PURPOSE: [u8; 16] = [
     1, 0, 0, 0, 0x01, 0x80, 0xa0, 0x58, 0x81, 0x00, 0xa0, 0x58, 0, 0, 0, 0,
 ];
+#[cfg(test)]
 const OWNER_PURPOSE: [u8; 16] = [
     2, 0, 0, 0, 0x01, 0x80, 0xa0, 0x59, 0x81, 0x00, 0xa0, 0x59, 0, 0, 0, 0,
 ];
@@ -385,30 +390,16 @@ fn require_slot_identity(slot: usize, identity: &FileIdentity) -> Result<(), Err
     Ok(())
 }
 
+#[cfg(test)]
 fn require_header(approved: &[u8], approval: &[u8; 48]) -> Result<(), Error> {
-    if approved.len() != 1332
-        || approved[..8] != *b"AOSNAJ03"
-        || approved[8..10] != 3_u16.to_be_bytes()
-        || approved[10..12] != 1_u16.to_be_bytes()
-        || approved[12..16] != [0; 4]
-        || approved[16..32] != approval[..16]
-        || approved[32..40] != 1_u64.to_be_bytes()
-        || approved[40..48] != [0; 8]
-        || approved[48..64] != CONTROLLER_PURPOSE
-        || approved[64..80] != OWNER_PURPOSE
-    {
-        return Err(Error::Rejected);
-    }
-    Ok(())
+    aos_sandbox::normal_root::require_nix_offline_static_header_v3(approved, approval)
+        .map_err(approved_data_error)
 }
 
+#[cfg(test)]
 fn fill_preimage(approved: &[u8], preimage: &mut [u8]) -> Result<(), Error> {
-    if approved.len() != 1332 || preimage.len() != PREIMAGE_BYTES {
-        return Err(Error::Rejected);
-    }
-    preimage[..APPROVAL_DOMAIN.len()].copy_from_slice(APPROVAL_DOMAIN);
-    preimage[APPROVAL_DOMAIN.len()..].copy_from_slice(&approved[..SIGNED_PREFIX_BYTES]);
-    Ok(())
+    aos_sandbox::normal_root::fill_nix_offline_static_preimage_v3(approved, preimage)
+        .map_err(approved_data_error)
 }
 
 fn require_approved_data(
@@ -420,73 +411,20 @@ fn require_approved_data(
     derived: &mut [u8],
     preimage: &mut [u8],
 ) -> Result<(), Error> {
-    require_header(approved, approval)?;
-    if public.len() != 268
-        || public[..8] != *b"AOSNPC03"
-        || public[8..10] != 3_u16.to_le_bytes()
-        || public[10..12] != [0; 2]
-        || public[28..44] != *node
-        || public != &approved[80..348]
-    {
-        return Err(Error::Rejected);
-    }
-    super::encode_public_candidates(private, &public[12..28], node, approval, derived)?;
-    if derived != public {
-        return Err(Error::Rejected);
-    }
+    aos_sandbox::normal_root::require_nix_offline_static_approval_v3(
+        private, public, approved, node, approval, derived, preimage,
+    )
+    .map_err(approved_data_error)
+}
 
-    let manifest = BrokerSessionManifestV1::decode(&approved[348..1268])?;
-    if manifest.encode().as_slice() != &approved[348..1268]
-        || manifest.protocol() != BrokerSessionProtocolV1::Nix
-        || manifest.audience() != BrokerSessionManifestAudienceV1::NodeController
-        || manifest.protocol_version() != (1, 0)
-        || manifest.node_id() != *node
-    {
-        return Err(Error::Rejected);
+fn approved_data_error(error: aos_sandbox::normal_root::NixOfflineApprovedDataErrorV4) -> Error {
+    use aos_sandbox::normal_root::NixOfflineApprovedDataErrorV4 as DataError;
+    match error {
+        DataError::Rejected => Error::Rejected,
+        DataError::Candidate => Error::Candidate(super::NixPrepareKeysErrorV3::Rejected),
+        DataError::Manifest(source) => Error::Manifest(source),
+        DataError::Signature(source) => Error::Signature(source),
     }
-    manifest.require_all_active()?;
-    let expected_roles = [
-        BrokerSessionKeyUsageV1::ClientHello,
-        BrokerSessionKeyUsageV1::BrokerHello,
-        BrokerSessionKeyUsageV1::ClientRecord,
-        BrokerSessionKeyUsageV1::BrokerOutcome,
-    ];
-    let pins = manifest.key_pins();
-    for (index, (pin, role)) in pins.iter().zip(expected_roles).enumerate() {
-        let offset = 76 + index * 48;
-        let signer = pin.signer();
-        if signer.key_id().as_slice() != &public[offset..offset + 16]
-            || pin.public_key().as_slice() != &public[offset + 16..offset + 48]
-            || signer.usage() != role
-            || signer.key_generation() != 1
-            || pin.minimum_key_generation() != 1
-            || pin.minimum_authority_generation() != signer.authority_generation()
-        {
-            return Err(Error::Rejected);
-        }
-    }
-    for (left, right) in [(0, 2), (1, 3)] {
-        let left = pins[left].signer();
-        let right = pins[right].signer();
-        if left.authority_id() != right.authority_id()
-            || left.authority_generation() != right.authority_generation()
-            || left.authority_digest() != right.authority_digest()
-        {
-            return Err(Error::Rejected);
-        }
-    }
-    if pins[0].signer().authority_id() == pins[1].signer().authority_id() {
-        return Err(Error::Rejected);
-    }
-
-    fill_preimage(approved, preimage)?;
-    let key_bytes = <[u8; 32]>::try_from(&approval[16..]).map_err(|_| Error::Rejected)?;
-    let signature_bytes = <[u8; 64]>::try_from(&approved[1268..]).map_err(|_| Error::Rejected)?;
-    VerifyingKey::from_bytes(&key_bytes)?.verify_strict(
-        preimage,
-        &Signature::from_bytes(&signature_bytes),
-    )?;
-    Ok(())
 }
 
 #[cfg(test)]

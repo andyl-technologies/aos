@@ -8,6 +8,7 @@
 
 use std::fs::File;
 use std::io::{Read as _, Seek as _, SeekFrom};
+use std::os::unix::fs::MetadataExt as _;
 
 use rustix::fs::{Mode, OFlags, fcntl_getfl, fstatfs, open};
 
@@ -18,6 +19,8 @@ use crate::{Error, Result};
 const PROCFS_MAGIC: u64 = 0x9fa0;
 const CONTEXT_BYTES: usize = 256;
 const READ_INTERRUPT_LIMIT: usize = 8;
+const NIX_HELPER_STATUS_BYTES: usize = 64 * 1024;
+const NIX_HELPER_MAPS_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ObservationPhaseV1 {
@@ -31,6 +34,8 @@ enum ObservationPhaseV1 {
 enum ProcFileV1 {
     Stat,
     Context,
+    NixHelperStatus,
+    NixHelperMaps,
 }
 
 impl ProcFileV1 {
@@ -38,6 +43,8 @@ impl ProcFileV1 {
         match self {
             Self::Stat => "stat",
             Self::Context => "attr/current",
+            Self::NixHelperStatus => "status",
+            Self::NixHelperMaps => "maps",
         }
     }
 
@@ -45,6 +52,28 @@ impl ProcFileV1 {
         match self {
             Self::Stat => MAXIMUM_PROC_STAT_BYTES,
             Self::Context => CONTEXT_BYTES,
+            Self::NixHelperStatus => NIX_HELPER_STATUS_BYTES,
+            Self::NixHelperMaps => NIX_HELPER_MAPS_BYTES,
+        }
+    }
+}
+
+struct NixHelperOriginalsV1 {
+    status: ProcDescriptorV1,
+    executable: Option<File>,
+    executable_identity: Option<(u64, u64, u64)>,
+    maps: ProcDescriptorV1,
+    captured: bool,
+}
+
+impl NixHelperOriginalsV1 {
+    const fn empty() -> Self {
+        Self {
+            status: ProcDescriptorV1::empty(),
+            executable: None,
+            executable_identity: None,
+            maps: ProcDescriptorV1::empty(),
+            captured: false,
         }
     }
 }
@@ -157,6 +186,7 @@ pub struct PidFdProcObservationsV1 {
     original_info: Option<PidFdInfo>,
     original_identity: Option<PidFdProcessIdentity>,
     phase: ObservationPhaseV1,
+    nix_helper: Option<NixHelperOriginalsV1>,
 }
 
 impl PidFd {
@@ -169,11 +199,139 @@ impl PidFd {
             original_info: None,
             original_identity: None,
             phase: ObservationPhaseV1::Fresh,
+            nix_helper: None,
         }
     }
 }
 
 impl PidFdProcObservationsV1 {
+    /// Parks fixed Nix helper status, executable and maps originals before HELLO.
+    ///
+    /// This selected DATA capture follows the ordinary stat/context capture on
+    /// the same actual pidfd. Every returned descriptor remains resident before
+    /// metadata, reads or postchecks. No pathname, FD, role or bound is supplied.
+    /// Full loader, executable and purpose checks belong to the genuine owner.
+    ///
+    /// # Errors
+    /// Permanently fences repeated capture, changed/exited processes, failed
+    /// original opens/reads or oversized records. Partial files and bytes stay.
+    pub fn capture_nix_offline_helper_originals_v1(&mut self, original: &PidFd) -> Result<()> {
+        let operation = self.begin(ObservationPhaseV1::Ready)?;
+        let result = operation.observations.capture_nix_helper_inner(original);
+        operation.finish(result, ObservationPhaseV1::Ready)
+    }
+
+    fn capture_nix_helper_inner(&mut self, original: &PidFd) -> Result<()> {
+        if self.nix_helper.is_some() {
+            return Err(closed());
+        }
+        self.nix_helper = Some(NixHelperOriginalsV1::empty());
+        let before = self.require_original_info(original)?;
+        self.nix_helper.as_mut().ok_or_else(closed)?.status
+            .capture(before.pid(), ProcFileV1::NixHelperStatus)?;
+        self.require_original_info(original)?;
+
+        let path = format!("/proc/{}/exe", before.pid());
+        let descriptor = open(path.as_str(), OFlags::RDONLY | OFlags::CLOEXEC, Mode::empty())
+            .map_err(|source| Error::Syscall {
+                operation: "open(original Nix helper executable)",
+                source: source.into(),
+            })?;
+        self.nix_helper.as_mut().ok_or_else(closed)?.executable = Some(File::from(descriptor));
+        let helper = self.nix_helper.as_mut().ok_or_else(closed)?;
+        let file = helper.executable.as_ref().ok_or_else(closed)?;
+        let flags = fcntl_getfl(file).map_err(|source| Error::Syscall {
+            operation: "fcntl(original Nix helper executable)",
+            source: source.into(),
+        })?;
+        let metadata = file.metadata().map_err(|source| Error::Syscall {
+            operation: "stat(original Nix helper executable)", source,
+        })?;
+        if !metadata.is_file() || flags & OFlags::ACCMODE != OFlags::RDONLY
+            || flags.contains(OFlags::PATH)
+        {
+            return Err(Error::invalid("Nix helper executable", "original is not a readable regular file"));
+        }
+        helper.executable_identity = Some((metadata.dev(), metadata.ino(), metadata.len()));
+        self.require_original_info(original)?;
+        self.nix_helper.as_mut().ok_or_else(closed)?.maps
+            .capture(before.pid(), ProcFileV1::NixHelperMaps)?;
+        self.require_original_info(original)?;
+        self.nix_helper.as_mut().ok_or_else(closed)?.captured = true;
+        Ok(())
+    }
+
+    /// Borrows bounded pre-HELLO maps DATA from the original completed capture.
+    ///
+    /// # Errors
+    /// Rejects uncompleted/failed capture. This does not reread maps after ACK.
+    pub fn nix_offline_helper_maps_v1(&self) -> Result<&[u8]> {
+        let helper = self.nix_helper.as_ref().ok_or_else(closed)?;
+        if self.phase != ObservationPhaseV1::Ready || !helper.captured {
+            return Err(closed());
+        }
+        Ok(&helper.maps.initial)
+    }
+
+    /// Compares the original executable descriptor under the same retained pidfd.
+    ///
+    /// Returned device/inode/length is DATA for the genuine image comparator;
+    /// neither a received tuple nor historical maps can admit this observation.
+    ///
+    /// # Errors
+    /// Fences absent measurement, changed metadata, original process or liveness.
+    pub fn observe_nix_offline_helper_executable_v1(
+        &mut self,
+        original: &PidFd,
+    ) -> Result<(u64, u64, u64)> {
+        let operation = self.begin(ObservationPhaseV1::Ready)?;
+        let result = operation.observations.observe_nix_helper_executable_inner(original);
+        operation.finish(result, ObservationPhaseV1::Ready)
+    }
+
+    fn observe_nix_helper_executable_inner(&self, original: &PidFd) -> Result<(u64, u64, u64)> {
+        self.require_original_info(original)?;
+        let helper = self.nix_helper.as_ref().ok_or_else(closed)?;
+        if !helper.captured {
+            return Err(closed());
+        }
+        let metadata = helper.executable.as_ref().ok_or_else(closed)?.metadata()
+            .map_err(|source| Error::Syscall {
+                operation: "stat(original Nix helper executable)", source,
+            })?;
+        let observed = (metadata.dev(), metadata.ino(), metadata.len());
+        if Some(observed) != helper.executable_identity {
+            return Err(Error::invalid("Nix helper executable", "original inode changed"));
+        }
+        self.require_original_info(original)?;
+        Ok(observed)
+    }
+
+    /// Rereads bounded Nix helper status from the same zero-offset descriptor.
+    ///
+    /// This can be used after nondumpable ACK without reopening a proc name.
+    /// Capability/NNP matching is purpose-local; bytes alone grant nothing.
+    ///
+    /// # Errors
+    /// Fences absent measurement, failed reread or changed/exited original task.
+    pub fn observe_nix_offline_helper_status_v1(&mut self, original: &PidFd) -> Result<&[u8]> {
+        let operation = self.begin(ObservationPhaseV1::Ready)?;
+        let result = operation.observations.observe_nix_helper_status_inner(original);
+        operation.finish(result, ObservationPhaseV1::Ready)?;
+        Ok(&self.nix_helper.as_ref().ok_or_else(closed)?.status.current)
+    }
+
+    fn observe_nix_helper_status_inner(&mut self, original: &PidFd) -> Result<()> {
+        self.require_original_info(original)?;
+        let helper = self.nix_helper.as_mut().ok_or_else(closed)?;
+        if !helper.captured {
+            return Err(closed());
+        }
+        helper.status.read(NIX_HELPER_STATUS_BYTES)?;
+        self.require_original_info(original)?;
+        Ok(())
+    }
+
     /// Captures stat once under the owner's same original pidfd.
     ///
     /// # Errors
@@ -322,6 +480,7 @@ mod tests {
             original_info: None,
             original_identity: None,
             phase,
+            nix_helper: None,
         }
     }
 

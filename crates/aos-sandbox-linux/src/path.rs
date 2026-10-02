@@ -33,14 +33,38 @@ impl PendingRegularFileV1 {
             .as_ref()
             .ok_or_else(|| Error::invalid("regular-file acquisition", "not validated"))
     }
+
+    pub(crate) fn take_readable_file(&mut self) -> Option<std::fs::File> {
+        self.validated.take().map(|file| std::fs::File::from(file.fd))
+    }
+}
+
+/// Parks one strict directory resolution through its shared original recipe.
+#[derive(Debug, Default)]
+pub(crate) struct PendingResolvedPathV5 {
+    raw: Option<OwnedFd>,
+    validated: Option<ResolvedPath>,
+}
+
+impl PendingResolvedPathV5 {
+    pub(crate) fn take_directory_root(&mut self) -> Option<BeneathRoot> {
+        if self.validated.as_ref().is_none_or(|path| path.identity.file_type != FileType::Directory) {
+            return None;
+        }
+        self.validated.take().map(|path| BeneathRoot { fd: path.fd, identity: path.identity })
+    }
 }
 
 // The closed dispositions share the original opening recipe. Local deliberately
 // keeps its original lexical descriptor lifetime; Retained parks it before fstat.
 macro_rules! regular_open_step {
     (Local, stage, $pending:ident, $fd:ident) => {};
-    (Retained, stage, $pending:ident, $fd:ident) => {
-        $pending.raw = Some($fd);
+    (Retained, stage, $pending:ident, $fd:ident) => {};
+    (Local, open, $pending:ident, $root:expr, $path:expr, $how:expr) => {
+        uapi::openat2($root, $path, $how)?
+    };
+    (Retained, open, $pending:ident, $root:expr, $path:expr, $how:expr) => {
+        uapi::openat2_retaining($root, $path, $how, &mut $pending.raw)?
     };
     (Local, descriptor, $pending:ident, $fd:ident) => { $fd.as_fd() };
     (Retained, descriptor, $pending:ident, $fd:ident) => {
@@ -72,7 +96,8 @@ macro_rules! open_regular_recipe {
             libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_NOCTTY,
         )
         .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?;
-        let fd = uapi::openat2(
+        let fd = regular_open_step!(
+            $disposition, open, $pending,
             $root.fd.as_fd(),
             &path,
             &OpenHow {
@@ -82,8 +107,8 @@ macro_rules! open_regular_recipe {
                     | RESOLVE_NO_MAGICLINKS
                     | RESOLVE_NO_SYMLINKS
                     | RESOLVE_NO_XDEV,
-            },
-        )?;
+            }
+        );
         regular_open_step!($disposition, stage, $pending, fd);
         let identity = inspect(regular_open_step!($disposition, descriptor, $pending, fd))?;
         if identity.file_type != FileType::Regular {
@@ -92,6 +117,59 @@ macro_rules! open_regular_recipe {
             });
         }
         regular_open_step!($disposition, finish, $pending, fd, identity)
+    }};
+}
+
+macro_rules! directory_resolution_step {
+    (Local, finish, $pending:ident, $fd:ident, $identity:ident) => {
+        Ok(ResolvedPath { fd: $fd, identity: $identity })
+    };
+    (Retained, finish, $pending:ident, $fd:ident, $identity:ident) => {{
+        let Some(fd) = $pending.raw.take() else {
+            std::process::abort();
+        };
+        $pending.validated = Some(ResolvedPath { fd, identity: $identity });
+        Ok(())
+    }};
+}
+
+// The ordinary expansion keeps its local descriptor and checks in their old
+// order. Only the closed retained disposition changes where the fresh fd lives.
+macro_rules! resolve_path_recipe {
+    ($root:ident, $relative:ident, $options:ident, $disposition:ident, $pending:ident) => {{
+        let bytes = validate_relative_path($relative)?;
+        let path =
+            CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
+        let mut resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS;
+        if $options.no_mount_crossing {
+            resolve |= RESOLVE_NO_XDEV;
+        }
+        let flags = u64::try_from(libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW)
+            .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?
+            | if $options.require_directory {
+                u64::try_from(libc::O_DIRECTORY)
+                    .map_err(|_| Error::invalid("open flags", "O_DIRECTORY conversion failed"))?
+            } else {
+                0
+            };
+        let fd = regular_open_step!(
+            $disposition, open, $pending,
+            $root.fd.as_fd(),
+            &path,
+            &OpenHow { flags, mode: 0, resolve }
+        );
+        let identity = inspect(regular_open_step!($disposition, descriptor, $pending, fd))?;
+        if identity.file_type == FileType::Symlink {
+            return Err(Error::WrongDescriptorType {
+                expected: "non-symlink object",
+            });
+        }
+        if $options.require_directory && identity.file_type != FileType::Directory {
+            return Err(Error::WrongDescriptorType {
+                expected: "directory",
+            });
+        }
+        directory_resolution_step!($disposition, finish, $pending, fd, identity)
     }};
 }
 
@@ -176,42 +254,19 @@ impl BeneathRoot {
     /// or overlong paths; disallowed object types; traversal attempts; mount
     /// crossings; races that invalidate resolution; and kernel failures.
     pub fn resolve(&self, relative: &Path, options: ResolveOptions) -> Result<ResolvedPath> {
-        let bytes = validate_relative_path(relative)?;
-        let path =
-            CString::new(bytes).map_err(|_| Error::invalid("relative path", "contains NUL"))?;
-        let mut resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS;
-        if options.no_mount_crossing {
-            resolve |= RESOLVE_NO_XDEV;
+        resolve_path_recipe!(self, relative, options, Local, unused)
+    }
+
+    pub(crate) fn resolve_directory_retaining(
+        &self,
+        relative: &Path,
+        pending: &mut PendingResolvedPathV5,
+    ) -> Result<()> {
+        if pending.raw.is_some() || pending.validated.is_some() {
+            return Err(Error::invalid("retained resolution", "already attempted"));
         }
-        let flags = u64::try_from(libc::O_PATH | libc::O_CLOEXEC | libc::O_NOFOLLOW)
-            .map_err(|_| Error::invalid("open flags", "platform flag conversion failed"))?
-            | if options.require_directory {
-                u64::try_from(libc::O_DIRECTORY)
-                    .map_err(|_| Error::invalid("open flags", "O_DIRECTORY conversion failed"))?
-            } else {
-                0
-            };
-        let fd = uapi::openat2(
-            self.fd.as_fd(),
-            &path,
-            &OpenHow {
-                flags,
-                mode: 0,
-                resolve,
-            },
-        )?;
-        let identity = inspect(fd.as_fd())?;
-        if identity.file_type == FileType::Symlink {
-            return Err(Error::WrongDescriptorType {
-                expected: "non-symlink object",
-            });
-        }
-        if options.require_directory && identity.file_type != FileType::Directory {
-            return Err(Error::WrongDescriptorType {
-                expected: "directory",
-            });
-        }
-        Ok(ResolvedPath { fd, identity })
+        let options = ResolveOptions::directory();
+        resolve_path_recipe!(self, relative, options, Retained, pending)
     }
 
     /// Opens a regular descendant for a bounded read without a path race.

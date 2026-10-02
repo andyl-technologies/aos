@@ -1811,6 +1811,29 @@ pub(crate) fn ensure_cloexec(fd: BorrowedFd<'_>) -> Result<()> {
 }
 
 pub(crate) fn openat2(directory: BorrowedFd<'_>, path: &CStr, how: &OpenHow) -> Result<OwnedFd> {
+    fd_result(openat2_result(directory, path, how), "openat2")
+}
+
+// The selected acquisition parks the one actual syscall result before either
+// CLOEXEC observation. It shares adoption and the complete flag recipe; the
+// destination is private lower custody, not a descriptor authority factory.
+pub(crate) fn openat2_retaining(
+    directory: BorrowedFd<'_>,
+    path: &CStr,
+    how: &OpenHow,
+    original: &mut Option<OwnedFd>,
+) -> Result<()> {
+    if original.is_some() {
+        return Err(Error::invalid("retained openat2", "already acquired"));
+    }
+    *original = Some(adopt_created_fd(openat2_result(directory, path, how), "openat2")?);
+    let descriptor = original.as_ref().ok_or_else(|| {
+        Error::invalid("retained openat2", "original descriptor is absent")
+    })?;
+    ensure_cloexec(descriptor.as_fd())
+}
+
+fn openat2_result(directory: BorrowedFd<'_>, path: &CStr, how: &OpenHow) -> libc::c_long {
     // SAFETY: the directory, C string, and immutable `open_how` all remain
     // live for the syscall; a successful return is a newly-owned fd.
     let result = unsafe {
@@ -1822,7 +1845,7 @@ pub(crate) fn openat2(directory: BorrowedFd<'_>, path: &CStr, how: &OpenHow) -> 
             size_of::<OpenHow>(),
         )
     };
-    fd_result(result, "openat2")
+    result
 }
 
 pub(crate) fn open_tree(path: BorrowedFd<'_>, recursive: bool) -> Result<OwnedFd> {

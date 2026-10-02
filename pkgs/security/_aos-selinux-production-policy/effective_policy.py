@@ -50,6 +50,7 @@ EXPLICIT_DOMAIN_ATTRIBUTES = (
     (PRIVATE_ROOT_CUSTODY_ATTRIBUTE, (
         "aos_sandbox_policy_authority_t",
         "aos_nix_offline_prepare_t",
+        "aos_nix_offline_tpm_helper_t",
     )),
 )
 GUEST_ROOT_PUBLISHER = "aos_sandbox_guest_root_publisher_t"

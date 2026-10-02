@@ -215,6 +215,32 @@ pub(super) fn read_properties(
     pid: u32,
     properties: &'static [&'static str],
 ) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
+    read_properties_with_recipe(unit_name, pid, properties, Pid1ConnectionRecipeV5::Legacy)
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum Pid1ConnectionRecipeV5 {
+    Legacy,
+    NixOfflineHardware,
+}
+
+pub(super) fn read_nix_offline_hardware_properties(
+    properties: &'static [&'static str],
+) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
+    read_properties_with_recipe(
+        "aos-sandbox-nix-floor-provision.service",
+        std::process::id(),
+        properties,
+        Pid1ConnectionRecipeV5::NixOfflineHardware,
+    )
+}
+
+fn read_properties_with_recipe(
+    unit_name: &'static str,
+    pid: u32,
+    properties: &'static [&'static str],
+    recipe: Pid1ConnectionRecipeV5,
+) -> Result<(Vec<OwnedValue>, Vec<OwnedValue>), NormalRootStartupErrorV1> {
     std::thread::Builder::new()
         .name("normal-root-pid1-readback".to_owned())
         .spawn(move || {
@@ -224,8 +250,12 @@ pub(super) fn read_properties(
                 .map_err(|_| NormalRootStartupErrorV1::Service)?;
             runtime.block_on(async {
                 tokio::time::timeout(Duration::from_secs(5), async {
-                    let manager = SystemdClient::connect()
-                        .await
+                    let manager = match recipe {
+                        Pid1ConnectionRecipeV5::Legacy => SystemdClient::connect().await,
+                        Pid1ConnectionRecipeV5::NixOfflineHardware => {
+                            SystemdClient::connect_nix_offline_hardware_observer().await
+                        }
+                    }
                         .map_err(|_| NormalRootStartupErrorV1::Service)?;
                     manager
                         .observe_pid1_service_startup_properties(

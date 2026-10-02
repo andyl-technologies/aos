@@ -21,6 +21,7 @@ pub use client::{
     ServiceControlGroupObservation, SettleOutcome, SystemdClient,
 };
 pub use client::GitSourceSocketObservationV1;
+pub use client::NixOfflineAbsenceObservationV5;
 pub use error::{Error, Result};
 pub use manager_proxy::ListUnitsEntry;
 pub use sandbox::{

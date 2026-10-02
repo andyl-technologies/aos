@@ -359,6 +359,8 @@ pub enum RecordNamespace {
     ControllerStorageOutputReserveAttempt = 74,
     /// Non-authorizing later-read resource preparations and retained quarantine.
     ControllerConsumerReadAttempt = 75,
+    /// Purpose-owned original offline paired Nix provisioning history.
+    NixOfflineProvisioning = 76,
 }
 
 impl RecordNamespace {
@@ -439,6 +441,7 @@ impl RecordNamespace {
             73 => Ok(Self::ControllerNoApplySettlementCursor),
             74 => Ok(Self::ControllerStorageOutputReserveAttempt),
             75 => Ok(Self::ControllerConsumerReadAttempt),
+            76 => Ok(Self::NixOfflineProvisioning),
             _ => Err(JournalError::MalformedRecord("unknown record namespace")),
         }
     }
@@ -727,6 +730,43 @@ pub struct Journal {
     source_original_replay: source_original_native::replay::SourceOriginalReplayCacheV5,
     source_history_compacted: bool,
 }
+
+// One materializer adopts a completely replayed original. The selected opener
+// supplies its already-resident authority allocation; ordinary recovery keeps
+// allocating that marker at its original field position.
+macro_rules! journal_from_original_replay {
+    ($path:expr, $file:expr, $lock:expr, $limits:expr, $protected:expr,
+     $replay:ident, $authority:expr) => {
+        Journal {
+            path: $path,
+            file: $file,
+            _lock: $lock,
+            limits: $limits,
+            next_sequence: $replay.next_sequence,
+            committed_transactions: $replay.committed_transactions,
+            transaction_ids: $replay.transaction_ids,
+            committed_namespaces: $replay.committed_namespaces,
+            state: $replay.state,
+            materialized_bytes: $replay.materialized_bytes,
+            idempotency: $replay.idempotency,
+            poisoned: false,
+            protected: $protected,
+            cache_policy_gate: None,
+            authority_instance: $authority,
+            source_challenge_history: $replay.source_challenge_history,
+            source_original_replay: $replay.source_original_replay,
+            source_history_compacted: $replay.source_history_compacted,
+        }
+    };
+}
+
+#[cfg(target_os = "linux")]
+mod nix_offline_provisioning;
+#[cfg(target_os = "linux")]
+pub use nix_offline_provisioning::{
+    NixOfflineContactDataV5, NixOfflineHelperLaunchV5,
+    NixOfflineNativeJobErrorV5, NixOfflineNativeJobV5,
+};
 
 /// Retains only an existing protected writer's lock open-file description.
 ///
@@ -1026,6 +1066,10 @@ enum ProtectedAuthorityScope {
 
 #[derive(Clone, Copy)]
 enum RootOwnerEdge {
+    #[cfg(target_os = "linux")]
+    NixOffline,
+    #[cfg(target_os = "linux")]
+    NixOfflineClosureData,
     SourceOriginal,
     Local(root_local_recovery::Edge),
     OriginalNative([u8; 32]),
@@ -1036,6 +1080,29 @@ enum RootOwnerEdge {
     },
 }
 
+fn nix_offline_provisioning_edge(edge: Option<RootOwnerEdge>) -> bool {
+    #[cfg(target_os = "linux")]
+    if matches!(edge, Some(RootOwnerEdge::NixOffline | RootOwnerEdge::NixOfflineClosureData)) {
+        return true;
+    }
+    let _ = edge;
+    false
+}
+
+fn require_no_nix_native_mutation(
+    state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
+    transaction: &JournalTransaction,
+) -> Result<(), JournalError> {
+    if state.keys().any(|(namespace, _)| *namespace == RecordNamespace::NixOfflineProvisioning)
+        || transaction.records().iter().any(|record| {
+            record.namespace() == RecordNamespace::NixOfflineProvisioning
+        })
+    {
+        return Err(JournalError::ProtectedBoundary);
+    }
+    Ok(())
+}
+
 fn validate_root_owner_edge(
     state: &BTreeMap<(RecordNamespace, Vec<u8>), Vec<u8>>,
     transaction: &JournalTransaction,
@@ -1043,6 +1110,16 @@ fn validate_root_owner_edge(
     limits: JournalLimits,
 ) -> Result<Option<[u8; 32]>, JournalError> {
     let settling = match edge {
+        #[cfg(target_os = "linux")]
+        RootOwnerEdge::NixOffline => {
+            nix_offline_provisioning::require_native_edge(state, transaction, limits)?;
+            Ok(None)
+        }
+        #[cfg(target_os = "linux")]
+        RootOwnerEdge::NixOfflineClosureData => {
+            nix_offline_provisioning::require_closure_data_edge(state, transaction, limits)?;
+            Ok(None)
+        }
         // The Source route also needs actual replay/challenge witnesses, so its
         // caller uses the Journal-owned branch rather than a state-only check.
         RootOwnerEdge::SourceOriginal => return Err(JournalError::ProtectedBoundary),
@@ -2052,26 +2129,10 @@ impl Journal {
             truncated_bytes,
         };
         Ok((
-            Self {
-                path,
-                file,
-                _lock: lock,
-                limits,
-                next_sequence: replay.next_sequence,
-                committed_transactions: replay.committed_transactions,
-                transaction_ids: replay.transaction_ids,
-                committed_namespaces: replay.committed_namespaces,
-                state: replay.state,
-                materialized_bytes: replay.materialized_bytes,
-                idempotency: replay.idempotency,
-                poisoned: false,
-                protected,
-                cache_policy_gate: None,
-                authority_instance: Arc::new(JournalAuthorityInstance),
-                source_challenge_history: replay.source_challenge_history,
-                source_original_replay: replay.source_original_replay,
-                source_history_compacted: replay.source_history_compacted,
-            },
+            journal_from_original_replay!(
+                path, file, lock, limits, protected, replay,
+                Arc::new(JournalAuthorityInstance)
+            ),
             report,
         ))
     }
@@ -2173,7 +2234,9 @@ impl Journal {
         namespace: RecordNamespace,
     ) -> Result<ProtectedJournalAuthority<'_>, JournalError> {
         self.ensure_protected_authority()?;
-        if namespace == RecordNamespace::MountSourceAcquisition {
+        if namespace == RecordNamespace::MountSourceAcquisition
+            || namespace == RecordNamespace::NixOfflineProvisioning
+        {
             return Err(JournalError::ForeignAuthorityNamespace);
         }
         capacity_reservation::require_legacy_reservations(&self.state)?;
@@ -2823,7 +2886,15 @@ impl Journal {
         mut cache_gate: CacheMutationGateV1<'_>,
         successor_issuance_transition: Option<controller_source_successor_issuance::Transition>,
     ) -> Result<CommitResult, JournalError> {
+        #[cfg(target_os = "linux")]
+        if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData)) {
+            // Synthetic upper-size values are preview DATA, never an effect.
+            return Err(JournalError::ProtectedBoundary);
+        }
         self.ensure_healthy()?;
+        if !nix_offline_provisioning_edge(root_local_edge) {
+            require_no_nix_native_mutation(&self.state, transaction)?;
+        }
         let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
             let (_, comparison) = self.source_original_replay.preview_transaction(
                 &self.state, transaction, self.limits,
@@ -2846,6 +2917,12 @@ impl Journal {
             native_held::require_legacy_transaction(&self.state, transaction)?;
             settling_reservation
         };
+        #[cfg(target_os = "linux")]
+        if nix_offline_provisioning_edge(root_local_edge) {
+            nix_offline_provisioning::require_native_identifier(
+                &self.state, transaction, self.next_sequence,
+            )?;
+        }
         self.validate_consumer_resource_transition(
             transaction,
             allow_capacity_records,
@@ -3182,7 +3259,15 @@ impl Journal {
         successor_issuance_transitions: Option<&[controller_source_successor_issuance::Transition]>,
     ) -> Result<(), JournalError> {
         self.ensure_healthy()?;
-        if root_local_edge.is_some() && transactions.len() != 1 {
+        if root_local_edge.is_some() && transactions.len() != 1
+            && !nix_offline_provisioning_edge(root_local_edge)
+        {
+            return Err(JournalError::ProtectedBoundary);
+        }
+        #[cfg(target_os = "linux")]
+        if matches!(root_local_edge, Some(RootOwnerEdge::NixOfflineClosureData))
+            && transactions.len() > 42
+        {
             return Err(JournalError::ProtectedBoundary);
         }
         if project_transitions.is_some_and(|transitions| transitions.len() != transactions.len()) {
@@ -3212,6 +3297,9 @@ impl Journal {
         let mut expected_length = self.file.metadata()?.len();
 
         for (index, transaction) in transactions.iter().enumerate() {
+            if !nix_offline_provisioning_edge(root_local_edge) {
+                require_no_nix_native_mutation(&state, transaction)?;
+            }
             let settling_reservation = if matches!(root_local_edge, Some(RootOwnerEdge::SourceOriginal)) {
                 self.source_original_replay.preview_transaction(
                     &state, transaction, self.limits,
@@ -3231,6 +3319,12 @@ impl Journal {
                 native_held::require_legacy_transaction(&state, transaction)?;
                 settling_reservation
             };
+            #[cfg(target_os = "linux")]
+            if matches!(root_local_edge, Some(RootOwnerEdge::NixOffline)) {
+                nix_offline_provisioning::require_native_identifier(
+                    &state, transaction, next_sequence,
+                )?;
+            }
             controller_source_genesis::require_no_mutation(
                 &state,
                 transaction,
@@ -3364,6 +3458,11 @@ impl Journal {
     /// whose original native history must remain intact.
     pub fn compact(&mut self) -> Result<(), JournalError> {
         self.ensure_healthy()?;
+        if self.state.keys().any(|(namespace, _)| {
+            *namespace == RecordNamespace::NixOfflineProvisioning
+        }) {
+            return Err(JournalError::ProtectedBoundary);
+        }
         if self.source_original_replay.has_dependencies()
             || source_original_native::replay::has_original_rows(&self.state)
             || self.state.keys().any(|(namespace, key)| {
@@ -4839,6 +4938,7 @@ enum DeploymentHistoryObserverV1<'observer, 'data> {
     Main(&'observer mut runtime_deployment_history::HistoryAuditV1<'data>),
     Sidecar(&'observer mut runtime_deployment_sidecar_history::SidecarHistoryAuditV1),
     Storage(&'observer mut storage_native_issuance_history::StorageHistoryObserverV1),
+    NixOffline(&'observer mut nix_offline_provisioning::NativeHistoryV5),
 }
 
 #[cfg(target_os = "linux")]
@@ -4856,6 +4956,9 @@ impl DeploymentHistoryObserverV1<'_, '_> {
             Self::Sidecar(history) => history.observe(transaction, begin_sequence, commit_sequence),
             Self::Storage(history) => history.observe(
                 transaction, begin_sequence, commit_sequence, begin_offset, end_offset,
+            ),
+            Self::NixOffline(history) => history.observe(
+                transaction, begin_sequence, begin_offset, end_offset,
             ),
         }
     }
@@ -5997,6 +6100,35 @@ fn open_protected_file(
     exclusive: bool,
     truncate: bool,
 ) -> Result<File, JournalError> {
+    let mut original = None;
+    let result = open_protected_file_into(
+        directory, name, expected_uid, create, exclusive, truncate, &mut original,
+    );
+    if let Err(error) = result {
+        if create && exclusive && original.is_some() {
+            drop(original);
+            let _ = unlinkat(directory, name, AtFlags::empty());
+            let _ = fsync(directory);
+        }
+        return Err(error);
+    }
+    original.ok_or(JournalError::ProtectedBoundary)
+}
+
+// The selected purpose parks the same actual open result before the shared
+// checks. The ordinary adapter keeps its historical local cleanup disposition.
+fn open_protected_file_into(
+    directory: &File,
+    name: &str,
+    expected_uid: u32,
+    create: bool,
+    exclusive: bool,
+    truncate: bool,
+    original: &mut Option<File>,
+) -> Result<(), JournalError> {
+    if original.is_some() {
+        return Err(JournalError::ProtectedBoundary);
+    }
     validate_basename(name)?;
     let mut flags = OFlags::RDWR | OFlags::CLOEXEC | OFlags::NOFOLLOW;
     if create {
@@ -6013,7 +6145,7 @@ fn open_protected_file(
     } else {
         Mode::empty()
     };
-    let file: File = openat2(
+    *original = Some(openat2(
         directory,
         name,
         flags,
@@ -6021,21 +6153,13 @@ fn open_protected_file(
         ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS,
     )
     .map_err(protected_open_error)?
-    .into();
-    if let Err(error) = validate_protected_fd(
-        &file,
+    .into());
+    validate_protected_fd(
+        original.as_ref().ok_or(JournalError::ProtectedBoundary)?,
         expected_uid,
         FileType::RegularFile,
         Mode::RUSR | Mode::WUSR,
-    ) {
-        if create && exclusive {
-            drop(file);
-            let _ = unlinkat(directory, name, AtFlags::empty());
-            let _ = fsync(directory);
-        }
-        return Err(error);
-    }
-    Ok(file)
+    )
 }
 
 fn open_read_only_protected_file(
@@ -6869,6 +6993,7 @@ mod tests {
             RecordNamespace::ControllerNoApplySettlementCursor,
             RecordNamespace::ControllerStorageOutputReserveAttempt,
             RecordNamespace::ControllerConsumerReadAttempt,
+            RecordNamespace::NixOfflineProvisioning,
         ];
         for (index, namespace) in namespaces.into_iter().enumerate() {
             let code = namespace as u8;

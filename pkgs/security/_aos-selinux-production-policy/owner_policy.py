@@ -24,7 +24,9 @@ OFFLINE_PREPARE_EXECUTABLE = "aos_nix_offline_prepare_exec_t"
 OFFLINE_PREPARE_PROFILE = "aos_nix_offline_prepare_profile_t"
 OFFLINE_PREPARE_CREDENTIAL = "aos_nix_offline_prepare_credential_t"
 OFFLINE_PREPARE_STATE = "aos_nix_offline_prepare_state_t"
-ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
+OFFLINE_HELPER = "aos_nix_offline_tpm_helper_t"
+OFFLINE_HELPER_EXECUTABLE = "aos_nix_offline_tpm_helper_exec_t"
+ENFORCING = (*OWNER_DOMAINS, *HELPER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE, OFFLINE_HELPER)
 NO_DEFAULT_ENTRY = (*OWNER_DOMAINS, *PREPARER_DOMAINS, *view_policy.SIGNER_DOMAINS, GATEWAY, OFFLINE_PREPARE)
 ROOT_CUSTODY_CUTS = (
     ("fd", "use"),
@@ -372,19 +374,61 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     for other in all_roles:
         negative.extend(accesses(other, OFFLINE_PREPARE_PROFILE, "file", file_mutate + ("execute", "execute_no_trans", "map")))
         if other != OFFLINE_PREPARE:
-            negative.extend(accesses(other, OFFLINE_PREPARE_STATE, "file", (*file_mutate, "open", "read")))
+            permissions = (*file_mutate, "open", "read")
+            if other == OFFLINE_HELPER:
+                # Only fstat/fcntl over the two original empty OFD loans.
+                permissions = tuple(permission for permission in permissions if permission != "lock")
+            negative.extend(accesses(other, OFFLINE_PREPARE_STATE, "file", permissions))
             negative.extend(accesses(other, OFFLINE_PREPARE_STATE, "dir", dir_mutate))
         if other not in (OFFLINE_PREPARE, "init_t"):
             negative.extend(accesses(other, OFFLINE_PREPARE_CREDENTIAL, "file", (*file_mutate, "open", "read")))
             negative.extend(accesses(other, OFFLINE_PREPARE_CREDENTIAL, "dir", dir_mutate))
             negative.extend(accesses(other, OFFLINE_PREPARE, "file", ("ioctl", "open", "read")))
-            negative.append(Access(other, OFFLINE_PREPARE, "fd", "use"))
-            negative.extend(accesses(other, OFFLINE_PREPARE, "unix_stream_socket", ("read", "write")))
+            if other != OFFLINE_HELPER:
+                negative.append(Access(other, OFFLINE_PREPARE, "fd", "use"))
+                negative.extend(accesses(other, OFFLINE_PREPARE, "unix_stream_socket", ("read", "write")))
             negative.append(Access(other, OFFLINE_PREPARE, "process", "transition"))
     negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_CREDENTIAL, "file", file_mutate))
     negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_CREDENTIAL, "dir", dir_mutate))
     negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "file", ("append", "link", "rename", "unlink")))
     negative.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_STATE, "dir", ("remove_name", "rename", "rmdir")))
+
+    # The sole measured offline entry, not an additional normal owner or
+    # hierarchy service. Only the retained parent can enter or nominate loans.
+    positive.extend(accesses(OFFLINE_PREPARE, OFFLINE_HELPER_EXECUTABLE, "file",
+                             ("execute", "getattr", "map", "open", "read")))
+    positive.extend((
+        Access(OFFLINE_PREPARE, OFFLINE_HELPER, "process", "transition"),
+        Access(OFFLINE_PREPARE, OFFLINE_HELPER, "process2", "nnp_transition"),
+        Access(OFFLINE_HELPER, OFFLINE_HELPER_EXECUTABLE, "file", "entrypoint"),
+        Access(OFFLINE_HELPER, OFFLINE_PREPARE, "fd", "use"),
+    ))
+    transitions.append(Transition(OFFLINE_PREPARE, OFFLINE_HELPER_EXECUTABLE,
+                                  "process", OFFLINE_HELPER))
+    positive.extend(accesses(OFFLINE_HELPER, OFFLINE_PREPARE, "unix_stream_socket",
+                             ("getattr", "getopt", "read", "setopt", "shutdown", "write")))
+    positive.extend(accesses(OFFLINE_HELPER, OFFLINE_PREPARE_STATE, "file", ("getattr", "lock")))
+    positive.extend(accesses(OFFLINE_HELPER, "aos_method46_tpm_device_t", "chr_file",
+                             ("getattr", "open", "read", "write")))
+    for target in ("security_t",):
+        positive.extend(accesses(OFFLINE_HELPER, target, "file", file_read))
+    for object_class, permissions in (
+        ("dir", ("getattr", "open", "read", "search")),
+        ("file", ("getattr", "open", "read")),
+        ("lnk_file", ("getattr", "read")),
+    ):
+        positive.extend(accesses(OFFLINE_PREPARE, OFFLINE_HELPER, object_class, permissions))
+    negative.extend(accesses(OFFLINE_HELPER, "*", "capability",
+                             ("chown", "dac_override", "setpcap", "setuid", "setgid")))
+    negative.extend(accesses(OFFLINE_HELPER, "aos_method46_tpm_device_t", "chr_file", ("ioctl",)))
+    negative.extend(accesses(OFFLINE_HELPER, "*", "file", ("execute_no_trans",)))
+    negative.extend(accesses(OFFLINE_HELPER, "*", "unix_stream_socket",
+                             ("accept", "bind", "connect", "connectto", "create", "listen")))
+    for other in all_roles:
+        if other != OFFLINE_PREPARE:
+            negative.append(Access(other, OFFLINE_HELPER, "process", "transition"))
+            negative.extend(accesses(other, OFFLINE_HELPER_EXECUTABLE, "file",
+                                     ("execute", "execute_no_trans")))
 
     root = "aos_sandbox_policy_authority_t"
     root_credential = "aos_sandbox_policy_authority_credential_t"

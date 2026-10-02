@@ -1,11 +1,14 @@
 //! Manual unsigned Nix key preparation and independently signed static inspection.
 //!
 //! The externally retained Core startup owns genuine selected launch and public
-//! approval delivery. This owner prepares candidates only: no TPM call, approval
+//! approval delivery. The preparation owner prepares candidates only: no TPM call, approval
 //! signature, physical journal, runtime credential or current Session exists.
 //! All originals and partially published files remain resident after failure.
 //! Static inspection reuses these candidate and protected-file engines; it does
 //! not initialize hardware, approve effects or establish session currentness.
+//! The separate `initialize` coordinator borrows the hardware-selected startup,
+//! verifies independent effect approval and drives the same selected supervisor
+//! and private C engine. It never publishes runtime credentials or a floor.
 //!
 //! ```text
 //! candidate-private-v3: AOSNPK03/version3/reserved + four ID16/seed32 + 4 auth32
@@ -19,22 +22,27 @@ use std::os::unix::fs::MetadataExt as _;
 
 use aos_sandbox::normal_root::OfflineNixPrepareOriginV3;
 use aos_sandbox_linux::inventory::MountId;
+#[cfg(test)]
 use ed25519_dalek::SigningKey;
 use rustix::fs::{Mode, OFlags};
-use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::{BrokerSessionSecurityError, entropy};
 
 mod approved_job;
+mod initialize;
 
 pub use approved_job::{NixApprovedJobInspectionAttemptV3, NixApprovedJobInspectionErrorV3};
+pub use initialize::{
+    NixOfflineHardwareAttemptV5, NixOfflineHardwareErrorV5, NixOfflineHardwareResourcesV5,
+};
 
 const JOB_NAME: &str = "sandbox-nix-floor-provision";
 const PRIVATE_NAME: &str = "candidate-private-v3";
 const PUBLIC_NAME: &str = "candidate-public-v3";
-const CANDIDATE_DOMAIN: &[u8] = b"aos.sandbox.nix-floor.offline-candidates.v3\0";
 const MAXIMUM_NAMED_READBACKS: usize = 16;
+#[cfg(test)]
+const CANDIDATE_DOMAIN: &[u8] = b"aos.sandbox.nix-floor.offline-candidates.v3\0";
 
 /// Retains a redacted actual candidate preparation failure.
 #[derive(Debug, thiserror::Error)]
@@ -397,114 +405,19 @@ fn encode_public_candidates(
     approval: &[u8; 48],
     public: &mut [u8],
 ) -> Result<(), Error> {
-    if private.len() != 336 || job.len() != 16 || public.len() != 268
-        || private[..8] != *b"AOSNPK03"
-        || private[8..10] != 3_u16.to_le_bytes()
-        || private[10..16] != [0; 6]
-        || job.iter().all(|byte| *byte == 0)
-    {
-        return Err(Error::Rejected);
-    }
-    public.fill(0);
-    public[..8].copy_from_slice(b"AOSNPC03");
-    public[8..10].copy_from_slice(&3_u16.to_le_bytes());
-    public[12..28].copy_from_slice(job);
-    public[28..44].copy_from_slice(node);
-    let mut digest = Sha256::new();
-    digest.update(CANDIDATE_DOMAIN);
-    digest.update(private);
-    public[44..76].copy_from_slice(&digest.finalize());
-
-    for index in 0..4 {
-        let record = &private[16 + index * 48..16 + (index + 1) * 48];
-        let seed = Zeroizing::new(<[u8; 32]>::try_from(&record[16..]).map_err(|_| Error::Rejected)?);
-        if record[..16].iter().all(|byte| *byte == 0)
-            || seed.iter().all(|byte| *byte == 0)
-            || record[..16] == approval[..16]
-        {
-            return Err(Error::Rejected);
-        }
-        let key = SigningKey::from_bytes(&seed);
-        let derived = key.verifying_key().to_bytes();
-        if derived == approval[16..] {
-            return Err(Error::Rejected);
-        }
-        let offset = 76 + index * 48;
-        public[offset..offset + 16].copy_from_slice(&record[..16]);
-        public[offset + 16..offset + 48].copy_from_slice(&derived);
-        for earlier in 0..index {
-            let earlier_offset = 76 + earlier * 48;
-            if public[earlier_offset..earlier_offset + 16] == record[..16]
-                || public[earlier_offset + 16..earlier_offset + 48] == derived
-            {
-                return Err(Error::Rejected);
-            }
-        }
-    }
-    let secret = |index: usize| -> &[u8] {
-        if index < 4 {
-            &private[32 + index * 48..64 + index * 48]
-        } else {
-            &private[208 + (index - 4) * 32..240 + (index - 4) * 32]
-        }
-    };
-    for index in 0..8 {
-        if secret(index).iter().all(|byte| *byte == 0)
-            || (0..index).any(|earlier| secret(earlier) == secret(index))
-        {
-            return Err(Error::Rejected);
-        }
-    }
-    Ok(())
+    aos_sandbox::normal_root::derive_nix_offline_public_candidates_v3(
+        private, job, node, approval, public,
+    )
+    .map_err(|_| Error::Rejected)
 }
 
 fn inspect(file: &File) -> io::Result<FileIdentity> {
-    let metadata = file.metadata()?;
-    // Directory entries are intentionally created by this attempt; directory
-    // link/size/time changes are not immutable content comparisons. Device/inode,
-    // owner and full mode remain original at every publication boundary; files
-    // additionally retain link count, size and modification/change timestamps.
-    let (links, length, modified, modified_ns, changed, changed_ns) = if metadata.is_dir() {
-        (0, 0, 0, 0, 0, 0)
-    } else {
-        (
-            metadata.nlink(),
-            metadata.len(),
-            metadata.mtime(),
-            metadata.mtime_nsec(),
-            metadata.ctime(),
-            metadata.ctime_nsec(),
-        )
-    };
-    Ok((
-        metadata.dev(),
-        metadata.ino(),
-        metadata.uid(),
-        metadata.gid(),
-        metadata.mode(),
-        links,
-        length,
-        modified,
-        modified_ns,
-        changed,
-        changed_ns,
-    ))
+    aos_sandbox::normal_root::inspect_nix_offline_job_identity_v5(file)
 }
 
 fn require_label(file: &File) -> Result<(), Error> {
-    let mut context = [0; 256];
-    let length = rustix::fs::fgetxattr(file, "security.selinux", &mut context[..])?;
-    let actual = context[..length].strip_suffix(&[0]).unwrap_or(&context[..length]);
-    if actual != b"system_u:object_r:aos_nix_offline_prepare_state_t" {
+    if !aos_sandbox::normal_root::nix_offline_job_has_original_label_v5(file)? {
         return Err(Error::Rejected);
-    }
-    let mut bytes = [0; 4096];
-    for name in ["system.posix_acl_access", "system.posix_acl_default"] {
-        match rustix::fs::fgetxattr(file, name, &mut bytes[..]) {
-            Err(rustix::io::Errno::NODATA) => {}
-            Err(error) => return Err(error.into()),
-            Ok(_) => return Err(Error::Rejected),
-        }
     }
     Ok(())
 }

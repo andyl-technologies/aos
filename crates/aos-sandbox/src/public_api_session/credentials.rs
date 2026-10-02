@@ -1323,6 +1323,13 @@ pub(crate) struct OfflinePrepareCredentialsV3 {
     readbacks: Vec<[Zeroizing<Vec<u8>>; 2]>,
     named: Vec<File>,
     admitted: bool,
+    hardware: Option<OfflineHardwareCredentialsV5>,
+}
+
+struct OfflineHardwareCredentialsV5 {
+    files: [Option<File>; 2],
+    originals: [Option<CredentialIdentity>; 2],
+    readbacks: Vec<[Zeroizing<Vec<u8>>; 2]>,
 }
 
 impl OfflinePrepareCredentialsV3 {
@@ -1336,6 +1343,7 @@ impl OfflinePrepareCredentialsV3 {
             readbacks: Vec::new(),
             named: Vec::new(),
             admitted: false,
+            hardware: None,
         }
     }
 
@@ -1349,11 +1357,14 @@ impl OfflinePrepareCredentialsV3 {
             .try_reserve_exact(4)
             .map_err(std::io::Error::other)?;
         self.named
-            .try_reserve_exact(48)
+            .try_reserve_exact(if self.hardware.is_some() { 210 } else { 48 })
             .map_err(std::io::Error::other)?;
         self.readbacks
-            .try_reserve_exact(16)
+            .try_reserve_exact(if self.hardware.is_some() { 43 } else { 16 })
             .map_err(std::io::Error::other)?;
+        if let Some(hardware) = &mut self.hardware {
+            hardware.readbacks.try_reserve_exact(43).map_err(std::io::Error::other)?;
+        }
 
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         self.ancestors.push(File::from(open("/", flags, Mode::empty())?));
@@ -1383,7 +1394,11 @@ impl OfflinePrepareCredentialsV3 {
             aos_sandbox_linux::inventory::MountId::from_fd(directory.as_fd())
                 .map_err(std::io::Error::other)?,
         );
-        offline_credential_names()?;
+        if self.hardware.is_some() {
+            offline_hardware_credential_names()?;
+        } else {
+            offline_credential_names()?;
+        }
 
         for (index, name) in OFFLINE_PREPARE_NAMES.iter().enumerate() {
             // Park the actual returned descriptor before any metadata/read gate.
@@ -1399,6 +1414,26 @@ impl OfflinePrepareCredentialsV3 {
             offline_credential_label(file)?;
             self.originals[index] = Some(identity(&metadata));
         }
+        if let Some(hardware) = &mut self.hardware {
+            for (index, name) in OFFLINE_HARDWARE_NAMES.iter().enumerate() {
+                hardware.files[index] = Some(File::from(openat(
+                    directory, *name,
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?));
+                let file = hardware.files[index].as_ref().ok_or_else(offline_credential_rejected)?;
+                let metadata = file.metadata()?;
+                let length = metadata.len();
+                if (index == 0 && (length == 0 || length > 1_048_576))
+                    || (index == 1 && length != 32)
+                {
+                    return Err(offline_credential_rejected());
+                }
+                require_offline_credential_file(&metadata, length)?;
+                offline_credential_label(file)?;
+                hardware.originals[index] = Some(identity(&metadata));
+            }
+        }
         self.capture_bytes()?;
         let [node, approval] = self.readbacks.first().ok_or_else(offline_credential_rejected)?;
         if node.iter().all(|byte| *byte == 0)
@@ -1412,8 +1447,47 @@ impl OfflinePrepareCredentialsV3 {
             .map_err(|_| offline_credential_rejected())?;
         ed25519_dalek::VerifyingKey::from_bytes(&public)
             .map_err(|_| offline_credential_rejected())?;
+        if let Some(hardware) = &self.hardware {
+            let [domain, hierarchy] = hardware.readbacks.first().ok_or_else(offline_credential_rejected)?;
+            let pins = crate::production_operation_compiler::NixFixedDomainPinsDataV2::decode(domain)
+                .map_err(std::io::Error::other)?;
+            if pins.node().as_bytes() != node.as_slice()
+                || hierarchy.iter().all(|byte| *byte == 0)
+            {
+                return Err(offline_credential_rejected());
+            }
+        }
         self.admitted = true;
         self.recheck()
+    }
+
+    pub(crate) fn admit_hardware(&mut self) -> std::io::Result<()> {
+        if self.hardware.is_some() || !self.ancestors.is_empty() {
+            return Err(offline_credential_rejected());
+        }
+        self.hardware = Some(OfflineHardwareCredentialsV5 {
+            files: [None, None],
+            originals: [None, None],
+            readbacks: Vec::new(),
+        });
+        self.admit()
+    }
+
+    pub(crate) fn hardware_domain_original(&self) -> std::io::Result<&[u8]> {
+        if !self.admitted {
+            return Err(offline_credential_rejected());
+        }
+        let hardware = self.hardware.as_ref().ok_or_else(offline_credential_rejected)?;
+        Ok(&hardware.readbacks.first().ok_or_else(offline_credential_rejected)?[0])
+    }
+
+    pub(crate) fn hardware_auth_original(&self) -> std::io::Result<&[u8; 32]> {
+        if !self.admitted {
+            return Err(offline_credential_rejected());
+        }
+        let hardware = self.hardware.as_ref().ok_or_else(offline_credential_rejected)?;
+        hardware.readbacks.first().ok_or_else(offline_credential_rejected)?[1]
+            .as_slice().try_into().map_err(|_| offline_credential_rejected())
     }
 
     pub(crate) fn public_originals(&self) -> std::io::Result<(&[u8], &[u8])> {
@@ -1427,7 +1501,8 @@ impl OfflinePrepareCredentialsV3 {
     pub(crate) fn recheck(&mut self) -> std::io::Result<()> {
         use std::os::fd::AsFd as _;
 
-        if !self.admitted || self.named.len() > 45 {
+        let named_before = if self.hardware.is_some() { 205 } else { 45 };
+        if !self.admitted || self.named.len() > named_before {
             return Err(offline_credential_rejected());
         }
         let directory = self.ancestors.last().ok_or_else(offline_credential_rejected)?;
@@ -1474,16 +1549,43 @@ impl OfflinePrepareCredentialsV3 {
             }
             offline_credential_label(named)?;
         }
-        offline_credential_names()?;
+        if let Some(hardware) = &self.hardware {
+            for index in 0..2 {
+                let file = hardware.files[index].as_ref().ok_or_else(offline_credential_rejected)?;
+                if Some(identity(&file.metadata()?)) != hardware.originals[index] {
+                    return Err(offline_credential_rejected());
+                }
+                offline_credential_label(file)?;
+                self.named.push(File::from(openat(
+                    directory, OFFLINE_HARDWARE_NAMES[index],
+                    OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
+                    Mode::empty(),
+                )?));
+                let named = self.named.last().ok_or_else(offline_credential_rejected)?;
+                if Some(identity(&named.metadata()?)) != hardware.originals[index] {
+                    return Err(offline_credential_rejected());
+                }
+                offline_credential_label(named)?;
+            }
+            offline_hardware_credential_names()?;
+        } else {
+            offline_credential_names()?;
+        }
         self.capture_bytes()?;
         if self.readbacks.first() != self.readbacks.last() {
             return Err(offline_credential_rejected());
+        }
+        if let Some(hardware) = &self.hardware {
+            if hardware.readbacks.first() != hardware.readbacks.last() {
+                return Err(offline_credential_rejected());
+            }
         }
         Ok(())
     }
 
     fn capture_bytes(&mut self) -> std::io::Result<()> {
-        if self.readbacks.len() == 16 {
+        let maximum = if self.hardware.is_some() { 43 } else { 16 };
+        if self.readbacks.len() == maximum {
             return Err(offline_credential_rejected());
         }
         self.readbacks.push([
@@ -1503,6 +1605,34 @@ impl OfflinePrepareCredentialsV3 {
             }
             offline_credential_label(file)?;
         }
+        if let Some(hardware) = &mut self.hardware {
+            if hardware.readbacks.len() == 43 {
+                return Err(offline_credential_rejected());
+            }
+            hardware.readbacks.push([Zeroizing::new(Vec::new()), Zeroizing::new(Vec::new())]);
+            let bytes = hardware.readbacks.last_mut().ok_or_else(offline_credential_rejected)?;
+            for index in 0..2 {
+                let original = hardware.originals[index].ok_or_else(offline_credential_rejected)?;
+                let length = usize::try_from(original.6).map_err(|_| offline_credential_rejected())?;
+                if (index == 0 && (length == 0 || length > 1_048_576))
+                    || (index == 1 && length != 32)
+                {
+                    return Err(offline_credential_rejected());
+                }
+                bytes[index].try_reserve_exact(length).map_err(std::io::Error::other)?;
+                bytes[index].resize(length, 0);
+                let file = hardware.files[index].as_ref().ok_or_else(offline_credential_rejected)?;
+                if identity(&file.metadata()?) != original {
+                    return Err(offline_credential_rejected());
+                }
+                aos_sandbox_linux::protected_file::read_exact_positioned_retaining_cause(file, &mut bytes[index])
+                    .map_err(|error| std::io::Error::other(OfflinePrepareExactReadError(error)))?;
+                if identity(&file.metadata()?) != original {
+                    return Err(offline_credential_rejected());
+                }
+                offline_credential_label(file)?;
+            }
+        }
         Ok(())
     }
 }
@@ -1510,6 +1640,9 @@ impl OfflinePrepareCredentialsV3 {
 const OFFLINE_PREPARE_DIRECTORY: &str = "/run/credentials/aos-sandbox-nix-floor-provision.service";
 const OFFLINE_PREPARE_NAMES: [&str; 2] = ["node-id", "nix-floor-provision-approval-public-key-v3"];
 const OFFLINE_PREPARE_LENGTHS: [u64; 2] = [16, 48];
+const OFFLINE_HARDWARE_NAMES: [&str; 2] = [
+    "nix-fixed-domain-pins-v2", "nix-floor-owner-hierarchy-auth-v4",
+];
 
 fn offline_credential_rejected() -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::InvalidData, "offline prepare credential custody differs")
@@ -1525,15 +1658,37 @@ fn require_offline_credential_file(metadata: &std::fs::Metadata, length: u64) ->
 }
 
 fn offline_credential_names() -> std::io::Result<()> {
+    offline_credential_names_with_recipe(false)
+}
+
+fn offline_hardware_credential_names() -> std::io::Result<()> {
+    offline_credential_names_with_recipe(true)
+}
+
+fn offline_credential_names_with_recipe(hardware: bool) -> std::io::Result<()> {
     let mut names = Vec::new();
-    names.try_reserve_exact(3).map_err(std::io::Error::other)?;
+    let count = if hardware { 4 } else { 2 };
+    names.try_reserve_exact(count + 1).map_err(std::io::Error::other)?;
     for entry in std::fs::read_dir(OFFLINE_PREPARE_DIRECTORY)? {
         names.push(entry?.file_name());
-        if names.len() > 2 {
+        if names.len() > count {
             return Err(offline_credential_rejected());
         }
     }
-    require_offline_credential_names(names)
+    if hardware {
+        names.sort();
+        let mut expected = [
+            OFFLINE_PREPARE_NAMES[0], OFFLINE_PREPARE_NAMES[1],
+            OFFLINE_HARDWARE_NAMES[0], OFFLINE_HARDWARE_NAMES[1],
+        ].map(std::ffi::OsString::from);
+        expected.sort();
+        if names != expected {
+            return Err(offline_credential_rejected());
+        }
+        Ok(())
+    } else {
+        require_offline_credential_names(names)
+    }
 }
 
 fn require_offline_credential_names(mut names: Vec<std::ffi::OsString>) -> std::io::Result<()> {

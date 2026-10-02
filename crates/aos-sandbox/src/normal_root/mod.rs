@@ -63,7 +63,14 @@ pub use nix_startup::{
     ProductionNixOwnerStartupCaptureV1, ProductionNixOwnerStartupV1,
 };
 pub use nix_offline_provision::{
-    OfflineNixPrepareOriginV3, OfflineNixPrepareStartupErrorV3, OfflineNixPrepareStartupV3,
+    NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalKindV4,
+    derive_nix_offline_public_candidates_v3, fill_nix_offline_static_preimage_v3,
+    require_nix_offline_effect_approval_v4, require_nix_offline_static_approval_v3,
+    require_nix_offline_static_header_v3,
+    NixOfflineJobIdentityDataV5, inspect_nix_offline_job_identity_v5,
+    nix_offline_job_has_original_label_v5,
+    OfflineNixHardwareOriginV5, OfflineNixPrepareOriginV3,
+    OfflineNixPrepareStartupErrorV3, OfflineNixPrepareStartupV3,
 };
 
 pub(super) const PID1_FD_NAME: &str = "aos-normal-root-pid1-image";
