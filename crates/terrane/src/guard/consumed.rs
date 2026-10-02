@@ -10,7 +10,7 @@ use std::sync::Mutex;
 use terrane_core::gc::publication::evidence::{
     AuthorityGrant, ConfiguredRegistryInputs, ConsumedRootLayer, ConsumedRootPolicy,
     ConsumedViewPolicy, ControlKind, GuardSnapshot, IssuerRow, LineageUsedInputs,
-    LocalOriginalRegistration, PhysicalRegistration, RequiredControlPin, SeededChunkProfile,
+    DisclosureRow, LocalOriginalRegistration, PhysicalRegistration, RequiredControlPin, SeededChunkProfile,
     TrustedGuardConfig,
 };
 use terrane_core::tree_format::Property;
@@ -24,6 +24,7 @@ struct Consumed {
     controls: BTreeMap<Vec<u8>, RequiredControlPin>,
     views: BTreeMap<[u8; 32], ConsumedViewPolicy>,
     issuers: BTreeMap<(String, String), IssuerRow>,
+    disclosures: BTreeMap<(String, String, [u8; 32], u64), DisclosureRow>,
 }
 
 /// Accumulates checked consumption inside a single actual held observation.
@@ -96,10 +97,41 @@ impl ConsumedResolver {
         issuers.sort_by(|left, right| {
             (&left.issuer, &left.key_id).cmp(&(&right.issuer, &right.key_id))
         });
+        let mut issuer_map = BTreeMap::new();
+        for key in issuers {
+            issuer_map.insert((key.issuer.clone(), key.key_id.clone()), key);
+        }
+        let mut disclosure_map = BTreeMap::new();
+        #[cfg(unix)]
+        for trust in guard.retained_public_trust()? {
+            for key in trust.issuer_keys {
+                let row = IssuerRow {
+                    issuer: key.issuer, key_id: key.key_id,
+                    public_key: key.public_key, retired_at: key.retirement,
+                };
+                let selector = (row.issuer.clone(), row.key_id.clone());
+                if issuer_map.get(&selector).is_some_and(|previous| previous != &row) {
+                    return Err(invalid());
+                }
+                issuer_map.insert(selector, row);
+            }
+            for role in trust.disclosure_roles {
+                let row = DisclosureRow {
+                    repository: role.repository, domain: role.domain,
+                    public_key: role.public_key, not_before: role.not_before,
+                    not_after: role.not_after,
+                };
+                let selector = (row.repository.clone(), row.domain.clone(), row.public_key, row.not_before);
+                if disclosure_map.get(&selector).is_some_and(|previous| previous != &row) {
+                    return Err(invalid());
+                }
+                disclosure_map.insert(selector, row);
+            }
+        }
         let snapshot = GuardSnapshot {
             registration: registration(authority),
-            issuers,
-            disclosures: Vec::new(),
+            issuers: issuer_map.into_values().collect(),
+            disclosures: disclosure_map.into_values().collect(),
             configuration,
             registries,
         };
@@ -188,6 +220,30 @@ impl ConsumedResolver {
             .map_err(|_| unavailable())?
             .issuers
             .insert((key.issuer.clone(), key.key_id.clone()), key);
+        Ok(())
+    }
+
+    /// Records only a role selected by a completed disclosure boundary.
+    ///
+    /// # Errors
+    /// Rejects an absent configured row, ambiguous historical windows or poisoned state.
+    pub(crate) fn disclosure(
+        &self,
+        boundary: &terrane_core::provenance::VerifiedDisclosureBoundary,
+    ) -> Result<(), StoreFailure> {
+        let mut matching = self.snapshot.disclosures.iter().filter(|row| {
+            row.repository == boundary.authority_repository()
+                && row.domain == boundary.authority_domain()
+                && &row.public_key == boundary.authority_key()
+                && row.not_before <= boundary.observed_at()
+                && row.not_after.is_none_or(|end| boundary.observed_at() < end)
+        });
+        let row = matching.next().ok_or_else(invalid)?.clone();
+        if matching.next().is_some() {
+            return Err(invalid());
+        }
+        let selector = (row.repository.clone(), row.domain.clone(), row.public_key, row.not_before);
+        self.consumed.lock().map_err(|_| unavailable())?.disclosures.insert(selector, row);
         Ok(())
     }
 
@@ -308,7 +364,7 @@ impl ConsumedResolver {
         let controls = keyed.into_iter().map(|(_, pin)| pin).collect();
         let inputs = LineageUsedInputs {
             issuers: consumed.issuers.values().cloned().collect(),
-            disclosures: self.snapshot.disclosures.clone(),
+            disclosures: consumed.disclosures.values().cloned().collect(),
             controls,
             registries: self.snapshot.registries.clone(),
             configuration: self.snapshot.configuration.clone(),
