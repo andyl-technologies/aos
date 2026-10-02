@@ -10,9 +10,6 @@ use crucible_campaign::AttemptId;
 use crucible_daemon::{AttemptExecutionKey, AttemptRuntimeState};
 use crucible_session::engine::MarkerId;
 
-#[path = "single_guest/resource_audit.rs"]
-mod resource_audit;
-
 const VIRTUAL_BUDGET_PS: u64 = 2_000_000_000_000;
 const HOST_WATCHDOG: Duration = Duration::from_secs(180);
 const SELECTED_MARKER: &str = "selected-fast-q7";
@@ -48,7 +45,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         &authority,
         hot_fork.as_deref(),
     )?;
-    let mut processes = resource_audit::ProcessAudit::default();
+    let mut processes = process_audit::ProcessAudit::default();
     stage("guest-start");
     guest_choice::grant_and_start_guest_choice_campaign(&fixture)?;
 
@@ -240,7 +237,7 @@ fn capture_and_restore(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     source: &Value,
-    processes: &mut resource_audit::ProcessAudit,
+    processes: &mut process_audit::ProcessAudit,
 ) -> Result<(), Box<dyn Error>> {
     stage("capture-selected-guest-state");
     let head = campaign_status(fixture)?;
@@ -338,7 +335,7 @@ fn wait_for_observation(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
     known: &BTreeSet<AttemptExecutionKey>,
-    processes: &mut resource_audit::ProcessAudit,
+    processes: &mut process_audit::ProcessAudit,
     hot_fork: bool,
     label: &str,
 ) -> Result<(AttemptExecutionKey, Value), Box<dyn Error>> {

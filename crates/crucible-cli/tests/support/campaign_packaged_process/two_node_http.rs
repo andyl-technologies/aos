@@ -33,32 +33,39 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
     println!("two_node_http_stage=start-runtime");
     let mut service =
         guest_choice::start_materialization_flight_service(&fixture, &authority, None)?;
+    let mut processes = process_audit::ProcessAudit::default();
 
     println!("two_node_http_virtual_budget_ticks={HTTP_VIRTUAL_BUDGET_TICKS}");
     println!("two_node_http_host_watchdog_seconds=180");
     let exchange = (|| {
         guest_choice::grant_and_start_guest_choice_campaign(&fixture)?;
         println!("two_node_http_campaign_started=true");
-        let explanation = wait_for_http_completion(&fixture, &mut service)?;
-        assert_eq!(explanation["observation"]["stop"], "terminal-success");
-        assert_eq!(
-            explanation["observation"]["discovered_choices"],
-            serde_json::json!([])
-        );
+        let explanation = wait_for_http_completion(&fixture, &mut service, &mut processes)?;
+        if explanation["observation"]["stop"] != "terminal-success"
+            || explanation["observation"]["discovered_choices"] != serde_json::json!([])
+        {
+            return Err(format!("HTTP exchange did not complete cleanly: {explanation}").into());
+        }
         envoy_network::require_semantic_marker(&explanation, HTTP_MARKER, "curl")?;
+        processes.require_guest_workloads(&["httpget", "httpd"])?;
         println!("two_node_http_attempt={explanation}");
         Ok::<(), Box<dyn Error>>(())
     })();
     println!("two_node_http_stage=cleanup");
     let shutdown = service.stop();
-    match (exchange, shutdown) {
-        (Ok(()), Ok(())) => {}
-        (Err(exchange), Err(shutdown)) => {
-            return Err(
-                format!("HTTP exchange failed: {exchange}; cleanup failed: {shutdown}").into(),
-            );
+    let cleanup = processes.verify_cleanup();
+    let mut failures = Vec::new();
+    for (stage, result) in [
+        ("HTTP exchange", exchange),
+        ("HTTP service shutdown", shutdown),
+        ("HTTP QEMU cleanup", cleanup),
+    ] {
+        if let Err(error) = result {
+            failures.push(format!("{stage} failed: {error}"));
         }
-        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+    }
+    if !failures.is_empty() {
+        return Err(failures.join("; ").into());
     }
 
     let run_root = required_path("CRUCIBLE_FLIGHT_RUN_ROOT")?;
@@ -157,6 +164,7 @@ fn compile_http_scenario(fixture: &FlightFixture) -> Result<Value, Box<dyn Error
 fn wait_for_http_completion(
     fixture: &FlightFixture,
     service: &mut CampaignServiceChild,
+    processes: &mut process_audit::ProcessAudit,
 ) -> Result<Value, Box<dyn Error>> {
     let began = Instant::now();
     let deadline = began + HTTP_HOST_WATCHDOG;
@@ -173,6 +181,7 @@ fn wait_for_http_completion(
             )
             .into());
         }
+        processes.observe(service.child.id(), false)?;
         let states = guest_choice::attempt_states(fixture)?;
         last_states = format!("{states:?}");
         if last_report.elapsed() >= Duration::from_secs(5) {
