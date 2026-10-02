@@ -326,6 +326,10 @@ impl Database {
 
     /// Computes fail-closed blockers for deleting one registry identity.
     ///
+    /// A planned GC run blocks only until its review expires: apply rejects an
+    /// expired plan, so it cannot start physical work behind the deletion.
+    /// Actions frozen by a run that was never applied are not GC work.
+    ///
     /// # Errors
     ///
     /// Returns an error for invalid time, negative persisted counts, or
@@ -352,10 +356,15 @@ impl Database {
                     + (SELECT COUNT(*) FROM oci_leases
                         WHERE registry_id = ?1 AND expires_at > ?2),
                    (SELECT COUNT(*) FROM oci_gc_runs
-                     WHERE registry_id = ?1 AND state IN('planned', 'applying'))
+                     WHERE registry_id = ?1
+                       AND (state = 'applying'
+                         OR (state = 'planned' AND expires_at > ?2)))
                     + (SELECT COUNT(*) FROM oci_gc_placement_actions action
                         WHERE action.registry_id = ?1
-                          AND action.state IN('pending', 'claimed', 'failed'))
+                          AND action.state IN('pending', 'claimed', 'failed')
+                          AND NOT EXISTS (SELECT 1 FROM oci_gc_runs action_run
+                            WHERE action_run.id = action.run_id
+                              AND action_run.state IN('planned', 'aborted')))
                     + (SELECT COUNT(*) FROM oci_untracked_repair_plans repair
                         WHERE repair.registry_id = ?1
                           AND repair.state IN('planned', 'pending', 'claimed', 'failed')),
