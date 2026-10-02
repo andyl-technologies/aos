@@ -8,7 +8,7 @@
   ],
   "scope": "Reviewed inventory of currently implemented public terrane-core pure format APIs. These tests perform no I/O, workflow, signing, issuance, verification or private-authority construction.",
   "shared_properties": {
-    "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header; indefinite string/container rejection; duplicate/reordered map keys; u64::MAX nested length/count claims; sampled bit flips and 32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
+    "cbor": "Model roundtrip and identical canonical bytes; every truncated prefix; every nested widened nonminimal header, including boolean/null simple values; indefinite string/container rejection; duplicate/reordered keys for every adjacent pair in each nested map; u64::MAX nested length/count claims; sampled bit flips and 32 deterministic byte-range replacements. Accepted mutations must reencode exactly because they may represent another valid model.",
     "binary": "Model roundtrip, every truncated prefix and canonical reencoding after bit/range mutations; explicit count/extent/reserved/tag failures.",
     "prefix": "Header and chunk envelope APIs deliberately accept prefix/body fragments. Accepted truncations/mutations retain the exact validated header and opaque suffix/body rather than incorrectly requiring all mutations to fail.",
     "limits": "Tiny hostile claimed-length headers exercise typed decoder rejection without constructing the claimed allocation. Allocator calls are not instrumented. Maximum resource values are tested where listed, not asserted universally.",
@@ -1569,7 +1569,7 @@
       "codec": "Text refs, bucket keys and view selectors",
       "public_api": [
         "refs::RefName::parse",
-        "bucket::BucketKey::parse",
+        "bucket::BucketKey::{parse,ref_record,reflog,legacy_reflog,reflog_candidate}",
         "surface::View::parse"
       ],
       "tests": [
