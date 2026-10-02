@@ -154,6 +154,18 @@ in {
   assert builtins.deepSeq defaultReference.config.aos.activation.graph true;
   assert builtins.length defaultReference.config.aos.activation.graph.order == 2; true;
   composed = assert builtins.length composed.order == 3; true;
+  shorterLivedChildRejected = assert rejected [
+    producer
+    composition
+    {aos.abilities.files.operations.prepare.effects.database.lifetime = "persistent";}
+  ]; true;
+  longerLivedChildAccepted = assert builtins.deepSeq
+  (evaluate [
+    producer
+    composition
+    {aos.abilities.files.operations.prepare.effects.database.lifetime = "transaction";}
+  ]).config.aos.activation.graph
+  true; true;
   disabledProducer = assert rejected [
     producer
     consumer

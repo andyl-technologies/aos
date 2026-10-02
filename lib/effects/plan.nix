@@ -110,6 +110,24 @@
     ))
   indexed;
 
+  lifetimeRank = {
+    transaction = 0;
+    instance = 1;
+    persistent = 2;
+  };
+
+  checkChildLifetimes = node:
+    if node.handler.kind != "composition"
+    then true
+    else
+      builtins.all (key: let
+        child = indexed.${key};
+      in
+        if lifetimeRank.${child.lifetime} >= lifetimeRank.${node.lifetime}
+        then true
+        else fail node.identity "composed child '${builtins.concatStringsSep "." child.identity}' (${child.lifetime}) does not outlive its parent (${node.lifetime}).")
+      node.handler.children;
+
   checkExports = node:
     if node.handler.kind != "composition"
     then true
@@ -164,7 +182,7 @@
         else node.handler;
     };
   checkedNodes = builtins.mapAttrs (key: node:
-    builtins.seq (checkExports node) (let
+    builtins.seq (checkExports node && checkChildLifetimes node) (let
       normalized = serializedNode node;
     in
       normalized

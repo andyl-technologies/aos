@@ -13,6 +13,10 @@
       evaluationInputs = [context anchor] ++ lib.optional (selectedContext != null) selectedContext;
       modules = [
         {
+          options.aos.boot.stage = lib.mkOption {
+            type = lib.types.enum ["host" "initrd"];
+            default = "initrd";
+          };
           options.aos.boot.storage.resolvedDevices = lib.mkOption {
             type = lib.types.attrsOf lib.types.str;
             default = {rootA = "/dev/disk/by-partlabel/root-a";};
@@ -70,9 +74,10 @@
     }).deployment.graph
     true);
 in
-  assert builtins.length nodes == 11;
+  assert builtins.length prepare.handler.children == 10;
   assert prepare.handler.kind == "composition";
-  assert prepare.lifetime == "persistent";
+  assert prepare.lifetime == "instance";
+  assert builtins.all (key: builtins.elem graph.nodes.${key}.lifetime ["instance" "persistent"]) prepare.handler.children;
   assert prepare.handler.exports.authorized_input.identity == authorizedInput.identity;
   assert prepare.handler.exports.authorized_input.output == "path";
   assert prepare.handler.exports.authorized_input_sha256.identity == authorizedInput.identity;
