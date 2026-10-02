@@ -739,6 +739,24 @@ impl OfflineAssertionChecker {
             require_recorded_offsets,
         )?;
 
+        // An empty black-box checker has no intermediate observation effects.
+        // Authenticate the entire terminal prefix first, then prove that none
+        // of its intermediate evaluation points would reject a future entry.
+        // Other cases retain the original offset and atomic-batch semantics.
+        if !require_recorded_offsets
+            && recorded_log.prefix_offsets.is_empty()
+            && evaluator.states.is_empty()
+            && evaluator.guest_marker_states.is_empty()
+            && self.guest_assertion_catalog.is_empty()
+            && !self
+                .white_box_policies
+                .values()
+                .any(|policy| *policy == WhiteBoxPolicy::Enabled)
+            && intermediate_prefix_times_are_visible(event_log)
+        {
+            return Ok(evaluator.finalize_prefix(&terminal_prefix, oracle));
+        }
+
         for index in 0..event_log.len() {
             let prefix_len = index + 1;
             if prefix_len == terminal_prefix_len {
@@ -770,6 +788,18 @@ impl OfflineAssertionChecker {
 
         Ok(evaluator.finalize_prefix(&terminal_prefix, oracle))
     }
+}
+
+/// Proves temporal visibility without reconstructing already authenticated prefixes.
+fn intermediate_prefix_times_are_visible(event_log: &[SchedulerEventLogEntry]) -> bool {
+    let mut latest_entry_ticks = 0;
+    for entry in event_log {
+        latest_entry_ticks = latest_entry_ticks.max(entry.at().ticks);
+        if latest_entry_ticks > EventEvaluationPoint::event_log_entry(entry).at().ticks {
+            return false;
+        }
+    }
+    true
 }
 
 /// Reports whether an unpublished entry belongs to a completed atomic batch.
