@@ -21,7 +21,7 @@ use super::{
 };
 use crate::backend::Statement;
 use crate::db::{
-    Database, OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
+    Database, OCI_NAMESPACE_EXPOSURE_PREDICATE, OCI_RETENTION_DEFAULT_DELETED_TAG_HISTORY_SECONDS,
     OCI_RETENTION_DEFAULT_RECENT_MANUAL_TAG_REVISIONS, OCI_RETENTION_DEFAULT_RETAIN_REFERRERS,
     OCI_RETENTION_DEFAULT_UNTAGGED_GRACE_SECONDS, OciRetentionPolicyRecord, sanitize_log_text,
 };
@@ -214,6 +214,25 @@ impl Database {
                     "route '{}' still serves the OCI surface; disable it before retirement",
                     sanitize_log_text(&row.get::<String>(0)?)
                 ),
+            });
+        }
+        // An instance OCI route exposes the registry through its namespace or
+        // as the route's default registry; both are live routes to clients.
+        let namespace_exposed = self
+            .backend
+            .query_opt(
+                &format!("SELECT 1 WHERE {OCI_NAMESPACE_EXPOSURE_PREDICATE}"),
+                &vals![registry_id],
+            )
+            .await?
+            .is_some();
+        if namespace_exposed {
+            blockers.push(PlanBlocker {
+                kind: "oci_route_enabled",
+                digest: None,
+                detail: "the registry OCI namespace is enabled or an instance OCI route serves \
+                         it as the default registry; disable both before retirement"
+                    .to_string(),
             });
         }
         Ok(())
