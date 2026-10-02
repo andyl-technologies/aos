@@ -120,7 +120,7 @@ fn bindings_must_match_live_identities() -> anyhow::Result<()> {
             .is_err()
     );
     let mut other_registry = live.clone();
-    other_registry.registry = "andyl/testing".into();
+    other_registry.registry = "andyl/experimental".into();
     assert!(
         attestation
             .validate_for(soak, kind, &other_registry, PERFORMED)

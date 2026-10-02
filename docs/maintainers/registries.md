@@ -7,11 +7,11 @@ enough isolation for an experimental trust root or disposable data.
 | Registry | Local APM alias | Purpose | Channels | Destinations | Data policy |
 | --- | --- | --- | --- | --- | --- |
 | `andyl/main` | `andyl` | The supported registry: hardware-backed keys, strict provenance, durable history | `edge`, `candidate`, `stable` | `staging/edge`, `staging/candidate`, `staging/stable`, `production/edge`, `production/candidate`, `production/stable` | Durable |
-| `andyl/testing` | `andyl-testing` | Rehearsal of new build, release, and key mechanisms on experimental infrastructure | `edge` | `staging/edge`, `production/edge` | Disposable |
+| `andyl/experimental` | `andyl-experimental` | Rehearsal of new build, release, and key mechanisms on experimental infrastructure | `edge` | `staging/edge`, `production/edge` | Disposable |
 
 The two registries differ in infrastructure, not in the maturity of what they
 carry. `andyl/main` has hardware-backed key custody, threshold signing, and
-the production publication pipeline; `andyl/testing` uses lighter key
+the production publication pipeline; `andyl/experimental` uses lighter key
 management and continuous-deployment infrastructure that is still being
 proven, so the registry itself is of a different quality. Maturity is a
 channel property: `edge` is the integration stream, `candidate` the weekly
@@ -21,12 +21,12 @@ pipeline, as the supported releases they will eventually receive.
 
 Each destination selects a qualification profile, listed in the
 [qualification contract](qualification.md#surfaces-and-destinations). A channel
-kind selects the same profile on both registries. Testing epochs
-(`andyl/testing-vN`) carry the same destinations as `andyl/testing`.
+kind selects the same profile on both registries. Experimental epochs
+(`andyl/experimental-vN`) carry the same destinations as `andyl/experimental`.
 
-Never move a testing release into main. Graduation is a new main-registry
+Never move a experimental release into main. Graduation is a new main-registry
 release plan built from a reviewed source commit; it is not a channel move
-across registries. Testing carries only `edge` because its releases never
+across registries. The experimental registry carries only `edge` because its releases never
 graduate: a candidate or stable stream on experimental infrastructure would
 be a second supported stream in name only.
 
@@ -38,14 +38,14 @@ its soak and rollout rings. Every other obligation still applies.
 Do not create a separate `andyl/nightly` registry. `edge` is the rapidly moving
 channel inside each registry; adding a registry is reserved for a genuinely
 different trust root, owner, legal boundary, dependency universe, or data
-lifecycle. Testing carries no other channel; a staged rollout within a channel
+lifecycle. The experimental registry carries no other channel; a staged rollout within a channel
 uses the destination profile's rings, not additional channels.
 
 The signed identity and local alias are deliberately different. Signed release,
 receipt, TUF, and Hub values use the slash-qualified identity. APM configuration
 filenames, local clone directories, and trust lines use the slash-free alias.
-For example, an `andyl/testing` image contains an
-`andyl-testing:Ed25519:...` bootstrap trust line.
+For example, an `andyl/experimental` image contains an
+`andyl-experimental:Ed25519:...` bootstrap trust line.
 
 ## Surfaces
 
@@ -71,23 +71,23 @@ publication and the destination's qualification.
 ## Trust-root epochs
 
 Normal key rotation is an in-band, signed roster/root transition and keeps the
-registry identity. If experimental work invalidates the testing history or its
+registry identity. If experimental work invalidates the experimental history or its
 out-of-band root, create a new epoch instead:
 
 ```text
-andyl/testing       root epoch 1
-andyl/testing-v2    root epoch 2
-andyl/testing-v3    root epoch 3
+andyl/experimental       root epoch 1
+andyl/experimental-v2    root epoch 2
+andyl/experimental-v3    root epoch 3
 ```
 
-Never serve a new out-of-band root under an old identity. Old testing images
+Never serve a new out-of-band root under an old identity. Old experimental images
 must fail closed until reinstalled with an image for the new epoch. The old
 registry becomes read-only for a bounded migration window and is then removed
 according to its disposable-data policy.
 
 ## Operation index
 
-- [`registry-testing.md`](registry-testing.md) is the operational runbook for
+- [`registry-experimental.md`](registry-experimental.md) is the operational runbook for
   creating, releasing, updating, rotating, resetting, auditing, and retiring
   the experimental registry.
 - [`registry-main.md`](registry-main.md) is the fail-closed production runbook.
@@ -114,7 +114,7 @@ release. A maintenance run must never write a hosted registry directly.
 
 One designated maintainer machine may perform all operations, but it does not
 collapse the security domains. Use separate restricted state directories and
-credential sets for testing versus main and for staging versus production.
+credential sets for experimental versus main and for staging versus production.
 Load only the credentials required by the current phase, verify the selected
 surface identity before mutation, and serialize release, backup, restore, and
 registry-maintenance jobs with the coordinator lock described in
@@ -128,7 +128,7 @@ and recovery manifests on independently recoverable storage. The
 state and surface data can be restored. A failed or lost maintainer disk must
 not force an unrecorded trust-root replacement.
 
-Co-location also does not create an independent approval quorum. Testing may
+Co-location also does not create an independent approval quorum. The experimental registry may
 accept one-machine operation while it remains explicitly experimental, but keep
 each signer role as a distinct key and provider identity so later separation is
 possible. Do not describe multiple keys available to one operator as independent

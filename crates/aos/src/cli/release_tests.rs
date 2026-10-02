@@ -671,7 +671,7 @@ fn new_requires_registry_version_and_image_decisions() {
             "release",
             "new",
             "--registry",
-            "andyl/testing",
+            "andyl/experimental",
             "--version",
             "2026.9.0-dev.1",
         ])
@@ -684,7 +684,7 @@ fn new_requires_registry_version_and_image_decisions() {
         "release",
         "new",
         "--registry",
-        "andyl/testing",
+        "andyl/experimental",
         "--version",
         "2026.9.0-dev.20260929.1",
         "--images",
@@ -708,7 +708,7 @@ fn new_requires_registry_version_and_image_decisions() {
     else {
         panic!("expected release new command");
     };
-    assert_eq!(args.registry, "andyl/testing");
+    assert_eq!(args.registry, "andyl/experimental");
     assert_eq!(args.release_id, None);
     assert_eq!(args.images, PathBuf::from("images.json"));
     assert_eq!(args.override_dir, Some(PathBuf::from("approvals")));
