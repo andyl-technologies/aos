@@ -33,9 +33,16 @@
   imageInitrd = evaluate "initrd" "image" [];
   imageHost = evaluate "host" "image" [];
   unsignedImage = evaluate "initrd" "image" [{aos.security.verity.enable = false;}];
+  absentSchema = lib.evalModules {
+    modules = [
+      ../../pkgs/system/_systemd-abilities/testing/fleet-kernel-policy.nix
+      {_module.strict = true;}
+    ];
+  };
   guard = "aos-boot-identity-guard.service";
   mountVar = config: config.aos.services."boot-preparations.mount-var";
 in {
+  absentVerificationSchemaIsSafe = !(absentSchema.config ? aos);
   directKernelInitrdMatchesImage = !kernelInitrd.aos.security.verity.enable && !kernelInitrd.aos.boot.substrateServices.verityEnabled;
   directKernelHostMatchesImage = !kernelHost.aos.security.verity.enable && !kernelHost.aos.boot.substrateServices.verityEnabled;
   directKernelGuardDisabled = !kernelInitrd.aos.services."boot-identity.aos-boot-identity-guard".enable;
