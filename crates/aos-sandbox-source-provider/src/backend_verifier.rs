@@ -716,6 +716,24 @@ impl ProtectedBackendVerifierV1 {
         Ok(())
     }
 
+    /// Borrows exact enrollment bytes only after checking the same named owner.
+    pub(crate) fn original_enrollment_v1(&self) -> Result<&[u8], ProviderLedgerError> {
+        self.revalidate()?;
+        Ok(&self.exact_manifest)
+    }
+
+    /// Compares the original preimage without accepting a replacement enrollment.
+    pub(crate) fn require_original_enrollment_v1(
+        &self,
+        original: &[u8],
+    ) -> Result<(), ProviderLedgerError> {
+        self.revalidate()?;
+        if original != self.exact_manifest {
+            return Err(ProviderLedgerError::ConfigurationMismatch);
+        }
+        self.revalidate()
+    }
+
     pub(crate) fn revalidate(&self) -> Result<(), ProviderLedgerError> {
         let group = rustix::process::getegid().as_raw();
         if rustix::process::geteuid().as_raw() != 0

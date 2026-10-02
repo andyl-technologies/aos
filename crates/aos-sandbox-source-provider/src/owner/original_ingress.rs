@@ -10,6 +10,7 @@ use aos_sandbox_source_provider_protocol::{
     ACQUIRE_SOURCE_REQUEST_VERSION_V3, AcquireSourceRequestV1, SignedSourceProviderRequestV1,
     SourceProviderMethod, VerifiedProviderRequestSequenceV1, VerifiedProviderRequestV1,
     digest_signed_request, native_held_completion::NativeHeldScopeV1,
+    held_snapshot_catalog::MAXIMUM_HELD_SNAPSHOT_CATALOG_BYTES_V1,
 };
 use aos_sandbox_source_provider_security::{
     CurrentProviderIngressSessionV1, CurrentProviderOriginalCarrierPacketV1,
@@ -39,6 +40,48 @@ struct RetainedOriginalPairV1 {
     acquire: Option<CurrentProviderRequestV1>,
     selection: Option<crate::acquire::CurrentSelection>,
     clock: Option<crate::native_completion::NativeAcquireClockGuardV1>,
+    catalog: RetainedOriginalCatalogV1,
+}
+
+// The original pair owns one bounded public catalog preimage. Inline storage
+// parks the bytes before authentication without a fallible retention allocation.
+struct RetainedOriginalCatalogV1 {
+    bytes: [u8; MAXIMUM_HELD_SNAPSHOT_CATALOG_BYTES_V1],
+    length: Option<usize>,
+}
+
+impl Default for RetainedOriginalCatalogV1 {
+    fn default() -> Self {
+        Self {
+            bytes: [0; MAXIMUM_HELD_SNAPSHOT_CATALOG_BYTES_V1],
+            length: None,
+        }
+    }
+}
+
+impl RetainedOriginalCatalogV1 {
+    fn retain(&mut self, bytes: &[u8]) -> Result<(), ProviderLedgerError> {
+        if bytes.len() > self.bytes.len() {
+            return Err(ProviderLedgerError::LimitExceeded(
+                "original held catalog bytes",
+            ));
+        }
+        if let Some(length) = self.length {
+            if self.bytes[..length] != *bytes {
+                return Err(ProviderLedgerError::Equivocation);
+            }
+            return Ok(());
+        }
+
+        self.bytes[..bytes.len()].copy_from_slice(bytes);
+        self.length = Some(bytes.len());
+        Ok(())
+    }
+
+    fn bytes(&self) -> Result<&[u8], ProviderLedgerError> {
+        let length = self.length.ok_or(ProviderLedgerError::Unavailable)?;
+        Ok(&self.bytes[..length])
+    }
 }
 
 struct OriginalIngressCutV1 {
@@ -53,6 +96,16 @@ pub(super) enum ReceivedOriginalIngressV1 {
 }
 
 impl OriginalIngressV1 {
+    /// Borrows the exact catalog parked before the original pair authentication.
+    pub(super) fn borrowed_catalog_v1(&self) -> Result<&[u8], ProviderLedgerError> {
+        self.borrowed_pair_v5()?;
+        self.pending
+            .as_ref()
+            .ok_or(ProviderLedgerError::Unavailable)?
+            .catalog
+            .bytes()
+    }
+
     pub(super) fn retain_producer_failure_v5(
         &mut self,
         cause: super::original_journal::producer::OriginalProducerErrorV5,
@@ -259,7 +312,7 @@ impl FixedProviderOwnerV1 {
             let journal = claim_fixed_provider_authority(self.journal.as_mut())?;
             let original_idle = carrier_idle && detached.original_ingress_is_idle().is_ok();
             let (configuration, recovered, session) = detached.original_ingress_parts()?;
-            if let Some(pending) = &pair.pending {
+            if let Some(pending) = &mut pair.pending {
                 if !original_idle {
                     return Err(ProviderLedgerError::Unavailable);
                 }
@@ -274,6 +327,9 @@ impl FixedProviderOwnerV1 {
                 session.revalidate_root_prepared_carrier_v1(&pending.root)?;
                 if pending.acquire.is_some() {
                     // Do not consume another transport packet after pairing.
+                    if let Some(rows) = rows {
+                        pending.catalog.retain(rows)?;
+                    }
                     let after = OriginalIngressCutV1::capture(
                         &journal,
                         configuration,
@@ -329,6 +385,7 @@ impl FixedProviderOwnerV1 {
                             acquire: None,
                             selection: None,
                             clock: None,
+                            catalog: RetainedOriginalCatalogV1::default(),
                         });
                     }
                     if !original_idle {
@@ -341,6 +398,8 @@ impl FixedProviderOwnerV1 {
                 CurrentProviderOriginalCarrierPacketV1::Source(packet) => {
                     if let Some(pending) = pair.pending.as_mut() {
                         pending.acquire_packet = Some(packet);
+                        let rows = rows.ok_or(ProviderLedgerError::Unavailable)?;
+                        pending.catalog.retain(rows)?;
                         authenticate_original_pair(
                             &journal,
                             configuration,
@@ -348,7 +407,7 @@ impl FixedProviderOwnerV1 {
                             session,
                             pending,
                             publication,
-                            rows.ok_or(ProviderLedgerError::Unavailable)?,
+                            rows,
                         )?;
                         ReceivedOriginalIngressV1::Progress(
                             FixedProviderIngressProgressV1::OriginalPairRetained,
@@ -551,6 +610,38 @@ mod tests {
         native_held_completion::native_held_flight_digest_v1, sign_request,
     };
     use ed25519_dalek::SigningKey;
+
+    #[test]
+    fn bounded_catalog_retention_preserves_the_first_bytes() {
+        let mut retained = RetainedOriginalCatalogV1::default();
+        assert!(retained.bytes().is_err());
+        let original = vec![31; retained.bytes.len()];
+        retained.retain(&original).unwrap();
+
+        retained.retain(&original).unwrap();
+        assert!(retained.retain(&original[..original.len() - 1]).is_err());
+        let mut changed = original.clone();
+        changed[original.len() - 1] ^= 1;
+        assert!(retained.retain(&changed).is_err());
+        assert_eq!(retained.bytes().unwrap(), original);
+    }
+
+    #[test]
+    fn oversized_catalog_is_refused_before_parking_and_retention_is_not_validation() {
+        let mut retained = RetainedOriginalCatalogV1::default();
+        let oversized = vec![31; retained.bytes.len() + 1];
+        assert!(retained.retain(&oversized).is_err());
+        assert!(retained.length.is_none());
+
+        // The slot owns raw DATA before authentication; it cannot certify it.
+        retained.retain(b"not-a-canonical-catalog").unwrap();
+        assert!(
+            aos_sandbox_source_provider_protocol::ProviderHeldSnapshotCatalogV1::from_canonical_bytes(
+                retained.bytes().unwrap(),
+            )
+            .is_err()
+        );
+    }
 
     fn original() -> (AcquireSourceRequestV1, ObjectDigest, NativeHeldScopeV1) {
         let retained = crate::native_completion::fixture_requested(

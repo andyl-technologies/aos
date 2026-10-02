@@ -37,6 +37,10 @@ const DIGEST_DOMAIN: &[u8] = b"aos.sandbox.provider.held-snapshot-catalog.v1\0";
 /// Maximum number of rows in one native held-snapshot catalog claim.
 pub const MAXIMUM_HELD_SNAPSHOT_CATALOG_ROWS_V1: usize = 64;
 
+/// Bounds all bytes in one complete canonical native held-snapshot catalog.
+pub const MAXIMUM_HELD_SNAPSHOT_CATALOG_BYTES_V1: usize =
+    HEADER_BYTES + MAXIMUM_HELD_SNAPSHOT_CATALOG_ROWS_V1 * ROW_BYTES;
+
 /// Binds one logical source to one claimed native held snapshot.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderHeldSnapshotRowV1 {
@@ -153,7 +157,7 @@ impl ProviderHeldSnapshotCatalogV1 {
     /// Rejects wrong magic, version, padding, length, ordering, and sentinels.
     pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ProviderCatalogManifestErrorV1> {
         if bytes.len() < HEADER_BYTES
-            || bytes.len() > HEADER_BYTES + MAXIMUM_HELD_SNAPSHOT_CATALOG_ROWS_V1 * ROW_BYTES
+            || bytes.len() > MAXIMUM_HELD_SNAPSHOT_CATALOG_BYTES_V1
             || bytes.get(..8) != Some(MAGIC.as_slice())
             || bytes.get(8..10) != Some(VERSION.to_be_bytes().as_slice())
             || bytes.get(10..12) != Some([0; 2].as_slice())

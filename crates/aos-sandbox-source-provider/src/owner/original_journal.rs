@@ -49,6 +49,7 @@ use crate::recovery::original_source_capacity::authenticate_archived_complete_cu
 use crate::zfs_hold_verifier::ProtectedStorageZfsHoldVerifierV1;
 
 pub(super) mod producer;
+mod selected_execution;
 mod storage_offer;
 use producer::{OriginalProducerAppendV5, OriginalSourceProducerV5};
 
