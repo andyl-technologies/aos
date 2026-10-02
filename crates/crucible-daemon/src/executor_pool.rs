@@ -51,6 +51,9 @@ use crate::{
     stage_prepared_checkpoint_result,
 };
 
+mod diagnostics;
+use diagnostics::{record_phase, record_queued_phase, record_retained_publication};
+
 mod completion;
 pub use completion::LocalExecutorPoolCompletion;
 use completion::{PoolCompletionState, WorkerCompletion};
@@ -1783,13 +1786,7 @@ where
     let cancellation = queued.cancellation().clone();
     let execution = queued.execution();
     let work = crate::AttemptWorkResult::new(queued, result);
-    crate::crucible_execution::record_execution_phase_diagnostic(
-        "preflight-begin",
-        format_args!(
-            "execution={execution:?} canceled={}",
-            cancellation.is_canceled()
-        ),
-    );
+    record_phase("preflight-begin", execution, &cancellation);
     let preflight = prepare_attempt_result(store, &shared.checkpoints, work);
     crate::crucible_execution::record_execution_phase_diagnostic(
         "preflight-return",
@@ -1820,7 +1817,7 @@ where
                 return Some(AttemptExecutionDisposition::Failed);
             }
             increment(&shared.counters.publication_retries);
-            record_publication_retry(
+            record_retained_publication(
                 shared,
                 "preflight-unavailable-input",
                 pending.queued().cancellation(),
@@ -2030,7 +2027,7 @@ where
             {
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
-                record_publication_retry(shared, "journal-io", prepared.queued().cancellation());
+                record_retained_publication(shared, "journal-io", prepared.queued().cancellation());
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
@@ -2054,27 +2051,13 @@ where
             abort_prepared(shared, prepared);
             return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
         }
-        crate::crucible_execution::record_execution_phase_diagnostic(
-            "journal-stage-begin",
-            format_args!(
-                "execution={:?} canceled={}",
-                prepared.queued().execution(),
-                prepared.queued().cancellation().is_canceled()
-            ),
-        );
+        record_queued_phase("journal-stage-begin", prepared.queued());
         let mut executor = lock_or_retain(shared, &prepared);
         match stage_prepared_attempt_result(executor.supervisor_mut(), prepared) {
             Ok(AttemptResultStageOutcome::Publish(staged)) => {
                 drop(executor);
                 prepared = (*staged).into_prepared();
-                crate::crucible_execution::record_execution_phase_diagnostic(
-                    "journal-stage-return",
-                    format_args!(
-                        "execution={:?} canceled={}",
-                        prepared.queued().execution(),
-                        prepared.queued().cancellation().is_canceled()
-                    ),
-                );
+                record_queued_phase("journal-stage-return", prepared.queued());
                 break;
             }
             Ok(AttemptResultStageOutcome::Finished { prepared, outcome }) => {
@@ -2088,7 +2071,7 @@ where
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
-                record_publication_retry(
+                record_retained_publication(
                     shared,
                     "journal-stage-ledger",
                     prepared.queued().cancellation(),
@@ -2105,26 +2088,12 @@ where
         }
     }
 
-    crate::crucible_execution::record_execution_phase_diagnostic(
-        "journal-commit-begin",
-        format_args!(
-            "execution={:?} canceled={}",
-            prepared.queued().execution(),
-            prepared.queued().cancellation().is_canceled()
-        ),
-    );
+    record_queued_phase("journal-commit-begin", prepared.queued());
     loop {
         match prepared.commit_staged_journal() {
             Ok(journaled) => {
                 drop(guard);
-                crate::crucible_execution::record_execution_phase_diagnostic(
-                    "journal-commit-return",
-                    format_args!(
-                        "execution={:?} canceled={}",
-                        journaled.queued().execution(),
-                        journaled.queued().cancellation().is_canceled()
-                    ),
-                );
+                record_queued_phase("journal-commit-return", journaled.queued());
                 return CaptureRootDisposition::Prepared {
                     prepared: Box::new(journaled),
                     journaled: true,
@@ -2135,7 +2104,7 @@ where
             {
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
-                record_publication_retry(shared, "journal-io", prepared.queued().cancellation());
+                record_retained_publication(shared, "journal-io", prepared.queued().cancellation());
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => retain_forever(shared, (error.prepared, guard)),
@@ -2217,35 +2186,17 @@ where
 {
     let execution = prepared.queued().execution();
     let cancellation = prepared.queued().cancellation().clone();
-    crate::crucible_execution::record_execution_phase_diagnostic(
-        "stage-begin",
-        format_args!(
-            "execution={execution:?} canceled={}",
-            cancellation.is_canceled()
-        ),
-    );
+    record_phase("stage-begin", execution, &cancellation);
     let staged = match stage_prepared(shared, prepared) {
         StageDisposition::Publish(staged) => staged,
         StageDisposition::Finished(disposition) => return disposition,
     };
-    crate::crucible_execution::record_execution_phase_diagnostic(
-        "stage-return-publish-begin",
-        format_args!(
-            "execution={execution:?} canceled={}",
-            cancellation.is_canceled()
-        ),
-    );
+    record_phase("stage-return-publish-begin", execution, &cancellation);
     let published = match publish_staged(shared, store, staged) {
         PublishDisposition::Published(published) => *published,
         PublishDisposition::Finished(disposition) => return disposition,
     };
-    crate::crucible_execution::record_execution_phase_diagnostic(
-        "publish-return-append-begin",
-        format_args!(
-            "execution={execution:?} canceled={}",
-            cancellation.is_canceled()
-        ),
-    );
+    record_phase("publish-return-append-begin", execution, &cancellation);
     let disposition = reconcile_published(shared, published);
     crate::crucible_execution::record_execution_phase_diagnostic(
         "append-return",
@@ -2562,7 +2513,11 @@ where
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
-                record_publication_retry(shared, "stage-ledger", prepared.queued().cancellation());
+                record_retained_publication(
+                    shared,
+                    "stage-ledger",
+                    prepared.queued().cancellation(),
+                );
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
@@ -2601,7 +2556,7 @@ where
             {
                 staged = error.staged;
                 increment(&shared.counters.publication_retries);
-                record_publication_retry(
+                record_retained_publication(
                     shared,
                     "publish-unavailable-input",
                     staged.queued().cancellation(),
@@ -2642,7 +2597,7 @@ where
                 published = *next;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
-                record_publication_retry(
+                record_retained_publication(
                     shared,
                     "append-ledger",
                     published.queued().cancellation(),
@@ -2664,7 +2619,7 @@ where
                 published = *next;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
-                record_publication_retry(
+                record_retained_publication(
                     shared,
                     "append-ledger",
                     published.queued().cancellation(),
@@ -2683,23 +2638,6 @@ where
                 return AttemptExecutionDisposition::Failed;
             }
         }
-    }
-}
-
-fn record_publication_retry<L, V>(
-    shared: &SharedExecutor<L, V>,
-    phase: &str,
-    cancellation: &crate::ExecutionCancellation,
-) {
-    let count = shared.counters.publication_retries.load(Ordering::Relaxed);
-    if count.is_power_of_two() {
-        crate::crucible_execution::record_execution_phase_diagnostic(
-            "retained-publication-retry",
-            format_args!(
-                "phase={phase} retries={count} canceled={}",
-                cancellation.is_canceled()
-            ),
-        );
     }
 }
 
