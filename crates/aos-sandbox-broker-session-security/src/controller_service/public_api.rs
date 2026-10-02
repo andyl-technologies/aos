@@ -53,6 +53,120 @@ async fn bind_at(
     })
 }
 
+/// Holds partial public-listener returns as fields of the existing parent.
+///
+/// Empty construction is not admission. This component has no terminal state
+/// or independent owner graph; the parent's original terminal handles failure.
+pub(super) struct PublicListenerStartupV1 {
+    acceptor: Option<Arc<PublicApiSessionAcceptor>>,
+    registration: Option<tokio::net::UnixListenerRegistrationAttempt>,
+    listener: Option<UnixListener>,
+    capacity: Option<Arc<Semaphore>>,
+    handshakes: Option<JoinSet<Option<(PublicConnection, SocketAddr)>>>,
+}
+
+impl PublicListenerStartupV1 {
+    /// Creates empty ownership slots without loading credentials or doing I/O.
+    pub(super) const fn new() -> Self {
+        Self {
+            acceptor: None,
+            registration: None,
+            listener: None,
+            capacity: None,
+            handshakes: None,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.acceptor.is_none()
+            && self.registration.is_none()
+            && self.listener.is_none()
+            && self.capacity.is_none()
+            && self.handshakes.is_none()
+    }
+}
+
+/// Forms the fixed public listener directly in the selected parent's slots.
+///
+/// Called inside that parent's existing runtime. Actual errors enter its
+/// terminal before the runtime returns; this helper never returns a failure.
+/// Lower credential/bind prefixes and accepted TLS tasks remain separate
+/// functional custody obligations.
+///
+/// # Panics
+///
+/// Borrowed Tokio registration can panic without an I/O-enabled runtime.
+/// The existing parent unwind fence remains responsible for termination.
+pub(super) fn bind_retained(
+    uid: u32,
+    partial: &mut PublicListenerStartupV1,
+    destination: &mut Option<Option<PublicListener>>,
+    terminal: &super::ControllerWorkerCustodyV1,
+) {
+    if !partial.is_empty() || destination.is_some() {
+        terminal.terminate(super::ControllerResidentCauseV1::Closed(
+            "Controller public startup destination occupied",
+        ));
+    }
+
+    let acceptor = match PublicApiSessionAcceptor::from_systemd_credentials() {
+        Ok(acceptor) => acceptor,
+        Err(cause) => terminal.terminate(super::ControllerResidentCauseV1::Runtime(
+            ControllerRuntimeError::PublicSession(cause),
+        )),
+    };
+    partial.acceptor = Some(Arc::new(acceptor));
+
+    let socket = match super::bind_controller_socket(std::path::Path::new(SOCKET), uid, 0o666) {
+        Ok(socket) => socket,
+        Err(cause) => terminal.terminate(super::ControllerResidentCauseV1::Runtime(cause)),
+    };
+    partial.registration = Some(tokio::net::UnixListenerRegistrationAttempt::new(socket));
+
+    let Some(attempt) = partial.registration.as_mut() else {
+        terminal.terminate(super::ControllerResidentCauseV1::Closed(
+            "Controller public registration unavailable",
+        ));
+    };
+    partial.listener = Some(match attempt.register() {
+        Ok(listener) => listener,
+        Err(cause) => terminal.terminate(super::ControllerResidentCauseV1::Runtime(
+            ControllerRuntimeError::PublicServer(cause),
+        )),
+    });
+    partial.capacity = Some(Arc::new(Semaphore::new(MAXIMUM_CONNECTIONS)));
+    partial.handshakes = Some(JoinSet::new());
+
+    if partial.listener.is_none()
+        || partial.acceptor.is_none()
+        || partial.capacity.is_none()
+        || partial.handshakes.is_none()
+        || destination.is_some()
+    {
+        terminal.terminate(super::ControllerResidentCauseV1::Closed(
+            "Controller public startup incomplete",
+        ));
+    }
+
+    // All four slots are occupied under this exclusive loan. Only infallible
+    // moves follow validation; no user code, checks or allocation can intervene
+    // before the final listener is parked in the same parent.
+    *destination = partial
+        .listener
+        .take()
+        .zip(partial.acceptor.take())
+        .zip(partial.capacity.take())
+        .zip(partial.handshakes.take())
+        .map(|(((listener, acceptor), capacity), handshakes)| {
+            Some(PublicListener {
+                listener,
+                acceptor,
+                capacity,
+                handshakes,
+            })
+        });
+}
+
 #[cfg(all(test, feature = "kernel-tests"))]
 mod qualification_tests;
 
