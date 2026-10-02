@@ -64,7 +64,18 @@
   };
   baseSources = {
     passwd-files = baseSource "passwd" "files" 100;
-    group-files = baseSource "group" "files" 100;
+    # Continue successful local lookups so provider groups can be merged too.
+    group-files =
+      (baseSource "group" "files" 100)
+      // {
+        actions = [
+          {
+            status = "success";
+            action = "merge";
+            negated = false;
+          }
+        ];
+      };
     shadow-files = baseSource "shadow" "files" 100;
     gshadow-files = baseSource "gshadow" "files" 100;
     hosts-files = baseSource "hosts" "files" 100;
