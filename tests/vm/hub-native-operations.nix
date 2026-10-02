@@ -1448,6 +1448,37 @@ in
         >/tmp/disposable-registry-show.json
       disposable_registry_version=$(resource_version \
         /tmp/disposable-registry-show.json)
+
+      # Final registry deletion requires a reviewed OCI purge writer fence,
+      # even for a registry that never held container state. With no
+      # placements, the empty registry is purge-ready as soon as it is fenced.
+      hub_cli_into /tmp/disposable-purge-plan.json \
+        registry container gc purge-fence plan analytics/disposable \
+        --action begin --if-version "$disposable_registry_version" \
+        --idempotency-key disposable-purge-plan
+      purge_plan_id=$(${pkgs.jq}/bin/jq -er .data.plan.plan_id \
+        /tmp/disposable-purge-plan.json)
+      purge_confirm_hash=$(${pkgs.jq}/bin/jq -er .data.plan.confirmation_hash \
+        /tmp/disposable-purge-plan.json)
+      hub_cli_into /tmp/disposable-purge-planned.json \
+        registry container gc purge-fence status "$purge_plan_id"
+      purge_plan_version=$(${pkgs.jq}/bin/jq -er \
+        '.data.fence | select(.plan_state == "planned" and .fence_state == "absent")
+          | .plan_resource_version' \
+        /tmp/disposable-purge-planned.json)
+      hub_cli_into /tmp/disposable-purge-apply.json \
+        registry container gc purge-fence apply \
+        --plan-id "$purge_plan_id" --confirm-hash "$purge_confirm_hash" \
+        --if-version "$purge_plan_version" \
+        --idempotency-key disposable-purge-apply --yes
+      ${pkgs.jq}/bin/jq -e \
+        '.data.fence | .plan_state == "applied" and .fence_state == "collecting"
+          and .post_fence_inventory_ready == true' \
+        /tmp/disposable-purge-apply.json >/dev/null || {
+        ${pkgs.coreutils}/bin/cat /tmp/disposable-purge-apply.json >&2
+        exit 1
+      }
+
       reviewed disposable-registry-delete registry delete analytics/disposable \
         --if-version "$disposable_registry_version" \
         >/tmp/disposable-registry-delete.json
