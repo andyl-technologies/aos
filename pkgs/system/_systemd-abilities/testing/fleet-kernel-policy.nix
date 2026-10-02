@@ -1,6 +1,14 @@
 ##! Matches direct-kernel image policy across both authenticated boot scopes.
-{lib, ...}: {
-  # Direct-kernel tests supply no authenticated root hash; image boots retain
-  # their configured verification policy and never import this fragment.
-  aos.security.verity.enable = lib.mkForce false;
+{
+  lib,
+  options,
+  ...
+}: {
+  # Partial contract fixtures may omit the optional verification schema.
+  # Direct-kernel boots supply no root hash; image boots omit this fragment.
+  config = lib.mkMerge [
+    (lib.optionalAttrs (options.aos.security or {} ? verity) {
+      aos.security.verity.enable = lib.mkForce false;
+    })
+  ];
 }
