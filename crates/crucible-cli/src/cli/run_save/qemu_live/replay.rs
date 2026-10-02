@@ -304,9 +304,14 @@ fn run_interactive_control_artifact_replay(
         .map_err(|error| artifact_error(format!("build interactive replay graph: {error}")))?;
     let engine = crucible_session::Engine::new(initial_configuration, graph, quantum_loop);
     let (sender, receiver) = tokio::sync::mpsc::channel(64);
-    let actor = crucible_session::SessionActor::new(engine, receiver)
-        .with_control_replay_artifact(&replay_artifact)
-        .map_err(|error| backend_error(format!("replay interactive control artifact: {error}")))?;
+    let nodes = captured_scenario
+        .world()
+        .vm_nodes()
+        .iter()
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    let (actor, execution_fingerprints) =
+        replay_interactive_terminal_actor(engine, receiver, &replay_artifact, &nodes)?;
 
     let event_log = actor.event_log();
     let mut stream = event_log.subscribe(crucible_session::EventLogCursor::default());
@@ -328,32 +333,8 @@ fn run_interactive_control_artifact_replay(
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    let execution_fingerprints = runtime.block_on(async move {
+    runtime.block_on(async move {
         let actor_task = tokio::spawn(async move { actor.run().await });
-        let mut fingerprints = Vec::with_capacity(captured_scenario.world().vm_nodes().len());
-        for node in captured_scenario.world().vm_nodes() {
-            let (reply, receiver) = crucible_session::CommandReply::channel();
-            sender
-                .send(crucible_session::SessionCommand::Query {
-                    kind: crucible_session::QueryKind::ExecutionFingerprint {
-                        node: node.id.clone(),
-                    },
-                    reply,
-                })
-                .await
-                .map_err(|_| backend_error("replay actor closed before fingerprint sampling"))?;
-            let result = receiver
-                .await
-                .map_err(|_| backend_error("replay fingerprint reply channel closed"))?
-                .map_err(|error| backend_error(format!("sample replay fingerprint: {error}")))?;
-            let crucible_session::QueryResult::ExecutionFingerprint(sample) = result else {
-                return Err(backend_error(
-                    "replay fingerprint query returned an unexpected payload",
-                ));
-            };
-            fingerprints.push(sample);
-        }
-
         let (reply, receiver) = crucible_session::CommandReply::channel();
         sender
             .send(crucible_session::SessionCommand::acknowledged(
@@ -370,7 +351,7 @@ fn run_interactive_control_artifact_replay(
             .await
             .map_err(|error| backend_error(format!("join replay actor: {error}")))?
             .map_err(|error| backend_error(format!("replay actor failed: {error}")))?;
-        Ok::<_, CliError>(fingerprints)
+        Ok::<_, CliError>(())
     })?;
 
     Ok(RunWorkflowReport {
@@ -399,6 +380,23 @@ fn run_interactive_control_artifact_replay(
         reproduction_commands,
         watch_statuses: Vec::new(),
     })
+}
+
+fn replay_interactive_terminal_actor<L: crucible::QuantumLoop>(
+    engine: crucible_session::Engine<L>,
+    receiver: tokio::sync::mpsc::Receiver<crucible_session::SessionCommand>,
+    artifact: &crucible_session::SessionControlReplayArtifact,
+    nodes: &[crucible::NodeId],
+) -> Result<
+    (
+        crucible_session::SessionActor<L>,
+        Vec<crucible::FingerprintSample>,
+    ),
+    CliError,
+> {
+    crucible_session::SessionActor::new(engine, receiver)
+        .with_control_replay_artifact_and_terminal_fingerprints(artifact, nodes)
+        .map_err(|error| backend_error(format!("replay interactive control artifact: {error}")))
 }
 
 pub(crate) fn validate_live_qemu_campaign_owner(
@@ -729,3 +727,7 @@ mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "replay/terminal_tests.rs"]
+mod terminal_tests;

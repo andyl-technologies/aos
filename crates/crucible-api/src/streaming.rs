@@ -1007,6 +1007,7 @@ fn session_error_rejection_kind(error: &SessionError) -> CommandRejectionKind {
         | SessionError::ControlReplayFinalSnapshotMismatch { .. }
         | SessionError::ControlReplayInitialConfigurationMismatch { .. }
         | SessionError::ControlReplayRecordInvalid { .. }
+        | SessionError::ControlReplayTerminalSamplingCleanup { .. }
         | SessionError::DebugRuntimeRepositionMismatch(_) => CommandRejectionKind::Internal,
     }
 }

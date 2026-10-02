@@ -1211,6 +1211,64 @@ impl<L: QuantumLoop> Engine<L> {
         &mut self,
         artifact: &SessionControlReplayArtifact,
     ) -> Result<EngineSnapshot, SessionError> {
+        self.replay_control_replay_artifact_inner(artifact, None)
+    }
+
+    /// Replays an operator-stopped artifact and samples its owned terminal nodes.
+    ///
+    /// Samples are obtained through the backend's existing fingerprint API at
+    /// the original paused boundary, immediately before the final recorded Stop.
+    /// The Stop and all control, event, frontier, quantum, and snapshot checks
+    /// remain part of replay. Sampling never drives an additional quantum.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionError`] for invalid replay state or records, an empty
+    /// or repeated node list, an unpaused final boundary, backend sampling or
+    /// shutdown refusal, or final snapshot divergence. A sampling refusal still
+    /// executes the recorded Stop; simultaneous failures preserve both causes.
+    pub fn replay_control_replay_artifact_with_terminal_fingerprints(
+        &mut self,
+        artifact: &SessionControlReplayArtifact,
+        nodes: &[NodeId],
+    ) -> Result<(EngineSnapshot, Vec<FingerprintSample>), SessionError> {
+        let mut nodes = nodes.to_vec();
+        nodes.sort_by(|left, right| left.name.cmp(&right.name));
+        if nodes.is_empty()
+            || nodes.windows(2).any(|pair| pair[0] == pair[1])
+            || artifact.control_log.last().is_none_or(|entry| {
+                entry.command != SessionCommandKind::Stop
+                    || entry.quanta != artifact.final_snapshot.quanta
+            })
+            || !matches!(
+                artifact.final_snapshot.state,
+                EngineState::Stopped {
+                    outcome: Outcome::Stopped
+                }
+            )
+        {
+            return Err(SessionError::ControlReplayRecordInvalid {
+                sequence: artifact
+                    .control_log
+                    .last()
+                    .map_or(0, |entry| entry.sequence),
+                reason: String::from(
+                    "terminal sampling requires unique nodes and a final operator Stop",
+                ),
+            });
+        }
+
+        let mut fingerprints = Vec::with_capacity(nodes.len());
+        let snapshot =
+            self.replay_control_replay_artifact_inner(artifact, Some((&nodes, &mut fingerprints)))?;
+        Ok((snapshot, fingerprints))
+    }
+
+    fn replay_control_replay_artifact_inner(
+        &mut self,
+        artifact: &SessionControlReplayArtifact,
+        mut terminal_sampling: Option<(&[NodeId], &mut Vec<FingerprintSample>)>,
+    ) -> Result<EngineSnapshot, SessionError> {
         if self.configuration != artifact.initial_configuration {
             return Err(SessionError::ControlReplayInitialConfigurationMismatch {
                 expected: artifact.initial_configuration.id(),
@@ -1231,10 +1289,14 @@ impl<L: QuantumLoop> Engine<L> {
 
         let mut log_index = 0;
         while self.quanta < artifact.final_snapshot.quanta {
-            self.replay_controls_at_current_boundary(artifact, &mut log_index)?;
+            self.replay_controls_at_current_boundary(
+                artifact,
+                &mut log_index,
+                &mut terminal_sampling,
+            )?;
             let _ = self.step_quantum()?;
         }
-        self.replay_controls_at_current_boundary(artifact, &mut log_index)?;
+        self.replay_controls_at_current_boundary(artifact, &mut log_index, &mut terminal_sampling)?;
         if let Some(entry) = artifact.control_log.get(log_index) {
             return Err(SessionError::ControlReplayBoundaryMismatch {
                 current_quanta: self.quanta,
@@ -1325,6 +1387,7 @@ impl<L: QuantumLoop> Engine<L> {
         &mut self,
         artifact: &SessionControlReplayArtifact,
         log_index: &mut usize,
+        terminal_sampling: &mut Option<(&[NodeId], &mut Vec<FingerprintSample>)>,
     ) -> Result<(), SessionError> {
         while let Some(entry) = artifact.control_log.get(*log_index) {
             if entry.quanta < self.quanta {
@@ -1352,8 +1415,30 @@ impl<L: QuantumLoop> Engine<L> {
                 });
             }
             if entry.scheduler_control.is_none() {
-                self.replay_non_scheduler_boundary_control(entry)?;
+                let samples = if entry.command == SessionCommandKind::Stop
+                    && *log_index + 1 == artifact.control_log.len()
+                    && let Some((nodes, _)) = terminal_sampling.as_ref()
+                {
+                    Some(self.sample_control_replay_terminal_fingerprints(nodes))
+                } else {
+                    None
+                };
+                let stopped = self.replay_non_scheduler_boundary_control(entry);
+                if let Some(Err(sampling)) = samples.as_ref()
+                    && let Err(shutdown) = stopped.as_ref()
+                {
+                    return Err(SessionError::ControlReplayTerminalSamplingCleanup {
+                        sampling: Box::new(sampling.clone()),
+                        shutdown: Box::new(shutdown.clone()),
+                    });
+                }
+                stopped?;
                 self.boundary_control_log.push(entry.clone());
+                if let Some(samples) = samples
+                    && let Some((_, fingerprints)) = terminal_sampling.as_mut()
+                {
+                    **fingerprints = samples?;
+                }
                 *log_index += 1;
                 continue;
             }
@@ -1388,6 +1473,23 @@ impl<L: QuantumLoop> Engine<L> {
                 .extend_from_slice(&artifact.control_log[batch_start..*log_index]);
         }
         Ok(())
+    }
+
+    fn sample_control_replay_terminal_fingerprints(
+        &mut self,
+        nodes: &[NodeId],
+    ) -> Result<Vec<FingerprintSample>, SessionError> {
+        if !matches!(self.state, EngineState::Paused { .. }) {
+            return Err(self.invalid_engine_state("sample paused replay terminal fingerprints"));
+        }
+        nodes
+            .iter()
+            .map(|node| {
+                self.quantum_loop
+                    .sample_fingerprint(node.clone())
+                    .map_err(SessionError::from)
+            })
+            .collect()
     }
 
     fn replay_non_scheduler_boundary_control(
