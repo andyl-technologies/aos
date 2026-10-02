@@ -78,6 +78,111 @@ fn stage_graft(
     staged
 }
 
+/// Preserves independently checked entry and attribute origins across a graft.
+///
+/// # Panics
+/// Panics if actual source publication fails or relocation changes either checked
+/// producer. Private attributes remain entirely within the private source.
+pub(super) async fn preserve_relocated_attribute_producer() {
+    let (source, authority, _) = independent_factory("private:writer").await;
+    let reference = "refs/heads/_/main";
+    let plaintext = b"content predates its independent private attribute producer";
+    let mut session = source
+        .begin(reference, authority.token(), "sdk")
+        .await
+        .unwrap();
+    let staged = private_file_request(Vec::new(), plaintext);
+    let mut proposal = authority.commit_request(staged.commit, "sdk".into());
+    proposal.uploads = staged.uploads;
+    let introduced = source.advance(&mut session, proposal).await.unwrap();
+
+    let snapshot = source
+        .guard()
+        .read_snapshot(reference, authority.token(), b"/file", "sdk")
+        .await
+        .unwrap();
+    let (location, _) = snapshot.history.locate(introduced.commit, b"file").unwrap();
+    let mut edited = snapshot.history.entry(&location).unwrap();
+    let attribute = edited
+        .attrs
+        .iter_mut()
+        .find(|attribute| attribute.name == "note")
+        .unwrap();
+    attribute.value = b"\x61y";
+    let child = Tree::build(
+        vec![LeafItem {
+            key: b"file".to_vec(),
+            entry: edited,
+        }],
+        properties(true),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let staged = stage_tree(request_file(vec![introduced.commit], plaintext), &child);
+    let mut proposal = authority.commit_request(staged.commit, "sdk".into());
+    proposal.uploads = staged.uploads;
+    let produced = source.advance(&mut session, proposal).await.unwrap();
+    assert_ne!(introduced.commit, produced.commit);
+
+    let graft = Tree::build(
+        vec![LeafItem {
+            key: b"mount".to_vec(),
+            entry: entry(EntryKind::Tree {
+                root: child.root_identity(),
+                props: None,
+            }),
+        }],
+        properties(true),
+        262144,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let staged = stage_graft(produced.commit, plaintext, &graft, &child);
+    let mut proposal = authority.commit_request(staged.commit, "sdk".into());
+    proposal.uploads = staged.uploads;
+    let relocated = source.advance(&mut session, proposal).await.unwrap();
+    let checked = source
+        .guard()
+        .read_snapshot(reference, authority.token(), b"/mount/file", "sdk")
+        .await
+        .unwrap();
+    let (location, _) = checked
+        .history
+        .locate(relocated.commit, b"mount/file")
+        .unwrap();
+    assert_eq!(
+        checked.history.introducing_commit(&location).unwrap(),
+        introduced.commit
+    );
+    assert_eq!(
+        checked
+            .history
+            .attribute_producer(&location, "note")
+            .unwrap(),
+        produced.commit
+    );
+    assert_ne!(
+        checked
+            .history
+            .attribute_producer(&location, "note")
+            .unwrap(),
+        relocated.commit
+    );
+    assert_eq!(
+        checked
+            .history
+            .entry(&location)
+            .unwrap()
+            .attrs
+            .iter()
+            .find(|attribute| attribute.name == "note")
+            .unwrap()
+            .value,
+        b"\x61y"
+    );
+}
+
 /// Certifies each canonical flattened occurrence under actual paired authority.
 ///
 /// # Panics
