@@ -386,15 +386,10 @@ fn wait_with_progress<T>(
             return Ok(Some(value));
         }
         if Instant::now() >= next_progress {
-            let progress = stderr
-                .lines()
-                .rev()
-                .find(|line| {
-                    line.starts_with("CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ")
-                        || line.starts_with("CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ")
-                })
-                .unwrap_or("guest boundary not reached");
-            eprintln!(
+            let progress = guest_progress_summary(&stderr);
+            // A closed diagnostic sink must not replace the flight's actual result.
+            let _write_result = writeln!(
+                std::io::stderr().lock(),
                 "single_guest_wait stage={label} host_elapsed_s={} guest_progress={progress}",
                 started.elapsed().as_secs()
             );
@@ -413,6 +408,39 @@ fn wait_with_progress<T>(
         )
         .into()
     })
+}
+
+/// Forwards retained runtime coordinates while waiting for a guest boundary.
+fn guest_progress_summary(stderr: &str) -> String {
+    if let Some(boundary) = stderr.lines().rev().find(|line| {
+        line.starts_with("CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ")
+            || line.starts_with("CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ")
+    }) {
+        return boundary.to_owned();
+    }
+
+    // The host reporter already bounds nodes and console bytes. Limit each
+    // forwarded row to 1 KiB as well; unrelated serialized records stay hidden.
+    let retained_row = |prefix: &str| {
+        stderr
+            .lines()
+            .rev()
+            .find(|line| line.len() <= 1024 && line.starts_with(prefix))
+    };
+    let frontier = stderr.lines().rev().find(|line| {
+        line.len() <= 1024
+            && (line.starts_with("CRUCIBLE-RUNTIME-PROGRESS-V1 stage=after-quantum quanta=")
+                || line.starts_with("CRUCIBLE-RUNTIME-PROGRESS-V1 stage=before-quantum quanta="))
+    });
+    let boot = retained_row("CRUCIBLE-RUNTIME-BOOT-V1 ");
+    if frontier.is_none() && boot.is_none() {
+        return "guest boundary not reached; runtime report unavailable".to_owned();
+    }
+    format!(
+        "frontier_report={}; boot_report={}",
+        frontier.unwrap_or("unavailable"),
+        boot.unwrap_or("unavailable")
+    )
 }
 
 fn first_execution_failure(stderr: &str) -> Option<&str> {
@@ -449,6 +477,35 @@ fn stage(label: &str) {
     eprintln!(
         "single_guest_stage={label} deterministic_virtual_budget_ps={VIRTUAL_BUDGET_PS} operational_host_watchdog_s={}",
         HOST_WATCHDOG.as_secs()
+    );
+}
+
+#[test]
+fn waiting_progress_forwards_bounded_runtime_frontier_and_boot_evidence() {
+    let frontier = "CRUCIBLE-RUNTIME-PROGRESS-V1 stage=after-quantum quanta=2213 frontier_ps=553189141800 pending_network_outputs=0 node_count=1 omitted_nodes=0 published_slot_status=unavailable tx_rx_counters=unavailable";
+    let boot = "CRUCIBLE-RUNTIME-BOOT-V1 stage=after-quantum node=\"single\" guest_stage=setup-complete stage_icount=553125992750 setup_receipts=1 console_bytes=0 console_tail_partial=true console_tail=\"\"";
+    let stderr = format!("{frontier}\n{boot}\nunrelated serialized payload\n");
+    let summary = guest_progress_summary(&stderr);
+    assert!(summary.contains(frontier));
+    assert!(summary.contains(boot));
+    assert!(!summary.contains("serialized payload"));
+    assert!(summary.len() <= 2 * 1024 + 40);
+
+    let before = frontier.replace("stage=after-quantum", "stage=before-quantum");
+    let summary = guest_progress_summary(&format!("{stderr}{before}\n"));
+    assert!(summary.contains(&before));
+    assert!(!summary.contains(frontier));
+
+    let boundary =
+        "CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 stage=source-discovery attempt=synthetic-regression";
+    assert_eq!(
+        guest_progress_summary(&format!("{boundary}\n{stderr}")),
+        boundary
+    );
+    let oversized = format!("CRUCIBLE-RUNTIME-BOOT-V1 {}\n", "x".repeat(1024));
+    assert_eq!(
+        guest_progress_summary(&oversized),
+        "guest boundary not reached; runtime report unavailable"
     );
 }
 
