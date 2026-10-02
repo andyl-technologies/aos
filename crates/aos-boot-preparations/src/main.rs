@@ -16,7 +16,6 @@ use std::process::{Command, Stdio};
 const PACKAGE_RUNTIME: &str = env!("AOS_PACKAGE_RUNTIME");
 const BOOT_CONFIGURATION: &str = env!("AOS_BOOT_CONFIGURATION");
 const CONFIGURATION_BOOT: &str = env!("AOS_CONFIGURATION_BOOT");
-const SHA256SUM: &str = env!("AOS_SHA256SUM");
 const SYSROOT: &str = "/sysroot";
 const PROFILE_ENV: &str = "/run/aos-profile-gen.env";
 
@@ -83,7 +82,8 @@ fn run() -> Result<()> {
 ///
 /// The fixed image locations are populated before boot and remain on the
 /// authenticated immutable image. The caller must already have established the
-/// image's integrity and mounted the stage journal; this command creates neither.
+/// image's integrity, mounted the stage journal, and initialized and registered
+/// the local store. This command does not establish those prerequisites.
 fn run_deployment(
     operation: &str,
     bundle: &Path,
@@ -149,9 +149,6 @@ fn run_deployment(
                 "host deployment state must belong to the system profile",
             ));
         }
-        if operation == "apply-deployment" {
-            seed_store_registration(nix_store)?;
-        }
         arguments.extend(["--profile", "/var/lib/profiles/system"]);
     }
     if bundle_text == "/usr/lib/aos/host/deployment" && operation == "apply-deployment" {
@@ -159,43 +156,6 @@ fn run_deployment(
     } else {
         run_exact(PACKAGE_RUNTIME, &arguments, &[])
     }
-}
-
-fn seed_store_registration(nix_store: &str) -> Result<()> {
-    let digest = fs::read_to_string("/usr/lib/aos/nix-registration.sha256").map_err(|error| {
-        PreparationError::io("reading verified-image registration digest", error)
-    })?;
-    let digest = digest.trim_end_matches('\n');
-    validate_admission_digest(digest)?;
-    let output = Command::new(SHA256SUM)
-        .env_clear()
-        .arg("/usr/lib/aos/nix-registration")
-        .output()
-        .map_err(|error| PreparationError::io("hashing the image registration stream", error))?;
-    let observed = std::str::from_utf8(&output.stdout).map_err(|error| {
-        PreparationError::message(format!("registration hash is not UTF-8: {error}"))
-    })?;
-    if !output.status.success()
-        || observed.split_whitespace().next() != digest.strip_prefix("sha256:")
-    {
-        return Err(PreparationError::message(
-            "image registration stream checksum differs",
-        ));
-    }
-    let registration = fs::File::open("/usr/lib/aos/nix-registration")
-        .map_err(|error| PreparationError::io("opening verified registration", error))?;
-    let status = Command::new(nix_store)
-        .env_clear()
-        .arg("--load-db")
-        .stdin(Stdio::from(registration))
-        .status()
-        .map_err(|error| PreparationError::io("seeding the image Nix database", error))?;
-    if !status.success() {
-        return Err(PreparationError::message(format!(
-            "Nix registration seeding failed: {status}"
-        )));
-    }
-    Ok(())
 }
 
 fn validate_admission_digest(digest: &str) -> Result<()> {
@@ -301,6 +261,8 @@ mod tests {
     fn admission_digest_accepts_only_canonical_sha256() {
         assert!(validate_admission_digest(&format!("sha256:{}", "a".repeat(64))).is_ok());
         for digest in [
+            "",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "sha256:abc",
             "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
             "sha512:abc",
