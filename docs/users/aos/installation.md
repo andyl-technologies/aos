@@ -452,6 +452,6 @@ If first boot stops before the target, inspect the units and state in
 - NVIDIA support in this repository stops at open kernel modules and matching
   GSP firmware. CUDA, OpenGL, Vulkan, management utilities, and other matching
   proprietary userspace components must be supplied separately.
-- `apm image download PACKAGE --format raw --output FILE` downloads an image
+- `apm image download PACKAGE --system --format raw --output FILE` downloads an image
   published in a system registry. It does not write a disk or provision a
   machine.
