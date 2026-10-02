@@ -43,7 +43,8 @@ impl QemuLiveHostIoRuntime {
     }
 
     /// Signals QEMU's plugin wake eventfd with the exact eight-byte counter write.
-    pub(super) fn write_wake_doorbell(&self) -> Result<(), QemuAsyncDriverRuntimeError> {
+    pub(super) fn write_wake_doorbell(&mut self) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.performance.wake_write();
         let mut wake = self.wake.as_ref();
         wake.write_all(&1_u64.to_ne_bytes()).map_err(|error| {
             QemuAsyncDriverRuntimeError::new("signal plugin wake", error.to_string())
@@ -162,6 +163,7 @@ impl QemuLiveHostIoRuntime {
         snapshot: &crucible_shmem::NodeSlotSnapshot,
         timeout: Duration,
     ) -> Result<(), QemuAsyncDriverRuntimeError> {
+        self.performance.boundary(self.vm_slot);
         let ceiling =
             authorize_advance_ceiling(snapshot.current_icount, snapshot.current_icount, None)
                 .map_err(|source| {
@@ -255,6 +257,7 @@ impl QemuLiveHostIoRuntime {
                 device_progress,
                 &observed,
             ) {
+                self.performance.finish(self.vm_slot, "acknowledged");
                 return Ok(());
             }
             let Some(remaining) = deadline.remaining() else {
@@ -273,6 +276,7 @@ impl QemuLiveHostIoRuntime {
             }
             Err(source) => format!("unavailable ({source})"),
         };
+        self.performance.finish(self.vm_slot, "timeout");
         Err(QemuAsyncDriverRuntimeError::new(
             "acknowledge completed-quantum clamp",
             format!(

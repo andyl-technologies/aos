@@ -1,12 +1,44 @@
 //! Live QEMU process, guest workload, and private resource evidence for VM flights.
 
 use super::*;
+use std::io::Write;
 
 #[derive(Default)]
 pub(super) struct ProcessAudit {
     observed: BTreeSet<u32>,
     guest_arguments: BTreeMap<u32, BTreeSet<String>>,
     private_fork: bool,
+    cpu_reports_remaining: u16,
+    cpu_observations: BTreeMap<u32, CpuObservation>,
+    service_pid: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CpuObservation {
+    start_time_ticks: u64,
+    cpu_ticks: u64,
+}
+
+impl CpuObservation {
+    fn parse(stat: &str) -> Option<Self> {
+        if stat.len() > 4096 {
+            return None;
+        }
+        let (_, fields) = stat.rsplit_once(") ")?;
+        let fields = fields.split_whitespace().collect::<Vec<_>>();
+        let user: u64 = fields.get(11)?.parse().ok()?;
+        let system: u64 = fields.get(12)?.parse().ok()?;
+        Some(Self {
+            start_time_ticks: fields.get(19)?.parse().ok()?,
+            cpu_ticks: user.checked_add(system)?,
+        })
+    }
+
+    fn delta_from(self, prior: Self) -> Option<u64> {
+        (self.start_time_ticks == prior.start_time_ticks)
+            .then(|| self.cpu_ticks.checked_sub(prior.cpu_ticks))
+            .flatten()
+    }
 }
 
 struct QemuResources {
@@ -17,7 +49,15 @@ struct QemuResources {
 }
 
 impl ProcessAudit {
-    pub(super) fn report_observed_processes(&self, stage: &str) {
+    /// Enables bounded CPU snapshots only for the explicit diagnostic flight.
+    pub(super) fn with_cpu_diagnostics(maximum: u16) -> Self {
+        Self {
+            cpu_reports_remaining: maximum.min(256),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn report_observed_processes(&mut self, stage: &str) {
         const MAX_REPORTED_PROCESSES: usize = 32;
         println!(
             "packaged_process_audit stage={stage} observed_qemu_count={} omitted_processes={} private_fork_observed={}",
@@ -37,9 +77,62 @@ impl ProcessAudit {
                 "packaged_process_audit stage={stage} observed_qemu_pid={pid} observed_workloads={workloads:?}"
             );
         }
+        self.report_cpu_with(stage, |pid| {
+            fs::read_to_string(format!("/proc/{pid}/stat"))
+                .ok()
+                .and_then(|stat| CpuObservation::parse(&stat))
+        });
+    }
+
+    /// Reads only retained service/guest PIDs, never scans for new processes.
+    fn report_cpu_with(
+        &mut self,
+        stage: &str,
+        mut read: impl FnMut(u32) -> Option<CpuObservation>,
+    ) {
+        if self.cpu_reports_remaining == 0 {
+            return;
+        }
+        self.cpu_reports_remaining -= 1;
+        let mut stdout = std::io::stdout().lock();
+        let pids = self
+            .service_pid
+            .into_iter()
+            .chain(self.observed.iter().take(32).copied());
+        for pid in pids {
+            let Some(current) = read(pid) else {
+                let _ = writeln!(
+                    stdout,
+                    "packaged_process_cpu stage={stage:?} pid={pid} snapshot=unavailable"
+                );
+                continue;
+            };
+            let previous = self.cpu_observations.get(&pid).copied();
+            let delta = previous.and_then(|prior| current.delta_from(prior));
+            let identity_matches =
+                previous.is_none_or(|prior| prior.start_time_ticks == current.start_time_ticks);
+            // Retain the first identity: a recycled PID never acquires a delta
+            // from a different process's CPU counters.
+            if previous.is_none() || (identity_matches && delta.is_some()) {
+                self.cpu_observations.insert(pid, current);
+            }
+            let role = if self.service_pid == Some(pid) {
+                "service"
+            } else {
+                "qemu"
+            };
+            let _ = writeln!(
+                stdout,
+                "packaged_process_cpu stage={stage:?} role={role} pid={pid} start_time_ticks={} cpu_ticks={} delta_cpu_ticks={delta:?} identity_matches={identity_matches} units=kernel-clock-ticks",
+                current.start_time_ticks, current.cpu_ticks,
+            );
+        }
     }
 
     pub(super) fn observe(&mut self, service_pid: u32, fork: bool) -> Result<(), Box<dyn Error>> {
+        if self.cpu_reports_remaining != 0 {
+            self.service_pid = Some(service_pid);
+        }
         let expected = required_path("CRUCIBLE_FLIGHT_QEMU")?
             .to_string_lossy()
             .into_owned();
@@ -150,6 +243,67 @@ impl ProcessAudit {
         self.guest_arguments.clear();
         Ok(())
     }
+}
+
+#[test]
+fn cpu_snapshot_parser_preserves_units_and_rejects_pid_reuse() {
+    let stat = "24 (qemu (worker)) R 1 0 0 0 0 0 0 0 0 0 17 9 0 0 0 0 1 0 12345";
+    let observed = CpuObservation::parse(stat);
+    assert_eq!(
+        observed,
+        Some(CpuObservation {
+            start_time_ticks: 12345,
+            cpu_ticks: 26
+        })
+    );
+    let prior = CpuObservation {
+        start_time_ticks: 12345,
+        cpu_ticks: 20,
+    };
+    assert_eq!(
+        observed.and_then(|current| current.delta_from(prior)),
+        Some(6)
+    );
+    assert_eq!(
+        CpuObservation {
+            start_time_ticks: 12346,
+            cpu_ticks: 30
+        }
+        .delta_from(prior),
+        None
+    );
+    assert_eq!(
+        CpuObservation {
+            start_time_ticks: 12345,
+            cpu_ticks: 19
+        }
+        .delta_from(prior),
+        None
+    );
+    assert!(CpuObservation::parse("malformed stat").is_none());
+}
+
+#[test]
+fn disabled_and_exhausted_cpu_diagnostics_never_read_process_files() {
+    assert_eq!(
+        ProcessAudit::with_cpu_diagnostics(u16::MAX).cpu_reports_remaining,
+        256
+    );
+
+    let mut disabled = ProcessAudit::default();
+    disabled.observed.insert(24);
+    disabled.report_cpu_with("disabled", |_| panic!("disabled CPU snapshot read proc"));
+
+    let mut enabled = ProcessAudit::with_cpu_diagnostics(1);
+    enabled.observed.insert(24);
+    enabled.report_cpu_with("sample", |_| {
+        Some(CpuObservation {
+            start_time_ticks: 1,
+            cpu_ticks: 2,
+        })
+    });
+    enabled.report_cpu_with("exhausted", |_| panic!("exhausted CPU snapshot read proc"));
+    assert_eq!(enabled.cpu_reports_remaining, 0);
 }
 
 fn qemu_resources(pid: u32) -> Result<Option<QemuResources>, Box<dyn Error>> {
