@@ -218,7 +218,7 @@ fn pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip() {
                     pack_format::encode_pack(header, &body, std::slice::from_ref(&record)).unwrap();
                 let view = PackView::decode(&bytes).unwrap();
                 assert_eq!(view.header(), header);
-                assert_eq!(view.records(), [record.clone()]);
+                assert_eq!(view.records(), std::slice::from_ref(&record));
                 let mut reserved = record.clone();
                 reserved.dictionary_id = u16::MAX;
                 assert!(pack_format::validate_record(&reserved, meta).is_err());
@@ -232,8 +232,10 @@ fn pack_flags_codecs_metadata_kinds_and_bundle_index_alternatives_roundtrip() {
                 });
                 let index = pack_format::encode_index(std::slice::from_ref(&record));
                 assert_eq!(
-                    pack_format::decode_index(&index, header).unwrap(),
-                    [record.clone()]
+                    pack_format::decode_index(&index, header)
+                        .unwrap()
+                        .as_slice(),
+                    std::slice::from_ref(&record)
                 );
                 let detached = [header.encode(), index].concat();
                 assert_eq!(

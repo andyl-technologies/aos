@@ -27,7 +27,7 @@ pub(super) fn commit(generator: &mut Generator, case: usize) -> refs::Commit {
                 refs::PrincipalKind::Workload,
                 refs::PrincipalKind::Service,
             ][case % 3],
-            workload_identity: (case % 2 == 0).then(|| "workload".into()),
+            workload_identity: (case.is_multiple_of(2)).then(|| "workload".into()),
             process: "property-test".into(),
             observed_at: generator.next(),
             writer_epoch: generator.next(),
@@ -42,7 +42,7 @@ pub(super) fn commit(generator: &mut Generator, case: usize) -> refs::Commit {
             embedded_token: None,
         },
         timestamp: generator.next(),
-        message: if case % 2 == 0 {
+        message: if case.is_multiple_of(2) {
             String::new()
         } else {
             format!("message {case}\0λ")
@@ -51,16 +51,16 @@ pub(super) fn commit(generator: &mut Generator, case: usize) -> refs::Commit {
             tree_format: 1,
             chunk_profile: "cdc-1m".into(),
             recipe: None,
-            conflicted: (case % 2 == 0).then_some(case % 4 == 0),
-            lease: (case % 3 == 0).then(|| refs::Lease {
+            conflicted: (case.is_multiple_of(2)).then_some(case.is_multiple_of(4)),
+            lease: (case.is_multiple_of(3)).then(|| refs::Lease {
                 owner: "owner".into(),
                 expiry: u64::MAX,
             }),
-            required_properties: (case % 4 == 0).then(|| vec![0xa0]),
-            entry_receipts: (case % 2 == 0).then(Vec::new),
+            required_properties: (case.is_multiple_of(4)).then(|| vec![0xa0]),
+            entry_receipts: (case.is_multiple_of(2)).then(Vec::new),
             commit_context: None,
         },
-        packs: (case % 3 == 0).then(|| {
+        packs: (case.is_multiple_of(3)).then(|| {
             vec![refs::PackLocation {
                 pack_id: generator.bytes(),
                 locality: refs::Locality {
@@ -70,9 +70,9 @@ pub(super) fn commit(generator: &mut Generator, case: usize) -> refs::Commit {
                 },
             }]
         }),
-        signature: (case % 2 == 0).then(|| generator.bytes()),
+        signature: (case.is_multiple_of(2)).then(|| generator.bytes()),
     };
-    if case % 3 == 0 {
+    if case.is_multiple_of(3) {
         model.provenance.embedded_token = Some(token_bytes(1, 2, generator));
         model.profile_pair.commit_context = Some(
             refs::CommitContext::from_request(&terrane_core::auth::Request {
