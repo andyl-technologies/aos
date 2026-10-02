@@ -1335,6 +1335,12 @@ in
       retained_apply resource-defaults-update instance resource-defaults update \
         >/tmp/resource-defaults-update.json
 
+      # Native Hubs run maintenance on their own schedule and have no durable
+      # queue for on-demand jobs, so an administrator's trigger is refused.
+      expect_hub_error maintenance-trigger-unavailable \
+        'cannot schedule maintenance on demand' \
+        instance maintenance trigger --job run_topology_probes
+
       echo '==> Exercise instance and organization topology-default inheritance'
       hub_cli instance topology-defaults show >/tmp/instance-topology-defaults.json
       reviewed instance-topology-clear instance topology-defaults clear --domain \

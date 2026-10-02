@@ -307,7 +307,12 @@ mod connect_path_tests {
         );
         assert_eq!(
             request_fields("PlanRunContainerGc"),
-            ["registry", "expected_resource_version", "idempotency_key"]
+            [
+                "registry",
+                "expected_resource_version",
+                "idempotency_key",
+                "retire_registry",
+            ]
         );
         assert_eq!(
             request_fields("ListContainerGcCandidates"),
