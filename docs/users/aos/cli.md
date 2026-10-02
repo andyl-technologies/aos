@@ -91,7 +91,7 @@ aos doc
 ```
 
 `aos build zlib` builds `pkgs.zlib`; it does not install a package on the
-running host. Use `apm install zlib` for that operation.
+running host. Use `apm install --system zlib` for a machine-wide install.
 
 The flake output `packages.<system>.all` is the remote-build equivalent of
 `aos build --all`: build it when one submitted derivation must realize every
@@ -170,8 +170,8 @@ aos --json image show --registry andyl/main --release 2026.3.0 \
   --architecture x86_64 --format raw
 ```
 
-`apm install PACKAGE --system --image FORMAT --output FILE` remains available
-for package-oriented installation flows. Prefer `aos image` when choosing by
+`apm image download PACKAGE --format FORMAT --output FILE` downloads an
+image by its registry package name. Prefer `aos image` when choosing by
 end-user target, release channel, or direct disk encoding.
 
 ## Run a downloaded image locally
