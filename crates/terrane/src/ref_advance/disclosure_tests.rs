@@ -16,6 +16,8 @@ use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property
 #[cfg(unix)]
 mod boundary_checks;
 #[cfg(unix)]
+mod dictionaries;
+#[cfg(unix)]
 mod fresh_recovery;
 #[cfg(unix)]
 mod materialization;
@@ -37,6 +39,12 @@ async fn disclosure_projection_safe_materialization_certifies_each_flattened_fil
 #[tokio::test]
 async fn disclosure_graft_preserves_independent_private_attribute_producer() {
     materialization::preserve_relocated_attribute_producer().await;
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_dictionary_dependencies_preserve_registered_codecs_and_verified_lengths() {
+    dictionaries::publish_dictionary_codecs().await;
 }
 
 #[cfg(unix)]

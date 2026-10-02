@@ -169,9 +169,21 @@ where
     if let Some((content, size)) = content {
         // This verifies exact entry scope, decoded chunks, complete manifests,
         // dictionary dependencies and current Read rights through the real guard.
-        source
-            .read_content(&snapshot, &selector.source_path, content, size)
+        let dictionaries = source
+            .read_content_dictionaries(&snapshot, &selector.source_path, content, size)
             .await?;
+        // These are genuine stored envelopes in dependency order. The reader
+        // verified each dictionary's plaintext identity and standalone-final
+        // length; destination admission revalidates the actual encoded bytes.
+        for (identity, encoded, declared_plaintext_len) in dictionaries {
+            uploads.push(StagedUpload::Chunk {
+                encoded,
+                identity,
+                declared_plaintext_len,
+                position: crate::store::ChunkPosition::Final,
+                profile: source.config().chunk_profile.clone(),
+            });
+        }
         let chunks = match content {
             ContentRef::Inline(digest) => vec![(digest, size)],
             ContentRef::Manifest(digest) => {
@@ -210,30 +222,6 @@ where
                 .from_digest(IdentityKind::Chunk, digest)
                 .map_err(|_| crate::guard::invalid())?;
             let encoded = source.store().get(&identity, None).await?;
-            let envelope = terrane_core::codec::parse_envelope(&encoded)
-                .map_err(|_| crate::guard::invalid())?;
-            if let terrane_core::codec::Codec::ZstdDictionary(digest) = envelope.codec {
-                source
-                    .authorize_snapshot_path(&snapshot, &selector.source_path)
-                    .await?;
-                let dictionary_identity = TERRANE_V1
-                    .from_digest(IdentityKind::Chunk, &digest)
-                    .map_err(|_| crate::guard::invalid())?;
-                let dictionary = source.store().get(&dictionary_identity, None).await?;
-                let dictionary_envelope = terrane_core::codec::parse_envelope(&dictionary)
-                    .map_err(|_| crate::guard::invalid())?;
-                if dictionary_envelope.codec != terrane_core::codec::Codec::Raw {
-                    return Err(crate::guard::invalid());
-                }
-                let declared_plaintext_len = dictionary_envelope.body.len();
-                uploads.push(StagedUpload::Chunk {
-                    encoded: dictionary,
-                    identity: dictionary_identity,
-                    declared_plaintext_len,
-                    position: crate::store::ChunkPosition::Final,
-                    profile: source.config().chunk_profile.clone(),
-                });
-            }
             uploads.push(StagedUpload::Chunk {
                 encoded,
                 identity,
