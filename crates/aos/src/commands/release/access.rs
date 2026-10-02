@@ -2,11 +2,13 @@
 //!
 //! Hub surfaces take a short-lived token from `--token`/`AOS_TOKEN`, or from
 //! the maintainer configuration's `token_credential`; without either, the
-//! renewable Hub login profile for the surface origin is used. Static surfaces take
-//! their transport credentials and the `surface-receipt` (and, for channel
-//! advances, `registry`) signer keys from the maintainer configuration. The
-//! configured surface must equal the plan's frozen surface exactly, so
-//! credentials are never presented to a different origin.
+//! renewable Hub login profile for the surface origin is used. The porcelain
+//! passes no `--token`, so for it the order is `token_credential`, then
+//! `AOS_TOKEN`, then the login profile (see `SurfaceConfig::token`). Static
+//! surfaces take their transport credentials and the `surface-receipt` (and,
+//! for channel advances, `registry`) signer keys from the maintainer
+//! configuration. The configured surface must equal the plan's frozen surface
+//! exactly, so credentials are never presented to a different origin.
 
 use std::path::Path;
 

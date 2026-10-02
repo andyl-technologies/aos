@@ -19,6 +19,7 @@ use aos_release::receipt::{
     HubEnvironment, RegistryBootstrapIntent, verify_signed_receipt_with_key,
 };
 use aos_release::signing::SignerRole;
+use serde::{Deserialize, Serialize};
 
 use crate::cli::ReleaseBootstrapArgs;
 
@@ -26,6 +27,28 @@ use super::access::{self, SignerNeed};
 use super::journal::persist_tree;
 use super::surface::PublishedSurface;
 use super::{capture, verify};
+
+/// Exact schema identifier of the bootstrap evidence record.
+pub(super) const BOOTSTRAP_EVIDENCE: &str = "aos.release.registry-bootstrap-evidence/v1";
+
+/// File name of the evidence record inside the bootstrap output directory.
+pub(super) const BOOTSTRAP_EVIDENCE_FILE: &str = "bootstrap-evidence.json";
+
+/// Record of one installed base, written only after full read-back.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct BootstrapEvidence {
+    /// Exact schema identifier.
+    pub(super) schema_version: String,
+    /// `staging` or `production`.
+    pub(super) environment: String,
+    /// Surface publication that installed the base.
+    pub(super) publication_id: String,
+    /// Registry default commit the surface serves; the plan's base commit.
+    pub(super) default_commit: String,
+    /// Number of objects read back.
+    pub(super) object_count: usize,
+}
 
 /// Verifies the bootstrap approvals and installs the base publication.
 pub(super) async fn run(args: &ReleaseBootstrapArgs, printer: &Printer) -> Result<()> {
@@ -139,13 +162,13 @@ fn persist(
     envelopes: &[Vec<u8>],
     publication: &PublishedSurface,
 ) -> Result<()> {
-    let evidence = canonical::to_vec(&serde_json::json!({
-        "schema_version": "aos.release.registry-bootstrap-evidence/v1",
-        "environment": args.environment,
-        "publication_id": publication.operation_id,
-        "default_commit": publication.default_commit,
-        "object_count": publication.objects.len(),
-    }))?;
+    let evidence = canonical::to_vec(&BootstrapEvidence {
+        schema_version: BOOTSTRAP_EVIDENCE.to_owned(),
+        environment: args.environment.clone(),
+        publication_id: publication.operation_id.clone(),
+        default_commit: publication.default_commit.clone(),
+        object_count: publication.objects.len(),
+    })?;
     let names: Vec<String> = (1..=envelopes.len())
         .map(|index| format!("signed-intents/{index:04}.json"))
         .collect();
@@ -154,7 +177,7 @@ fn persist(
         .map(String::as_str)
         .zip(envelopes.iter().map(Vec::as_slice))
         .collect();
-    files.push(("bootstrap-evidence.json", &evidence));
+    files.push((BOOTSTRAP_EVIDENCE_FILE, &evidence));
     persist_tree(&args.output, &files, "bootstrap")
 }
 
