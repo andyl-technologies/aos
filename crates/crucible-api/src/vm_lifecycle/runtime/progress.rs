@@ -13,6 +13,8 @@ use crucible::{ObservableEventPayload, QuantumOutcome, SchedulerEventLogPayload,
 
 const REPORT_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_REPORTS: u16 = 1024;
+// A finite late-evidence allowance, not a guarantee for every node or marker.
+const MAX_RESERVED_EVIDENCE_REPORTS: u16 = 16;
 const MAX_REPORTED_NODES: usize = 32;
 const CONSOLE_TAIL_BYTES: usize = 160;
 
@@ -78,6 +80,7 @@ fn diagnostic_clock() -> Instant {
 pub(in crate::vm_lifecycle) struct RuntimeProgress {
     enabled: bool,
     remaining: u16,
+    reserved_evidence: u16,
     // crucible-lint: allow host-monotonic-time -- sampling state is excluded from checkpoint and wire formats.
     next_report: Option<Instant>,
     guest_boot: BTreeMap<String, GuestBootProgress>,
@@ -90,9 +93,16 @@ impl RuntimeProgress {
             .and_then(|value| value.parse::<u16>().ok())
             .unwrap_or_default()
             .min(MAX_REPORTS);
+        Self::with_report_limit(maximum)
+    }
+
+    fn with_report_limit(maximum: u16) -> Self {
         Self {
             enabled: maximum != 0,
             remaining: maximum,
+            // Preserve part of the admitted total for decoded stages or errors
+            // that arrive after periodic telemetry has exhausted its allowance.
+            reserved_evidence: maximum.div_ceil(4).min(MAX_RESERVED_EVIDENCE_REPORTS),
             ..Self::default()
         }
     }
@@ -136,11 +146,12 @@ impl RuntimeProgress {
             return false;
         }
         self.remaining -= 1;
+        self.reserved_evidence = self.reserved_evidence.saturating_sub(1);
         true
     }
 
     pub(in crate::vm_lifecycle) fn begin(&mut self) -> bool {
-        if self.remaining < 2 {
+        if self.remaining.saturating_sub(self.reserved_evidence) < 2 {
             return false;
         }
         self.begin_at(diagnostic_clock())
@@ -148,7 +159,9 @@ impl RuntimeProgress {
 
     // crucible-lint: allow host-monotonic-time -- the host instant gates stderr notices only, with no scheduler or queue mutation.
     fn begin_at(&mut self, now: Instant) -> bool {
-        if self.remaining < 2 || self.next_report.is_some_and(|next| now < next) {
+        if self.remaining.saturating_sub(self.reserved_evidence) < 2
+            || self.next_report.is_some_and(|next| now < next)
+        {
             return false;
         }
         // Reserve both notices before effects. A blocked operation leaves its
@@ -213,28 +226,23 @@ mod tests {
     #[test]
     fn reports_reserve_pairs_at_bounded_cadence_without_sleeping() {
         let now = diagnostic_clock();
-        let mut progress = RuntimeProgress {
-            remaining: 4,
-            ..RuntimeProgress::default()
-        };
+        let mut progress = RuntimeProgress::with_report_limit(6);
 
         assert!(progress.begin_at(now));
         assert!(!progress.begin_at(now + Duration::from_secs(4)));
         assert!(progress.begin_at(now + REPORT_INTERVAL));
         assert!(!progress.begin_at(now + REPORT_INTERVAL * 2));
-        assert_eq!(progress.remaining, 0);
+        assert_eq!(progress.remaining, 2);
+        assert_eq!(progress.reserved_evidence, 2);
     }
 
     #[test]
     fn disabled_and_exhausted_reporters_do_not_sample() {
         let mut disabled = RuntimeProgress::default();
         assert!(!disabled.begin());
-        let mut exhausted = RuntimeProgress {
-            remaining: 1,
-            ..RuntimeProgress::default()
-        };
+        let mut exhausted = RuntimeProgress::with_report_limit(2);
         assert!(!exhausted.begin());
-        assert_eq!(exhausted.remaining, 1);
+        assert_eq!(exhausted.remaining, 2);
     }
 
     #[test]
@@ -282,16 +290,13 @@ mod tests {
         assert_eq!(progress.stage_icount, 42);
         assert_eq!(progress.setup_receipts, 1);
 
-        let mut budget = RuntimeProgress {
-            remaining: 1,
-            ..RuntimeProgress::default()
-        };
+        let mut budget = RuntimeProgress::with_report_limit(1);
         assert!(budget.reserve_evidence_report());
         assert!(!budget.reserve_evidence_report());
     }
 
     #[test]
-    fn outcome_capture_ignores_disabled_and_undeclared_guest_evidence()
+    fn periodic_exhaustion_preserves_declared_boot_evidence_within_256_reports()
     -> Result<(), Box<dyn std::error::Error>> {
         let scenario = crucible::crash_restart_scenario()?.scenario;
         let node = scenario
@@ -341,12 +346,42 @@ mod tests {
         assert!(disabled.guest_boot.is_empty());
         assert!(disabled.next_report.is_none());
 
-        let mut enabled = RuntimeProgress {
-            enabled: true,
-            remaining: 4,
-            ..RuntimeProgress::default()
-        };
+        let mut enabled = RuntimeProgress::with_report_limit(256);
+        let now = diagnostic_clock();
+        let mut periodic_notices = 0;
+        for interval in 0..128 {
+            if enabled.begin_at(now + REPORT_INTERVAL * interval) {
+                periodic_notices += 2;
+            }
+        }
+        assert_eq!(periodic_notices, 240);
+        assert_eq!(enabled.remaining, 16);
+
+        let mut ignored = outcome.clone();
+        ignored.event_log_entries.truncate(1);
+        ignored.event_log_entries.push(
+            crucible::test_support::condition_observation_entry_for_test(
+                1,
+                &crucible::ObservableEvent::console_output(
+                    crucible::VirtualTime { ticks: 41 },
+                    node.clone(),
+                    b"lifecycle.setup_complete".to_vec(),
+                ),
+            ),
+        );
+        assert!(!enabled.observe(&ignored, scenario.world().vm_nodes()));
+        assert_eq!(enabled.remaining, 16);
+        assert_eq!(
+            enabled
+                .guest_boot
+                .get(&node.name)
+                .ok_or("missing console node")?
+                .setup_receipts,
+            0
+        );
+
         assert!(enabled.observe(&outcome, scenario.world().vm_nodes()));
+        assert!(enabled.reserve_evidence_report());
         assert_eq!(enabled.guest_boot.len(), 1);
         assert_eq!(
             enabled
@@ -357,6 +392,45 @@ mod tests {
             1
         );
         assert!(!enabled.guest_boot.contains_key("unlisted-progress-node"));
+        for _ in 0..15 {
+            assert!(enabled.reserve_evidence_report());
+        }
+        assert!(!enabled.reserve_evidence_report());
+        assert!(!enabled.begin_at(now + REPORT_INTERVAL * 128));
+        assert_eq!(periodic_notices + 16, 256);
+        assert_eq!(enabled.remaining, 0);
+        assert_eq!(enabled.reserved_evidence, 0);
         Ok(())
+    }
+
+    #[test]
+    fn evidence_reservations_preserve_total_caps_and_small_budget_pairs() {
+        let now = diagnostic_clock();
+        for maximum in [0, 1, 2, 3, 4, 5, 16, 255, 256, MAX_REPORTS] {
+            let mut progress = RuntimeProgress::with_report_limit(maximum);
+            let mut periodic_notices = 0;
+            for interval in 0..MAX_REPORTS / 2 {
+                if progress.begin_at(now + REPORT_INTERVAL * u32::from(interval)) {
+                    periodic_notices += 2;
+                }
+            }
+            let mut evidence_notices = 0;
+            for _ in 0..=maximum {
+                if progress.reserve_evidence_report() {
+                    evidence_notices += 1;
+                }
+            }
+            assert_eq!(periodic_notices + evidence_notices, maximum);
+            assert_eq!(progress.remaining, 0);
+            assert_eq!(progress.reserved_evidence, 0);
+            assert!(!progress.begin_at(now + REPORT_INTERVAL * u32::from(MAX_REPORTS)));
+            assert!(!progress.reserve_evidence_report());
+            if maximum <= 2 {
+                assert_eq!(periodic_notices, 0);
+            } else if maximum == 3 {
+                assert_eq!(periodic_notices, 2);
+                assert_eq!(evidence_notices, 1);
+            }
+        }
     }
 }
