@@ -83,6 +83,29 @@ def bootstrap_bus():
     return value
 
 
+def scalar_path_service():
+    value = service()
+    value["lifecycle"]["environment_files"] = [
+        {"source": "/etc/aos/runtime %literal.env", "optional": False},
+        {"source": "/etc/aos/optional %literal.env", "optional": True},
+    ]
+    value["lifecycle"]["working_directory"] = "/"
+    value["isolation"] = {
+        "privilege": "privileged", "filesystem": "host", "home_access": "host",
+        "network": "host", "process_visibility": "host", "termination_scope": "all-processes",
+        "temporary_directory": "shared", "root_directory": "/",
+        "temporary_filesystems": [], "devices": [], "host_paths": [], "permit_core_dumps": False,
+    }
+    value["terminal"] = {
+        "device": "/dev/tty %literal", "reset": False, "hangup": False,
+        "deallocate": False, "send_hangup_on_stop": False,
+    }
+    value["termination"] = {
+        "process_id_file": "/run/aos %literal.pid", "send_to_all_processes": True,
+    }
+    return value
+
+
 def active_bus_manager(calls):
     def manager(*args, **kwargs):
         calls.append(args)
@@ -750,6 +773,76 @@ class NativeHandlerTests(unittest.TestCase):
             self.assertNotEqual(rejected.returncode, 0)
             self.assertIn("Failed to parse address value", rejected.stderr)
 
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_scalar_paths_preserve_actual_pinned_manager_paths(self):
+        value = scalar_path_service()
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            handler_module.render_services({"example": value}, units)
+            unit = units / "example.service"
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            self.assertNotIn("path is not absolute", verified.stderr)
+            for parsed in [
+                "EnvironmentFile: /etc/aos/runtime %literal.env",
+                "EnvironmentFile: -/etc/aos/optional %literal.env",
+                "RootDirectory: /", "WorkingDirectory: /", "TTYPath: /dev/tty %literal",
+                "PIDFile: /run/aos %literal.pid",
+            ]:
+                with self.subTest(parsed=parsed):
+                    self.assertIn(parsed, verified.stdout)
+            text = unit.read_text()
+            self.assertIn("EnvironmentFile=/etc/aos/runtime %%literal.env\n", text)
+            self.assertIn("EnvironmentFile=-/etc/aos/optional %%literal.env\n", text)
+
+            # EnvironmentFile is silently ignored, and PIDFile is silently
+            # prefixed with /run, when Exec-style quotes reach these parsers.
+            quoted = text.replace(
+                "EnvironmentFile=/etc/aos/runtime %%literal.env",
+                'EnvironmentFile="/etc/aos/runtime %%literal.env"',
+            ).replace("PIDFile=/run/aos %%literal.pid", 'PIDFile="/run/aos %%literal.pid"')
+            unit.write_text(quoted)
+            rejected_paths = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", str(unit)],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertIn("EnvironmentFile= path is not absolute, ignoring", rejected_paths.stderr)
+            self.assertIn('PIDFile: /run/"/run/aos %literal.pid"', rejected_paths.stdout)
+
+    def test_scalar_paths_reject_control_characters_and_unrepresentable_paths(self):
+        fields = [
+            ("lifecycle", "environment_files", 0, "source"),
+            ("isolation", "root_directory"), ("terminal", "device"),
+            ("lifecycle", "working_directory"), ("termination", "process_id_file"),
+        ]
+        for field in fields:
+            for invalid in [
+                "/tmp/path\nInjected=yes", "/tmp/path\rInjected=yes", "/tmp/path\0",
+                "/tmp/path\\", "/tmp/path ", " /tmp/path", "relative/path",
+            ]:
+                with self.subTest(field=field, path=invalid):
+                    value = scalar_path_service()
+                    container = value
+                    for key in field[:-1]:
+                        container = container[key]
+                    container[field[-1]] = invalid
+
+                    with self.assertRaises(ValueError):
+                        handler_module.realize_service(value)
+
     def test_socket_addresses_reject_scalar_injection_and_unrepresentable_suffixes(self):
         for invalid in (
             "/run/test\n[Service]", "/run/test\rInjected=yes", "/run/test\0socket",
@@ -842,7 +935,7 @@ class NativeHandlerTests(unittest.TestCase):
                 self.assertIn("Requires=" + directory_name, main)
                 self.assertIn("After=" + directory_name, main)
                 self.assertIn("ProtectSystem=strict", main)
-                self.assertIn('RootDirectory="/srv/service-root"', main)
+                self.assertIn("RootDirectory=/srv/service-root\n", main)
                 self.assertIn('TemporaryFileSystem="' + root.rstrip("/") + ':ro"', main)
                 self.assertIn('BindPaths="' + root + 'example/state"', main)
                 self.assertNotIn(directive + "=", main)

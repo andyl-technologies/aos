@@ -79,12 +79,16 @@ def token(value):
     return value
 
 
-def socket_address(value):
+def scalar_value(value):
     value = checked_text(value)
     if "\n" in value or "\r" in value or value != value.strip() or value.endswith("\\"):
-        raise ValueError("socket address cannot require scalar whitespace or continuation escaping")
-    # Listen*= resolves specifiers directly; it does not remove Exec*= quoting.
+        raise ValueError("manager scalar cannot require whitespace or continuation escaping")
+    # Scalar directives resolve specifiers without removing Exec*= quoting.
     return value.replace("%", "%%")
+
+
+def scalar_path(value):
+    return scalar_value(absolute(value))
 
 
 def yes(value):
@@ -284,7 +288,7 @@ def process_features(unit, value):
         for entry in isolation["host_paths"]:
             unit.add("BindReadOnlyPaths" if entry["mode"] == "read-only" else "BindPaths", quote(absolute(entry["source"])))
         if isolation.get("root_directory"):
-            unit.add("RootDirectory", quote(absolute(isolation["root_directory"])))
+            unit.add("RootDirectory", scalar_path(isolation["root_directory"]))
         if isolation["devices"]:
             unit.add("DevicePolicy", "closed")
         for entry in isolation["devices"]:
@@ -292,7 +296,7 @@ def process_features(unit, value):
             unit.add("DeviceAllow", quote(absolute(entry["source"])) + " " + access)
     terminal = value.get("terminal")
     if terminal:
-        unit.add("TTYPath", quote(absolute(terminal["device"])))
+        unit.add("TTYPath", scalar_path(terminal["device"]))
         for field, key in {"reset": "TTYReset", "hangup": "TTYVHangup", "deallocate": "TTYVTDisallocate", "send_hangup_on_stop": "SendSIGHUP"}.items():
             unit.add(key, yes(terminal[field]))
         unit.add("UtmpIdentifier", terminal.get("session_identifier"))
@@ -371,7 +375,7 @@ def realize_service(value):
     elif supervision.get("startup_protocol") == "notification":
         unit.add("NotifyAccess", {"none": "none", "main-process": "main", "all-processes": "all"}[supervision["notification_access"]])
     if lifecycle.get("working_directory"):
-        unit.add("WorkingDirectory", quote(absolute(lifecycle["working_directory"])))
+        unit.add("WorkingDirectory", scalar_path(lifecycle["working_directory"]))
     for field, key in {"condition": "ExecCondition", "pre_start": "ExecStartPre", "start": "ExecStart", "post_start": "ExecStartPost", "stop": "ExecStop", "post_stop": "ExecStopPost"}.items():
         if field == "start" and value.get("concurrency"):
             if FLOCK_EXECUTABLE is None or len(lifecycle[field]) != 1 or lifecycle["execution_model"] == "forking":
@@ -384,7 +388,7 @@ def realize_service(value):
         else:
             unit.repeat(key, lifecycle[field], encode=command)
     for entry in lifecycle["environment_files"]:
-        unit.add("EnvironmentFile", ("-" if entry["optional"] else "") + quote(absolute(entry["source"])))
+        unit.add("EnvironmentFile", ("-" if entry["optional"] else "") + scalar_path(entry["source"]))
     unit.add("Restart", {"never": "no", "always": "always", "on-failure": "on-failure"}[lifecycle["restart"]])
     unit.add("RestartSec", milliseconds(lifecycle["restart_delay_millis"]))
     unit.add("RemainAfterExit", yes(lifecycle["remain_after_exit"] or readiness.get("mechanism") == "successful-exit"))
@@ -400,7 +404,7 @@ def realize_service(value):
     termination = value.get("termination") or {}
     unit.add("KillSignal", termination.get("signal"))
     unit.add("FinalKillSignal", termination.get("final_signal"))
-    unit.add("PIDFile", quote(absolute(termination["process_id_file"])) if termination.get("process_id_file") else None)
+    unit.add("PIDFile", scalar_path(termination["process_id_file"]) if termination.get("process_id_file") else None)
     if termination:
         unit.add("KillMode", "control-group" if termination["send_to_all_processes"] else "process")
     watchdog = value.get("watchdog")
@@ -496,12 +500,12 @@ def realize_service(value):
         document.add("RemoveOnStop", yes(socket["remove_on_stop"]), "Socket")
         for endpoint in socket["endpoints"]:
             if endpoint["kind"] == "unix":
-                document.add("ListenStream", socket_address(absolute(endpoint["path"])), "Socket")
+                document.add("ListenStream", scalar_path(endpoint["path"]), "Socket")
             else:
                 address = checked_text(endpoint["address"])
                 if ":" in address and not address.startswith("["):
                     address = "[" + address + "]"
-                document.add("ListenStream" if endpoint["transport"] == "tcp" else "ListenDatagram", socket_address(address + ":" + str(endpoint["port"])), "Socket")
+                document.add("ListenStream" if endpoint["transport"] == "tcp" else "ListenDatagram", scalar_value(address + ":" + str(endpoint["port"])), "Socket")
         for field, key in {"after": "After", "binds_to": "BindsTo"}.items():
             document.repeat(key, (socket_names[n] for n in socket.get(field, [])), "Unit")
         rendered[name] = document.text()
