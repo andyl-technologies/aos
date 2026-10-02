@@ -1449,6 +1449,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         }
     }
     let mut lifecycle = ProductionVmLifecycleLoop {
+        runtime_progress: runtime::progress::RuntimeProgress::from_environment(),
         inner,
         trigger_graph,
         trigger_state: restore_checkpoint

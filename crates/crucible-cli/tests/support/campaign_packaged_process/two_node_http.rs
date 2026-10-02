@@ -51,6 +51,7 @@ fn public_two_node_http_request_and_response_are_authenticated() -> Result<(), B
         println!("two_node_http_attempt={explanation}");
         Ok::<(), Box<dyn Error>>(())
     })();
+    processes.report_observed_processes("before-http-cleanup");
     println!("two_node_http_stage=cleanup");
     let shutdown = service.stop();
     let cleanup = processes.verify_cleanup();
@@ -189,9 +190,11 @@ fn wait_for_http_completion(
                 "two_node_http_wait elapsed_host_seconds={} states={last_states}",
                 began.elapsed().as_secs()
             );
+            processes.report_observed_processes("http-wait");
             for diagnostic in stderr.lines().filter(|line| {
                 line.starts_with("CRUCIBLE-GUEST-SELECTABLE-BOUNDARY-V1 ")
                     || line.starts_with("CRUCIBLE-EXACT-RESUME-PROGRESS-V1 ")
+                    || line.starts_with("CRUCIBLE-RUNTIME-PROGRESS-V1 ")
             }) {
                 println!("two_node_http_runtime_diagnostic={diagnostic}");
             }
