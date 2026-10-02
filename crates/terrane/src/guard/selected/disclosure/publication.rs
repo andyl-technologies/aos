@@ -297,6 +297,8 @@ where
             });
         }
     }
+    #[cfg(all(test, feature = "tokio"))]
+    super::mutations::apply_before_sign(concrete.store().root(), &mut record)?;
     let mut prototype_history = VerifiedHistory::new(destination.guard().config().min_chunk_size);
     for snapshot in &checked.snapshots {
         prototype_history
