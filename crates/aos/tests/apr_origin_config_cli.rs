@@ -345,7 +345,7 @@ async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()
         &maintainer_home,
         &["status", "--registry", "origin-default-reg"],
     )?;
-    run_apr(
+    let key_output = run_apr(
         &maintainer_home,
         &[
             "keys",
@@ -361,6 +361,20 @@ async fn apr_add_authoring_clone_supports_release_upload_workflow() -> Result<()
         "apr keys generate should write {}",
         release_key.display(),
     );
+    // Releases are signed only by active roster keys. The seed registry has an
+    // empty roster, so the maintainer bootstraps it with the generated key.
+    let release_trust_key = extract_public_key(&key_output)?;
+    run_apr(
+        &maintainer_home,
+        &[
+            "keys",
+            "add",
+            "release",
+            &release_trust_key,
+            "--registry",
+            "origin-default-reg",
+        ],
+    )?;
 
     let upload_dir = tmp.path().join("origin-default-upload");
     let upload_url = format!("file://{}", upload_dir.display());
