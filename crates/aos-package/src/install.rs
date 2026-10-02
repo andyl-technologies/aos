@@ -58,6 +58,7 @@ use aos_core::error::AosError;
 use aos_core::nar::info as narinfo;
 use aos_core::output::{OutputMode, Printer};
 
+pub(crate) mod acquire;
 pub(crate) mod native;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -39,7 +39,12 @@
     graph = host.deployment.graph;
     withProfileRecords = true;
   };
-  hostText = "{ config, ... }: { aos.bootstrapFixture.value = \"authorized-\" + config.host.facts.hostname; }\n";
+  hostText = ''
+    { config, ... }: {
+      aos.apm.desiredPackages = ["boot-bootstrap-fixture"];
+      aos.bootstrapFixture.value = "authorized-" + config.host.facts.hostname;
+    }
+  '';
   receipt =
     pkgs.runCommand "boot-original-authorization.json" {
       buildInputs = [pkgs.python3];

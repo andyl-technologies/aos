@@ -14,6 +14,9 @@ in {
     description = "Enable server identities, chrony, SSH, and standard security policy.";
   };
   config = lib.mkIf (cfg.enable && (config.aos.boot.stage or "host") == "host") ({
+      # Admit these role requirements before evaluating their service policy.
+      aos.apm.desiredPackages = lib.mkAfter ["openssh" "chrony"];
+
       aos.services.chrony.enable = lib.mkDefault true;
       aos.services.ssh.enable = lib.mkDefault true;
       aos.security.level = lib.mkDefault "standard";

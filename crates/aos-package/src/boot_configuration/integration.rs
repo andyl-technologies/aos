@@ -158,6 +158,27 @@ async fn checked_metadata_adoption_recovers_and_preserves_operator_sources() -> 
         scope: ProfileScope::System,
     };
     let printer = aos_core::output::Printer::new(0, true, false);
+    let unavailable_worktree = scratch.path().join("unavailable-package");
+    fs::create_dir(&unavailable_worktree)?;
+    fs::write(
+        unavailable_worktree.join("host.nix"),
+        "{ aos.apm.desiredPackages = [\"unavailable-bootstrap-package\"]; aos.bootstrapFixture.value = \"must-not-dispatch\"; }\n",
+    )?;
+    let unavailable =
+        crate::runtime_modules::snapshot(&unavailable_worktree, scratch.path(), false)?;
+    let count_before = fs::read_to_string("/build/aos-boot-bootstrap-state/count")?;
+    let generation_before = current(&profile, &executable)?.0;
+    ensure!(
+        crate::install::native::reconfigure_at(&config, &profile, &unavailable, false, &printer)
+            .is_err(),
+        "configuration acquired an unavailable package"
+    );
+    ensure!(
+        current(&profile, &executable)?.0 == generation_before
+            && fs::read_to_string("/build/aos-boot-bootstrap-state/count")? == count_before
+            && !crate::profile::deployment::has_pending_deployment(&profile.path)?,
+        "failed package acquisition changed the generation or dispatched effects"
+    );
     let operator = source(scratch.path(), "operator", "operator", false)?;
     crate::install::native::reconfigure_at(&config, &profile, &operator, false, &printer)
         .context("normal operator switch after verified metadata adoption")?;
