@@ -13,7 +13,16 @@ use terrane_core::identity::{IdentityKind, TERRANE_V1};
 use terrane_core::tree_builder::Tree;
 use terrane_core::tree_format::{ContentRef, Entry, EntryKind, LeafItem, Property, TreeUse};
 
+#[cfg(unix)]
+mod fresh_recovery;
 mod multiple;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_paired_retry_reopens_a_fresh_destination_before_source_erasure() {
+    fresh_recovery::recover_fresh_transition().await;
+}
+
 #[cfg(unix)]
 mod recovery;
 

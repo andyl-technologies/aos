@@ -214,7 +214,7 @@ pub(super) async fn recover_cached_transition() {
     );
 }
 
-fn restricted_token(token: &[u8], secret: &[u8; 32], grant: Grant) -> Vec<u8> {
+pub(super) fn restricted_token(token: &[u8], secret: &[u8; 32], grant: Grant) -> Vec<u8> {
     Token::decode(token)
         .unwrap()
         .attenuate(

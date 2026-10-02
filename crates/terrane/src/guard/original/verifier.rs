@@ -153,6 +153,36 @@ impl<
     where
         C: Clock,
     {
+        self.configure_original_verifier(authority, true).await
+    }
+
+    /// Prepares physical checks for a private pending paired destination.
+    ///
+    /// This installs no selected Guard. Only the private recovery constructor
+    /// uses this preparation; a pending coordinator is never returned as a
+    /// repository or exposed for unrelated operations.
+    ///
+    /// # Errors
+    /// Rejects unsafe physical bindings, malformed retained controls and
+    /// conflicting original contexts exactly as ordinary native setup does.
+    pub(crate) async fn prepare_paired_original_verifier(
+        &self,
+        authority: &OriginalAuthority,
+    ) -> Result<(), StoreFailure>
+    where
+        C: Clock,
+    {
+        self.configure_original_verifier(authority, false).await
+    }
+
+    async fn configure_original_verifier(
+        &self,
+        authority: &OriginalAuthority,
+        select_initial: bool,
+    ) -> Result<(), StoreFailure>
+    where
+        C: Clock,
+    {
         // Setup retains its genuine clock without inventing a writer deadline.
         // No dummy clock can reach the initial checked effect context.
         let setup_clock = self.clock.retain_native_clock().map_err(|error| {
@@ -452,6 +482,10 @@ impl<
                 self.load_original_import(&authority, &import).await?;
             }
         }
+        if !select_initial {
+            return Ok(());
+        }
+
         let setup = Guard::new(
             self.store.clone(),
             setup_clock,
