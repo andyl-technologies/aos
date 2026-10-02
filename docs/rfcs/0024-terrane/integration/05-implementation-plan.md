@@ -803,8 +803,13 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   Native publication now derives its consumed snapshot from the actual held
   guard's trust state, preserving complete snapshot equality. Historical
   original authority remains independent of the current physical discloser;
-  identical issuer labels across independently initialized repositories still
-  need scoped historical handling before paired publication can qualify.
+  identical issuer labels across independently initialized repositories now
+  have an isolated scoped historical-consumption candidate. Its exact retained
+  import-trust pin carries the foreign public key and retirement bound without
+  replacing current configured local keys. The complete six-file source review,
+  native build, 16 focused regressions and mandatory formatting pass. This is
+  preparatory evidence; genuine independent-factory paired publication and the
+  19 required boundary cases remain unqualified.
   — satisfies PROV-1 to PROV-31;
   `checks.terrane.gates.prov-commit-signature`,
   `checks.terrane.gates.prov-selector-presets`,
@@ -894,6 +899,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   a regression from the target-history correction; current complete-workflow
   qualification remains open. This branch stays unmerged while aggregate
   qualification is red.
+  A subsequent isolated CLI preview on the reviewed SDK read candidate passes
+  all three CLI tests in 103.198 seconds with the unchanged 120-second limit.
+  It covers the complete separate-process workflow and fixed historical
+  checkout. Strict CLI rustdoc and both mandatory formatting commands pass.
+  Its actual feature matrix still fails with the same seven native failures,
+  strict Clippy rejects inherited unfinished native paths, and the aggregate
+  fails on the 19 unqualified disclosure cases. This single workflow pass does
+  not establish package, ext4 or complete task qualification; both candidates
+  remain unmerged.
   Its fresh feature matrix passes both 439-test core runs and 73 portable
   native tests, then fails with 351 native passes and eight failures, including
   a multiwriter join expiry. The release package builds, but its unchanged
@@ -914,7 +928,7 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   waiter; the trunk aggregate fails the index-generation retirement assertion.
   The shared `checks.terrane.integration.local-workflow-ext4` registration now
   exists and an actual request fails explicitly as pending. The concrete
-  hermetic ext4 VM workflow and its successful artifact remain unimplemented;
+  hermetic ext4 VM workflow is not yet adopted on the trunk;
   registration does not qualify local workflow or store conformance.
   The isolated two-file ext4 workflow candidate is implemented and reviewed.
   Its actual VM check builds the genuine release package, but required package
