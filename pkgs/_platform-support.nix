@@ -1024,6 +1024,7 @@ let
     "toolchain/rust/_rust-darwin-build-tool.nix" = "cross-build-helper";
     "toolchain/rust/_rust-darwin.nix" = "cross-build-helper";
     "toolchain/rust/_rust-bootstrap.nix" = "native-build-helper";
+    "tools/aos/_release-tooling.nix" = "native-release-helper";
     "tools/aos/_tests.nix" = "native-test-helper";
     "tools/aos/_workspace-source.nix" = "target-independent-source";
     "tools/crucible/_cargo-deps-hash.nix" = "target-independent-source";
