@@ -13,6 +13,13 @@ and reads the files below. The signed tag authenticates the whole tree transitiv
 anything being placed in the tag message (tags are pure pointers — see
 [`signing-and-trust.md`](signing-and-trust.md) and design-brief §14).
 
+Unpublished candidates follow the [release-stage contract](release-stages.md).
+Maintainer branches are authoring workspaces. Configured channel branch names
+reserve the published frontier, public `HEAD` names the default channel, and
+signed semver releases and the 256-partition schema retain their existing
+meaning. Default catalogs and channels omit drafts; a known ref, digest, cache
+URL, or CDN path may still expose candidate bytes.
+
 ---
 
 ## 1. Tree at a glance
@@ -154,9 +161,11 @@ with only the new key (the old key is dropped).
 <survivor-id>] [--reason ..]` to list the key under `[[revoked]]` in a commit
 **signed by one of the *other* overlapping active keys** (the command refuses to
 retire the last active key, so a retiring key never revokes itself). Because
-signatures by a revoked key stop verifying, retirement also **re-signs** the
-channel partition tags and the release tags they reference whose only valid signer
-was the retired key, using the vouching key (`--no-resign` skips). The revocation
+signatures by a revoked key stop verifying, retirement fails before roster
+mutation when an immutable published release would lose active-key trust.
+Prepare higher-version replacement releases, or explicitly use `--no-resign`
+to revoke trust in the affected releases. Only partition tags whose release
+already verifies with survivors may be re-signed. The revocation
 propagates to consumers **in-band** on their next sync, which pins the new active
 set and masks the dropped key.
 
@@ -304,7 +313,7 @@ assembling objects**; **`http-layout.md` = the transport encoding of that conten
 | File | Status (today's code) |
 |---|---|
 | `registry.toml` | `[registry]` + unified `[caches]` stack (no signing pubkey) |
-| `keys.toml` | emitted by `apr create` as a schema-1 roster; maintained by `apr keys generate/list/add/retire` (signed roster commits, survivor-vouched + re-signed retirement); **consumed by clients** during sync (`pin_rotated_keys`) as the authoritative trusted-key set |
+| `keys.toml` | emitted by `apr create` as a schema-1 roster; maintained by `apr keys generate/list/add/retire` (signed roster commits, survivor-vouched retirement preserving immutable release tags); **consumed by clients** during sync (`pin_rotated_keys`) as the authoritative trusted-key set |
 | `packages/<x>/<name>.toml` | nested `PackageToml` (`nar_hash`/`nar_size`/`references` legacy-optional, superseded by `store/`) |
 | `store/<2-char>/<ia-hash>` | realisation graph: blessed NARs + dependency edges + CA realisations (RFC-0005); written by `apr publish`, maintained by `apr store`, enforced by `apm` |
 | bootstrap trust | out-of-band anchor — image-baked `aos.apm.registries` → `trusted-keys.d`, or `apr trust pin`, or `[registry.signing] public_key` when the store is empty — then `keys.toml` overlap rotation in-band (no silent TOFU) |

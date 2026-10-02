@@ -337,12 +337,11 @@
       "service": "PublishService",
       "audience": "end-user",
       "cli_families": ["registry publish"],
-      "web_workflows": ["registry-publication"],
+      "web_workflows": ["registry-publication", "registry-staging"],
       "web_method_exceptions": [
         {"method": "BeginRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
         {"method": "AppendRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone admits large local manifests through resumable bounded pages."},
         {"method": "SealRegistryPublicationManifest", "reason": "The browser observes publication state; the CLI alone seals a completely admitted local manifest."},
-        {"method": "GetRegistryPublication", "reason": "ListRegistryPublications returns the complete publication state rendered by the browser workflow."},
         {"method": "BeginRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone streams local release artifacts into bounded multipart transactions."},
         {"method": "CompleteRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone completes multipart transactions for local release artifacts."},
         {"method": "AbortRegistryPublicationMultipartUpload", "reason": "The browser observes publication state; the CLI alone cleans up failed multipart transactions for local release artifacts."},
@@ -354,7 +353,7 @@
         {"method": "PublishReleaseTimestamp", "reason": "Online timestamp renewal is a restricted maintainer operation."},
         {"method": "AdvanceReleaseChannel", "reason": "Partitioned release rollout is a restricted maintainer operation."}
       ],
-      "methods": ["BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication", "BeginReleasePublication", "CommitReleasePublication", "RecordReleaseQualification", "PromoteReleasePublication", "GetReleaseReceipt", "PublishReleaseTimestamp", "AdvanceReleaseChannel"]
+      "methods": ["UpsertStagedRelease", "GetStagedRelease", "ListStagedReleases", "FinalizeStagedRelease", "DiscardStagedRelease", "BeginRegistryPublication", "BeginRegistryPublicationManifest", "AppendRegistryPublicationManifest", "SealRegistryPublicationManifest", "BeginRegistryPublicationMultipartUpload", "CompleteRegistryPublicationMultipartUpload", "AbortRegistryPublicationMultipartUpload", "ListRegistryPublications", "GetRegistryPublication", "CommitRegistryPublication", "AbortRegistryPublication", "BeginReleasePublication", "CommitReleasePublication", "RecordReleaseQualification", "PromoteReleasePublication", "GetReleaseReceipt", "PublishReleaseTimestamp", "AdvanceReleaseChannel"]
     },
     {
       "service": "GitService",

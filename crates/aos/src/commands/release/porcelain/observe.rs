@@ -58,7 +58,7 @@ impl Observation {
     pub(super) fn require_journal(&self) -> Result<&(PathBuf, Journal)> {
         self.journal
             .as_ref()
-            .context("the release has no journal yet; run aos release advance")
+            .context("the release has no journal yet; run aos maintain release advance")
     }
 }
 
@@ -471,7 +471,7 @@ fn after_blocker(
             .min_by_key(|candidate| candidate.channel != destination.channel)
             .map_or_else(
                 || format!("a {role} destination"),
-                |candidate| format!("aos release advance --to {}", candidate.name),
+                |candidate| format!("aos maintain release advance --to {}", candidate.name),
             );
         return Ok(Some(format!(
             "{} follows a {role} publication; publish it first with {suggestion}",

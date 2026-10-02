@@ -125,6 +125,33 @@ fn put_headers_map_preconditions_onto_the_builder() {
     assert_eq!(absent.get_if_match().as_deref(), None);
 }
 
+#[test]
+fn conditional_multipart_requires_native_resolver_without_endpoint_overrides() {
+    #[derive(Debug)]
+    struct ServiceEndpoint;
+
+    impl aws_types::service_config::LoadServiceConfig for ServiceEndpoint {
+        fn load_config(
+            &self,
+            _: aws_types::service_config::ServiceConfigKey<'_>,
+        ) -> Option<String> {
+            Some("https://custom-s3.example.test".into())
+        }
+    }
+
+    let native = aws_config::SdkConfig::builder().build();
+    let global = aws_config::SdkConfig::builder()
+        .endpoint_url("https://s3.amazonaws.com.attacker.example.test")
+        .build();
+    let service = aws_config::SdkConfig::builder()
+        .service_config(ServiceEndpoint)
+        .build();
+
+    assert!(native_aws_configuration(&native).unwrap());
+    assert!(!native_aws_configuration(&global).unwrap());
+    assert!(!native_aws_configuration(&service).unwrap());
+}
+
 #[tokio::test]
 async fn conditional_put_sends_if_none_match_and_returns_the_etag() {
     let (endpoint, server) =

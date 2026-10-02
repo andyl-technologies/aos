@@ -3,7 +3,7 @@
 # Two independently keyed native Hub instances terminate TLS for the canonical
 # staging and production names. A third machine receives four prebuilt package
 # closures only through the fleet's read-only 9p store mount, turns them into
-# release NARs, and drives every online `aos release step` transition of a
+# release NARs, and drives every online `aos maintain release step` transition of a
 # release candidate: publication to `staging/candidate`, staging-phase
 # qualification, publication to `production/candidate` (functional profile,
 # with fitness attestations), rollout qualification, and its single ring.

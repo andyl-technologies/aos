@@ -175,3 +175,45 @@ aos --json hub registry get acme/cdn --hub https://hub.example.com
 
 Pass `--token '<access-token>'` to commands that require authentication. Use
 the schema when building a client or integration.
+
+## Unpublished registry release candidates
+
+`aos.hub.v1.PublishService` exposes these Connect methods. Every operation,
+including inventory reads, requires the registry's Publish permission.
+
+| Method | Purpose |
+| --- | --- |
+| `UpsertStagedRelease` | Save or attach one portable candidate revision with compare-and-swap |
+| `GetStagedRelease` | Read its exact signed commit, withheld pointer bytes, and inventory |
+| `ListStagedReleases` | List permissioned candidates with `page_size`, `page_token`, and `next_page_token` |
+| `FinalizeStagedRelease` | Publish the frozen revision and reserved signed release identity |
+| `DiscardStagedRelease` | Relinquish a candidate after an exact revision check |
+
+Each method is a POST to `/aos.hub.v1.PublishService/<method>`.
+`UpsertStagedRelease` takes `registry`, exactly one of canonical `revision_json`
+or gzip `revision_gzip` bytes in the shared `aos.registry-stage/v1` schema,
+`expected_revision` (`0` for creation; the observed revision for an edit or
+attachment), and an optional `publication_id` that may initially be empty.
+The Connect envelope is capped at 8 MiB, decoded revision JSON at 32 MiB, and
+compressed bytes at 6 MiB minus 4 KiB. A revision has at most 50,000 objects.
+Protobuf JSON encodes gzip bytes as base64; pointer bytes within the revision
+also use base64 strings. Detail reads return `revision_gzip`; list summaries
+leave both payload fields empty. These limits cover metadata, not artifacts;
+bulk object admission uses the existing chunked publication-manifest protocol.
+
+`FinalizeStagedRelease` takes `registry`, `stage_id`, `expected_revision`, and
+`release_id` matching the version declared by that revision. Releasing freezes
+the revision; retries continue the exact signed tag, commit, and release/OCI
+bindings after public verification. Discarded or superseded candidate roots
+retain a 24-hour grace period, while released and shared roots remain retained.
+Default public catalogs and channel pointers never discover unfinished stages.
+
+For an AOS distribution timestamp, admission binds the exact prepared envelope
+to its immutable metadata inventory and applies the existing publication and
+monotonic timestamp rules. Registry tag verification and consumer verification
+of distribution TUF signatures against pinned roots are distinct checks. Hub
+admission does not infer root trust from a candidate-supplied root.
+
+See [the console workflow](web.md#review-unpublished-release-candidates) and
+[the common stage contract](../../registry/release-stages.md) for candidate
+inspection, resume, and the distinction between staged bytes and publication.

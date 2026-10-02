@@ -343,6 +343,16 @@ impl Database {
                      WHERE id = ?1 AND resource_version = ?2
                        AND NOT EXISTS (SELECT 1 FROM oci_repositories WHERE registry_id = ?1)
                        AND NOT EXISTS (SELECT 1 FROM oci_blobs WHERE registry_id = ?1)
+                       AND NOT EXISTS (
+                         SELECT 1 FROM staged_release_objects staged_object
+                         JOIN staged_release_revisions staged_revision
+                           ON staged_revision.registry_id = staged_object.registry_id
+                          AND staged_revision.stage_id = staged_object.stage_id
+                          AND staged_revision.revision = staged_object.revision
+                         WHERE staged_object.registry_id = ?1
+                           AND staged_object.object_key LIKE 'oci/blobs/sha256/%'
+                           AND (staged_revision.retire_after IS NULL
+                             OR staged_revision.retire_after > ?3))
                        AND NOT EXISTS (SELECT 1 FROM oci_upload_sessions
                          WHERE registry_id = ?1 AND state IN('active', 'completing'))
                        AND NOT EXISTS (SELECT 1 FROM oci_publication_sessions
@@ -354,7 +364,7 @@ impl Database {
                            AND state IN('planned', 'pending', 'claimed', 'failed'))
                        AND NOT EXISTS (SELECT 1 FROM oci_registry_purge_fences
                          WHERE registry_id = ?1 AND state = 'collecting')",
-                    vals![registry_id, expected_registry_resource_version],
+                    vals![registry_id, expected_registry_resource_version, now],
                 )
                 .expecting(1),
                 Statement::new(
@@ -781,7 +791,16 @@ impl Database {
                    WHERE head.generation_id = ?16 AND head.placement_id = ?3
                      AND entry.registry_id = ?2 AND entry.object_key = ?19
                      AND entry.classification = 'untracked' AND entry.deleted_at IS NULL
-                     AND registry_state.mutation_epoch = ?28)",
+                     AND registry_state.mutation_epoch = ?28)
+                   AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.registry_id = ?2 AND staged_object.object_key = ?19
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?30))",
                 vals![
                     id,
                     input.registry_id,
@@ -913,6 +932,16 @@ impl Database {
                  WHERE id = ?1 AND actor_id = ?2 AND state = 'planned'
                    AND resource_version = ?3 AND confirmation_hash = ?5
                    AND expires_at > ?7 AND captured_mutation_epoch = ?6
+                   AND NOT EXISTS (
+                     SELECT 1 FROM staged_release_objects staged_object
+                     JOIN staged_release_revisions staged_revision
+                       ON staged_revision.registry_id = staged_object.registry_id
+                      AND staged_revision.stage_id = staged_object.stage_id
+                      AND staged_revision.revision = staged_object.revision
+                     WHERE staged_object.registry_id = oci_untracked_repair_plans.registry_id
+                       AND staged_object.object_key = oci_untracked_repair_plans.object_key
+                       AND (staged_revision.retire_after IS NULL
+                         OR staged_revision.retire_after > ?7))
                    AND EXISTS (SELECT 1 FROM oci_registry_state registry_state
                      WHERE registry_state.registry_id = oci_untracked_repair_plans.registry_id
                        AND registry_state.mutation_epoch = ?6)

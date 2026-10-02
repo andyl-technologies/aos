@@ -162,6 +162,18 @@ pub enum SigningContext {
         /// Monotonic metadata version.
         metadata_version: u64,
     },
+    /// One registry catalog role authenticated by the committed registry root.
+    ///
+    /// This uses registry roster authority and SSHSIG, independently of the
+    /// distribution-bundle TUF authorities and their payload digest domains.
+    CatalogTuf {
+        /// Local registry alias authenticated by the roster trust line.
+        catalog_registry: String,
+        /// Catalog role: root, targets, snapshot, or timestamp.
+        metadata_role: String,
+        /// Monotonic version encoded by the catalog metadata payload.
+        metadata_version: u64,
+    },
     /// One signed Git object in the canonical registry transaction.
     Git {
         /// Closed Git object kind: `commit` or `tag`.
@@ -314,6 +326,12 @@ impl SigningRequest {
         if !operation_matches {
             bail!("signature algorithm is incompatible with the requested operation");
         }
+        if matches!(self.context, SigningContext::CatalogTuf { .. })
+            && self.algorithm != SignatureAlgorithm::SshsigEd25519
+        {
+            bail!("registry catalog metadata requires SSHSIG Ed25519 signing");
+        }
+
         if self.algorithm == SignatureAlgorithm::Ed25519Payload
             && !matches!(
                 (&self.role, &self.context),
@@ -529,6 +547,18 @@ impl SigningContext {
                 };
                 if role != expected {
                     bail!("TUF metadata role does not match signer authority");
+                }
+            }
+            (
+                Self::CatalogTuf { catalog_registry, metadata_role, metadata_version },
+                SigningOperation::SignPayload,
+            ) => {
+                require_identifier(catalog_registry, "catalog registry alias")?;
+                if role != SignerRole::Registry
+                    || !matches!(metadata_role.as_str(), "root" | "targets" | "snapshot" | "timestamp")
+                    || *metadata_version == 0
+                {
+                    bail!("catalog metadata requires a versioned registry-root role");
                 }
             }
             (Self::Git { object_kind }, SigningOperation::SignGitObject) => {
@@ -912,6 +942,34 @@ mod tests {
             artifact_kind: "uki".to_owned(),
         };
         assert!(request.validate().is_ok());
+    }
+
+    #[test]
+    fn registry_catalog_metadata_is_separate_from_bundle_tuf_authority() -> Result<()> {
+        let mut request = request();
+        request.role = SignerRole::Registry;
+        request.algorithm = SignatureAlgorithm::SshsigEd25519;
+        request.context = SigningContext::CatalogTuf {
+            catalog_registry: "test".to_owned(),
+            metadata_role: "targets".to_owned(),
+            metadata_version: 2,
+        };
+        request.payload_digest = Sha256Digest::of_bytes(b"catalog metadata");
+        request.verify_payload_bytes(b"catalog metadata")?;
+
+        request.role = SignerRole::TufTargets;
+        assert!(request.validate().is_err());
+        request.role = SignerRole::Registry;
+        request.algorithm = SignatureAlgorithm::Ed25519;
+        assert!(request.validate().is_err());
+        request.algorithm = SignatureAlgorithm::SshsigEd25519;
+        request.context = SigningContext::CatalogTuf {
+            catalog_registry: "test".to_owned(),
+            metadata_role: "stable".to_owned(),
+            metadata_version: 2,
+        };
+        assert!(request.validate().is_err());
+        Ok(())
     }
 
     #[test]

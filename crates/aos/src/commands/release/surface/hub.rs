@@ -24,7 +24,7 @@ use url::Url;
 use super::readback;
 use super::{
     ChannelAdvance, ChannelExpectation, PublicationRequest, PublishedSurface, SignedReceipt,
-    SurfaceClient, SurfaceObject, TimestampPublication, TimestampReceipt,
+    StagedSurface, SurfaceClient, SurfaceObject, TimestampPublication, TimestampReceipt,
 };
 use crate::cli::HubAccessArgs;
 
@@ -113,6 +113,77 @@ impl SurfaceClient for HubSurface {
         if publication.default_commit != base_commit {
             bail!("release publication does not preserve the approved registry base");
         }
+        published(&publication)
+    }
+
+    async fn stage_surface(
+        &self,
+        root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
+        printer: &Printer,
+    ) -> Result<StagedSurface> {
+        let access = aos_package::registry::hub_publication::PublicationAccess {
+            hub: Some(self.planned.origin.clone()),
+            token: self.token.clone(),
+        };
+        let mut publication = aos_package::registry::hub_publication::stage_registry_candidate(
+            &access,
+            revision,
+            revision.revision.saturating_sub(1),
+            root,
+            printer,
+        )
+        .await?;
+        publication
+            .objects
+            .retain(|object| object.kind != "mutable_pointer");
+        Ok(StagedSurface {
+            publication: published(&publication)?,
+            record: aos_registry_surface::staging::StageRecord {
+                revision: revision.clone(),
+                state: aos_registry_surface::staging::StageState::Ready,
+                released_version: None,
+            },
+        })
+    }
+
+    async fn finalize_stage(
+        &self,
+        _root: &Path,
+        revision: &aos_registry_surface::staging::StageRevision,
+        base_commit: &str,
+        _printer: &Printer,
+    ) -> Result<PublishedSurface> {
+        revision.validate()?;
+        let hub = self.authenticated().await?;
+        let stage_client = aos_package::registry::hub_stage::HubStageClient::connect(
+            &self.planned.origin,
+            &self.registry,
+            self.token.as_deref(),
+        )
+        .await?;
+        let stage = stage_client.show(&revision.id).await?;
+        anyhow::ensure!(
+            stage.record.revision == *revision,
+            "Hub candidate revision changed before publication"
+        );
+        let released = stage_client.finalize(revision).await?;
+        anyhow::ensure!(
+            released.record.state == aos_registry_surface::staging::StageState::Released,
+            "Hub did not finalize the exact candidate"
+        );
+        let publication = hub
+            .call_topology(
+                hub_rpc::GetRegistryPublication,
+                &aos_proto_types::GetRegistryPublicationRequest {
+                    publication_id: released.publication_id,
+                },
+            )
+            .await?;
+        anyhow::ensure!(
+            publication.default_commit == base_commit,
+            "candidate publication differs from the approved registry base"
+        );
         published(&publication)
     }
 

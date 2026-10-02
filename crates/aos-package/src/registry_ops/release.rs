@@ -10,7 +10,7 @@ use crate::CacheUploadAuthArgs;
 use crate::config::ApmConfig;
 use crate::registry::channel::PartitionMap;
 use crate::registry::membership::{CacheMembership, HeadMembership};
-use crate::registry::{keys, nixcache, objectstore, pack, static_upload, tuf};
+use crate::registry::{keys, nixcache, objectstore, tuf};
 use crate::registry_ops::channels::{
     channel_advance_dir, channel_init_dir, select_partitions_for_advance,
 };
@@ -19,19 +19,17 @@ use crate::registry_ops::config::{
     resolve_effective_release_cache_url, resolve_registry_name, resolve_upload_urls,
     warn_on_cache_gc,
 };
-use crate::registry_ops::git::{
-    commit_registry, commit_registry_paths, git, git_try, refresh_registry_object_store,
-    semver_tag_versions,
-};
+use crate::registry_ops::git::{git, git_try};
 use crate::registry_ops::publish::{
-    publish, validate_release_publish_metadata, validate_release_publish_signing_identity,
+    publish_to_registry_directory, validate_release_publish_metadata,
+    validate_release_publish_signing_identity,
 };
 use crate::registry_ops::signing::{
     ResolvedSigningKey, registry_config_by_name, resolve_producer_signing_key,
     resolve_signing_key_source,
 };
 use crate::registry_ops::store_paths::{introspect_store_path, validate_store_path_release_policy};
-use crate::registry_ops::tags::{release_commit, sign_tag};
+use crate::registry_ops::tags::release_commit;
 use crate::registry_ops::trust::derive_trust_key;
 use crate::security::{key_fingerprint, parse_signing_key};
 use anyhow::{Context, Result, bail};
@@ -42,6 +40,7 @@ use aos_oci_types::{
     CONTAINER_RELEASE_SIDECAR_PATH, ContainerRelease, ContainerSignatureInput,
     definition_attribute_matches_image,
 };
+use sha2::{Digest as _, Sha256};
 use std::collections::HashSet;
 use std::fs;
 use std::fs::OpenOptions;
@@ -175,10 +174,10 @@ pub struct ReleaseReport {
 }
 
 /// Exclusive on-disk lock (`.git/apr-release.lock`) serializing release
-/// publishers against one registry clone; the lock file records the
-/// holder's pid and is removed on drop.
+/// publishers against one registry clone. The advisory lock is released by the
+/// operating system after interruption; the persistent file is only diagnostic.
 struct ReleaseLock {
-    path: PathBuf,
+    _file: fs::File,
 }
 
 impl ReleaseLock {
@@ -187,7 +186,8 @@ impl ReleaseLock {
         let path = git_dir.join("apr-release.lock");
         let mut file = OpenOptions::new()
             .write(true)
-            .create_new(true)
+            .create(true)
+            .truncate(false)
             .open(&path)
             .with_context(|| {
                 format!(
@@ -195,15 +195,12 @@ impl ReleaseLock {
                     path.display()
                 )
             })?;
+        rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+            .with_context(|| format!("another publisher holds {}", path.display()))?;
+        file.set_len(0)?;
         writeln!(file, "pid={}", std::process::id())
             .with_context(|| format!("writing {}", path.display()))?;
-        Ok(Self { path })
-    }
-}
-
-impl Drop for ReleaseLock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
+        Ok(Self { _file: file })
     }
 }
 
@@ -268,8 +265,75 @@ pub async fn release(
     resume: bool,
     registry: Option<&str>,
     jobs: Option<usize>,
+    container_layout: Option<&Path>,
+    container_repository: Option<&str>,
+    stage: Option<&str>,
+    stage_revision: Option<u64>,
+    from_stage: Option<&str>,
     printer: &Printer,
 ) -> Result<()> {
+    let mut expected_stage_revision = stage_revision;
+    if stage.is_some() && from_stage.is_some() {
+        bail!("--stage and --from-stage cannot be combined");
+    }
+    if (stage.is_some() || from_stage.is_some())
+        && (channel.is_some() || init_channel || count.is_some() || partitions.is_some())
+    {
+        bail!(
+            "staged releases preserve channel assignments; publish the candidate, then use apr channel init or apr channel advance"
+        );
+    }
+    if stage_revision.is_some() && stage.is_none() && from_stage.is_none() {
+        bail!("--stage-revision requires --stage or --from-stage");
+    }
+    if let Some(id) = from_stage.or(stage.filter(|_| resume)) {
+        let registry_name = resolve_registry_name(config, registry)?;
+        let dir = config.scope.registries_path().join(&registry_name);
+        let stages = if dry_run {
+            crate::registry::staging::LocalStageStore::open_read_only(&dir)?
+        } else {
+            crate::registry::staging::LocalStageStore::open(&dir)?
+        };
+        let revision = stage_revision.context("an exact --stage-revision is required")?;
+        let candidate = stages.find(id)?;
+        if candidate
+            .as_ref()
+            .is_none_or(|candidate| candidate.revision.revision != revision)
+        {
+            if from_stage.is_some() {
+                bail!("the exact requested stage revision is not available for publication");
+            }
+            let workspace = stages.workspace(id, revision)?;
+            if !preparation_checkpoint_path(&workspace)?.is_file() {
+                bail!("the requested stage revision has no preparation checkpoint");
+            }
+            expected_stage_revision = revision.checked_sub(1).filter(|value| *value > 0);
+        } else {
+            let candidate = candidate.context("stage disappeared while selecting its revision")?;
+            if candidate.revision.release_id != semver {
+                bail!("requested release version differs from the staged candidate");
+            }
+            let destinations = resolve_upload_urls(config, &registry_name, upload_urls);
+            let auth =
+                auth.auth_options_with_config(registry_upload_auth_config(config, &registry_name));
+            if dry_run {
+                printer.json(&serde_json::to_value(candidate)?);
+                return Ok(());
+            }
+            let record = if from_stage.is_some() {
+                if store_path.is_some() || container_release.is_some() || channel.is_some() {
+                    bail!(
+                        "candidate publication uses its exact prepared catalog and channel pointers"
+                    );
+                }
+                stages.publish(id, revision, &destinations, &auth).await?
+            } else {
+                stages.upload(id, revision, &destinations, &auth).await?
+            };
+            print_stage_record(&record, printer)?;
+            return Ok(());
+        }
+    }
     validate_release_publish_metadata(store_path, description, license, maintainer)?;
     validate_release_publish_signing_identity(store_path, key_id)?;
 
@@ -277,6 +341,20 @@ pub async fn release(
         .with_context(|| format!("parsing release semver '{semver}'"))?;
     let container_release =
         load_container_release_attachment(&version, container_release, container_signature_input)?;
+    let container_graph = match (&container_release, container_layout) {
+        (Some(attachment), Some(layout)) => {
+            Some(crate::registry::container_stage::prepare_container_stage(
+                layout,
+                container_repository.unwrap_or(&attachment.release.identity.image),
+                &attachment.release,
+            )?)
+        }
+        (None, Some(_)) => bail!("--container-layout requires a validated container release"),
+        (Some(_), None) if stage.is_some() => {
+            bail!("container staging requires --container-layout")
+        }
+        _ => None,
+    };
     if let Some(store_path) = store_path {
         let info = introspect_store_path(store_path)?;
         validate_store_path_release_policy(&info)?;
@@ -295,8 +373,10 @@ pub async fn release(
     let resolved_upload_urls = resolve_upload_urls(config, &registry_name, upload_urls);
     let has_store_roots = store_path.is_some() || nixcache::registry_has_store_roots(&dir)?;
     let cache_url_explicit = cache_url.is_some();
+    // The preceding published catalog is composed in the isolated workspace.
+    // Resolve implicit cache policy there, where inherited roots are visible.
     let effective_cache_url =
-        resolve_effective_release_cache_url(cache_url, &resolved_upload_urls, has_store_roots)?;
+        resolve_effective_release_cache_url(cache_url, &resolved_upload_urls, false)?;
     let store_publish = store_path.map(|store_path| ReleaseStorePublish {
         config: config.clone(),
         store_path: store_path.to_string(),
@@ -346,8 +426,325 @@ pub async fn release(
         cache_max_age_days: registry_cache_max_age_days(config, &registry_name),
     };
 
-    release_registry_tree(&dir, &registry_name, &options, printer).await?;
+    if let Some(id) = stage {
+        stage_registry_release(
+            &dir,
+            &registry_name,
+            id,
+            expected_stage_revision,
+            &options,
+            container_layout,
+            container_graph.as_ref(),
+            printer,
+        )
+        .await?;
+    } else {
+        release_registry_tree(&dir, &registry_name, &options, printer).await?;
+    }
     Ok(())
+}
+
+fn print_stage_record(
+    record: &crate::registry::staging::StageRecord,
+    printer: &Printer,
+) -> Result<()> {
+    if printer.mode() == OutputMode::Json {
+        printer.json(&serde_json::to_value(record)?);
+    } else {
+        printer.success(&format!(
+            "Stage {} revision {} {:?}: {} at {}.",
+            record.revision.id,
+            record.revision.revision,
+            record.state,
+            record.revision.release_id,
+            record.revision.commit
+        ));
+    }
+    Ok(())
+}
+
+async fn stage_registry_release(
+    dir: &Path,
+    registry: &str,
+    id: &str,
+    expected_revision: Option<u64>,
+    options: &ReleaseTreeOptions,
+    container_layout: Option<&Path>,
+    container_graph: Option<&aos_registry_surface::staging::StageContainerGraph>,
+    printer: &Printer,
+) -> Result<()> {
+    if options.dry_run {
+        print_release_plan(dir, registry, options, printer);
+        return Ok(());
+    }
+    let stages = crate::registry::staging::LocalStageStore::open(dir)?;
+    let _source_lock = ReleaseLock::acquire(dir)?;
+    let source_branch = git2::Repository::open(dir)?
+        .head()?
+        .shorthand()
+        .context("stage authoring HEAD is not a named branch")?
+        .to_string();
+    stages.require_authoring_branch(&source_branch)?;
+    ensure_release_worktree_clean(dir)?;
+    let revision = expected_revision
+        .map_or(Some(1), |value| value.checked_add(1))
+        .context("stage revision overflow")?;
+    if let Some(current) = stages.find(id)? {
+        if Some(current.revision.revision) != expected_revision {
+            bail!(
+                "stage revision changed; supply --stage-revision with the exact current revision"
+            );
+        }
+    } else if expected_revision.is_some() {
+        bail!("stage does not exist; omit --stage-revision for its first revision");
+    }
+    let workspace = stages.workspace(id, revision)?;
+    let parent = workspace
+        .parent()
+        .context("candidate workspace lacks a parent")?;
+    fs::create_dir_all(parent)?;
+    let mut prepared = options.clone();
+    prepared.cache_dir = stages.cache_path(id, revision)?;
+    let checkpoint =
+        PreparationCheckpoint::new(dir, registry, &source_branch, options, container_graph)?;
+    let signed_candidate = restore_preparation_checkpoint(&workspace, &checkpoint, options)?;
+    if !signed_candidate {
+        git2::build::RepoBuilder::new()
+            .clone_local(git2::build::CloneLocal::NoLinks)
+            .clone(dir.to_str().context("non-UTF-8 registry path")?, &workspace)?;
+        let mut private_config = git2::Repository::open(&workspace)?.config()?;
+        private_config.set_str("user.name", &checkpoint.author_name)?;
+        private_config.set_str("user.email", &checkpoint.author_email)?;
+        if git(&workspace, &["rev-parse", "HEAD"])? != checkpoint.source_commit {
+            bail!("source branch moved while creating the candidate workspace");
+        }
+        for relative in ["aos-image-staging", "channels"] {
+            let source = objectstore::repo_git_dir(dir)?.join(relative);
+            if source.is_dir() {
+                copy_stage_directory(
+                    &source,
+                    &objectstore::repo_git_dir(&workspace)?.join(relative),
+                )?;
+            }
+        }
+    }
+    prepared.resume = signed_candidate;
+    if signed_candidate {
+        // The signed tree already contains the reviewed catalog and cache
+        // pointer. Retrying artifact generation must never reauthor it.
+        prepared.store_publish = None;
+    }
+    let preparation_printer = Printer::new(0, printer.mode() == OutputMode::Quiet, false);
+    prepare_release_registry_tree(&workspace, registry, &prepared, false, &preparation_printer)
+        .await?;
+    let graph_objects = container_graph
+        .map(crate::registry::container_stage::graph_objects)
+        .unwrap_or_default();
+    if let (Some(layout), Some(graph)) = (container_layout, container_graph) {
+        crate::registry::container_stage::capture_layout_objects(
+            layout,
+            graph,
+            &stages.objects_path(),
+        )?;
+    }
+    let mut canonical_registry = registry.to_string();
+    for destination in &options.upload_urls {
+        if let Some(target) = crate::registry::staging::hub::target(destination, registry).await? {
+            if canonical_registry != registry && canonical_registry != target.registry {
+                bail!("stage destinations resolve to different canonical registries");
+            }
+            canonical_registry = target.registry;
+        }
+    }
+    let captured = stages
+        .capture(
+            id,
+            &canonical_registry,
+            &options.version.to_string(),
+            &source_branch,
+            &workspace,
+            expected_revision,
+            Some(&prepared.cache_dir),
+            &options.upload_urls,
+            &options.upload_auth,
+            container_graph,
+            &graph_objects,
+        )
+        .await?;
+    let record = stages
+        .upload(
+            id,
+            captured.revision.revision,
+            &options.upload_urls,
+            &options.upload_auth,
+        )
+        .await?;
+    print_stage_record(&record, printer)
+}
+
+fn copy_stage_directory(source: &Path, target: &Path) -> Result<()> {
+    fs::create_dir_all(target)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        let destination = target.join(entry.file_name());
+        if metadata.is_dir() {
+            copy_stage_directory(&path, &destination)?;
+        } else if metadata.is_file() {
+            fs::copy(path, destination)?;
+        } else {
+            bail!("candidate staging contains a symlink or special file");
+        }
+    }
+    Ok(())
+}
+
+/// Binds an interrupted private preparation to its exact authoring inputs.
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct PreparationCheckpoint {
+    registry: String,
+    source_branch: String,
+    source_commit: String,
+    release_id: String,
+    input_digest: String,
+    author_name: String,
+    author_email: String,
+}
+
+impl PreparationCheckpoint {
+    fn new(
+        directory: &Path,
+        registry: &str,
+        source_branch: &str,
+        options: &ReleaseTreeOptions,
+        container: Option<&aos_registry_surface::staging::StageContainerGraph>,
+    ) -> Result<Self> {
+        // Credentials and transfer concurrency are effects, so changes to
+        // those inputs do not change the prepared release's identity.
+        let inputs = serde_json::json!({
+            "signing_key": options.signing_key,
+            "metadata_keys": format!("{:?}", options.tuf_signing_keys),
+            "store_publish": options.store_publish.as_ref().map(|publish| serde_json::json!({
+                "store_path": publish.store_path,
+                "name": publish.name,
+                "version": publish.version,
+                "platform": publish.platform,
+                "description": publish.description,
+                "homepage": publish.homepage,
+                "license": publish.license,
+                "maintainer": publish.maintainer,
+                "sysroot": publish.sysroot,
+                "previous": publish.previous,
+                "source_drv": publish.source_drv,
+                "image_payload_paths": publish.image_payload_paths,
+                "image_disk_paths": publish.image_disk_paths,
+                "image_info_paths": publish.image_info_paths,
+                "image_formats": publish.image_formats,
+                "image_uki_paths": publish.image_uki_paths,
+                "bless": publish.bless,
+                "message": publish.message,
+                "registry": publish.registry,
+                "signing_key_id": publish.signing_key_id,
+            })),
+            "container": container,
+            "container_release": options.container_release.as_ref().map(|value| &value.canonical_bytes),
+            "cache_key": options.cache_key,
+            "cache_url": options.cache_url,
+            "cache_priority": options.cache_priority,
+            "cache_url_explicit": options.cache_url_explicit,
+            "cache_priority_explicit": options.cache_priority_explicit,
+            "destinations": options.upload_urls,
+        });
+        let input_digest = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(serde_json::to_vec(&inputs)?))
+        );
+        let repository = git2::Repository::open(directory)?;
+        let author = repository.signature()?;
+        Ok(Self {
+            registry: registry.to_string(),
+            source_branch: source_branch.to_string(),
+            source_commit: git(directory, &["rev-parse", "HEAD"])?,
+            release_id: options.version.to_string(),
+            input_digest,
+            author_name: author
+                .name()
+                .context("registry author lacks a name")?
+                .to_string(),
+            author_email: author
+                .email()
+                .context("registry author lacks an email")?
+                .to_string(),
+        })
+    }
+}
+
+fn preparation_checkpoint_path(workspace: &Path) -> Result<PathBuf> {
+    let parent = workspace
+        .parent()
+        .context("candidate workspace lacks a parent")?;
+    let name = workspace
+        .file_name()
+        .context("candidate workspace lacks a revision")?;
+    Ok(parent.join(format!("{}.preparation.json", name.to_string_lossy())))
+}
+
+/// Recovers only checkpoint-owned private bytes, retaining signed identities.
+fn restore_preparation_checkpoint(
+    workspace: &Path,
+    checkpoint: &PreparationCheckpoint,
+    options: &ReleaseTreeOptions,
+) -> Result<bool> {
+    let path = preparation_checkpoint_path(workspace)?;
+    if path.exists() {
+        if fs::metadata(&path)?.len() > 1024 * 1024 {
+            bail!("stage preparation checkpoint exceeds its size limit");
+        }
+        let saved: PreparationCheckpoint = serde_json::from_slice(&fs::read(&path)?)?;
+        if saved != *checkpoint {
+            bail!(
+                "interrupted preparation has different authoring inputs; restore its exact source commit and release options before resuming"
+            );
+        }
+    } else {
+        if workspace.exists() {
+            bail!(
+                "candidate workspace exists without a preparation checkpoint; inspect it before reuse"
+            );
+        }
+        let mut temporary =
+            tempfile::NamedTempFile::new_in(path.parent().context("checkpoint lacks a parent")?)?;
+        temporary.write_all(&serde_json::to_vec(checkpoint)?)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist_noclobber(&path)
+            .map_err(|error| error.error)?;
+        fs::File::open(path.parent().context("checkpoint lacks a parent")?)?.sync_all()?;
+    }
+
+    if !workspace.exists() {
+        return Ok(false);
+    }
+    if let Ok(repository) = git2::Repository::open(workspace) {
+        if crate::registry::release::RegistryReleaseLifecycle::restore_signed_candidate(
+            workspace,
+            &checkpoint.registry,
+            &checkpoint.release_id,
+            &checkpoint.source_commit,
+        )? {
+            return Ok(true);
+        }
+        let reference = format!("refs/tags/{}", options.version);
+        if repository.find_reference(&reference).is_ok() {
+            bail!("interrupted signed candidate lacks its original provider receipt");
+        }
+    }
+
+    // No signed identity exists yet. Recreate only this private workspace from
+    // the checkpoint's unchanged source; partial authoring is never published.
+    fs::remove_dir_all(workspace)?;
+    Ok(false)
 }
 
 /// Loads and binds an optional externally signed container-release attachment.
@@ -446,11 +843,14 @@ fn read_bounded_container_json(path: &Path, label: &str) -> Result<Vec<u8>> {
 /// remain independent.
 async fn publish_release_store_path(
     publish_opts: &ReleaseStorePublish,
+    dir: &Path,
     printer: &Printer,
 ) -> Result<()> {
     let (key, key_id) = publish_opts.publish_signing_args();
-    publish(
+    publish_to_registry_directory(
         &publish_opts.config,
+        dir,
+        &publish_opts.registry,
         &publish_opts.store_path,
         publish_opts.name.as_deref(),
         publish_opts.version.as_deref(),
@@ -474,11 +874,11 @@ async fn publish_release_store_path(
         &[],
         publish_opts.bless,
         false,
-        false,
+        true,
         publish_opts.message.as_deref(),
         key,
         key_id,
-        Some(&publish_opts.registry),
+        None,
         printer,
     )
     .await
@@ -518,8 +918,18 @@ pub async fn release_registry_tree(
     options: &ReleaseTreeOptions,
     printer: &Printer,
 ) -> Result<ReleaseReport> {
-    validate_release_options(options)?;
+    prepare_release_registry_tree(dir, registry_name, options, true, printer).await
+}
+
+async fn prepare_release_registry_tree(
+    dir: &Path,
+    registry_name: &str,
+    options: &ReleaseTreeOptions,
+    publish_origin: bool,
+    printer: &Printer,
+) -> Result<ReleaseReport> {
     if options.dry_run {
+        validate_release_options(options)?;
         if printer.mode() == OutputMode::Json {
             printer.json(&release_result_json(
                 "planned",
@@ -538,10 +948,20 @@ pub async fn release_registry_tree(
     objectstore::assert_sha256(dir)?;
     ensure_release_worktree_clean(dir)?;
     ensure_release_tag_available(dir, &options.version, options.resume)?;
+    let base_commit = git(dir, &["rev-parse", "HEAD"])?;
+    let predecessor_commit = if existing_release_tag_commit(dir, &options.version)?.is_none() {
+        crate::registry::release::RegistryReleaseLifecycle::prepare_lineage(dir, &options.version)?
+    } else {
+        None
+    };
+    let effective_options = composed_cache_options(dir, options)?;
+    let options = &effective_options;
+    validate_release_options(options)?;
     attach_container_release(dir, registry_name, options, printer)?;
 
-    if let Some(publish) = &options.store_publish {
-        publish_release_store_path(publish, printer).await?;
+    let already_signed = existing_release_tag_commit(dir, &options.version)?.is_some();
+    if !already_signed && let Some(publish) = &options.store_publish {
+        publish_release_store_path(publish, dir, printer).await?;
     }
 
     // Publishing cache unit (§9): generate into the internal staging dir, push
@@ -550,8 +970,8 @@ pub async fn release_registry_tree(
     // committed pointer lands before the tag so it is part of the snapshot.
     let mut cache_report = None;
     let mut cache_pointer_updated = false;
-    if options.should_publish_cache() {
-        let membership = if options.no_skip {
+    if !already_signed && options.should_publish_cache() {
+        let membership = if options.no_skip || !publish_origin {
             None
         } else {
             Some(
@@ -585,15 +1005,17 @@ pub async fn release_registry_tree(
 
         // Cache bytes first (NARs, then member narinfos, then root narinfos).
         // On failure the `?` aborts before any tag or pointer exists.
-        nixcache::upload_static_cache_to_all(
-            &options.cache_dir,
-            &options.upload_urls,
-            &options.upload_auth,
-            &generated.root_hashes,
-            options.no_skip,
-            printer,
-        )
-        .await?;
+        if publish_origin {
+            nixcache::upload_static_cache_to_all(
+                &options.cache_dir,
+                &options.upload_urls,
+                &options.upload_auth,
+                &generated.root_hashes,
+                options.no_skip,
+                printer,
+            )
+            .await?;
+        }
 
         // Advertise only when at least one narinfo is present on the
         // destinations — freshly uploaded (`narinfos`) or already there
@@ -604,26 +1026,13 @@ pub async fn release_registry_tree(
         {
             cache_pointer_updated = true;
             printer.info(&format!("Updated registry.toml [caches] -> {cache_url}"));
-            commit_registry(
-                dir,
-                "registry: update static cache pointer",
-                Some(&options.signing_key),
-            )?;
         }
         cache_report = Some(generated);
     }
 
     let release_tag_exists = existing_release_tag_commit(dir, &options.version)?.is_some();
     if !release_tag_exists {
-        let tuf_changed = write_tuf_release_metadata(dir, registry_name, options, printer)?;
-        if tuf_changed {
-            commit_registry_paths(
-                dir,
-                "registry: update TUF release metadata",
-                &[dir.join(tuf::TUF_DIR)],
-                Some(&options.signing_key),
-            )?;
-        }
+        write_tuf_release_metadata(dir, registry_name, options, printer)?;
     } else if options.resume {
         printer.info(&format!(
             "Release tag {} already exists; leaving committed TUF metadata unchanged.",
@@ -631,20 +1040,74 @@ pub async fn release_registry_tree(
         ));
     }
 
-    let head = git(dir, &["rev-parse", "HEAD"])?;
-    let published_before = semver_tag_versions(dir)?
-        .into_iter()
-        .filter(|version| version != &options.version)
-        .collect::<Vec<_>>();
+    let artifacts = if release_tag_exists {
+        let head = git(dir, &["rev-parse", "HEAD"])?;
+        ensure_resumed_release_tag(dir, options, &head, printer)?;
+        crate::registry::release::RegistryReleaseLifecycle::complete_signed_release(
+            dir,
+            &options.version,
+            true,
+            printer,
+        )
+        .await?
+    } else {
+        use crate::registry::release::{
+            KeyPathRegistryObjectSigner, PreparedRegistryRelease, RegistryCommitIdentity,
+            RegistryReleaseArtifacts, RegistryReleaseLifecycle,
+        };
+        let plan_digest = format!(
+            "sha256:{}",
+            hex::encode(Sha256::digest(
+                format!(
+                    "apr.registry-release/v1\0{registry_name}\0{}\0{base_commit}",
+                    options.version
+                )
+                .as_bytes()
+            ))
+        );
+        let prepared = PreparedRegistryRelease::from_authored_tree(
+            dir,
+            registry_name,
+            &options.version.to_string(),
+            &plan_digest,
+            &base_commit,
+            predecessor_commit,
+        )?;
+        let trust_key = derive_trust_key(registry_name, &options.signing_key)?;
+        let key_id = tuf_signing_key_id(dir, &trust_key)?;
+        let mut signer = KeyPathRegistryObjectSigner::new(
+            dir,
+            registry_name,
+            Path::new(&options.signing_key),
+            &key_id,
+        )?;
+        let repository = git2::Repository::open(dir)?;
+        let signature = repository.signature()?;
+        let identity = RegistryCommitIdentity {
+            name: signature
+                .name()
+                .context("registry author identity lacks a name")?
+                .to_string(),
+            email: signature
+                .email()
+                .context("registry author identity lacks an email")?
+                .to_string(),
+            unix_seconds: signature.when().seconds(),
+            offset_minutes: signature.when().offset_minutes(),
+        };
+        let finalized =
+            RegistryReleaseLifecycle::finalize_prepared(&prepared, &identity, &mut signer).await?;
+        RegistryReleaseArtifacts {
+            full_pack: finalized.full_pack,
+            deltas: finalized.deltas,
+        }
+    };
 
-    ensure_release_tag(dir, options, &head, printer)?;
-    refresh_registry_object_store(dir).context("refreshing dumb-HTTP object store after tag")?;
-
-    let artifacts = write_release_artifacts(dir, &published_before, options, printer).await?;
-    refresh_registry_object_store(dir)
-        .context("refreshing dumb-HTTP object store after release artifacts")?;
-
-    let mut report = artifacts;
+    let mut report = ReleaseReport {
+        full_pack: artifacts.full_pack,
+        deltas: artifacts.deltas,
+        ..ReleaseReport::default()
+    };
     report.cache_pointer_updated = cache_pointer_updated;
     report.cache = cache_report;
 
@@ -675,9 +1138,11 @@ pub async fn release_registry_tree(
     // Static git origin last: objects, refs, channel payloads, and the
     // committed cache pointer. Cache bytes, when any, were already uploaded
     // above, so this call carries the git surface only (`cache_dir = None`).
-    if !options.upload_urls.is_empty() {
-        let upload = static_upload::upload_static_origin_to_all(
+    if publish_origin && !options.upload_urls.is_empty() {
+        let surface = crate::registry::release::collect_static_surface(dir)?;
+        let upload = crate::registry::release::RegistryReleaseLifecycle::upload(
             dir,
+            &surface,
             &options.upload_urls,
             &options.upload_auth,
             options.no_skip,
@@ -693,8 +1158,15 @@ pub async fn release_registry_tree(
         ));
     }
 
-    printer.success(&format!("Released {registry_name} {}.", options.version));
-    if printer.mode() == OutputMode::Json {
+    if publish_origin {
+        printer.success(&format!("Released {registry_name} {}.", options.version));
+    } else {
+        printer.info(&format!(
+            "Prepared signed candidate {registry_name} {}.",
+            options.version
+        ));
+    }
+    if publish_origin && printer.mode() == OutputMode::Json {
         printer.json(&release_result_json(
             "released",
             registry_name,
@@ -703,10 +1175,34 @@ pub async fn release_registry_tree(
             &report,
         ));
     }
-    if let Some(cache) = &report.cache {
-        warn_on_cache_gc(&cache.output_dir, options.cache_max_age_days, printer);
+    if publish_origin && let Some(cache) = &report.cache {
+        warn_on_cache_gc(dir, &cache.output_dir, options.cache_max_age_days, printer);
     }
     Ok(report)
+}
+
+/// Resolves cache policy against the complete composed candidate catalog.
+fn composed_cache_options(
+    directory: &Path,
+    options: &ReleaseTreeOptions,
+) -> Result<ReleaseTreeOptions> {
+    let mut effective = options.clone();
+    effective.has_store_roots |= nixcache::registry_has_store_roots(directory)?;
+    if !effective.cache_url_explicit && effective.has_store_roots {
+        let root: aos_registry_surface::manifest::RegistryRootConfig =
+            toml::from_str(&fs::read_to_string(directory.join("registry.toml"))?)?;
+        if let Some(primary) = root.cache_entries().first() {
+            effective.cache_url = Some(primary.url.clone());
+        }
+    }
+    if effective.cache_url.is_none() {
+        effective.cache_url = resolve_effective_release_cache_url(
+            None,
+            &effective.upload_urls,
+            effective.has_store_roots,
+        )?;
+    }
+    Ok(effective)
 }
 
 fn write_tuf_release_metadata(
@@ -1175,12 +1671,6 @@ fn attach_container_release(
         .with_context(|| format!("creating container release directory {}", parent.display()))?;
     fs::write(&path, &attachment.canonical_bytes)
         .with_context(|| format!("staging canonical container release {}", path.display()))?;
-    commit_registry_paths(
-        dir,
-        &format!("registry: attach container release {}", options.version),
-        &[path],
-        Some(&options.signing_key),
-    )?;
     printer.success(&format!(
         "Attached canonical container sidecar for release {}.",
         options.version
@@ -1202,9 +1692,8 @@ fn ensure_release_worktree_clean(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Create the signed release tag at `head`, or accept an existing tag that
-/// already points at `head` when resuming.
-fn ensure_release_tag(
+/// Requires the exact existing release tag at HEAD before resuming artifacts.
+fn ensure_resumed_release_tag(
     dir: &Path,
     options: &ReleaseTreeOptions,
     head: &str,
@@ -1232,16 +1721,10 @@ fn ensure_release_tag(
         );
     }
 
-    sign_tag(
-        dir,
-        &options.version.to_string(),
-        head,
-        Some("AOS registry release"),
-        &options.signing_key,
-        false,
-    )?;
-    printer.success(&format!("Created signed tag '{}'.", options.version));
-    Ok(())
+    bail!(
+        "release tag {} disappeared before its artifacts resumed",
+        options.version
+    )
 }
 
 /// Return the commit an existing release tag points at, or `None` when no
@@ -1272,8 +1755,8 @@ fn existing_release_tag_commit(dir: &Path, version: &semver::Version) -> Result<
 /// publish commit and a cache upload have already landed.
 ///
 /// It is deliberately *not* sufficient on its own: the authoritative collision
-/// check still happens in [`ensure_release_tag`] under the release lock, since
-/// a concurrent producer working from a different clone can create the same
+/// check still happens in the shared prepared finalizer under the release lock.
+/// A concurrent producer working from a different clone can create the same
 /// tag after this check passes. That residual race resolves when the losing
 /// producer pushes to the shared origin. Passing `resume` skips the preflight,
 /// since resuming an interrupted release legitimately reuses an existing tag.
@@ -1293,181 +1776,6 @@ fn ensure_release_tag_available(dir: &Path, version: &semver::Version, resume: b
         );
     }
     Ok(())
-}
-
-/// Generate the pack artifacts for a release under
-/// `.git/releases/<version>/`.
-///
-/// Major and minor releases get a self-contained full pack, recorded in
-/// `info/packs` for dumb-HTTP fetchers. Every release also gets a
-/// zstd-compressed thin delta from each prior release selected by the
-/// delta scheme, so consumers on a supported base version can fetch a
-/// compact incremental pack instead of the full history.
-async fn write_release_artifacts(
-    dir: &Path,
-    published_before: &[semver::Version],
-    options: &ReleaseTreeOptions,
-    printer: &Printer,
-) -> Result<ReleaseReport> {
-    let commit = release_commit(dir, &options.version)?;
-    let release_objects = objectstore::repo_git_dir(dir)?
-        .join("releases")
-        .join(objectstore::release_object_dir(&options.version));
-    let pack_dir = release_objects.join("pack");
-    let info_dir = release_objects.join("info");
-    fs::create_dir_all(&pack_dir).with_context(|| format!("creating {}", pack_dir.display()))?;
-    fs::create_dir_all(&info_dir).with_context(|| format!("creating {}", info_dir.display()))?;
-
-    let full_pack = match pack::release_kind(&options.version) {
-        pack::ReleaseKind::Major | pack::ReleaseKind::Minor => {
-            Some(write_full_pack_artifact(dir, &commit, &pack_dir, options.resume, printer).await?)
-        }
-        pack::ReleaseKind::Patch => None,
-    };
-
-    if let Some(full_pack) = &full_pack {
-        fs::write(info_dir.join("packs"), format!("P {full_pack}\n"))
-            .with_context(|| format!("writing {}", info_dir.join("packs").display()))?;
-    }
-
-    let mut deltas = Vec::new();
-    for base in pack::scheme_deltas(&options.version, published_before) {
-        let base_commit = release_commit(dir, &base)?;
-        deltas.push(
-            write_delta_artifact(
-                dir,
-                &base,
-                &base_commit,
-                &commit,
-                &pack_dir,
-                options.resume,
-                printer,
-            )
-            .await?,
-        );
-    }
-
-    Ok(ReleaseReport {
-        full_pack,
-        deltas,
-        ..ReleaseReport::default()
-    })
-}
-
-/// Generate (or, with `resume`, reuse) the full `pack-*.pack` for a
-/// release commit, staging it in a tempdir before copying it and its
-/// `.idx` into place.
-async fn write_full_pack_artifact(
-    dir: &Path,
-    commit: &str,
-    pack_dir: &Path,
-    resume: bool,
-    printer: &Printer,
-) -> Result<String> {
-    if let Some(existing) = existing_full_pack(pack_dir)? {
-        if resume {
-            let idx = pack_dir.join(existing.trim_end_matches(".pack").to_string() + ".idx");
-            if !idx.exists() {
-                bail!(
-                    "full pack {existing} exists but its index {} is missing; rerun without --resume to regenerate it",
-                    idx.display()
-                );
-            }
-            printer.info(&format!("Full pack {existing} already exists; resuming."));
-            return Ok(existing);
-        }
-        bail!("full pack {existing} already exists; pass --resume to reuse it");
-    }
-
-    let tmp = tempfile::Builder::new()
-        .prefix(".tmp-full-pack-")
-        .tempdir_in(pack_dir)
-        .with_context(|| format!("creating full-pack tempdir in {}", pack_dir.display()))?;
-    let pack_path = pack::full_pack(dir, commit, tmp.path()).await?;
-    let pack_name = file_name_string(&pack_path)?;
-    fs::copy(&pack_path, pack_dir.join(&pack_name))
-        .with_context(|| format!("copying {}", pack_path.display()))?;
-    let idx_path = pack_path.with_extension("idx");
-    if !idx_path.exists() {
-        bail!("full pack index was not generated: {}", idx_path.display());
-    }
-    let idx_name = file_name_string(&idx_path)?;
-    fs::copy(&idx_path, pack_dir.join(idx_name))
-        .with_context(|| format!("copying {}", idx_path.display()))?;
-    printer.success(&format!("Generated full pack {pack_name}."));
-    Ok(pack_name)
-}
-
-/// Generate (or, with `resume`, reuse) the `delta-<base>.pack.zst` thin
-/// pack carrying the objects needed to go from `base_commit` to
-/// `target_commit`.
-async fn write_delta_artifact(
-    dir: &Path,
-    base: &semver::Version,
-    base_commit: &str,
-    target_commit: &str,
-    pack_dir: &Path,
-    resume: bool,
-    printer: &Printer,
-) -> Result<String> {
-    let artifact_name = format!("delta-{base}.pack.zst");
-    let dest = pack_dir.join(&artifact_name);
-    if dest.exists() {
-        if resume {
-            printer.info(&format!(
-                "Delta pack {artifact_name} already exists; resuming."
-            ));
-            return Ok(artifact_name);
-        }
-        bail!("delta pack {artifact_name} already exists; pass --resume to reuse it");
-    }
-
-    let tmp = tempfile::Builder::new()
-        .prefix(".tmp-delta-pack-")
-        .tempdir_in(pack_dir)
-        .with_context(|| format!("creating delta-pack tempdir in {}", pack_dir.display()))?;
-    let delta = pack::thin_delta(dir, base_commit, target_commit, base, tmp.path()).await?;
-    let compressed = pack::zstd_compress(&delta, None).await?;
-    fs::copy(&compressed, &dest).with_context(|| format!("copying {}", compressed.display()))?;
-    printer.success(&format!("Generated delta pack {artifact_name}."));
-    Ok(artifact_name)
-}
-
-/// Find an already-generated full pack in `pack_dir`; more than one is an
-/// error because `info/packs` records exactly one.
-fn existing_full_pack(pack_dir: &Path) -> Result<Option<String>> {
-    if !pack_dir.exists() {
-        return Ok(None);
-    }
-    let mut packs = Vec::new();
-    for entry in
-        fs::read_dir(pack_dir).with_context(|| format!("reading {}", pack_dir.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if name.starts_with("pack-") && name.ends_with(".pack") {
-            packs.push(name.to_string());
-        }
-    }
-    packs.sort();
-    if packs.len() > 1 {
-        bail!(
-            "multiple full packs already exist in {}: {}",
-            pack_dir.display(),
-            packs.join(", "),
-        );
-    }
-    Ok(packs.into_iter().next())
-}
-
-fn file_name_string(path: &Path) -> Result<String> {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .map(ToString::to_string)
-        .ok_or_else(|| anyhow::anyhow!("path has no UTF-8 filename: {}", path.display()))
 }
 
 #[cfg(test)]

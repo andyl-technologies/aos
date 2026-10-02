@@ -1,6 +1,6 @@
 # Maintainer-host publishing runbook
 
-This is the operating procedure for the implemented `aos release` command
+This is the operating procedure for the implemented `aos maintain release` command
 family. Production publication remains prohibited until every launch gate in
 [`05-implementation-plan.md`](05-implementation-plan.md) has objective
 evidence and the rehearsals in this runbook have completed. The lower-level

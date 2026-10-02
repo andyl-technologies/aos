@@ -72,7 +72,7 @@ pub(super) fn require_fitness(
         signer_roster: Some(signer_roster_digest(plan)?),
         tooling: match parse_digest(input.tooling_digest.as_deref(), "tooling digest")? {
             Some(digest) => Some(digest),
-            None => configured(config.as_ref(), MaintainerConfig::tooling_digest)?,
+            None => super::tooling::detected_digest()?,
         },
         alert_config: match parse_digest(
             input.alert_config_digest.as_deref(),

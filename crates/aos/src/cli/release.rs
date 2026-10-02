@@ -4,16 +4,17 @@
 //! a work directory:
 //!
 //! ```text
-//! aos release new --registry R --version V --images PATH [--release-id ID] [--override DIR] [--work DIR] [--config PATH]
-//! aos release advance --to <destination> [--ring N] [--override DIR] [--accept-transaction] [--work DIR] [--config PATH]
-//! aos release status [--work DIR] [--config PATH]
-//! aos release explain --to <destination> [--work DIR] [--config PATH]
-//! aos release review [--reject --reason TEXT] [--work DIR] [--config PATH]
-//! aos release fitness run <kind> [--report PATH] [--config PATH]
-//! aos release fitness status [--config PATH]
+//! aos maintain release new --registry R --version V --images PATH [--release-id ID] [--override DIR] [--work DIR] [--config PATH]
+//! aos maintain release advance --to <destination> [--stop-after-upload] [--stage-revision N] [--ring N] [--override DIR] [--accept-transaction] [--work DIR] [--config PATH]
+//! aos maintain release publish --to <destination> [--stage-revision N] [--work DIR] [--config PATH]
+//! aos maintain release status [--work DIR] [--config PATH]
+//! aos maintain release explain --to <destination> [--work DIR] [--config PATH]
+//! aos maintain release review [--reject --reason TEXT] [--work DIR] [--config PATH]
+//! aos maintain release fitness run <kind> [--report PATH] [--config PATH]
+//! aos maintain release fitness status [--config PATH]
 //! ```
 //!
-//! `aos release step <command>` exposes each leaf operation with explicit
+//! `aos maintain release step <command>` exposes each leaf operation with explicit
 //! inputs: planning, build and signing, publication to one destination
 //! (`<surface>/<channel>`, such as `production/stable`), per-destination
 //! qualification, ring-by-ring channel rollout, and inspection. Every
@@ -30,6 +31,8 @@ pub enum ReleaseCommand {
     New(ReleaseNewArgs),
     /// Run every automated step toward a destination until it completes or needs a person
     Advance(ReleaseAdvanceArgs),
+    /// Publish a fully uploaded destination after explicit review
+    Publish(ReleaseDestinationArgs),
     /// Show the release state, each destination's state, and the next step
     Status(ReleaseWorkArgs),
     /// List a destination's obligations and whether each is met
@@ -93,9 +96,36 @@ pub struct ReleaseAdvanceArgs {
     #[arg(long = "override", value_name = "DIR")]
     pub override_dir: Option<PathBuf>,
 
+    /// Stop after uploading immutable artifacts, before release visibility changes
+    #[arg(long)]
+    pub stop_after_upload: bool,
+
+    /// Expected current candidate revision when updating an immutable upload
+    #[arg(long, requires = "stop_after_upload")]
+    pub stage_revision: Option<u64>,
+
     /// Accept the reviewed isolated registry transaction and continue
     #[arg(long)]
     pub accept_transaction: bool,
+
+    /// Work directory [default: newest release under work_root]
+    #[arg(long)]
+    pub work: Option<PathBuf>,
+
+    /// Maintainer configuration [default: $AOS_RELEASE_CONFIG or the standard search]
+    #[arg(long)]
+    pub config: Option<PathBuf>,
+}
+
+#[derive(Args)]
+pub struct ReleaseDestinationArgs {
+    /// Exact candidate revision selected for publication
+    #[arg(long)]
+    pub stage_revision: Option<u64>,
+
+    /// Destination to publish, such as staging/edge or production/stable
+    #[arg(long)]
+    pub to: String,
 
     /// Work directory [default: newest release under work_root]
     #[arg(long)]
@@ -672,12 +702,20 @@ pub struct ReleasePrepareRegistryArgs {
     pub build_report: PathBuf,
 
     /// Externally signed canonical container-release sidecar to commit
-    #[arg(long, requires = "container_signature_input")]
+    #[arg(long, requires_all = ["container_signature_input", "container_layout"])]
     pub container_release: Option<PathBuf>,
 
     /// Nix-produced signature input paired with --container-release
     #[arg(long, requires = "container_release")]
     pub container_signature_input: Option<PathBuf>,
+
+    /// OCI image layout whose graph is captured with the container candidate
+    #[arg(long, requires = "container_release")]
+    pub container_layout: Option<PathBuf>,
+
+    /// Distribution repository for the signed container image
+    #[arg(long, requires = "container_layout")]
+    pub container_repository: Option<String>,
 
     /// Clean authoring registry at the exact planned base commit
     #[arg(long)]
@@ -698,6 +736,14 @@ pub struct ReleasePrepareRegistryArgs {
     /// Provenance roster key and public trust line as KEY_ID=PATH
     #[arg(long, value_name = "KEY_ID=PATH")]
     pub provenance_key: String,
+
+    /// Active registry roster key for canonical catalog metadata as KEY_ID=PATH
+    #[arg(long, value_name = "KEY_ID=PATH")]
+    pub registry_key: String,
+
+    /// Provider verification identity expected for catalog metadata operations
+    #[arg(long)]
+    pub registry_verification_identity: String,
 
     /// Provider verification identity expected for provenance operations
     #[arg(long)]
@@ -882,6 +928,18 @@ pub struct ReleaseFitnessInputArgs {
 
 #[derive(Args)]
 pub struct ReleasePublishArgs {
+    /// Expected candidate revision for an upload update or publication
+    #[arg(long)]
+    pub stage_revision: Option<u64>,
+
+    /// Upload immutable artifacts and retain an unpublished candidate
+    #[arg(long)]
+    pub stage_only: bool,
+
+    /// Completed candidate upload directory whose exact revision is being published
+    #[arg(long)]
+    pub staged_upload: Option<PathBuf>,
+
     /// Destination to publish, such as staging/edge or production/stable
     #[arg(long)]
     pub to: String,
@@ -1133,7 +1191,7 @@ pub struct ReleaseChannelAdvanceArgs {
     pub journal: PathBuf,
 
     /// Destination surface publication receipt
-    #[arg(long, alias = "production-receipt")]
+    #[arg(long)]
     pub publication_receipt: PathBuf,
 
     /// Channel receipt of an earlier ring of this destination; repeatable
@@ -1191,7 +1249,7 @@ pub struct ReleaseChannelCompleteArgs {
     pub journal: PathBuf,
 
     /// Destination surface publication receipt
-    #[arg(long, alias = "production-receipt")]
+    #[arg(long)]
     pub publication_receipt: PathBuf,
 
     /// Signed channel receipt; repeat for every planned ring
@@ -1273,7 +1331,7 @@ pub struct ReleaseStatusArgs {
 
 #[derive(Args)]
 pub struct ReleaseBuildArgs {
-    /// Canonical release plan produced by `aos release plan`
+    /// Canonical release plan produced by `aos maintain release plan`
     #[arg(long)]
     pub plan: PathBuf,
 
@@ -1288,7 +1346,7 @@ pub struct ReleaseBuildArgs {
 
 #[derive(Args)]
 pub struct ReleaseAssembleArgs {
-    /// Canonical release plan produced by `aos release plan`
+    /// Canonical release plan produced by `aos maintain release plan`
     #[arg(long)]
     pub plan: PathBuf,
 

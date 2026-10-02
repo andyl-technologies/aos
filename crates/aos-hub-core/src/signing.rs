@@ -24,7 +24,8 @@
 //!
 use anyhow::Result;
 
-use aos_registry_surface::object::{encode_loose, hash_object, ObjectKind, Oid};
+use aos_registry_surface::channel::PartitionTag;
+use aos_registry_surface::object::{ObjectKind, Oid, encode_loose, hash_object};
 use aos_registry_surface::tag::{render_tag_payload, verify_signed_tag};
 use aos_registry_surface::{sshsig, tag};
 
@@ -97,18 +98,17 @@ pub fn sign_partition(
     release_tag_oid: &str,
     when: i64,
 ) -> Result<Vec<u8>> {
-    let body = render_tag_payload(
+    let partition = PartitionTag::new(
         channel_name,
         release_tag_oid,
-        "tag",
+        &format!("AOS Registry <registry@aos> {when} +0000"),
         PARTITION_MESSAGE,
-        when,
     )?;
-    let armor = sshsig::sign_armored(body.as_bytes(), signing_key);
-    let mut payload = body.into_bytes();
-    payload.extend_from_slice(armor.as_bytes());
-    payload.push(b'\n');
-    Ok(payload)
+    partition.sign_with(|payload| {
+        let mut armor = sshsig::sign_armored(payload, signing_key);
+        armor.push('\n');
+        Ok(armor)
+    })
 }
 
 /// Verifies a signed release tag against an exact release name and trust set.
@@ -163,6 +163,19 @@ mod tests {
         assert_eq!(verified.tag.object, tag_oid);
         // Name binding: the same bytes must not verify under another channel.
         assert!(verify_signed_tag(&payload, "beta", &trusted(&signer)).is_err());
+    }
+
+    #[test]
+    fn shared_partition_signer_preserves_existing_wire_bytes() {
+        let signer = key(17);
+        let target = "cd".repeat(32);
+        let when = 1_770_000_000;
+        let body = render_tag_payload("stable", &target, "tag", PARTITION_MESSAGE, when).unwrap();
+        let expected = format!("{body}{}\n", sshsig::sign_armored(body.as_bytes(), &signer));
+
+        let actual = sign_partition(&signer, "stable", &target, when).unwrap();
+
+        assert_eq!(actual, expected.as_bytes());
     }
 
     #[test]
