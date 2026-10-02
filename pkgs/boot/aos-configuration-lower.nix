@@ -26,7 +26,7 @@
     export AOS_FSCK_EROFS=${erofs-utils}/bin/fsck.erofs
     export AOS_MOUNT=${util-linux}/bin/mount
     export AOS_UMOUNT=${util-linux}/bin/umount
-    export AOS_PACKAGE_RUNTIME=${aos.packageRuntime}/bin/.aos-package-runtime-unwrapped
+    export AOS_PACKAGE_RUNTIME=${aos.packageRuntime}/bin/aos-package-runtime
     target_triple="$(rustc -vV | sed -n 's/^host: //p')"
     test "$target_triple" = "${targetTriple}"
     rustflags_var="CARGO_TARGET_$(printf '%s' "$target_triple" | tr '[:lower:]-' '[:upper:]_')_RUSTFLAGS"
