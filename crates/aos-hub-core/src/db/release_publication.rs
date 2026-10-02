@@ -1976,19 +1976,27 @@ mod tests {
     async fn per_train_ledger_migration_retains_baseline_operations() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("hub.db");
-        let db = Database::open(&path).await.unwrap();
+        {
+            let connection = rusqlite::Connection::open(&path).unwrap();
+            connection
+                .execute_batch(super::super::MIGRATIONS[0])
+                .unwrap();
+            connection.execute_batch("CREATE TABLE schema_version(version INTEGER NOT NULL); INSERT INTO schema_version VALUES(1)").unwrap();
+        }
+        // Populate the actual v1 schema without running successor migrations.
+        let backend = crate::backend::SqlxBackend::connect_sqlite(path.to_str().unwrap())
+            .await
+            .unwrap();
+        let db = Database {
+            backend: Box::new(backend),
+        };
         let bundle = admitted_bundle(&db, "ledger-upgrade").await;
         commit_staging(&db, &bundle, "ledger-upgrade").await;
         create_channel(&db, bundle.registry_id, 1, "edge").await;
         drop(db);
 
-        // Rewind to the baseline: the successor ledger is additive, so a v1
-        // database is exactly this schema without it. The retained operation
-        // lives in the frozen baseline ledger.
+        // The retained operation lives in the frozen baseline ledger.
         let connection = rusqlite::Connection::open(&path).unwrap();
-        connection
-            .execute_batch("DROP TABLE release_channel_advances")
-            .unwrap();
         connection
             .execute(
                 "INSERT INTO release_channel_operations
@@ -2005,9 +2013,6 @@ mod tests {
                 ],
             )
             .unwrap();
-        connection
-            .execute_batch("UPDATE schema_version SET version = 1")
-            .unwrap();
         drop(connection);
 
         let db = Database::open(&path).await.unwrap();
@@ -2019,7 +2024,7 @@ mod tests {
             .unwrap()
             .get(0)
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, super::super::MIGRATIONS.len() as i64);
         let retained = db
             .release_channel_operation(bundle.registry_id, "edge", 1)
             .await
