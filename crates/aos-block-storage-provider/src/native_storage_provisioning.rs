@@ -132,13 +132,13 @@ struct Context {
     mkfs_xfs: PathBuf,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 enum DiskState {
     Absent,
     Completed(Source),
     Drifted(Source),
     Pending,
-    Unknown,
+    Unknown(String),
 }
 
 #[derive(Debug, Deserialize)]
@@ -186,7 +186,7 @@ pub fn handle(action: &str, bytes: &[u8]) -> Result<Vec<u8>> {
             DiskState::Completed(_)
             | DiskState::Drifted(_)
             | DiskState::Pending
-            | DiskState::Unknown => "indeterminate",
+            | DiskState::Unknown(_) => "indeterminate",
         };
         let result = if status == "current" {
             json!({"status":status,"outputs":outputs(&desired, &invocation.id)})
@@ -225,7 +225,9 @@ fn converge(
         DiskState::Completed(_) | DiskState::Drifted(_) => {
             bail!("committed storage layout is immutable; factory reset is required")
         }
-        DiskState::Unknown => bail!("storage provisioning state is indeterminate"),
+        DiskState::Unknown(reason) => {
+            bail!("storage provisioning state is indeterminate: {reason}")
+        }
     }
 
     let deadline = operation_deadline(remaining_millis)?;
@@ -371,7 +373,11 @@ fn inspect_state(desired: &Desired, context: &Context, target: &str) -> Result<D
         (false, false) => return Ok(DiskState::Absent),
         (true, false) => Source::Operator,
         (false, true) => Source::Fallback,
-        (true, true) => return Ok(DiskState::Unknown),
+        (true, true) => {
+            return Ok(DiskState::Unknown(
+                "both operator and fallback provisioning markers exist".into(),
+            ));
+        }
     };
     let marker = fs::canonicalize(label_path(source.label()))
         .context("resolving committed provisioning marker")?;
@@ -388,13 +394,20 @@ fn inspect_state(desired: &Desired, context: &Context, target: &str) -> Result<D
         match run_repart(context, target, true, true, 15_000) {
             Ok(value) if all_unchanged(&value)? => {}
             Ok(_) => return Ok(DiskState::Drifted(source)),
-            Err(_) => return Ok(DiskState::Unknown),
+            Err(error) => {
+                return Ok(DiskState::Unknown(format!(
+                    "inspecting committed layout on {}: {error:#}",
+                    target.device
+                )));
+            }
         }
     }
     match topology_matches(desired, context) {
         Ok(true) => Ok(DiskState::Completed(source)),
         Ok(false) => Ok(DiskState::Drifted(source)),
-        Err(_) => Ok(DiskState::Unknown),
+        Err(error) => Ok(DiskState::Unknown(format!(
+            "inspecting committed storage topology: {error:#}"
+        ))),
     }
 }
 
