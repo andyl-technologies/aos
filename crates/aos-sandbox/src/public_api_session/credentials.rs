@@ -1493,8 +1493,11 @@ impl OfflinePrepareCredentialsV3 {
         let bytes = self.readbacks.last_mut().ok_or_else(offline_credential_rejected)?;
         for index in 0..2 {
             let file = self.files[index].as_ref().ok_or_else(offline_credential_rejected)?;
-            aos_sandbox_linux::protected_file::read_exact_positioned(file, &mut bytes[index])
-                .map_err(|error| std::io::Error::other(OfflinePrepareExactReadError(error)))?;
+            aos_sandbox_linux::protected_file::read_exact_positioned_retaining_cause(
+                file,
+                &mut bytes[index],
+            )
+            .map_err(|error| std::io::Error::other(OfflinePrepareExactReadError(error)))?;
             if Some(identity(&file.metadata()?)) != self.originals[index] {
                 return Err(offline_credential_rejected());
             }
@@ -1545,7 +1548,9 @@ fn require_offline_credential_names(mut names: Vec<std::ffi::OsString>) -> std::
 
 #[derive(Debug, thiserror::Error)]
 #[error("offline prepare original exact read failed ({0:?})")]
-struct OfflinePrepareExactReadError(aos_sandbox_linux::protected_file::ExactReadError);
+struct OfflinePrepareExactReadError(
+    #[source] aos_sandbox_linux::protected_file::ExactReadFailure,
+);
 
 fn offline_credential_label(file: &File) -> std::io::Result<()> {
     let mut context = [0; 256];

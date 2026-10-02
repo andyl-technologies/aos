@@ -356,8 +356,16 @@ impl<'startup> NixPrepareKeysAttemptV3<'startup> {
         }
         self.readbacks.push(Zeroizing::new(vec![0; expected.len()]));
         let readback = self.readbacks.last_mut().ok_or(Error::Rejected)?;
-        aos_sandbox_linux::protected_file::read_exact_positioned(file, &mut *readback)
-            .map_err(Error::Read)?;
+        aos_sandbox_linux::protected_file::read_exact_positioned_retaining_cause(
+            file,
+            &mut *readback,
+        )
+        .map_err(|failure| match failure {
+            aos_sandbox_linux::protected_file::ExactReadFailure::Io(errno) => {
+                Error::Io(io::Error::from_raw_os_error(errno.raw_os_error()))
+            }
+            failure => Error::Read(failure.legacy_classification()),
+        })?;
         if readback.as_slice() != expected || Some(inspect(file)?) != self.identities[index] {
             return Err(Error::Rejected);
         }

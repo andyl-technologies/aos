@@ -24,7 +24,9 @@ use aos_sandbox_broker_session_protocol::manifest::{
     BrokerSessionManifestAudienceV1, BrokerSessionManifestErrorV1, BrokerSessionManifestV1,
 };
 use aos_sandbox_linux::inventory::MountId;
-use aos_sandbox_linux::protected_file::{open_nofollow_child, read_exact_positioned};
+use aos_sandbox_linux::protected_file::{
+    open_nofollow_child, read_exact_positioned_retaining_cause,
+};
 use ed25519_dalek::{Signature, SignatureError, VerifyingKey};
 use rustix::fs::{Mode, OFlags};
 use zeroize::{Zeroize as _, Zeroizing};
@@ -304,11 +306,16 @@ impl<'startup> NixApprovedJobInspectionAttemptV3<'startup> {
         for index in 0..3 {
             let slot = index + 3;
             self.require_original(slot)?;
-            read_exact_positioned(
+            read_exact_positioned_retaining_cause(
                 self.originals[slot].as_ref().ok_or(Error::Rejected)?,
                 &mut self.snapshots[round][index],
             )
-            .map_err(Error::Read)?;
+            .map_err(|failure| match failure {
+                aos_sandbox_linux::protected_file::ExactReadFailure::Io(errno) => {
+                    Error::Io(io::Error::from_raw_os_error(errno.raw_os_error()))
+                }
+                failure => Error::Read(failure.legacy_classification()),
+            })?;
             self.require_original(slot)?;
         }
         for slot in 0..6 {
