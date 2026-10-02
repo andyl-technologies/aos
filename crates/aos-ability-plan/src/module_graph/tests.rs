@@ -217,3 +217,34 @@ fn resolves_canonical_sets_by_returned_values_without_reordering_lists() {
             .is_err()
     );
 }
+
+#[test]
+fn contract_errors_locate_nested_values_without_disclosing_them() {
+    let mut declaration = effect("metadata");
+    let record = json!({"kind":"submodule", "fields":{
+        "facts":{"kind":"submodule", "fields":{"name":{"kind":"string"}}}
+    }});
+    declaration["input_type"] = record.clone();
+    declaration["input"] = json!({"facts":{"name":"valid"}});
+    declaration["results"]["value"] = record;
+    let node_key = key(&declaration);
+    let checked = decode(&document(vec![declaration])).unwrap();
+    let node = &checked.graph().nodes[&node_key];
+    let invalid = json!({"facts":{"name":"private-value", "extra":"private-extra"}});
+
+    let input_error = format!("{:#}", node.check_input(&invalid).unwrap_err());
+    let result_error = format!(
+        "{:#}",
+        node.check_results(&json!({"value":invalid})).unwrap_err()
+    );
+
+    assert!(input_error.contains("input of effect"));
+    assert!(result_error.contains("result value of effect"));
+    for error in [input_error, result_error] {
+        assert!(error.contains("metadata"));
+        assert!(error.contains("field facts"));
+        assert!(error.contains("record field count 2"));
+        assert!(!error.contains("private-value"));
+        assert!(!error.contains("private-extra"));
+    }
+}

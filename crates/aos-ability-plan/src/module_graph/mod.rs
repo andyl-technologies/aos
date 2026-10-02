@@ -13,7 +13,7 @@ mod tests;
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, ensure};
 use aos_ability_model::OptionType;
 use aos_contract::{Sha256Digest, canonical, limits::JsonLimits};
 use serde::{Deserialize, Serialize};
@@ -183,7 +183,8 @@ impl Effect {
             let value = object
                 .get(name)
                 .ok_or_else(|| anyhow::anyhow!("missing handler result {name}"))?;
-            validation::check_concrete(value, schema)?;
+            validation::check_concrete(value, schema)
+                .with_context(|| format!("result {name} of effect {:?}", self.identity))?;
         }
         Ok(())
     }
@@ -210,7 +211,8 @@ impl Effect {
     /// # Errors
     /// Returns an error if the concrete value does not satisfy the input type.
     pub fn check_input(&self, input: &Value) -> Result<()> {
-        validation::check_concrete(input, &self.input_type)?;
+        validation::check_concrete(input, &self.input_type)
+            .with_context(|| format!("input of effect {:?}", self.identity))?;
         Ok(())
     }
 }
@@ -237,7 +239,12 @@ pub fn resolve(value: &Value, results: &BTreeMap<String, Value>) -> Result<Value
             .ok_or_else(|| {
                 anyhow::anyhow!("unavailable deferred output {key}.{}", reference.output)
             })?;
-        validation::check_concrete(result, &reference.schema)?;
+        validation::check_concrete(result, &reference.schema).with_context(|| {
+            format!(
+                "deferred result {} of effect {:?}",
+                reference.output, reference.identity
+            )
+        })?;
         return Ok(result.clone());
     }
     match value {
