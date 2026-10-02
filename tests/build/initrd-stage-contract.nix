@@ -22,6 +22,10 @@
   };
   system = mkSystem {modules = [../../systems/server.nix fixtureAuthorities];};
   initrd = system.config.system.build.initrd;
+  initrdClosure = (lib.build.closureInfo {inherit pkgs;}) {
+    rootPaths = [initrd];
+    pname = "aos-initrd-retained-closure";
+  };
   assembly = system.config.system.build.unsignedImageAssembly;
   rootPaths = map builtins.toString system.config.aos.boot.initrd.packageRoots;
   runtimeRoots = system.config.aos.boot.initrd.runtimeRoots;
@@ -44,12 +48,31 @@ in
       pname = "aos-initrd-native-contract-check";
       version = "1";
       src = null;
-      buildDeps = [assembly imageContent imageMetadata pkgs.aos.testSupport pkgs.coreutils pkgs.diffutils pkgs.gawk pkgs.libarchive pkgs.erofs-utils pkgs.python3 pkgs.zstd];
+      buildDeps = [assembly imageContent imageMetadata initrdClosure pkgs.aos.testSupport pkgs.coreutils pkgs.diffutils pkgs.gawk pkgs.jq pkgs.libarchive pkgs.erofs-utils pkgs.python3 pkgs.zstd];
+      outputChecks.out = {};
+      exportReferencesGraph.initrd = [initrd];
       phases = [
         {
           name = "check";
           script = ''
             set -eu
+            # Verify positive retention as well as refusal of incidental
+            # catalog references: an allowlist alone cannot detect omissions.
+            ${pkgs.jq}/bin/jq -r --arg root ${lib.escapeShellArg (builtins.toString initrd)} '
+              .initrd[] | select(.path == $root) | .references[]
+            ' "$NIX_ATTRS_JSON_FILE" | sort -u > actual-references
+            sort -u ${initrd}/reference-roots > expected-references
+            ${pkgs.diffutils}/bin/cmp expected-references actual-references
+
+            archive_path=$(dirname "$(readlink -f ${initrd}/initrd.img)")
+            ${pkgs.jq}/bin/jq -e --arg archive "$archive_path" '
+              [.initrd[] | select(.path == $archive)] as $archives
+              | ($archives | length) == 1 and $archives[0].references == []
+            ' "$NIX_ATTRS_JSON_FILE" >/dev/null
+            ${pkgs.gawk}/bin/awk -v forbidden=${lib.escapeShellArg (builtins.toString pkgs.glibc.dev)} '
+              $0 == forbidden { exit 1 }
+            ' ${initrdClosure}/store-paths
+
             ${pkgs.aos.testSupport}/bin/aos-release-fleet-fixture \
               image-assembly-contract ${assembly} initrd-native-contract-check
             mkdir initrd-tree root-tree

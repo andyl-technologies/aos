@@ -434,8 +434,8 @@
     ++ (map (p: "${p}/sbin") initrdRuntimeRoots)
     ++ ["/bin" "/sbin"]
   );
-  initrdArtifact = mkDerivation {
-    name = "aos-initrd";
+  initrdArchive = mkDerivation {
+    name = "aos-initrd-archive";
     src = null;
 
     buildDeps = [
@@ -447,21 +447,13 @@
       jq
     ];
 
-    # Nix's exported graph also contains build-history nodes associated
-    # with derivations. Only paths reachable through store references
-    # from these roots belong in the initrd runtime closure.
-    # `initrdUnits` is included so the `unit-<name>.service` store
-    # paths that the rendered units symlink into land in the initrd's
-    # /nix/store. Without it `/etc/systemd/system/*.service` resolves
-    # to dangling symlinks and systemd emits "No such file or
-    # directory" for each initrd service.
-    exportReferencesGraph =
-      lib.concatLists
-      (lib.imap (i: p: ["closure-${toString i}" p]) initrdRuntimeRoots)
-      ++ [
-        "closure-initrd-units"
-        initrdUnits
-      ];
+    # Catalogs inside the compressed image name available outputs that are
+    # not runtime roots. A compressed hash can accidentally survive Nix's
+    # byte scanner; retain dependencies explicitly in the public wrapper.
+    outputChecks.out = {};
+    unsafeDiscardReferences.out = true;
+    dontStrip = true;
+    dontNukeRefs = true;
 
     phases = [
       {
@@ -471,45 +463,8 @@
 
           echo "==> Assembling AOS systemd initrd"
 
-          # ── 0. Walk store references from the selected runtime roots ────
-          cat > runtime-roots <<'ROOTS'
-          ${lib.concatStringsSep "\n" (map builtins.toString (initrdRuntimeRoots ++ [initrdUnits]))}
-          ROOTS
-
-          awk '
-            FNR == 1 { state = 0 }
-            state == 0 { path = $0; state = 1; next }
-            state == 1 { state = 2; next }
-            state == 2 {
-              remaining = $0 + 0
-              referenceCount[path] = remaining
-              if (remaining == 0) state = 0
-              else state = 3
-              next
-            }
-            state == 3 {
-              references[path, referenceCount[path] - remaining] = $0
-              remaining--
-              if (remaining == 0) state = 0
-              next
-            }
-            END {
-              while ((getline root < "runtime-roots") > 0) queue[tail++] = root
-              while (head < tail) {
-                path = queue[head++]
-                if (path in seen) continue
-                if (!(path in referenceCount)) {
-                  printf "initrd reference graph omits %s\n", path > "/dev/stderr"
-                  exit 1
-                }
-                seen[path] = 1
-                print path
-                for (i = 0; i < referenceCount[path]; i++) {
-                  queue[tail++] = references[path, i]
-                }
-              }
-            }
-          ' closure-* | sort -u > closure-paths
+          # Copy exactly the same realized closure that the guest registers.
+          cp ${registration}/store-paths closure-paths
           echo "    $(wc -l < closure-paths) unique store paths in initrd closure"
 
           # ── 1. Directory skeleton ───────────────────────────────────────
@@ -854,6 +809,38 @@
     meta = {
       description = "AOS initrd (zstd-compressed cpio, systemd PID 1)";
     };
+  };
+  retainedRoots = lib.unique (map builtins.toString (
+    [initrdArchive registration deploymentBundle kernelModuleTree]
+    ++ map (entry: entry.store_path) dependencyRoots
+  ));
+  initrdArtifact = mkDerivation {
+    name = "aos-initrd";
+    src = null;
+    buildDeps = [coreutils initrdArchive];
+    allowedReferences = retainedRoots;
+    dontStrip = true;
+    dontNukeRefs = true;
+
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out"
+          ln -s ${initrdArchive}/initrd.img "$out/initrd.img"
+          cp ${initrdArchive}/initrd-stage-contract.json "$out/initrd-stage-contract.json"
+          ln -s ${deploymentBundle} "$out/deployment"
+
+          # Every root is visible to Nix independently of archive compression.
+          # Qualification checks exact direct references, including omissions.
+          cat > "$out/reference-roots" <<'ROOTS'
+          ${lib.concatStringsSep "\n" (map builtins.toString retainedRoots)}
+          ROOTS
+        '';
+      }
+    ];
+
+    meta.description = "AOS initrd with explicit retained dependency roots";
   };
 in
   initrdArtifact

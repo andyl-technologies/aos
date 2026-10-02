@@ -430,7 +430,7 @@
               echo "root image exceeds its $MAX_ROOT_MIB MiB artifact contract" >&2
               exit 1
             fi
-            initrd_bytes=$(stat -c %s "$INITRD")
+            initrd_bytes=$(stat -L -c %s "$INITRD")
             if [ "$initrd_bytes" -gt $(( MAX_INITRD_MIB * 1048576 )) ]; then
               echo "initrd exceeds its $MAX_INITRD_MIB MiB artifact contract" >&2
               exit 1
