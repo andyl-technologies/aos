@@ -157,12 +157,7 @@ pub(crate) fn evaluate(
         retained_inputs,
     };
 
-    let storage = evaluator.project(
-        &["aos".into(), "provisioning".into(), "storage".into()],
-        scratch.path(),
-        timeout_ms,
-        cancellation,
-    )?;
+    let storage = evaluator.provisioning_storage(scratch.path(), timeout_ms, cancellation)?;
     let plan: ProvisioningPlan =
         serde_json::from_value(json!({"schema":"aos.provisioning-plan/v1", "storage":storage}))?;
     let marker_uuid = marker_uuid_for_source(&parameters.marker, authorized.source)?;
