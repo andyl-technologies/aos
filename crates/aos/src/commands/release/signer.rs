@@ -729,7 +729,6 @@ mod tests {
         assert!(verify_payload_binding(&request, b"different").is_err());
     }
 
-    #[allow(dead_code)]
     fn payload_request() -> SigningRequest {
         SigningRequest {
             schema_version: "aos.release.signing-request/v1".to_owned(),

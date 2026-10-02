@@ -116,7 +116,7 @@
       # A variant that defers signing to the release finalizer has no final
       # image in Nix at all: `build.image` and `imageArtifacts` stay undefined
       # and the unsigned assembly is the only buildable output. Signed disks
-      # for those variants come from `aos release step finalize-image`.
+      # for those variants come from `aos maintain release step finalize-image`.
       externallyFinalized = name: assembly: {
         "${name}-unsigned-image-assembly" = assembly;
       };
@@ -261,6 +261,7 @@
           aos = aos.pkgs.aos;
           apm = aos.pkgs.aos.apm;
           apr = aos.pkgs.aos.apr;
+          release-tooling = aos.releaseTooling;
           all = allPackages;
           crucible-nginx-curl-guest = import ./tests/crucible/_nginx-curl-http-200-guest.nix {
             pkgs = aos.pkgs;
@@ -362,6 +363,23 @@
               # the `nix` subprocesses they launch.
               export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
             '';
+        };
+
+        # The operator shell for canonical releases: only the installed
+        # release tooling closure, whose wrappers export AOS_RELEASE_TOOLING
+        # so `aos release` binds that closure and finds its executors.
+        release = builtins.derivation {
+          name = "aos-release";
+          inherit system;
+          outputs = ["out"];
+          builder = "${aos.pkgs.bash}/bin/bash";
+          args = [
+            "-c"
+            "echo 'Use nix develop .#release, not nix build' >&2; ${aos.pkgs.coreutils}/bin/mkdir -p $out"
+          ];
+          shellHook = ''
+            export PATH="${aos.releaseTooling}/bin''${PATH:+:$PATH}"
+          '';
         };
       }
     );

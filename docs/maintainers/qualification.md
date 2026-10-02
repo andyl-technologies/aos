@@ -26,6 +26,10 @@ documents command arguments.
 
 ### Surfaces and destinations
 
+An unpublished **release stage** is an exact candidate id, revision, and
+artifact inventory; it is independent of the deployment named staging. See
+[release stages](../registry/release-stages.md).
+
 A **surface** is one publication endpoint with the role `staging` or
 `production`. It is either an AOS Hub deployment or a
 [static origin](#static-surfaces). A **destination** is one surface role and
@@ -188,7 +192,7 @@ every publication.
 
 The maintainer machine's `aos-release-restore-check` and
 `aos-release-alert-check` services record the automated kinds. Operators record
-the others with `aos release fitness run <kind> --report PATH`, or with the
+the others with `aos maintain release fitness run <kind> --report PATH`, or with the
 report on standard input, after performing the exercise in the
 [release checklist](release-checklist.md#fitness-exercises). The input is an
 `aos.release.fitness-report/v1` exercise report: `performed_at`, `operator`,
@@ -206,7 +210,7 @@ with the live value:
 | `surface` | The destination surface identity: the Hub deployment ID, or the static surface identity served at `.aos-surface` |
 | `hub-schema` | The Hub schema version reported by the deployment. A static surface has none; the binding is recorded as `null` and is satisfied vacuously |
 | `signer-roster` | Digest of the plan's `signers` list, canonical JSON under the domain `aos.release.signer-roster/v1` |
-| `tooling` | Digest of the maintainer configuration's `tooling_closure` |
+| `tooling` | Digest of the installed release tooling closure's store path |
 | `alert-config` | Digest of the maintainer configuration's `[alert]` section |
 
 A binding mismatch makes an attestation unusable regardless of its age. A new
@@ -558,11 +562,11 @@ path.
 ## Inspect and freeze the contract
 
 ```sh
-aos release step contract --registry andyl/testing
-aos release step contract --registry andyl/main --to production/stable
+aos maintain release step contract --registry andyl/testing
+aos maintain release step contract --registry andyl/main --to production/stable
 aos --json release step contract --registry andyl/main --to production/candidate \
   --output qualification-contract.json
-aos release step contract --registry andyl/main --input qualification-contract.json
+aos maintain release step contract --registry andyl/main --input qualification-contract.json
 ```
 
 Without `--to`, the command prints the destination table for the registry tier
@@ -573,14 +577,14 @@ requirements and never claims that they passed. `--output` writes a new
 canonical contract file and refuses replacement. `--input` supports inspection
 without Nix or network.
 
-`aos release new` exports the contract itself and freezes it into the plan.
+`aos maintain release new` exports the contract itself and freezes it into the plan.
 Plans use `aos.release.plan/v1` and embed the complete
 `aos.release.qualification-contract/v1` (`aos-system`). A plan or contract
 with any other schema or identity is rejected.
 
 Record a `qualification_predecessor` with the same registry, a distinct
 `release_id`, and the verified preceding `manifest_digest`. The maintainer
-configuration's `predecessor_bundle` supplies it to `aos release new`. First
+configuration's `predecessor_bundle` supplies it to `aos maintain release new`. First
 public releases use the restricted, non-public
 [qualification snapshot workflow](canonical-releases.md#create-a-first-qualification-predecessor)
 as their predecessor. A descriptor alone is insufficient: retain the signed
@@ -735,14 +739,14 @@ therefore independent per destination: a failure to qualify
 
 ## Collect, review, and sign
 
-`aos release advance` performs this section's steps for each destination and
+`aos maintain release advance` performs this section's steps for each destination and
 stops at every human decision. The underlying leaf commands are documented here
 because their inputs and outputs are the evidence.
 
 Inspect the actual case population before allocating machines:
 
 ```sh
-aos release step qualification cases \
+aos maintain release step qualification cases \
   --plan "$WORK/plan.json" \
   --manifest "$WORK/finalized/bundle/release-manifest.json" \
   --to production/candidate --phase staging
@@ -751,11 +755,11 @@ aos release step qualification cases \
 This command displays requirements, a `case_digests` map keyed by case ID, and
 an `environment_profile_digests` map for target cases. It applies the
 destination's profile and the plan's change scope. It does not verify
-signatures or claim a pass. Use `aos release step verify` with independent
-public anchors for verification. `aos release explain --to <destination>`
+signatures or claim a pass. Use `aos maintain release step verify` with independent
+public anchors for verification. `aos maintain release explain --to <destination>`
 prints the same population with the current status of every case.
 
-Run `aos release step qualify-run --to <destination> --phase staging
+Run `aos maintain release step qualify-run --to <destination> --phase staging
 --prepare-only` with the bundle, the staging publication receipt, applicable
 executor mappings, and `--qualified-at now` described in
 [the runbook](canonical-releases.md#run-the-native-qualification-matrix).
@@ -763,7 +767,7 @@ For staging image update cases, also supply the retained snapshot through an
 absolute `--predecessor-bundle` path.
 Inspect the prepared report and its retained `reports/` directory. Each
 reviewer signs an independent review payload with a planned `release-evidence`
-key, either through `aos release review` or directly:
+key, either through `aos maintain release review` or directly:
 
 ```json
 {
@@ -851,7 +855,7 @@ assembly to the installed CLI. Write a canonical report in the attempt
 directory, then run:
 
 ```sh
-aos release step qualification respond \
+aos maintain release step qualification respond \
   --request request.json \
   --scenarios scenario-registry.json \
   --report scenario-report.json \
@@ -947,9 +951,10 @@ environment shape that does not match the case.
 
 The flake exposes `qualification-executor-<platform>` packages for all four
 release platforms under `packages.x86_64-linux`, plus a native
-`qualification-executor` alias on each supported system. Install the exact
-platform closures at the paths named by the maintainer configuration's
-`[executors.<platform>]` tables, which `advance` passes to `step qualify-run`. Before starting an
+`qualification-executor` alias on each supported system. The `release-tooling`
+package bundles the native one with the CLI under
+`libexec/aos-release/executors/<platform>/`, where `advance` discovers it and
+passes it to `step qualify-run`. Before starting an
 executor, install each applicable report-backed scenario's single-link
 canonical report at
 `/run/aos-release/qualification-reports/<platform>/<case-digest>.json`.
@@ -1101,7 +1106,7 @@ branch followed by that branch's next release, never a surface setting.
 
 Registry finalization precedes qualification, so the qualification outcome
 cannot live in the registry tree. After the staging-phase report for a
-production destination is signed, `aos release step record` composes
+production destination is signed, `aos maintain release step record` composes
 `aos.release-record/v1` from the frozen plan, the final manifest, the signed
 qualification, and the public report, and the TUF and compose-surface steps
 authorize and serve it beside the release manifest on that destination's

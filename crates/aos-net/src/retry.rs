@@ -58,8 +58,17 @@ pub enum ErrorClass {
 /// that status. Unknown errors default to transient so they get
 /// retried.
 pub fn classify_error(status: Option<u16>, error: &anyhow::Error) -> ErrorClass {
+    if error
+        .downcast_ref::<crate::multipart::MultipartSessionMissing>()
+        .is_some()
+    {
+        return ErrorClass::Permanent;
+    }
     if let Some(status) = status {
         return classify_status(status);
+    }
+    if let Some(response) = error.downcast_ref::<crate::protocol::http::HttpStatusError>() {
+        return classify_status(response.status);
     }
 
     // Check for reqwest-specific errors.
@@ -76,8 +85,12 @@ pub fn classify_error(status: Option<u16>, error: &anyhow::Error) -> ErrorClass 
     }
 
     // Check for I/O errors (connection reset, broken pipe, etc.).
-    if error.downcast_ref::<std::io::Error>().is_some() {
-        return ErrorClass::Transient;
+    if let Some(io_error) = error.downcast_ref::<std::io::Error>() {
+        return if io_error.kind() == std::io::ErrorKind::NotFound {
+            ErrorClass::Permanent
+        } else {
+            ErrorClass::Transient
+        };
     }
 
     // Default to transient for unknown errors.
@@ -264,6 +277,24 @@ mod tests {
     #[test]
     fn test_classify_status_429() {
         assert_eq!(classify_status(429), ErrorClass::RateLimit);
+    }
+
+    #[test]
+    fn typed_http_missing_objects_are_not_retried() {
+        let missing = anyhow::Error::new(crate::protocol::http::HttpStatusError {
+            status: 404,
+            url: "https://registry.example/channels/stable/00".into(),
+            body: "missing partition".into(),
+        })
+        .context("reading channel partition");
+        assert_eq!(classify_error(None, &missing), ErrorClass::Permanent);
+
+        let unavailable = anyhow::Error::new(crate::protocol::http::HttpStatusError {
+            status: 503,
+            url: "https://registry.example/channels/stable/00".into(),
+            body: "unavailable".into(),
+        });
+        assert_eq!(classify_error(None, &unavailable), ErrorClass::Transient);
     }
 
     #[test]

@@ -3,10 +3,8 @@
 //! [`index_registry`] re-walks one registry surface exactly as an `apm`
 //! client would and replaces its rebuildable index atomically:
 //!
-//! 1. Fetch `HEAD` + `info/refs` and pick the default branch's commit.
-//!    If both the advertised commit and the `info/refs` digest match the
-//!    current fresh index, only the mutable channel partitions are re-verified
-//!    (the incremental fast path); otherwise the full walk runs.
+//! 1. Fetch `HEAD` + `info/refs`; the default channel's frontier commit
+//!    supplies authenticated roster evolution, never draft package rows.
 //! 2. Read the commit loose object; with `require_signatures`, verify its
 //!    `gpgsig` SSH signature against the registry's pinned trust anchors
 //!    (fail closed — an unverifiable surface is never displayed as fresh).
@@ -17,9 +15,9 @@
 //!    advertisement above [`MAX_RELEASE_TAGS`], validate any signed container
 //!    sidecar against exact OCI catalog and placement evidence, and probe each
 //!    release's per-release `objects/info/packs` for pack presence.
-//! 5. Resolve every channel (rejecting more than [`MAX_BRANCHES`]) by
-//!    probing all 256 partition payloads, verifying each, and mapping its
-//!    target tag object to a release.
+//! 5. Resolve released channel frontier branches through all 256 signed
+//!    partitions. Project the default channel's released tree into the public
+//!    catalog; authoring branches never supply public package rows.
 //! 6. Enforce the anti-rollback floor: a channel whose frontier dropped
 //!    below the highest frontier ever indexed is rejected.
 //! 7. Write the snapshot and webhook event intents in one transaction, then
@@ -42,26 +40,31 @@
 //! exactly these rules, so the Worker's eventual index is byte-identical to the
 //! native hub's.
 
+#[cfg(test)]
+mod catalog_tests;
+
 pub mod load;
+pub(crate) mod staging;
+mod staging_cache;
 
 use std::collections::BTreeMap;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use aos_oci_types::{
-    limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES, ContainerDsseEnvelope, ContainerRelease,
-    Descriptor, ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType,
-    RepositoryName, Sha256Digest, CONTAINER_DSSE_SIGNATURE_NAMESPACE,
+    CONTAINER_DSSE_SIGNATURE_NAMESPACE, ContainerDsseEnvelope, ContainerRelease, Descriptor,
+    ImageConfig, ImageIndex, ImageManifest, ManifestReference, MediaType, RepositoryName,
+    Sha256Digest, limits::MAX_JSON_BYTES as MAX_OCI_JSON_BYTES,
 };
 use aos_registry_surface::manifest::{ImageVerificationState, RegistryRootConfig};
 use aos_registry_surface::object::{Commit, ObjectKind, Oid};
-use aos_registry_surface::refs::{parse_head, parse_info_refs, Refs};
+use aos_registry_surface::refs::{Refs, parse_head, parse_info_refs};
 use aos_registry_surface::sshsig;
-use aos_registry_surface::tag::{parse_signed_tag, verify_signed_tag, SignedTag};
-use aos_registry_surface::tagobject::{verify_name_binding, TagTarget};
+use aos_registry_surface::tag::{SignedTag, parse_signed_tag, verify_signed_tag};
+use aos_registry_surface::tagobject::{TagTarget, verify_name_binding};
 use axum::body::to_bytes;
 use base64::Engine as _;
 use ed25519_dalek::VerifyingKey;
-use futures_util::{future::try_join_all, stream, StreamExt as _, TryStreamExt as _};
+use futures_util::{StreamExt as _, TryStreamExt as _, future::try_join_all, stream};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
@@ -75,7 +78,7 @@ use crate::db::{
 };
 use crate::fetch::SurfaceFetch;
 
-use self::load::{load_registry_tree_with_reader, load_release_tree_with_reader, ObjectReader};
+use self::load::{ObjectReader, load_registry_tree_with_reader, load_release_tree_with_reader};
 
 /// Maximum branches (channels) processed per index run.
 ///
@@ -427,56 +430,48 @@ async fn index_registry_inner(
         Some(bytes) => parse_head(&String::from_utf8_lossy(&bytes)),
         None => None,
     };
-    let (default_branch, commit_oid) =
-        match head.and_then(|name| refs.branches.get(&name).copied().map(|oid| (name, oid))) {
-            Some(found) => found,
-            None => refs
-                .branches
-                .iter()
-                .next()
-                .map(|(name, oid)| (name.clone(), *oid))
-                .context("surface advertises no branches")?,
-        };
-    tracing::debug!(branch = %default_branch, commit = %commit_oid, "indexing from");
-
-    // The refs digest alone is not sufficient evidence that every derived row
-    // belongs to the advertised graph if a prior refresh was interrupted or
-    // persisted state drifted. Require the recorded commit to agree with the
-    // default branch before skipping the full verification walk.
+    validate_ref_cardinality(&refs)?;
+    let default_channel = head.filter(|name| refs.branches.contains_key(name));
     let status = db.index_status(registry.id).await?;
-    let advertised_commit = commit_oid.to_hex();
-    let refs_digest_matches =
-        db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str());
-    let has_images = db.has_system_image_catalog(registry.id).await?
-        || db.has_container_release_catalog(registry.id).await?;
-    let release_documentation_complete = db
-        .release_documentation_projection_complete(registry.id)
-        .await?
-        && db.release_browse_projection_complete(registry.id).await?;
-    if incremental_preconditions(
-        status.as_ref().map(|status| status.state.as_str()),
-        status
-            .as_ref()
-            .and_then(|status| status.last_indexed_commit.as_deref()),
-        refs_digest_matches,
-        has_images,
-        release_documentation_complete,
-        &advertised_commit,
-    ) {
-        return index_incremental(db, fetch, registry, &refs, indexed_placement_id).await;
+
+    if let Some(commit_oid) = default_channel
+        .as_ref()
+        .and_then(|name| refs.branches.get(name))
+    {
+        let advertised_commit = commit_oid.to_hex();
+        let has_images = db.has_system_image_catalog(registry.id).await?
+            || db.has_container_release_catalog(registry.id).await?;
+        let projection_complete = db
+            .release_documentation_projection_complete(registry.id)
+            .await?
+            && db.release_browse_projection_complete(registry.id).await?;
+        if incremental_preconditions(
+            status.as_ref().map(|status| status.state.as_str()),
+            status
+                .as_ref()
+                .and_then(|status| status.last_indexed_commit.as_deref()),
+            db.refs_digest(registry.id).await?.as_deref() == Some(refs_digest.as_str()),
+            has_images,
+            projection_complete,
+            &advertised_commit,
+        ) {
+            if let Some(outcome) = index_incremental(
+                db,
+                fetch,
+                registry,
+                &refs,
+                default_channel.as_deref(),
+                indexed_placement_id,
+            )
+            .await?
+            {
+                return Ok(outcome);
+            }
+        }
     }
 
     let reader = ObjectReader::new(fetch);
     reader.preload_bundles().await?;
-    let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
-    tracing::info!(
-        phase = "bundle_preload",
-        bundle_fetches,
-        loose_fetches,
-        cached_objects,
-        "registry index phase completed"
-    );
-    let commit = reader.read_commit(commit_oid).await?;
     let mut trusted: Vec<String> = registry.trust_keys.clone();
     let typed_publication = append_signing_usage_key(
         db,
@@ -485,6 +480,47 @@ async fn index_registry_inner(
         "registry_publication",
     )
     .await?;
+
+    // HEAD names the default channel's authenticated roster frontier. A draft
+    // branch is never an implicit fallback when that symref is absent.
+    let commit_oid = match default_channel
+        .as_ref()
+        .and_then(|name| refs.branches.get(name).copied())
+    {
+        Some(oid) => oid,
+        None => match refs
+            .tags
+            .iter()
+            .find(|(name, _)| semver::Version::parse(name).is_ok())
+        {
+            Some((name, oid)) => {
+                let payload = reader.read_kind(*oid, ObjectKind::Tag).await?;
+                let tag = if registry.require_signatures || typed_publication {
+                    verify_signed_tag(&payload, name, &trusted)?
+                } else {
+                    lenient_tag(&payload, name)?
+                };
+                anyhow::ensure!(
+                    tag.tag.target_type == TagTarget::Commit,
+                    "release tag '{name}' does not target a commit"
+                );
+                Oid::from_hex(&tag.tag.object)?
+            }
+            None => {
+                let placement_id = indexed_placement_id
+                    .context("unreleased registry indexing requires an authoritative placement")?;
+                db.mark_index_empty_from_placement(registry.id, placement_id)
+                    .await?;
+                return Ok(empty_outcome());
+            }
+        },
+    };
+    let advertised_commit = commit_oid.to_hex();
+
+    // Signed partitions can change without info/refs changing. Every pass
+    // rebuilds the default release projection together with those partitions;
+    // refreshing only channel rows would leave the public catalog behind.
+    let commit = reader.read_commit(commit_oid).await?;
     if registry.require_signatures || typed_publication {
         let signature = commit
             .signature
@@ -494,7 +530,7 @@ async fn index_registry_inner(
             .with_context(|| format!("verifying commit {commit_oid}"))?;
     }
 
-    let tree = load_registry_tree_with_reader(&reader, commit_oid).await?;
+    let mut tree = load_registry_tree_with_reader(&reader, commit_oid).await?;
     let (bundle_fetches, loose_fetches, cached_objects) = reader.stats()?;
     tracing::info!(
         phase = "head_tree",
@@ -546,7 +582,11 @@ async fn index_registry_inner(
         advertised = refs.tags.len(),
         "registry index phase prepared"
     );
-    let release_tags: Vec<_> = refs.tags.iter().collect();
+    let release_tags: Vec<_> = refs
+        .tags
+        .iter()
+        .filter(|(name, _)| semver::Version::parse(name).is_ok())
+        .collect();
     let release_concurrency = if reusable_releases.len() == release_tags.len() {
         RELEASE_TREE_FETCH_CONCURRENCY
     } else {
@@ -830,14 +870,10 @@ async fn index_registry_inner(
         "registry index phase completed"
     );
 
-    // The verified trees own their parsed data. Release the compressed,
-    // decoded, and parsed Git caches before documentation and SQL projections
-    // expand those same packages into additional buffers in a Worker isolate.
-    drop(reader);
-
-    // Channels: branches are channel names; each resolves through 256
-    // partition payloads pointing at release tag objects.
-    let branch_names = complete_branch_names(&refs)?;
+    // Channel frontiers point at released commits. Draft branches never need
+    // partition probes; explicit partition evidence still authenticates every
+    // candidate before it becomes a channel.
+    let branch_names = complete_channel_names(&refs, &releases)?;
     let tag_to_semver: BTreeMap<String, String> = releases
         .iter()
         .map(|release| (release.tag_oid.clone(), release.semver.clone()))
@@ -858,6 +894,24 @@ async fn index_registry_inner(
         channels = channels.len(),
         "registry index phase completed"
     );
+
+    let selected_release =
+        default_catalog_release(default_channel.as_deref(), &channels, &releases);
+    let public_catalog_commit = selected_release.map(|release| release.commit_oid.clone());
+    let public_catalog_release = selected_release.map(|release| release.semver.clone());
+    if let Some(release) = selected_release {
+        tree = load_release_tree_with_reader(&reader, Oid::from_hex(&release.commit_oid)?).await?;
+    } else {
+        if let Some(release) = releases.first() {
+            tree =
+                load_release_tree_with_reader(&reader, Oid::from_hex(&release.commit_oid)?).await?;
+        }
+        tree.packages.clear();
+    }
+
+    // The verified trees own their parsed data. Release the Git caches before
+    // documentation and SQL projections expand the selected public catalog.
+    drop(reader);
 
     // The committed [caches] cache stack (RFC-0004) is flattened into the
     // priority list stack-unaware clients and the display table resolve; when
@@ -888,16 +942,10 @@ async fn index_registry_inner(
     let image_presence = deduplicated_presence;
 
     let package_documentation = verify_package_documentation(fetch, &tree.packages).await?;
-    db.retain_release_browse_catalog(
-        registry.id,
-        &commit_oid.to_hex(),
-        &tree.packages,
-        tree.root.registry.default_release.as_deref(),
-        &package_documentation,
-    )
-    .await?;
     let snapshot = IndexSnapshot {
         commit: commit_oid.to_hex(),
+        public_catalog_commit,
+        public_catalog_release,
         name: tree.root.registry.name.clone(),
         description: tree.root.registry.description.clone(),
         readme: tree.root.registry.readme.clone(),
@@ -1180,7 +1228,7 @@ fn reconcile_zstd_content_size(bytes: &[u8]) -> Option<u64> {
     Some(if size_length == 2 { size + 256 } else { size })
 }
 
-/// Returns whether the index state proves the immutable graph is unchanged.
+/// Returns whether immutable graph reuse can safely inspect mutable channels.
 fn incremental_preconditions(
     state: Option<&str>,
     last_indexed_commit: Option<&str>,
@@ -3143,21 +3191,19 @@ fn commit_message(signed_payload: &[u8]) -> String {
     }
 }
 
-/// The incremental fast path: `info/refs` is byte-identical to the fresh
-/// index's digest, so the immutable object graph is unchanged — re-verify
-/// only the mutable channel partitions and replace the channel tables.
+/// Refreshes signed partitions only when the selected released catalog is unchanged.
 async fn index_incremental(
     db: &Database,
     fetch: &dyn SurfaceFetch,
     registry: &RegistryRecord,
     refs: &Refs,
+    default_channel: Option<&str>,
     indexed_placement_id: Option<i64>,
-) -> Result<IndexOutcome> {
-    tracing::debug!(source = %fetch.describe(), "refs unchanged; incremental channel refresh");
-
-    // Rebuild the trusted set exactly as the full walk would have left
-    // it: pinned anchors plus the verified roster's active keys.
-    let mut trusted: Vec<String> = registry.trust_keys.clone();
+) -> Result<Option<IndexOutcome>> {
+    let Some(previous_selection) = db.public_catalog_head(registry.id).await? else {
+        return Ok(None);
+    };
+    let mut trusted = registry.trust_keys.clone();
     let typed_publication = append_signing_usage_key(
         db,
         &mut trusted,
@@ -3165,53 +3211,83 @@ async fn index_incremental(
         "registry_publication",
     )
     .await?;
-    for (_key_id, public_key, status) in db.list_roster(registry.id).await? {
-        if status == "active" && !public_key.is_empty() && !trusted.contains(&public_key) {
-            trusted.push(public_key);
+    for (_id, key, status) in db.list_roster(registry.id).await? {
+        if status == "active" && !key.is_empty() && !trusted.contains(&key) {
+            trusted.push(key);
         }
     }
-
     let releases = db.list_releases(registry.id).await?;
-    let tag_to_semver: BTreeMap<String, String> = releases
+    let tag_to_semver = releases
         .iter()
         .map(|release| (release.tag_oid.clone(), release.semver.clone()))
         .collect();
-
-    let branch_names = complete_branch_names(refs)?;
     let channels = resolve_channels(
         db,
         fetch,
         registry,
-        &branch_names,
+        &complete_channel_names(refs, &releases)?,
         &trusted,
         typed_publication,
         &tag_to_semver,
         &std::collections::BTreeSet::new(),
     )
     .await?;
+    let selected = default_catalog_release(default_channel, &channels, &releases);
+    let selection = (
+        selected.map(|release| release.commit_oid.clone()),
+        selected.map(|release| release.semver.clone()),
+    );
+    if selection != previous_selection {
+        return Ok(None);
+    }
     db.update_channels_from_placement(registry.id, &channels, indexed_placement_id)
         .await?;
-
     let commit = db
         .index_status(registry.id)
         .await?
         .and_then(|status| status.last_indexed_commit)
         .unwrap_or_default();
-    Ok(IndexOutcome {
+    Ok(Some(IndexOutcome {
         commit,
         packages: db.list_packages(registry.id).await?.len(),
         releases: releases.len(),
         channels: channels.len(),
         incremental: true,
         pending: false,
-    })
+    }))
 }
 
-/// Returns every advertised branch name or rejects an incomplete index.
-fn complete_branch_names(refs: &Refs) -> Result<Vec<String>> {
+/// Returns only frontier branches whose commit belongs to a verified release.
+fn complete_channel_names(refs: &Refs, releases: &[ReleaseRow]) -> Result<Vec<String>> {
     validate_ref_cardinality(refs)?;
-    let names: Vec<String> = refs.branches.keys().cloned().collect();
-    Ok(names)
+    let released_commits = releases
+        .iter()
+        .map(|release| release.commit_oid.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    Ok(refs
+        .branches
+        .iter()
+        .filter(|(_, oid)| released_commits.contains(oid.to_hex().as_str()))
+        .map(|(name, _)| name.clone())
+        .collect())
+}
+
+/// Selects the aggregate browse frontier of HEAD's verified channel.
+///
+/// Consumers keep their deterministic partition assignment. The public
+/// aggregate uses the highest authenticated partition target and never falls
+/// back to a newer authoring commit or an unrelated release tag.
+fn default_catalog_release<'a>(
+    default_channel: Option<&str>,
+    channels: &[ChannelSummary],
+    releases: &'a [ReleaseRow],
+) -> Option<&'a ReleaseRow> {
+    let frontier = channels
+        .iter()
+        .find(|channel| Some(channel.name.as_str()) == default_channel)?
+        .frontier
+        .as_deref()?;
+    releases.iter().find(|release| release.semver == frontier)
 }
 
 /// Rejects ref advertisements that cannot be indexed completely.
@@ -3457,13 +3533,13 @@ mod tests {
     use crate::db::Database;
     use crate::fetch::{StreamedRead, SurfaceFetch};
     use aos_oci_types::{
-        to_canonical_json, Annotations, ContainerDsseSignature,
-        ContainerEvidenceMappingQualification, ContainerEvidenceQualification,
-        ContainerEvidenceQualificationCheck, ContainerNixProvenance, ContainerOciRelease,
-        ContainerReleaseEvidence, ContainerReleaseIdentity, ContainerSignatureInput,
-        ContainerSignatureInputEvidence, NixDefinitionIdentity, NixOutputIdentity, Platform,
-        CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
+        Annotations, CONTAINER_EVIDENCE_QUALIFICATION_SCHEMA, CONTAINER_RELEASE_SCHEMA_VERSION,
         CONTAINER_SIGNATURE_INPUT_MEDIA_TYPE, CONTAINER_SIGNATURE_INPUT_SCHEMA,
+        ContainerDsseSignature, ContainerEvidenceMappingQualification,
+        ContainerEvidenceQualification, ContainerEvidenceQualificationCheck,
+        ContainerNixProvenance, ContainerOciRelease, ContainerReleaseEvidence,
+        ContainerReleaseIdentity, ContainerSignatureInput, ContainerSignatureInputEvidence,
+        NixDefinitionIdentity, NixOutputIdentity, Platform, to_canonical_json,
     };
 
     fn container_descriptor(media_type: MediaType, label: &str) -> Descriptor {
@@ -3665,33 +3741,59 @@ mod tests {
     }
 
     #[test]
-    fn incremental_refresh_requires_the_recorded_commit_to_match() {
-        let advertised = "b".repeat(64);
+    fn draft_branches_are_excluded_from_channel_candidates() {
+        let released = Oid::from_hex(&"a".repeat(64)).unwrap();
+        let draft = Oid::from_hex(&"b".repeat(64)).unwrap();
+        let mut refs = Refs::default();
+        refs.branches.insert("stable".into(), released);
+        refs.branches.insert("maintainer/work".into(), draft);
+        let releases = vec![catalog_release("1.0.0", released.to_hex())];
 
-        assert!(incremental_preconditions(
-            Some("fresh"),
-            Some(advertised.as_str()),
-            true,
-            false,
-            true,
-            &advertised,
-        ));
-        assert!(!incremental_preconditions(
-            Some("fresh"),
-            Some(&"a".repeat(64)),
-            true,
-            false,
-            true,
-            &advertised,
-        ));
-        assert!(!incremental_preconditions(
-            Some("fresh"),
-            Some(advertised.as_str()),
-            true,
-            false,
-            false,
-            &advertised,
-        ));
+        assert_eq!(
+            complete_channel_names(&refs, &releases).unwrap(),
+            ["stable"]
+        );
+    }
+
+    fn catalog_release(version: &str, commit_oid: String) -> ReleaseRow {
+        ReleaseRow {
+            semver: version.into(),
+            tag_oid: "c".repeat(64),
+            commit_oid,
+            signer: None,
+            tagged_at: Some(0),
+            pack_present: false,
+        }
+    }
+
+    #[test]
+    fn public_catalog_requires_default_channel_release_evidence() {
+        let releases = vec![
+            catalog_release("1.0.0", "a".repeat(64)),
+            catalog_release("2.0.0", "b".repeat(64)),
+        ];
+        let mut channels = vec![ChannelSummary {
+            name: "stable".into(),
+            frontier: Some("1.0.0".into()),
+            partitions: vec![Some("1.0.0".into()); 256],
+        }];
+
+        assert_eq!(
+            default_catalog_release(Some("stable"), &channels, &releases)
+                .unwrap()
+                .semver,
+            "1.0.0"
+        );
+        assert!(default_catalog_release(Some("maintainer/work"), &channels, &releases).is_none());
+        assert!(default_catalog_release(None, &channels, &releases).is_none());
+
+        channels[0].frontier = Some("2.0.0".into());
+        assert_eq!(
+            default_catalog_release(Some("stable"), &channels, &releases)
+                .unwrap()
+                .semver,
+            "2.0.0"
+        );
     }
 
     #[test]

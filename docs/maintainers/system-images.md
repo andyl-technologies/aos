@@ -100,6 +100,12 @@ initrd, bootloader, TPM state, or disk layout. Container-specific assertions
 are enforced by the same system evaluation and also when the container output
 is forced directly.
 
+`modules/image/container.nix` owns the OCI projection and imports the shared
+base-container recipe from `modules/image/_container-definition.nix`. The
+underscore-prefixed helper is excluded from automatic module discovery. It
+combines the owning system's userland with explicit runtime, shell, and CLI
+roots, and defines the OCI layers and runtime defaults.
+
 The public `aos-testing` system demonstrates the pattern. Its disk and OCI
 artifacts contain exactly one `andyl/testing` registry seed, select `edge`, and
 carry the same experimental-use warning and trust anchor. The disk displays the
@@ -171,7 +177,7 @@ nix build .#acme-server-image-vhd
 Build the experimental artifacts from the same variant evaluation. The
 `aos-testing` variant defers image signing to the release finalizer, so Nix
 stops at the unsigned assembly and publishes no `-image-<format>` outputs;
-`aos release step finalize-image` turns the assembly into the signed disks:
+`aos maintain release step finalize-image` turns the assembly into the signed disks:
 
 ```sh
 nix build .#aos-testing-unsigned-image-assembly

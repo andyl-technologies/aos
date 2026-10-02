@@ -14,6 +14,13 @@ public.
 committed into `registry.toml` for consumers. These differ whenever the write
 path is S3, SFTP, a local document root, or an AOS Hub upload endpoint.
 
+An unpublished stage uses these same backends and public URLs. It does not
+need a separate Hub registry or deployment. Default catalogs and channels omit
+candidate revisions; directly addressed Git objects and cache/CDN URLs may
+still expose their uploaded bytes. Permissioned Hub stage views track the same
+stage id and revision as `apr`. See
+[Release stages](../../registry/release-stages.md).
+
 ## Choose a topology
 
 | Topology | Producer URL | Consumer URL | Rollout channels |
@@ -116,6 +123,14 @@ appropriate to immutable objects and mutable pointers. Configure the CDN to
 honor it; channel and ref files must not receive the same long lifetime as NARs
 and content-addressed Git objects.
 
+Staged uploads to custom S3 endpoints, including R2, use a streamed conditional single-object
+upload with a 5 GiB maximum per object. A retry reuses a complete object only
+after verifying its exact digest; an incomplete object restarts its transfer.
+Objects above that limit fail before publication. Native AWS multipart byte
+resume is available only through the SDK's ordinary AWS endpoint resolution,
+without custom endpoint overrides. These transfer limits are independent of
+stage revision metadata limits.
+
 ## SFTP or SSH deployment
 
 SFTP is a write transport to a directory that another service exposes over
@@ -173,7 +188,14 @@ apr release 2026.8.0 \
   --upload-url "file://${publication_root}"
 ```
 
-Then upload that surface through the Hub's placement-aware transaction:
+For permissioned review before visibility, the Hub console's **Publishing**
+page at `/<org>/<registry>/-/settings/staged-releases` tracks the same portable
+stage revision and inventory as APR. See
+[Review unpublished release candidates](../aos-hub/web.md#review-unpublished-release-candidates).
+A ready candidate is already signed; publication and channel selection are
+separate decisions.
+
+To use the lower-level placement-aware transaction, upload the surface:
 
 ```sh
 export AOS_HUB=https://hub.example.com

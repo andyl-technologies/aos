@@ -110,6 +110,15 @@ impl TransferEngine {
         }
     }
 
+    /// Uses an existing HTTP client while preserving the engine's policy.
+    ///
+    /// HTTP connections and client-supplied headers are shared with the caller.
+    pub fn with_http_client(config: TransferEngineConfig, client: reqwest::Client) -> Self {
+        let mut engine = Self::new(config);
+        engine.http = Arc::new(protocol::http::HttpProtocol::with_client(client));
+        engine
+    }
+
     /// Set the progress handler for single transfers.
     pub fn set_progress(&mut self, handler: Box<dyn ProgressHandler>) {
         self.progress = handler;

@@ -8,7 +8,6 @@
 //! ```
 
 use crate::config::ApmConfig;
-use crate::registry::nixcache;
 use crate::types::{CacheEntry, RegistryRootConfig, validate_registry_name};
 use anyhow::{Context, Result, bail};
 use aos_core::output::Printer;
@@ -185,11 +184,14 @@ pub(in crate::registry_ops) fn registry_cache_max_age_days(
 }
 
 pub(in crate::registry_ops) fn warn_on_cache_gc(
+    registry_dir: &Path,
     cache_dir: &Path,
     max_age_days: u64,
     printer: &Printer,
 ) {
-    if let Err(err) = nixcache::gc_static_cache(cache_dir, max_age_days, false) {
+    let result = crate::registry::staging::LocalStageStore::open_read_only(registry_dir)
+        .and_then(|store| store.gc_cache(cache_dir, max_age_days, false));
+    if let Err(err) = result {
         printer.warning(&format!(
             "Static cache GC failed for {}: {err:#}",
             cache_dir.display()

@@ -139,6 +139,7 @@ ssh2 = { version = "0.9", features = ["vendored-openssl"] }
 # rustls 0.21 compatibility connector; clients use BehaviorVersion::latest().
 aws-sdk-s3 = { version = "1", default-features = false, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"] }
 aws-config = "1"
+aws-types = "1"
 suppaftp = { version = "6", features = ["async-rustls"] }
 
 # TUI

@@ -16,7 +16,7 @@ Commands:
   run <aos|apm|apr> [arguments]  Build or fetch an ordinary packaged CLI, then run it
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
-  release <arguments>       Run the existing release CLI without shared caches
+  release <arguments>       Run aos maintain release without shared caches
   cache usage               Show disk use by backend
   cache prune [--before TIME|--days N] [--max-gib N] [--dry-run] [--compact]
   cache clear [go|bazel|rust|accache|all]

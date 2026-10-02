@@ -213,6 +213,29 @@ struct ReleaseGraphDocument {
     bytes: Vec<u8>,
 }
 
+/// Returns every exact descriptor reachable from a signed release layout.
+///
+/// Verification covers the index, platform manifests, layers, configuration,
+/// subjects, and all signed evidence roots before returning the inventory.
+///
+/// # Errors
+///
+/// Returns an error for incomplete, cyclic, corrupt, conflicting, or incorrectly
+/// bound graphs, using the same validation as immutable release uploads.
+pub fn verified_release_graph(root: &Path, release: &ContainerRelease) -> Result<Vec<Descriptor>> {
+    release.validate()?;
+    let graph = ReleaseGraph::collect(root, release)?;
+    let mut descriptors = graph.blobs;
+    descriptors.extend(
+        graph
+            .documents
+            .into_iter()
+            .map(|document| document.descriptor),
+    );
+    descriptors.sort_by_key(|descriptor| descriptor.digest);
+    Ok(descriptors)
+}
+
 struct ReleaseGraph {
     blobs: Vec<Descriptor>,
     documents: Vec<ReleaseGraphDocument>,

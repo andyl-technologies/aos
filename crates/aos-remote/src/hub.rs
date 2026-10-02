@@ -68,6 +68,16 @@ pub struct HubClient {
 /// CLI to exchange the generated request and response messages directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HubTopologyMethod {
+    /// Selects the persistent candidate lifecycle operation.
+    UpsertStagedRelease,
+    /// Selects the persistent candidate lifecycle operation.
+    GetStagedRelease,
+    /// Selects the persistent candidate lifecycle operation.
+    ListStagedReleases,
+    /// Selects the persistent candidate lifecycle operation.
+    FinalizeStagedRelease,
+    /// Selects the persistent candidate lifecycle operation.
+    DiscardStagedRelease,
     /// Selects the coordinated delivery `PlanDeliveryDestination` operation.
     PlanDeliveryDestination,
     /// Selects the coordinated delivery `ApplyDeliveryDestination` operation.
@@ -1206,6 +1216,11 @@ impl HubTopologyMethod {
             AbortRegistryPublicationMultipartUpload => {
                 "aos.hub.v1.PublishService/AbortRegistryPublicationMultipartUpload"
             }
+            UpsertStagedRelease => "aos.hub.v1.PublishService/UpsertStagedRelease",
+            GetStagedRelease => "aos.hub.v1.PublishService/GetStagedRelease",
+            ListStagedReleases => "aos.hub.v1.PublishService/ListStagedReleases",
+            FinalizeStagedRelease => "aos.hub.v1.PublishService/FinalizeStagedRelease",
+            DiscardStagedRelease => "aos.hub.v1.PublishService/DiscardStagedRelease",
             ListRegistryPublications => "aos.hub.v1.PublishService/ListRegistryPublications",
             GetRegistryPublication => "aos.hub.v1.PublishService/GetRegistryPublication",
             CommitRegistryPublication => "aos.hub.v1.PublishService/CommitRegistryPublication",
@@ -1388,6 +1403,11 @@ macro_rules! typed_hub_rpcs {
 /// Closed typed selectors for normalized Hub Connect operations.
 pub mod hub_rpc {
     typed_hub_rpcs! {
+        UpsertStagedRelease: UpsertStagedReleaseRequest => StagedRelease;
+        GetStagedRelease: GetStagedReleaseRequest => StagedRelease;
+        ListStagedReleases: ListStagedReleasesRequest => ListStagedReleasesResponse;
+        FinalizeStagedRelease: FinalizeStagedReleaseRequest => StagedRelease;
+        DiscardStagedRelease: DiscardStagedReleaseRequest => StagedRelease;
         PlanDeliveryDestination: PlanDeliveryDestinationRequest => TopologyPlanResponse;
         ApplyDeliveryDestination: ApplyDeliveryDestinationRequest => DeliveryWorkflowResponse;
         GetDeliveryWorkflow: GetDeliveryWorkflowRequest => DeliveryWorkflowResponse;

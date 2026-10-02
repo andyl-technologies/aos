@@ -321,7 +321,7 @@ impl PageSpec {
             "audit" | "operations" => "audit.read",
             "signing" => "keys.manage",
             "mirror" => "registry.configure",
-            "publish-history" => "publish",
+            "publish-history" | "staged-releases" => "publish",
             "webhooks" => "members.manage",
             "storage" => "binding.read",
             "domains" => "domain.read",
@@ -916,6 +916,13 @@ pub const REGISTRY_PAGES: &[PageSpec] = &[
         "access-tokens",
     ),
     PageSpec::new(
+        "staged-releases",
+        "Staged releases",
+        "Publishing",
+        "staged-releases",
+        "registry-staging",
+    ),
+    PageSpec::new(
         "containers",
         "Containers",
         "Publishing",
@@ -1195,6 +1202,7 @@ mod tests {
                     "access",
                     "signing",
                     "tokens",
+                    "staged-releases",
                     "containers",
                     "mirror",
                     "configuration",
@@ -1427,6 +1435,28 @@ mod tests {
             .expect("publish history route must resolve");
         assert_eq!(route.page.key, "publish-history");
         assert!(ConsoleRoute::resolve("/acme/main/-/settings/publishes").is_none());
+    }
+
+    #[test]
+    fn staged_releases_require_publish_in_flat_and_nested_registries() {
+        for path in [
+            "/main/-/settings/staged-releases",
+            "/acme/project/main/-/settings/staged-releases",
+        ] {
+            let route = ConsoleRoute::resolve(path).expect("staging route must resolve");
+            assert_eq!(route.page.workflow, "registry-staging");
+            assert_eq!(route.page.navigation_permission(), "publish");
+            assert!(!route
+                .visible_navigation(&["read".into(), "registry.configure".into()])
+                .iter()
+                .any(|page| page.key == "staged-releases"));
+            assert!(route
+                .visible_navigation(&["publish".into()])
+                .iter()
+                .any(|page| page.key == "staged-releases"));
+        }
+
+        assert!(ConsoleRoute::resolve("/main/-/staged-releases").is_none());
     }
 
     #[test]

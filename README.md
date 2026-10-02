@@ -36,6 +36,9 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
   configuration, packages, security, upgrades, operations, and recovery.
 - [AOS Hub documentation](docs/users/aos-hub/) covers its trust model, web,
   API, CLI, native, and Cloudflare deployments.
+- [Registry release stages](docs/registry/release-stages.md) explains unpublished
+  candidate uploads and revision checks. Registry maintainers use `apr release`;
+  AOS qualification and destination orchestration use `aos maintain release`.
 - [Registry operator documentation](docs/users/registry/) covers hosting,
   signing, publishing, staged rollouts, and incident response.
 - [Crucible documentation](docs/users/crucible/) covers deterministic
@@ -46,8 +49,11 @@ Check the [support-status matrix](docs/users/aos/support-status.md) before plann
 ## Contributing
 
 Bug reports and feature proposals are welcome in
-[GitHub Issues](https://github.com/andyl-technologies/aos/issues). Before
-changing packages, images, or build tooling, read the
+[GitHub Issues](https://github.com/andyl-technologies/aos/issues). Report
+undisclosed vulnerabilities privately under the [security policy](SECURITY.md).
+External contributions are currently disabled, and only project contributors
+may open pull requests. Before changing packages, images, or build tooling,
+read the
 [contribution requirements](CONTRIBUTING.md) and
 [maintainer guide](docs/maintainers/). The contribution requirements document
 the employee authorization, external CLA, DCO, and license-boundary checks that

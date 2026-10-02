@@ -135,7 +135,7 @@ apr create andyl-testing \
 The Hub slug and signed release identity are `andyl/testing`; the clone name and
 trust-line prefix are `andyl-testing`. Generate threshold-signed bootstrap
 intents for the exact staging and production deployment identities and run
-`aos release step bootstrap` once per surface as documented in
+`aos maintain release step bootstrap` once per surface as documented in
 [`canonical-releases.md`](canonical-releases.md). Bootstrap refuses a destination
 that already contains a publication.
 
@@ -171,14 +171,14 @@ aos hub registry show \
 Bootstrap and qualify the empty base in staging. Only then repeat the topology
 plan/apply/show and bootstrap against `https://aos.andyl.org`, using the
 production access profile, deployment identity, plan, and idempotency key. The
-topology row and `aos release step bootstrap` publication are separate: create and
+topology row and `aos maintain release step bootstrap` publication are separate: create and
 inspect the row first, then install the independently approved empty base.
 
 ## Prepare the image signing authorities
 
 The `aos-testing` variant is a canonical release image: `aos.image` emits only
 `system.build.unsignedImageAssembly` and every signature is applied later by
-`aos release step finalize-image` through the registry's signer adapter. Four public
+`aos maintain release step finalize-image` through the registry's signer adapter. Four public
 trust inputs are therefore committed, and their private halves are prepared once
 and held in operator custody with the registry and TUF keys.
 
@@ -248,7 +248,7 @@ reproducible derivation.
 
 Plan the snapshot while the `.0` revision is still the head of `master`.
 Planning derives its source identity from the checked-out commit and refuses
-one that is merely an ancestor: `aos release step plan` requires `HEAD` to
+one that is merely an ancestor: `aos maintain release step plan` requires `HEAD` to
 equal the protected branch head, and accepts no protected branch other than
 `master`. The hotfix-branch exception applies only to main plans that carry a
 profile override. Merging the `.0` and `.1` revisions together therefore
@@ -264,7 +264,7 @@ snapshot, write the reviewed Linux image decisions to `images.json`, then
 freeze the public plan with the exact prepared version:
 
 ```sh
-aos release new --registry andyl/testing --version 2026.9.0-dev.20260917.1 --images images.json
+aos maintain release new --registry andyl/testing --version 2026.9.0-dev.20260917.1 --images images.json
 ```
 
 Check the printed summary: registry `andyl/testing` (or the active epoch
@@ -275,8 +275,8 @@ complete package and image decisions with all required signer roles. Then
 publish with:
 
 ```sh
-aos release advance --to staging/edge
-aos release advance --to production/edge
+aos maintain release advance --to staging/edge
+aos maintain release advance --to production/edge
 ```
 
 Follow the [release checklist](release-checklist.md), using
@@ -317,7 +317,7 @@ aos container publish aos "$TESTING_OCI_REFERENCE" \
 ```
 
 Place those exact `container-release.json` and `signature-input.json` files
-where `aos release advance` asks for the OCI sidecar; it passes them to both
+where `aos maintain release advance` asks for the OCI sidecar; it passes them to both
 `step prepare-registry` and `step finalize-registry`. The generated
 transaction's reviewed catalog digest includes the sidecar, and finalization
 verifies its exact bytes again. After the signed registry release is published
@@ -401,7 +401,7 @@ Merge only after required review and contributor authorization, and record the
 observed protected merge with `handoff`. Then create a new edge release from
 that merge commit. Do not edit a previous release, tag, immutable TUF metadata
 version, or content-addressed Hub object. Channel and timestamp pointers
-advance only through their dedicated `aos release` operations.
+advance only through their dedicated `aos maintain release` operations.
 
 ## Rotate keys without resetting trust
 
@@ -499,7 +499,7 @@ storage-retention procedure.
 
 ## Audit, rollback, and retirement
 
-Use `aos release step verify` with independently supplied public keys for every
+Use `aos maintain release step verify` with independently supplied public keys for every
 retained release bundle. Compare the public deployment probe, registry release,
 channel partitions, timestamp, and object digests to the operation log. A bad
 edge release is fixed forward with a new immutable release; channel rollback is

@@ -954,7 +954,7 @@ pub(crate) async fn fetch_with_progress(
     refspecs: &[String],
     progress: Option<TransferProgress>,
 ) -> Result<()> {
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if super::transport::uses_static_git_reader(url) {
         return match progress.as_ref() {
             Some(progress) => {
                 dumb_http::fetch_with_progress(repo_dir, url, refspecs, Some(progress)).await
@@ -983,7 +983,7 @@ pub(crate) async fn fetch_with_verified_graph(
         repo_dir == verified.repo_dir,
         "verification cache belongs to a different repository"
     );
-    if url.starts_with("http://") || url.starts_with("https://") {
+    if super::transport::uses_static_git_reader(url) {
         return dumb_http::fetch_with_verified_graph(
             repo_dir,
             url,

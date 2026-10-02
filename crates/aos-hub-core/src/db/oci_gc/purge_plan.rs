@@ -309,9 +309,10 @@ impl Database {
                (registry_id, mutation_epoch, charged_bytes, charged_objects, updated_at)
              SELECT id, 0, 0, 0, ?2 FROM registries WHERE id = ?1
              ON CONFLICT(registry_id) DO NOTHING",
-            vals![plan.registry_id, input.now],
-        )
-        .unchecked()];
+                vals![plan.registry_id, input.now],
+            )
+            .unchecked(),
+        ];
         match plan.action {
             OciRegistryPurgeFenceAction::Begin => {
                 statements.extend([
@@ -330,6 +331,16 @@ impl Database {
                            AND NOT EXISTS (SELECT 1 FROM oci_repositories
                              WHERE registry_id = ?1)
                            AND NOT EXISTS (SELECT 1 FROM oci_blobs WHERE registry_id = ?1)
+                           AND NOT EXISTS (
+                             SELECT 1 FROM staged_release_objects staged_object
+                             JOIN staged_release_revisions staged_revision
+                               ON staged_revision.registry_id = staged_object.registry_id
+                              AND staged_revision.stage_id = staged_object.stage_id
+                              AND staged_revision.revision = staged_object.revision
+                             WHERE staged_object.registry_id = ?1
+                               AND staged_object.object_key LIKE 'oci/blobs/sha256/%'
+                               AND (staged_revision.retire_after IS NULL
+                                 OR staged_revision.retire_after > ?4))
                            AND NOT EXISTS (SELECT 1 FROM oci_upload_sessions
                              WHERE registry_id = ?1 AND state IN('active', 'completing'))
                            AND NOT EXISTS (SELECT 1 FROM oci_publication_sessions
@@ -344,7 +355,8 @@ impl Database {
                         vals![
                             plan.registry_id,
                             plan.expected_resource_version,
-                            plan.captured_mutation_epoch
+                            plan.captured_mutation_epoch,
+                            input.now
                         ],
                     )
                     .expecting(1),
