@@ -192,6 +192,10 @@ Complete this section before starting builds or requesting signatures.
   aos maintain release new --registry andyl/experimental --version 2026.9.0-dev.20260929.1 --images images.json
   ```
 
+  For a registry's first release, when no surface holds a publication yet,
+  add `--first-release --source-registry <clean single-commit clone>` as
+  described in
+  [plan a registry's first release](canonical-releases.md#plan-a-registrys-first-release).
   For an emergency, add `--override DIR`, or immediately run
   `aos maintain release advance --to production/stable --override DIR` before any
   other `advance`, as described in
@@ -205,15 +209,17 @@ Complete this section before starting builds or requesting signatures.
   configuration or source and start a new release; do not edit the frozen plan.
 
 - [ ] **Bootstrap a first registry base, if needed.** For an existing verified
-  base, record its receipt and mark this item inapplicable. For a new registry,
-  obtain the separate staging and production bootstrap approvals for this plan.
-  Run [release bootstrap](canonical-releases.md#bootstrap-the-first-registry-base)
-  on the staging surface first, verify its result, then repeat for production
-  with that surface's approval and access profile.
+  base, record its receipt and mark this item inapplicable. For a plan frozen
+  with `--first-release`, obtain the separate staging and production bootstrap
+  approvals for this plan. Run
+  [release bootstrap](canonical-releases.md#bootstrap-the-first-registry-base)
+  on the staging surface first with `--output <work>/bootstrap/staging`,
+  verify its result, then repeat for production with that surface's approval
+  and access profile and `--output <work>/bootstrap/production`.
 
-  **Check when:** both bootstrap outputs are retained, their public read-back
-  succeeded, and their base commit and surface identities match the plan.
-  Do not bootstrap over an existing publication.
+  **Check when:** both bootstrap outputs are retained in the work directory,
+  their public read-back succeeded, and their base commit and surface
+  identities match the plan. Do not bootstrap over an existing publication.
 
 ## 3. Publish to staging
 
