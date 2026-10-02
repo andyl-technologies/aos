@@ -16,14 +16,23 @@ use terrane_core::refs::{Commit, EntryOrigin};
 /// Changes one authenticated certificate-bearing candidate in a native test.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum CertificateMutation {
+    /// Changes the complete destination message after source signing.
     Message,
+    /// Changes the complete destination timestamp after source signing.
     Timestamp,
+    /// Moves a certified destination receipt to an uncovered path.
     ReceiptPath,
+    /// Changes the attested source commit identity.
     SourceCommit,
+    /// Changes the attested source root identity.
     SourceRoot,
+    /// Moves the attested source selector to an uncovered local path.
     SourcePath,
+    /// Substitutes an unrelated private source domain.
     SourceDomain,
+    /// Corrupts the genuine dedicated source-role signature.
     Signature,
+    /// Changes an independently copied attribute's producer claim.
     AttributeOrigin,
 }
 
@@ -70,6 +79,11 @@ pub(crate) fn corrupt_next_certificate(
     Ok(CertificateMutationWitness(observed))
 }
 
+/// Applies and consumes the mutation armed for this actual destination.
+///
+/// # Errors
+/// Rejects synchronization failure, timestamp overflow, or a candidate lacking
+/// the certificate, source selector, or attribute required by the armed mutation.
 pub(super) fn apply(root: &Path, commit: &mut Commit) -> Result<(), StoreFailure> {
     let Some(injection) = PENDING
         .get_or_init(Mutex::default)

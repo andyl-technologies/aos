@@ -26,12 +26,19 @@ struct ImportPlan {
 
 /// Borrows request data and preserves the original destination operation timing.
 pub(super) struct DestinationRequest<'request> {
+    /// Actual destination writer-session reference, independently of source references.
     pub(super) reference: &'request str,
+    /// Capability chain requiring fresh destination Commit authorization.
     pub(super) token: &'request [u8],
+    /// Actual destination paths whose root ACLs authorize the complete candidate.
     pub(super) paths: &'request [Vec<u8>],
+    /// Destination consumer surface checked against capability caveats.
     pub(super) surface: &'request str,
+    /// Exact whole destination head observed for the paired selected transition.
     pub(super) expected: Option<&'request terrane_core::refs::RefRecord>,
+    /// Monotonic start of the original publication attempt, including preloading.
     pub(super) started: std::time::Duration,
+    /// Original publication deadlines retained through both final authority checks.
     pub(super) timing: crate::ref_advance::CommitTiming,
 }
 
