@@ -615,6 +615,19 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The REF-9 citation correction passes source-built comparison, four auxiliary
   groups and mandatory formats. The shared harness now checks and consumes
   the normative whole reference. Published-input qualification remains pending.
+  The reviewed owning Commit recipe candidate separately passes all 489 core
+  tests with zero skips, strict Clippy/rustdoc, actual `algebra-merge` including
+  both new schema groups, `ref-names` and mandatory formatting. Full qualification
+  follows the shared generic-map normalization-fixture correction; its initial
+  invalid-overlay fixture failure remains recorded. The actual isolated aggregate
+  still fails the missing `format_properties` target; the candidate stays unmerged.
+  A separate `control-reference-models` auxiliary now reserves six exact groups
+  for backend binding alternatives, original-control versions, complete nested
+  Guard snapshots, portable inventory/genesis fields, publication proof variants
+  and independently assembled structural negatives. It fails explicitly until
+  its generator and public-model consumers exist. These are ordinary format
+  records; no signing, checked authority, backend, native reconciliation or
+  collection effects are qualified by this registration.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
