@@ -27,7 +27,7 @@
   system,
   name,
   kernel,
-  systemVariant ? name,
+  systemVariant,
   runtimeClosureAudit,
   bootArtifacts,
   rawDiskFilename,

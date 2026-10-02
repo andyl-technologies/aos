@@ -3,6 +3,7 @@
   config,
   lib,
   pkgs,
+  systemName,
   ...
 }: let
   artifactFor = name: pkgs.${name};
@@ -130,6 +131,7 @@
     imageBuild = import ./_image-builder.nix {
       pkgs = imagePackages;
       inherit (pkgs) buildPackages;
+      systemVariant = systemName;
       inherit kernel lib bootArtifacts rawDiskFilename rawMetadataFilename rawDeliveryFilename rootfs runtimeClosureAudit targetPlatform;
       system = {inherit config;};
       inherit name;
