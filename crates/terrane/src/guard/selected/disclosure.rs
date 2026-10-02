@@ -7,6 +7,9 @@
 #[path = "disclosure/projection.rs"]
 mod projection;
 
+#[path = "disclosure/destination.rs"]
+mod destination;
+
 use crate::bucket::held::HeldBucket;
 use crate::bucket::publication::SelectedObservation;
 use crate::bucket::{BucketBinding, FileBucket};
@@ -22,6 +25,7 @@ use super::{LocalControlInputs, SharedCheck, invalid};
 /// Keeps independently checked source rights and exact physical controls private.
 struct DisclosureSource<'guard, F: LocalFs> {
     snapshots: Vec<AuthorizedSnapshot>,
+    issuer_keys: Vec<terrane_core::auth::IssuerKey>,
     requests: Vec<AuthorizedRef>,
     originals: Vec<OriginalCommitContext>,
     signer: DisclosureSigner,
@@ -155,6 +159,7 @@ where
     observed.revalidate().await?;
 
     Ok(DisclosureSource {
+        issuer_keys: concrete.keys().to_vec(),
         snapshots,
         requests,
         originals,
