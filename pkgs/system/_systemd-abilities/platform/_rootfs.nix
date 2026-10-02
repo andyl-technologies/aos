@@ -14,9 +14,6 @@
   runtimeClosureAudit,
 }: let
   config = system.config;
-  receivedInitrdPaths = config.aos.boot.stageInputPaths.receivedInitrd;
-  receivedInitrdBundleDestination = lib.escapeShellArg ("rootfs" + receivedInitrdPaths.bundle);
-  receivedInitrdBundleParent = lib.escapeShellArg ("rootfs" + builtins.dirOf receivedInitrdPaths.bundle);
   sb = config.aos.boot.secureBoot;
   externalFinalization = sb.externalFinalization.enable;
   localSecureBootSigning = sb.enable && !externalFinalization;
@@ -79,13 +76,6 @@
           mkdir -p rootfs/usr/lib/aos
           cp ${config.system.build.bootMetadataBinding}/binding.json rootfs/usr/lib/aos/boot-metadata-binding.json
         ''}
-        ${lib.optionalString config.aos.boot.initrd.abilityHandoff.enable ''
-          # The rootfs builder already copies the host bundle; only the
-          # received initrd bundle needs a separate handoff attachment.
-          mkdir -p ${receivedInitrdBundleParent}
-          ln -s ${config.system.build.initrdDeploymentBundle} ${receivedInitrdBundleDestination}
-        ''}
-
         ${lib.optionalString sb.enable ''
           mkdir -p rootfs/usr/lib/aos/image-trust
           cp ${dbCertificate} rootfs/usr/lib/aos/image-trust/boot-db.crt

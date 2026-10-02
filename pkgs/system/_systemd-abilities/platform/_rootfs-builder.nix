@@ -95,6 +95,10 @@
   runtimeClosureAudit ? null,
 }: let
   toplevel = system.config.system.build.toplevel;
+  stageInputPaths = system.config.aos.boot.stageInputPaths;
+  hostBundleDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.host.bundle);
+  receivedInitrdDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.receivedInitrd.bundle);
+  receivedInitrdParent = lib.escapeShellArg ("rootfs" + builtins.dirOf stageInputPaths.receivedInitrd.bundle);
   kernelPackage = kernel.package;
   kernelModuleTree =
     if kernel.configuration.moduleTree == null
@@ -398,10 +402,14 @@ in
               # edge. See spec v12 §6.1.
               ln -sfn "$TOPLEVEL" rootfs/usr/lib/aos/toplevel
 
-              # The native host controller consumes this authenticated bundle
-              # before a profile generation has been published.
-              mkdir -p rootfs/usr/lib/aos/host/deployment
-              cp -a "$TOPLEVEL/host-deployment/." rootfs/usr/lib/aos/host/deployment/
+              # Both production and test images receive the bundles consumed
+              # after switch-root, at the boot package's configured paths.
+              mkdir -p ${hostBundleDestination}
+              cp -a "$TOPLEVEL/host-deployment/." ${hostBundleDestination}/
+              ${lib.optionalString system.config.aos.boot.initrd.abilityHandoff.enable ''
+                mkdir -p ${receivedInitrdParent}
+                cp -a "$TOPLEVEL/initrd-deployment" ${receivedInitrdDestination}
+              ''}
 
               # ── 9. /usr/lib/aos/nix-registration Nix DB seed ───────────────────────────
               # Stage-2 loads this plain text `nix-store --load-db` stream to
