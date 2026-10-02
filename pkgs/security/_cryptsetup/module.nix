@@ -39,9 +39,13 @@ in {
     };
   };
 
-  config = lib.mkIf cfg.enable {
+  # Selecting cryptsetup for initrd storage unlocks must not activate host swap.
+  config = lib.mkIf (cfg.enable && (config.aos.boot.stage or "host") == "host") {
     aos.abilities = {
-      device.operations.present.effects.cryptswap.input.path = cfg.device;
+      device.operations.present.effects.cryptswap.input = {
+        path = cfg.device;
+        kind = "block";
+      };
       encryptedMapping.operations.open.effects.cryptswap.input = {
         name = cfg.mappingName;
         cryptsetup = "${package}/sbin/cryptsetup";
