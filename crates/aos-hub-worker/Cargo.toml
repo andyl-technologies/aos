@@ -105,6 +105,7 @@ futures-util = "0.3"
 send_wrapper = { version = "0.6", features = ["futures"] }
 
 [dev-dependencies]
+aos-hub-core = { workspace = true, features = ["test-fixtures"] }
 zstd = { workspace = true }
 aos-doc-model = { workspace = true }
 aos-hub = { workspace = true, features = ["test-support"] }

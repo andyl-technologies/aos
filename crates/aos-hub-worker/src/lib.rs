@@ -172,6 +172,8 @@ mod oci_cleanup_state;
 #[cfg(test)]
 #[path = "oci_projection/lifetime.rs"]
 mod oci_projection_lifetime;
+#[cfg(any(test, all(target_arch = "wasm32", feature = "do-e2e")))]
+mod oci_profile_load_observer;
 #[cfg(target_arch = "wasm32")]
 mod oci_sdk_emulation;
 #[cfg(target_arch = "wasm32")]

@@ -28,13 +28,30 @@ impl OciProviderConfig {
     /// # Errors
     /// Rejects absent, stale or changed acceptance and unsupported execution.
     pub(crate) async fn load(env: &Env) -> Result<Self> {
+        Self::load_selected(env, None).await
+    }
+
+    /// Adds a private observation without changing loader admission.
+    #[cfg(feature = "do-e2e")]
+    pub(crate) async fn load_observed(
+        env: &Env,
+        observation: Option<&crate::oci_profile_load_observer::Trace>,
+    ) -> Result<Self> {
+        Self::load_selected(env, observation).await
+    }
+
+    async fn load_selected(
+        env: &Env,
+        #[cfg(feature = "do-e2e")] observation: Option<&crate::oci_profile_load_observer::Trace>,
+        #[cfg(not(feature = "do-e2e"))] _observation: Option<&()>,
+    ) -> Result<Self> {
         let opt_in = env
             .var("HUB_OCI_SDK_EMULATOR_ENABLED")
             .ok()
             .map(|value| value.to_string());
         if opt_in.as_deref() == Some("true") {
             #[cfg(feature = "do-e2e")]
-            return Self::load_emulator(env).await;
+            return Self::load_emulator(env, observation).await;
             #[cfg(not(feature = "do-e2e"))]
             anyhow::bail!("OCI SDK emulator permission is unavailable in a production Worker");
         }
@@ -48,7 +65,10 @@ impl OciProviderConfig {
     }
 
     #[cfg(feature = "do-e2e")]
-    async fn load_emulator(env: &Env) -> Result<Self> {
+    async fn load_emulator(
+        env: &Env,
+        observation: Option<&crate::oci_profile_load_observer::Trace>,
+    ) -> Result<Self> {
         let deadline = u64::try_from(aos_hub_core::clock::now_unix_secs())?
             .checked_add(30)
             .context("OCI SDK artifact lookup deadline overflow")?;
@@ -58,7 +78,7 @@ impl OciProviderConfig {
             .context("OCI SDK artifact lookup expired")?;
         let timer = worker::Delay::from(std::time::Duration::from_secs(remaining));
         match futures_util::future::select(
-            Box::pin(Self::load_emulator_records(env)),
+            Box::pin(Self::load_emulator_records(env, observation)),
             Box::pin(timer),
         )
         .await
@@ -77,7 +97,10 @@ impl OciProviderConfig {
     }
 
     #[cfg(feature = "do-e2e")]
-    async fn load_emulator_records(env: &Env) -> Result<Self> {
+    async fn load_emulator_records(
+        env: &Env,
+        observation: Option<&crate::oci_profile_load_observer::Trace>,
+    ) -> Result<Self> {
         use aos_hub_core::oci_sdk_emulation::oci_sdk_emulation_acceptance_key;
 
         let deployment = env.var("HUB_DEPLOYMENT_ID")?.to_string();
@@ -130,7 +153,10 @@ impl OciProviderConfig {
                     == config::integer(env, "HUB_OCI_SDK_EMULATOR_MAX_PROVIDER_REQUESTS")?.get(),
             "OCI SDK installed audience, source, clock or bounds changed"
         );
-        artifact.verify(
+        crate::oci_profile_load_observer::verify_artifact(
+            observation,
+            &artifact,
+            &bytes,
             &deployment,
             &origin,
             &env.var("HUB_OCI_SDK_EMULATOR_REVIEWER_PUBLIC_KEY")?

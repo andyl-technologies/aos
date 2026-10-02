@@ -140,14 +140,21 @@ pub(crate) async fn physical_fetch(
     gate: Arc<Mutex<()>>,
 ) -> worker::Result<Response> {
     let operation = async {
-        let (lookup, _, _) = authenticate(request, &guard.env).await?;
+        let (lookup, body, _) = authenticate(request, &guard.env).await?;
         ensure!(
             lookup.key == key,
             "OCI projection addressed another physical guard"
         );
         bounded(&guard.env, &lookup, async {
             let gate = crate::hybrid_object::acquire_gate(gate).await;
-            physical_reply(guard, key, &lookup, gate).await
+            physical_reply(
+                guard,
+                key,
+                &lookup,
+                gate,
+                &hex::encode(Sha256::digest(&body)),
+            )
+            .await
         })
         .await
     };
@@ -165,6 +172,7 @@ async fn physical_reply(
     key: &str,
     lookup: &OciProjectionLookup,
     gate: OwnedMutexGuard<()>,
+    _request_sha256: &str,
 ) -> Result<Response> {
     ensure!(
         lookup.key == key,
@@ -183,6 +191,20 @@ async fn physical_reply(
         storage.get("pending-delete").await?;
     crate::hybrid_object_state::ensure_ready(pending.as_ref(), deleting.as_ref())?;
 
+    // Entry follows authentication, exact key selection and journal readiness,
+    // while the physical key gate is held. This covers only the loader interval.
+    #[cfg(feature = "do-e2e")]
+    let qualified = {
+        let trace = crate::oci_profile_load_observer::from_env(&guard.env, lookup, _request_sha256);
+        let result =
+            crate::oci_sdk_emulation::OciProviderConfig::load_observed(&guard.env, trace.as_ref())
+                .await;
+        if let Some(trace) = trace {
+            trace.finish(&result);
+        }
+        result?
+    };
+    #[cfg(not(feature = "do-e2e"))]
     let qualified = crate::oci_sdk_emulation::OciProviderConfig::load(&guard.env).await?;
     qualified
         .verify_anchor(&guard.env, Some(lookup.expires_at))
