@@ -20,7 +20,7 @@ const LIMIT: usize = 65_536;
 const RECORD_LIMIT: usize = 16 * 1024 * 1024;
 
 /// Owns an untrusted dedicated disclosure role without a private key.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct DisclosureRoleRecord {
     /// Canonical lowercase hexadecimal physical repository authority identifier.
     pub(crate) repository: String,
@@ -52,7 +52,8 @@ impl DisclosureRoleRecord {
 pub(crate) struct PublicTrustRecord {
     /// Raw BLAKE3 digest of the exact canonical import record.
     pub(crate) import_digest: [u8; 32],
-    /// Source authority whose held configuration supplies these mappings.
+    /// Original authoring registration bound to the exact retained import.
+    /// Disclosure roles independently identify their actual physical disclosers.
     pub(crate) source_authority: [u8; 32],
     /// Physical destination authority that retains the checked mappings.
     pub(crate) destination_authority: [u8; 32],
@@ -273,6 +274,72 @@ impl Record for PublicTrustRecord {
             .map(|byte| format!("{byte:02x}"))
             .collect::<String>();
         Ok(format!("import-trust-{digest}.cbor"))
+    }
+}
+
+impl Record for DisclosureRoleRecord {
+    /// Encodes the registered public disclosure-role row without private material.
+    ///
+    /// # Errors
+    /// Rejects malformed physical repository identities, domains or intervals.
+    fn encode(&self) -> Result<Vec<u8>, Error> {
+        let mut bytes = Vec::new();
+        cbor::write_array(&mut bytes, 5);
+        cbor::write_text(&mut bytes, &self.repository);
+        cbor::write_text(&mut bytes, &self.domain);
+        cbor::write_bytes(&mut bytes, &self.public_key);
+        cbor::write_uint(&mut bytes, self.not_before);
+        optional_time(&mut bytes, self.not_after);
+        let validation = PublicTrustRecord {
+            import_digest: [0; 32],
+            source_authority: [0; 32],
+            destination_authority: [0; 32],
+            issuer_keys: Vec::new(),
+            disclosure_roles: vec![self.clone()],
+        };
+        validation.validate()?;
+        Ok(bytes)
+    }
+
+    /// Decodes exactly one canonical registered disclosure-role row.
+    ///
+    /// # Errors
+    /// Rejects wrong shapes, malformed key widths, invalid fields or trailing bytes.
+    fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut decoder = cbor::Decoder::new(bytes);
+        if decoder.array(5).map_err(|_| Error::Denied)? != 5 {
+            return Err(Error::Denied);
+        }
+        let row = Self {
+            repository: decoder.text(LIMIT).map_err(|_| Error::Denied)?.to_owned(),
+            domain: decoder.text(LIMIT).map_err(|_| Error::Denied)?.to_owned(),
+            public_key: decoder
+                .bytes(32)
+                .map_err(|_| Error::Denied)?
+                .try_into()
+                .map_err(|_| Error::Denied)?,
+            not_before: decoder.uint().map_err(|_| Error::Denied)?,
+            not_after: read_time(&mut decoder)?,
+        };
+        decoder.finish().map_err(|_| Error::Denied)?;
+        if row.encode()? != bytes {
+            return Err(Error::Denied);
+        }
+        Ok(row)
+    }
+
+    /// Selects one immutable historical role interval by dedicated key and start.
+    ///
+    /// # Errors
+    /// Rejects malformed role configuration.
+    fn selector(&self) -> Result<String, Error> {
+        self.encode()?;
+        let key = self
+            .public_key
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        Ok(format!("disclosure-role-{key}-{}.cbor", self.not_before))
     }
 }
 

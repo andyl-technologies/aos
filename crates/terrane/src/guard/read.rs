@@ -1,7 +1,6 @@
 //! Keeps authenticated read witnesses private and rechecks live policy before reachable content I/O.
 
 use terrane_core::auth::{self, Request, RequestRoot, Verb};
-use terrane_core::codec::{Codec, parse_envelope};
 use terrane_core::identity::{Digest, IdentityKind, TERRANE_V1};
 use terrane_core::manifest::Manifest;
 use terrane_core::properties::{self, RootLayer};
@@ -10,6 +9,12 @@ use terrane_core::tree_format::{ContentRef, EntryKind};
 
 use super::{Guard, HistoryObservation, TreeEvidence, denied, domain_label, invalid};
 use crate::store::{Clock, Store, StoreErrorKind, StoreFailure};
+
+mod dictionaries;
+#[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
+mod dictionary_tests;
+
+use dictionaries::{ReadContent, ReadDictionary};
 
 /// Holds an authorized scoped target without exposing its private historical witnesses.
 pub struct AuthorizedSnapshot {
@@ -36,44 +41,10 @@ impl<S: Store, C: Clock> Guard<S, C> {
         content: ContentRef,
         size: u64,
     ) -> Result<crate::domain::DomainAccess, StoreFailure> {
-        self.read_content(snapshot, path, content, size).await?;
-        let mut identities = Vec::new();
-        let chunks = match content {
-            ContentRef::Inline(digest) => vec![digest],
-            ContentRef::Manifest(digest) => {
-                let identity = TERRANE_V1
-                    .from_digest(IdentityKind::Manifest, &digest)
-                    .map_err(|_| invalid())?;
-                self.authorize_snapshot_path(snapshot, path).await?;
-                let bytes = self.store().get(&identity, None).await?;
-                let manifest =
-                    Manifest::decode_verified(&bytes, &self.config().chunk_profile, &identity)
-                        .map_err(|_| invalid())?;
-                identities.push(identity);
-                manifest
-                    .chunks
-                    .into_iter()
-                    .map(|chunk| chunk.digest)
-                    .collect()
-            }
-        };
-        for digest in chunks {
-            let identity = TERRANE_V1
-                .from_digest(IdentityKind::Chunk, &digest)
-                .map_err(|_| invalid())?;
-            self.authorize_snapshot_path(snapshot, path).await?;
-            let bytes = self.store().get(&identity, None).await?;
-            if let Codec::ZstdDictionary(dictionary) =
-                parse_envelope(&bytes).map_err(|_| invalid())?.codec
-            {
-                identities.push(
-                    TERRANE_V1
-                        .from_digest(IdentityKind::Chunk, &dictionary)
-                        .map_err(|_| invalid())?,
-                );
-            }
-            identities.push(identity);
-        }
+        let identities = self
+            .read_content_checked(snapshot, path, content, size)
+            .await?
+            .identities;
         self.authorize_snapshot_path(snapshot, path).await?;
         let access = self
             .domain_access(
@@ -462,6 +433,48 @@ impl<S: Store, C: Clock> Guard<S, C> {
         content: ContentRef,
         size: u64,
     ) -> Result<Vec<u8>, StoreFailure> {
+        Ok(self
+            .read_content_checked(snapshot, path, content, size)
+            .await?
+            .plaintext)
+    }
+
+    /// Reads genuine stored dictionary envelopes after checking the exact file selection.
+    ///
+    /// The returned dependency-first records are ordinary data. Consumers must
+    /// independently validate them before native preload or content admission.
+    ///
+    /// # Errors
+    /// Preserves current policy, scoped content and dictionary validation failures.
+    pub(crate) async fn read_content_dictionaries(
+        &self,
+        snapshot: &AuthorizedSnapshot,
+        path: &[u8],
+        content: ContentRef,
+        size: u64,
+    ) -> Result<Vec<(terrane_core::identity::Identity, Vec<u8>, usize)>, StoreFailure> {
+        Ok(self
+            .read_content_checked(snapshot, path, content, size)
+            .await?
+            .dictionaries
+            .into_iter()
+            .map(|dictionary| {
+                (
+                    dictionary.identity,
+                    dictionary.encoded,
+                    dictionary.plaintext.len(),
+                )
+            })
+            .collect())
+    }
+
+    async fn read_content_checked(
+        &self,
+        snapshot: &AuthorizedSnapshot,
+        path: &[u8],
+        content: ContentRef,
+        size: u64,
+    ) -> Result<ReadContent, StoreFailure> {
         self.authorize_snapshot_path(snapshot, path).await?;
         let relative = path.strip_prefix(b"/").ok_or_else(invalid)?;
         {
@@ -481,6 +494,7 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 let identity = TERRANE_V1
                     .from_digest(IdentityKind::Manifest, &digest)
                     .map_err(|_| invalid())?;
+                self.authorize_snapshot_path(snapshot, path).await?;
                 let bytes = self.store().get(&identity, None).await?;
                 let manifest =
                     Manifest::decode_verified(&bytes, &self.config().chunk_profile, &identity)
@@ -488,10 +502,14 @@ impl<S: Store, C: Clock> Guard<S, C> {
                 if manifest.size != size {
                     return Err(invalid());
                 }
-                let mut plaintext = Vec::new();
+                let mut result = ReadContent {
+                    plaintext: Vec::new(),
+                    identities: vec![identity],
+                    dictionaries: Vec::new(),
+                };
                 for (index, chunk) in manifest.chunks.iter().enumerate() {
                     self.authorize_snapshot_path(snapshot, path).await?;
-                    let bytes = self
+                    let chunk = self
                         .read_chunk(
                             snapshot,
                             path,
@@ -500,15 +518,17 @@ impl<S: Store, C: Clock> Guard<S, C> {
                             index + 1 == manifest.chunks.len(),
                         )
                         .await?;
-                    plaintext.extend(bytes);
+                    result.plaintext.extend(chunk.plaintext);
+                    result.identities.extend(chunk.identities);
+                    result.dictionaries.extend(chunk.dictionaries);
                 }
-                if plaintext.len() as u64 != size
+                if result.plaintext.len() as u64 != size
                     || manifest.hashes.get("blake3").map(Vec::as_slice)
-                        != Some(blake3::hash(&plaintext).as_bytes().as_slice())
+                        != Some(blake3::hash(&result.plaintext).as_bytes().as_slice())
                 {
                     return Err(invalid());
                 }
-                Ok(plaintext)
+                Ok(result)
             }
         }
     }
@@ -520,38 +540,39 @@ impl<S: Store, C: Clock> Guard<S, C> {
         digest: Digest,
         size: u64,
         final_chunk: bool,
-    ) -> Result<Vec<u8>, StoreFailure> {
+    ) -> Result<ReadContent, StoreFailure> {
         self.authorize_snapshot_path(snapshot, path).await?;
         let identity = TERRANE_V1
             .from_digest(IdentityKind::Chunk, &digest)
             .map_err(|_| invalid())?;
         let encoded = self.store().get(&identity, None).await?;
-        let envelope = parse_envelope(&encoded).map_err(|_| invalid())?;
-        let dictionary = if let Codec::ZstdDictionary(digest) = envelope.codec {
-            let identity = TERRANE_V1
-                .from_digest(IdentityKind::Chunk, &digest)
-                .map_err(|_| invalid())?;
-            let bytes = self.store().get(&identity, None).await?;
-            let encoded = parse_envelope(&bytes).map_err(|_| invalid())?;
-            if encoded.codec != Codec::Raw {
-                return Err(StoreFailure::new(StoreErrorKind::Unsupported));
-            }
-            TERRANE_V1
-                .verify(&identity, encoded.body)
-                .map_err(|_| invalid())?;
-            Some(encoded.body.to_vec())
-        } else {
-            None
-        };
+        let length = usize::try_from(size).map_err(|_| invalid())?;
+        crate::codec::inspect_chunk(&encoded, length, self.config().chunk_profile.maximum())
+            .map_err(|_| invalid())?;
+        let dictionaries = self
+            .read_chunk_dictionaries(snapshot, path, &identity, &encoded)
+            .await?;
+        let dictionary = dictionaries
+            .last()
+            .map(|dictionary| dictionary.plaintext.as_slice());
         let chunk = crate::codec::decode_verified(
             &encoded,
-            usize::try_from(size).map_err(|_| invalid())?,
+            length,
             &self.config().chunk_profile,
             final_chunk,
             &identity,
-            dictionary.as_deref(),
+            dictionary,
         )
         .map_err(|_| invalid())?;
-        Ok(chunk.plaintext().to_vec())
+        let mut identities = dictionaries
+            .iter()
+            .map(|dictionary: &ReadDictionary| dictionary.identity.clone())
+            .collect::<Vec<_>>();
+        identities.push(identity);
+        Ok(ReadContent {
+            plaintext: chunk.plaintext().to_vec(),
+            identities,
+            dictionaries,
+        })
     }
 }

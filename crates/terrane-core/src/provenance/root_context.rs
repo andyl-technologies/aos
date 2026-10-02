@@ -104,7 +104,8 @@ impl RootChangePlan {
     ///
     /// Existing roots use their prior policy. Admin may also be established on
     /// a canonical ancestor; these units do not confer admission authority.
-    /// Fresh authoring plans still require a trusted bootstrap comparison in
+    /// Fresh authoring and copied-root publication under another original
+    /// authority require a trusted bootstrap comparison in
     /// [`verify_root_context_with_bootstrap`]; no baseline comes from a plan.
     pub fn required_admin(&self) -> &[AffectedRoot] {
         &self.required_admin
@@ -315,6 +316,43 @@ fn canonical_ancestor<'a>(snapshot: &'a Snapshot, path: &[u8]) -> Option<&'a Roo
         .max_by_key(|root| root.path.len())
 }
 
+// Equal tree roots establish unchanged content, not continuation of the same
+// protected authoring authority. Optional ordinary scope annotations do not
+// claim physical continuity; explicit original evidence must establish it.
+fn requires_bootstrap_comparison(
+    history: &VerifiedHistory,
+    record: &Commit,
+    original: Option<&bootstrap::CheckedBootstrap>,
+) -> Result<bool, Rejected> {
+    let first_parent = record.parents.first().ok_or(Rejected)?;
+    let parent = history.commit(first_parent).ok_or(Rejected)?.commit();
+    let reference = record
+        .profile_pair
+        .commit_context
+        .as_ref()
+        .ok_or(Rejected)?
+        .reference();
+    let Some(parent_context) = parent.profile_pair.commit_context.as_ref() else {
+        // Legacy verification authenticates a trusted original request, but
+        // does not retain its complete context here. It cannot prove authority
+        // continuity; the candidate needs its own independent comparison.
+        return Ok(true);
+    };
+    if parent_context.reference() != reference {
+        return Ok(true);
+    }
+
+    let Some(original) = original else {
+        return Ok(false);
+    };
+    let previous = history
+        .root_scopes
+        .get(first_parent)
+        .and_then(|scope| scope.bootstrap.as_ref())
+        .ok_or(Rejected)?;
+    Ok(previous.authority != original.authority)
+}
+
 /// Verifies original signed claims against canonical prior/candidate root changes.
 ///
 /// Each claim must name an actual root, never a file path. Broader same-domain
@@ -326,14 +364,17 @@ fn canonical_ancestor<'a>(snapshot: &'a Snapshot, path: &[u8]) -> Option<&'a Roo
 /// A first-parent audit cut is available only from a complete disclosure batch.
 /// It requires a complete fresh candidate and actual view-root publication scope.
 /// Identical copied trees validate only the bounded claimed root occurrences.
-/// Initial and certified-fresh views require the separately trusted input to
-/// [`verify_root_context_with_bootstrap`], even for an empty candidate ACL.
+/// Initial, certified-fresh, different-ref and legacy-parent views require the
+/// separately trusted input to [`verify_root_context_with_bootstrap`], even for
+/// an empty candidate ACL. Ordinary same-ref scope verification may omit the
+/// optional bootstrap annotation; it does not establish physical-authority
+/// continuity. This comparison does not make an unchanged tree plan fresh.
 ///
 /// # Errors
 /// Returns [`Rejected`] for missing witnesses, unchecked disclosure state,
 /// nonexistent or mislabeled claims, uncovered changes, insufficient original
-/// grants/caveats, a missing initial bootstrap input, or an unavailable ordinary
-/// first parent.
+/// grants/caveats, a missing required bootstrap input, or an unavailable ordinary
+/// first parent or original-authority continuity witness.
 pub fn verify_root_context(
     history: &mut VerifiedHistory,
     view: Digest,
@@ -348,6 +389,10 @@ pub fn verify_root_context(
 /// actual original physical authority, independently of the candidate or token
 /// issuer. The exact original baseline remains available after destination-only
 /// reopening. Ordinary views may also validate this configuration explicitly.
+/// Same-ref continuation with explicit original evidence requires the parent's
+/// checked physical-authority annotation; ref text cannot establish continuity.
+/// A historically verified legacy parent has no retained complete original
+/// context here, so its candidate requires an independent bootstrap comparison.
 /// Current ACL intersections remain native admission checks.
 ///
 /// # Errors
@@ -417,14 +462,20 @@ fn verify_context(
             return Err(Rejected);
         }
     }
-    if plan.fresh {
+    let compare_bootstrap =
+        plan.fresh || requires_bootstrap_comparison(history, record, bootstrap.as_ref())?;
+    if compare_bootstrap {
         let original = bootstrap.as_ref().ok_or(Rejected)?;
-        let current = snapshot::complete(history, record.tree, defaults)?;
-        let main = current.roots.get(b"/".as_slice()).ok_or(Rejected)?;
+        // Only the view-root policy is needed for the independent bootstrap
+        // comparison. Copied trees retain their bounded, empty change plan.
+        let main = snapshot::at_path(history, record.tree, b"/", defaults)?;
         if bootstrap::widens(main.acl().ok_or(Rejected)?, &original.acl) {
             plan.required_admin
-                .push(affected(main, RootSide::Candidate, true));
+                .push(affected(&main, RootSide::Candidate, true));
         }
+    }
+    if plan.fresh {
+        let current = snapshot::complete(history, record.tree, defaults)?;
         for child in current.roots.values() {
             if let Some(parent) = canonical_ancestor(&current, &child.path)
                 && child.widens_delegation(parent)
@@ -433,9 +484,9 @@ fn verify_context(
                     .push(affected(parent, RootSide::Candidate, true));
             }
         }
-        plan.required_admin.sort();
-        plan.required_admin.dedup();
     }
+    plan.required_admin.sort();
+    plan.required_admin.dedup();
     let mut claims = Vec::new();
     for claim in context.roots() {
         let current = snapshot::at_path(history, record.tree, claim.path(), defaults);
@@ -460,7 +511,7 @@ fn verify_context(
             (None, None) => return Err(Rejected),
         }
     }
-    if (plan.fresh || record.parents.is_empty())
+    if compare_bootstrap
         && !claims
             .iter()
             .any(|claim| claim.path == b"/" && claim.side == RootSide::Candidate)

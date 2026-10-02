@@ -12,6 +12,7 @@ use crate::{
 const PUBLIC: &str = "public";
 
 mod bootstrap;
+mod bootstrap_fork;
 
 fn defaults() -> Defaults<'static> {
     Defaults {
