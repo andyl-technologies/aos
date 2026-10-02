@@ -1735,6 +1735,30 @@ is added rather than editing history.
     T1's initial encoding freeze and does not qualify the complete corpus,
     native reconciliation or deletion operations.
 
+- **[D-96] Publish complete publication and original-control alternatives.**
+  - **Status:** Decided
+  - **Decision:** Add 88 complete positive and 37 independently assembled
+    negative record-format witnesses. Cover local/S3/GCS bindings and activation
+    shapes, registered original-control versions, populated Guard configuration,
+    retained selection alternatives, full/delta portable inventories, genesis
+    transaction fields, pointers and all publication-proof cases. Preserve every
+    prior reference byte. These control records receive no immutable-content
+    descriptor or identity; raw hashes describe embedded byte relationships.
+  - **Rationale:** TEST-2 requires published vectors for implemented formats.
+    Primitive CBOR fields reproduce the wires independently; separately
+    constructed public models compare complete owning encodings and decoded
+    fields. Negative inputs bypass rejecting encoders. Full inventories preserve
+    absence versus present-empty bytes; opaque CAPABILITIES bytes demonstrate
+    presence without validating that payload. Local original registration retains
+    its existing nine-element version 1; physical registrations and imports use
+    only the registered version-2 alternatives. Represented keys, roles, nonces,
+    ownership, time intervals and proofs establish no original authority,
+    trusted Guard, checked publication, completed wait or physical permission.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, schemas, identity domains and existing bytes remain unchanged. This
+    additive correction precedes T1's initial encoding freeze and does not
+    qualify the complete corpus, payload validation or native operations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

@@ -653,6 +653,28 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   The shared harness checks and consumes the normative whole reference;
   published-input qualification remains pending. The codec stays on its task
   branch, and no current authority or native physical operation is qualified.
+  Full review of the publication/control alternative candidate covers all nine
+  input files and 125 witnesses: 88 complete positive records and 37 independent
+  malformed wires. Its build, all 493 core Nextest tests with zero skips,
+  strict Clippy/rustdoc, six exact auxiliary groups and mandatory formatting pass.
+  Every positive also rejects all truncated prefixes, trailing bytes and
+  nonminimal container heads. Local original registration remains version 1;
+  physical/import unions exercise the actual registered version-2 alternatives.
+  Opaque CAPABILITIES bytes establish presence only, without payload validation.
+  D-96 publishes the reviewed alternatives and raw embedded relationships while
+  preserving all previous golden bytes. The shared harness now checks and
+  supplies the entire normative reference; published-input qualification remains
+  pending. The isolated aggregate still fails on missing `format_properties`;
+  no native authority, task merge or milestone completion is claimed.
+  The rebased D-95 codec consumer now passes the actual published-input
+  auxiliary: all three exact groups, strict consumer Clippy and both mandatory
+  formatters. Its full copied reference equals the normative D-95 revision;
+  all three reviewed source blobs remain unchanged across the rebase.
+  The clean combined candidate's actual trunk aggregate now terminates on
+  `prov-disclosure-boundary`: twelve of the nineteen required native targets
+  remain absent or unqualified. The failing aggregate is retained separately
+  from the passing 586-test core qualification. No task branch merges or
+  milestone exit follows either narrower result.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
