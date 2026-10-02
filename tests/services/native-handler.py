@@ -822,6 +822,114 @@ class NativeHandlerTests(unittest.TestCase):
             self.assertIn("EnvironmentFile= path is not absolute, ignoring", rejected_paths.stderr)
             self.assertIn('PIDFile: /run/"/run/aos %literal.pid"', rejected_paths.stdout)
 
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_scalar_descriptions_conditions_and_credential_tuples_use_pinned_grammar(self):
+        value = bootstrap_bus()
+        value["lifecycle"]["description"] = "Bus words %literal"
+        value["lifecycle"]["start"][0]["executable"] = {
+            "path": str(systemd_analyze), "arguments": ["--version"],
+        }
+        value["conditions"] = {"all": [
+            {"kind": "kernel-argument", "argument": "aos-test=%literal", "negated": False},
+            {"kind": "kernel-argument", "argument": "aos-test=a value %literal", "negated": True},
+        ]}
+        value["directories"] = {"managed": [{
+            "path": "dbus", "purpose": "state", "mode": "0755", "retention": "persistent",
+        }]}
+        value["credentials"] = {"views": [
+            {"name": "plain", "reference": "/run/plain %literal", "encrypted": False},
+            {"name": "encrypted", "reference": "/run/encrypted %literal", "encrypted": True},
+        ]}
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            with patch.object(handler_module, "TRUE_EXECUTABLE", str(systemd_analyze)):
+                handler_module.render_services({"dbus": value}, units)
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="debug")
+            unit_paths = sorted(str(path) for path in units.iterdir() if path.suffix in {".service", ".socket"})
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            for parsed in [
+                "Description: Bus words %literal\n",
+                "Description: Bus words %literal (system-bus)\n",
+                "Description: Managed state directory dbus\n",
+                "ConditionKernelCommandLine: aos-test=%literal untested",
+                "ConditionKernelCommandLine: !aos-test=a value %literal untested",
+            ]:
+                with self.subTest(parsed=parsed):
+                    self.assertIn(parsed, verified.stdout)
+            main = units / "dbus.service"
+            text = main.read_text()
+            # The credential parser splits ':' without unquoting either field;
+            # its debug dump does not expose credentials, so check exact tuples.
+            self.assertIn("LoadCredential=plain:/run/plain %%literal\n", text)
+            self.assertIn("LoadCredentialEncrypted=encrypted:/run/encrypted %%literal\n", text)
+
+            quoted_lines = []
+            for line in text.splitlines():
+                if line.startswith(("Description=", "ConditionKernelCommandLine=")):
+                    key, scalar = line.split("=", 1)
+                    prefix = "!" if scalar.startswith("!") else ""
+                    line = f'{key}={prefix}"{scalar[len(prefix):]}"'
+                quoted_lines.append(line)
+            main.write_text("\n".join(quoted_lines) + "\n")
+            old_rendering = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertIn('Description: "Bus words %literal"', old_rendering.stdout)
+            self.assertIn('ConditionKernelCommandLine: "aos-test=%literal" untested', old_rendering.stdout)
+            self.assertIn('ConditionKernelCommandLine: !"aos-test=a value %literal" untested', old_rendering.stdout)
+
+    def test_scalar_text_rejects_injection_and_kernel_condition_control_prefixes(self):
+        for invalid in ["text\nInjected=yes", "text\rInjected=yes", "text\0", " text", "text ", "text\\"]:
+            with self.subTest(description=invalid):
+                value = service()
+                value["lifecycle"]["description"] = invalid
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+        for invalid in ["!flag", "|flag", "arg\nInjected=yes", "arg\rInjected=yes", "arg\\"]:
+            for negated in [False, True]:
+                with self.subTest(argument=invalid, negated=negated):
+                    value = service()
+                    value["conditions"] = {"all": [{
+                        "kind": "kernel-argument", "argument": invalid, "negated": negated,
+                    }]}
+
+                    with self.assertRaises(ValueError):
+                        handler_module.realize_service(value)
+
+    def test_credential_identifiers_and_scalar_sources_are_validated(self):
+        for invalid in ["name:other", "name\\other", "name other", '"name', "", ".", "..", "a" * 129]:
+            with self.subTest(name=invalid):
+                value = service()
+                value["credentials"] = {"views": [{
+                    "name": invalid, "reference": "/run/credential", "encrypted": False,
+                }]}
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+        for invalid in ["relative/path", "/run/credential\nInjected=yes", "/run/credential\r", "/run/credential\\"]:
+            with self.subTest(reference=invalid):
+                value = service()
+                value["credentials"] = {"views": [{
+                    "name": "token", "reference": invalid, "encrypted": True,
+                }]}
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
     def test_scalar_paths_reject_control_characters_and_unrepresentable_paths(self):
         fields = [
             ("lifecycle", "environment_files", 0, "source"),
