@@ -111,7 +111,7 @@ it into APR:
 openssh="$(nix build .#pkg-openssh --no-link --print-out-paths)"
 derived_public="$("$openssh/bin/ssh-keygen" -y -f "$ANDYL_EXPERIMENTAL_REGISTRY_KEY")"
 test "andyl-experimental:Ed25519:${derived_public#ssh-ed25519 }" = \
-  "$ANDYL_TESTING_TRUST_KEY"
+  "$ANDYL_EXPERIMENTAL_TRUST_KEY"
 ```
 
 For a future registry or trust-root epoch, mint the dedicated OpenSSH Ed25519
@@ -127,7 +127,7 @@ the first canonical registry base:
 
 ```sh
 apr create andyl-experimental \
-  --trust-key "$ANDYL_TESTING_TRUST_KEY" \
+  --trust-key "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
   --trust-key-id experimental-v1 \
   --key "$ANDYL_EXPERIMENTAL_REGISTRY_KEY"
 ```
@@ -148,7 +148,7 @@ aos hub registry create \
   --org andyl \
   --name experimental \
   --visibility public \
-  --trust-key "$ANDYL_TESTING_TRUST_KEY" \
+  --trust-key "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
   --if-version "" \
   --idempotency-key create-andyl-experimental-v1 \
   --plan
@@ -296,7 +296,7 @@ aos container prepare-signature ./result \
   -n aos-container-signature-dsse-v1 \
   container-signature.pae
 aos container finalize-signature ./result \
-  --signer "$ANDYL_TESTING_TRUST_KEY" \
+  --signer "$ANDYL_EXPERIMENTAL_TRUST_KEY" \
   --signature container-signature.pae.sig \
   --output final-experimental-container
 ```
