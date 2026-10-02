@@ -57,7 +57,7 @@ impl BlockHeadFixture {
 fn identified_response(identity: BlockRequestIdentity, payload: &[u8]) -> FrameEntry {
     let encoded = BlockResponse::with_identity(BlockResponseStatus::Ok, identity, payload.to_vec())
         .encode()
-        .expect("response should encode");
+        .unwrap_or_else(|error| panic!("response should encode: {error}"));
     frame(90, BLOCK_IO_SLOT_U32, identity.request_id(), &encoded)
 }
 
@@ -122,7 +122,7 @@ fn foreign_block_owner_cannot_finalize_the_original_request() {
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &inbound, &token)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_some()
     );
 
@@ -187,8 +187,8 @@ fn original_block_head_binds_owner_epoch_request_and_consumer_frontier() {
     let observed = fixture
         .block
         .observe_inbound_head(&fixture.freeze, &inbound, &first)
-        .expect("original head should be readable")
-        .expect("first original request should own the head");
+        .unwrap_or_else(|error| panic!("original head should be readable: {error}"))
+        .unwrap_or_else(|| panic!("first original request should own the head"));
 
     assert_eq!(observed.identity(), BlockRequestIdentity::new(7, 0));
     assert_eq!(observed.ring_index(), 9);
@@ -199,45 +199,45 @@ fn original_block_head_binds_owner_epoch_request_and_consumer_frontier() {
         fixture
             .block
             .inbound_head_current(&fixture.freeze, &inbound, &first, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
     assert!(
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &inbound, &second)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_none()
     );
     assert!(
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &inbound, &copied_identity)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_none()
     );
     assert!(
         !foreign_block
             .inbound_head_current(&fixture.freeze, &inbound, &copied_identity, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
     assert_eq!(fixture.inbound_header.read_index(), 0);
     assert_eq!(fixture.freeze.pending_requests(), 3);
 
     PluginShmemOrdering::dequeue_inbound_frame(&fixture.inbound_header, &fixture.inbound_entries)
-        .expect("physical dequeue should succeed")
-        .expect("first response should be present");
+        .unwrap_or_else(|error| panic!("physical dequeue should succeed: {error}"))
+        .unwrap_or_else(|| panic!("first response should be present"));
 
     assert!(
         !fixture
             .block
             .inbound_head_current(&fixture.freeze, &inbound, &first, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
     assert!(
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &inbound, &second)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_some()
     );
 }
@@ -250,28 +250,28 @@ fn block_head_refuses_unregistered_remapped_and_changed_response_bytes() {
     let observed = fixture
         .block
         .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &token)
-        .unwrap()
-        .unwrap();
+        .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
+        .unwrap_or_else(|| panic!("original inbound head should be present"));
     let unregistered = inbound_ring(9, 2, &fixture.inbound_header, &fixture.inbound_entries);
 
     assert!(
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &unregistered, &token)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_none()
     );
     assert!(
         !fixture
             .block
             .inbound_head_current(&fixture.freeze, &unregistered, &token, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
     assert!(
         !fixture
             .block
             .inbound_head_current(&fixture.freeze, &fixture.inbound(2), &token, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
 
     fixture.inbound_entries[0] = identified_response(token.identity(), b"replaced");
@@ -279,7 +279,7 @@ fn block_head_refuses_unregistered_remapped_and_changed_response_bytes() {
         !fixture
             .block
             .inbound_head_current(&fixture.freeze, &fixture.inbound(1), &token, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
 
     fixture.inbound_entries[0] = identified_response(
@@ -290,7 +290,7 @@ fn block_head_refuses_unregistered_remapped_and_changed_response_bytes() {
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &token)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_none()
     );
     assert_eq!(fixture.inbound_header.read_index(), 0);
@@ -305,8 +305,8 @@ fn block_head_current_refuses_a_replacement_token_with_the_same_transport_identi
     let observed = fixture
         .block
         .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &token)
-        .unwrap()
-        .unwrap();
+        .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
+        .unwrap_or_else(|| panic!("original inbound head should be present"));
     let mut outbound = outbound_ring(
         8,
         2,
@@ -323,7 +323,7 @@ fn block_head_current_refuses_a_replacement_token_with_the_same_transport_identi
             &BlockRequest::read(0, 4),
             token.identity(),
         )
-        .expect("retry fixture should publish")
+        .unwrap_or_else(|error| panic!("retry fixture should publish: {error}"))
         .into_token();
 
     assert_eq!(replacement.identity(), token.identity());
@@ -332,7 +332,7 @@ fn block_head_current_refuses_a_replacement_token_with_the_same_transport_identi
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &replacement)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_some()
     );
     assert!(
@@ -344,13 +344,13 @@ fn block_head_current_refuses_a_replacement_token_with_the_same_transport_identi
                 &replacement,
                 &observed
             )
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
     assert!(
         fixture
             .block
             .inbound_head_current(&fixture.freeze, &fixture.inbound(1), &token, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
 }
 
@@ -362,7 +362,7 @@ fn block_head_validation_errors_preserve_the_request_and_physical_head() {
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &token)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_none()
     );
     fixture.enqueue(token.identity(), b"original");
@@ -409,21 +409,21 @@ fn block_head_refuses_staged_guest_delivery_and_asynchronous_transport_events() 
     let observed = fixture
         .block
         .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &token)
-        .unwrap()
-        .unwrap();
+        .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
+        .unwrap_or_else(|| panic!("original inbound head should be present"));
     let response = BlockResponse::with_identity(
         BlockResponseStatus::DuplicateIgnored,
         token.identity(),
         Vec::new(),
     )
     .encode()
-    .unwrap();
+    .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"));
     fixture.inbound_entries[0] = frame(90, BLOCK_IO_SLOT_U32, token.request_id(), &response);
     assert!(
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &token)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_none()
     );
 
@@ -456,14 +456,14 @@ fn block_head_refuses_staged_guest_delivery_and_asynchronous_transport_events() 
         fixture
             .block
             .observe_inbound_head(&fixture.freeze, &fixture.inbound(1), &token)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
             .is_none()
     );
     assert!(
         !fixture
             .block
             .inbound_head_current(&fixture.freeze, &fixture.inbound(1), &token, &observed)
-            .unwrap()
+            .unwrap_or_else(|error| panic!("block head observation should succeed: {error}"))
     );
     assert_eq!(fixture.inbound_header.read_index(), 0);
     assert_eq!(fixture.freeze.pending_requests(), 1);

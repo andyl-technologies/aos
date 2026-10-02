@@ -15,6 +15,7 @@ pub(crate) fn scripted_node_with_live_host_runtime(
         ScriptedShmemHotPath {
             log: Arc::clone(&log),
             fail_advance: false,
+            network_outputs: None,
             coverage_enabled: false,
             quantum_coverage: Arc::new(Mutex::new(VecDeque::new())),
             teardown_coverage: Arc::new(Mutex::new(Vec::new())),

@@ -1510,8 +1510,8 @@ mod tests {
 
         let observed = ninep
             .observe_inbound_head(&freeze, &inbound, &first)
-            .expect("original inbound head should be readable")
-            .expect("first request owns the physical head");
+            .unwrap_or_else(|error| panic!("original inbound head should be readable: {error}"))
+            .unwrap_or_else(|| panic!("first request owns the physical head"));
         assert_eq!(observed.ring_index(), 11);
         assert_eq!(observed.ring_generation(), 1);
         assert_eq!(observed.read_index(), 0);
@@ -1521,39 +1521,45 @@ mod tests {
         assert!(
             ninep
                 .observe_inbound_head(&freeze, &unregistered, &first)
-                .expect("unregistered ring view should be a factual refusal")
+                .unwrap_or_else(|error| panic!(
+                    "unregistered ring view should be a factual refusal: {error}"
+                ))
                 .is_none()
         );
         assert!(
             ninep
                 .inbound_head_current(&freeze, &inbound, &first, &observed)
-                .expect("original head currentness should be readable")
+                .unwrap_or_else(|error| panic!(
+                    "original head currentness should be readable: {error}"
+                ))
         );
         assert!(
             ninep
                 .observe_inbound_head(&freeze, &inbound, &second)
-                .expect("second request should be readable")
+                .unwrap_or_else(|error| panic!("second request should be readable: {error}"))
                 .is_none()
         );
         assert!(
             ninep
                 .observe_inbound_head(&freeze, &inbound, &copied_request_id)
-                .expect("foreign token must be a factual refusal")
+                .unwrap_or_else(|error| panic!("foreign token must be a factual refusal: {error}"))
                 .is_none()
         );
 
         PluginShmemOrdering::dequeue_inbound_frame(&inbound_header, &inbound_entries)
-            .expect("physical dequeue should succeed")
-            .expect("first response should be present");
+            .unwrap_or_else(|error| panic!("physical dequeue should succeed: {error}"))
+            .unwrap_or_else(|| panic!("first response should be present"));
         assert!(
             !ninep
                 .inbound_head_current(&freeze, &inbound, &first, &observed)
-                .expect("moved head should be a factual refusal")
+                .unwrap_or_else(|error| panic!("moved head should be a factual refusal: {error}"))
         );
         assert!(
             ninep
                 .observe_inbound_head(&freeze, &inbound, &second)
-                .expect("second original request should still be readable")
+                .unwrap_or_else(|error| panic!(
+                    "second original request should still be readable: {error}"
+                ))
                 .is_some()
         );
     }

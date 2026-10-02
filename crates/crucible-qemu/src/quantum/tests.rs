@@ -5,6 +5,7 @@ use super::*;
 mod channel_behavior;
 mod completion;
 mod network_delivery;
+mod network_output;
 mod source_assertions;
 use crucible_shmem::{
     AdvanceCeiling, FRAME_DELIVERY_RETRY_INTERVAL_ICOUNT, FrameEntry, NodeSlot, STATUS_IDLE,

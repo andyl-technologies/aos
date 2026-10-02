@@ -30,9 +30,9 @@ use crate::{
 use crucible::model::{FaultCoordinate, ResolvedBindingAction};
 use crucible::{
     AdvanceOutcome, Backend, BackendEffect, BackendError, BackendInput, BackendNetworkOutput,
-    BackendRngEvidence, BackendSnapshot, Checkpoint, EventLog, ExecutionFingerprint,
-    ExecutionHorizon, FingerprintSample, Icount, NodeId, ObservableEvent, SchedulerEventLogAppend,
-    SimulationBackend, StepObservation, VirtualTime,
+    BackendPhysicalStop, BackendRngEvidence, BackendSnapshot, Checkpoint, EventLog,
+    ExecutionFingerprint, ExecutionHorizon, FingerprintSample, Icount, NodeId, ObservableEvent,
+    SchedulerEventLogAppend, SimulationBackend, StepObservation, VirtualTime,
 };
 use crucible_protocol::guest_introspection::GuestIntrospectionRecord;
 use crucible_shmem::{
@@ -46,6 +46,7 @@ pub(crate) use channels::QemuQmpMachineControlChannel;
 pub use channels::{QemuNodePendingQuantum, QemuPluginIpcControlChannel, QemuShmemHotPathChannel};
 mod error;
 mod exact_snapshot;
+mod network_output;
 #[cfg(target_os = "linux")]
 pub use exact_snapshot::{
     QemuExactCheckpointCaptureAdmission, QemuExactCheckpointCaptureBoundary,
@@ -558,6 +559,7 @@ pub struct QemuNode {
     pending_preemption: Option<crucible::PreemptionDecision>,
     bounded_scheduler_preemption: Option<crate::BoundedSchedulerPreemptionEvidenceClaim>,
     selectable_resume_pending: bool,
+    network_output_resume_pending: bool,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
     next_network_output_sequence: u64,
@@ -811,6 +813,7 @@ impl QemuNode {
             pending_preemption: None,
             bounded_scheduler_preemption: None,
             selectable_resume_pending: false,
+            network_output_resume_pending: false,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
             next_network_output_sequence: 0,
@@ -1807,7 +1810,8 @@ impl QemuNode {
             )
             .map_err(QemuNodeError::from_bounded_scheduler_preemption)?;
         let mut pending_quantum_certified = false;
-        let resume_selectable = self.selectable_resume_pending;
+        let resume_stopped_boundary =
+            self.selectable_resume_pending || self.network_output_resume_pending;
         let mut target = QemuNodeAsyncStepTarget {
             child: &mut self.child,
             channels: &mut self.channels,
@@ -1822,7 +1826,7 @@ impl QemuNode {
             &self.crash_detector,
             ExecutionHorizon { icount: ceiling },
             |target, pending| {
-                if resume_selectable {
+                if resume_stopped_boundary {
                     target
                         .channels
                         .qmp_machine_control
@@ -1857,8 +1861,9 @@ impl QemuNode {
             .map_err(|source| {
                 QemuNodeError::bounded_scheduler_preemption_message(source.to_string())
             })?;
-        if resume_selectable {
+        if resume_stopped_boundary {
             self.selectable_resume_pending = false;
+            self.network_output_resume_pending = false;
         }
         Ok(report)
     }
@@ -1876,8 +1881,9 @@ impl QemuNode {
             stop_condition,
         };
         let horizon = ExecutionHorizon { icount: ceiling };
-        let resume_selectable = self.selectable_resume_pending;
-        let report = if resume_selectable {
+        let resume_stopped_boundary =
+            self.selectable_resume_pending || self.network_output_resume_pending;
+        let report = if resume_stopped_boundary {
             run_bounded_qemu_node_step_with_start_hook(
                 &mut target,
                 self.host_io_runtime.as_mut(),
@@ -1901,8 +1907,9 @@ impl QemuNode {
             )
         }
         .map_err(QemuNodeError::from_async_driver)?;
-        if resume_selectable {
+        if resume_stopped_boundary {
             self.selectable_resume_pending = false;
+            self.network_output_resume_pending = false;
         }
         Ok(report)
     }
@@ -1912,6 +1919,19 @@ impl QemuNode {
         ceiling: Icount,
         report: crate::QemuAsyncNodeStepReport,
     ) -> Result<AdvanceOutcome, QemuNodeError> {
+        let output_boundary = network_output::exact_output_boundary(&report, ceiling)?;
+        if output_boundary.is_some() {
+            // The producer's native dispatch fence precedes this confirmation.
+            // Every bounded advance path retains the stop until a later step
+            // publishes its ceiling and explicitly resumes QEMU.
+            self.channels
+                .qmp_machine_control
+                .stop_for_checkpoint()
+                .map_err(|source| {
+                    QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
+                })?;
+            self.network_output_resume_pending = true;
+        }
         self.last_step_ceiling = report.ceiling;
         self.last_step_final_state = report.final_state;
         self.last_step_inbound_frames_consumed = report.inbound_frames_consumed;
@@ -1924,6 +1944,7 @@ impl QemuNode {
                 shutdown: Box::new(shutdown),
             }),
         }?;
+        let advance = output_boundary.map_or(advance, |at| AdvanceOutcome::Paused { at });
         self.last_observed_time = virtual_time_from_advance_outcome(ceiling, advance);
         // crucible-lint: allow host-nondeterminism-state -- this opt-in diagnostic reads an already published boundary and changes no scheduler state.
         if std::env::var_os("CRUCIBLE_PHASE4_CLOCK_TRACE").is_some()
@@ -2278,7 +2299,13 @@ impl QemuNode {
             .resume_after_checkpoint()
             .map_err(|source| {
                 QemuNodeError::from_channel(QemuNodeChannelPlane::QmpMachineControl, source)
-            })
+            })?;
+
+        // A source checkpoint can resume the same output-stopped process.
+        // Its native fence is now released; the next step needs only its new
+        // ceiling, just like a freshly reconstructed restored generation.
+        self.network_output_resume_pending = false;
+        Ok(())
     }
 
     /// Prevents a partially assembled restored node from leaking its child.
@@ -2524,11 +2551,16 @@ impl SimulationBackend for QemuNode {
         let report = self
             .advance_to_ceiling_report(icount_ceiling)
             .map_err(BackendError::from)?;
+        let emitted_network_output = !report.emitted_frames.is_empty();
         let outcome = self
             .finish_advance_report(icount_ceiling, report)
             .map_err(BackendError::from)?;
-        self.console_observation_boundary = ceiling;
-        Ok(StepObservation::from_advance_outcome(ceiling, outcome))
+        let mut observation = StepObservation::from_advance_outcome(ceiling, outcome);
+        if emitted_network_output {
+            observation.physical_stop = BackendPhysicalStop::NetworkOutput;
+        }
+        self.console_observation_boundary = observation.reached;
+        Ok(observation)
     }
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {

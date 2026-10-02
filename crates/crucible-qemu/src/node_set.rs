@@ -2174,7 +2174,9 @@ impl SimulationBackend for QemuNodeSet {
                     return Ok(observation);
                 }
             }
-            if observation.reached == ceiling {
+            if observation.physical_stop == BackendPhysicalStop::NetworkOutput
+                || observation.reached == ceiling
+            {
                 return Ok(observation);
             }
             if let crucible::AdvanceOutcome::Paused { .. } = observation.outcome

@@ -93,7 +93,10 @@ fn live_later_frame_error_never_replays_the_accepted_prefix() {
     ));
     assert_eq!(fixture.inbound.read_index(), 1);
     assert!(!state.network_rx_commit_uncertain());
-    let remaining = state.network_inbound_head_observe().unwrap().unwrap();
+    let remaining = state
+        .network_inbound_head_observe()
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"))
+        .unwrap_or_else(|| panic!("original network fixture state should be present"));
     assert_eq!(remaining.frame, second);
     assert_eq!(remaining.read_index, 1);
 
@@ -114,14 +117,18 @@ fn registered_head_observation_rejects_foreign_owner_and_reused_frame_bytes() {
     let frame = fixture.enqueue(0, b"head");
     fixture.enqueue(0, b"head");
     let state = fixture.state();
-    let original = state.network_inbound_head_observe().unwrap().unwrap();
+    let original = state
+        .network_inbound_head_observe()
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"))
+        .unwrap_or_else(|| panic!("original network fixture state should be present"));
     assert_eq!(state.network_inbound_head_current(&original), Ok(true));
 
     let mut foreign = original.clone();
     foreign.owner_generation += 1;
     assert_eq!(state.network_inbound_head_current(&foreign), Ok(false));
     let mut replaced_payload = original.clone();
-    replaced_payload.frame = FrameEntry::new(20, SLOT_NET_ROUTER as u32, 0, b"other").unwrap();
+    replaced_payload.frame = FrameEntry::new(20, SLOT_NET_ROUTER as u32, 0, b"other")
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"));
     assert_eq!(replaced_payload.frame.delivery_key(), frame.delivery_key());
     assert_eq!(
         state.network_inbound_head_current(&replaced_payload),
@@ -132,7 +139,10 @@ fn registered_head_observation_rejects_foreign_owner_and_reused_frame_bytes() {
         PluginShmemOrdering::dequeue_inbound_frame(&fixture.inbound, &fixture.inbound_entries),
         Ok(Some(frame.clone()))
     );
-    let successor = state.network_inbound_head_observe().unwrap().unwrap();
+    let successor = state
+        .network_inbound_head_observe()
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"))
+        .unwrap_or_else(|| panic!("original network fixture state should be present"));
     assert_eq!(successor.frame, frame);
     assert_eq!(successor.read_index, 1);
     assert_eq!(state.network_inbound_head_current(&original), Ok(false));
@@ -149,7 +159,10 @@ fn hot_fork_rejects_rx_poison_when_an_in_flight_callback_finishes_during_snapsho
         let mut fixture = NetworkFixture::new();
         let frame = fixture.enqueue(0, b"accepted");
         let state = fixture.state();
-        let callback = state.quiescence.enter().unwrap();
+        let callback = state
+            .quiescence
+            .enter()
+            .unwrap_or_else(|| panic!("original network fixture state should be present"));
         if action == crate::QEMU_PLUGIN_HOT_FORK_BARRIER_QUERY {
             assert_eq!(state.quiescence.hold_hot_fork().in_flight, 1);
         }
@@ -161,7 +174,10 @@ fn hot_fork_rejects_rx_poison_when_an_in_flight_callback_finishes_during_snapsho
             || {
                 // Finish an admitted RX callback after the entry poison check
                 // and before the barrier acquires its quiescence snapshot.
-                let network = state.network.as_ref().unwrap();
+                let network = state
+                    .network
+                    .as_ref()
+                    .unwrap_or_else(|| panic!("original network fixture state should be present"));
                 let mut rx_queue = network.rx_queue;
                 assert!(matches!(
                     network.rx.inject_due_frames_with_commit(
@@ -201,7 +217,7 @@ fn hot_fork_rejects_rx_poison_when_an_in_flight_callback_finishes_during_snapsho
             crate::QEMU_PLUGIN_HOT_FORK_BARRIER_RELEASE,
             || Ok(state.quiescence.release_hot_fork()),
         )
-        .unwrap();
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"));
         assert!(!released.hot_fork_held);
         assert!(state.network_rx_commit_uncertain());
     }
@@ -212,7 +228,10 @@ fn uncertain_guest_acceptance_refuses_replay_checkpoint_and_restore() {
     let mut fixture = NetworkFixture::new();
     let frame = fixture.enqueue(0, b"accepted");
     let state = fixture.state();
-    let network = state.network.as_ref().unwrap();
+    let network = state
+        .network
+        .as_ref()
+        .unwrap_or_else(|| panic!("original network fixture state should be present"));
     let mut rx_queue = network.rx_queue;
 
     assert!(matches!(
@@ -238,7 +257,11 @@ fn uncertain_guest_acceptance_refuses_replay_checkpoint_and_restore() {
         })
     );
 
-    state.header.get().request_pause([&fixture.slot]).unwrap();
+    state
+        .header
+        .get()
+        .request_pause([&fixture.slot])
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"));
     let before_pause = fixture.slot.snapshot();
     assert_eq!(
         state.publish_pause_for_boundary(0, true, false, None, "poisoned-test"),
@@ -248,7 +271,10 @@ fn uncertain_guest_acceptance_refuses_replay_checkpoint_and_restore() {
     );
     assert_eq!(fixture.slot.snapshot(), before_pause);
 
-    let control_request = fixture.slot.request_control_boundary(0, None).unwrap();
+    let control_request = fixture
+        .slot
+        .request_control_boundary(0, None)
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"));
     assert_eq!(
         state.on_control_boundary(0),
         Err(LiveVcpuTimeCallbackError::NetworkRx {
@@ -277,7 +303,10 @@ fn uncertain_guest_acceptance_refuses_replay_checkpoint_and_restore() {
         Ok(())
     );
 
-    let generation = fixture.slot.arm_logical_time_restore(20).unwrap();
+    let generation = fixture
+        .slot
+        .arm_logical_time_restore(20)
+        .unwrap_or_else(|error| panic!("network fixture operation should succeed: {error}"));
     assert_eq!(
         state.restore_logical_time_if_requested(0, true),
         Err(LiveVcpuTimeCallbackError::NetworkRx {

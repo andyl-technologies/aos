@@ -4,6 +4,90 @@ use super::control::PendingControlBoundary;
 use super::*;
 
 impl QemuLiveHostIoRuntime {
+    /// Returns the producer frontier without consuming any outbound frame.
+    pub(super) fn outbound_write_index(&mut self) -> Result<u64, QemuAsyncDriverRuntimeError> {
+        let rings = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                crucible_shmem::SLOT_NET_ROUTER as u32,
+                crucible_shmem::SLOT_NET_ROUTER as u32,
+                self.vm_slot,
+            )
+            .map_err(map_slot_error)?;
+        Ok(rings.first.header.write_index())
+    }
+
+    /// Authenticates a new output batch at a zero-retirement physical stop.
+    ///
+    /// A control callback can republish an old zero-length idle coordinate.
+    /// Only an unconsumed head beyond the preceding quantum's producer frontier
+    /// proves that the same coordinate now owns fresh network output. The
+    /// ordinary post-device clamp and paired control acknowledgement still run.
+    pub(super) fn network_output_stop_write_index(
+        &mut self,
+        snapshot: &crucible_shmem::NodeSlotSnapshot,
+    ) -> Result<Option<u64>, QemuAsyncDriverRuntimeError> {
+        if snapshot.status != STATUS_IDLE || snapshot.idle_wake_icount != snapshot.current_icount {
+            return Ok(None);
+        }
+        let rings = self
+            .region
+            .node_directed_ring_pair_mut(
+                self.vm_slot,
+                self.vm_slot,
+                crucible_shmem::SLOT_NET_ROUTER as u32,
+                crucible_shmem::SLOT_NET_ROUTER as u32,
+                self.vm_slot,
+            )
+            .map_err(map_slot_error)?;
+        let write_index = rings.first.header.write_index();
+        // Ring cursors wrap. Equality with the preceding producer frontier
+        // proves the old prefix was drained without imposing numeric order
+        // on its serialized cursor; peek validates the bounded live span.
+        if write_index == self.completed_outbound_write_index
+            || rings.first.header.read_index() != self.completed_outbound_write_index
+        {
+            return Ok(None);
+        }
+        let Some(frame) = rings
+            .first
+            .header
+            .peek(rings.first.entries)
+            .map_err(|source| {
+                QemuAsyncDriverRuntimeError::new("observe network output stop", source.to_string())
+            })?
+        else {
+            return Ok(None);
+        };
+        // The producer releases the frame before publishing its output pause.
+        // A head observed after an older slot snapshot must wait for that fresh
+        // coherent publication, rather than rejecting a valid newer event.
+        let observed = self
+            .region
+            .node_slot(self.vm_slot)
+            .map_err(map_slot_error)?
+            .snapshot();
+        if observed.publish_gen != snapshot.publish_gen {
+            return Ok(None);
+        }
+        if frame.src_node != self.vm_slot || frame.delivery_icount != snapshot.current_icount {
+            return Err(QemuAsyncDriverRuntimeError::new(
+                "observe network output stop",
+                format!(
+                    "frame {} from slot {} at {} does not match stopped slot {} at {}",
+                    frame.seq,
+                    frame.src_node,
+                    frame.delivery_icount,
+                    self.vm_slot,
+                    snapshot.current_icount,
+                ),
+            ));
+        }
+        Ok(Some(write_index))
+    }
+
     /// Publishes the earliest exact completion across every attached host device.
     pub(super) fn publish_device_completion_deadline(
         &self,
