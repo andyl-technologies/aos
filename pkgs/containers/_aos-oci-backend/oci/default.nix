@@ -13,6 +13,7 @@
 {
   lib,
   mkDerivation,
+  runArtifact,
   coreutils,
   findutils,
   gzip,
@@ -51,7 +52,7 @@ in rec {
   };
   mkEvidenceLayout = import ./evidence-layout.nix baseDependencies;
   mkDeploymentArtifact = import ./deployment-artifact.nix {
-    inherit lib mkDerivation coreutils jq common deploymentChecker;
+    inherit lib runArtifact jq common deploymentChecker;
   };
 
   # Short aliases are useful to call sites while the long names preserve the

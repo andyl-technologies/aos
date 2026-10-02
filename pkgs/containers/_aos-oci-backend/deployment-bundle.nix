@@ -62,7 +62,6 @@
     package = packageForArtifact artifact;
     envelope = package.deploymentArtifact or (throw "Image package '${modules.nameFor package}' has no retained native deployment artifact.");
     documentation = package.documentationArtifact or null;
-    qualification = package.qualificationArtifact or null;
   in {
     store_path = artifact.path;
     pushed_at = 0;
@@ -85,10 +84,9 @@
         if documentation == null
         then null
         else builtins.toString documentation;
-      qualification =
-        if qualification == null
-        then null
-        else builtins.toString qualification;
+      # Image admission authenticates these seeds. Release qualification
+      # retains its own probes; their build/test assets are not runtime inputs.
+      qualification = null;
       attestation = {};
     };
   };
