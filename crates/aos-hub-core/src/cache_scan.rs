@@ -494,10 +494,10 @@ async fn build_inventory(
                 "cache inventory exceeded the page limit"
             );
             let page = fetch
-                .list_page(cursor.as_deref(), page_limit)
+                .list_page("", cursor.as_deref(), page_limit)
                 .await
                 .with_context(|| format!("listing cache placement '{}'", placement.name))?;
-            page.validate(page_limit, cursor.as_deref())?;
+            page.validate(page_limit, "", cursor.as_deref())?;
             let listed_evidence = &page.evidence;
             let mut page_observations = Vec::with_capacity(page.paths.len());
             for path in &page.paths {
@@ -1081,6 +1081,7 @@ mod tests {
 
         async fn list_page(
             &self,
+            _prefix: &str,
             _cursor: Option<&str>,
             _limit: usize,
         ) -> Result<crate::fetch::SurfaceListPage> {
