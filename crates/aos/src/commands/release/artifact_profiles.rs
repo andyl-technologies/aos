@@ -17,6 +17,7 @@ use aos_core::nix::NixRunner;
 use aos_release::artifact_profile::ArtifactProfile;
 use aos_release::plan::{ReleasePlan, SurfaceKind, SurfaceRole};
 use aos_release::platform::MatrixCell;
+use aos_release::signing::SignerRole;
 
 /// Checks every image-producing platform against the exact release destination.
 pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
@@ -42,6 +43,12 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
         .surfaces
         .iter()
         .find(|surface| surface.role == consumer_role && surface.kind == SurfaceKind::Hub);
+    let provenance_key_ids: Vec<String> = plan
+        .signers
+        .iter()
+        .filter(|signer| signer.role == SignerRole::Provenance)
+        .flat_map(|signer| signer.key_ids.iter().cloned())
+        .collect();
 
     for image in &plan.images {
         if image.system_variant.is_empty()
@@ -66,6 +73,14 @@ pub(super) fn require_plan(nix: &NixRunner, plan: &ReleasePlan) -> Result<()> {
                     image.system_variant, cell.platform
                 )
             })?;
+            profile
+                .require_root_owner_signers(&provenance_key_ids)
+                .with_context(|| {
+                    format!(
+                        "release profile root-owner signer mismatch for {} on {}",
+                        image.system_variant, cell.platform
+                    )
+                })?;
             if let Some(hub) = consumer_hub {
                 profile.require_hub(&hub.origin).with_context(|| {
                     format!(
