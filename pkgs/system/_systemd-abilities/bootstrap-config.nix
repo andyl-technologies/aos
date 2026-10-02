@@ -8,7 +8,7 @@
     inherit config lib;
     pkgs = {};
   };
-  references = builtins.concatMap (service: service.activationInputs) (builtins.attrValues services);
+  references = builtins.concatMap (service: service.dependencyValues) (builtins.attrValues services);
   effects = lib.filterAttrs (_: effect:
     effect.enable
     && (builtins.elem effect.outputs.resource references || builtins.elem effect.outputs.path references))

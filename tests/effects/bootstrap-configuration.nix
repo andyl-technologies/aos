@@ -1,6 +1,30 @@
 ##! Seeds only literal files consumed by selected early native services.
 let
   lib = import ../../lib {system = "x86_64-linux";};
+  lifecycle = {
+    description = "Bootstrap configuration consumer";
+    execution_model = "foreground";
+    environment_files = [];
+    condition = [];
+    pre_start = [];
+    start = [
+      {
+        executable = {
+          path = "${import ./_fixture-payload.nix "bootstrap-consumer"}/bin/consumer";
+          arguments = [];
+        };
+        ignore_failure = false;
+      }
+    ];
+    post_start = [];
+    stop = [];
+    post_stop = [];
+    restart = "never";
+    restart_delay_millis = 0;
+    remain_after_exit = false;
+    start_timeout_millis = 90000;
+    stop_timeout_millis = 90000;
+  };
   evaluate = settings:
     lib.evalModules {
       inherit lib;
@@ -14,6 +38,7 @@ let
             mode = "0640";
           };
           aos.services.bus = {
+            inherit lifecycle;
             enable = true;
             bootstrap = true;
             activationInputs = [config.aos.abilities.configuration.operations.file.effects.policy.outputs.resource];
@@ -45,6 +70,7 @@ let
   });
   repeatedReference = project ({config, ...}: {
     aos.services.second = {
+      inherit lifecycle;
       enable = true;
       bootstrap = true;
       activationInputs = [config.aos.abilities.configuration.operations.file.effects.policy.outputs.resource];

@@ -4,6 +4,6 @@
   lib,
   pkgs,
 }: let
-  services = config.aos.services;
+  services = lib.filterAttrs (_: service: service.enable && (service.bootstrap || service.activationOwner != "ability")) config.aos.services;
 in
-  lib.filterAttrs (_: service: service.enable && (service.bootstrap || service.activationOwner != "ability")) services
+  lib.mapAttrs (name: _: config.aos.abilities.serviceManagement.operations.realize.effects.${name}.input) services
