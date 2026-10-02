@@ -63,7 +63,7 @@ in
             # the shipped content and metadata before native activation starts.
             ${lib.concatStringsSep "\n" (lib.mapAttrsToList (path: entry: ''
                 ${pkgs.diffutils}/bin/cmp \
-                  ${lib.escapeShellArg "root-tree/nix/store/${baseNameOf (builtins.toString imageContent)}/${path}"} \
+                  ${lib.escapeShellArg "root-tree/usr/lib/aos/nix/store/${baseNameOf (builtins.toString imageContent)}/${path}"} \
                   ${lib.escapeShellArg system.config.environment.etc.${path}.source}
                 ${pkgs.gawk}/bin/awk \
                   -v path=${lib.escapeShellArg "/${path}"} \
