@@ -362,42 +362,58 @@ where
 ///
 /// # Errors
 ///
-/// Returns an error for invalid activation, unsafe state or socket paths,
-/// corrupt durable state, failure of the initial authenticated catalog cycle,
-/// selected Nix startup or recipe admission failure, systemd notification
-/// failure, or diagnostic-server termination.
+/// Returns configuration or process-identity errors. A genuinely empty
+/// NoRoot/NoNix continuation also returns ordinary state, socket, journal,
+/// catalog, notification or server errors.
+///
+/// Original capture, selected Root/Nix startup and recipe admission failures
+/// intentionally terminate instead of returning an error. Later ordinary
+/// failures also terminate while the continuation remains armed or retains
+/// Root, Nix selector or launch-image custody. Issue-only failures retain their
+/// original invocation through intentional termination.
 pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     let configuration = RuntimeConfiguration::from_process()?;
     configuration.validate_process_identity()?;
-    let startup = crate::production_startup::capture_controller_with_backends(
+    let mut startup = crate::production_startup::ControllerStartupContinuationV1::new(
         configuration.publisher_ingress,
         configuration.nix_start_admission,
-        false,
-    )
-    .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
-    if configuration.issue_source_successor {
-        return source_successor_issuance::run(&configuration, startup);
+        configuration.issue_source_successor,
+    );
+    if !startup.capture_once() {
+        startup.terminate_failed();
     }
-    let crate::production_startup::CapturedControllerStartupV1 {
-        publisher_descriptor,
-        launch_image,
-        normal_root_capture,
-        nix_capture,
-        git_source_listener: _,
-    } = startup;
+    if configuration.issue_source_successor {
+        return source_successor_issuance::run(&configuration, &mut startup);
+    }
+
+    match run_ordinary_controller(configuration, &mut startup) {
+        Err(cause) if startup.must_retain_failure() => startup.fail_runtime(cause),
+        result => result,
+    }
+}
+
+fn run_ordinary_controller(
+    configuration: RuntimeConfiguration,
+    startup: &mut crate::production_startup::ControllerStartupContinuationV1,
+) -> Result<(), ControllerRuntimeError> {
     // This independently selected profile is retained before opening any
     // journal. Root's concurrent startup is joined only on the original flight.
-    let normal_root_profile = normal_root_capture
-        .admit_selected(configuration.uid, configuration.gid)
-        .map_err(ControllerRuntimeError::NormalRootProfile)?
-        .map(Arc::new);
-    aos_sandbox::normal_root::require_source_successor_delivery_absent_v2(
-        normal_root_profile.as_deref(),
-    ).map_err(|_| ControllerRuntimeError::InvalidCredential)?;
-    let launch_image = launch_image
-        .map(|image| image.bind_controller_profile(normal_root_profile.clone()))
-        .transpose()
-        .map_err(|error| ControllerRuntimeError::PublisherIngress(error.to_string()))?;
+    if !startup.admit_root_once(configuration.uid, configuration.gid) {
+        startup.terminate_failed();
+    }
+    let normal_root_profile = startup.profile_share();
+    if !startup.require_source_delivery_absent() {
+        if startup.must_retain_failure() {
+            startup.terminate_failed();
+        }
+        // Genuine empty NoRoot/NoNix retains the old ordinary error exit.
+        return Err(ControllerRuntimeError::InvalidCredential);
+    }
+    if !startup.bind_launch_in_place() {
+        startup.terminate_failed();
+    }
+    let launch_image = startup.image_share();
+    let publisher_descriptor = startup.take_publisher();
     let publisher_listener = publisher_descriptor
         .map(publisher_ingress::adopt_observed_listener)
         .transpose()
@@ -406,13 +422,14 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
     // Admission consumes the genuine original capture before any Controller
     // journal opens. The selected credentials grant no worker or floor owner.
     let nix_start = if configuration.nix_start_admission {
-        let capture = nix_capture.ok_or(NixStartAdmissionErrorV2::Invalid)?;
-        Some(Arc::new(ControllerNixStartRecipeSelectorV2::admit_original(
-            capture,
+        if !startup.admit_nix_once(
             configuration.uid,
             configuration.gid,
             NodeId::from_bytes(node_id),
-        )?))
+        ) {
+            startup.terminate_failed();
+        }
+        startup.selector_share()
     } else {
         None
     };
@@ -540,6 +557,8 @@ pub fn run_from_environment() -> Result<(), ControllerRuntimeError> {
             )
         })
         .map_err(ControllerRuntimeError::WorkerSpawn)?;
+
+    startup.complete_worker_handoff();
 
     wait_for_initial_readiness(&events_rx)?;
     if let Some(profile) = &normal_root_profile {

@@ -60,10 +60,7 @@ pub(super) fn retain_pin(
     let path = PathBuf::from(&pin.path);
     match original {
         Some(file) => {
-            require_readonly_launch_flags(
-                rustix::fs::fcntl_getfl(&file).map_err(|_| NormalRootStartupErrorV1::Image)?,
-            )
-            .map_err(|_| NormalRootStartupErrorV1::Image)?;
+            require_original_pin_flags(&file).map_err(ImageObservationErrorV1::into_legacy)?;
             RetainedImmutableFileV1::retain_with_profile(
                 path,
                 file,
@@ -80,6 +77,24 @@ pub(super) fn retain_pin(
         ),
     }
     .map_err(|_| NormalRootStartupErrorV1::Image)
+}
+
+fn require_original_pin_flags(file: &File) -> Result<(), ImageObservationErrorV1> {
+    require_readonly_launch_flags(rustix::fs::fcntl_getfl(file)?)?;
+    Ok(())
+}
+
+// The caller parks its genuine original before entering this same flag/pin
+// engine. No selected pathname can substitute for the inherited descriptor.
+pub(super) fn park_original_pin(
+    pin: &ImagePinV1,
+    executable: bool,
+    pending: &mut PendingImmutableFileV1,
+) -> Result<(), ImageObservationErrorV1> {
+    let path = PathBuf::from(&pin.path);
+    require_original_pin_flags(pending.original()?)?;
+    pending.measure_original(path, Some(pin.sha256), MAXIMUM_IMAGE_BYTES, executable)?;
+    Ok(())
 }
 
 pub(super) fn retain_profile(
