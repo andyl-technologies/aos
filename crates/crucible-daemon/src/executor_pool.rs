@@ -1529,7 +1529,16 @@ fn worker_loop<L, V, W>(
         let execution = queued.execution();
         let key = AttemptExecutionKey::for_request(queued.request());
         let cancellation = queued.cancellation().clone();
-        match catch_unwind(AssertUnwindSafe(|| worker.execute(queued))) {
+        let returned = catch_unwind(AssertUnwindSafe(|| worker.execute(queued)));
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "worker-return",
+            format_args!(
+                "execution={execution:?} canceled={} panicked={}",
+                cancellation.is_canceled(),
+                returned.is_err()
+            ),
+        );
+        match returned {
             Ok(work) if cancellation.is_canceled() => {
                 let (queued, result) = work.into_parts();
                 let produced_result = result.is_ok();
@@ -1770,7 +1779,27 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
-    let prepared = match prepare_attempt_result(store, &shared.checkpoints, work) {
+    let (queued, result) = work.into_parts();
+    let cancellation = queued.cancellation().clone();
+    let execution = queued.execution();
+    let work = crate::AttemptWorkResult::new(queued, result);
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "preflight-begin",
+        format_args!(
+            "execution={execution:?} canceled={}",
+            cancellation.is_canceled()
+        ),
+    );
+    let preflight = prepare_attempt_result(store, &shared.checkpoints, work);
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "preflight-return",
+        format_args!(
+            "execution={execution:?} canceled={} ok={}",
+            cancellation.is_canceled(),
+            preflight.is_ok()
+        ),
+    );
+    let prepared = match preflight {
         Ok(prepared) => prepared,
         Err(AttemptResultPreparationError::Worker { queued, failure }) => {
             reconcile_worker_failure(shared, *queued, failure);
@@ -1791,6 +1820,11 @@ where
                 return Some(AttemptExecutionDisposition::Failed);
             }
             increment(&shared.counters.publication_retries);
+            record_publication_retry(
+                shared,
+                "preflight-unavailable-input",
+                pending.queued().cancellation(),
+            );
             thread::sleep(WORKER_RETRY_INTERVAL);
             match retry_pending_attempt_result::<W>(store, *pending) {
                 Ok(prepared) => {
@@ -1996,6 +2030,7 @@ where
             {
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
+                record_publication_retry(shared, "journal-io", prepared.queued().cancellation());
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
@@ -2019,11 +2054,27 @@ where
             abort_prepared(shared, prepared);
             return CaptureRootDisposition::Finished(AttemptExecutionDisposition::Canceled);
         }
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "journal-stage-begin",
+            format_args!(
+                "execution={:?} canceled={}",
+                prepared.queued().execution(),
+                prepared.queued().cancellation().is_canceled()
+            ),
+        );
         let mut executor = lock_or_retain(shared, &prepared);
         match stage_prepared_attempt_result(executor.supervisor_mut(), prepared) {
             Ok(AttemptResultStageOutcome::Publish(staged)) => {
                 drop(executor);
                 prepared = (*staged).into_prepared();
+                crate::crucible_execution::record_execution_phase_diagnostic(
+                    "journal-stage-return",
+                    format_args!(
+                        "execution={:?} canceled={}",
+                        prepared.queued().execution(),
+                        prepared.queued().cancellation().is_canceled()
+                    ),
+                );
                 break;
             }
             Ok(AttemptResultStageOutcome::Finished { prepared, outcome }) => {
@@ -2037,6 +2088,11 @@ where
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
+                record_publication_retry(
+                    shared,
+                    "journal-stage-ledger",
+                    prepared.queued().cancellation(),
+                );
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
@@ -2049,10 +2105,26 @@ where
         }
     }
 
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "journal-commit-begin",
+        format_args!(
+            "execution={:?} canceled={}",
+            prepared.queued().execution(),
+            prepared.queued().cancellation().is_canceled()
+        ),
+    );
     loop {
         match prepared.commit_staged_journal() {
             Ok(journaled) => {
                 drop(guard);
+                crate::crucible_execution::record_execution_phase_diagnostic(
+                    "journal-commit-return",
+                    format_args!(
+                        "execution={:?} canceled={}",
+                        journaled.queued().execution(),
+                        journaled.queued().cancellation().is_canceled()
+                    ),
+                );
                 return CaptureRootDisposition::Prepared {
                     prepared: Box::new(journaled),
                     journaled: true,
@@ -2063,6 +2135,7 @@ where
             {
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
+                record_publication_retry(shared, "journal-io", prepared.queued().cancellation());
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => retain_forever(shared, (error.prepared, guard)),
@@ -2142,15 +2215,46 @@ where
     L: AssignmentLedger,
     V: AttemptAdmissionValidator,
 {
+    let execution = prepared.queued().execution();
+    let cancellation = prepared.queued().cancellation().clone();
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "stage-begin",
+        format_args!(
+            "execution={execution:?} canceled={}",
+            cancellation.is_canceled()
+        ),
+    );
     let staged = match stage_prepared(shared, prepared) {
         StageDisposition::Publish(staged) => staged,
         StageDisposition::Finished(disposition) => return disposition,
     };
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "stage-return-publish-begin",
+        format_args!(
+            "execution={execution:?} canceled={}",
+            cancellation.is_canceled()
+        ),
+    );
     let published = match publish_staged(shared, store, staged) {
         PublishDisposition::Published(published) => *published,
         PublishDisposition::Finished(disposition) => return disposition,
     };
-    reconcile_published(shared, published)
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "publish-return-append-begin",
+        format_args!(
+            "execution={execution:?} canceled={}",
+            cancellation.is_canceled()
+        ),
+    );
+    let disposition = reconcile_published(shared, published);
+    crate::crucible_execution::record_execution_phase_diagnostic(
+        "append-return",
+        format_args!(
+            "execution={execution:?} canceled={} disposition={disposition:?}",
+            cancellation.is_canceled()
+        ),
+    );
+    disposition
 }
 
 fn reconcile_checkpoint_result<L, V>(
@@ -2458,6 +2562,7 @@ where
                 prepared = *error.prepared;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
+                record_publication_retry(shared, "stage-ledger", prepared.queued().cancellation());
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
@@ -2496,6 +2601,11 @@ where
             {
                 staged = error.staged;
                 increment(&shared.counters.publication_retries);
+                record_publication_retry(
+                    shared,
+                    "publish-unavailable-input",
+                    staged.queued().cancellation(),
+                );
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(error) => {
@@ -2532,6 +2642,11 @@ where
                 published = *next;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
+                record_publication_retry(
+                    shared,
+                    "append-ledger",
+                    published.queued().cancellation(),
+                );
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(AttemptWorkerReconcileError::CompletionPending {
@@ -2549,6 +2664,11 @@ where
                 published = *next;
                 increment(&shared.counters.publication_retries);
                 drop(executor);
+                record_publication_retry(
+                    shared,
+                    "append-ledger",
+                    published.queued().cancellation(),
+                );
                 thread::sleep(WORKER_RETRY_INTERVAL);
             }
             Err(AttemptWorkerReconcileError::JournalCleanupPending {
@@ -2563,6 +2683,23 @@ where
                 return AttemptExecutionDisposition::Failed;
             }
         }
+    }
+}
+
+fn record_publication_retry<L, V>(
+    shared: &SharedExecutor<L, V>,
+    phase: &str,
+    cancellation: &crate::ExecutionCancellation,
+) {
+    let count = shared.counters.publication_retries.load(Ordering::Relaxed);
+    if count.is_power_of_two() {
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "retained-publication-retry",
+            format_args!(
+                "phase={phase} retries={count} canceled={}",
+                cancellation.is_canceled()
+            ),
+        );
     }
 }
 

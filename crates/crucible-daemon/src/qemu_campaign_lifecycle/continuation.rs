@@ -560,6 +560,16 @@ where
             Ok(None)
         };
         let cleanup = lifecycle.shutdown();
+        crate::crucible_execution::record_execution_phase_diagnostic(
+            "shutdown-return",
+            format_args!(
+                "basis={:?} canceled={} driven_ok={} shutdown_ok={}",
+                context.runtime_basis(),
+                context.cancellation().is_canceled(),
+                driven.is_ok(),
+                cleanup.is_ok()
+            ),
+        );
 
         let (pending, final_events) = match (driven, cleanup) {
             (Ok(pending), Ok(events)) => (pending, events),
@@ -581,10 +591,30 @@ where
             )
         })?;
         let product = match pending {
-            QemuFreshRunnerResult::Observation(pending) => self
-                .driver
-                .seal_with_trace(pending, final_events, resolved_effect_trace)
-                .map_err(map_fresh_driver_failure)?,
+            QemuFreshRunnerResult::Observation(pending) => {
+                crate::crucible_execution::record_execution_phase_diagnostic(
+                    "seal-begin",
+                    format_args!(
+                        "basis={:?} canceled={} final_events={}",
+                        context.runtime_basis(),
+                        context.cancellation().is_canceled(),
+                        final_events.len()
+                    ),
+                );
+                let sealed =
+                    self.driver
+                        .seal_with_trace(pending, final_events, resolved_effect_trace);
+                crate::crucible_execution::record_execution_phase_diagnostic(
+                    "seal-return",
+                    format_args!(
+                        "basis={:?} canceled={} ok={}",
+                        context.runtime_basis(),
+                        context.cancellation().is_canceled(),
+                        sealed.is_ok()
+                    ),
+                );
+                sealed.map_err(map_fresh_driver_failure)?
+            }
             QemuFreshRunnerResult::Checkpoint(checkpoint) => {
                 AttemptExecutionProduct::exact_checkpoint(checkpoint)
             }
