@@ -321,6 +321,24 @@ pub fn sign_issuer_reply(
     request: &IssuerRequest,
     reply: IssuerReply,
 ) -> Result<Vec<u8>> {
+    sign_issuer_reply_observed(signer, request, reply, |_| {})
+}
+
+/// Observes the actual reply signing call without changing reply authority.
+///
+/// The observer receives no input or signature. It must be bounded,
+/// non-panicking and synchronous. All validation and serialization precedes
+/// the signing sample; returned bytes match [`sign_issuer_reply`].
+///
+/// # Errors
+/// Returns the same audience, key or serialization errors as the unobserved
+/// entrypoint. Measurement availability conveys no permission.
+pub fn sign_issuer_reply_observed(
+    signer: &EpochLeaseSigningKey,
+    request: &IssuerRequest,
+    reply: IssuerReply,
+    mut observer: impl FnMut(super::LeaseSignatureObservation),
+) -> Result<Vec<u8>> {
     validate_reply(request, &reply)?;
     ensure!(
         reply.issuer_key_id == signer.key_id(),
@@ -331,7 +349,7 @@ pub fn sign_issuer_reply(
         payload.len() <= MAX_ISSUER_CONTROL_BYTES - 256,
         "issuer reply exceeds bound"
     );
-    let signature = signer.sign_domain(reply_domain(request), &payload);
+    let signature = signer.sign_domain_observed(reply_domain(request), &payload, &mut observer);
     Ok(serde_json::to_vec(&ReplyEnvelope {
         payload: reply,
         signature,

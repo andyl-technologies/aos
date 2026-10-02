@@ -94,8 +94,7 @@ pub(super) fn initialize_with_policy(
             IssuerOperation::Install(snapshot.publication.clone()),
         )?,
     )?;
-    transaction
-        .commit()
+    commit_observed(adapter, transaction, "initialization")
         .context("committing initial issuer installation")?;
     Ok(())
 }
@@ -104,7 +103,7 @@ pub(super) fn load(adapter: &AuthorityJournal) -> Result<IssuerLiveState> {
     let mut connection = connection(adapter)?;
     let transaction = connection.transaction()?;
     let snapshot = load_transaction(&transaction, adapter)?;
-    transaction.commit()?;
+    commit_observed(adapter, transaction, "read_only")?;
     adapter.file.validate_current()?;
     Ok(snapshot)
 }
@@ -117,7 +116,7 @@ pub(super) fn receipt(
     let transaction = connection.transaction()?;
     load_transaction(&transaction, adapter)?;
     let receipt = read_receipt(&transaction, &adapter.marker, generation)?;
-    transaction.commit()?;
+    commit_observed(adapter, transaction, "read_only")?;
     adapter.file.validate_current()?;
     Ok(receipt)
 }
@@ -147,8 +146,7 @@ pub(super) fn commit_lease(
     )?;
     retain_clock_floor(&transaction, next.journal.clock_floor)?;
     before_commit();
-    transaction
-        .commit()
+    commit_observed(adapter, transaction, "lease")
         .context("committing issuer lease journal; outcome may be indeterminate")?;
     adapter.file.validate_current()?;
     Ok(())
@@ -239,8 +237,7 @@ fn commit_control(
     let receipt = insert_receipt(&transaction, &next.publication, &retained)?;
     retain_clock_floor(&transaction, next.journal.clock_floor)?;
     before_commit()?;
-    transaction
-        .commit()
+    commit_observed(adapter, transaction, "control")
         .context("committing issuer publication; outcome may be indeterminate")?;
     adapter.file.validate_current()?;
     Ok(receipt)
@@ -457,7 +454,7 @@ pub(super) fn receipt_for_operation(
             "control replay differs from original intent"
         );
     }
-    transaction.commit()?;
+    commit_observed(adapter, transaction, "read_only")?;
     adapter.file.validate_current()?;
     Ok(receipt)
 }
@@ -497,8 +494,7 @@ pub(super) fn begin_clock_session(adapter: &AuthorityJournal, session: &str) -> 
         [session],
     )?;
     ensure!(rows == 1, "clock session row disappeared");
-    transaction
-        .commit()
+    commit_observed(adapter, transaction, "clock_session")
         .context("claiming unresolved clock session; outcome may be indeterminate")?;
     adapter.file.validate_current()?;
     Ok(())
@@ -563,8 +559,7 @@ pub(super) fn observe_clock(
         .context("clock uncertainty overflow")?;
     retain_clock_floor(&transaction, LeaseInteger::new(clock.observed_at)?)?;
     recovery::retain_observation_ceiling(&transaction, clock)?;
-    transaction
-        .commit()
+    commit_observed(adapter, transaction, "clock_observation")
         .context("retaining clock observation; outcome may be indeterminate")?;
     adapter.file.validate_current()?;
     Ok(clock)
@@ -656,4 +651,27 @@ fn decode<T: DeserializeOwned + Serialize>(bytes: &[u8], limit: usize) -> Result
         "issuer journal record is not canonical closed JSON"
     );
     Ok(value)
+}
+
+// Observe the real acknowledgment; an error still has an indeterminate write
+// outcome. The recorder cannot change the returned SQLite result.
+fn commit_observed(
+    adapter: &AuthorityJournal,
+    transaction: rusqlite::Transaction<'_>,
+    kind: &'static str,
+) -> rusqlite::Result<()> {
+    let Some(observer) = &adapter.observation else {
+        return transaction.commit();
+    };
+    let started = std::time::Instant::now();
+    let result = transaction.commit();
+    observer.record(
+        "transaction_commit",
+        serde_json::json!({
+            "kind": kind,
+            "wallNs": crate::authority_server::observation::elapsed_ns(started),
+            "outcome": if result.is_ok() { "acknowledged" } else { "indeterminate_error" },
+        }),
+    );
+    result
 }

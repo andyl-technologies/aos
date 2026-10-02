@@ -11,8 +11,8 @@ use std::time::Duration;
 use anyhow::{ensure, Context as _, Result};
 use aos_hub_core::storage_authority::lease::{
     control::{
-        sign_issuer_reply, verify_issuer_reply_at_time, verify_issuer_request, IssuerOperation,
-        IssuerReply, IssuerRequest, ISSUER_CONTROL_PATH, MAX_ISSUER_CONTROL_BYTES,
+        sign_issuer_reply_observed, verify_issuer_reply_at_time, verify_issuer_request,
+        IssuerOperation, IssuerReply, IssuerRequest, ISSUER_CONTROL_PATH, MAX_ISSUER_CONTROL_BYTES,
     },
     EpochLeaseSigningKey, EpochLeaseVerifier,
 };
@@ -33,12 +33,14 @@ use clock::{ClockSource, NativeClock};
 
 mod clock;
 mod config;
+pub(crate) mod observation;
 pub mod recovery_operator;
 
 #[cfg(test)]
 mod tests;
 
 pub use config::{AuthorityConfiguration, AuthorityTlsConfiguration};
+pub use observation::LocalIssuerObservationConfiguration;
 
 /// Header containing the independently domain-separated issuer authentication tag.
 ///
@@ -63,6 +65,7 @@ struct Inner {
     issuance_enabled: bool,
     clock: Arc<dyn ClockSource>,
     gate: Mutex<()>,
+    observation: Option<observation::Observation>,
     listen: std::net::SocketAddr,
     tls: Option<AuthorityTlsConfiguration>,
 }
@@ -93,12 +96,41 @@ impl AuthorityServer {
         configuration: &AuthorityConfiguration,
         resolution: Option<&crate::authority_journal::recovery::ClockRecoveryReceipt>,
     ) -> Result<Self> {
+        Self::open_observed(configuration, resolution, None)
+    }
+
+    /// Opens an exact issuer with explicit owner-private local observations.
+    ///
+    /// Ordinary policy, keys, journal claims and signing authority are unchanged.
+    /// Measurements require an independent source/executable and runtime join;
+    /// this recorder establishes no clock, fleet or provider qualification.
+    ///
+    /// # Errors
+    /// Returns the existing opening errors and refuses invalid observation
+    /// custody, a changed selected executable/configuration or an unavailable log.
+    pub fn open_with_local_observation(
+        configuration: &AuthorityConfiguration,
+        resolution: Option<&crate::authority_journal::recovery::ClockRecoveryReceipt>,
+        selected: &LocalIssuerObservationConfiguration,
+    ) -> Result<Self> {
+        Self::open_observed(configuration, resolution, Some(selected))
+    }
+
+    fn open_observed(
+        configuration: &AuthorityConfiguration,
+        resolution: Option<&crate::authority_journal::recovery::ClockRecoveryReceipt>,
+        selected: Option<&LocalIssuerObservationConfiguration>,
+    ) -> Result<Self> {
         configuration.validate()?;
+        let observation = selected
+            .map(|selected| observation::Observation::open(selected, configuration))
+            .transpose()?;
         let journal = AuthorityJournal::open_existing(
             &configuration.journal_file,
             &configuration.boundary(),
             configuration.installation.clone(),
-        )?;
+        )?
+        .with_observation(observation.clone());
         let state = journal.load()?;
         journal.verify_recovery_policy(configuration.clock_recovery.as_ref())?;
         ensure!(
@@ -159,6 +191,7 @@ impl AuthorityServer {
                 issuance_enabled: configuration.issuance_enabled,
                 clock: Arc::new(clock),
                 gate: Mutex::new(()),
+                observation,
                 listen: configuration.listen,
                 tls: configuration.tls.clone(),
             }),
@@ -196,21 +229,62 @@ impl AuthorityServer {
                 &tls.private_key_file,
                 tls.expected_server_name.clone(),
             )?;
-            axum::serve(listener, self.router()).await?;
+            if self.inner.observation.is_some() {
+                axum::serve(listener, self.router())
+                    .with_graceful_shutdown(local_observation_shutdown())
+                    .await?;
+            } else {
+                axum::serve(listener, self.router()).await?;
+            }
         } else {
             let listener = tokio::net::TcpListener::bind(self.inner.listen)
                 .await
                 .context("binding private authority listener")?;
-            axum::serve(listener, self.router()).await?;
+            if self.inner.observation.is_some() {
+                axum::serve(listener, self.router())
+                    .with_graceful_shutdown(local_observation_shutdown())
+                    .await?;
+            } else {
+                axum::serve(listener, self.router()).await?;
+            }
+        }
+        if let Some(observer) = &self.inner.observation {
+            observer.finish()?;
         }
         Ok(())
     }
 
     async fn execute(&self, request: &IssuerRequest) -> Result<Vec<u8>> {
+        self.execute_observed(request, None).await
+    }
+
+    async fn execute_observed(
+        &self,
+        request: &IssuerRequest,
+        observer: Option<observation::Observation>,
+    ) -> Result<Vec<u8>> {
+        let mut outcome = observation::RequestOutcome::new(observer.clone());
+        let result = self.execute_body(request, observer).await;
+        outcome.completed(result.is_ok());
+        result
+    }
+
+    async fn execute_body(
+        &self,
+        request: &IssuerRequest,
+        observer: Option<observation::Observation>,
+    ) -> Result<Vec<u8>> {
+        let queue_started = observer.as_ref().map(|_| std::time::Instant::now());
         let _gate = self.inner.gate.lock().await;
+        if let (Some(observer), Some(queue_started)) = (&observer, queue_started) {
+            observer.record(
+                "gate_acquired",
+                serde_json::json!({ "queueWaitNs": observation::elapsed_ns(queue_started) }),
+            );
+        }
         let clock = self.inner.clock.observe()?;
         request.validate(&self.inner.installation, clock.observed_at)?;
-        let current = self.load().await?;
+        let current = self.load_observed(observer.clone()).await?;
         let mut applied = None;
         let mut lease = None;
         match &request.operation {
@@ -218,13 +292,16 @@ impl AuthorityServer {
             IssuerOperation::Install(_)
             | IssuerOperation::Publish(_)
             | IssuerOperation::Deny(_) => {
-                let journal = self.inner.journal.clone();
+                let journal = self.inner.journal.with_observation(observer.clone());
                 let operation = request.operation.clone();
                 applied =
                     tokio::task::spawn_blocking(move || journal.receipt_for_operation(operation))
                         .await??;
                 if applied.is_none() {
-                    applied = Some(self.apply_control(&current, request, clock).await?);
+                    applied = Some(
+                        self.apply_control(&current, request, clock, observer.clone())
+                            .await?,
+                    );
                 }
             }
             IssuerOperation::Issue {
@@ -242,21 +319,29 @@ impl AuthorityServer {
                     requested_not_after.get(),
                     clock,
                 )?;
-                let journal = self.inner.journal.clone();
+                let journal = self.inner.journal.with_observation(observer.clone());
+                let mut signature = observer
+                    .as_ref()
+                    .map(|observer| observer.signature_observer());
                 let bytes = prepared
-                    .commit_and_sign(
+                    .commit_and_sign_observed(
                         &self.inner.signer,
                         move |transition| {
                             let journal = journal.clone();
                             async move { journal.commit_lease(transition).await }
                         },
                         || self.inner.clock.observe(),
+                        |event| {
+                            if let Some(signature) = &mut signature {
+                                signature(event);
+                            }
+                        },
                     )
                     .await?;
                 lease = Some(String::from_utf8(bytes)?);
             }
         }
-        let head = self.load().await?.head()?;
+        let head = self.load_observed(observer.clone()).await?.head()?;
         let reply = IssuerReply {
             protocol_version: 1,
             issuer_key_id: self.inner.signing_key_id.clone(),
@@ -267,7 +352,14 @@ impl AuthorityServer {
             applied,
             lease,
         };
-        let bytes = sign_issuer_reply(&self.inner.signer, request, reply)?;
+        let mut signature = observer
+            .as_ref()
+            .map(|observer| observer.signature_observer());
+        let bytes = sign_issuer_reply_observed(&self.inner.signer, request, reply, |event| {
+            if let Some(signature) = &mut signature {
+                signature(event);
+            }
+        })?;
         // A different process can win a durable CAS despite this local gate.
         // Refuse a head/token mismatch before any signed bytes leave the server.
         verify_issuer_reply_at_time(&self.inner.verifier, request, &bytes, || {
@@ -277,7 +369,14 @@ impl AuthorityServer {
     }
 
     async fn load(&self) -> Result<IssuerLiveState> {
-        let journal = self.inner.journal.clone();
+        self.load_observed(self.inner.observation.clone()).await
+    }
+
+    async fn load_observed(
+        &self,
+        observer: Option<observation::Observation>,
+    ) -> Result<IssuerLiveState> {
+        let journal = self.inner.journal.with_observation(observer);
         tokio::task::spawn_blocking(move || journal.load()).await?
     }
 
@@ -286,6 +385,7 @@ impl AuthorityServer {
         current: &IssuerLiveState,
         request: &IssuerRequest,
         clock: aos_hub_core::storage_authority::lease::LeaseClock,
+        observer: Option<observation::Observation>,
     ) -> Result<IssuerPublicationReceipt> {
         match &request.operation {
             IssuerOperation::Install(_) => {
@@ -295,6 +395,7 @@ impl AuthorityServer {
                 let transition = current.journal.prepare_publication(publication, clock)?;
                 self.inner
                     .journal
+                    .with_observation(observer)
                     .commit_publication(transition, publication.clone(), clock)
                     .await
             }
@@ -302,6 +403,7 @@ impl AuthorityServer {
                 let transition = current.journal.prepare_denied_gap(denial, clock)?;
                 self.inner
                     .journal
+                    .with_observation(observer)
                     .commit_denial(transition, denial.clone(), clock)
                     .await
             }
@@ -442,8 +544,28 @@ async fn handle_inner(
     if !permitted {
         return Err(StatusCode::FORBIDDEN);
     }
-    server
-        .execute(&request)
-        .await
-        .map_err(|_| StatusCode::CONFLICT)
+    let observer = server.inner.observation.as_ref().and_then(|observer| {
+        match observer.for_request(&request, &bytes) {
+            Ok(context) => Some(context),
+            Err(_) => {
+                // Measurement failure invalidates the recorder; the existing
+                // authority execution still determines the request result.
+                observer.invalidate();
+                None
+            }
+        }
+    });
+    let result = match observer {
+        Some(observer) => server.execute_observed(&request, Some(observer)).await,
+        None => server.execute(&request).await,
+    };
+    result.map_err(|_| StatusCode::CONFLICT)
+}
+
+async fn local_observation_shutdown() {
+    // Only the explicit local recorder selects this orderly shutdown path. A
+    // failed signal subscription makes its terminal sample unavailable.
+    if tokio::signal::ctrl_c().await.is_err() {
+        std::future::pending::<()>().await;
+    }
 }

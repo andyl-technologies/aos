@@ -15,9 +15,11 @@
 //! This abbreviated illustration omits the required full cohort and time profile.
 
 pub mod control;
+mod observation;
 mod state;
 mod wire;
 
+pub use observation::*;
 pub use state::*;
 pub use wire::*;
 

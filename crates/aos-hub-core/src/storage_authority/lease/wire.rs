@@ -448,16 +448,54 @@ impl EpochLeaseSigningKey {
         &self.key_id
     }
 
+    #[cfg(test)]
     pub(super) fn sign_domain(&self, domain: &[u8], bytes: &[u8]) -> String {
-        let mut message = domain.to_vec();
-        message.extend_from_slice(bytes);
-        hex::encode(self.key.sign(&message).to_bytes())
+        self.sign_domain_observed(domain, bytes, &mut |_| {})
     }
 
+    pub(super) fn sign_domain_observed(
+        &self,
+        domain: &[u8],
+        bytes: &[u8],
+        observer: &mut impl FnMut(super::LeaseSignatureObservation),
+    ) -> String {
+        let mut message = domain.to_vec();
+        message.extend_from_slice(bytes);
+        self.sign_message(&message, super::LeaseSignatureKind::Reply, observer)
+    }
+
+    fn sign_message(
+        &self,
+        message: &[u8],
+        kind: super::LeaseSignatureKind,
+        observer: &mut impl FnMut(super::LeaseSignatureObservation),
+    ) -> String {
+        observer(super::LeaseSignatureObservation {
+            kind,
+            boundary: super::LeaseSignatureBoundary::Started,
+        });
+        let signature = self.key.sign(message);
+        observer(super::LeaseSignatureObservation {
+            kind,
+            boundary: super::LeaseSignatureBoundary::Completed,
+        });
+        hex::encode(signature.to_bytes())
+    }
+
+    #[cfg(test)]
     pub(super) fn sign(&self, payload: EpochLeasePayload) -> Result<Vec<u8>> {
+        self.sign_observed(payload, &mut |_| {})
+    }
+
+    pub(super) fn sign_observed(
+        &self,
+        payload: EpochLeasePayload,
+        observer: &mut impl FnMut(super::LeaseSignatureObservation),
+    ) -> Result<Vec<u8>> {
         payload.validate()?;
         ensure!(payload.issuer_key_id == self.key_id, "issuer key mismatch");
-        let signature = hex::encode(self.key.sign(&message(&payload)?).to_bytes());
+        let message = message(&payload)?;
+        let signature = self.sign_message(&message, super::LeaseSignatureKind::Lease, observer);
         let bytes = serde_json::to_vec(&Envelope { payload, signature })?;
         ensure!(
             bytes.len() <= MAX_EPOCH_LEASE_BYTES,

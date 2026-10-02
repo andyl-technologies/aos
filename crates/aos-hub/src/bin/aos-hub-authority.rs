@@ -8,7 +8,9 @@
 use std::path::PathBuf;
 
 use anyhow::{Context as _, Result};
-use aos_hub::authority_server::{recovery_operator, AuthorityConfiguration, AuthorityServer};
+use aos_hub::authority_server::{
+    recovery_operator, AuthorityConfiguration, AuthorityServer, LocalIssuerObservationConfiguration,
+};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -37,6 +39,9 @@ enum Operation {
         /// Consume one exact retained format 3 recovery receipt, once.
         #[arg(long)]
         clock_resolution: Option<PathBuf>,
+        /// Record local qualification metrics using explicit private custody.
+        #[arg(long)]
+        qualification_observation: Option<PathBuf>,
     },
     /// Inspect inactive format 3 state without changing the old session.
     InspectClockSession {
@@ -92,6 +97,7 @@ async fn main() -> Result<()> {
         Operation::Serve {
             configuration,
             clock_resolution,
+            qualification_observation,
         } => {
             let configuration = AuthorityConfiguration::read(&configuration)
                 .context("loading explicit authority configuration")?;
@@ -99,9 +105,17 @@ async fn main() -> Result<()> {
                 .as_deref()
                 .map(recovery_operator::read_receipt)
                 .transpose()?;
-            let server =
-                AuthorityServer::open_with_clock_resolution(&configuration, receipt.as_ref())
-                    .context("opening existing private authority resource")?;
+            let server = match qualification_observation {
+                Some(path) => AuthorityServer::open_with_local_observation(
+                    &configuration,
+                    receipt.as_ref(),
+                    &LocalIssuerObservationConfiguration::read(&path)?,
+                ),
+                None => {
+                    AuthorityServer::open_with_clock_resolution(&configuration, receipt.as_ref())
+                }
+            }
+            .context("opening existing private authority resource")?;
             server
                 .serve()
                 .await

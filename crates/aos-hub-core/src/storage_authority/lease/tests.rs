@@ -1,5 +1,7 @@
 //! Pure wire, persistence-order, fork, denial and clock regressions.
 
+mod observation;
+
 use std::cell::RefCell;
 
 use anyhow::{ensure, Result};

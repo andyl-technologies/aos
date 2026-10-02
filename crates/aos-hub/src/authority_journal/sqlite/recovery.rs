@@ -177,7 +177,7 @@ pub(crate) fn verify_policy(
             "journal format 3 requires its exact recovery configuration"
         ),
     }
-    transaction.commit()?;
+    super::commit_observed(adapter, transaction, "recovery_read_only")?;
     adapter.file.validate_current()
 }
 
@@ -212,7 +212,7 @@ pub(crate) fn inspect(
         )?,
     };
     plan.validate(policy)?;
-    transaction.commit()?;
+    super::commit_observed(adapter, transaction, "recovery_read_only")?;
     adapter.file.validate_current()?;
     Ok(plan)
 }
@@ -294,8 +294,7 @@ pub(crate) fn resolve(
         )?;
         receipt
     };
-    transaction
-        .commit()
+    super::commit_observed(adapter, transaction, "clock_resolution")
         .context("committing explicit clock resolution; outcome may be indeterminate")?;
     adapter.file.validate_current()?;
     Ok(receipt)
@@ -333,8 +332,7 @@ pub(crate) fn consume(adapter: &AuthorityJournal, expected: &ClockRecoveryReceip
             uncertainty: expected.uncertainty.get(),
         },
     )?;
-    transaction
-        .commit()
+    super::commit_observed(adapter, transaction, "clock_resolution_consume")
         .context("consuming clock resolution once; outcome may be indeterminate")?;
     adapter.file.validate_current()
 }

@@ -433,8 +433,32 @@ impl PreparedEpochLease {
     pub async fn commit_and_sign<PersistFuture>(
         self,
         signer: &EpochLeaseSigningKey,
+        persist: impl FnMut(IssuerTransition) -> PersistFuture,
+        observe_clock: impl FnMut() -> Result<LeaseClock>,
+    ) -> Result<Vec<u8>>
+    where
+        PersistFuture: Future<Output = Result<()>>,
+    {
+        self.commit_and_sign_observed(signer, persist, observe_clock, |_| {})
+            .await
+    }
+
+    /// Observes actual synchronous signing without changing issuance authority.
+    ///
+    /// Persistence, clock checks and returned signed bytes follow
+    /// [`Self::commit_and_sign`]. The observer sees only actual sign boundaries;
+    /// it cannot return a substitute result or skip either durable acknowledgment.
+    /// It must be bounded, non-panicking and synchronous, with no async work.
+    ///
+    /// # Errors
+    /// Returns the same key, persistence, signing or clock errors as
+    /// [`Self::commit_and_sign`]. Missing measurements grant no permission.
+    pub async fn commit_and_sign_observed<PersistFuture>(
+        self,
+        signer: &EpochLeaseSigningKey,
         mut persist: impl FnMut(IssuerTransition) -> PersistFuture,
         mut observe_clock: impl FnMut() -> Result<LeaseClock>,
+        mut observer: impl FnMut(super::LeaseSignatureObservation),
     ) -> Result<Vec<u8>>
     where
         PersistFuture: Future<Output = Result<()>>,
@@ -445,7 +469,7 @@ impl PreparedEpochLease {
         );
         let committed = self.transition.next.clone();
         persist(self.transition).await?;
-        let bytes = signer.sign(self.payload.clone())?;
+        let bytes = signer.sign_observed(self.payload.clone(), &mut observer)?;
         let clock = observe_clock()?;
         validate_time(&self.payload, committed.clock_floor, clock)?;
         let mut next = committed.clone();

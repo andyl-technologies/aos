@@ -65,9 +65,21 @@ pub struct HubDataBoundary {
 pub struct AuthorityJournal {
     file: filesystem::PrivateFile,
     marker: IssuerInstallation,
+    observation: Option<crate::authority_server::observation::Observation>,
 }
 
 impl AuthorityJournal {
+    pub(crate) fn with_observation(
+        &self,
+        observation: Option<crate::authority_server::observation::Observation>,
+    ) -> Self {
+        Self {
+            file: self.file.clone(),
+            marker: self.marker.clone(),
+            observation,
+        }
+    }
+
     /// Explicitly creates a freshly qualified per-authority installation.
     ///
     /// The caller must independently establish a never-used issuer resource and
@@ -145,7 +157,11 @@ impl AuthorityJournal {
         };
         snapshot.validate()?;
         let file = filesystem::PrivateFile::create_new(path, boundary)?;
-        let adapter = Self { file, marker };
+        let adapter = Self {
+            file,
+            marker,
+            observation: None,
+        };
         match recovery {
             Some(policy) => sqlite::initialize_with_policy(&adapter, &snapshot, Some(policy))?,
             None => sqlite::initialize(&adapter, &snapshot)?,
@@ -168,6 +184,7 @@ impl AuthorityJournal {
         let adapter = Self {
             file: filesystem::PrivateFile::existing(path, boundary)?,
             marker: expected,
+            observation: None,
         };
         adapter.load()?;
         Ok(adapter)
@@ -191,6 +208,7 @@ impl AuthorityJournal {
         let adapter = Self {
             file: filesystem::PrivateFile::existing(path, boundary)?,
             marker: expected,
+            observation: None,
         };
         let _lock = adapter.file.lock_exclusive()?;
         adapter.load()?;

@@ -150,6 +150,7 @@ fn test_server(
             issuance_enabled: true,
             clock,
             gate: Mutex::new(()),
+            observation: None,
             listen,
             tls: None,
         }),
