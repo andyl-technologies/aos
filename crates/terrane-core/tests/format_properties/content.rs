@@ -225,16 +225,20 @@ fn entries_nodes_and_properties_cover_all_kinds_and_optional_presence() {
                 } else {
                     ContentRef::Manifest(generator.bytes())
                 },
-                link_id: None,
+                link_id: (case % 3 == 0).then_some(b"entry-00".as_slice()),
             }),
             entry(EntryKind::Directory { mode: 0o755 }),
             entry(EntryKind::Symlink { target: &target }),
             entry(EntryKind::Tree {
                 root: generator.bytes(),
-                props: Some(vec![Property {
-                    name: "domain",
-                    value: b"\x66public",
-                }]),
+                props: match case % 3 {
+                    0 => None,
+                    1 => Some(vec![]),
+                    _ => Some(vec![Property {
+                        name: "domain",
+                        value: b"\x66public",
+                    }]),
+                },
             }),
             entry(EntryKind::Whiteout),
             entry(EntryKind::Conflict {
@@ -242,7 +246,11 @@ fn entries_nodes_and_properties_cover_all_kinds_and_optional_presence() {
                     entry(EntryKind::Directory { mode: 0o755 }),
                     entry(EntryKind::Whiteout),
                 ],
-                base: Some(None),
+                base: match case % 3 {
+                    0 => None,
+                    1 => Some(None),
+                    _ => Some(Some(Box::new(entry(EntryKind::Directory { mode: 0 })))),
+                },
             }),
             entry(EntryKind::Index {
                 targets: vec![[0; 32], [255; 32]],
@@ -392,7 +400,12 @@ fn derived_attribute_values_and_records_cover_every_registered_variant() {
             AttributeValue::GitBlobSha256(generator.bytes()),
             AttributeValue::ZstdDictionary(generator.bytes()),
             AttributeValue::Magic(
-                Magic::parse(if case % 2 == 0 { "elf" } else { "other" }).unwrap(),
+                Magic::parse(
+                    [
+                        "elf", "shebang", "ar", "zstd", "gzip", "tar", "text", "other",
+                    ][case % 8],
+                )
+                .unwrap(),
             ),
             AttributeValue::Elf(ElfValue {
                 class: if case % 2 == 0 { 32 } else { 64 },
@@ -611,4 +624,103 @@ fn index_overlay_and_internal_nodes_cover_context_and_summary_boundaries() {
         value: &[0xf4],
     });
     assert!(tree_format::encode_entry(&model, MIN).is_err());
+}
+
+#[test]
+fn token_field_models_cover_all_principal_kinds_verb_bits_and_absent_attenuation_fields() {
+    let mut generator = Generator::new(0x371b_a3de_f17a_cc87);
+    let source = super::support::token_bytes(1, 1, &mut generator);
+    let mut decoder = cbor::Decoder::new(&source);
+    assert_eq!(decoder.array(1).unwrap(), 1);
+    let count = decoder.map(12).unwrap();
+    let mut fields = BTreeMap::new();
+    for _ in 0..count {
+        let key = decoder.uint().unwrap();
+        fields.insert(key, decoder.raw_value(source.len()).unwrap().to_vec());
+    }
+    for kind in 1..=3 {
+        for optional in 0..4 {
+            for mask in [1, 2, 4, 8, 16, 31] {
+                let mut authority = fields.clone();
+                authority.insert(4, vec![kind]);
+                authority.insert(5, vec![0x80]);
+                if optional & 1 == 0 {
+                    authority.remove(&7);
+                }
+                if optional & 2 == 0 {
+                    authority.remove(&10);
+                }
+                let mut grants = vec![];
+                cbor::write_array(&mut grants, 1);
+                cbor::write_array(&mut grants, 2);
+                cbor::write_text(&mut grants, "refs/heads/_/main");
+                cbor::write_uint(&mut grants, mask);
+                authority.insert(9, grants);
+                let mut bytes = vec![];
+                cbor::write_array(&mut bytes, 2);
+                cbor::write_map(&mut bytes, authority.len());
+                for (key, value) in authority {
+                    cbor::write_uint(&mut bytes, key);
+                    bytes.extend(value);
+                }
+                // An empty attenuation body still carries the required opaque
+                // next-key/signature envelope; no authority is verified.
+                cbor::write_map(&mut bytes, 2);
+                cbor::write_uint(&mut bytes, 5);
+                cbor::write_bytes(&mut bytes, &generator.bytes::<32>());
+                cbor::write_uint(&mut bytes, 6);
+                cbor::write_bytes(&mut bytes, &generator.bytes::<64>());
+                cbor_properties("token optional fields/kinds/verbs", &bytes, |input| {
+                    Ok::<_, terrane_core::auth::Unauthorized>(Token::decode(input)?.encode())
+                });
+            }
+        }
+    }
+}
+
+#[test]
+fn derived_function_metadata_and_text_values_preserve_unknown_versions_and_limits() {
+    use terrane_core::derived::AttributeName;
+    let mut generator = Generator::new(0x817e_223f_765a_dbba);
+    for version in ["2".to_string(), "v".repeat(128)] {
+        let mut record = AttrRecord::new(
+            generator.bytes(),
+            AttributeValue::Sha256(generator.bytes()),
+            generator.bytes(),
+        );
+        record.function.version = version;
+        assert!(!record.function.supported(AttributeName::Sha256));
+        check_record!("preserved function version", record.clone(), AttrRecord);
+        record.function.version.push('v');
+        if record.function.version.len() > 128 {
+            assert!(record.encode().is_err());
+        }
+    }
+    let maximum = "a".repeat(65536);
+    for value in [
+        AttributeValue::Elf(ElfValue {
+            class: 64,
+            machine: u16::MAX,
+            elf_type: u16::MAX,
+            interpreter: Some(maximum.clone()),
+            needed: vec![maximum.clone(), maximum.clone()],
+        }),
+        AttributeValue::Shebang(ShebangValue {
+            interpreter: format!("/{}", "a".repeat(65535)),
+            argument: Some(maximum.clone()),
+        }),
+    ] {
+        let bytes = value.encode().unwrap();
+        assert_eq!(AttributeValue::decode(value.name(), &bytes).unwrap(), value);
+        for end in [0, 1, bytes.len() / 2, bytes.len() - 1] {
+            assert!(AttributeValue::decode(value.name(), &bytes[..end]).is_err());
+        }
+    }
+    for text in ["a".repeat(65537), "contains\0NUL".into()] {
+        let value = AttributeValue::Shebang(ShebangValue {
+            interpreter: text,
+            argument: None,
+        });
+        assert!(value.encode().is_err());
+    }
 }

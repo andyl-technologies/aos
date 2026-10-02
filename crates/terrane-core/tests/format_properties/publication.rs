@@ -27,7 +27,11 @@ pub(super) fn binding(case: usize) -> BackendBinding {
             },
             endpoint: format!("endpoint-{case}"),
             bucket: format!("bucket-{case}"),
-            prefix: vec![],
+            prefix: if case % 3 == 0 {
+                vec![]
+            } else {
+                b"opaque-prefix/".to_vec()
+            },
             resource_nonce: [1; 32],
             coordination_key: b"coordination".to_vec(),
             coordination_nonce: [2; 32],
@@ -456,7 +460,11 @@ fn portable_full_checkpoint_models_require_complete_capabilities_and_retained_hi
                     value: Some(capabilities.encode().unwrap()),
                 },
                 ProjectionEntry {
-                    key: "objects/index/MANIFEST".into(),
+                    key: "gc/lease".into(),
+                    value: None,
+                },
+                ProjectionEntry {
+                    key: "objects/index/1/MANIFEST".into(),
                     value: Some(manifest.encode().unwrap()),
                 },
                 ProjectionEntry {
@@ -474,5 +482,235 @@ fn portable_full_checkpoint_models_require_complete_capabilities_and_retained_hi
         let mut invalid = model;
         invalid.projection.remove(0);
         assert!(invalid.encode().is_err());
+    }
+}
+
+#[test]
+fn evidence_control_selectors_and_optional_configuration_fields_preserve_models() {
+    let mut generator = Generator::new(0x7e31_558f_bce2_954b);
+    for case in 0..6 {
+        let owner = registration(case, generator.bytes());
+        let original = owner
+            .original_id()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        for (kind, key) in [
+            (ControlKind::Registration, "registration.cbor".to_string()),
+            (
+                ControlKind::Bootstrap,
+                format!("bootstrap-{original}-{}-{}.cbor", "00".repeat(32), u64::MAX),
+            ),
+            (
+                ControlKind::Association,
+                format!("commit-{}.cbor", "01".repeat(32)),
+            ),
+            (
+                ControlKind::Import,
+                format!("import-{}.cbor", "01".repeat(32)),
+            ),
+            (
+                ControlKind::ImportBinding,
+                format!("import-binding-{}.cbor", "01".repeat(32)),
+            ),
+            (
+                ControlKind::ImportTrust,
+                format!("import-trust-{}.cbor", "01".repeat(32)),
+            ),
+        ] {
+            let model = RequiredControlPin {
+                kind,
+                owner: owner.clone(),
+                key,
+                digest: generator.bytes(),
+            };
+            check_record!("control selector", model.clone(), RequiredControlPin);
+            let mut invalid = model;
+            invalid.key.push('/');
+            assert!(invalid.encode().is_err());
+        }
+        let mut config = configuration(generator.bytes());
+        config.home = Locality {
+            region: Some("region".into()),
+            zone: Some("zone".into()),
+            host: Some("host".into()),
+        };
+        config.policy_authority = Some("policy-owner".into());
+        check_record!("complete guard configuration", config, TrustedGuardConfig);
+        let mut registry = registries();
+        registry.later_properties = vec!["later.generated".into()];
+        check_record!(
+            "inert later registry name",
+            registry,
+            ConfiguredRegistryInputs
+        );
+        let bootstrap = OriginalBootstrap {
+            original_id: *owner.original_id(),
+            ref_name: "refs/heads/_/main".into(),
+            epoch: u64::MAX,
+            acl: vec![],
+        };
+        let association = OriginalAssociation {
+            original_id: *owner.original_id(),
+            ref_name: bootstrap.ref_name.clone(),
+            epoch: bootstrap.epoch,
+            commit: generator.bytes(),
+        };
+        check_record!(
+            "v2 import local or remote",
+            OriginalImport {
+                version: ImportVersion::PhysicalV2,
+                registration: owner,
+                bootstrap,
+                association
+            },
+            OriginalImport
+        );
+        let layer = ConsumedRootLayer {
+            properties: vec![0xa0],
+            overrides: vec![0xa0],
+        };
+        let root = ConsumedRootPolicy {
+            root: generator.bytes(),
+            path: format!("/{}", super::support::maximum_key()).into_bytes(),
+            layers: vec![layer; 65],
+        };
+        check_record!(
+            "maximum policy occurrence",
+            root.clone(),
+            ConsumedRootPolicy
+        );
+        check_record!(
+            "repeated equal policy occurrence",
+            ConsumedViewPolicy {
+                view: generator.bytes(),
+                default_domain: "private:generated".into(),
+                roots: vec![root.clone(), root.clone()]
+            },
+            ConsumedViewPolicy
+        );
+        let mut invalid = root;
+        invalid.layers.push(invalid.layers[0].clone());
+        assert!(invalid.encode().is_err());
+        check_record!(
+            "empty consumed views",
+            ConsumedViewPolicy {
+                view: generator.bytes(),
+                default_domain: "public".into(),
+                roots: vec![]
+            },
+            ConsumedViewPolicy
+        );
+    }
+}
+
+#[test]
+fn publication_nonempty_sources_changes_and_genesis_fields_have_unique_bytes() {
+    let mut generator = Generator::new(0xf26c_177d_960a_ce52);
+    for case in 0..6 {
+        let mut model = state(case, generator.next());
+        model.guard = Some(generator.bytes());
+        model.branches = ["conflicts", "derived", "heads", "jobs"]
+            .into_iter()
+            .map(|class| HistoryEntry {
+                name: if class == "conflicts" {
+                    "refs/conflicts/_/main/00000000000000000001".into()
+                } else {
+                    format!("refs/{class}/_/main")
+                },
+                selection: CommittedSelection::Selected(Box::new(records::head(1))),
+            })
+            .collect();
+        model.sources = model
+            .branches
+            .iter()
+            .map(|row| SourceLineage {
+                name: row.name.clone(),
+                digest: generator.bytes(),
+            })
+            .collect();
+        model.sources.push(SourceLineage {
+            name: "refs/tags/_/tag".into(),
+            digest: generator.bytes(),
+        });
+        model.burn_owners = Some(vec![terrane_core::gc::retirement::PermanentBurnOwner {
+            pack: [1; 16],
+            selection: terrane_core::gc::retirement::PermanentOwnerSelection::CopiedVisibility,
+        }]);
+        check_record!(
+            "nonempty publication state",
+            model.clone(),
+            PublicationState
+        );
+        check_record!(
+            "collection carried lineage",
+            PublicationProof::Collection {
+                fence_key: "gc/0/fence/0".into(),
+                fence_digest: generator.bytes(),
+                removed: vec![],
+                carried: model.sources
+            },
+            PublicationProof
+        );
+        let history = SelectedHistory {
+            branches: vec![],
+            origin: binding(case),
+        };
+        let changes = vec![
+            LogicalChange {
+                key: "CAPABILITIES".into(),
+                expected: None,
+                new: Some(vec![0xa0]),
+            },
+            LogicalChange {
+                key: "gc/lease".into(),
+                expected: None,
+                new: None,
+            },
+            LogicalChange {
+                key: "publication/SELECTED-HISTORY".into(),
+                expected: None,
+                new: Some(history.encode().unwrap()),
+            },
+        ];
+        check_record!(
+            "genesis transaction",
+            PublicationTransaction {
+                nonce: [0; 32],
+                old: None,
+                new: state(case, 0),
+                changes,
+                proof: PublicationProof::Raw,
+                predecessor: None,
+                snapshot: pointer(0),
+            },
+            PublicationTransaction
+        );
+        for (expected, new) in [
+            (None, Some(vec![0xf4])),
+            (Some(vec![0xf4]), None),
+            (Some(vec![0xf4]), Some(vec![0xf5])),
+        ] {
+            check_record!(
+                "opaque note change",
+                PublicationTransaction {
+                    nonce: [0; 32],
+                    old: Some(state(case, 1)),
+                    new: state(case, 2),
+                    changes: vec![LogicalChange {
+                        key: "refs/notes/profiles/_/note:record".into(),
+                        expected,
+                        new
+                    }],
+                    proof: PublicationProof::Raw,
+                    predecessor: Some(PredecessorSlot {
+                        revision: 1,
+                        digest: generator.bytes()
+                    }),
+                    snapshot: pointer(2),
+                },
+                PublicationTransaction
+            );
+        }
     }
 }

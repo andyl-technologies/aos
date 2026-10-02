@@ -178,6 +178,34 @@ fn walk(decoder: &mut Decoder<'_>, bytes: &[u8], variants: &mut Vec<Vec<u8>>) {
         }
         _ => unreachable!("generated subset value"),
     }
+
+    if (2..=5).contains(&major) {
+        // A short hostile header must fail before any claimed-size collection
+        // can be materialized. This probes the real typed decoder at every
+        // nested collection/string position, without allocating that size.
+        let width = match initial & 31 {
+            0..=23 => 0,
+            24 => 1,
+            25 => 2,
+            26 => 4,
+            27 => 8,
+            _ => unreachable!("generated canonical header"),
+        };
+        let mut excessive = bytes[..start].to_vec();
+        excessive.push((major << 5) | 27);
+        excessive.extend_from_slice(&u64::MAX.to_be_bytes());
+        excessive.extend_from_slice(&bytes[start + width + 1..]);
+        variants.push(excessive);
+
+        let end = decoder.position();
+        let mut indefinite = bytes[..start].to_vec();
+        indefinite.push((major << 5) | 31);
+        let payload = if major <= 3 { start } else { start + width + 1 };
+        indefinite.extend_from_slice(&bytes[payload..end]);
+        indefinite.push(0xff);
+        indefinite.extend_from_slice(&bytes[end..]);
+        variants.push(indefinite);
+    }
 }
 
 macro_rules! check_record {
@@ -283,4 +311,9 @@ pub(super) fn token_bytes(grants: usize, blocks: usize, generator: &mut Generato
         cbor::write_bytes(&mut bytes, &generator.bytes::<64>());
     }
     bytes
+}
+
+/// Builds the full key-size boundary while respecting every component bound.
+pub(super) fn maximum_key() -> String {
+    vec!["x".repeat(240); 17].join("/")
 }

@@ -9,6 +9,8 @@
 mod containers;
 #[path = "format_properties/content.rs"]
 mod content;
+#[path = "format_properties/foreign.rs"]
+mod foreign;
 #[path = "format_properties/policy.rs"]
 mod policy;
 #[path = "format_properties/publication.rs"]

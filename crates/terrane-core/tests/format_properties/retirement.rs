@@ -285,9 +285,15 @@ fn permanent_pass_models_cover_observation_handles_states_and_complete_coverage(
                 vec![
                     ObservedInstance::Unversioned,
                     ObservedInstance::Version(
-                        generator.bytes::<128>()[..[1, 32, 128][case % 3]].to_vec(),
+                        (0..[1, 32, 128, 4096][case % 4])
+                            .map(|_| generator.next() as u8)
+                            .collect(),
                     ),
-                    ObservedInstance::Marker(generator.bytes::<128>().to_vec()),
+                    ObservedInstance::Marker(
+                        (0..[1, 128, 4096][case % 3])
+                            .map(|_| generator.next() as u8)
+                            .collect(),
+                    ),
                 ]
             };
             let mut observations = vec![];
@@ -544,5 +550,122 @@ fn local_v1_delete_operations_roundtrip_exact_embedded_authorization_and_all_pha
             });
             assert!(gc::DeleteOperation::decode(&bytes, "gc/0/delete/invalid/invalid").is_err());
         }
+    }
+}
+
+#[test]
+fn collection_fences_cover_every_ref_class_selected_payload_and_absent_generation() {
+    use terrane_core::gc::publication::{CommittedSelection, HistoryEntry};
+    use terrane_core::refs::{RefLogReason, RefLogRecord};
+    let mut generator = Generator::new(0xc201_557d_022a_ec4b);
+    for case in 0..4 {
+        let backend = binding(case);
+        let head = super::records::head(1);
+        let mut branches = vec![];
+        let refs: Vec<_> = ["conflicts", "derived", "heads", "jobs", "notes", "tags"]
+            .into_iter()
+            .map(|class| {
+                let branch = !matches!(class, "notes" | "tags");
+                let selection = if branch {
+                    match case % 3 {
+                        0 => CommittedSelection::Selected(Box::new(head.clone())),
+                        1 => CommittedSelection::Unknown,
+                        _ => CommittedSelection::Never,
+                    }
+                } else {
+                    CommittedSelection::Never
+                };
+                let name = match class {
+                    "notes" => "refs/notes/profiles/_/main".into(),
+                    "conflicts" => "refs/conflicts/_/main/00000000000000000001".into(),
+                    _ => format!("refs/{class}/_/main"),
+                };
+                if branch {
+                    branches.push(HistoryEntry {
+                        name: name.clone(),
+                        selection: selection.clone(),
+                    });
+                }
+                FenceRef {
+                    name,
+                    current: if class == "notes" {
+                        Some(vec![0xf4])
+                    } else if case == 0 || class == "tags" {
+                        Some(head.encode().unwrap())
+                    } else {
+                        None
+                    },
+                    log: if matches!(selection, CommittedSelection::Selected(_)) {
+                        Some(RefLogRecord {
+                            record: head.clone(),
+                            previous_commit: None,
+                            principal: "principal".into(),
+                            reason: RefLogReason::Commit,
+                            timestamp: generator.next(),
+                            expected_previous: Some(None),
+                            committed_previous: None,
+                        })
+                    } else {
+                        None
+                    },
+                    selection,
+                }
+            })
+            .collect();
+        let capabilities = bucket::BucketCapabilities {
+            layout_version: 2,
+            create_if_absent: true,
+            compare_and_swap: true,
+            ranges: true,
+            presign: false,
+            multi_writer: false,
+            probed_at: generator.next(),
+            profile: bucket::StoreProfile {
+                identity: "terrane-v1".into(),
+                algorithm: "blake3".into(),
+                chunk: "cdc-1m".into(),
+                seed: generator.bytes(),
+            },
+            generation: None,
+            ref_names: Some(refs.iter().map(|row| row.name.clone()).collect()),
+            publication_protocol: Some(1),
+        }
+        .encode()
+        .unwrap();
+        let guard = generator.bytes();
+        let state = PublicationState {
+            revision: u64::MAX,
+            loss_generation: generator.next(),
+            sources: vec![],
+            binding: backend.clone(),
+            branches,
+            guard: Some(guard),
+            burn_owners: None,
+        };
+        let model = CurrentCollectionFence {
+            capabilities,
+            manifest: None,
+            refs,
+            guard,
+            state,
+            roots: RecordPointer {
+                key: "gc/0/roots".into(),
+                digest: generator.bytes(),
+            },
+            marks: RecordPointer {
+                key: "gc/0/state".into(),
+                digest: generator.bytes(),
+            },
+            backend,
+            controls: vec![],
+        };
+        check_record!(
+            "populated current fence",
+            model.clone(),
+            CurrentCollectionFence
+        );
+        let mut invalid = model;
+        invalid.refs.pop();
+        assert!(invalid.encode().is_err());
     }
 }
