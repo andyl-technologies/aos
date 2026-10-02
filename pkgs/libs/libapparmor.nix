@@ -125,7 +125,6 @@ in
 
     # Keep module compatibility at this release until a broader policy is reviewed.
     version = "=${version}";
-    outputs = ["out" "python" "perl"];
     src = fetchurl {
       urls = ["https://gitlab.com/apparmor/apparmor/-/archive/v${version}/apparmor-v${version}.tar.gz"];
       hash = "sha256-3tTNQZuKBQAqEIoJEiCOIJhpV1JmTGpZRk0t2kGOBFI=";
@@ -146,9 +145,8 @@ in
       setuptools
       ncurses
     ];
-    runtimeDeps = [libxcrypt];
+    runtimeDeps = [perl python3 libxcrypt];
     propagatedDeps = [libxcrypt];
-    outputChecks.out.disallowedReferences = [python3 perl];
     phases = [
       {
         name = "unpack";
@@ -207,19 +205,14 @@ in
           ''
             make install
             test -f "$out/lib/libapparmor.so"
-
-            mkdir -p "$python/lib" "$perl/lib"
-            mv "$out/lib/python3.14" "$python/lib/"
-            mv "$out/lib/perl5" "$out/lib/site_perl" "$perl/lib/"
-
-            python_path=$(find "$python" -type d -name site-packages -print -quit)
+            python_path=$(find "$out" -type d -name site-packages -print -quit)
             test -n "$python_path"
             PYTHONPATH="$python_path" ${python3}/bin/python3 -c 'import LibAppArmor'
           ''
           + (
             if stdenv.isCross
             then ''
-              perl_path=$(find "$perl" -type f -name LibAppArmor.pm -print -quit)
+              perl_path=$(find "$out" -type f -name LibAppArmor.pm -print -quit)
               test -n "$perl_path"
               PERL5LIB="''${perl_path%/*}" ${perl}/bin/perl -MLibAppArmor -e 1
             ''

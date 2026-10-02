@@ -8,11 +8,13 @@
   zfs,
   coreutils,
   grep,
+  mariadb,
+  postgresql,
   service-management,
   storage-interface,
 }: let
   version = "0.3.6";
-  runtimePath = "${zfs}/bin:${zfs}/sbin:${coreutils}/bin";
+  runtimePath = "${zfs}/bin:${zfs}/sbin:${coreutils}/bin:${mariadb}/bin:${postgresql}/bin";
 in
   mkDerivation {
     platformSupport = {
@@ -92,7 +94,7 @@ in
     };
 
     buildDeps = [];
-    runtimeDeps = [ruby zfs coreutils];
+    runtimeDeps = [ruby zfs coreutils mariadb postgresql];
     propagatedDeps = [];
 
     module = ./_zfstools;
@@ -122,8 +124,9 @@ in
           ''}chmod 0755 "$script"
           done
 
-          # Database-aware snapshots can add client paths through the separate
-          # zfstools-db package without retaining them in the core package.
+          # The upstream library intentionally invokes the ZFS and optional
+          # database clients by name. Give those subprocesses an exact,
+          # source-built runtime path without relying on a global environment.
           sed -i "2iENV['PATH'] = '${runtimePath}:' + ENV.fetch('PATH', String.new)" \
             "$out/lib/zfstools.rb"
 

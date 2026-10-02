@@ -82,7 +82,8 @@ in
   k3s-control-plane = common // {
     role = "control-plane";
     description = "Lightweight Kubernetes control plane without an agent";
-    command = "server --disable-agent";
+    # Agentless servers reach webhooks and aggregated APIs through worker tunnels.
+    command = "server --disable-agent --egress-selector-mode=cluster";
     stateDirectories = [ "rancher/k3s" ];
     hostPaths = serverHostPaths;
     ingressEndpoints = [
