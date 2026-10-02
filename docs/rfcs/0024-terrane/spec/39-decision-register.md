@@ -1691,6 +1691,29 @@ is added rather than editing history.
     unchanged. This additive correction precedes T1's initial encoding freeze
     and does not qualify complete golden coverage or native publication.
 
+- **[D-94] Publish complete modern Commit and ref field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 33 complete Commit, eight RefRecord, ten RefLogRecord
+    and 96 independently constructed structural rejection witnesses. Include
+    optional fields, registered recipe alternatives, complete token/context
+    metadata, snapshot annotations, CAS expectations and retained predecessors.
+    Only complete positive Commit records receive immutable identities.
+    Publish exact unsigned Commit and annotation preimages without assigning
+    content identities to mutable records, preimages or malformed inputs.
+  - **Rationale:** TEST-2 requires vectors for implemented formats. Independent
+    primitive CBOR tables reproduce complete wires and preimages; separately
+    constructed public models compare every decoded field. The graft witness
+    contains the actual canonical Tree target and independently compares its
+    complete typed recipe. Exact bounded reference comparison rejects missing,
+    duplicate, split, tampered and whitespace-altered sections. Signature,
+    token, context and selector fields remain unverified data; structural
+    comparison establishes no signed authority, backend state or publication.
+  - **Affects:** TEST-1 to TEST-3, REF-9, REF-20, PROV-1, PROV-3 and the
+    golden-vector reference. Requirement IDs, schemas, identity domains and
+    every prior reference byte remain unchanged. This additive correction
+    precedes T1's initial encoding freeze and does not qualify the complete
+    corpus, policy verification or native ref operations.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**

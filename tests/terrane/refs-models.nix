@@ -25,10 +25,9 @@ in
     reference_binary="$CARGO_TARGET_DIR/debug/examples/reference_blake3"
     python3 ../tests/terrane/refs_vectors.py --self-check \
       --blake3-bin "$reference_binary" > "$out/reference-result"
-    python3 ../tests/terrane/refs_vectors.py --emit \
-      --blake3-bin "$reference_binary" > ../tests/terrane/refs-reference.md
-    python3 ../tests/terrane/refs_vectors.py --check ../tests/terrane/refs-reference.md \
+    python3 ../tests/terrane/refs_vectors.py --check ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md \
       --blake3-bin "$reference_binary" >> "$out/reference-result"
+    cp ../docs/rfcs/0024-terrane/spec/reference/golden-vectors.md ../tests/terrane/refs-reference.md
     cp ../tests/terrane/refs-reference.md "$out/reference.md"
     cp ../tests/terrane/refs-models.rs terrane-core/tests/refs_vectors.rs
     cp -r ../tests/terrane/refs_models terrane-core/tests/refs_models

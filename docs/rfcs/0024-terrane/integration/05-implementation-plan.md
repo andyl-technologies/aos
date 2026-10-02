@@ -606,6 +606,15 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   and supplies that published input to every consumer. Qualification against
   that published source remains pending; complete corpus and native gates stay
   open, with no task tick or formal merge.
+  The D-93 consumer now passes the actual published-input auxiliary: five exact
+  groups, strict template Clippy and mandatory formats. Its entire output
+  reference matches the normative golden file; all seven reviewed input blobs
+  remain unchanged across the merge-preserving rebase.
+  D-94 publishes all 147 complete modern Commit/ref witnesses. Independent
+  reproduction preserves every preceding golden byte and all witness wires.
+  The REF-9 citation correction passes source-built comparison, four auxiliary
+  groups and mandatory formats. The shared harness now checks and consumes
+  the normative whole reference. Published-input qualification remains pending.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
