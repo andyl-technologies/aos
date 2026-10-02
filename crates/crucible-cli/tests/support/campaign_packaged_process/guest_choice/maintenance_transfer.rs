@@ -179,7 +179,7 @@ fn public_active_pause_restart_and_executable_transfer_rejects_incompatible_prov
         &incompatible_deployment,
         &alternate_qemu,
         &alternate_plugin,
-        false,
+        FlightDiagnostics::Disabled,
     )
     .err()
     .ok_or("incompatible packaged recipient unexpectedly started")?;

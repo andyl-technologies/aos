@@ -52,6 +52,7 @@ use super::{
     worker_quiescence::LiveWorkerQuiescence,
 };
 
+mod control_callback_witness;
 mod devices;
 mod error;
 mod fingerprint_worker;
@@ -818,6 +819,7 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     fault_command_pump_active: AtomicBool,
     control_boundary_dispatch_generation: AtomicU32,
     control_boundary_defer_diagnostic_generation: AtomicU64,
+    control_callback_witness: control_callback_witness::ControlCallbackWitness,
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     logical_restore_continuation_generation: AtomicU32,
@@ -1225,6 +1227,7 @@ impl LiveVcpuTimeCallbackState {
             fault_command_pump_active: AtomicBool::new(false),
             control_boundary_dispatch_generation: AtomicU32::new(u32::MAX),
             control_boundary_defer_diagnostic_generation: AtomicU64::new(u64::MAX),
+            control_callback_witness: control_callback_witness::ControlCallbackWitness::from_env(),
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             logical_restore_continuation_generation: AtomicU32::new(0),
@@ -1241,8 +1244,18 @@ impl LiveVcpuTimeCallbackState {
     }
 
     fn callback_guard(&self) -> Option<LiveCallbackInFlight> {
-        let in_flight = self.quiescence.enter()?;
+        self.callback_guard_with_rejection(|_| {})
+    }
+
+    fn callback_guard_with_rejection(
+        &self,
+        mut rejected: impl FnMut(control_callback_witness::Rejection),
+    ) -> Option<LiveCallbackInFlight> {
+        let in_flight = self.quiescence.enter_with_rejection(|observation| {
+            rejected(control_callback_witness::Rejection::Admission(observation));
+        })?;
         if PluginShmemOrdering::observe_shutdown_requested(self.header.get()) {
+            rejected(control_callback_witness::Rejection::SharedShutdown);
             if let Err(error) = self.signal_shared_shutdown() {
                 abort_live_callback(error);
             }
@@ -2806,12 +2819,7 @@ pub(crate) extern "C" fn crucible_qemu_plugin_live_control_boundary_cb(
     userdata: *mut c_void,
 ) {
     let state = callback_userdata_or_abort(userdata);
-    let Some(_in_flight) = state.callback_guard() else {
-        return;
-    };
-    if let Err(error) = state.on_control_boundary(raw_icount) {
-        abort_live_callback(error);
-    }
+    state.control_callback_with_witness(raw_icount);
 }
 
 pub(crate) extern "C" fn crucible_qemu_plugin_live_max_advance_icount_cb(

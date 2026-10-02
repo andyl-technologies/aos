@@ -681,7 +681,14 @@ fn start_packaged_service(
     let deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
     let qemu = required_path("CRUCIBLE_FLIGHT_QEMU")?;
     let plugin = required_path("CRUCIBLE_FLIGHT_PLUGIN")?;
-    start_packaged_service_with_artifacts(fixture, authority, &deployment, &qemu, &plugin, false)
+    start_packaged_service_with_artifacts(
+        fixture,
+        authority,
+        &deployment,
+        &qemu,
+        &plugin,
+        FlightDiagnostics::Disabled,
+    )
 }
 
 pub(super) fn start_materialization_flight_service(
@@ -693,7 +700,58 @@ pub(super) fn start_materialization_flight_service(
     let deployment = hot_fork_deployment.unwrap_or(&default_deployment);
     let qemu = required_path("CRUCIBLE_FLIGHT_QEMU")?;
     let plugin = required_path("CRUCIBLE_FLIGHT_PLUGIN")?;
-    start_packaged_service_with_artifacts(fixture, authority, deployment, &qemu, &plugin, true)
+    start_packaged_service_with_artifacts(
+        fixture,
+        authority,
+        deployment,
+        &qemu,
+        &plugin,
+        FlightDiagnostics::Materialization,
+    )
+}
+
+pub(super) fn start_callback_witness_flight_service(
+    fixture: &FlightFixture,
+    authority: &Path,
+    hot_fork_deployment: Option<&Path>,
+) -> Result<CampaignServiceChild, Box<dyn Error>> {
+    let default_deployment = required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?;
+    let deployment = hot_fork_deployment.unwrap_or(&default_deployment);
+    let qemu = required_path("CRUCIBLE_FLIGHT_QEMU")?;
+    let plugin = required_path("CRUCIBLE_FLIGHT_PLUGIN")?;
+    start_packaged_service_with_artifacts(
+        fixture,
+        authority,
+        deployment,
+        &qemu,
+        &plugin,
+        FlightDiagnostics::ControlCallback,
+    )
+}
+
+enum FlightDiagnostics {
+    Disabled,
+    Materialization,
+    ControlCallback,
+}
+
+pub(super) fn report_recent_control_callback_witness(service: &CampaignServiceChild) {
+    // These flights retain the last 32 compact records even after many token
+    // epochs or large serialized progress records. Reader failures cannot
+    // replace the original execution failure.
+    match service.stderr_recent_lines_with_prefix("CRUCIBLE-CONTROL-CALLBACK-V1 ", 32, 256) {
+        Ok(records) => {
+            for record in records {
+                let _write_result = writeln!(std::io::stderr().lock(), "{record}");
+            }
+        }
+        Err(error) => {
+            let _write_result = writeln!(
+                std::io::stderr().lock(),
+                "control callback witness unavailable: {error}"
+            );
+        }
+    }
 }
 
 fn start_packaged_service_with_artifacts(
@@ -702,12 +760,15 @@ fn start_packaged_service_with_artifacts(
     deployment: &Path,
     qemu: &Path,
     plugin: &Path,
-    materialization_diagnostics: bool,
+    diagnostics: FlightDiagnostics,
 ) -> Result<CampaignServiceChild, Box<dyn Error>> {
     let executor_socket = fixture._temporary.path().join("guest-choice-executor.sock");
     let mut invocation = fixture.service_command(None);
-    if materialization_diagnostics {
+    if !matches!(diagnostics, FlightDiagnostics::Disabled) {
         invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "1024");
+    }
+    if matches!(diagnostics, FlightDiagnostics::ControlCallback) {
+        invocation.env("CRUCIBLE_CONTROL_CALLBACK_WITNESS", "1");
     }
     invocation
         .arg("--qemu")

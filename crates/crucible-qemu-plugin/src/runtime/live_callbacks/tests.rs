@@ -178,7 +178,7 @@ fn test_sealed_fingerprint_memfd(seed: u8) -> std::io::Result<File> {
 mod fingerprint_capture;
 use fingerprint_capture::test_clock_deadline_ps;
 
-fn test_live_state(
+pub(super) fn test_live_state(
     plugin_id: QemuPluginId,
     vcpu_count: u32,
     initial_raw_icount: u64,

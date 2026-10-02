@@ -4,6 +4,8 @@
 //! The static initramfs registers real guest choices and reports their selected
 //! values. Its attached small root disk still uses the production writable
 //! overlay, pinned descriptors, credentials, and project quota.
+//! Both flights enable the bounded control callback witness, including the
+//! fork materialization, replay, and restore stages of the second flight.
 
 use super::*;
 use crucible_campaign::AttemptId;
@@ -45,7 +47,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
     let hot_fork = materialization
         .then(|| guest_choice::materialization_flight_deployment(&fixture))
         .transpose()?;
-    let mut service = guest_choice::start_materialization_flight_service(
+    let mut service = guest_choice::start_callback_witness_flight_service(
         &fixture,
         &authority,
         hot_fork.as_deref(),
@@ -99,7 +101,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         stage("retire-fork-source");
         service.stop()?;
         processes.verify_cleanup()?;
-        service = guest_choice::start_materialization_flight_service(&fixture, &authority, None)?;
+        service = guest_choice::start_callback_witness_flight_service(&fixture, &authority, None)?;
         assert_eq!(
             choice_at(&fixture, &selected_recovery, "campaign.retry-quanta")?,
             quanta_choice
@@ -399,7 +401,11 @@ fn wait_with_progress<T>(
             next_progress = Instant::now() + Duration::from_secs(5);
         }
         Ok(None)
-    })?;
+    });
+    if !matches!(observation, Ok(Some(_))) {
+        guest_choice::report_recent_control_callback_witness(service);
+    }
+    let observation = observation?;
     observation.ok_or_else(|| {
         format!(
             "single-guest operational host watchdog expired during {label}; deterministic virtual budget is {VIRTUAL_BUDGET_PS}ps; stderr={}",
