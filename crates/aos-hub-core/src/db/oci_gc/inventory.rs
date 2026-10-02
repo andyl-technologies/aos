@@ -271,7 +271,12 @@ impl Database {
         if now < 0 || limit == 0 || limit > 100 {
             bail!("OCI conditional-delete due selector is invalid");
         }
-        let oldest = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS);
+        // Re-probe once an observation is older than half the planner's
+        // maximum age. The cron period equals that maximum, so treating a
+        // full-age observation as fresh let a tick that ran seconds after its
+        // predecessor skip the binding and leave planning blocked for a
+        // further period.
+        let oldest = now.saturating_sub(super::OCI_GC_MAX_INVENTORY_AGE_SECONDS / 2);
         self.backend
             .query(
                 "SELECT placement.registry_id, placement.id, placement.name,

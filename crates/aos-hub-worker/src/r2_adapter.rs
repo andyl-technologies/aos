@@ -134,12 +134,12 @@ where
         key: &str,
         expected: &SurfaceDeletePrecondition,
     ) -> Result<SurfaceDeleteOutcome> {
-        let expected_etag = expected
+        let supplied_etag = expected
             .etag
             .as_deref()
             .filter(|etag| !etag.is_empty())
             .context("R2 identity-checked deletion requires a strong ETag")?;
-        let expected_etag = strong_if_match_etag(expected_etag)?;
+        let expected_etag = strong_if_match_etag(supplied_etag)?;
 
         let Some(current) = self.head(key).await? else {
             return Ok(SurfaceDeleteOutcome::NotFound);
@@ -155,7 +155,12 @@ where
         }
 
         self.adapter.delete(key).await?;
-        Ok(SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { etag: current_etag })
+        // Acknowledge the identity exactly as the caller supplied it. The R2
+        // read path reports the bare `etag` property while the If-Match form
+        // is quoted, and callers compare the acknowledgement verbatim.
+        Ok(SurfaceDeleteOutcome::ConditionalDeleteAcknowledged {
+            etag: supplied_etag.to_string(),
+        })
     }
 
     /// Lists and validates one raw R2 page.
@@ -474,7 +479,7 @@ mod tests {
         assert!(matches!(
             outcome,
             SurfaceDeleteOutcome::ConditionalDeleteAcknowledged { ref etag }
-                if etag == "\"fixture-etag\""
+                if etag == "fixture-etag"
         ));
         assert_eq!(*present.adapter.calls.borrow(), vec!["head:k", "delete:k"]);
 

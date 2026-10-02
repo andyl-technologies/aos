@@ -2683,6 +2683,14 @@
     "external_effects": false
   },
   {
+    "service": "InstanceService",
+    "method": "TriggerInstanceMaintenance",
+    "exposure": "public",
+    "durability": "durable",
+    "class": { "class": "maintenance_replay" },
+    "external_effects": false
+  },
+  {
     "service": "RegistryConfigurationService",
     "method": "ListChangesets",
     "exposure": "public",

@@ -211,7 +211,10 @@
       "audience": "end-user",
       "cli_families": ["instance"],
       "web_workflows": ["instance-settings"],
-      "methods": ["GetInstanceSettings", "PlanSetInstanceSettings", "SetInstanceSettings"]
+      "web_method_exceptions": [
+        {"method": "TriggerInstanceMaintenance", "reason": "Immediate maintenance scheduling is an explicit operator command used during registry retirement and incident response; the browser observes maintenance results but does not schedule work."}
+      ],
+      "methods": ["GetInstanceSettings", "PlanSetInstanceSettings", "SetInstanceSettings", "TriggerInstanceMaintenance"]
     },
     {
       "service": "RegistryConfigurationService",
