@@ -7,6 +7,11 @@ use crate::selected_bridge::native_guard::disclosure::{
 };
 use crate::store::{InvalidReason, RefStore, StoreErrorKind};
 
+/// Refuses complete signed-candidate mutations before transferring payloads.
+///
+/// # Panics
+/// Panics if genuine fixture setup fails, a mutation never reaches actual source
+/// signing, a malformed candidate publishes, or the unchanged candidate refuses.
 pub(super) async fn reject_signed_mutations() {
     let (source, source_authority, _) = independent_factory("public").await;
     let (destination, destination_authority, _) = independent_factory("public").await;
