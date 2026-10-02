@@ -1543,6 +1543,25 @@ is added rather than editing history.
     existing encoded bytes remain unchanged. This clarification precedes T1's
     initial encoding freeze and creates no verification or publication authority.
 
+- **[D-87] Publish independent collection-record format witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 20 independently encoded golden witnesses for GcLease,
+    GcRoots, GcMark, GcState, Tombstone and IndexGenerationManifest. Include
+    every root reason and phase, absent and explicit-empty generation inputs,
+    proof-context fieldwise order and five explicit negative decoder inputs.
+    Reconstruct membership hints directly from GC-7's registered bit rule.
+  - **Rationale:** TEST-2 requires vectors when a format is implemented, but
+    these existing collection records lacked complete published byte/model
+    witnesses. Independent CBOR primitives avoid using record encoders as
+    their own oracle. Digest fields are ordinary wire models, not proof of
+    authenticated history, checkpoint integrity or current effect authority.
+  - **Affects:** TEST-1 to TEST-3, GC-7, GC-30 and the golden-vector reference.
+    Requirement IDs, schemas, identity domains and existing bytes remain
+    unchanged. These non-content-addressed records receive no immutable
+    descriptor. The additive correction precedes T1's initial format freeze;
+    qualification of this section does not qualify the complete golden corpus
+    or native collection, grace, recovery or physical effects.
+
 ## Open decisions
 
 - **[D-21] Tenancy scope of chunk deduplication.**
