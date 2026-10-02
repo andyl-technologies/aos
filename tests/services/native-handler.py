@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import stat
 import subprocess
@@ -17,6 +18,7 @@ handler_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).pa
 configuration_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file__).parents[2] / "pkgs/system/_aos-configuration-provider/aos_configuration.py"
 configuration_entrypoint = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else configuration_path.parent / "handler.py"
 configuration_wrapper = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+systemd_analyze = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
 configuration_module = importlib.util.module_from_spec(configuration_spec)
 sys.modules["aos_configuration"] = configuration_module
@@ -377,8 +379,85 @@ class NativeHandlerTests(unittest.TestCase):
         value = service()
         value["socket_activation"] = {"sockets": [{"name": "bus", "manager_name": "dbus", "enabled": True, "endpoints": [{"kind": "unix", "path": "/run/dbus/system_bus_socket"}], "mode": "0666", "remove_on_stop": False}]}
         realized = handler_module.realize_service(value)
-        self.assertIn('ListenStream="/run/dbus/system_bus_socket"', realized["units"]["dbus.socket"])
+        self.assertIn('ListenStream=/run/dbus/system_bus_socket', realized["units"]["dbus.socket"])
         self.assertEqual(realized["links"]["sockets.target.wants/dbus.socket"], "../dbus.socket")
+
+    @unittest.skipUnless(systemd_analyze, "pinned systemd-analyze executable not supplied")
+    def test_rendered_socket_units_pass_pinned_manager_parser(self):
+        value = bootstrap_bus()
+        value["lifecycle"]["start"] = [{
+            "executable": {"path": str(systemd_analyze), "arguments": ["--version"]},
+            "ignore_failure": False,
+        }]
+        value["directories"] = {"managed": [{
+            "path": "dbus", "purpose": purpose, "mode": "0755", "retention": "persistent",
+        } for purpose in ("runtime", "state")]}
+        value["socket_activation"]["sockets"][0]["endpoints"] += [
+            {"kind": "unix", "path": "/run/aos-test/socket %literal"},
+            {"kind": "network", "address": "127.0.0.1", "port": 45000, "transport": "tcp"},
+            {"kind": "network", "address": "::1", "port": 45001, "transport": "udp"},
+        ]
+
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            with patch.object(handler_module, "TRUE_EXECUTABLE", str(systemd_analyze)):
+                handler_module.render_services({"dbus": value}, units)
+            vendor_units = systemd_analyze.parent.parent / "lib/systemd/system"
+            environment = dict(os.environ, SYSTEMD_UNIT_PATH=f"{units}:{vendor_units}",
+                               SYSTEMD_LOG_COLOR="0", SYSTEMD_LOG_LEVEL="warning")
+            unit_paths = sorted(str(path) for path in units.iterdir() if path.suffix in {".service", ".socket"})
+
+            verified = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertEqual(verified.returncode, 0, verified.stdout + verified.stderr)
+            self.assertNotIn("Failed to parse", verified.stderr)
+            socket = (units / "dbus.socket").read_text()
+            self.assertIn("ListenStream=/run/dbus/system_bus_socket\n", socket)
+            self.assertIn("ListenStream=/run/aos-test/socket %%literal\n", socket)
+            self.assertIn("ListenStream=127.0.0.1:45000\n", socket)
+            self.assertIn("ListenDatagram=[::1]:45001\n", socket)
+
+            # Reproduce the old Exec-style quoting so this gate must catch it.
+            quoted_lines = []
+            for line in socket.splitlines():
+                if line.startswith(("ListenStream=", "ListenDatagram=")):
+                    key, address = line.split("=", 1)
+                    line = f'{key}="{address}"'
+                quoted_lines.append(line)
+            (units / "dbus.socket").write_text("\n".join(quoted_lines) + "\n")
+
+            rejected = subprocess.run(
+                [str(systemd_analyze), "--man=no", "--generators=no", "verify", *unit_paths],
+                env=environment, capture_output=True, text=True, check=False,
+            )
+
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("Failed to parse address value", rejected.stderr)
+
+    def test_socket_addresses_reject_scalar_injection_and_unrepresentable_suffixes(self):
+        for invalid in (
+            "/run/test\n[Service]", "/run/test\rInjected=yes", "/run/test\0socket",
+            "/run/test\\", "/run/test ",
+        ):
+            with self.subTest(path=invalid):
+                value = bootstrap_bus()
+                value["socket_activation"]["sockets"][0]["endpoints"][0]["path"] = invalid
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
+
+        for invalid in ("127.0.0.1\n[Service]", "::1\rInjected=yes", "127.0.0.1\0"):
+            with self.subTest(address=invalid):
+                value = bootstrap_bus()
+                value["socket_activation"]["sockets"][0]["endpoints"] = [{
+                    "kind": "network", "address": invalid, "port": 45000, "transport": "tcp",
+                }]
+
+                with self.assertRaises(ValueError):
+                    handler_module.realize_service(value)
 
     def test_pending_configuration_can_reconcile_after_crash(self):
         with tempfile.TemporaryDirectory() as root:
