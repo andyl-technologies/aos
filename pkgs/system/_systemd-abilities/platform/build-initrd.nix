@@ -107,7 +107,7 @@
     pkgs = buildContext.packageSet.buildPackages;
   };
   registration = closureInfoFor {
-    rootPaths = lib.unique (initrdRuntimeRoots ++ [builtins.toString initrdUnits]);
+    rootPaths = lib.unique (initrdRuntimeRoots ++ [(builtins.toString initrdUnits)]);
     pname = "aos-initrd-native-registration";
   };
   handoff = let
