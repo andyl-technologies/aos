@@ -58,7 +58,7 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         materialization,
         "guest-discovery",
     )?;
-    assert_eq!(discovered["observation"]["stop"], "reached:next-choice");
+    require_bounded_boundary(&discovered, "next-choice")?;
     if materialization {
         guest_choice::assert_materialization_tier(
             &guest_choice::capture_materialization_events(&service)?,
@@ -123,14 +123,14 @@ fn run_single_guest(materialization: bool) -> Result<(), Box<dyn Error>> {
         "selected-guest-result",
     )?;
     assert_eq!(selection["selection"]["value"], "u64:7");
-    assert_eq!(
-        selection["observation"]["stop"],
+    require_bounded_boundary(
+        &selection,
         if materialization {
-            "reached:boundary:single.selected"
+            "boundary:single.selected"
         } else {
-            "reached:boundary:single.complete"
-        }
-    );
+            "boundary:single.complete"
+        },
+    )?;
     println!("single_guest_selected_result={SELECTED_MARKER}");
 
     if materialization {
@@ -318,10 +318,7 @@ fn capture_and_restore(
     assert_eq!(restored["runtime"]["origin"], "selected-savepoint");
     assert_eq!(restored["runtime"]["origin_checkpoint"], checkpoint);
     assert_eq!(restored["runtime"]["source_request"], request);
-    assert_eq!(
-        restored["observation"]["stop"],
-        "reached:boundary:single.complete"
-    );
+    require_bounded_boundary(&restored, "boundary:single.complete")?;
     guest_choice::assert_materialization_tier(
         &guest_choice::capture_materialization_events(service)?,
         continuation,
@@ -412,11 +409,78 @@ fn first_execution_failure(stderr: &str) -> Option<&str> {
         .find(|line| line.starts_with("packaged campaign execution ") && line.contains(" failed:"))
 }
 
+// The virtual policy wraps each primary stop in a proof-bearing outcome.
+fn require_bounded_boundary(report: &Value, primary: &str) -> Result<(), Box<dyn Error>> {
+    let stop = json_string(&report["observation"], "stop")?;
+    let (frontier, quanta) = bounded_boundary_progress(&stop, primary).ok_or_else(|| {
+        format!("expected successful bounded {primary} with valid progress before {VIRTUAL_BUDGET_PS}ps; observed {stop}")
+    })?;
+    eprintln!(
+        "single_guest_boundary primary={primary} frontier_ps={frontier} completed_quanta={quanta}"
+    );
+    Ok(())
+}
+
+fn bounded_boundary_progress(stop: &str, primary: &str) -> Option<(u64, u64)> {
+    let prefix = format!("bounded-primary-reached:{primary}:frontier-ps=");
+    let (frontier, quanta) = stop.strip_prefix(&prefix)?.split_once(":quanta=")?;
+    let canonical_integer = |value: &str| {
+        let parsed = value.parse::<u64>().ok()?;
+        (parsed.to_string() == value).then_some(parsed)
+    };
+    let frontier = canonical_integer(frontier)?;
+    let quanta = canonical_integer(quanta)?;
+    (frontier > 0 && frontier < VIRTUAL_BUDGET_PS && quanta > 0).then_some((frontier, quanta))
+}
+
 fn stage(label: &str) {
     eprintln!(
         "single_guest_stage={label} deterministic_virtual_budget_ps={VIRTUAL_BUDGET_PS} operational_host_watchdog_s={}",
         HOST_WATCHDOG.as_secs()
     );
+}
+
+#[test]
+fn bounded_boundary_success_preserves_primary_and_physical_progress() {
+    for primary in [
+        "next-choice",
+        "boundary:single.selected",
+        "boundary:single.complete",
+    ] {
+        let stop =
+            format!("bounded-primary-reached:{primary}:frontier-ps=553189141800:quanta=2213");
+        assert_eq!(
+            bounded_boundary_progress(&stop, primary),
+            Some((553_189_141_800, 2213))
+        );
+    }
+}
+
+#[test]
+fn bounded_boundary_rejects_timeouts_wrong_primary_and_invalid_progress() {
+    for stop in [
+        "reached:next-choice",
+        "bounded-primary-timeout:next-choice:frontier-ps=1:quanta=1",
+        "policy-timeout:VirtualTime:next-choice:frontier-ps=1:quanta=1",
+        "bounded-primary-reached:boundary:single.complete:frontier-ps=1:quanta=1",
+        "bounded-primary-reached:next-choice:frontier-ps=1",
+        "bounded-primary-reached:next-choice:frontier-ps=:quanta=1",
+        "bounded-primary-reached:next-choice:frontier-ps=1:quanta=",
+        "bounded-primary-reached:next-choice:frontier-ps=+1:quanta=1",
+        "bounded-primary-reached:next-choice:frontier-ps=01:quanta=1",
+        "bounded-primary-reached:next-choice:frontier-ps=0:quanta=1",
+        "bounded-primary-reached:next-choice:frontier-ps=1:quanta=0",
+        "bounded-primary-reached:next-choice:frontier-ps=2000000000000:quanta=1",
+        "bounded-primary-reached:next-choice:frontier-ps=18446744073709551616:quanta=1",
+        "bounded-primary-reached:next-choice:frontier-ps=1:quanta=18446744073709551616",
+        "bounded-primary-reached:next-choice:frontier-ps=1:quanta=1:extra=1",
+    ] {
+        assert_eq!(
+            bounded_boundary_progress(stop, "next-choice"),
+            None,
+            "{stop}"
+        );
+    }
 }
 
 #[test]
