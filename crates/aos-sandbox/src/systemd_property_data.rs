@@ -7,6 +7,7 @@
 //! ```text
 //! SELinuxContext: (false, string)
 //! ExecStart:      [(string, array, false, u64, u64, u64, u64, u32, i32, i32)]
+//! OpenFile:       two (string path, string name, u64 readonly=1) entries
 //! InvocationID:   array -> sixteen converted u8 values, not all zero
 //! ```
 
@@ -22,6 +23,49 @@ pub(crate) fn explicit_context(value: &OwnedValue) -> Option<&str> {
     };
 
     Some(context.as_str())
+}
+
+/// Checks two exact readonly path/name pairs and empty string-typed extras.
+///
+/// The caller supplies both roles; no path normalization or authority is added.
+pub(crate) fn exact_readonly_open_file_pair(
+    open_files: &OwnedValue,
+    extras: &OwnedValue,
+    expected: [(&str, &str); 2],
+) -> bool {
+    let Value::Array(open_files) = &**open_files else {
+        return false;
+    };
+    let Value::Array(extras) = &**extras else {
+        return false;
+    };
+    if open_files.len() != 2
+        || !extras.is_empty()
+        || extras.element_signature() != Value::from("").value_signature()
+    {
+        return false;
+    }
+
+    let mut found = [false; 2];
+    for entry in open_files.inner() {
+        let Value::Structure(entry) = entry else {
+            return false;
+        };
+        let [Value::Str(path), Value::Str(name), Value::U64(1)] = entry.fields() else {
+            return false;
+        };
+        let slot = match (path.as_str(), name.as_str()) {
+            pair if pair == expected[0] => 0,
+            pair if pair == expected[1] => 1,
+            _ => return false,
+        };
+        if found[slot] {
+            return false;
+        }
+        found[slot] = true;
+    }
+
+    found == [true; 2]
 }
 
 /// Borrows one command's DATA; no field establishes an image or process role.
@@ -102,6 +146,82 @@ mod tests {
             0_i32,
             0_i32,
         )
+    }
+
+    #[test]
+    fn readonly_pair_is_order_independent_and_requires_both_distinct_slots() {
+        let expected = [("/raw/first", "left"), ("/raw/second", "right")];
+        let first = ("/raw/first", "left", 1_u64);
+        let second = ("/raw/second", "right", 1_u64);
+        let extras = value(Vec::<String>::new());
+
+        for entries in [vec![first, second], vec![second, first]] {
+            assert!(exact_readonly_open_file_pair(
+                &value(entries), &extras, expected,
+            ));
+        }
+        for entries in [
+            vec![],
+            vec![first],
+            vec![first, first],
+            vec![first, second, second],
+            vec![first, ("/raw/second", "foreign", 1)],
+            vec![("/raw//first", "left", 1), second],
+            vec![("/raw/first", "left", 3), second],
+        ] {
+            assert!(!exact_readonly_open_file_pair(
+                &value(entries), &extras, expected,
+            ));
+        }
+        assert!(!exact_readonly_open_file_pair(
+            &value(vec![first, first]),
+            &extras,
+            [expected[0]; 2],
+        ));
+    }
+
+    #[test]
+    fn readonly_pair_preserves_exact_field_and_empty_extras_types() {
+        let expected = [("/raw/first", "left"), ("/raw/second", "right")];
+        let files = value(vec![
+            ("/raw/first", "left", 1_u64),
+            ("/raw/second", "right", 1_u64),
+        ]);
+        let extras = value(Vec::<String>::new());
+
+        for malformed_extras in [
+            value(Vec::<u64>::new()),
+            value(vec!["extra"]),
+            OwnedValue::from(false),
+            value(Value::new(Value::from(Vec::<String>::new()))),
+        ] {
+            assert!(!exact_readonly_open_file_pair(
+                &files, &malformed_extras, expected,
+            ));
+        }
+        for malformed_files in [
+            OwnedValue::from(false),
+            value(Value::new(Value::from(vec![
+                ("/raw/first", "left", 1_u64),
+                ("/raw/second", "right", 1_u64),
+            ]))),
+            value(vec![
+                ("/raw/first", "left", 1_u32),
+                ("/raw/second", "right", 1_u32),
+            ]),
+            value(vec![
+                (Value::new(Value::from("/raw/first")), "left", 1_u64),
+                (Value::new(Value::from("/raw/second")), "right", 1_u64),
+            ]),
+            value(vec![
+                ("/raw/first", "left", 1_u64, "extra"),
+                ("/raw/second", "right", 1_u64, "extra"),
+            ]),
+        ] {
+            assert!(!exact_readonly_open_file_pair(
+                &malformed_files, &extras, expected,
+            ));
+        }
     }
 
     #[test]
