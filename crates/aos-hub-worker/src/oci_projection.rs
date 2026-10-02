@@ -91,16 +91,23 @@ pub(crate) async fn fetch(mut request: Request, env: &Env) -> worker::Result<Res
 
 async fn relay(request: &mut Request, env: &Env) -> Result<Response> {
     let (lookup, body, signature) = authenticate(request, env).await?;
-    if let aos_hub_core::oci_projection::OciProjectionSource::External { original, .. } = &lookup.source {
+    if let aos_hub_core::oci_projection::OciProjectionSource::External { original, .. } =
+        &lookup.source
+    {
         let headers = Headers::new();
         headers.set(OCI_PROJECTION_SIGNATURE_HEADER, &signature)?;
         let mut init = RequestInit::new();
-        init.with_method(Method::Post).with_headers(headers)
+        init.with_method(Method::Post)
+            .with_headers(headers)
             .with_body(Some(js_sys::Uint8Array::from(body.as_slice()).into()));
-        return Ok(env.durable_object("EXTERNAL_OBJECT_GUARD")?
-            .id_from_name(&original.scope.guard_name()?)?.get_stub()?
+        return Ok(env
+            .durable_object("EXTERNAL_OBJECT_GUARD")?
+            .id_from_name(&original.scope.guard_name()?)?
+            .get_stub()?
             .fetch_with_request(Request::new_with_init(
-                &format!("https://physical-guard{PHYSICAL_PATH}"), &init)?)
+                &format!("https://physical-guard{PHYSICAL_PATH}"),
+                &init,
+            )?)
             .await?);
     }
     let address = format!(
@@ -163,7 +170,10 @@ async fn physical_reply(
         lookup.key == key,
         "OCI projection addressed another physical guard"
     );
-    ensure!(lookup.source.is_managed(), "external OCI source requires its own physical guard");
+    ensure!(
+        lookup.source.is_managed(),
+        "external OCI source requires its own physical guard"
+    );
     let storage = guard.state.storage();
     crate::direct_guard::deny_legacy(&storage).await?;
     crate::mirror_import::runtime::deny_other_owner(&storage).await?;
