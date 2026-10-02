@@ -323,10 +323,15 @@
           "aarch64-linux" = "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS";
         };
         mkDevShell = name: packages: let
+          livePackageRuntime = name == "aos-cargo-dev";
           binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
         in
           builtins.derivation {
-            inherit (configurationLowerCargoEnv) AOS_MKFS_EROFS AOS_FSCK_EROFS AOS_MOUNT AOS_UMOUNT AOS_PACKAGE_RUNTIME;
+            inherit (configurationLowerCargoEnv) AOS_MKFS_EROFS AOS_FSCK_EROFS AOS_MOUNT AOS_UMOUNT;
+            AOS_PACKAGE_RUNTIME =
+              if livePackageRuntime
+              then ""
+              else configurationLowerCargoEnv.AOS_PACKAGE_RUNTIME;
             inherit name system;
             outputs = ["out"];
             builder = "${aos.pkgs.bash}/bin/bash";
@@ -355,6 +360,10 @@
                   fi
                   unset aos_dev_checkout
                 fi
+                ${aos.lib.optionalString livePackageRuntime ''
+                  # Cargo-first development uses the local binary built by the caller.
+                  export AOS_PACKAGE_RUNTIME="$(${aos.pkgs.coreutils}/bin/realpath -m -- "''${CARGO_TARGET_DIR:-$AOS_DEV_ROOT/crates/target}/debug/aos-package-runtime")"
+                ''}
                 export NIX_CONFIG="''${NIX_CONFIG:+$NIX_CONFIG
                 }${devNixConfig.text}"
                 export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
