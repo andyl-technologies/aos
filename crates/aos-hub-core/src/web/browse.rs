@@ -54,6 +54,16 @@
 //! **public-only**: they pass no auth to [`RpcService`] (neither session cookie
 //! nor bearer), so only `public` registries resolve and everything else is a
 //! `404` — the same shape the Worker served before.
+//!
+//! # Delivery status
+//!
+//! The exact control authority renders every visible registry, including ones
+//! its host does not deliver. When the route dispatcher admits a request to
+//! the control-plane router it attaches the host's enabled routes as a
+//! [`HostRoutes`]; the hub home then badges registries without a ready route
+//! on this host, and the registry home explains why (see
+//! [`host_delivery`](crate::web::host_delivery)). Content negotiation keeps a
+//! registry with no enabled route on this host a `404` for machine clients.
 
 use crate::clock::Instant;
 
@@ -68,6 +78,7 @@ use crate::service::RpcService;
 use crate::web::browse_pages as pages;
 use crate::web::console::handlers::resolved_client_ip;
 use crate::web::console_render::SessionIndicator;
+use crate::web::host_delivery::{self, HostRoutes};
 use crate::web::session;
 
 /// The outcome of a browse handler: an HTML page, a JSON document, a redirect,
@@ -550,7 +561,15 @@ const HOME_RESOLVE_FANOUT: usize = 16;
 /// Anonymous and expensive (it scans and visibility-filters every registry), so
 /// it is rate-limited per IP. Renders the rich, branded, session-aware instance
 /// home; a read failure renders the empty list rather than erroring.
-pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) -> Rendered {
+///
+/// `host_routes` is the route dispatcher's view of the request host. When it
+/// is present, registries that host does not deliver are marked in the list.
+pub async fn home(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    query: &BrowseQuery,
+    host_routes: Option<&HostRoutes>,
+) -> Rendered {
     if let Some(limited) = browse_rate_limited(svc, headers).await {
         return limited;
     }
@@ -583,6 +602,7 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
                     query.page_number(),
                     started,
                     &session,
+                    host_routes,
                 ));
             }
         }
@@ -616,6 +636,7 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
         query.page_number(),
         started,
         &session,
+        host_routes,
     ))
 }
 
@@ -625,13 +646,30 @@ pub async fn home(svc: &RpcService, headers: &HeaderMap, query: &BrowseQuery) ->
 /// (the on-CDN web-surface pointer) via the shared facade, or a `404` when none
 /// is shipped. Otherwise renders the rich registry home with trust anchors,
 /// channels, cache health, the package count, and the setup snippets.
-pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) -> Rendered {
+///
+/// `host_routes` is the route dispatcher's view of the request host, present
+/// when the control-plane router serves the page. A registry with no enabled
+/// route on that host renders with an explanatory delivery notice for
+/// browsers and stays a `404` for machine clients.
+pub async fn registry_home(
+    svc: &RpcService,
+    headers: &HeaderMap,
+    slug: &str,
+    host_routes: Option<&HostRoutes>,
+) -> Rendered {
     // Content negotiation: non-HTML clients get the machine surface index.html.
     // A registry that is absent or not visible to this caller is a 404; a
     // visible registry that ships no `index.html` is a 406 (the request cannot
     // be satisfied in a non-HTML representation), matching the native hub.
     if !accepts_html(headers) {
         if load_visible(svc, headers, slug).await.is_none() {
+            return Rendered::NotFound;
+        }
+        // A host that has no enabled route for this registry does not serve
+        // its machine surface, so a machine client must not learn it exists.
+        let unrouted =
+            host_routes.is_some_and(|routes| routes.delivery(slug).lacks_enabled_route());
+        if unrouted {
             return Rendered::NotFound;
         }
         let auth = auth_header(headers);
@@ -661,6 +699,10 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
     else {
         return Rendered::ServiceUnavailable;
     };
+    let delivery = match host_routes {
+        Some(routes) => host_delivery::registry_delivery(&svc.db, routes, &registry).await,
+        None => None,
+    };
     let caches = resolved_cache_urls(caches);
     let external = svc.registry_setup_url(&registry).await.ok();
     let setup = pages::RegistrySetup::new(&registry, status.as_ref(), external.as_deref(), &caches)
@@ -680,6 +722,7 @@ pub async fn registry_home(svc: &RpcService, headers: &HeaderMap, slug: &str) ->
         can_manage,
         started,
         &session,
+        delivery,
     ))
 }
 
