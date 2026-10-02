@@ -10,7 +10,7 @@ const path = require('node:path');
 
 function acceptanceRegistryServer(
   runtime, socketPath, bindings, namespaceObservation, ociNamespaceObservation,
-  ociAnchorCreation, ociAcceptanceStaging,
+  ociAnchorCreation, ociAcceptanceStaging, publicDocumentCacheObservation,
 ) {
   const parent = lstatSync(path.dirname(socketPath));
   if (!parent.isDirectory() || parent.uid !== process.getuid() || (parent.mode & 0o077)) {
@@ -18,6 +18,7 @@ function acceptanceRegistryServer(
   }
   const sockets = new Set();
   let ociStagingActive = false;
+  let publicCacheActive = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     sockets.add(socket);
     socket.once('close', () => sockets.delete(socket));
@@ -45,6 +46,18 @@ function acceptanceRegistryServer(
         if (request.version === 1 && fields === 'kind,version'
             && request.kind === 'oci-sdk-namespace-readback') {
           socket.end(JSON.stringify(await ociNamespaceObservation()) + '\n');
+          return;
+        }
+        if (request.version === 1 && fields === 'kind,version'
+            && ['public-document-cache-readback', 'public-document-cache-evict'].includes(request.kind)) {
+          if (!publicDocumentCacheObservation) throw new Error('Cache observation is not configured');
+          if (publicCacheActive) throw new Error('Cache observation is already active');
+          publicCacheActive = true;
+          try {
+            socket.end(JSON.stringify(await publicDocumentCacheObservation(request)) + '\n');
+          } finally {
+            publicCacheActive = false;
+          }
           return;
         }
         if (request.version === 1 && request.kind === 'oci-sdk-anchor-create') {
@@ -741,7 +754,7 @@ async function main() {
   const {
     certificatePath, privateKeyPath, queueObservationPath, namespaceObservationPath,
     acceptanceSocketPath, ociSdkNamespaceObservation, ociSdkAnchorEnabled,
-    ociSdkAcceptanceRegistryKey, ...options
+    ociSdkAcceptanceRegistryKey, publicDocumentCacheCase, publicDocumentCacheObserverPath, ...options
   } = JSON.parse(configurationBytes);
   const queueOptions = QueuesOptionsSchema.parse(options);
   if (queueObservationPath && 'maxConcurrentInvocations' in QueueConsumerOptionsSchema.shape) {
@@ -832,6 +845,16 @@ async function main() {
         request => storeOciSdkAcceptance(runtime, { ...options, ociSdkAcceptanceRegistryKey }, request,
           () => observeOciSdkNamespace(runtime, load, options, configurationBytes,
             ociSdkNamespaceObservation, configurationPath)),
+        request => {
+          if (typeof publicDocumentCacheObserverPath !== 'string'
+              || !path.isAbsolute(publicDocumentCacheObserverPath)) {
+            throw new Error('Cache observer requires an explicit installed fixture module');
+          }
+          const observer = ociHashFile(publicDocumentCacheObserverPath, 64 * 1024);
+          const { observePublicDocumentCache } = require(publicDocumentCacheObserverPath);
+          return observePublicDocumentCache(runtime, load, options, configurationBytes,
+            publicDocumentCacheCase, request, observer.sha256);
+        },
       );
       await acceptanceServer.ready;
     }
