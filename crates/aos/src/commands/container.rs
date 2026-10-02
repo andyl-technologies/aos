@@ -617,6 +617,10 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
         !idempotency_key.is_empty() && idempotency_key.len() <= 120,
         "--idempotency-key must contain 1..120 bytes"
     );
+    // A destination under the registry's own slug addresses the registry OCI
+    // namespace of an instance-owned route. Distribution transfers keep the
+    // full wire name; the Hub tracks the registry-local remainder.
+    let (hub_repository, namespace) = split_registry_namespace(reference.repository(), registry);
     let release_bytes = read_release_sidecar(release_path)?;
     let release = ContainerRelease::from_canonical_json(&release_bytes)
         .context("validating signed container release sidecar")?;
@@ -661,7 +665,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
                 );
                 let graph = aos_package::registry::container_stage::prepare_container_stage(
                     release_layout,
-                    reference.repository().as_str(),
+                    hub_repository.as_str(),
                     &release,
                 )?;
                 ensure!(
@@ -806,6 +810,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
             &record.revision,
             &object_directory,
             registry_origin,
+            namespace,
             Some(registry_token),
             &options,
             &mount_from,
@@ -883,7 +888,7 @@ async fn publish(input: PublishInput<'_>, printer: &Printer) -> Result<()> {
     };
     let request = VerifiedPublicationRequest {
         registry: registry.to_string(),
-        repository: reference.repository().clone(),
+        repository: hub_repository,
         release,
         target_kind: target_kind.to_string(),
         target_tag,
@@ -1398,6 +1403,28 @@ fn render_push_result(
         printer.success(&format!("Pushed {source_label} -> {reference}"));
     }
     Ok(())
+}
+
+/// Splits a destination repository into its Hub-local name and the registry
+/// namespace it travels under.
+///
+/// Instance-owned OCI routes serve a registry's repositories beneath the
+/// registry slug, so `acme/containers/aos` pushed to registry `acme/containers`
+/// is the Hub repository `aos` in the `acme/containers` namespace. A
+/// destination outside the slug is the registry-local name itself.
+fn split_registry_namespace<'a>(
+    repository: &RepositoryName,
+    registry: &'a str,
+) -> (RepositoryName, Option<&'a str>) {
+    let local = repository
+        .as_str()
+        .strip_prefix(registry)
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| RepositoryName::parse(rest).ok());
+    match local {
+        Some(local) => (local, Some(registry)),
+        None => (repository.clone(), None),
+    }
 }
 
 fn parse_mount_sources(
@@ -1953,6 +1980,26 @@ mod tests {
     use axum::routing::any;
     use std::sync::Arc;
     use std::sync::Mutex;
+
+    #[test]
+    fn destination_under_the_registry_slug_names_its_namespace() {
+        let wire = RepositoryName::parse("acme/containers/tools/aos").unwrap();
+        let (local, namespace) = split_registry_namespace(&wire, "acme/containers");
+        assert_eq!(local.as_str(), "tools/aos");
+        assert_eq!(namespace, Some("acme/containers"));
+
+        // A bare slug or a different prefix is a registry-local name.
+        let bare = RepositoryName::parse("acme/containers").unwrap();
+        assert_eq!(
+            split_registry_namespace(&bare, "acme/containers"),
+            (bare.clone(), None)
+        );
+        let other = RepositoryName::parse("acme/containers-private/aos").unwrap();
+        assert_eq!(
+            split_registry_namespace(&other, "acme/containers"),
+            (other.clone(), None)
+        );
+    }
 
     struct MockPublicationHook {
         calls: Mutex<Vec<&'static str>>,
