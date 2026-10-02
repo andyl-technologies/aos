@@ -19,6 +19,7 @@ configuration_path = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else Path(__file
 configuration_entrypoint = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else configuration_path.parent / "handler.py"
 configuration_wrapper = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 systemd_analyze = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
+host_activation_input = Path(sys.argv.pop(1)) if len(sys.argv) > 1 else None
 configuration_spec = importlib.util.spec_from_file_location("aos_configuration", configuration_path)
 configuration_module = importlib.util.module_from_spec(configuration_spec)
 sys.modules["aos_configuration"] = configuration_module
@@ -91,6 +92,26 @@ def active_bus_manager(calls):
 
 
 class NativeHandlerTests(unittest.TestCase):
+    def test_host_activator_publishes_mounts_in_the_manager_namespace(self):
+        self.assertIsNotNone(host_activation_input, "requires the actual host activator projection")
+        value = json.loads(host_activation_input.read_text())
+
+        text = handler_module.realize_service(value)["units"]["aos-activate.service"]
+        directives = dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+        self.assertEqual(directives["PrivateTmp"], "no")
+        self.assertEqual(directives["ProtectSystem"], "no")
+        self.assertEqual(directives["ProtectHome"], "no")
+        self.assertEqual(directives["NoNewPrivileges"], "no")
+        for directive in [
+            "PrivateMounts", "RootDirectory", "RootImage", "MountFlags",
+            "BindPaths", "BindReadOnlyPaths", "ReadOnlyPaths", "ReadWritePaths",
+            "InaccessiblePaths", "TemporaryFileSystem", "RuntimeDirectory",
+            "StateDirectory", "CacheDirectory", "LogsDirectory", "ConfigurationDirectory",
+        ]:
+            with self.subTest(directive=directive):
+                self.assertNotIn(directive, directives)
+
     def test_workload_profiles_preserve_master_syscall_filters(self):
         for profile, expected in [
             ("privileged", []),
