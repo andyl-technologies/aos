@@ -407,6 +407,15 @@ where
             pattern: authority.root().display().to_string(),
         }));
     }
+    #[cfg(unix)]
+    guard
+        .check_retained_trust_controls(
+            authority,
+            &mut controls,
+            &terrane_core::gc::publication::evidence::GuardSnapshot::decode(&snapshot)
+                .map_err(|_| invalid())?,
+        )
+        .await?;
     let inputs = consumed.finish()?;
     let registration = crate::guard::consumed_registration(authority);
     for pin in &inputs.controls {
@@ -480,6 +489,15 @@ where
 
     let mut controls = guard
         .hold_original_registration(authority, observed.identity())
+        .await?;
+    #[cfg(unix)]
+    guard
+        .check_retained_trust_controls(
+            authority,
+            &mut controls,
+            &terrane_core::gc::publication::evidence::GuardSnapshot::decode(&snapshot)
+                .map_err(|_| invalid())?,
+        )
         .await?;
     let inputs = consumed.finish()?;
     for pin in &inputs.controls {
