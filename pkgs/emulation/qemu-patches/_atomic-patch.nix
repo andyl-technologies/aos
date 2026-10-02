@@ -6,26 +6,26 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "0c9ed358bd465d5c03a5849d65da86da2cef27aa8f2cf14655c459403284455b";
-  subject = "crucible: preserve native runtime and sealed template admission";
-  body = "Preserve the native graph and descriptor implementation with the\ndeterministic runtime and schemas. Restore ordinary zero-budget execution\nand queue translation invalidation through exclusive CPU work. Retain\nmain-loop physical completion and drain RR queues before guest execution\nor stop acknowledgment while preserving idle timer ordering.\n\nConvert denied service instructions to exact sim ticks with signed-range\nchecks. Version service clock evidence and retain production-body unit\ncoverage for rate, phase, interruption, ordinary mode and refusal paths.\n\nAuthenticate retained native block seals under BQL during OOB template\npreparation. Acquire BQL before the template mutex, retain both through\nadmission and state publication, and preserve inherited BQL ownership.\nKeep all receipt and barrier checks and other template action scopes.";
-  commit = "a3eae68365be5839dd341bbf9829febd418eb097";
-  tree = "415594efada238fc49e0022c54d0b9dce1cb9472";
+  sha256 = "81074f133e21ffb03f0e75adc5e663c48bf724744c8fdbc546fc5f5456b8367b";
+  subject = "crucible: retain native runtime and frozen graph admission";
+  body = "Preserve the native graph and descriptor implementation with the\ndeterministic runtime and schemas. Restore ordinary zero-budget execution\nand queue translation invalidation through exclusive CPU work. Retain\nmain-loop physical completion and drain RR queues before guest execution\nor stop acknowledgment while preserving idle timer ordering.\n\nConvert denied service instructions to exact sim ticks with signed-range\nchecks. Version service clock evidence and retain production-body unit\ncoverage for rate, phase, interruption, ordinary mode and refusal paths.\n\nAuthenticate retained native block seals under BQL during OOB template\npreparation. Acquire BQL before the template mutex, retain both through\nadmission and state publication, and preserve inherited BQL ownership.\nKeep all receipt and barrier checks and other template action scopes.\n\nAllow frozen source-graph capture out of band so retained async admission\ndoes not park QMP dispatch. Take BQL before the template mutex throughout\nnative graph authentication, stopped-epoch checks and receipt publication.";
+  commit = "75246478df138e9b4546450e64bd30750ec751e8";
+  tree = "8c33f4b77208078074ce737bd8e2042bd8e97683";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/native-template-seal-handoff-94";
+  branchRef = "dplecki/frozen-source-graph-capture-95";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "293c9c5f0d2bb0c1dd32a0acb946cbeeb58b64c0ae6c0f2be4863e3e5009fa09";
+  bundleSha256 = "85cfdc9731cf1cd01768b932e2cd7de14ddcc0b17304fdd81a1e605ee78b2401";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
   deterministicAuthorEmail = "dylan@andyl.com";
   deterministicBaseDate = "2001-01-01T00:00:00Z";
-  deterministicPatchDate = "2026-10-01T16:33:32-07:00";
+  deterministicPatchDate = "2026-10-01T17:32:22-07:00";
 
   additionalCapabilities = [
     {
