@@ -675,6 +675,22 @@ Exit gates: `checks.terrane.gates.golden-vectors`,
   remain absent or unqualified. The failing aggregate is retained separately
   from the passing 586-test core qualification. No task branch merges or
   milestone exit follows either narrower result.
+  The D-96 consumer now passes all six exact published-input auxiliary groups,
+  strict consumer Clippy and both mandatory formatters. Its full reference
+  output matches the normative whole file; all nine reviewed input blobs remain
+  unchanged across the rebase. A separate `lineage-reference-models` auxiliary
+  reserves complete ordinary control-pin alternatives, consumed root layers
+  and repeated occurrences, view domains/order, complete used-input summaries,
+  whole source records and independently malformed wire inputs. It fails
+  explicitly while those input templates are absent. These pure formats grant
+  no checked lineage, trusted policy, current authority or native permission.
+  The combined candidate now includes both reviewed D-95/D-96 owning consumers.
+  Its full core build, all 595 Nextest tests with zero skips (run
+  `f54485a1-e9f7-48f0-982c-88d8b1e8bdbc`), strict all-target Clippy,
+  warnings/missing-docs rustdoc and both mandatory formatters pass. All 34
+  temporary inputs were byte-compared after every original stage terminated,
+  then removed or restored exactly. Complete golden and native qualification
+  remain open; this core result advances no task or milestone.
   — satisfies TEST-1 to TEST-4, CRATE-3;
   `checks.terrane.gates.golden-vectors`, `checks.terrane.gates.core-fuzz`.
 - [x] **T-STORE-1** The `ContentStore`, `RefStore`, and `Store` traits,
