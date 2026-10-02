@@ -42,6 +42,7 @@
   bootIdentityReadiness = "aos-boot-identity-guard.service";
   bootStorageUnlockedReadiness = "aos-zfs-unlock.service";
   localFilesystemsReadiness = "local-fs.target";
+  hostStoreReadiness = "aos-host-store-seed.service";
   hostStageReceivedReadiness = "aos-ability-host-receiver.service";
   multiUserReadiness = "multi-user.target";
   service = {
@@ -242,6 +243,22 @@
       };
     logging = substrateLogging;
   };
+  hostStoreSeed =
+    (substrateService {
+      key = "aos-host-store-seed";
+      description = "Hydrate the immutable image store before host verification";
+      dependencies =
+        emptyDependencies
+        // {
+          after = [localFilesystemsReadiness];
+          requires = [localFilesystemsReadiness];
+          before = [hostStageReceivedReadiness];
+          required_by = [hostStageReceivedReadiness];
+          implicit_dependencies = false;
+        };
+      logging = substrateLogging;
+    })
+    // {activationOwner = "image";};
   hostReceiver = handoffService {
     key = "aos-ability-host-receiver";
     description = "Revalidate and receive initrd ability ownership";
@@ -250,8 +267,8 @@
     dependencies =
       emptyDependencies
       // {
-        after = [localFilesystemsReadiness];
-        requires = [localFilesystemsReadiness];
+        after = [localFilesystemsReadiness hostStoreReadiness];
+        requires = [localFilesystemsReadiness hostStoreReadiness];
       };
   };
   hostController = handoffService {
@@ -549,7 +566,7 @@
     etcOverlaySetup
   ];
   handoffInitrdServices = [initrdController initrdHandoffBarrier];
-  handoffHostServices = [hostReceiver hostController];
+  handoffHostServices = [hostStoreSeed hostReceiver hostController];
   handoffPreparationResources =
     builtins.sort
     (left: right: builtins.toJSON left < builtins.toJSON right)

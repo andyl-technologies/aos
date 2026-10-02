@@ -40,8 +40,21 @@
     ];
   };
   guard = "aos-boot-identity-guard.service";
+  hostStoreSeed = config: config.aos.services."boot-preparations.aos-host-store-seed";
+  hostReceiver = kernelHost.aos.services."boot-preparations.aos-ability-host-receiver";
   mountVar = config: config.aos.services."boot-preparations.mount-var";
 in {
+  hostDatabaseBootstrapPrecedesReceiver =
+    (hostStoreSeed kernelHost).enable
+    && (hostStoreSeed kernelHost).activationOwner == "image"
+    && builtins.elem "local-fs.target" (hostStoreSeed kernelHost).dependencies.after
+    && builtins.elem "local-fs.target" (hostStoreSeed kernelHost).dependencies.requires
+    && builtins.elem "aos-ability-host-receiver.service" (hostStoreSeed kernelHost).dependencies.before;
+  hostReceiverRequiresDatabaseBootstrap =
+    builtins.elem "aos-host-store-seed.service" hostReceiver.dependencies.requires
+    && builtins.elem "aos-host-store-seed.service" hostReceiver.dependencies.after;
+  databaseBootstrapIsHostOnly = !(hostStoreSeed kernelInitrd).enable;
+  databaseBootstrapRunsPackageOwnedScript = lib.hasSuffix "/bin/aos-host-store-seed" (builtins.head (hostStoreSeed kernelHost).lifecycle.start).executable.path;
   absentVerificationSchemaIsSafe = !(absentSchema.config ? aos);
   directKernelInitrdMatchesImage = !kernelInitrd.aos.security.verity.enable && !kernelInitrd.aos.boot.substrateServices.verityEnabled;
   directKernelHostMatchesImage = !kernelHost.aos.security.verity.enable && !kernelHost.aos.boot.substrateServices.verityEnabled;

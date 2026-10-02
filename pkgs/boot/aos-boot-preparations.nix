@@ -87,6 +87,8 @@ in
             sed -e 's|@bash@|${bash}|g' \
               -e 's|@package_runtime@|${packageRuntime}|g' \
               -e 's|@util_linux@|${util-linux}|g' \
+              -e 's|@nix@|${nix}|g' \
+              -e 's|@coreutils@|${coreutils}|g' \
               "$source" > "$destination"
             chmod 0555 "$destination"
           done
