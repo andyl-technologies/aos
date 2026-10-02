@@ -11,7 +11,8 @@
 #   nix-build -A systems.server.checks.boot-basics   Run a module check
 #   nix-build -A systems.server.checks.system-boot   Run a system-level check
 #   nix-build -A allChecks                           Run all tests
-#   nix-build -A checks.eval                         Run core evaluation checks
+#   nix-build -A checks.eval-core                    Run fast core evaluation checks
+#   nix-build -A checks.eval                         Run all native evaluation suites
 #   nix-build -A checks.eval-suites.<suite>          Run one deeper evaluation suite
 #
 # Architecture:
@@ -1701,10 +1702,12 @@ in rec {
   # nix-build does not descend through arbitrary nested check attrsets. An
   # explicit list reaches every gate while stopping at derivations, whose
   # passthru attributes are metadata rather than additional checks.
-  allChecks = lib.collect (value: builtins.isAttrs value && lib.isDerivation value) {
-    repository = checks;
-    systems = lib.mapAttrs (_: system: system.checks) discoverSystems;
-  };
+  allChecks = lib.uniqueBy (check: check.drvPath) (
+    lib.collect (value: builtins.isAttrs value && lib.isDerivation value) {
+      repository = checks;
+      systems = lib.mapAttrs (_: system: system.checks) discoverSystems;
+    }
+  );
   packageQualificationCoverage = qualificationPackageCoverageReport;
 
   # Pure, fail-closed release eligibility data. The release coordinator reads
@@ -1835,9 +1838,9 @@ in rec {
       ];
     };
     package-maintenance = import ./tests/packages/maintenance.nix {inherit pkgs lib;};
-    # Keep routine evaluation bounded; the complete ability integration checks
-    # are independent suites below and remain in the full eval layer.
-    eval = pkgs.mkDerivation {
+    # The core remains a quick authoring gate. The public eval aggregate below
+    # also reaches native policy, provider, stage and provenance coverage.
+    eval-core = pkgs.mkDerivation {
       pname = "aos-eval-core-checks";
       version = "0";
       src = null;
@@ -1857,12 +1860,35 @@ in rec {
       ];
     };
     eval-suites = {
-      core = eval;
+      core = eval-core;
       abilities-package-services = ability-suites.package-services;
       abilities-provider-realization = ability-suites.provider-realization;
       abilities-native-resources = ability-suites.native-resources;
       abilities-system-selection = ability-suites.system-selection;
       abilities-system-packages = ability-suites.system-packages;
+      effects = effects;
+      baseline-policy = import ./tests/abilities/baseline-policy.nix {inherit pkgs lib;};
+      config-provenance = configProvenanceChecks.suites;
+      rendered-evaluation = builtins.removeAttrs renderedEvalSuites ["rendered-system"];
+    };
+    eval = pkgs.mkDerivation {
+      pname = "aos-native-evaluation-checks";
+      version = "0";
+      src = null;
+      # Collect leaf suites, stopping at derivations; aliases cannot introduce
+      # recursion or schedule the same check more than once.
+      buildDeps = lib.uniqueBy (check: check.drvPath) (
+        lib.collect (value: builtins.isAttrs value && lib.isDerivation value) eval-suites
+      );
+      phases = [
+        {
+          name = "check";
+          script = ''
+            mkdir -p "$out"
+            echo PASS > "$out/result"
+          '';
+        }
+      ];
     };
     build = let
       toolchain-boundaries = import ./tests/build/toolchain-boundaries.nix {
