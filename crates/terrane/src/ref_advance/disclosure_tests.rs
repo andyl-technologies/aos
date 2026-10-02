@@ -24,6 +24,8 @@ mod coverage;
 #[cfg(unix)]
 mod dictionaries;
 #[cfg(unix)]
+mod domain_scope;
+#[cfg(unix)]
 mod fresh_recovery;
 #[cfg(unix)]
 mod import_controls;
@@ -42,6 +44,12 @@ mod parents;
 mod producers;
 #[cfg(unix)]
 mod raw_kinds;
+
+#[cfg(unix)]
+#[tokio::test]
+async fn disclosure_domain_reference_order_and_dedup_remain_scoped() {
+    domain_scope::preserve_domain_scope().await;
+}
 
 #[cfg(unix)]
 #[tokio::test]
