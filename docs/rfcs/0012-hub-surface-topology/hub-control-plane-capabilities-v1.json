@@ -404,7 +404,6 @@
       "cli_families": ["operation"],
       "web_workflows": ["operations"],
       "web_method_exceptions": [
-        {"method": "GetOperation", "reason": "ListOperations returns complete operation records for the selected scope."},
         {"method": "WatchOperation", "reason": "The browser polls ListOperations so it can recover across navigation and Worker request boundaries."}
       ],
       "methods": ["GetOperation", "ListOperations", "WatchOperation", "CancelOperation", "RetryOperation"]
