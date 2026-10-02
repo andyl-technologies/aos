@@ -5,7 +5,7 @@ use std::os::unix::fs::{FileTypeExt as _, MetadataExt as _, PermissionsExt as _}
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context as _, Result, ensure};
 
 use crate::lower::{Tools, validate};
 use crate::model::Lower;
@@ -59,6 +59,33 @@ fn mounted_at(path: &Path, filesystem: &str, marker: &str) -> Result<bool> {
     }))
 }
 
+// PID 1 makes mounts shared again at switch-root. Only the dedicated staging
+// tmpfs may change propagation; a foreign directory must never affect /run.
+fn prepare_staging_mount(mount: &Path) -> Result<()> {
+    let staging = Path::new("/run/etc");
+    ensure!(
+        fs::symlink_metadata(staging)
+            .context("inspecting /run/etc staging root")?
+            .is_dir(),
+        "OS configuration staging root is not a real directory"
+    );
+    ensure!(
+        mounted_at(staging, "tmpfs", "").context("checking /run/etc staging mount identity")?,
+        "OS configuration staging root is not an exact mounted tmpfs"
+    );
+
+    let status = Command::new(mount)
+        .env_clear()
+        .args(["--make-private", "/run/etc"])
+        .status()
+        .context("isolating /run/etc staging mount")?;
+    ensure!(
+        status.success(),
+        "isolating OS configuration staging mount failed: {status}"
+    );
+    Ok(())
+}
+
 /// Stages and switches the exact native overlay while retaining prior mounts.
 ///
 /// The lower is immutable. A fresh upper/work pair is staged before the mount
@@ -79,6 +106,7 @@ pub fn apply(lower: &Lower, mount: &Path, tools: &Tools) -> Result<()> {
             && Path::new("/run/etc/system/content").is_dir(),
         "image configuration layers are not mounted"
     );
+    prepare_staging_mount(mount)?;
     let (configuration, upper, activation) = paths(lower);
     for path in [
         &configuration,
