@@ -3,9 +3,13 @@
 //! Ancestors are root-owned until ownership transitions to the service UID.
 //! Symlinks, writable ancestors, nonregular files, excess bytes, and changed
 //! file metadata are rejected. No key or certificate bytes appear in errors.
+//!
+//! Ordinary adapters and the closed Controller retaining owner share the same
+//! traversal/read engines. Offline prepare keeps its distinct root-only policy;
+//! the local/resident storage choice does not select or change that policy.
 
 use std::fs::File;
-use std::io::Read as _;
+use std::io::{Read as _, Seek as _, SeekFrom};
 use std::os::fd::OwnedFd;
 use std::os::unix::fs::MetadataExt as _;
 use std::path::{Component, Path, PathBuf};
@@ -444,38 +448,317 @@ impl Credentials {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CredentialFailureClass {
+    Configuration,
+    Stale,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum CredentialOperation {
+    DirectoryOpen,
+    DirectoryMetadata,
+    DirectoryProvenance,
+    FileOpen,
+    FileMetadata,
+    FileProvenance,
+    FileRead,
+    FileSeek,
+    FileChanged,
+    State,
+}
+
+enum CredentialIoCause {
+    Syscall(rustix::io::Errno),
+    File(std::io::Error),
+}
+
+impl From<rustix::io::Errno> for CredentialIoCause {
+    fn from(error: rustix::io::Errno) -> Self {
+        Self::Syscall(error)
+    }
+}
+
+impl From<std::io::Error> for CredentialIoCause {
+    fn from(error: std::io::Error) -> Self {
+        Self::File(error)
+    }
+}
+
+/// Retains the first original I/O cause without changing ordinary error classes.
+pub(crate) struct ControllerNixPublicCredentialErrorV1 {
+    class: CredentialFailureClass,
+    operation: CredentialOperation,
+    io: Option<CredentialIoCause>,
+}
+
+impl ControllerNixPublicCredentialErrorV1 {
+    fn rejected(class: CredentialFailureClass, operation: CredentialOperation) -> Self {
+        Self {
+            class,
+            operation,
+            io: None,
+        }
+    }
+
+    fn io(
+        class: CredentialFailureClass,
+        operation: CredentialOperation,
+        error: impl Into<CredentialIoCause>,
+    ) -> Self {
+        Self {
+            class,
+            operation,
+            io: Some(error.into()),
+        }
+    }
+
+    fn into_legacy(self) -> PublicApiSessionError {
+        match self.class {
+            CredentialFailureClass::Configuration => PublicApiSessionError::Configuration,
+            CredentialFailureClass::Stale => PublicApiSessionError::Stale,
+        }
+    }
+}
+
+impl std::fmt::Debug for ControllerNixPublicCredentialErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ControllerNixPublicCredentialErrorV1")
+            .field("class", &self.class)
+            .field("operation", &self.operation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl std::fmt::Display for ControllerNixPublicCredentialErrorV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "Controller public credential custody failed ({:?})",
+            self.operation,
+        )
+    }
+}
+
+impl std::error::Error for ControllerNixPublicCredentialErrorV1 {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.io {
+            Some(CredentialIoCause::Syscall(error)) => Some(error),
+            Some(CredentialIoCause::File(error)) => Some(error),
+            None => None,
+        }
+    }
+}
+
+type CredentialResult<T> = Result<T, ControllerNixPublicCredentialErrorV1>;
+type DirectoryIdentity = (u64, u64);
+
+struct CredentialDirectorySlot {
+    descriptor: Option<OwnedFd>,
+    identity: Option<DirectoryIdentity>,
+}
+
+struct CredentialAncestors {
+    slots: [CredentialDirectorySlot; 4],
+    count: usize,
+}
+
+impl CredentialAncestors {
+    fn new() -> Self {
+        Self {
+            slots: std::array::from_fn(|_| CredentialDirectorySlot {
+                descriptor: None,
+                identity: None,
+            }),
+            count: 0,
+        }
+    }
+
+    fn directory(&self) -> CredentialResult<&OwnedFd> {
+        self.slots
+            .get(self.count.wrapping_sub(1))
+            .and_then(|slot| slot.descriptor.as_ref())
+            .ok_or_else(credential_state_rejected)
+    }
+}
+
+// This closed choice changes storage only. Ordinary traversal still replaces
+// its current parent at the old assignment; resident traversal keeps every FD.
+enum DirectoryCustody<'owner> {
+    Local(Option<OwnedFd>),
+    Resident(&'owner mut CredentialAncestors),
+}
+
+impl DirectoryCustody<'_> {
+    fn open_root(&mut self, flags: OFlags) -> CredentialResult<()> {
+        let destination = match self {
+            Self::Local(directory) => directory,
+            Self::Resident(ancestors) => {
+                if ancestors.count != 0
+                    || ancestors.slots.iter().any(|slot| slot.descriptor.is_some())
+                {
+                    return Err(credential_state_rejected());
+                }
+                &mut ancestors.slots[0].descriptor
+            }
+        };
+        *destination = Some(open("/", flags, Mode::empty()).map_err(|error| {
+            ControllerNixPublicCredentialErrorV1::io(
+                CredentialFailureClass::Configuration,
+                CredentialOperation::DirectoryOpen,
+                error,
+            )
+        })?);
+        if let Self::Resident(ancestors) = self {
+            ancestors.count = 1;
+        }
+        Ok(())
+    }
+
+    fn directory(&self) -> CredentialResult<&OwnedFd> {
+        match self {
+            Self::Local(directory) => directory.as_ref().ok_or_else(credential_state_rejected),
+            Self::Resident(ancestors) => ancestors.directory(),
+        }
+    }
+
+    fn record_identity(&mut self, stat: &rustix::fs::Stat) {
+        if let Self::Resident(ancestors) = self {
+            // A current descriptor exists only after the corresponding slot
+            // was filled; recording metadata cannot relinquish that original.
+            if let Some(slot) = ancestors.slots.get_mut(ancestors.count.wrapping_sub(1)) {
+                slot.identity = Some((stat.st_dev, stat.st_ino));
+            }
+        }
+    }
+
+    fn open_child(&mut self, name: &std::ffi::OsStr, flags: OFlags) -> CredentialResult<()> {
+        let open_child = |parent: &OwnedFd| {
+            openat(parent, name, flags, Mode::empty()).map_err(|error| {
+                ControllerNixPublicCredentialErrorV1::io(
+                    CredentialFailureClass::Configuration,
+                    CredentialOperation::DirectoryOpen,
+                    error,
+                )
+            })
+        };
+        match self {
+            Self::Local(directory) => {
+                let parent = directory.as_ref().ok_or_else(credential_state_rejected)?;
+                *directory = Some(open_child(parent)?);
+            }
+            Self::Resident(ancestors) => {
+                // Establish both borrows before openat returns ownership. A
+                // full fixed array is rejected before creating another FD.
+                if ancestors.count >= ancestors.slots.len() {
+                    return Err(credential_state_rejected());
+                }
+                let (previous, next) = ancestors.slots.split_at_mut(ancestors.count);
+                let parent = previous
+                    .last()
+                    .and_then(|slot| slot.descriptor.as_ref())
+                    .ok_or_else(credential_state_rejected)?;
+                let destination = next.first_mut().ok_or_else(credential_state_rejected)?;
+                destination.descriptor = Some(open_child(parent)?);
+                ancestors.count += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn credential_state_rejected() -> ControllerNixPublicCredentialErrorV1 {
+    ControllerNixPublicCredentialErrorV1::rejected(
+        CredentialFailureClass::Stale,
+        CredentialOperation::State,
+    )
+}
+
+fn require_credential_ancestor(
+    stat: &rustix::fs::Stat,
+    uid: u32,
+    service_owned: &mut bool,
+) -> CredentialResult<()> {
+    if stat.st_mode & 0o022 != 0
+        || (stat.st_uid != 0 && stat.st_uid != uid)
+        || (*service_owned && stat.st_uid != uid)
+    {
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::DirectoryProvenance,
+        ));
+    }
+    *service_owned |= stat.st_uid == uid;
+    Ok(())
+}
+
+fn require_credential_directory(stat: &rustix::fs::Stat, uid: u32) -> CredentialResult<()> {
+    if stat.st_uid != uid || stat.st_mode & 0o077 != 0 {
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::DirectoryProvenance,
+        ));
+    }
+    Ok(())
+}
+
 fn open_directory(path: &Path, uid: u32) -> Result<OwnedFd, PublicApiSessionError> {
+    let mut custody = DirectoryCustody::Local(None);
+    open_directory_with_custody(path, uid, &mut custody)
+        .map_err(ControllerNixPublicCredentialErrorV1::into_legacy)?;
+    match custody {
+        DirectoryCustody::Local(Some(directory)) => Ok(directory),
+        _ => Err(PublicApiSessionError::Configuration),
+    }
+}
+
+fn open_directory_with_custody(
+    path: &Path,
+    uid: u32,
+    custody: &mut DirectoryCustody<'_>,
+) -> CredentialResult<()> {
     if !path.is_absolute() {
-        return Err(PublicApiSessionError::Configuration);
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::DirectoryProvenance,
+        ));
     }
     let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
-    let mut directory =
-        open("/", flags, Mode::empty()).map_err(|_| PublicApiSessionError::Configuration)?;
+    custody.open_root(flags)?;
     let mut service_owned = false;
     for component in path.components() {
-        let stat =
-            rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Configuration)?;
-        if stat.st_mode & 0o022 != 0
-            || (stat.st_uid != 0 && stat.st_uid != uid)
-            || (service_owned && stat.st_uid != uid)
-        {
-            return Err(PublicApiSessionError::Configuration);
-        }
-        service_owned |= stat.st_uid == uid;
+        let stat = rustix::fs::fstat(custody.directory()?).map_err(|error| {
+            ControllerNixPublicCredentialErrorV1::io(
+                CredentialFailureClass::Configuration,
+                CredentialOperation::DirectoryMetadata,
+                error,
+            )
+        })?;
+        require_credential_ancestor(&stat, uid, &mut service_owned)?;
+        custody.record_identity(&stat);
+
         match component {
             Component::RootDir => continue,
-            Component::Normal(name) => {
-                directory = openat(&directory, name, flags, Mode::empty())
-                    .map_err(|_| PublicApiSessionError::Configuration)?;
+            Component::Normal(name) => custody.open_child(name, flags)?,
+            _ => {
+                return Err(ControllerNixPublicCredentialErrorV1::rejected(
+                    CredentialFailureClass::Configuration,
+                    CredentialOperation::DirectoryProvenance,
+                ));
             }
-            _ => return Err(PublicApiSessionError::Configuration),
         }
     }
-    let stat = rustix::fs::fstat(&directory).map_err(|_| PublicApiSessionError::Configuration)?;
-    if stat.st_uid != uid || stat.st_mode & 0o077 != 0 {
-        return Err(PublicApiSessionError::Configuration);
-    }
-    Ok(directory)
+    let stat = rustix::fs::fstat(custody.directory()?).map_err(|error| {
+        ControllerNixPublicCredentialErrorV1::io(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::DirectoryMetadata,
+            error,
+        )
+    })?;
+    require_credential_directory(&stat, uid)?;
+    custody.record_identity(&stat);
+    Ok(())
 }
 
 fn read_all(
@@ -515,8 +798,54 @@ fn read_optional_one_with_identity(
     uid: u32,
     maximum_bytes: u64,
 ) -> Result<Option<(Zeroizing<Vec<u8>>, CredentialIdentity)>, PublicApiSessionError> {
+    let mut slot = CredentialReadSlot::new();
+    let observed = open_read_credential(directory, name, uid, maximum_bytes, &mut slot)
+        .map_err(ControllerNixPublicCredentialErrorV1::into_legacy)?;
+    match observed {
+        CredentialReadOutcome::Absent(_) => Ok(None),
+        CredentialReadOutcome::Present(identity) => {
+            let bytes = slot.bytes.take().ok_or(PublicApiSessionError::Configuration)?;
+            Ok(Some((bytes, identity)))
+        }
+    }
+}
+
+// Field order preserves the old local error/unwind drop order: any read buffer
+// is destroyed before the File. Resident callers keep this same slot in place.
+struct CredentialReadSlot {
+    bytes: Option<Zeroizing<Vec<u8>>>,
+    file: Option<File>,
+}
+
+impl CredentialReadSlot {
+    fn new() -> Self {
+        Self {
+            bytes: None,
+            file: None,
+        }
+    }
+}
+
+enum CredentialReadOutcome {
+    Absent(rustix::io::Errno),
+    Present(CredentialIdentity),
+}
+
+fn open_read_credential(
+    directory: &OwnedFd,
+    name: &str,
+    uid: u32,
+    maximum_bytes: u64,
+    slot: &mut CredentialReadSlot,
+) -> CredentialResult<CredentialReadOutcome> {
     if maximum_bytes == 0 || maximum_bytes > MAXIMUM_CREDENTIAL_BYTES {
-        return Err(PublicApiSessionError::Configuration);
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::FileProvenance,
+        ));
+    }
+    if slot.file.is_some() || slot.bytes.is_some() {
+        return Err(credential_state_rejected());
     }
     let descriptor = match openat(
         directory,
@@ -525,13 +854,39 @@ fn read_optional_one_with_identity(
         Mode::empty(),
     ) {
         Ok(descriptor) => descriptor,
-        Err(rustix::io::Errno::NOENT) => return Ok(None),
-        Err(_) => return Err(PublicApiSessionError::Configuration),
+        Err(error @ rustix::io::Errno::NOENT) => {
+            return Ok(CredentialReadOutcome::Absent(error));
+        }
+        Err(error) => {
+            return Err(ControllerNixPublicCredentialErrorV1::io(
+                CredentialFailureClass::Configuration,
+                CredentialOperation::FileOpen,
+                error,
+            ));
+        }
     };
-    let mut file = File::from(descriptor);
-    let before = file
-        .metadata()
-        .map_err(|_| PublicApiSessionError::Configuration)?;
+    slot.file = Some(File::from(descriptor));
+    let file = slot.file.as_mut().ok_or_else(credential_state_rejected)?;
+    read_opened_credential(file, &mut slot.bytes, uid, maximum_bytes)
+        .map(CredentialReadOutcome::Present)
+}
+
+fn read_opened_credential(
+    file: &mut File,
+    bytes: &mut Option<Zeroizing<Vec<u8>>>,
+    uid: u32,
+    maximum_bytes: u64,
+) -> CredentialResult<CredentialIdentity> {
+    if bytes.is_some() {
+        return Err(credential_state_rejected());
+    }
+    let before = file.metadata().map_err(|error| {
+        ControllerNixPublicCredentialErrorV1::io(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::FileMetadata,
+            error,
+        )
+    })?;
     if !before.is_file()
         || before.uid() != uid
         || before.mode() & 0o077 != 0
@@ -539,20 +894,38 @@ fn read_optional_one_with_identity(
         || before.len() == 0
         || before.len() > maximum_bytes
     {
-        return Err(PublicApiSessionError::Configuration);
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::FileProvenance,
+        ));
     }
-    let mut bytes = Zeroizing::new(Vec::new());
-    (&mut file)
+
+    *bytes = Some(Zeroizing::new(Vec::new()));
+    let bytes = bytes.as_mut().ok_or_else(credential_state_rejected)?;
+    (&mut *file)
         .take(maximum_bytes + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| PublicApiSessionError::Configuration)?;
-    let after = file
-        .metadata()
-        .map_err(|_| PublicApiSessionError::Configuration)?;
+        .read_to_end(bytes)
+        .map_err(|error| {
+            ControllerNixPublicCredentialErrorV1::io(
+                CredentialFailureClass::Configuration,
+                CredentialOperation::FileRead,
+                error,
+            )
+        })?;
+    let after = file.metadata().map_err(|error| {
+        ControllerNixPublicCredentialErrorV1::io(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::FileMetadata,
+            error,
+        )
+    })?;
     if before.len() != bytes.len() as u64 || identity(&before) != identity(&after) {
-        return Err(PublicApiSessionError::Stale);
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Stale,
+            CredentialOperation::FileChanged,
+        ));
     }
-    Ok(Some((bytes, identity(&after))))
+    Ok(identity(&after))
 }
 
 fn read_optional_exact_one_with_identity(
@@ -585,6 +958,356 @@ fn identity(metadata: &std::fs::Metadata) -> CredentialIdentity {
         metadata.ctime(),
         metadata.ctime_nsec(),
     )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ControllerCredentialPhase {
+    Fresh,
+    Ready,
+    Closed,
+}
+
+struct OriginalControllerCredential {
+    public: Option<PinnedSystemdCredential>,
+    read: CredentialReadSlot,
+}
+
+struct ControllerCredentialReadback {
+    original_bytes: [Option<Zeroizing<Vec<u8>>>; 12],
+    named: [CredentialReadSlot; 12],
+    ancestors: CredentialAncestors,
+}
+
+impl ControllerCredentialReadback {
+    fn new() -> Self {
+        Self {
+            original_bytes: std::array::from_fn(|_| None),
+            named: std::array::from_fn(|_| CredentialReadSlot::new()),
+            ancestors: CredentialAncestors::new(),
+        }
+    }
+}
+
+/// Parks the fixed Controller's twelve public credentials and opened ancestry.
+///
+/// This supplies protected local DATA only, not startup or currentness
+/// authority. Original FDs and partial observations remain resident on failure
+/// or unwind. There is no caller-selected name, path, descriptor or role.
+/// Its future caller must park this owner before capture and keep it resident.
+pub(crate) struct ControllerNixPublicCredentialCustodyV1 {
+    originals: [OriginalControllerCredential; 12],
+    ancestors: CredentialAncestors,
+    readback: ControllerCredentialReadback,
+    uid: Option<u32>,
+    phase: ControllerCredentialPhase,
+    failure: Option<ControllerNixPublicCredentialErrorV1>,
+}
+
+impl std::fmt::Debug for ControllerNixPublicCredentialCustodyV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("ControllerNixPublicCredentialCustodyV1(<resident fixed originals>)")
+    }
+}
+
+impl ControllerNixPublicCredentialCustodyV1 {
+    /// Creates empty fixed slots without opening files or admitting authority.
+    pub(crate) fn new() -> Self {
+        Self {
+            originals: std::array::from_fn(|_| OriginalControllerCredential {
+                public: None,
+                read: CredentialReadSlot::new(),
+            }),
+            ancestors: CredentialAncestors::new(),
+            readback: ControllerCredentialReadback::new(),
+            uid: None,
+            phase: ControllerCredentialPhase::Fresh,
+            failure: None,
+        }
+    }
+
+    /// Captures only the fixed Controller directory and existing twelve names.
+    ///
+    /// # Errors
+    ///
+    /// Returns the resident first typed cause if capture was already attempted,
+    /// custody is unsafe, a read fails, or original/named observations differ.
+    pub(crate) fn capture(&mut self) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Fresh {
+            return self.finish(Err(credential_state_rejected()));
+        }
+
+        // Close before even the UID observation. An unwinding borrowed call
+        // cannot leave a partially captured or interrupted owner Ready.
+        self.phase = ControllerCredentialPhase::Closed;
+        self.uid = Some(rustix::process::geteuid().as_raw());
+        let result = self.capture_originals();
+        self.finish(result)
+    }
+
+    /// Rechecks the same opened originals and their fixed named bindings.
+    ///
+    /// # Errors
+    ///
+    /// Permanently closes on interruption, unsafe/changed custody or I/O error.
+    /// Returns the first resident cause on every subsequent refused call.
+    pub(crate) fn recheck(&mut self) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return self.finish(Err(credential_state_rejected()));
+        }
+
+        self.phase = ControllerCredentialPhase::Closed;
+        // Ready certifies completion of the previous entire readback batch.
+        // Retire only that completed batch, never a failed partial observation
+        // or an original descriptor. This is not physical Drain or settlement.
+        self.readback = ControllerCredentialReadback::new();
+        let result = self.observe_originals();
+        self.finish(result)
+    }
+
+    /// Borrows complete protected public DATA without copying bytes or FDs.
+    ///
+    /// The loan performs no I/O and is not a freshness or authority permit.
+    /// Mutable observation cannot overlap this owner's immutable loan.
+    pub(crate) fn publics(&self) -> Option<[&PinnedSystemdCredential; 12]> {
+        if self.phase != ControllerCredentialPhase::Ready {
+            return None;
+        }
+        Some([
+            self.originals[0].public.as_ref()?,
+            self.originals[1].public.as_ref()?,
+            self.originals[2].public.as_ref()?,
+            self.originals[3].public.as_ref()?,
+            self.originals[4].public.as_ref()?,
+            self.originals[5].public.as_ref()?,
+            self.originals[6].public.as_ref()?,
+            self.originals[7].public.as_ref()?,
+            self.originals[8].public.as_ref()?,
+            self.originals[9].public.as_ref()?,
+            self.originals[10].public.as_ref()?,
+            self.originals[11].public.as_ref()?,
+        ])
+    }
+
+    /// Borrows the first actual cause without displacing retained custody.
+    pub(crate) fn failure(&self) -> Option<&ControllerNixPublicCredentialErrorV1> {
+        self.failure.as_ref()
+    }
+
+    /// Permanently fences this owner without releasing originals or readbacks.
+    pub(crate) fn fence(&mut self) {
+        self.phase = ControllerCredentialPhase::Closed;
+    }
+
+    fn finish(
+        &mut self,
+        result: CredentialResult<()>,
+    ) -> Result<(), &ControllerNixPublicCredentialErrorV1> {
+        match result {
+            Ok(()) => {
+                self.phase = ControllerCredentialPhase::Ready;
+                Ok(())
+            }
+            Err(error) => {
+                self.phase = ControllerCredentialPhase::Closed;
+                Err(self.failure.get_or_insert(error))
+            }
+        }
+    }
+
+    fn capture_originals(&mut self) -> CredentialResult<()> {
+        let uid = self.uid.ok_or_else(credential_state_rejected)?;
+        open_directory_with_custody(
+            Path::new(NIX_CONTROLLER_DIRECTORY),
+            uid,
+            &mut DirectoryCustody::Resident(&mut self.ancestors),
+        )?;
+        let directory = self.ancestors.directory()?;
+        let directory_identity = self.ancestors.slots[3]
+            .identity
+            .ok_or_else(credential_state_rejected)?;
+
+        for (index, name) in NIX_PUBLIC_NAMES.iter().enumerate() {
+            let original = &mut self.originals[index];
+            let observed = open_read_credential(
+                directory,
+                name,
+                uid,
+                MAXIMUM_CREDENTIAL_BYTES,
+                &mut original.read,
+            )?;
+            let file_identity = require_present_credential(observed)?;
+
+            // Allocate the fixed DATA path while the read buffer is still
+            // resident. Once it moves into public, construction is infallible.
+            let path = PathBuf::from(NIX_CONTROLLER_DIRECTORY);
+            let bytes = original.read.bytes.take().ok_or_else(credential_state_rejected)?;
+            original.public = Some(PinnedSystemdCredential {
+                name: *name,
+                path,
+                uid,
+                directory_identity,
+                file_identity,
+                bytes,
+                exact_bytes: None,
+            });
+        }
+        self.observe_originals()
+    }
+
+    fn observe_originals(&mut self) -> CredentialResult<()> {
+        let uid = self.uid.ok_or_else(credential_state_rejected)?;
+        if rustix::process::geteuid().as_raw() != uid {
+            return Err(ControllerNixPublicCredentialErrorV1::rejected(
+                CredentialFailureClass::Stale,
+                CredentialOperation::DirectoryProvenance,
+            ));
+        }
+        recheck_credential_ancestors(&self.ancestors, uid)?;
+        open_directory_with_custody(
+            Path::new(NIX_CONTROLLER_DIRECTORY),
+            uid,
+            &mut DirectoryCustody::Resident(&mut self.readback.ancestors),
+        )?;
+        for (original, named) in self
+            .ancestors
+            .slots
+            .iter()
+            .zip(&self.readback.ancestors.slots)
+        {
+            if original.identity != named.identity {
+                return Err(ControllerNixPublicCredentialErrorV1::rejected(
+                    CredentialFailureClass::Stale,
+                    CredentialOperation::DirectoryProvenance,
+                ));
+            }
+        }
+
+        let directory = self.readback.ancestors.directory()?;
+        for (index, name) in NIX_PUBLIC_NAMES.iter().enumerate() {
+            let original = &mut self.originals[index];
+            let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
+            let file = original.read.file.as_mut().ok_or_else(credential_state_rejected)?;
+            recheck_credential_file(file, public.file_identity)?;
+            file.seek(SeekFrom::Start(0)).map_err(|error| {
+                ControllerNixPublicCredentialErrorV1::io(
+                    CredentialFailureClass::Stale,
+                    CredentialOperation::FileSeek,
+                    error,
+                )
+            })?;
+            let bytes = &mut self.readback.original_bytes[index];
+            let observed = read_opened_credential(file, bytes, uid, MAXIMUM_CREDENTIAL_BYTES)?;
+            if observed != public.file_identity
+                || bytes.as_ref().map(|bytes| bytes.as_slice()) != Some(public.bytes())
+            {
+                return Err(ControllerNixPublicCredentialErrorV1::rejected(
+                    CredentialFailureClass::Stale,
+                    CredentialOperation::FileChanged,
+                ));
+            }
+
+            let named = &mut self.readback.named[index];
+            let observed = require_present_credential(open_read_credential(
+                directory,
+                name,
+                uid,
+                MAXIMUM_CREDENTIAL_BYTES,
+                named,
+            )?)?;
+            if observed != public.file_identity
+                || named.bytes.as_ref().map(|bytes| bytes.as_slice()) != Some(public.bytes())
+            {
+                return Err(ControllerNixPublicCredentialErrorV1::rejected(
+                    CredentialFailureClass::Stale,
+                    CredentialOperation::FileChanged,
+                ));
+            }
+        }
+
+        // These are descriptor bookends of a bounded local observation, not an
+        // atomic filesystem snapshot or external Source/Session currentness.
+        for (original, named) in self.originals.iter().zip(&self.readback.named) {
+            let public = original.public.as_ref().ok_or_else(credential_state_rejected)?;
+            recheck_credential_file(
+                original.read.file.as_ref().ok_or_else(credential_state_rejected)?,
+                public.file_identity,
+            )?;
+            recheck_credential_file(
+                named.file.as_ref().ok_or_else(credential_state_rejected)?,
+                public.file_identity,
+            )?;
+        }
+        recheck_credential_ancestors(&self.ancestors, uid)?;
+        recheck_credential_ancestors(&self.readback.ancestors, uid)?;
+        if rustix::process::geteuid().as_raw() != uid {
+            return Err(ControllerNixPublicCredentialErrorV1::rejected(
+                CredentialFailureClass::Stale,
+                CredentialOperation::DirectoryProvenance,
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn require_present_credential(
+    observed: CredentialReadOutcome,
+) -> CredentialResult<CredentialIdentity> {
+    match observed {
+        CredentialReadOutcome::Present(identity) => Ok(identity),
+        CredentialReadOutcome::Absent(error) => Err(ControllerNixPublicCredentialErrorV1::io(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::FileOpen,
+            error,
+        )),
+    }
+}
+
+fn recheck_credential_file(file: &File, expected: CredentialIdentity) -> CredentialResult<()> {
+    let metadata = file.metadata().map_err(|error| {
+        ControllerNixPublicCredentialErrorV1::io(
+            CredentialFailureClass::Stale,
+            CredentialOperation::FileMetadata,
+            error,
+        )
+    })?;
+    if identity(&metadata) != expected {
+        return Err(ControllerNixPublicCredentialErrorV1::rejected(
+            CredentialFailureClass::Stale,
+            CredentialOperation::FileChanged,
+        ));
+    }
+    Ok(())
+}
+
+fn recheck_credential_ancestors(
+    ancestors: &CredentialAncestors,
+    uid: u32,
+) -> CredentialResult<()> {
+    if ancestors.count != ancestors.slots.len() {
+        return Err(credential_state_rejected());
+    }
+    let mut service_owned = false;
+    for (index, slot) in ancestors.slots.iter().enumerate() {
+        let directory = slot.descriptor.as_ref().ok_or_else(credential_state_rejected)?;
+        let stat = rustix::fs::fstat(directory).map_err(|error| {
+            ControllerNixPublicCredentialErrorV1::io(
+                CredentialFailureClass::Stale,
+                CredentialOperation::DirectoryMetadata,
+                error,
+            )
+        })?;
+        if slot.identity != Some((stat.st_dev, stat.st_ino)) {
+            return Err(ControllerNixPublicCredentialErrorV1::rejected(
+                CredentialFailureClass::Stale,
+                CredentialOperation::DirectoryProvenance,
+            ));
+        }
+        require_credential_ancestor(&stat, uid, &mut service_owned)?;
+        if index + 1 == ancestors.count {
+            require_credential_directory(&stat, uid)?;
+        }
+    }
+    Ok(())
 }
 
 /// Parks the prepare-only unit's two independently delivered public originals.
@@ -852,6 +1575,112 @@ mod tests {
     use crate::hierarchy::source_seed::{
         PinnedControllerSourceTreeSeedIssuerV1, encode_controller_source_tree_seed_credential_v1,
     };
+
+    #[test]
+    fn controller_public_empty_owner_exposes_no_ready_data_or_opened_files() {
+        let owner = ControllerNixPublicCredentialCustodyV1::new();
+
+        assert!(owner.publics().is_none());
+        assert!(owner.failure().is_none());
+        assert_eq!(owner.ancestors.count, 0);
+        assert_eq!(owner.readback.ancestors.count, 0);
+        assert!(owner.ancestors.slots.iter().all(|slot| slot.descriptor.is_none()));
+        assert!(owner.originals.iter().all(|slot| {
+            slot.public.is_none() && slot.read.file.is_none() && slot.read.bytes.is_none()
+        }));
+        assert!(owner.readback.named.iter().all(|slot| {
+            slot.file.is_none() && slot.bytes.is_none()
+        }));
+    }
+
+    #[test]
+    fn controller_public_fence_refuses_capture_and_recheck_without_opening() {
+        let mut owner = ControllerNixPublicCredentialCustodyV1::new();
+        owner.fence();
+
+        assert!(owner.capture().is_err());
+        assert!(owner.recheck().is_err());
+
+        assert!(owner.publics().is_none());
+        assert!(owner.uid.is_none());
+        assert_eq!(owner.ancestors.count, 0);
+        assert_eq!(owner.readback.ancestors.count, 0);
+        assert!(matches!(
+            owner.failure().unwrap().operation,
+            CredentialOperation::State,
+        ));
+    }
+
+    #[test]
+    fn controller_public_first_io_cause_survives_later_refusals_and_fence() {
+        use std::error::Error as _;
+
+        let mut owner = ControllerNixPublicCredentialCustodyV1::new();
+        let original = ControllerNixPublicCredentialErrorV1::io(
+            CredentialFailureClass::Configuration,
+            CredentialOperation::FileRead,
+            std::io::Error::from_raw_os_error(5),
+        );
+        assert!(owner.finish(Err(original)).is_err());
+        let first = owner.failure().unwrap() as *const _;
+
+        assert!(owner.recheck().is_err());
+        assert!(owner.capture().is_err());
+        owner.fence();
+
+        let retained = owner.failure().unwrap();
+        assert_eq!(first, retained as *const _);
+        assert_eq!(
+            retained.source().unwrap().downcast_ref::<std::io::Error>()
+                .unwrap().raw_os_error(),
+            Some(5),
+        );
+        assert!(matches!(retained.operation, CredentialOperation::FileRead));
+        assert!(owner.publics().is_none());
+    }
+
+    #[test]
+    fn controller_public_failed_batch_preserves_partial_buffers_without_ready_view() {
+        let mut owner = ControllerNixPublicCredentialCustodyV1::new();
+        owner.readback.original_bytes[2] = Some(Zeroizing::new(vec![1, 2, 3]));
+        owner.readback.named[2].bytes = Some(Zeroizing::new(vec![4, 5]));
+
+        assert!(owner.finish(Err(credential_state_rejected())).is_err());
+        assert!(owner.recheck().is_err());
+
+        assert_eq!(
+            owner.readback.original_bytes[2].as_ref().unwrap().as_slice(),
+            &[1, 2, 3],
+        );
+        assert_eq!(
+            owner.readback.named[2].bytes.as_ref().unwrap().as_slice(),
+            &[4, 5],
+        );
+        assert!(owner.publics().is_none());
+        assert!(owner.ancestors.slots.iter().all(|slot| slot.descriptor.is_none()));
+    }
+
+    #[test]
+    fn controller_public_missing_required_file_retains_actual_errno_and_legacy_class() {
+        use std::error::Error as _;
+
+        let error = require_present_credential(
+            CredentialReadOutcome::Absent(rustix::io::Errno::NOENT),
+        ).unwrap_err();
+
+        assert_eq!(
+            error.source().unwrap().downcast_ref::<rustix::io::Errno>(),
+            Some(&rustix::io::Errno::NOENT),
+        );
+        assert!(matches!(error.into_legacy(), PublicApiSessionError::Configuration));
+        assert!(matches!(
+            ControllerNixPublicCredentialErrorV1::rejected(
+                CredentialFailureClass::Stale,
+                CredentialOperation::FileChanged,
+            ).into_legacy(),
+            PublicApiSessionError::Stale,
+        ));
+    }
 
     #[test]
     fn offline_prepare_names_are_an_exact_set_not_processing_order() {
