@@ -209,6 +209,20 @@ impl ProductionVmNodeLauncher for FailingFinishLauncher {
     }
 }
 
+struct RecordingRetainedResource {
+    finish_order: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    label: &'static str,
+}
+
+impl Drop for RecordingRetainedResource {
+    fn drop(&mut self) {
+        self.finish_order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy"))
+            .push(self.label);
+    }
+}
+
 struct RecordingFinishLauncher {
     finish_order: Arc<std::sync::Mutex<Vec<&'static str>>>,
 }
@@ -1052,6 +1066,7 @@ pub(in crate::vm_lifecycle) fn production_loop_without_backends(
         debug_runtime_evidence: Vec::new(),
         node_launcher: Box::new(PackagedProductionVmNodeLauncher),
         _run_directory: run_directory,
+        retained_hot_fork_disk_owners: Vec::new(),
         retained_resource_owners: Vec::new(),
         hot_fork_backing_files: BTreeMap::new(),
     };
@@ -1808,7 +1823,18 @@ fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
     let source = initially_violated_scenario();
     let lease_finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut lifecycle = production_loop_without_backends(&source);
+    let mut lifecycle = production_loop_without_backends(&source).with_retained_resource_owner(
+        RecordingRetainedResource {
+            finish_order: Arc::clone(&order),
+            label: "generic-resource",
+        },
+    );
+    lifecycle
+        .retained_hot_fork_disk_owners
+        .push(Box::new(RecordingRetainedResource {
+            finish_order: Arc::clone(&order),
+            label: "disk-resource",
+        }));
     let node = node();
     lifecycle.node_generations.insert(node.clone(), 9);
     lifecycle.node_leases.insert(
@@ -1844,6 +1870,8 @@ fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
         vec!["lease"]
     );
+    assert_eq!(lifecycle.retained_resource_owners.len(), 1);
+    assert_eq!(lifecycle.retained_hot_fork_disk_owners.len(), 1);
 
     let repeated = QuantumLoop::shutdown(&mut lifecycle)
         .err()
@@ -1855,14 +1883,27 @@ fn lifecycle_retains_aggregate_launcher_after_generation_lease_failure() {
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
         vec!["lease"]
     );
+    assert_eq!(lifecycle.retained_resource_owners.len(), 1);
+    assert_eq!(lifecycle.retained_hot_fork_disk_owners.len(), 1);
 }
 
 #[test]
-fn lifecycle_finishes_generation_lease_before_aggregate_launcher() {
+fn lifecycle_releases_retained_resources_after_lease_before_aggregate_launcher() {
     let source = initially_violated_scenario();
     let order = Arc::new(std::sync::Mutex::new(Vec::new()));
     let finish_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let mut lifecycle = production_loop_without_backends(&source);
+    let mut lifecycle = production_loop_without_backends(&source).with_retained_resource_owner(
+        RecordingRetainedResource {
+            finish_order: Arc::clone(&order),
+            label: "generic-resource",
+        },
+    );
+    lifecycle
+        .retained_hot_fork_disk_owners
+        .push(Box::new(RecordingRetainedResource {
+            finish_order: Arc::clone(&order),
+            label: "disk-resource",
+        }));
     let node = node();
     lifecycle.node_generations.insert(node.clone(), 11);
     lifecycle.node_leases.insert(
@@ -1886,7 +1927,31 @@ fn lifecycle_finishes_generation_lease_before_aggregate_launcher() {
         *order
             .lock()
             .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
-        vec!["lease", "launcher"]
+        vec!["lease", "disk-resource", "launcher"]
+    );
+    assert!(lifecycle.retained_hot_fork_disk_owners.is_empty());
+    assert_eq!(lifecycle.retained_resource_owners.len(), 1);
+
+    QuantumLoop::shutdown(&mut lifecycle)
+        .unwrap_or_else(|error| panic!("repeated cleanup should remain successful: {error}"));
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec!["lease", "disk-resource", "launcher", "launcher"]
+    );
+    drop(lifecycle);
+    assert_eq!(
+        *order
+            .lock()
+            .unwrap_or_else(|_| panic!("finish-order recorder should remain healthy")),
+        vec![
+            "lease",
+            "disk-resource",
+            "launcher",
+            "launcher",
+            "generic-resource"
+        ]
     );
 }
 

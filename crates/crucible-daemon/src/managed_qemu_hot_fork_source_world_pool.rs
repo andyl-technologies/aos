@@ -109,10 +109,12 @@ impl ManagedQemuHotForkSourceWorld {
                 source, error,
             ));
         }
-        if require_canonical_genesis && !is_canonical_genesis_reuse_boundary(&source) {
+        if require_canonical_genesis
+            && let Some(detail) = canonical_genesis_reuse_boundary_error(&source)
+        {
             return Err(ManagedQemuHotForkSourceWorldBindingFailure::new(
                 source,
-                ManagedQemuHotForkSourceWorldBindingError::NonCanonicalBoundary,
+                ManagedQemuHotForkSourceWorldBindingError::NonCanonicalBoundary { detail },
             ));
         }
 
@@ -310,8 +312,11 @@ pub enum ManagedQemuHotForkSourceWorldBindingError {
     },
     /// The source crossed a scheduler, event, or lifecycle frontier that its
     /// configuration identity does not represent.
-    #[error("source world is not at the canonical genesis reuse boundary")]
-    NonCanonicalBoundary,
+    #[error("source world is not at the canonical genesis reuse boundary: {detail}")]
+    NonCanonicalBoundary {
+        /// Failed boundary predicate and its captured values.
+        detail: String,
+    },
     /// The source process incarnation or retained footprint could not be measured.
     #[error("measure complete retained source-world resources")]
     ResourceMeasurement(#[source] crucible_api::LifecycleApiError),
@@ -367,19 +372,50 @@ impl<E> std::fmt::Display for ManagedQemuHotForkAuthenticatedAdmissionFailure<E>
     }
 }
 
-fn is_canonical_genesis_reuse_boundary(source: &ProductionVmHotForkSourceWorld) -> bool {
+fn canonical_genesis_reuse_boundary_error(
+    source: &ProductionVmHotForkSourceWorld,
+) -> Option<String> {
     let continuation = source.continuation();
     let event_log = continuation.event_log_offset();
+    let scheduler = continuation.scheduler();
+    if !continuation.configuration().schedule.is_empty()
+        || scheduler.frontier().ticks != 0
+        || scheduler.quanta() != 0
+        || !is_canonical_genesis_event_log(event_log)
+        || continuation.terminal_verdict().is_some()
+        || !continuation.initial_lifecycle_observations_pending()
+    {
+        return Some(format!(
+            "schedule_len={} frontier={} quanta={} event_log={event_log:?} terminal={} initial_observations_pending={}",
+            continuation.configuration().schedule.len(),
+            scheduler.frontier().ticks,
+            scheduler.quanta(),
+            continuation.terminal_verdict().is_some(),
+            continuation.initial_lifecycle_observations_pending(),
+        ));
+    }
 
-    continuation.configuration().schedule.is_empty()
-        && continuation.scheduler().frontier().ticks == 0
-        && is_canonical_genesis_event_log(event_log)
-        && continuation.terminal_verdict().is_none()
-        && continuation.initial_lifecycle_observations_pending()
-        && continuation.nodes().iter().all(|node| {
-            node.scheduler_time().ticks == 0
-                && node.physical_time().is_none_or(|time| time.ticks == 0)
-        })
+    for node in continuation.nodes() {
+        let ready_point = scheduler.epoch_ready_point_counter_for_node(node.node());
+        let physical_matches = match (node.physical_time(), ready_point) {
+            (Some(physical), Some(counter)) => physical.ticks == counter.ticks,
+            (None, Some(_)) => {
+                node.service_state()
+                    == crucible_api::vm_lifecycle::ProductionVmHotForkNodeServiceState::PermanentlyFailed
+            }
+            _ => false,
+        };
+        if node.scheduler_time().ticks != 0 || !physical_matches {
+            return Some(format!(
+                "node={} scheduler_time={} physical_time={:?} epoch_ready_point={ready_point:?} service_state={:?}",
+                node.node().name,
+                node.scheduler_time().ticks,
+                node.physical_time(),
+                node.service_state(),
+            ));
+        }
+    }
+    None
 }
 
 fn is_canonical_genesis_event_log(offset: crucible::EventLogOffset) -> bool {

@@ -951,6 +951,11 @@ impl QuantumLoop for ProductionVmLifecycleLoop {
         };
         let launcher_shutdown =
             if shutdown.is_ok() && lease_shutdown.is_ok() && !self.node_lease_cleanup_failed {
+                // Reaped processes no longer need their pinned backing files.
+                // Close those owners before aggregate storage cleanup checks
+                // quota usage: unlinked open inodes remain charged to it.
+                self.retained_hot_fork_disk_owners.clear();
+
                 self.node_launcher
                     .finish()
                     .map_err(|error| SchedulerError::BoundaryViolation {

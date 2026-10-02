@@ -12,6 +12,175 @@ fn genesis_reuse_requires_the_canonical_empty_event_prefix() {
     assert!(!is_canonical_genesis_event_log(foreign));
 }
 
+fn nonzero_ready_point_source() -> Result<ProductionVmHotForkSourceWorld, Box<dyn std::error::Error>>
+{
+    let mut node = scripted_hot_fork_source_for_test(QemuTestHotForkOutcome::Forked)?;
+    node.advance_to_ceiling(crucible::Icount { retired: 37 })?;
+    let (_, source) = prepared_multi_node_hot_fork_source_world_for_test(vec![node])?;
+    Ok(source)
+}
+
+fn source_key(source: &ProductionVmHotForkSourceWorld) -> QemuHotForkSourceWorldKey {
+    QemuHotForkSourceWorldKey::new(
+        lineage_id(0x32),
+        source.continuation().configuration().def.id(),
+        source.continuation().configuration().id(),
+        compatibility_profile(),
+    )
+}
+
+#[test]
+fn canonical_genesis_accepts_the_authenticated_nonzero_ready_point()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source = nonzero_ready_point_source()?;
+    let retained = source
+        .continuation()
+        .nodes()
+        .iter()
+        .find(|node| node.physical_time().is_some())
+        .ok_or("missing retained source")?;
+    assert_eq!(retained.physical_time().map(|time| time.ticks), Some(37));
+    assert_eq!(retained.scheduler_time().ticks, 0);
+    assert_eq!(source.continuation().scheduler().quanta(), 0);
+
+    let world = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
+        .map_err(|failure| failure.into_parts().1)?;
+    let mut source = world.into_source().map_err(|_| "source unavailable")?;
+    assert!(
+        source
+            .fork_continuation()?
+            .initial_lifecycle_observations_pending()
+    );
+    assert!(
+        source
+            .fork_continuation()?
+            .initial_lifecycle_observations_pending()
+    );
+    source.retire()?;
+    Ok(())
+}
+
+#[test]
+fn canonical_genesis_rejects_a_physical_counter_foreign_to_its_ready_point()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut source = nonzero_ready_point_source()?;
+    let scenario = source.continuation().configuration().def.clone();
+    let form = crucible::crash_restart_scenario()?.scenario;
+    let scheduler = crucible::SingleScheduler::new(
+        crucible::SchedulerLivenessScenario::from_runnable_world(
+            "foreign-ready-point",
+            4,
+            crucible::SimInstant { ticks: 100 },
+            38,
+            form.world(),
+        )
+        .with_scenario_def(scenario),
+    )?;
+    source.replace_scheduler_for_test(scheduler.checkpoint()?);
+
+    let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
+        .err()
+        .ok_or("foreign physical counter admitted")?;
+    let (source, error) = failure.into_parts();
+    let diagnostic = error.to_string();
+    assert!(diagnostic.contains("physical_time=Some(VirtualTime { ticks: 37 })"));
+    assert!(diagnostic.contains("epoch_ready_point=Some(NodeCounter { ticks: 38 })"));
+    source.retire()?;
+    Ok(())
+}
+
+fn changed_scheduler_quanta(
+    checkpoint: &crucible::SingleSchedulerCheckpoint,
+) -> Result<crucible::SingleSchedulerCheckpoint, Box<dyn std::error::Error>> {
+    const PREFIX: &[u8] = b"crucible.single-scheduler-continuation.v6\0";
+    let bytes = checkpoint.canonical_bytes()?;
+    let payload = bytes.strip_prefix(PREFIX).ok_or("scheduler version")?;
+    let mut value: ciborium::value::Value = ciborium::de::from_reader(payload)?;
+    let fields = value.as_map_mut().ok_or("scheduler map")?;
+    let (_, quanta) = fields
+        .iter_mut()
+        .find(|(key, _)| key.as_text() == Some("quanta"))
+        .ok_or("scheduler quanta field")?;
+    *quanta = ciborium::value::Value::Integer(1.into());
+    let mut encoded = PREFIX.to_vec();
+    ciborium::ser::into_writer(&value, &mut encoded)?;
+    Ok(crucible::SingleSchedulerCheckpoint::from_canonical_bytes(
+        &encoded,
+    )?)
+}
+
+#[test]
+fn canonical_genesis_rejects_completed_quanta_and_preserves_its_diagnostic()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut source = nonzero_ready_point_source()?;
+    source.replace_scheduler_for_test(changed_scheduler_quanta(source.continuation().scheduler())?);
+    let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
+        .err()
+        .ok_or("completed quantum admitted as genesis")?;
+    let (source, error) = failure.into_parts();
+    assert!(error.to_string().contains("frontier=0 quanta=1"));
+    source.retire()?;
+    Ok(())
+}
+
+#[test]
+fn canonical_genesis_rejects_recorded_events_and_foreign_configuration_keys()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut source = nonzero_ready_point_source()?;
+    let form = crucible::crash_restart_scenario()?.scenario;
+    let node = form
+        .world()
+        .vm_nodes()
+        .iter()
+        .next()
+        .ok_or("missing VM")?
+        .id
+        .clone();
+    let mut scheduler = crucible::SingleScheduler::new(
+        crucible::SchedulerLivenessScenario::from_runnable_world(
+            "recorded-genesis-event",
+            4,
+            crucible::SimInstant { ticks: 100 },
+            37,
+            form.world(),
+        )
+        .with_scenario_def(form.scenario_def()),
+    )?;
+    crucible::QuantumLoop::append_backend_observable_events(
+        &mut scheduler,
+        vec![crucible::ObservableEvent::console_output(
+            crucible::VirtualTime { ticks: 0 },
+            node,
+            b"event".to_vec(),
+        )],
+    )?;
+    source.replace_scheduler_for_test(scheduler.checkpoint()?);
+    let failure = ManagedQemuHotForkSourceWorld::bind(source_key(&source), source)
+        .err()
+        .ok_or("recorded event admitted as genesis")?;
+    let (source, error) = failure.into_parts();
+    assert!(error.to_string().contains("event_log="));
+    source.retire()?;
+
+    let source = nonzero_ready_point_source()?;
+    let key = QemuHotForkSourceWorldKey::new(
+        lineage_id(0x32),
+        source.continuation().configuration().def.id(),
+        ContentHash::from_bytes(b"foreign configuration"),
+        compatibility_profile(),
+    );
+    let failure = ManagedQemuHotForkSourceWorld::bind(key, source)
+        .err()
+        .ok_or("foreign configuration key admitted")?;
+    let (source, error) = failure.into_parts();
+    assert!(matches!(
+        error,
+        ManagedQemuHotForkSourceWorldBindingError::SourceKeyMismatch { .. }
+    ));
+    source.retire()?;
+    Ok(())
+}
+
 #[test]
 fn admission_uses_measured_world_resources_and_charges_only_matching_checkouts() {
     let source_node =
@@ -242,7 +411,7 @@ fn same_configuration_at_an_advanced_frontier_is_rejected() {
 
     assert!(matches!(
         error,
-        ManagedQemuHotForkSourceWorldBindingError::NonCanonicalBoundary
+        ManagedQemuHotForkSourceWorldBindingError::NonCanonicalBoundary { .. }
     ));
     source.retire().expect("retire rejected source world");
 }

@@ -81,6 +81,12 @@ impl ProductionVmHotForkSourceWorld {
         self.continuation.initial_lifecycle_observations_pending = false;
     }
 
+    /// Replaces the captured scheduler for cross-crate boundary-refusal tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn replace_scheduler_for_test(&mut self, scheduler: SingleSchedulerCheckpoint) {
+        self.continuation.scheduler = Arc::new(scheduler);
+    }
+
     /// Mints a process-neutral continuation for one child world.
     ///
     /// The retained sources and their enclosing production lifecycle remain
@@ -1298,7 +1304,7 @@ impl ProductionVmLifecycleLoop {
             match preparation {
                 Ok(token) => {
                     if let Some((custody, _binding)) = disk {
-                        self.retained_resource_owners
+                        self.retained_hot_fork_disk_owners
                             .push(Box::new(Arc::clone(&custody)));
                         disk_custody.insert(node.clone(), custody);
                     }
@@ -1310,7 +1316,7 @@ impl ProductionVmLifecycleLoop {
                         // Keep the original open inodes with the unresolved
                         // lifecycle; rollback of PREPARE cannot discharge a
                         // prior block graph mutation.
-                        self.retained_resource_owners.push(Box::new(custody));
+                        self.retained_hot_fork_disk_owners.push(Box::new(custody));
                     }
                     let mut rollback_targets = prepared
                         .iter()

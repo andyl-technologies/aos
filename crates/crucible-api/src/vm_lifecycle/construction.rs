@@ -1513,10 +1513,11 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         node_launcher,
         _run_directory: run_directory,
         hot_fork_backing_files,
-        retained_resource_owners: retained_hot_fork_disk_files
+        retained_hot_fork_disk_owners: retained_hot_fork_disk_files
             .into_iter()
             .map(|file| Box::new(file) as Box<dyn Send>)
             .collect(),
+        retained_resource_owners: Vec::new(),
     };
     if let Some(checkpoint) = &restore_checkpoint {
         let prefix = lifecycle

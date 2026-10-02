@@ -1111,6 +1111,8 @@ pub struct ProductionVmLifecycleLoop {
     debug_runtime_evidence: Vec<ProductionVmDebugRuntimeEvidence>,
     node_launcher: Box<dyn ProductionVmNodeLauncher>,
     _run_directory: ProductionRunDirectory,
+    // Disk pins close after authenticated reap, before aggregate quota release.
+    retained_hot_fork_disk_owners: Vec<Box<dyn Send>>,
     retained_resource_owners: Vec<Box<dyn Send>>,
     hot_fork_backing_files:
         BTreeMap<NodeId, Vec<hot_fork::disk_basis::ImmutableHotForkBackingFile>>,
