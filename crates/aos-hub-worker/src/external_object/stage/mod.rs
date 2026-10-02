@@ -55,3 +55,9 @@ pub(super) use storage::verify_observable_destination;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(feature = "do-e2e", any(test, target_arch = "wasm32")))]
+pub(crate) mod observation;
+
+#[cfg(all(feature = "do-e2e", target_arch = "wasm32"))]
+pub(crate) use executor::execute_stage_observed_with_fault;

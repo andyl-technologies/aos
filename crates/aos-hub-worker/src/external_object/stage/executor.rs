@@ -104,6 +104,36 @@ pub(crate) async fn execute_stage_observed(
     work: &ExternalStageRequest,
     before_dispatch: &dyn Fn(),
 ) -> Result<ExternalStageResult> {
+    execute_stage_observed_inner(
+        env,
+        work,
+        before_dispatch,
+        #[cfg(feature = "do-e2e")]
+        None,
+    )
+    .await
+}
+
+/// Attaches confined observation without changing dispatch eligibility.
+///
+/// # Errors
+/// Returns the unchanged executor errors; records grant no authority.
+#[cfg(feature = "do-e2e")]
+pub(crate) async fn execute_stage_observed_with_fault(
+    env: &Env,
+    work: &ExternalStageRequest,
+    before_dispatch: &dyn Fn(),
+    observation: Option<&super::observation::Attempt>,
+) -> Result<ExternalStageResult> {
+    execute_stage_observed_inner(env, work, before_dispatch, observation).await
+}
+
+async fn execute_stage_observed_inner(
+    env: &Env,
+    work: &ExternalStageRequest,
+    before_dispatch: &dyn Fn(),
+    #[cfg(feature = "do-e2e")] observation: Option<&super::observation::Attempt>,
+) -> Result<ExternalStageResult> {
     executor_key(env)?;
     let object = configured(env)?.ok_or_else(|| anyhow::anyhow!("object consumer disabled"))?;
     let config = config::configured(env, &object)?
@@ -288,6 +318,8 @@ pub(crate) async fn execute_stage_observed(
         &parts,
         direct_permission_expires_at,
         before_dispatch,
+        #[cfg(feature = "do-e2e")]
+        observation,
     )
     .await?;
     let receipt = Receipt {
@@ -355,11 +387,14 @@ async fn dispatch(
     parts: &[DirectManifestPart],
     direct_permission_expires_at: Option<aos_hub_core::direct_upload::WireInteger>,
     before_dispatch: &dyn Fn(),
+    #[cfg(feature = "do-e2e")] observation: Option<&super::observation::Attempt>,
 ) -> Result<(Outcome, Option<String>)> {
     let now = object.clock().observed_at;
     let domain = config.domain(&work.context)?;
     let headers = Headers::new();
     let mut body = None;
+    #[cfg(feature = "do-e2e")]
+    let mut conditional_headers = None;
     let (url, method) = match &work.operation {
         Action::CreateStage | Action::CreateDestination { .. }
             if work.context.intent.byte_size.get() == 0 =>
@@ -411,6 +446,10 @@ async fn dispatch(
                 now,
                 PROVIDER_URL_SECONDS,
             )?;
+            #[cfg(feature = "do-e2e")]
+            if observation.is_some() {
+                conditional_headers = Some(signed.required_headers.clone());
+            }
             for header in signed.required_headers {
                 headers.set(&header.name, &header.value)?;
             }
@@ -501,6 +540,24 @@ async fn dispatch(
     } else {
         None
     };
+    // This snapshot precedes the final eligibility observation. It does not
+    // claim dispatch; the actual provider request must be joined independently.
+    #[cfg(feature = "do-e2e")]
+    if let (Some(observation), Some(closed), Some(headers)) =
+        (observation, closed, conditional_headers.as_deref())
+    {
+        observation.prepared(
+            turn,
+            closed,
+            floor,
+            direct_permission_expires_at,
+            &publication.snapshot.object_bucket,
+            &turn.intent.scope()?.full_key,
+            &url,
+            headers,
+        );
+    }
+
     // Both crypto validations and all async guard/manifest/binding work finish
     // before a fresh scalar observation. Actual JS Fetch starts synchronously.
     let final_clock = object.clock();

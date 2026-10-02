@@ -87,3 +87,9 @@ pub(crate) use oci::source_fetch as fetch_oci_source;
 
 #[cfg(target_arch = "wasm32")]
 pub(crate) use oci::cleanup_fetch as fetch_oci_cleanup;
+
+#[cfg(all(feature = "do-e2e", target_arch = "wasm32"))]
+pub(crate) use stage::execute_stage_observed_with_fault;
+
+#[cfg(all(feature = "do-e2e", target_arch = "wasm32"))]
+pub(crate) use stage::observation::Attempt as VerificationFaultAttempt;

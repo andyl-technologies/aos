@@ -52,3 +52,6 @@ pub(crate) mod verification;
 pub(crate) use broker::fetch;
 #[cfg(target_arch = "wasm32")]
 pub use storage::HybridDirectUpload;
+
+#[cfg(all(feature = "do-e2e", any(test, target_arch = "wasm32")))]
+pub(crate) mod verification_observation;

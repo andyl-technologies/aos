@@ -534,9 +534,45 @@ async fn verify_observed(
                 operation,
             )
             .await?;
+            #[cfg(feature = "do-e2e")]
+            let fault_observation = super::verification_observation::configured(env, &work)
+                .and_then(|selection| {
+                    let projection = super::verification_observation::Projection {
+                        version: 1,
+                        attempt_id: uuid::Uuid::new_v4().simple().to_string(),
+                        selection,
+                        job: super::verification_observation::JobProjection {
+                            canonical_job_sha256: super::verification_observation::bytes_digest(
+                                &serde_json::to_vec(job).ok()?,
+                            ),
+                            admission: job.admission.clone(),
+                            complete: job.complete.clone(),
+                            placement_id: job.placement_id,
+                            closed_result: result.clone(),
+                        },
+                        work: work.clone(),
+                    };
+                    crate::external_object::VerificationFaultAttempt::new(projection).ok()
+                });
             let verified = {
                 let _capacity = super::provider_capacity::acquire_class(1, class).await?;
-                crate::external_object::execute_stage_observed(env, &work, source_dispatch).await?
+                #[cfg(feature = "do-e2e")]
+                let result = crate::external_object::execute_stage_observed_with_fault(
+                    env,
+                    &work,
+                    source_dispatch,
+                    fault_observation.as_ref(),
+                )
+                .await;
+                #[cfg(not(feature = "do-e2e"))]
+                let result =
+                    crate::external_object::execute_stage_observed(env, &work, source_dispatch)
+                        .await;
+                #[cfg(feature = "do-e2e")]
+                if let Some(observation) = fault_observation.as_ref() {
+                    observation.finish(&result);
+                }
+                result?
             };
             ensure!(
                 matches!(&verified.outcome, ExternalStageOutcome::Verified { sha256, byte_size, .. } if sha256 == &job.admission.intent.expected_sha256 && byte_size == &job.admission.intent.byte_size),
