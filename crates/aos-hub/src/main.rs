@@ -1091,8 +1091,14 @@ async fn main() -> Result<()> {
                     deployment_id.clone(),
                     &storage_key,
                 )?;
-                let work = match mirror_profiles { Some(profiles) => work.with_mirror_profiles(profiles), None => work };
-                let work = match mirror_guard_key { Some(key) => work.with_mirror_guard_key(&key)?, None => work };
+                let work = match mirror_profiles {
+                    Some(profiles) => work.with_mirror_profiles(profiles),
+                    None => work,
+                };
+                let work = match mirror_guard_key {
+                    Some(key) => work.with_mirror_guard_key(&key)?,
+                    None => work,
+                };
                 work.check_console_ready().await?;
                 Some((deployment_id, Arc::new(ingress_key), Arc::new(work)))
             } else {
@@ -2465,7 +2471,11 @@ async fn index_all(db: &Database, surfaces: &dyn aos_hub_core::fetch::SurfacePro
 /// elapsed since its last attempt. Each sync verifies the upstream surface and
 /// copies it into the local binding; a verification failure is recorded and
 /// logged, never fatal to the loop.
-async fn sync_due_mirrors(db: &Arc<Database>, work: Option<&Arc<aos_hub::storage_work::RemoteStorageWorkClient>>, now: i64) {
+async fn sync_due_mirrors(
+    db: &Arc<Database>,
+    work: Option<&Arc<aos_hub::storage_work::RemoteStorageWorkClient>>,
+    now: i64,
+) {
     let sources = match db.list_mirror_sources().await {
         Ok(sources) => sources,
         Err(err) => {

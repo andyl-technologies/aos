@@ -1364,28 +1364,51 @@ async fn execute_storage_work(mut request: Request, env: &Env) -> Result<Respons
     };
     let operation_kind = plan.operation.kind();
 
-    let execution = if matches!(plan.operation,
-        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadataBatch { .. }) {
+    let execution = if matches!(
+        plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadataBatch { .. }
+    ) {
         crate::mirror_live::batch::inspect(env, &plan).await
-    } else if matches!(&plan.operation,
-        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadata { .. }) {
+    } else if matches!(
+        &plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorLiveMetadata { .. }
+    ) {
         crate::mirror_live::inspect_metadata(env, &plan).await
-    } else if matches!(plan.operation,
-        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorMembership { .. }) {
+    } else if matches!(
+        plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorMembership { .. }
+    ) {
         crate::mirror_import::membership::dispatch(env, &plan, &body, &signature).await
-    } else if matches!(plan.operation,
-        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorTreeInventory { .. }) {
+    } else if matches!(
+        plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorTreeInventory { .. }
+    ) {
         crate::mirror_import::inventory::dispatch(env, &plan, &body, &signature).await
-    } else if matches!(plan.operation,
-        aos_hub_core::storage_work::StorageWorkOperation::MirrorTransferBatch { .. }) {
+    } else if matches!(
+        plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::MirrorTransferBatch { .. }
+    ) {
         crate::mirror_import::batch::execute(env, &plan, &body, &signature, false).await
-    } else if matches!(plan.operation,
+    } else if matches!(
+        plan.operation,
         aos_hub_core::storage_work::StorageWorkOperation::InspectMirrorPack { .. }
-        | aos_hub_core::storage_work::StorageWorkOperation::InspectStoredGitPack { .. }
-        | aos_hub_core::storage_work::StorageWorkOperation::FilterStoredGitPackTree { .. }) {
+            | aos_hub_core::storage_work::StorageWorkOperation::InspectStoredGitPack { .. }
+            | aos_hub_core::storage_work::StorageWorkOperation::FilterStoredGitPackTree { .. }
+    ) {
         crate::mirror_import::inspection::execute(env, &plan).await
-    } else if matches!(plan.operation, aos_hub_core::storage_work::StorageWorkOperation::MirrorTransfer { .. }) {
-        crate::mirror_import::runtime::dispatch(env, &plan, &body, &signature).await.map(|(progress, source_bytes)| crate::surface::storage_work_result(&plan, aos_hub_core::storage_work::StorageWorkOutcome::MirrorProgress { progress }, source_bytes))
+    } else if matches!(
+        plan.operation,
+        aos_hub_core::storage_work::StorageWorkOperation::MirrorTransfer { .. }
+    ) {
+        crate::mirror_import::runtime::dispatch(env, &plan, &body, &signature)
+            .await
+            .map(|(progress, source_bytes)| {
+                crate::surface::storage_work_result(
+                    &plan,
+                    aos_hub_core::storage_work::StorageWorkOutcome::MirrorProgress { progress },
+                    source_bytes,
+                )
+            })
     } else if plan.binding_kind == "deployment_r2" {
         crate::surface::execute_r2_storage_work(env, &plan).await
     } else {

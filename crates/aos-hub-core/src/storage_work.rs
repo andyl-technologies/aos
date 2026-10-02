@@ -76,11 +76,11 @@ pub struct StorageCapabilities {
     pub max_verify_source_bytes: u64,
 }
 
-mod binding_snapshot;
 pub mod binding_custody;
+mod binding_snapshot;
 mod frozen_cleanup;
-mod metadata_batch;
 pub mod live_metadata_batch;
+mod metadata_batch;
 
 pub use frozen_cleanup::{
     StorageFrozenCleanupAccess, StorageFrozenCleanupHeadResult, StorageFrozenCleanupOperation,
@@ -933,10 +933,7 @@ impl StorageWorkPlan {
     /// # Errors
     /// Returns an error for changed deployment, invalid intrinsic issue/expiry
     /// geometry, unsupported operations, malformed paths or changed fence shapes.
-    pub fn validate_observation_shape(
-        &self,
-        deployment_id: &str,
-    ) -> Result<(), StorageWorkError> {
+    pub fn validate_observation_shape(&self, deployment_id: &str) -> Result<(), StorageWorkError> {
         self.validate_checked(deployment_id, None)
     }
 
@@ -997,7 +994,8 @@ impl StorageWorkPlan {
             }
             StorageWorkOperation::InspectMirrorLiveMetadata { target } => {
                 if target.validate().is_err()
-                    || target.class != crate::hybrid_ingress::live::HybridLiveDeliveryClass::Metadata
+                    || target.class
+                        != crate::hybrid_ingress::live::HybridLiveDeliveryClass::Metadata
                     || target.placement_id != self.placement_id
                     || target.placement_resource_version != self.placement_resource_version
                     || target.binding_id != self.binding_id
@@ -1033,7 +1031,9 @@ impl StorageWorkPlan {
                 }
             }
             StorageWorkOperation::InspectStoredGitPack {
-                index_path, selections, protected_profile_digest,
+                index_path,
+                selections,
+                protected_profile_digest,
             } => {
                 if self.binding_kind != "deployment_r2"
                     || index_path.len() > 512
@@ -1045,7 +1045,9 @@ impl StorageWorkPlan {
                 }
             }
             StorageWorkOperation::MirrorTransfer { original, step } => {
-                original.validate_plan(self).map_err(|_| StorageWorkError::InvalidPlan)?;
+                original
+                    .validate_plan(self)
+                    .map_err(|_| StorageWorkError::InvalidPlan)?;
                 step.validate().map_err(|_| StorageWorkError::InvalidPlan)?;
             }
             StorageWorkOperation::Head { path } => {
@@ -1627,13 +1629,20 @@ mod tests {
     fn retained_plan_shape_never_supplies_a_live_authorization_time() {
         let mut retained = plan(100);
         assert!(retained.validate_observation_shape("deployment-1").is_ok());
-        assert_eq!(retained.validate("deployment-1", 200), Err(StorageWorkError::InvalidTime));
-        assert!(retained.validate_observation_shape("another-deployment").is_err());
+        assert_eq!(
+            retained.validate("deployment-1", 200),
+            Err(StorageWorkError::InvalidTime)
+        );
+        assert!(retained
+            .validate_observation_shape("another-deployment")
+            .is_err());
 
         retained.expires_at = retained.issued_at + 31;
         assert!(retained.validate_observation_shape("deployment-1").is_err());
         retained.expires_at = retained.issued_at + 30;
-        retained.operation = StorageWorkOperation::Head { path: "../outside".into() };
+        retained.operation = StorageWorkOperation::Head {
+            path: "../outside".into(),
+        };
         assert!(retained.validate_observation_shape("deployment-1").is_err());
     }
 

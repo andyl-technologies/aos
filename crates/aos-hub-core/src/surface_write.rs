@@ -36,7 +36,8 @@ use md5::{Digest as _, Md5};
 
 use crate::backend::BackendBounds;
 use crate::db::{
-    BindingWriteRevisionRecord, OciUploadChunkRecord, SurfacePlacementRecord, TopologyOperationRecord,
+    BindingWriteRevisionRecord, OciUploadChunkRecord, SurfacePlacementRecord,
+    TopologyOperationRecord,
 };
 use crate::fetch::{SurfaceListedEvidence, SurfaceObjectEvidence};
 
