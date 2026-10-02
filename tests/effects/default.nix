@@ -78,7 +78,7 @@ in
       pname = "aos-effect-module-checks";
       version = "0";
       src = null;
-      buildDeps = [pkgs.python3];
+      buildDeps = [pkgs.python3 pkgs.systemd];
       runtimeDeps = [fixture initrdAccountSeed.serialization];
       phases = [
         {
@@ -86,7 +86,7 @@ in
           script = ''
             export PYTHONDONTWRITEBYTECODE=1
             test -f ${initrdAccountSeed.serialization}/result
-            ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py} ${../../pkgs/system/_aos-configuration-provider/aos_configuration.py} ${../../pkgs/system/_aos-configuration-provider/handler.py} ${pkgs.aos-configuration-provider}/bin/aos-configuration-provider
+            ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py} ${../../pkgs/system/_aos-configuration-provider/aos_configuration.py} ${../../pkgs/system/_aos-configuration-provider/handler.py} ${pkgs.aos-configuration-provider}/bin/aos-configuration-provider ${pkgs.systemd}/bin/systemd-analyze
             ${pkgs.python3}/bin/python3 ${../services/native-flight-oracle.py} ${../fleet/native-reference-service-flights.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-filesystem-firewall-oracles-self-test.py} ${../fleet/native-filesystem-firewall-oracles.py}
             ${pkgs.python3}/bin/python3 ${../fleet/native-reference-filesystem-flights-self-test.py} ${../fleet/native-reference-filesystem-flights.py}

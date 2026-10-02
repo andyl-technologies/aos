@@ -72,6 +72,14 @@ def token(value):
     return value
 
 
+def socket_address(value):
+    value = checked_text(value)
+    if "\n" in value or "\r" in value or value != value.strip() or value.endswith("\\"):
+        raise ValueError("socket address cannot require scalar whitespace or continuation escaping")
+    # Listen*= resolves specifiers directly; it does not remove Exec*= quoting.
+    return value.replace("%", "%%")
+
+
 def yes(value):
     return "yes" if value else "no"
 
@@ -479,12 +487,12 @@ def realize_service(value):
         document.add("RemoveOnStop", yes(socket["remove_on_stop"]), "Socket")
         for endpoint in socket["endpoints"]:
             if endpoint["kind"] == "unix":
-                document.add("ListenStream", quote(absolute(endpoint["path"])), "Socket")
+                document.add("ListenStream", socket_address(absolute(endpoint["path"])), "Socket")
             else:
-                address = endpoint["address"]
+                address = checked_text(endpoint["address"])
                 if ":" in address and not address.startswith("["):
                     address = "[" + address + "]"
-                document.add("ListenStream" if endpoint["transport"] == "tcp" else "ListenDatagram", quote(address + ":" + str(endpoint["port"])), "Socket")
+                document.add("ListenStream" if endpoint["transport"] == "tcp" else "ListenDatagram", socket_address(address + ":" + str(endpoint["port"])), "Socket")
         for field, key in {"after": "After", "binds_to": "BindsTo"}.items():
             document.repeat(key, (socket_names[n] for n in socket.get(field, [])), "Unit")
         rendered[name] = document.text()
