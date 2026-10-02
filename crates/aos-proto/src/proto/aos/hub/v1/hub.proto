@@ -420,6 +420,11 @@ service ContainerService {
   rpc PlanRunContainerGc(PlanRunContainerGcRequest)
       returns (ContainerGcPlanResponse);
   rpc RunContainerGc(ApplyContainerMutationRequest) returns (OperationResponse);
+  // Discards one unapplied reviewed GC plan so it stops blocking registry
+  // deletion. Applying runs cannot be cancelled; terminal runs are returned
+  // unchanged.
+  rpc CancelContainerGcRun(CancelContainerGcRunRequest)
+      returns (ContainerGcRunResponse);
   rpc GetContainerGcRun(GetContainerGcRunRequest)
       returns (ContainerGcRunResponse);
   rpc ListContainerGcRuns(ListContainerGcRunsRequest)
@@ -1220,6 +1225,16 @@ message PlanRunContainerGcRequest {
 message GetContainerGcRunRequest {
   string registry = 1;
   string run_id = 2;
+}
+
+// Cancels one planned (unapplied) GC run. The resource version binds the
+// exact reviewed run; replaying the request after the run reached a terminal
+// state returns that run unchanged.
+message CancelContainerGcRunRequest {
+  string registry = 1;
+  string run_id = 2;
+  string expected_resource_version = 3;
+  string idempotency_key = 4;
 }
 
 message ListContainerGcRunsRequest {
